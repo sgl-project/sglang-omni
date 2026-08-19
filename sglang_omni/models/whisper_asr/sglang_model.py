@@ -29,6 +29,20 @@ from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
 
 logger = logging.getLogger(__name__)
 
+_QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
+_KV_SHARDS = {"k_proj": 0, "v_proj": 1}
+
+
+def _load_projection_shard(
+    param: torch.Tensor,
+    loaded_weight: torch.Tensor,
+    *,
+    shard: int,
+    shard_size: int,
+) -> None:
+    target = param.data.narrow(0, shard * shard_size, shard_size)
+    default_weight_loader(target, loaded_weight)
+
 
 class WhisperEncoderAttention(nn.Module):
     def __init__(self, config: WhisperConfig) -> None:
@@ -36,9 +50,11 @@ class WhisperEncoderAttention(nn.Module):
         self.embed_dim = config.d_model
         self.num_heads = config.encoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
+        # Whisper K projections have no bias. The zero K shard preserves that
+        # checkpoint structure while issuing one GEMM for all three projections.
+        with torch.no_grad():
+            self.qkv_proj.bias[self.embed_dim : 2 * self.embed_dim].zero_()
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
 
     def _shape(self, states: torch.Tensor) -> torch.Tensor:
@@ -48,9 +64,10 @@ class WhisperEncoderAttention(nn.Module):
         ).transpose(1, 2)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        query = self._shape(self.q_proj(hidden_states))
-        key = self._shape(self.k_proj(hidden_states))
-        value = self._shape(self.v_proj(hidden_states))
+        query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
+        query = self._shape(query)
+        key = self._shape(key)
+        value = self._shape(value)
         attn_output = F.scaled_dot_product_attention(
             query,
             key,
@@ -143,9 +160,9 @@ class WhisperSGLangSelfAttention(nn.Module):
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
+        with torch.no_grad():
+            self.qkv_proj.bias[self.embed_dim : 2 * self.embed_dim].zero_()
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.attn = RadixAttention(
             self.num_heads,
@@ -160,9 +177,10 @@ class WhisperSGLangSelfAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        query = self.q_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        key = self.k_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        value = self.v_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
+        query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
+        query = query.view(-1, self.num_heads, self.head_dim)
+        key = key.view(-1, self.num_heads, self.head_dim)
+        value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
         return self.out_proj(attn_output)
 
@@ -181,8 +199,9 @@ class WhisperSGLangCrossAttention(nn.Module):
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.kv_proj = nn.Linear(self.embed_dim, 2 * self.embed_dim)
+        with torch.no_grad():
+            self.kv_proj.bias[: self.embed_dim].zero_()
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.attn = RadixAttention(
@@ -204,12 +223,9 @@ class WhisperSGLangCrossAttention(nn.Module):
         if cross_attention_states is None:
             key = value = None
         else:
-            key = self.k_proj(cross_attention_states).view(
-                -1, self.num_heads, self.head_dim
-            )
-            value = self.v_proj(cross_attention_states).view(
-                -1, self.num_heads, self.head_dim
-            )
+            key, value = self.kv_proj(cross_attention_states).chunk(2, dim=-1)
+            key = key.view(-1, self.num_heads, self.head_dim)
+            value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
         return self.out_proj(attn_output)
 
@@ -501,6 +517,27 @@ class WhisperForConditionalGeneration(nn.Module):
         for name, loaded_weight in weights:
             if name == "proj_out.weight":
                 name = "model.decoder.embed_tokens.weight"
+            projection = name.rsplit(".", 2)[-2]
+            if ".self_attn." in name and projection in _QKV_SHARDS:
+                target_name = name.replace(f".{projection}.", ".qkv_proj.", 1)
+                param = params_dict[target_name]
+                _load_projection_shard(
+                    param,
+                    loaded_weight,
+                    shard=_QKV_SHARDS[projection],
+                    shard_size=self.config.d_model,
+                )
+                continue
+            if ".encoder_attn." in name and projection in _KV_SHARDS:
+                target_name = name.replace(f".{projection}.", ".kv_proj.", 1)
+                param = params_dict[target_name]
+                _load_projection_shard(
+                    param,
+                    loaded_weight,
+                    shard=_KV_SHARDS[projection],
+                    shard_size=self.config.d_model,
+                )
+                continue
             if name not in params_dict:
                 continue
             param = params_dict[name]
