@@ -40,9 +40,9 @@ def test_deferred_capture_uses_the_omni_wrapper() -> None:
         "deferred capture must go through init_sglang_cuda_graphs so the "
         "prefill embeds view is applied"
     )
-    assert "model_runner.init_cuda_graphs()" not in src, (
-        "raw init_cuda_graphs() bypasses the omni prefill embeds view"
-    )
+    assert (
+        "model_runner.init_cuda_graphs()" not in src
+    ), "raw init_cuda_graphs() bypasses the omni prefill embeds view"
 
 
 def test_speech_path_attests_prefill_graphs() -> None:
