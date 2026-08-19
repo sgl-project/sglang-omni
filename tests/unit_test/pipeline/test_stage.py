@@ -1067,7 +1067,9 @@ def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> No
 
 
 def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> None:
-    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
+    monkeypatch.setattr(
+        stage_io, "should_use_direct_cuda_ipc_payload", lambda payload: True
+    )
     monkeypatch.setattr(
         stage_io,
         "serialize_direct_cuda_ipc_payload",
@@ -1109,7 +1111,9 @@ def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> No
 
 
 def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
-    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
+    monkeypatch.setattr(
+        stage_io, "should_use_direct_cuda_ipc_payload", lambda payload: True
+    )
 
     def _unexpected_direct_payload(payload):
         raise AssertionError("direct payload serializer should not be called")
@@ -1150,7 +1154,9 @@ def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
 
 
 def test_stage_uses_relay_when_direct_cuda_payload_is_reexported(monkeypatch) -> None:
-    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
+    monkeypatch.setattr(
+        stage_io, "should_use_direct_cuda_ipc_payload", lambda payload: True
+    )
 
     def _raise_reexport(payload):
         raise RuntimeError(
@@ -1407,5 +1413,175 @@ def test_stage_local_object_requires_registered_target() -> None:
                 make_stage_payload(request_id="req-local"),
                 allow_local_object=True,
             )
+
+    asyncio.run(_run())
+
+
+def test_cuda_tensor_payload_nbytes_sums_only_cuda_tensors() -> None:
+    payload = make_stage_payload(
+        request_id="req-nbytes",
+        data={
+            "audio": torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0"),
+            "host_side": torch.zeros(1024, dtype=torch.float32),
+            "scalar": 7,
+        },
+    )
+    assert stage_io.cuda_tensor_payload_nbytes(payload) == 63 * 2048 * 2
+
+
+def test_cuda_tensor_payload_nbytes_walks_nested_containers() -> None:
+    payload = make_stage_payload(
+        request_id="req-nested",
+        data={
+            "outer": [
+                {"inner": torch.zeros(8, dtype=torch.int32, device="cuda:0")},
+                (torch.zeros(4, dtype=torch.int32, device="cuda:0"),),
+            ]
+        },
+    )
+    assert stage_io.cuda_tensor_payload_nbytes(payload) == (8 + 4) * 4
+
+
+def test_should_use_direct_cuda_ipc_payload_gates_the_audio_encoder_hop() -> None:
+    # 63 x 2048 bf16 = 258 KB, the measured audio_encoder -> mm_aggregate payload.
+    small = make_stage_payload(
+        request_id="req-small",
+        data={"t": torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0")},
+    )
+    assert (
+        stage_io.cuda_tensor_payload_nbytes(small)
+        < stage_io._DIRECT_CUDA_IPC_PAYLOAD_MIN_BYTES
+    )
+    assert stage_io.should_use_direct_cuda_ipc_payload(small) is False
+
+
+def test_should_use_direct_cuda_ipc_payload_keeps_large_payloads_on_ipc() -> None:
+    large = make_stage_payload(
+        request_id="req-large",
+        data={
+            "t": torch.zeros(
+                stage_io._DIRECT_CUDA_IPC_PAYLOAD_MIN_BYTES // 2,
+                dtype=torch.bfloat16,
+                device="cuda:0",
+            )
+        },
+    )
+    assert stage_io.should_use_direct_cuda_ipc_payload(large) is True
+
+
+def test_should_use_direct_cuda_ipc_payload_is_false_without_cuda_tensor() -> None:
+    cpu_only = make_stage_payload(
+        request_id="req-cpu",
+        data={"t": torch.zeros(8 * 1024 * 1024, dtype=torch.bfloat16)},
+    )
+    assert stage_io.should_use_direct_cuda_ipc_payload(cpu_only) is False
+
+
+def test_stage_routes_small_cuda_payload_over_relay_not_direct_ipc(
+    monkeypatch,
+) -> None:
+    def _unexpected_direct_payload(payload):
+        raise AssertionError("small payload must not take the direct CUDA IPC path")
+
+    monkeypatch.setattr(
+        stage_io, "serialize_direct_cuda_ipc_payload", _unexpected_direct_payload
+    )
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="audio_encoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"mm_aggregate": "inproc://mm"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"mm_aggregate"},
+            stage_gpu_ids={"mm_aggregate": (0,)},
+        )
+
+        tensor = torch.randn(63, 2048, dtype=torch.bfloat16, device="cuda:0")
+        payload = make_stage_payload(request_id="req-small-hop", data={"t": tensor})
+        await sender._send_to_stage("req-small-hop", "mm_aggregate", payload)
+
+        target, endpoint, msg = control_plane.sent_to_stage[0]
+        assert target == "mm_aggregate"
+        assert endpoint == "inproc://mm"
+        assert msg.data_ref["_type"] == "DataRef"
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+def test_stage_still_uses_direct_ipc_for_large_cuda_payload() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="image_encoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"mm_aggregate": "inproc://mm"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"mm_aggregate"},
+            stage_gpu_ids={"mm_aggregate": (0,)},
+        )
+
+        tensor = torch.zeros(2048, 2048, dtype=torch.bfloat16, device="cuda:0")
+        payload = make_stage_payload(request_id="req-large-hop", data={"t": tensor})
+        await sender._send_to_stage("req-large-hop", "mm_aggregate", payload)
+
+        assert relay.storage == {}
+        _, _, msg = control_plane.sent_to_stage[0]
+        assert msg.data_ref["_type"] == "TorchCudaIpcPayload"
+
+    asyncio.run(_run())
+
+
+def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
+    """The size gate changes transport only; values must be untouched."""
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="audio_encoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"mm_aggregate": "inproc://mm"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"mm_aggregate"},
+            stage_gpu_ids={"mm_aggregate": (0,)},
+        )
+
+        torch.manual_seed(0)
+        tensor = torch.randn(63, 2048, dtype=torch.bfloat16, device="cuda:0")
+        original = tensor.clone()
+        payload = make_stage_payload(request_id="req-bitwise", data={"t": tensor})
+        await sender._send_to_stage("req-bitwise", "mm_aggregate", payload)
+
+        _, _, msg = control_plane.sent_to_stage[0]
+        assert msg.data_ref["_type"] == "DataRef"
+        landed = await stage_io.read_payload(
+            relay,
+            "req-bitwise",
+            DataRef.from_dict(msg.data_ref),
+            local_device="cuda:0",
+        )
+        received = landed.data["t"]
+        assert received.dtype == original.dtype
+        assert tuple(received.shape) == tuple(original.shape)
+        assert torch.equal(received.to(original.device), original)
+        # the sender-side tensor must also be left alone
+        assert torch.equal(tensor, original)
 
     asyncio.run(_run())

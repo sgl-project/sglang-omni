@@ -42,6 +42,20 @@ _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE = "TorchCudaIpcStreamChunk"
 _DIRECT_CUDA_IPC_PAYLOAD_TYPE = "TorchCudaIpcPayload"
 _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT = 64 * 1024
 
+# Note (wenyao): direct CUDA IPC costs a receive-side cudaIpcOpenMemHandle whose
+# price is per-handle and independent of payload size, and that handle open
+# contends with the thinker's ~54 ms prefill on the same card. Measured on the
+# audio_encoder -> mm_aggregate hop (63 x 2048 bf16 = 258 KB), same run, same
+# box, steady state: shm pack+transport 1.26 ms (max 0.59 ms transport) versus
+# torch_cuda_ipc 13.4 ms mean / 69 ms p95 / 80 ms max, with ~1/3 of hops
+# stalling 10-80 ms. Sender-side pack is equal in both arms, so the tail is the
+# handle open, not a D2H copy. shm cost instead scales with bytes, so IPC only
+# pays for itself on payloads large enough to amortise the handle: this floor
+# keeps image/video encoder outputs (>= 1024 tokens of 2048-wide bf16) on IPC
+# while routing the small audio hop over shm.
+# See /data/omni-encresidual-20260818/LEDGER.md.
+_DIRECT_CUDA_IPC_PAYLOAD_MIN_BYTES = 4 * 1024 * 1024
+
 
 def relay_device(relay: Relay) -> str:
     device = relay.device
@@ -131,8 +145,31 @@ def should_use_direct_cuda_ipc_stream_chunk(
     return inline_size <= _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT
 
 
-def payload_has_cuda_tensor(payload: Any) -> bool:
-    return _contains_cuda_tensor(payload)
+def cuda_tensor_payload_nbytes(obj: Any, seen: set[int] | None = None) -> int:
+    """Total bytes of the CUDA tensors reachable from ``obj``."""
+    if obj is None:
+        return 0
+    seen = set() if seen is None else seen
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+    if isinstance(obj, torch.Tensor):
+        return obj.numel() * obj.element_size() if obj.is_cuda else 0
+    if isinstance(obj, dict):
+        return sum(cuda_tensor_payload_nbytes(value, seen) for value in obj.values())
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return sum(cuda_tensor_payload_nbytes(value, seen) for value in obj)
+    if is_dataclass(obj) and not isinstance(obj, type):
+        return sum(
+            cuda_tensor_payload_nbytes(getattr(obj, field.name), seen)
+            for field in fields(obj)
+        )
+    return 0
+
+
+def should_use_direct_cuda_ipc_payload(payload: Any) -> bool:
+    return cuda_tensor_payload_nbytes(payload) >= _DIRECT_CUDA_IPC_PAYLOAD_MIN_BYTES
 
 
 def serialize_direct_cuda_ipc_payload(payload: StagePayload) -> dict[str, Any]:

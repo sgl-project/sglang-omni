@@ -1183,7 +1183,7 @@ class Stage:
         if (
             not self._disable_direct_cuda_ipc_payload
             and can_use_direct_cuda_ipc
-            and stage_io.payload_has_cuda_tensor(projected_payload)
+            and stage_io.should_use_direct_cuda_ipc_payload(projected_payload)
         ):
             try:
                 direct_ref = stage_io.serialize_direct_cuda_ipc_payload(
