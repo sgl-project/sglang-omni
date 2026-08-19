@@ -563,7 +563,7 @@ that happened to contain an older version of the test.
     pytest tests/unit_test/qwen3_omni/test_thinker_prefill_contract.py -q
     ```
   - Speech prefill graph integration: H100 profile resolution, bootstrap
-    capture/attestation, custom-eager observer hooks, and phase-defined static
+    capture/attestation, custom-eager counting, and phase-defined static
     auxiliary-hidden slicing with strict row-count validation.
 
 - `unit_test/ming_omni/` Ming-Omni unit tests:

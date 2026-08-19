@@ -53,6 +53,17 @@ def _prefill_runner() -> QwenTalkerModelRunner:
     return runner
 
 
+def _prefill_forward_batch(
+    num_tokens: int, *, input_embeds: torch.Tensor | None = None
+) -> SimpleNamespace:
+    """ForwardBatch fields the sidecar attach reads."""
+    return SimpleNamespace(
+        input_embeds=input_embeds,
+        replace_embeds=None,
+        input_ids=torch.zeros(num_tokens, dtype=torch.long),
+    )
+
+
 def _prefill_sidecar(
     runner: QwenTalkerModelRunner,
     forward_batch: SimpleNamespace,
@@ -1747,10 +1758,7 @@ def test_projected_prefill_reads_tensor_from_data() -> None:
             extend_range=SimpleNamespace(length=10),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(10, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(10)
 
     payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
@@ -1771,10 +1779,7 @@ def test_projected_prefill_slices_tensor_by_prefix_indices() -> None:
             extend_range=SimpleNamespace(length=7),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(7, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(7)
 
     payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
@@ -1798,10 +1803,7 @@ def test_projected_prefill_slices_tensor_by_extend_range() -> None:
             extend_range=SimpleNamespace(length=extend_len),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(extend_len, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(extend_len)
 
     payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
@@ -1825,10 +1827,7 @@ def test_projected_prefill_list_fallback_slices_by_extend_range() -> None:
             extend_range=SimpleNamespace(length=extend_len),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(extend_len, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(extend_len)
 
     payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
@@ -1856,10 +1855,7 @@ def test_projected_prefill_rejects_mixed_projected_and_list_batch() -> None:
             extend_range=SimpleNamespace(length=2),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=torch.randn(2, 8),
-        input_ids=torch.zeros(4, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(4, input_embeds=torch.randn(2, 8))
 
     with pytest.raises(RuntimeError, match="cannot be batched together"):
         _prefill_sidecar(_prefill_runner(), forward_batch, [projected_req, list_req])
@@ -1877,10 +1873,7 @@ def test_projected_prefill_full_prefix_hit_returns_none() -> None:
             extend_range=SimpleNamespace(length=0),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(0, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(0)
 
     assert _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req]) is None
 
@@ -1924,10 +1917,7 @@ def test_projected_prefill_survives_decode_retract() -> None:
         tts_pad_embed=None,
         thinker_chunks_done=True,
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(10, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(10)
 
     runner = _prefill_runner()
     runner._feedback_enabled = False
@@ -1998,10 +1988,7 @@ def test_projected_prefill_retract_replays_generated_decode_inputs() -> None:
             output_ids=[11, 12, 13],
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(5, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(5)
 
     result = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 

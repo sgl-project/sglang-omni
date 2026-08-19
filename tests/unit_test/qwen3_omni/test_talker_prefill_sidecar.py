@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Talker projected prefill through the Omni prefill sidecar.
 
-The talker used to compose its projected embeddings inside a hand-rolled
-forward, which never reached ``ModelRunner.forward`` and therefore never
-reached prefill-graph dispatch. Routing the same embeddings through the
-sidecar makes the batch eligible for the breakable prefill CUDA graph.
-
-The failure mode these tests guard is silent: rows composed from the wrong
-slice produce speech of exactly the right duration saying the wrong thing,
-which every duration-based contract gate passes. So the sidecar rows are
-pinned against the rows the legacy custom forward composes.
+before_prefill composes the projected prompt rows and attaches them to the
+sidecar; SGLang dispatches the forward, so the batch stays eligible for the
+breakable prefill CUDA graph. Rows composed from the wrong slice produce
+speech of exactly the right duration saying the wrong thing, which every
+duration-based gate passes, so per-request slicing is pinned here.
 """
 
 from __future__ import annotations
@@ -20,7 +16,6 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 
@@ -87,13 +82,6 @@ def test_before_prefill_attaches_projected_embeds_to_the_sidecar() -> None:
     # The batch's own embeds field stays untouched: a batch carrying it is
     # refused by prefill-graph admission.
     assert forward_batch.input_embeds is None
-
-
-def test_talker_uses_the_base_custom_prefill_dispatch() -> None:
-    assert (
-        QwenTalkerModelRunner.custom_prefill_forward
-        is ModelRunner.custom_prefill_forward
-    )
 
 
 def test_sidecar_composes_the_logical_rows_for_each_request() -> None:
