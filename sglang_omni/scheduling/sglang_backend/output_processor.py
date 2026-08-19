@@ -257,12 +257,7 @@ class SGLangOutputProcessor:
         if tensor.shape[0] == num_requests:
             return tensor[request_index]
 
-        is_extend_fn = getattr(
-            getattr(batch_data, "forward_mode", None),
-            "is_extend",
-            None,
-        )
-        is_extend = bool(callable(is_extend_fn) and is_extend_fn())
+        is_extend = bool(batch_data.forward_mode.is_extend())
         lengths = [req.extend_range.length for req in reqs] if is_extend else None
         if lengths is not None and tensor.shape[0] == sum(lengths):
             start = sum(lengths[:request_index])
