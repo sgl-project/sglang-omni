@@ -863,12 +863,18 @@ def create_audio_encoder_executor(
     *,
     device: str | None = None,
     dtype: str | None = None,
+    enable_layer_cuda_graph: bool = False,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_device_spec
 
     device = resolve_device_spec(device)
-    model = Qwen3OmniAudioEncoder(model_path=model_path, device=device, dtype=dtype)
+    model = Qwen3OmniAudioEncoder(
+        model_path=model_path,
+        device=device,
+        dtype=dtype,
+        enable_layer_cuda_graph=enable_layer_cuda_graph,
+    )
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
