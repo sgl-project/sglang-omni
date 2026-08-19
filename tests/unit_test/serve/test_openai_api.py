@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
@@ -166,6 +168,22 @@ class EmptyStreamingSpeechClient:
             sample_rate=24000,
             finish_reason="stop",
         )
+
+
+class FailingSpeechGenerateClient:
+    def __init__(self, error: str) -> None:
+        self.error = error
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request, request_id
+        raise RuntimeError(self.error)
+        yield
+
+    async def abort(self, request_id: str) -> None:
+        del request_id
 
 
 class EmptyDeltaStreamingSpeechClient:
@@ -581,6 +599,37 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     assert speech_resp.status_code == 500
     assert speech_resp.json()["error"]["type"] == "server_error"
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
+
+
+def test_speech_stream_admission_reject_returns_503_without_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = TestClient(
+        create_app(
+            FailingSpeechGenerateClient(QueueFullError.MESSAGE),
+            model_name="s2-pro",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.serve.openai_api"):
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "s2-pro",
+                "input": "hello",
+                "voice": "default",
+                "stream": True,
+                "response_format": "pcm",
+            },
+        )
+
+    assert response.status_code == 503
+    assert QueueFullError.MESSAGE in response.json()["error"]["message"]
+    assert any(
+        rec.levelno == logging.WARNING and "Rejecting speech request" in rec.message
+        for rec in caplog.records
+    )
+    assert not any(rec.exc_info for rec in caplog.records)
 
 
 def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
@@ -1518,6 +1567,36 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
 
 
+def test_noise_floor_chunks_are_skipped_not_transcribed() -> None:
+    # A TTS-runaway-shaped upload: loud speech then a ~-70 dBFS noise floor.
+    # Floor-only chunks hallucinate when decoded, so they must never be sent.
+    import numpy as np
+
+    from sglang_omni.serve.transcription_chunking import encode_wav
+
+    rng = np.random.default_rng(0)
+    loud = rng.uniform(-0.5, 0.5, 8000).astype(np.float32)
+    floor = rng.uniform(-3e-4, 3e-4, 32000).astype(np.float32)
+    upload = encode_wav(np.concatenate([loud, floor]), 16000)
+
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("runaway.wav", upload, "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    # Only the chunk holding speech reached the engine; the floor-only
+    # chunks were answered locally with empty text.
+    assert len(transcription_client.requests) == 1
+    assert response.json()["text"] == "part0"
+    # usage still reports the whole upload, skipped chunks included.
+    assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
+
+
 def test_streamed_long_audio_is_rejected_explicitly() -> None:
     # Streaming cannot chunk; without this 400 a too-long upload would run
     # as a single request and truncate (observed live: 243s audio came back
@@ -1721,6 +1800,28 @@ def test_upload_over_the_total_duration_limit_is_rejected() -> None:
     assert response.status_code == 400
     assert "accepts audio up to" in response.json()["detail"]
     # Rejected before any engine request or decode.
+    assert transcription_client.requests == []
+
+
+def test_total_duration_limit_is_re_enforced_on_the_decoded_audio(monkeypatch) -> None:
+    # A metadata probe can under-measure estimated containers; once the
+    # decode reveals the true duration the cap must still hold.
+    from sglang_omni.serve import transcriptions
+
+    monkeypatch.setattr(
+        transcriptions, "_probe_audio_duration", lambda audio_bytes: 1.5
+    )
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(transcription_client, max_total_audio_s=2.0)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "accepts audio up to" in response.json()["detail"]
     assert transcription_client.requests == []
 
 

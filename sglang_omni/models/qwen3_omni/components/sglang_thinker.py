@@ -9,6 +9,7 @@ prefill, so this wrapper keeps only the text model and LM head.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
@@ -24,6 +25,15 @@ from sglang.srt.utils import add_prefix, logger
 from sglang_omni.quantization import get_weight_preprocessor
 
 
+def _config_uses_mrope(config: Any) -> bool:
+    """Return whether the exact Qwen text config declares M-RoPE."""
+    for field in ("rope_parameters", "rope_scaling"):
+        value = getattr(config, field, None)
+        if isinstance(value, Mapping) and value.get("mrope_section") is not None:
+            return True
+    return False
+
+
 class Qwen3OmniThinkerForCausalLM(nn.Module):
     """Qwen3-Omni thinker text model without duplicated audio/vision towers."""
 
@@ -37,6 +47,7 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         self.root_config = config
         self.thinker_config = getattr(config, "thinker_config", config)
         self.config = getattr(self.thinker_config, "text_config", self.thinker_config)
+        self.is_mrope_enabled = _config_uses_mrope(self.config)
 
         self.model = Qwen3MoeLLMModel(
             config=self.config,
@@ -68,8 +79,9 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         pp_proxy_tensors: Any | None = None,
         input_embeds: torch.Tensor | None = None,
         input_deepstack_embeds: torch.Tensor | None = None,
+        omni_prefill_rids: list[str] | tuple[str, ...] | None = None,
     ):
-        del get_embedding
+        del get_embedding, omni_prefill_rids
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
 

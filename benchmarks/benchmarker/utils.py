@@ -251,8 +251,10 @@ def managed_omni_server(
     log_file: Path | None,
     server_config: str | None = None,
     max_running_requests: int | None = None,
+    max_queued_requests: int | None = None,
     cuda_graph_max_bs: int | None = None,
     mem_fraction_static: float | None = None,
+    quantization: str | None = None,
     timeout: int = STARTUP_TIMEOUT,
     wait_for_gpu_release: bool = True,
 ) -> Iterator[None]:
@@ -274,10 +276,14 @@ def managed_omni_server(
         cmd.extend(["--config", server_config])
     if max_running_requests is not None:
         cmd.extend(["--max-running-requests", str(max_running_requests)])
+    if max_queued_requests is not None:
+        cmd.extend(["--max-queued-requests", str(max_queued_requests)])
     if cuda_graph_max_bs is not None:
         cmd.extend(["--cuda-graph-max-bs", str(cuda_graph_max_bs)])
     if mem_fraction_static is not None:
         cmd.extend(["--mem-fraction-static", str(mem_fraction_static)])
+    if quantization is not None:
+        cmd.extend(["--quantization", quantization])
     logger.info(f"Starting server: {' '.join(cmd)}")
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)

@@ -15,12 +15,20 @@ from sglang_omni.models.model_capabilities import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
-EXPECTED_TTS_CAPABILITIES = {
+EXPECTED_MODEL_CAPABILITIES = {
     "DotsTTSForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
         supports_batch_vocoder=True,
         supports_streaming_vocoder=True,
         supports_cuda_graph=False,
+        supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=False,
+    ),
+    "MiniMaxMusic3ForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=False,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=True,
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
     ),
@@ -74,8 +82,8 @@ EXPECTED_TTS_CAPABILITIES = {
     ),
     "BailingMMNativeForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
-        supports_batch_vocoder=True,
-        supports_streaming_vocoder=False,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=False,
         supports_breakable_prefill_cuda_graph=False,
@@ -96,6 +104,14 @@ EXPECTED_TTS_CAPABILITIES = {
         supports_torch_compile=True,
         supports_breakable_prefill_cuda_graph=False,
     ),
+    "MossTranscribeDiarizeForConditionalGeneration": ModelCapabilities(
+        supports_reference_audio=False,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=False,
+        supports_cuda_graph=True,
+        supports_torch_compile=True,
+        supports_breakable_prefill_cuda_graph=True,
+    ),
 }
 
 
@@ -114,7 +130,7 @@ def _capability_required_architectures() -> set[str]:
 
 
 def test_expected_capabilities_cover_registered_required_configs() -> None:
-    assert _capability_required_architectures() == set(EXPECTED_TTS_CAPABILITIES)
+    assert _capability_required_architectures() == set(EXPECTED_MODEL_CAPABILITIES)
 
 
 def test_required_model_capability_configs_resolve_capabilities() -> None:
@@ -131,26 +147,27 @@ def test_model_capabilities_are_frozen_and_explicit() -> None:
     with pytest.raises(TypeError):
         ModelCapabilities()
 
-    capabilities = next(iter(EXPECTED_TTS_CAPABILITIES.values()))
+    capabilities = next(iter(EXPECTED_MODEL_CAPABILITIES.values()))
     with pytest.raises(FrozenInstanceError):
         capabilities.supports_reference_audio = False
 
 
-@pytest.mark.parametrize("architecture", EXPECTED_TTS_CAPABILITIES)
-def test_tts_model_package_exports_capabilities(architecture: str) -> None:
+@pytest.mark.parametrize("architecture", EXPECTED_MODEL_CAPABILITIES)
+def test_model_package_exports_capabilities(architecture: str) -> None:
     module = _package_for_architecture(architecture)
     capabilities = getattr(module, "CAPABILITIES", None)
 
-    assert capabilities == EXPECTED_TTS_CAPABILITIES[architecture]
+    assert capabilities == EXPECTED_MODEL_CAPABILITIES[architecture]
     assert isinstance(capabilities, ModelCapabilities)
     for field in fields(ModelCapabilities):
         assert isinstance(getattr(capabilities, field.name), bool)
 
 
-@pytest.mark.parametrize("architecture", EXPECTED_TTS_CAPABILITIES)
-def test_get_model_capabilities_for_tts_architecture(architecture: str) -> None:
+@pytest.mark.parametrize("architecture", EXPECTED_MODEL_CAPABILITIES)
+def test_get_model_capabilities_for_registered_architecture(architecture: str) -> None:
     assert (
-        get_model_capabilities(architecture) == EXPECTED_TTS_CAPABILITIES[architecture]
+        get_model_capabilities(architecture)
+        == EXPECTED_MODEL_CAPABILITIES[architecture]
     )
 
 
@@ -185,7 +202,7 @@ def test_get_model_capabilities_rejects_malformed_capabilities_export(
 def test_get_model_capabilities_resolves_registered_alias() -> None:
     assert (
         get_model_capabilities("MossTTSDelay")
-        == EXPECTED_TTS_CAPABILITIES["MossTTSDelayModel"]
+        == EXPECTED_MODEL_CAPABILITIES["MossTTSDelayModel"]
     )
 
 

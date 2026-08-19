@@ -7,8 +7,12 @@ on:
         type: string
         default: higgs
       tts_mps_config:
+        description: >-
+          MPS-DP config for stage 5. Empty for models gated as a single
+          instance, which skips that stage.
         type: string
-        required: true
+        required: false
+        default: ""
       exact_sha:
         type: string
         required: true
@@ -272,7 +276,10 @@ jobs:
   stage-5-mps:
     name: stage 5 - MPS
     needs: stage-4-serving
-    if: always() && !cancelled()
+    # Note: (Jiaxin Deng) Qwen3-TTS is gated as a single instance: the tuned
+    # single instance beats the same-card pool there, so colocation is not the
+    # recommended topology and there is no MPS config to run.
+    if: always() && !cancelled() && inputs.tts_mps_config != ''
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:

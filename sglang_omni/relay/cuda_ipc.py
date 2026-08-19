@@ -24,6 +24,7 @@ from .base import Relay, RelayOperation, register_relay
 logger = logging.getLogger(__name__)
 
 _PEER_ENABLED: set[tuple[int, int]] = set()
+_PEER_UNAVAILABLE: set[tuple[int, int]] = set()
 _PEER_VISIBILITY_WARNED: set[tuple[int, int, int]] = set()
 _DEFAULT_WAIT_THREADS = 8
 
@@ -106,21 +107,26 @@ def _parse_device_id(device: str) -> int:
     return 0
 
 
-def _ensure_peer_access(src_index: int, dst_index: int) -> None:
-    """Enable P2P access when available and warn when it is not."""
+def _ensure_peer_access(src_index: int, dst_index: int) -> bool:
+    """Check P2P access and report whether a cross-GPU copy is safe."""
     if src_index == dst_index:
-        return
+        return True
     key = (dst_index, src_index)
+    if key in _PEER_UNAVAILABLE:
+        return False
     if key in _PEER_ENABLED:
-        return
+        return True
     if not torch.cuda.can_device_access_peer(dst_index, src_index):
+        _PEER_UNAVAILABLE.add(key)
         logger.warning(
-            "cuda_ipc: GPU %d cannot peer-access GPU %d; cross-GPU copy will "
-            "stage through host memory (no NVLink fast path)",
+            "cuda_ipc: GPU %d cannot peer-access GPU %d; CUDA IPC cannot perform "
+            "this cross-GPU copy (select the shm relay instead)",
             dst_index,
             src_index,
         )
+        return False
     _PEER_ENABLED.add(key)
+    return True
 
 
 def _dump_cuda_storage_handle(tensor: torch.Tensor) -> dict[str, Any]:
@@ -861,7 +867,12 @@ class CudaIpcRelay(Relay):
         peer_start = _comm_now_ns()
         device_count = torch.cuda.device_count()
         if 0 <= src_index < device_count:
-            _ensure_peer_access(src_index, dst_index)
+            if not _ensure_peer_access(src_index, dst_index):
+                raise RuntimeError(
+                    "cuda_ipc cross-GPU transfer requires peer access, but "
+                    f"GPU {dst_index} cannot access GPU {src_index}; use the "
+                    "shm relay for host-staged transfer"
+                )
         else:
             warn_key = (dst_index, src_index, device_count)
             if warn_key not in _PEER_VISIBILITY_WARNED:

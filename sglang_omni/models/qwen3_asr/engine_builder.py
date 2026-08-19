@@ -9,7 +9,7 @@ from typing import Any
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
-from sglang_omni.models.qwen3_asr import request_builders
+from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_max_audio_tokens,
     qwen3_asr_max_output_tokens,
@@ -19,7 +19,11 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
-from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+    get_decode_cuda_graph_bs,
+)
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
@@ -29,6 +33,7 @@ logger = logging.getLogger(__name__)
 class Qwen3ASREngineBuilder(AsrEngineBuilder):
     model_name = "Qwen3-ASR"
     model_arch_override = "Qwen3ASRForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -123,6 +128,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
             "dtype": dtype,
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
@@ -142,6 +148,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
         super().validate_before_infrastructure(server_args)
+        # Replace the per-request decode mrope-position loop with a vectorized
+        # equivalent before any forward runs.
+        mrope_fast_path.apply_asr_mrope_fast_path()
         logger.info(
             "Qwen3-ASR runtime profile: dtype=%s attention_backend=%s "
             "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
@@ -164,6 +173,25 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
+        if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
+            return
+        if "cuda_graph_bs_prefill" in overrides:
+            return
+        # note(ratish): derived from the merged caps: a ladder past any of
+        # them fails startup or captures buckets that can never replay.
+        caps = [
+            overrides["max_prefill_tokens"],
+            overrides.get("cuda_graph_max_bs_prefill"),
+            overrides.get("max_total_tokens"),
+            self.context_length,
+        ]
+        if overrides["chunked_prefill_size"] > 0:
+            caps.append(overrides["chunked_prefill_size"])
+        ladder = build_default_prefill_cuda_graph_bs(
+            min(int(cap) for cap in caps if cap is not None)
+        )
+        overrides["cuda_graph_bs_prefill"] = ladder
+        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
 
     def customize_server_args(self, server_args: Any) -> None:
         self.context_length = int(server_args.context_length)

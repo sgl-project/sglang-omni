@@ -25,6 +25,7 @@ from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from sglang.srt.utils import add_prefix
 
+from .audio_lengths import arkasr_num_audio_tokens
 from .audio_tower import ArkAudioMLPAdapter
 from .configuration_arkasr import ArkasrConfig
 
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 
 class ArkasrForConditionalGeneration(nn.Module):
+    DEFAULT_ENCODER_MAX_BATCH_SIZE = 8
+
     def __init__(
         self,
         config: ArkasrConfig,
@@ -50,27 +53,126 @@ class ArkasrForConditionalGeneration(nn.Module):
             prefix=add_prefix("language_model", prefix),
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
+        self.encoder_max_batch_size = self.DEFAULT_ENCODER_MAX_BATCH_SIZE
+
+    def set_encoder_max_batch_size(self, max_batch_size: int) -> None:
+        if max_batch_size < 1:
+            raise ValueError(
+                f"encoder_max_batch_size must be >= 1, got {max_batch_size}"
+            )
+        self.encoder_max_batch_size = int(max_batch_size)
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
 
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
-        """Encode each request's mel features to LLM-space audio embeddings.
+        """Encode cache-miss audio items in bounded sequential microbatches.
 
-        Each item.feature is (num_mel_bins, T) or (1, num_mel_bins, T). We run
-        the tower per item (variable T) and concatenate along the token axis so
-        the flat sequence lines up with the scattered <|audio|> positions.
+        SGLang calls this once for every audio embedding-cache miss in a
+        forward batch.  The flattened result must retain item order and exactly
+        match every item's precomputed audio-token span.  Request concurrency
+        is intentionally independent from encoder batch size: large miss
+        batches are split into sequential encoder forwards to bound activation
+        memory.
         """
+        if not items:
+            raise ValueError(
+                "ARK-ASR get_audio_feature requires at least one audio item"
+            )
+        outputs = []
+        for start in range(0, len(items), self.encoder_max_batch_size):
+            outputs.append(
+                self._encode_audio_batch(
+                    items[start : start + self.encoder_max_batch_size]
+                )
+            )
+        return torch.cat(outputs, dim=0)
+
+    def _encode_audio_batch(self, items: List[MultimodalDataItem]) -> torch.Tensor:
+        """Pad and encode one bounded batch of audio items."""
         device = next(self.audio_encoder.parameters()).device
         dtype = self.audio_encoder.dtype
-        outs = []
+
+        features: list[torch.Tensor] = []
+        mel_lengths: list[int] = []
+        mel_bins: int | None = None
         for item in items:
-            feat = item.feature.to(device=device, dtype=dtype)
-            if feat.dim() == 2:
-                feat = feat.unsqueeze(0)  # (1, mel, T)
-            emb = self.audio_encoder(feat)  # (1, Sa, H)
-            outs.append(emb.reshape(-1, emb.size(-1)))
-        return torch.cat(outs, dim=0)
+            if item.feature is None:
+                raise ValueError("ARK-ASR audio item is missing mel features")
+            feature = item.feature
+            if feature.ndim == 2:
+                feature = feature.unsqueeze(0)
+            if feature.ndim != 3 or feature.shape[0] != 1:
+                raise ValueError(
+                    "ARK-ASR expects item.feature shaped [mel_bins, T] or "
+                    f"[1, mel_bins, T], got {tuple(feature.shape)}"
+                )
+            if mel_bins is None:
+                mel_bins = int(feature.shape[1])
+            elif feature.shape[1] != mel_bins:
+                raise ValueError(
+                    "ARK-ASR audio features in one batch must share mel_bins; "
+                    f"expected {mel_bins}, got {feature.shape[1]}"
+                )
+
+            frames = int(feature.shape[-1])
+            mask = getattr(item, "feature_attention_mask", None)
+            if mask is None:
+                valid_frames = frames
+            else:
+                if mask.ndim == 1:
+                    mask = mask.unsqueeze(0)
+                if mask.shape != (1, frames):
+                    raise ValueError(
+                        "ARK-ASR feature_attention_mask shape "
+                        f"{tuple(mask.shape)} does not match feature frames "
+                        f"{(1, frames)}"
+                    )
+                mask = mask.to(dtype=torch.bool)
+                valid_frames = int(mask.sum().item())
+                is_right_padded = bool(mask[0, :valid_frames].all()) and not bool(
+                    mask[0, valid_frames:].any()
+                )
+                if valid_frames <= 0 or not is_right_padded:
+                    raise ValueError(
+                        "ARK-ASR feature_attention_mask must mark a non-empty "
+                        "right-padded valid prefix"
+                    )
+
+            features.append(feature[:, :, :valid_frames])
+            mel_lengths.append(valid_frames)
+
+        assert mel_bins is not None
+        batch_size = len(features)
+        max_frames = max(mel_lengths)
+        batched = torch.zeros(
+            (batch_size, mel_bins, max_frames), device=device, dtype=dtype
+        )
+        for index, (feature, length) in enumerate(zip(features, mel_lengths)):
+            batched[index, :, :length] = feature[0, :, :length].to(
+                device=device, dtype=dtype, non_blocking=True
+            )
+
+        # Pass the original-frame mask, rather than only its downsampled form:
+        # the tower needs it between conv1 and conv2 so the right boundary of a
+        # short sample has exactly the same convolution context as a serial
+        # encode.  The tower derives its own post-conv2 SDPA mask.
+        if batch_size == 1:
+            encoder_mask = None
+        else:
+            frame_index = torch.arange(max_frames, device=device).unsqueeze(0)
+            encoder_mask = frame_index < torch.tensor(
+                mel_lengths, device=device, dtype=torch.long
+            ).unsqueeze(1)
+
+        encoded = self.audio_encoder(batched, attention_mask=encoder_mask)
+        outputs = []
+        for batch_index, mel_length in enumerate(mel_lengths):
+            num_tokens = arkasr_num_audio_tokens(
+                mel_length, self.audio_encoder.merge_factor
+            )
+            outputs.append(encoded[batch_index, :num_tokens, :])
+        return torch.cat(outputs, dim=0)
 
     def forward(
         self,

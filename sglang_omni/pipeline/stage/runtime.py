@@ -6,6 +6,7 @@ stream chunk routing, abort tracking, profiling.
 
 Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,8 +39,6 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
-    KVTransferPrepareMessage,
-    KVTransferReadyMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -54,6 +53,7 @@ from sglang_omni.scheduling.messages import IncomingMessage
 logger = logging.getLogger(__name__)
 
 _SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
+_OUTBOX_DRAIN_BATCH_SIZE = 64
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
@@ -88,6 +88,9 @@ class Stage:
         gpu_id: int | None,
         endpoints: dict[str, str],
         control_plane: Any,
+        rank_endpoints: dict[str, tuple[str, ...]] | None = None,
+        tp_rank: int = 0,
+        tp_size: int = 1,
         placement_gpu_id: int | None = None,
         input_handler: InputHandler | None = None,
         relay: Relay | None = None,
@@ -137,6 +140,9 @@ class Stage:
                 comm_config=comm_config or {},
                 injected_relay=relay,
             ),
+            tp_rank=tp_rank,
+            tp_size=tp_size,
+            rank_endpoints=rank_endpoints,
             task_done_callback=self._on_background_task_done,
         )
 
@@ -159,6 +165,7 @@ class Stage:
         if self._running:
             return
         await self.control_plane.start()
+        await self._comm.start()
         self._loop = asyncio.get_running_loop()
         self._running = True
 
@@ -171,10 +178,15 @@ class Stage:
                 _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
-                        current_platform.set_device(int(self.gpu_id))
+                        from sglang_omni.platforms import current_platform
+
+                        current_platform.set_device(
+                            current_platform.get_device(int(self.gpu_id))
+                        )
                         logger.info(
-                            "Scheduler thread for stage %s set device to %s",
+                            "Scheduler thread for stage %s set %s device to %s",
                             self.name,
+                            current_platform.device_type,
                             self.gpu_id,
                         )
                     self.scheduler.start()
@@ -258,7 +270,7 @@ class Stage:
             except Exception as exc:
                 _record_cleanup_error("TP fanout", exc)
         try:
-            self._comm.close()
+            await self._comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
         logger.info("Stage %s stopped", self.name)
@@ -325,10 +337,6 @@ class Stage:
             await self._on_submit(msg)
         elif isinstance(msg, DataAckMessage):
             self._comm.ack_transfer(msg)
-        elif isinstance(msg, KVTransferReadyMessage):
-            self._comm.kv_transfer_ready(msg)
-        elif isinstance(msg, KVTransferPrepareMessage):
-            await self._on_kv_transfer_prepare(msg)
         elif isinstance(msg, DataReadyMessage):
             self._schedule_receive_task(msg)
         elif isinstance(msg, ProfilerStartMessage):
@@ -461,29 +469,6 @@ class Stage:
         await self._wait_for_receive_predecessor(predecessor)
         if payload is not None:
             await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
-
-    async def _on_kv_transfer_prepare(
-        self,
-        msg: KVTransferPrepareMessage,
-    ) -> None:
-        endpoint = self.endpoints.get(msg.from_stage)
-        if endpoint is None:
-            raise RuntimeError(
-                f"Stage {self.name}: no endpoint configured for KV ready target "
-                f"{msg.from_stage!r}"
-            )
-        if msg.request_id in self._aborted:
-            ready = KVTransferReadyMessage(
-                request_id=msg.request_id,
-                transfer_id=msg.transfer_id,
-                from_stage=self.name,
-                to_stage=msg.from_stage,
-                success=False,
-                error=f"request {msg.request_id!r} was aborted",
-            )
-        else:
-            ready = self._comm.prepare_kv_receive(msg)
-        await self.control_plane.send_to_stage(msg.from_stage, endpoint, ready)
 
     async def receive_local_payload(
         self,
@@ -1000,48 +985,55 @@ class Stage:
     async def _drain_outbox_external(self) -> None:
         """Drain scheduler outbox and route results downstream."""
         loop = asyncio.get_running_loop()
-        while self._running or not self.scheduler.outbox.empty():
+        outbox = self.scheduler.outbox
+        while self._running or not outbox.empty():
             try:
-                out = await loop.run_in_executor(
-                    None, lambda: self.scheduler.outbox.get(timeout=0.1)
-                )
+                out = await loop.run_in_executor(None, lambda: outbox.get(timeout=0.1))
             except _queue_mod.Empty:
                 continue
 
-            if out.request_id not in self._active_requests:
-                continue
-
-            if out.type == "result":
-                await self._route_result(out.request_id, out.data)
-            elif out.type == "stream":
-                if out.target is None:
-                    if self._stream_targets:
-                        await asyncio.gather(
-                            *(
-                                self._send_stream_to_target(
+            for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
+                if out.request_id in self._active_requests:
+                    if out.type == "result":
+                        await self._route_result(out.request_id, out.data)
+                    elif out.type == "stream":
+                        if out.target is None:
+                            if self._stream_targets:
+                                await asyncio.gather(
+                                    *(
+                                        self._send_stream_to_target(
+                                            out.request_id,
+                                            out.data,
+                                            target,
+                                            out.metadata,
+                                        )
+                                        for target in self._stream_targets
+                                    )
+                                )
+                            else:
+                                await self._send_stream_to_coordinator(
                                     out.request_id,
                                     out.data,
-                                    target,
                                     out.metadata,
                                 )
-                                for target in self._stream_targets
+                        else:
+                            await self._send_stream_to_target(
+                                out.request_id,
+                                out.data,
+                                out.target,
+                                out.metadata,
                             )
-                        )
-                    else:
-                        await self._send_stream_to_coordinator(
-                            out.request_id,
-                            out.data,
-                            out.metadata,
-                        )
-                else:
-                    await self._send_stream_to_target(
-                        out.request_id,
-                        out.data,
-                        out.target,
-                        out.metadata,
-                    )
-            elif out.type == "error":
-                await self._send_failure(out.request_id, str(out.data))
+                    elif out.type == "error":
+                        await self._send_failure(out.request_id, str(out.data))
+
+                if batch_index + 1 >= _OUTBOX_DRAIN_BATCH_SIZE:
+                    await asyncio.sleep(0)
+                    break
+
+                try:
+                    out = outbox.get_nowait()
+                except _queue_mod.Empty:
+                    break
 
     async def _drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""

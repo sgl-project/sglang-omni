@@ -22,6 +22,7 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
     """Single-stage batched ASR/diarization pipeline for MOSS-TD checkpoints."""
 
     architecture: ClassVar[str] = "MossTranscribeDiarizeForConditionalGeneration"
+    requires_model_capabilities: ClassVar[bool] = True
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
@@ -43,8 +44,15 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 "max_running_requests": 16,
                 "encoder_cache_size_bytes": 4 * 1024**3,
                 "encoder_max_batch_size": _ENCODER_MAX_BATCH_SIZE,
+                "enable_torch_compile": True,
+                "torch_compile_max_bs": 4,
                 "request_build_max_workers": _REQUEST_BUILD_MAX_WORKERS,
                 "request_build_max_pending": 16,
+                "prefill_coalesce_requests": 4,
+                "prefill_coalesce_wait_ms": 12,
+                "prefill_coalesce_when_idle": True,
+                "prefill_coalesce_requires_pending_builds": True,
+                "prefill_coalesce_after_builds_during_decode": True,
             },
             gpu=0,
             terminal=True,

@@ -383,6 +383,11 @@ class PipelineConfig(BaseModel):
         return {}
 
     @classmethod
+    def generation_admission_defaults(cls) -> dict[str, Any]:
+        """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
+        return {}
+
+    @classmethod
     def code2wav_stage(cls) -> str | None:
         """Return the code2wav stage name when the pipeline supports it."""
         return None
@@ -413,6 +418,10 @@ class PipelineConfig(BaseModel):
 
     def supports_uploaded_voice_references(self) -> bool:
         """Return whether uploaded voices can be lowered as reference audio."""
+        return False
+
+    def supports_audio_translation(self) -> bool:
+        """Return whether this pipeline can serve /v1/audio/translations."""
         return False
 
     @property

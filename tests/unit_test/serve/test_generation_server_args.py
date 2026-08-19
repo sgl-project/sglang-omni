@@ -9,11 +9,18 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from sglang_omni.cli.serve import _apply_stage_server_args_override, serve
+from sglang_omni.cli.serve import (
+    _apply_stage_server_args_override,
+    apply_backbone_server_args_cli_overrides,
+    serve,
+)
 from sglang_omni.config import PipelineConfig, StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.models.moss_transcribe_diarize.config import (
+    MossTranscribeDiarizePipelineConfig,
+)
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
@@ -212,6 +219,47 @@ def test_qwen3_tts_cli_routes_64_batch_policy_to_tts_engine(
     assert "server_args_overrides" not in _stage_args(launched_config, "vocoder")
 
 
+def test_qwen3_tts_coordinator_cap_uses_engine_defaults_and_cli_overlay() -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+    from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
+
+    defaults = Qwen3TTSPipelineConfig.generation_admission_defaults()
+    kwargs = Qwen3TtsEngineBuilder().extra_scheduler_kwargs()
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+    assert resolve_coordinator_max_in_flight(config) == (
+        int(defaults["max_running_requests"]) + int(defaults["max_queued_requests"])
+    )
+    assert kwargs["request_build_max_workers"] == 4
+    assert kwargs["request_build_max_pending"] == 16
+
+    _apply_stage_server_args_override(
+        config,
+        stage_name="tts_engine",
+        updates={"max_running_requests": 32, "max_queued_requests": 16},
+        reason="SGLang generation server args override",
+    )
+    assert resolve_coordinator_max_in_flight(config) == 48
+
+
+def test_coordinator_cap_follows_queued_bound_for_any_generation_pipeline() -> None:
+    from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
+
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+    assert resolve_coordinator_max_in_flight(config) is None
+    assert (
+        resolve_coordinator_max_in_flight(FunASRPipelineConfig(model_path="dummy"))
+        is None
+    )
+
+    _apply_stage_server_args_override(
+        config,
+        stage_name="tts_engine",
+        updates={"max_running_requests": 8, "max_queued_requests": 4},
+        reason="SGLang generation server args override",
+    )
+    assert resolve_coordinator_max_in_flight(config) == 12
+
+
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_higgs_talker_compile_override_targets_tts_engine(
@@ -254,6 +302,68 @@ def test_talker_torch_compile_max_bs_rejects_unsupported_pipeline(
         match=(r"--talker-torch-compile-max-bs is not supported by " r"PipelineConfig"),
     ):
         serve(**_serve_kwargs(talker_torch_compile_max_bs=64))
+
+    launch_server.assert_not_called()
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_torch_compile_flags_reach_single_stage_generation(
+    from_model_path,
+    launch_server,
+) -> None:
+    """MOSS-TD exposes no talker role, so the neutral flags are its only CLI
+    control over the default-on decoder compile."""
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    from_model_path.return_value = _DummyManager(config)
+
+    serve(**_serve_kwargs(torch_compile="off", torch_compile_max_bs=8))
+
+    launched_config = launch_server.call_args.args[0]
+    overrides = _stage_args(launched_config, "asr")["server_args_overrides"]
+    assert overrides["enable_torch_compile"] is False
+    assert overrides["torch_compile_max_bs"] == 8
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_torch_compile_default_leaves_generation_stage_untouched(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    from_model_path.return_value = _DummyManager(config)
+
+    serve(**_serve_kwargs())
+
+    launched_config = launch_server.call_args.args[0]
+    assert "server_args_overrides" not in _stage_args(launched_config, "asr")
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_torch_compile_rejects_unsupported_pipeline(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="stage",
+                process="pipeline",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                terminal=True,
+            )
+        ],
+    )
+    from_model_path.return_value = _DummyManager(config)
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=r"--torch-compile is not supported by PipelineConfig",
+    ):
+        serve(**_serve_kwargs(torch_compile="off"))
 
     launch_server.assert_not_called()
 
@@ -310,3 +420,79 @@ def test_generation_server_args_declared_stage_must_exist() -> None:
 
     with pytest.raises(typer.BadParameter, match="missing_generation"):
         _apply_generation_server_args(config)
+
+
+def test_quantization_routes_to_generation_stage_without_thinker() -> None:
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+
+    apply_backbone_server_args_cli_overrides(
+        config,
+        cpu_offload_gb=None,
+        quantization="fp8",
+    )
+
+    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
+    assert overrides == {"quantization": "fp8"}
+
+
+def test_cpu_offload_routes_to_generation_stage_without_thinker() -> None:
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+
+    apply_backbone_server_args_cli_overrides(
+        config,
+        cpu_offload_gb=20,
+        quantization=None,
+    )
+
+    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
+    assert overrides == {"cpu_offload_gb": 20}
+
+
+def test_quantization_prefers_thinker_stage_when_present() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_backbone_server_args_cli_overrides(
+        config,
+        cpu_offload_gb=None,
+        quantization="fp8",
+    )
+
+    assert _stage_args(config, "thinker")["server_args_overrides"] == {
+        "quantization": "fp8"
+    }
+    assert "server_args_overrides" not in _stage_args(config, "talker_ar")
+
+
+def test_quantization_merges_with_generation_server_args() -> None:
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+
+    apply_backbone_server_args_cli_overrides(
+        config,
+        cpu_offload_gb=None,
+        quantization="fp8",
+    )
+    _apply_generation_server_args(config)
+
+    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
+    assert overrides == {"quantization": "fp8", **GENERATION_SERVER_ARGS}
+
+
+def test_quantization_rejects_pipeline_without_thinker_or_generation() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="stage",
+                process="pipeline",
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                terminal=True,
+            )
+        ],
+    )
+
+    with pytest.raises(typer.BadParameter, match="not supported"):
+        apply_backbone_server_args_cli_overrides(
+            config,
+            cpu_offload_gb=None,
+            quantization="fp8",
+        )

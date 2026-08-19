@@ -88,7 +88,21 @@ class MossTTSModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
+            if data.output_rows:
+                # note (Richard Wang): prompt_rows is short by the generated tail
+                generated = torch.stack(data.output_rows, dim=0)
+                rows = torch.cat([rows.to(generated.device), generated], dim=0)
             current_rows = rows[prefix_len : prefix_len + req_len]
+            if int(current_rows.shape[0]) != req_len:
+                raise RuntimeError(
+                    f"MOSS-TTS prefill row mismatch for {req.rid}: have "
+                    f"{int(current_rows.shape[0])} rows, need {req_len} "
+                    f"(prefix={prefix_len}, prompt={int(data.prompt_rows.shape[0])}, "
+                    f"generated={len(data.output_rows)})"
+                )
+            if data.output_rows:
+                # note (Richard Wang): leftover row would decode instead of new sample
+                data.pending_feedback_queue.clear()
             embeds = self.model._prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )

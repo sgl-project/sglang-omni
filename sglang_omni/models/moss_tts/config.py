@@ -84,7 +84,10 @@ class MossTTSPipelineConfig(PipelineConfig):
             name="vocoder",
             process="pipeline",
             factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={"dtype": "float32"},
+            factory_args={
+                "dtype": "float32",
+                "compute_dtype": "bfloat16",
+            },
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,

@@ -60,6 +60,41 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
         model_config.is_multimodal = original_is_multimodal
 
 
+def _hidden_capture_max_tokens(server_args: Any) -> int:
+    """Largest token-row count a single thinker forward can produce.
+
+    Covers chunked prefill, non-chunked prefill, decode batches, and every
+    configured CUDA graph bucket maximum, so the capture buffers are large
+    enough for both eager forwards and graph replay.
+    """
+    chunked_prefill_size = getattr(server_args, "chunked_prefill_size", None)
+    candidates: list[Any] = []
+    if chunked_prefill_size is not None and chunked_prefill_size > 0:
+        candidates.append(chunked_prefill_size)
+    else:
+        candidates.append(getattr(server_args, "max_prefill_tokens", None))
+        # Note(wenyao): Without chunking, SGLang always admits the first prefill request even
+        # when it exceeds the batch token budget, up to the model context bound.
+        candidates.append(getattr(server_args, "context_length", None))
+    candidates.append(getattr(server_args, "max_running_requests", None))
+
+    cuda_graph_config = getattr(server_args, "cuda_graph_config", None)
+    if cuda_graph_config is not None:
+        for phase in ("decode", "prefill"):
+            phase_config = getattr(cuda_graph_config, phase, None)
+            if phase_config is not None:
+                candidates.append(getattr(phase_config, "max_bs", None))
+
+    positive = [int(value) for value in candidates if value is not None and value > 0]
+    if not positive:
+        raise ValueError(
+            "Cannot derive hidden capture capacity: none of chunked_prefill_size, "
+            "max_prefill_tokens, context_length, max_running_requests, or the "
+            "CUDA graph batch maxima is positive"
+        )
+    return max(positive)
+
+
 def create_sglang_infrastructure(
     server_args: Any,
     gpu_id: int,
@@ -102,7 +137,11 @@ def create_sglang_infrastructure(
         )
 
         model = model_worker.model_runner.model
-        install_hidden_capture_hooks(model, capture_hidden_layers)
+        install_hidden_capture_hooks(
+            model,
+            capture_hidden_layers,
+            max_tokens=_hidden_capture_max_tokens(server_args),
+        )
 
     # SGLang 0.5.15 split model loading, KV-pool allocation, attention-backend
     # (order re-verified against 0.5.16 Scheduler.init_model_worker)

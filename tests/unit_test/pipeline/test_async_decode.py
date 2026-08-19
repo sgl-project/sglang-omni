@@ -29,13 +29,16 @@ from sglang_omni.scheduling.types import (
 )
 from tests.unit_test.fakes import FakeExecutionBridge
 
+_STUB_DEVICE = torch.device("cpu")
+
 
 class _StubRunner(ModelRunner):
     """ModelRunner with mocked sub-steps; exercises only execute_launch/resolve."""
 
     def __init__(self):
+        self.device = _STUB_DEVICE
         self._async_enabled = True
-        self._execution_bridge = FakeExecutionBridge()
+        self._execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
         self._staging_slot = 0
         self._host_staging_buffers = []
         self._async_query_hit = 0
@@ -106,7 +109,39 @@ def _patch_event(ready: bool):
         def synchronize(self):
             self.synced = True
 
-    return mock.patch("torch.cuda.Event", _FakeEvent)
+    return mock.patch.object(torch.get_device_module(_STUB_DEVICE), "Event", _FakeEvent)
+
+
+def test_launch_event_comes_from_the_runners_device_module():
+    """execute_launch must build the event on the runner's own device backend.
+
+    Guards against a regression to a hardcoded backend (e.g. torch.cuda.Event or
+    torch.cpu.Event): a fixed-backend call would not construct the patched class.
+    The device is this host's live backend rather than a literal, because an
+    uncompiled backend's Event can be referenced but not instantiated ("dummy
+    base class Event"), so a hardcoded one would fail on other builds' CI.
+    """
+    from sglang_omni.platforms import current_platform
+
+    accel = torch.device(current_platform.device_type)
+    runner = _StubRunner()
+    runner.device = accel
+    runner._execution_bridge = FakeExecutionBridge(accel)
+
+    seen = []
+    real_event = torch.get_device_module(accel).Event
+
+    class _RecordingEvent(real_event):  # type: ignore[misc,valid-type]
+        def __new__(cls, *a, **k):
+            seen.append(cls)
+            return super().__new__(cls)
+
+    with mock.patch.object(torch.get_device_module(accel), "Event", _RecordingEvent):
+        pending = runner.execute_launch(_sched_output(1))
+
+    assert seen, "no event built from the runner's device module"
+    assert pending is not None
+    assert isinstance(pending.event, real_event)
 
 
 def _sched_output(n):
@@ -534,6 +569,7 @@ def _new_scheduler_for_async_loop():
     s._admin_queue = queue.Queue()
     s._request_admission_lock = threading.RLock()
     s._pending_request_builds = {}
+    s._pending_request_admissions = {}
     s._model_runner = None
     s.chunked_req = None
     s.is_mixed_chunk = False

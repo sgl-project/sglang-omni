@@ -66,8 +66,10 @@ class DotsTTSPipelineConfig(PipelineConfig):
         stages = {stage.name: stage for stage in self.stages}
         preprocessing = stages["preprocessing"]
         latent_engine = stages["latent_engine"]
+        vocoder = stages["vocoder"]
         preprocessing_overrides = self.runtime_overrides.get("preprocessing", {})
         latent_overrides = self.runtime_overrides.get("latent_engine", {})
+        vocoder_overrides = self.runtime_overrides.get("vocoder", {})
         for engine_key, preprocessing_key, default in (
             ("num_steps", "default_num_steps", 4),
             ("max_generate_length", "max_generate_length", 500),
@@ -81,6 +83,47 @@ class DotsTTSPipelineConfig(PipelineConfig):
                     "configure it on the latent_engine stage"
                 )
             preprocessing.factory_args[preprocessing_key] = engine_value
+        # note (guozhihao-224): stream_slots must match backbone concurrency so
+        # a max_running_requests override cannot outrun vocoder admission after
+        # readiness. Omit vocoder.stream_slots to derive it.
+        max_running_requests = self._latent_max_running_requests(
+            latent_engine, latent_overrides
+        )
+        if "stream_slots" in vocoder_overrides:
+            stream_slots = int(vocoder_overrides["stream_slots"])
+            if stream_slots != max_running_requests:
+                raise ValueError(
+                    "dots.tts vocoder stream_slots "
+                    f"({stream_slots}) must equal latent_engine "
+                    f"max_running_requests ({max_running_requests}); "
+                    "omit stream_slots to derive it from the latent engine"
+                )
+        else:
+            vocoder.factory_args["stream_slots"] = max_running_requests
+
+    @staticmethod
+    def _latent_max_running_requests(
+        latent_engine: StageConfig,
+        latent_overrides: dict[str, Any],
+    ) -> int:
+        for source in (
+            latent_overrides.get("server_args_overrides"),
+            latent_overrides,
+            latent_engine.factory_args.get("server_args_overrides"),
+            latent_engine.factory_args,
+        ):
+            if not isinstance(source, dict):
+                continue
+            if "max_running_requests" in source:
+                value = int(source["max_running_requests"])
+                if value < 1:
+                    raise ValueError(
+                        "dots.tts max_running_requests must be positive, "
+                        f"got {value}"
+                    )
+                return value
+        # Match DotsTTSEngineBuilder default when unset.
+        return 16
 
     @classmethod
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
