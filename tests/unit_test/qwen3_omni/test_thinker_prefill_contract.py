@@ -27,6 +27,7 @@ AUDIO_ID = 53
 
 def _runner() -> Qwen3OmniThinkerModelRunner:
     runner = object.__new__(Qwen3OmniThinkerModelRunner)
+    runner.tp_worker = SimpleNamespace(record_custom_prefill_eager=lambda: None)
     torch.manual_seed(0)
     runner._embed_tokens = torch.nn.Embedding(VOCAB, HIDDEN)
     runner._image_token_id = IMAGE_ID
@@ -98,15 +99,25 @@ def _batch(
     return forward_batch, schedule_batch
 
 
-def test_custom_prefill_hook_records_eager_fallback() -> None:
+def test_custom_prefill_forward_records_eager_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runner = object.__new__(Qwen3OmniThinkerModelRunner)
     calls: list[str] = []
     runner.tp_worker = SimpleNamespace(
         record_custom_prefill_eager=lambda: calls.append("recorded")
     )
+    runner._classify_prefill = lambda *_args: SimpleNamespace(kind="custom")
+    expected = object()
+    monkeypatch.setattr(
+        ThinkerModelRunner,
+        "custom_prefill_forward",
+        lambda *_args: expected,
+    )
 
-    runner.on_custom_prefill_forward(object(), object(), object(), [])
+    result = runner.custom_prefill_forward(SimpleNamespace(), object(), [])
 
+    assert result is expected
     assert calls == ["recorded"]
 
 

@@ -94,12 +94,6 @@ def _runner(calls: list[str], *, custom_result):
             calls.append("custom_prefill")
             return custom_result
 
-        def on_custom_prefill_forward(
-            self, result, forward_batch, schedule_batch, requests
-        ):
-            del result, forward_batch, schedule_batch, requests
-            calls.append("custom_prefill_hook")
-
         def before_decode(
             self,
             forward_batch,
@@ -174,7 +168,6 @@ def test_resolve_deferred_prefill_inputs_materializes_staged_ids():
             [
                 "before_prefill",
                 "custom_prefill",
-                "custom_prefill_hook",
                 "post_prefill",
             ],
         ),
@@ -286,6 +279,10 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
     ]
     assert output.can_run_cuda_graph is False
     assert not hasattr(ModelRunner, "prepare_prefill")
+
+
+def test_base_runner_has_no_custom_prefill_observer_hook() -> None:
+    assert not hasattr(ModelRunner, "on_custom_prefill_forward")
 
 
 def _prefill_forward_batch() -> SimpleNamespace:
