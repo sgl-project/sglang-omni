@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 
@@ -69,21 +70,6 @@ def _runner(dtype: torch.dtype = torch.float32) -> QwenTalkerModelRunner:
     return runner
 
 
-def _recording_runner(
-    dtype: torch.dtype = torch.float32,
-) -> tuple[QwenTalkerModelRunner, dict]:
-    runner = _runner(dtype)
-    recorded: dict = {}
-
-    def record(self, forward_batch, *, input_embeds, **kwargs):
-        recorded["input_embeds"] = input_embeds
-        recorded.update(kwargs)
-        return None
-
-    runner._forward_with_input_embeds = record.__get__(runner)
-    return runner, recorded
-
-
 def test_before_prefill_attaches_projected_embeds_to_the_sidecar() -> None:
     embeds = torch.randn(10, 64)
     forward_batch = _forward_batch(10)
@@ -103,21 +89,14 @@ def test_before_prefill_attaches_projected_embeds_to_the_sidecar() -> None:
     assert forward_batch.input_embeds is None
 
 
-def test_custom_prefill_forward_defers_to_sglang_once_the_sidecar_is_attached() -> None:
-    embeds = torch.randn(6, 64)
-    forward_batch = _forward_batch(6)
-    requests = [_projected_req(embeds, prefix_len=0, extend_len=6)]
-
-    runner, recorded = _recording_runner()
-    runner.before_prefill(forward_batch, schedule_batch=None, requests=requests)
-
-    # Returning None hands dispatch back to SGLang, which can take the graph.
-    assert runner.custom_prefill_forward(forward_batch, None, requests) is None
-    assert not recorded
+def test_talker_uses_the_base_custom_prefill_dispatch() -> None:
+    assert (
+        QwenTalkerModelRunner.custom_prefill_forward
+        is ModelRunner.custom_prefill_forward
+    )
 
 
-def test_sidecar_rows_match_the_legacy_custom_forward_rows() -> None:
-    """Per-request slicing must be identical, or the audio is silently wrong."""
+def test_sidecar_composes_the_logical_rows_for_each_request() -> None:
     first = torch.randn(12, 64)
     second = torch.randn(9, 64)
     requests = [
@@ -126,18 +105,13 @@ def test_sidecar_rows_match_the_legacy_custom_forward_rows() -> None:
     ]
     num_tokens = 5 + 7
 
-    legacy_runner, recorded = _recording_runner()
-    legacy_runner._run_projected_prefill_forward(
-        _forward_batch(num_tokens), schedule_batch=None, requests=requests
-    )
-
     sidecar_batch = _forward_batch(num_tokens)
     _runner().before_prefill(sidecar_batch, schedule_batch=None, requests=requests)
 
     payload = get_omni_prefill_inputs(sidecar_batch)
     assert payload is not None
     assert payload.input_embeds.shape[0] == num_tokens
-    assert torch.equal(payload.input_embeds, recorded["input_embeds"])
+    assert torch.equal(payload.input_embeds, torch.cat((first[3:8], second[2:9])))
 
 
 def test_sidecar_embeds_are_converted_to_the_model_dtype() -> None:
@@ -170,17 +144,13 @@ def test_mixed_projected_and_unprojected_batch_is_still_refused() -> None:
         )
 
 
-def test_batch_carrying_sglang_input_embeds_keeps_the_custom_forward() -> None:
-    """SGLang owns that field; such a batch is refused by graph admission."""
+def test_batch_carrying_sglang_input_embeds_uses_the_standard_forward() -> None:
     forward_batch = _forward_batch(5, input_embeds=torch.randn(5, 64))
     requests = [_unprojected_req(5)]
 
-    runner, recorded = _recording_runner()
+    runner = _runner()
     runner.before_prefill(forward_batch, schedule_batch=None, requests=requests)
     assert get_omni_prefill_inputs(forward_batch) is None
-
-    runner.custom_prefill_forward(forward_batch, None, requests)
-    assert torch.equal(recorded["input_embeds"], forward_batch.input_embeds)
 
 
 def test_talker_forward_accepts_the_sidecar_kwargs() -> None:

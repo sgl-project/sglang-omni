@@ -6,15 +6,12 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
-    get_omni_prefill_inputs,
 )
-from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.scheduling.messages import OutgoingMessage
 
 
@@ -44,10 +41,6 @@ class QwenTalkerModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        if forward_batch.input_embeds is not None:
-            # Note (wenyao): prefill-graph admission refuses any batch carrying
-            # this SGLang-owned field, so it gains nothing from the sidecar.
-            return
         composed = self._compose_prefill_embeds(forward_batch, requests)
         if composed is None:
             return
@@ -58,20 +51,6 @@ class QwenTalkerModelRunner(ModelRunner):
                 input_embeds=input_embeds,
                 input_embeds_are_projected=input_embeds_are_projected,
             ),
-        )
-
-    def custom_prefill_forward(
-        self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> GenerationBatchResult | None:
-        if get_omni_prefill_inputs(forward_batch) is not None:
-            # Note (wenyao): returning None is what keeps this prefill on
-            # SGLang's dispatch, and so within reach of the prefill CUDA graph.
-            return None
-        return self._run_projected_prefill_forward(
-            forward_batch, schedule_batch, requests
         )
 
     def before_decode(
@@ -194,71 +173,39 @@ class QwenTalkerModelRunner(ModelRunner):
             for req in schedule_batch.reqs
         )
 
-    def _run_projected_prefill_forward(
-        self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> GenerationBatchResult | None:
-        del schedule_batch
-        composed = self._compose_prefill_embeds(forward_batch, requests)
-        if composed is None:
-            return None
-        input_embeds, input_embeds_are_projected = composed
-        return self._forward_with_input_embeds(
-            forward_batch,
-            input_embeds=input_embeds,
-            input_embeds_are_projected=input_embeds_are_projected,
-        )
-
     def _compose_prefill_embeds(
         self,
         forward_batch: Any,
         requests: list,
     ) -> tuple[torch.Tensor, bool] | None:
-        """Assemble the batch's prefill embeddings, or None when it has none.
-
-        Shared by the sidecar and the custom forward so the two can never
-        compose different rows: a row misaligned against ``input_ids`` yields
-        audio of exactly the right duration saying the wrong thing.
-        """
-        has_projected = forward_batch.input_embeds is not None or any(
-            bool(req.data.input_embeds_are_projected) for req in requests
-        )
-        if not has_projected:
-            return None
-
+        """Assemble projected prefill rows for the Omni sidecar."""
         projected_flags = [
             bool(req.data.input_embeds_are_projected) for req in requests
         ]
-        has_projected_requests = any(projected_flags)
-        if has_projected_requests and not all(projected_flags):
+        if not any(projected_flags):
+            return None
+        if not all(projected_flags):
             raise RuntimeError(
                 "Talker projected and unprojected prefill requests cannot be "
                 "batched together"
             )
 
-        input_embeds_are_projected = has_projected_requests
-        input_embeds = forward_batch.input_embeds
-        if has_projected_requests:
-            parts: list[torch.Tensor] = []
-            for sched_req in requests:
-                req = sched_req.data.req
-                prefix_len = len(req.prefix_indices)
-                extend_len = int(req.extend_range.length)
-                part = self._projected_prefill_slice(
-                    sched_req=sched_req,
-                    prefix_len=prefix_len,
-                    extend_len=extend_len,
-                    device=forward_batch.input_ids.device,
-                )
-                if part is not None and part.shape[0] > 0:
-                    parts.append(part)
-            if not parts:
-                return None
-            input_embeds = torch.cat(parts, dim=0)
-        elif input_embeds is None:
+        parts: list[torch.Tensor] = []
+        for sched_req in requests:
+            req = sched_req.data.req
+            prefix_len = len(req.prefix_indices)
+            extend_len = int(req.extend_range.length)
+            part = self._projected_prefill_slice(
+                sched_req=sched_req,
+                prefix_len=prefix_len,
+                extend_len=extend_len,
+                device=forward_batch.input_ids.device,
+            )
+            if part is not None and part.shape[0] > 0:
+                parts.append(part)
+        if not parts:
             return None
+        input_embeds = torch.cat(parts, dim=0)
 
         expected_rows = int(forward_batch.input_ids.shape[0])
         if input_embeds.shape[0] != expected_rows:
@@ -271,7 +218,7 @@ class QwenTalkerModelRunner(ModelRunner):
             device=forward_batch.input_ids.device,
             dtype=self.model.activation_dtype,
         )
-        return input_embeds, input_embeds_are_projected
+        return input_embeds, True
 
     @staticmethod
     def _projected_prefill_slice(
@@ -548,46 +495,3 @@ class QwenTalkerModelRunner(ModelRunner):
         if getattr(data, "pending_text_queue", None):
             QwenTalkerModelRunner._pop_left(data.pending_text_queue)
         return combined
-
-    def _forward_with_input_embeds(
-        self,
-        forward_batch: Any,
-        *,
-        input_embeds: torch.Tensor,
-        input_deepstack_embeds: torch.Tensor | None = None,
-        input_deepstack_mask: torch.Tensor | None = None,
-        input_embeds_are_projected: bool = False,
-    ) -> GenerationBatchResult:
-        model_runner = self.tp_worker.model_runner
-        model_dtype = self.model.activation_dtype
-
-        model_runner.attn_backend.init_forward_metadata(forward_batch)
-
-        positions = forward_batch.positions
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-
-        input_embeds = input_embeds.to(
-            device=forward_batch.input_ids.device,
-            dtype=model_dtype,
-        )
-        if input_deepstack_embeds is not None:
-            input_deepstack_embeds = input_deepstack_embeds.to(
-                device=forward_batch.input_ids.device,
-                dtype=model_dtype,
-            )
-
-        with attn_forward_context(model_runner.attn_backend):
-            logits_output = self.model(
-                input_ids=forward_batch.input_ids,
-                positions=positions,
-                forward_batch=forward_batch,
-                input_embeds=input_embeds,
-                input_deepstack_embeds=input_deepstack_embeds,
-                input_deepstack_mask=input_deepstack_mask,
-                input_embeds_are_projected=input_embeds_are_projected,
-            )
-        return GenerationBatchResult(
-            logits_output=logits_output,
-            can_run_cuda_graph=False,
-        )
