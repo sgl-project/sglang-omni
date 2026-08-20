@@ -349,11 +349,21 @@ def assemble_speech_to_text_response(
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
     if normalized_response_format in {"verbose_json", *SEGMENT_RESPONSE_FORMATS}:
-        response = adapter.build_verbose_response(
-            text=text,
-            language=language,
-            audio_duration_s=duration_s,
-        )
+        if normalized_response_format in SEGMENT_RESPONSE_FORMATS:
+            try:
+                response = adapter.build_timestamped_response(
+                    text=text,
+                    language=language,
+                    audio_duration_s=duration_s,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            response = adapter.build_verbose_response(
+                text=text,
+                language=language,
+                audio_duration_s=duration_s,
+            )
         response.task = task
         response.usage = usage
         if normalized_response_format == "srt":

@@ -2749,23 +2749,86 @@ def test_transcription_vtt_returns_diarized_segments() -> None:
     assert response.text.startswith("WEBVTT\n\n")
 
 
-def test_transcription_srt_requires_segment_timestamp_capability() -> None:
+@pytest.mark.parametrize("response_format", ["srt", "vtt"])
+def test_transcription_subtitle_format_requires_model_timestamps(
+    response_format: str,
+) -> None:
+    transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(
         create_app(
-            SuccessfulTranscriptionClient(),
-            model_name="openai/whisper-large-v3",
-            architectures=["WhisperForConditionalGeneration"],
+            transcription_client,
+            model_name="moss-transcribe-diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
         )
     )
 
     response = client.post(
         "/v1/audio/transcriptions",
-        data={"model": "openai/whisper-large-v3", "response_format": "srt"},
+        data={
+            "model": "moss-transcribe-diarize",
+            "response_format": response_format,
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "model did not produce segment timestamps"
+    assert len(transcription_client.requests) == 1
+
+
+@pytest.mark.parametrize("response_format", ["srt", "vtt"])
+def test_qwen3_asr_rejects_subtitle_format_before_inference(
+    response_format: str,
+) -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="Qwen/Qwen3-ASR-1.7B",
+            architectures=["Qwen3ASRForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "Qwen/Qwen3-ASR-1.7B",
+            "response_format": response_format,
+        },
         files={"file": ("sample.wav", b"RIFF", "audio/wav")},
     )
 
     assert response.status_code == 400
     assert "segment-timestamp capability" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
+@pytest.mark.parametrize("response_format", ["srt", "vtt"])
+def test_streaming_rejects_subtitle_format_before_inference(
+    response_format: str,
+) -> None:
+    transcription_client = SuccessfulTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="moss-transcribe-diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "moss-transcribe-diarize",
+            "response_format": response_format,
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "stream=true supports only" in response.json()["detail"]
+    assert transcription_client.requests == []
 
 
 def test_transcription_verbose_json_falls_back_for_plain_text() -> None:
