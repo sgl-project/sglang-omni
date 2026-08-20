@@ -13,28 +13,35 @@ OpenAI-compatible `/v1/audio/speech` endpoint.
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-Fun-CosyVoice3 depends on the `cosyvoice` package (GitHub-only, no PyPI release) and several
-audio-processing libraries:
+Fun-CosyVoice3 depends on the `cosyvoice` package:
 
 ```bash
 apt-get update && apt-get install -y sox
-uv pip install sox onnxruntime openai-whisper
+uv pip install "sglang-omni[fun-cosyvoice3]"
 ```
 
-Clone the CosyVoice repository with its Matcha-TTS submodule and add both
-packages to `PYTHONPATH`:
+Clone the CosyVoice repository with its Matcha-TTS submodule and add both to `PYTHONPATH`:
 
 ```bash
 COSYVOICE_PATH=/path/to/CosyVoice
+COSYVOICE_COMMIT=074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+MATCHA_TTS_COMMIT=dd9105b34bf2be2230f4aa1e4769fb586a3c824e 
+
 git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git ${COSYVOICE_PATH}
+git -C ${COSYVOICE_PATH} checkout ${COSYVOICE_COMMIT}
+git -C ${COSYVOICE_PATH} submodule update --init --recursive
+git -C ${COSYVOICE_PATH}/third_party/Matcha-TTS checkout ${MATCHA_TTS_COMMIT}
 export PYTHONPATH="${COSYVOICE_PATH}:${COSYVOICE_PATH}/third_party/Matcha-TTS:$PYTHONPATH"
 ```
 
-If CosyVoice was cloned without submodules, initialize Matcha-TTS with
-`git -C ${COSYVOICE_PATH} submodule update --init --recursive` before starting the server.
+**Do not** run `pip install -r requirements.txt` from the CosyVoice checkout. That file pins
+`torch`, `torchaudio`, `transformers`, and `diffusers` versions that conflict with the
+`sglang-omni` core pins — only the `fun-cosyvoice3` extra above and the two `PYTHONPATH`
+entries are needed; the CosyVoice Flow and HiFT modules import fine against the
+`sglang-omni` versions of those shared packages.
 
-The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, so
-`onnxruntime` is required.
+The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, which use
+the `onnxruntime` already pinned in `sglang-omni`'s core dependencies.
 
 Download the checkpoint:
 
@@ -177,7 +184,7 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 | `top_p` | `0.8` | Top-p sampling |
 | `top_k` | `20` | Top-k sampling |
 | `repetition_penalty` | `1.1` | Repetition penalty |
-| `max_new_tokens` | `2048` | Maximum number of generated speech tokens |
+| `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Reserved for the planned incremental decoder; current decode is buffered |
 
@@ -207,8 +214,8 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 - **Reference conditioning cache.** Local files, data URLs, and byte payloads are cached
   by audio content and encoder configuration. Mutable HTTP URLs are intentionally encoded
   on every request instead of being cached by URL alone.
-- **Speed control.** Non-streaming mode only: speed changes interpolate the mel
-  spectrogram and are not available during streaming inference.
+- **Speed control.** Applied once, on the decoded waveform, by the shared
+  `/v1/audio/speech` response-encoding path.
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
 - **Streaming decode.** The current implementation buffers all speech tokens before Flow + HiFT
   decoding. Incremental PCM output is planned but is not yet available.

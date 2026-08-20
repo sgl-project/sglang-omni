@@ -43,27 +43,43 @@ def _payload(state: FunCosyVoice3State) -> StagePayload:
     )
 
 
-def test_cosyvoice3_vocoder_pads_short_sequences_and_applies_speed() -> None:
+def test_cosyvoice3_vocoder_does_not_pad_or_rescale_short_sequences() -> None:
     flow = _FakeFlow()
     hift = _FakeHiFT()
     vocoder = stages._CosyVoice3Vocoder(flow, hift)
 
+    # note: token id 0 is a valid FSQ speech token, not padding — the
+    # vocoder must feed exactly what the AR stage generated through
+    # untouched, with no minimum-length padding and no speed rescaling
+    # (speed is applied once, downstream, on the decoded waveform).
     wav = vocoder._token2wav(
-        token=torch.tensor([[1, 2]], dtype=torch.long),
+        token=torch.tensor([[0, 2]], dtype=torch.long),
         prompt_token=torch.tensor([[4]], dtype=torch.int32),
         prompt_feat=torch.zeros(1, 2, 80),
         embedding=torch.ones(1, 192),
-        speed=2.0,
     )
 
     flow_call = flow.calls[0]
-    assert flow_call["token"].shape == (1, 10)
-    assert flow_call["token_len"].tolist() == [10]
+    assert flow_call["token"].shape == (1, 2)
+    assert flow_call["token"].tolist() == [[0, 2]]
+    assert flow_call["token_len"].tolist() == [2]
     assert flow_call["prompt_token_len"].tolist() == [1]
     assert flow_call["prompt_feat_len"].tolist() == [2]
     assert flow_call["finalize"] is True
-    assert hift.calls[0][0].shape[-1] == 10
+    assert hift.calls[0][0].shape[-1] == 4  # _FakeFlow returns token_count * 2 mel frames
     assert wav.device.type == "cpu"
+
+
+def test_cosyvoice3_vocoder_raises_on_empty_token_sequence() -> None:
+    vocoder = stages._CosyVoice3Vocoder(_FakeFlow(), _FakeHiFT())
+
+    with pytest.raises(RuntimeError, match="no usable speech tokens"):
+        vocoder._token2wav(
+            token=torch.zeros(1, 0, dtype=torch.long),
+            prompt_token=torch.tensor([[4]], dtype=torch.int32),
+            prompt_feat=torch.zeros(1, 2, 80),
+            embedding=torch.ones(1, 192),
+        )
 
 
 def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:

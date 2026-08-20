@@ -82,7 +82,10 @@ def test_build_cosyvoice3_state_merges_input_params_and_tts_metadata() -> None:
     assert state.stream is True
     assert state.speed == 1.1
     assert state.seed == 4
-    assert state.generation_kwargs == {"max_new_tokens": 2048}
+    # max_new_tokens is intentionally absent here (no explicit override was
+    # passed via params) — build_sglang_cosyvoice3_request derives it from
+    # the CosyVoice3 generation-length contract instead of a fixed default.
+    assert state.generation_kwargs == {}
 
 
 def test_build_cosyvoice3_state_accepts_plain_text_input() -> None:
@@ -411,10 +414,62 @@ def test_preprocess_and_build_request_share_prepared_state(
     assert request_data.max_new_tokens == 5
     assert request_data.temperature == 0.0
     assert request_data.req.sampling_params.sampling_seed == 7
-    assert request_data.req.sampling_params.stop_token_ids == {request_builders.EOS_ID}
+    # Stop on the full 200-id control range, not only EOS_ID.
+    assert request_data.req.sampling_params.stop_token_ids == set(
+        request_builders.CONTROL_TOKEN_IDS
+    )
+    # target text is "hello" -> 2 tokens; min_new_tokens = 2x that, capped by
+    # the explicit max_new_tokens=5.
+    assert request_data.req.sampling_params.min_new_tokens == 4
     assert request_data.req._input_embeds_are_projected is True
     with pytest.raises(RuntimeError, match="state is missing"):
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
+
+
+def test_build_request_derives_generation_length_contract_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When max_new_tokens is not explicitly requested, both bounds should
+    come from CosyVoice3's own contract (based on target text token count),
+    not a fixed default."""
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: torch.zeros(1600).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: torch.zeros(2400).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 2, 80),
+    )
+    model = _FakeModel()
+    set_cosyvoice3_preprocessing_context(
+        model=model,
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_FakeSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+    )
+    payload = _payload(
+        {"text": "hello", "ref_audio": "reference.wav"},
+        params={"do_sample": False},
+        request_id="req-contract",
+    )
+
+    prepared_payload = preprocess_cosyvoice3_payload(payload)
+    prepared = request_builders.pop_prepared_cosyvoice3_request(prepared_payload)
+    assert prepared is not None
+    assert prepared.target_text_token_count == 2  # "hello" -> 2 tokens
+
+    request_builders._PREPARED_REQUESTS["req-contract"] = prepared
+    request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
+    # max_new_tokens = min(2048, 20 * 2) = 40; min_new_tokens = 2 * 2 = 4.
+    assert request_data.max_new_tokens == 40
+    assert request_data.req.sampling_params.min_new_tokens == 4
 
 
 def test_preprocess_includes_reference_text_before_target_text(

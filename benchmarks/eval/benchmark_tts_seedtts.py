@@ -240,6 +240,10 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    # Keeps ref_audio but drops ref_text/references[].text — for cross-lingual
+    # runs where the reference speaker is cloned but no reference transcript is
+    # sent. Only meaningful when voice_clone=True; ignored otherwise.
+    no_ref_text: bool = False
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
@@ -311,6 +315,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "no_ref_text": config.no_ref_text,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -381,6 +386,7 @@ async def run_tts_seedtts_benchmark(
         initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
+        no_ref_text=config.no_ref_text,
         voice=config.voice,
         task_type=config.task_type,
         instructions=config.instructions,
@@ -425,6 +431,7 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "no_ref_text": config.no_ref_text,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -463,6 +470,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        no_ref_text=args.no_ref_text,
         response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
@@ -784,6 +792,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="no_ref_audio",
         action="store_true",
         help="Skip ref audio/text from testset (TTS without voice cloning).",
+    )
+    parser.add_argument(
+        "--no-ref-text",
+        dest="no_ref_text",
+        action="store_true",
+        help=(
+            "Keep ref_audio (voice cloning) but drop ref_text/references[].text "
+            "from the request, for cross-lingual-style runs. Ignored when "
+            "--no-ref-audio is also set."
+        ),
     )
     parser.add_argument(
         "--ref-format",

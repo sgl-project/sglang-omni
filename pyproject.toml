@@ -96,9 +96,13 @@ audar-tts = [
     "neucodec==0.0.6",
 ]
 fun-cosyvoice3 = [
-    "openai-whisper",
-    "onnxruntime-gpu; sys_platform == 'linux'",
-    "onnxruntime; sys_platform != 'linux'",
+    "conformer==0.3.2",
+    "HyperPyYAML==1.2.3",
+    "onnx==1.16.0",
+    "pyworld==0.3.4",
+    "wetext==0.0.4",
+    "inflect==7.3.1",
+    "gdown==5.1.0",
 ]
 
 [project.scripts]

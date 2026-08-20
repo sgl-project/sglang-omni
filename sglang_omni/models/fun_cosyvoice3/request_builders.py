@@ -33,7 +33,7 @@ from sglang_omni.utils.audio import decode_audio_data_uri as _decode_audio_data_
 from sglang_omni.utils.audio import load_audio as _shared_load_audio
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
-from .sglang_model import EOS_ID, SOS_ID, TASK_ID, TOTAL_VOCAB_SIZE
+from .sglang_model import CONTROL_TOKEN_IDS, EOS_ID, SOS_ID, TASK_ID, TOTAL_VOCAB_SIZE
 from .utils import (
     CosyVoice3Tokenizer,
     SpeakerEncoder,
@@ -67,6 +67,34 @@ _IMPLICIT_SAMPLING_DEFAULTS = {
 }
 
 _COSYVOICE3_PREPARED_MARKER = "_cosyvoice3_prepared_request"
+
+
+class _CosyVoice3NullTokenizer:
+    """Tokenizer shim so SGLang's ``min_new_tokens`` stop-suppression
+    penalizer can run without a real HF tokenizer attached to the request.
+
+    CosyVoice3 speech tokens are sampled directly from the codec vocabulary
+    (``TOTAL_VOCAB_SIZE``) and are never decoded to text for this request, so
+    the only contract this object needs to satisfy is the attribute access
+    performed by ``SamplingParams.normalize``/``verify`` and
+    ``BatchedMinNewTokensPenalizer`` (``eos_token_id``,
+    ``additional_stop_token_ids``).
+
+    ``eos_token_id`` is set to the real ``EOS_ID`` rather than ``None``:
+    the installed ``sglang==0.5.16`` penalizer builds
+    ``{req.tokenizer.eos_token_id}`` unconditionally (no ``is not None``
+    guard), so a ``None`` here becomes a literal ``{None}`` in the stop-id
+    set and crashes ``torch.tensor(...)`` with "'NoneType' object cannot be
+    interpreted as an integer" on the very first request. ``EOS_ID`` is
+    already part of ``stop_token_ids``/``CONTROL_TOKEN_IDS``, so this is a
+    harmless duplicate, not a behavior change.
+    """
+
+    eos_token_id: int = EOS_ID
+    additional_stop_token_ids: set[int] | None = None
+
+
+_COSYVOICE3_NULL_TOKENIZER = _CosyVoice3NullTokenizer()
 
 
 def _cosyvoice3_model_revision(model: Any) -> str:
@@ -157,6 +185,11 @@ class CosyVoice3PreparedRequest:
     flow_prompt_speech_feat: torch.Tensor
     flow_embedding: torch.Tensor
     gen_kwargs: dict[str, Any]
+    # Target text token count, captured before the reference prompt (ref_text
+    # / instructions / cross-lingual prefix) is concatenated. CosyVoice3's
+    # upstream generation-length contract is defined in terms of this count,
+    # not the full prompt length.
+    target_text_token_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -556,10 +589,16 @@ def build_generation_kwargs(
                 continue
         selected_fields.add(field)
 
+    # note: max_new_tokens is intentionally left out of generation_kwargs
+    # unless the caller explicitly passed one. CosyVoice3's own generation
+    # contract derives max_new_tokens (and the minimum length before stop
+    # tokens are honored) from the target text length; build_sglang_
+    # cosyvoice3_request only falls back to _DEFAULT_MAX_NEW_TOKENS when
+    # neither the caller nor the contract provides a bound.
+    generation_kwargs: dict[str, Any] = {}
     max_new_tokens = params.get("max_new_tokens")
-    if max_new_tokens is None:
-        max_new_tokens = _DEFAULT_MAX_NEW_TOKENS
-    generation_kwargs: dict[str, Any] = {"max_new_tokens": int(max_new_tokens)}
+    if max_new_tokens is not None:
+        generation_kwargs["max_new_tokens"] = int(max_new_tokens)
     for field in _GENERATION_FIELDS:
         if field == "max_new_tokens":
             continue
@@ -591,6 +630,7 @@ def _prepare_cosyvoice3_request(
 
     text_token = tokenizer(state.text)
     text_token = text_token.to(device=device)
+    target_text_token_count = int(text_token.shape[1])
     prompt_text = _build_cosyvoice3_prompt_text(state)
     if prompt_text is not None:
         prompt_text_token = tokenizer(prompt_text).to(device=device)
@@ -653,6 +693,7 @@ def _prepare_cosyvoice3_request(
         flow_prompt_speech_feat=flow_prompt_speech_feat,
         flow_embedding=flow_embedding,
         gen_kwargs=gen_kwargs,
+        target_text_token_count=target_text_token_count,
     )
 
 
@@ -700,18 +741,37 @@ def build_sglang_cosyvoice3_request(
     state = prepared.state
     do_sample = bool(gen_kwargs.get("do_sample", True))
     temperature = float(gen_kwargs.get("temperature", 0.7)) if do_sample else 0.0
-    max_new_tokens = int(gen_kwargs.get("max_new_tokens", _DEFAULT_MAX_NEW_TOKENS))
+
+    # CosyVoice3's own generation-length contract: stop tokens are suppressed
+    # until at least 2x the target text token count has been generated, and
+    # generation is capped at 20x that count (itself capped at the service
+    # default). target_text_token_count is captured before the reference
+    # prompt (ref_text / instructions) is concatenated, matching upstream.
+    target_text_tokens = max(int(prepared.target_text_token_count), 1)
+    contract_max_new_tokens = min(_DEFAULT_MAX_NEW_TOKENS, 20 * target_text_tokens)
+    explicit_max_new_tokens = gen_kwargs.get("max_new_tokens")
+    max_new_tokens = (
+        int(explicit_max_new_tokens)
+        if explicit_max_new_tokens is not None
+        else contract_max_new_tokens
+    )
+    min_new_tokens = min(2 * target_text_tokens, max_new_tokens)
 
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
+        min_new_tokens=min_new_tokens,
         temperature=temperature,
         top_p=float(gen_kwargs.get("top_p", 0.8)),
         top_k=int(gen_kwargs.get("top_k", 20)),
         repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.1)),
-        stop_token_ids=[EOS_ID],
+        # Stop on any of the 200 ids CosyVoice3 treats as terminal/non-speech
+        # control ids, not only EOS_ID — the other 199 never stopped the
+        # scheduler when only EOS_ID was registered, so generation could run
+        # on after a non-EOS control token was emitted.
+        stop_token_ids=list(CONTROL_TOKEN_IDS),
         sampling_seed=state.seed,
     )
-    sampling_params.normalize(None)
+    sampling_params.normalize(_COSYVOICE3_NULL_TOKENIZER)
     sampling_params.verify(TOTAL_VOCAB_SIZE)
 
     req = Req(
@@ -721,7 +781,7 @@ def build_sglang_cosyvoice3_request(
         sampling_params=sampling_params,
         vocab_size=TOTAL_VOCAB_SIZE,
     )
-    req.tokenizer = None
+    req.tokenizer = _COSYVOICE3_NULL_TOKENIZER
     req._input_embeds_are_projected = True
     req._codec_suppress_tokens = None
 

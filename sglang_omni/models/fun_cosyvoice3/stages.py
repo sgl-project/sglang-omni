@@ -21,6 +21,7 @@ from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
@@ -140,7 +141,6 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                 prompt_token=prompt_token,
                 prompt_feat=prompt_feat,
                 embedding=embedding,
-                speed=state.speed,
             )
             results.append((wav, state.sample_rate))
         return results
@@ -151,17 +151,12 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         prompt_token: torch.Tensor,
         prompt_feat: torch.Tensor,
         embedding: torch.Tensor,
-        speed: float = 1.0,
     ) -> torch.Tensor:
+        if token.shape[1] == 0:
+            raise RuntimeError(
+                "Fun-CosyVoice3 generation produced no usable speech tokens"
+            )
         device = next(self._flow.parameters()).device
-        # note: the HiFT vocoder requires a minimum mel length for its
-        # convolutional upsampling. Pad short token sequences with a
-        # zero token so the vocoder has enough frames to process.
-        min_tokens = 10
-        if token.shape[1] < min_tokens:
-            pad_len = min_tokens - token.shape[1]
-            pad = torch.zeros(1, pad_len, dtype=token.dtype, device=token.device)
-            token = torch.cat([token, pad], dim=1)
 
         with torch.autocast(
             device_type=current_platform.device_type, enabled=self._fp16
@@ -180,12 +175,6 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                 embedding=embedding.to(device),
                 streaming=False,
                 finalize=True,
-            )
-        if speed != 1.0:
-            tts_mel = torch.nn.functional.interpolate(
-                tts_mel,
-                size=int(tts_mel.shape[2] / speed),
-                mode="linear",
             )
         tts_speech, _ = self._hift.inference(speech_feat=tts_mel, finalize=True)
         return tts_speech.detach().cpu()
@@ -224,7 +213,7 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
-    checkpoint_dir = model_path
+    checkpoint_dir = resolve_checkpoint(model_path)
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
         device=device,

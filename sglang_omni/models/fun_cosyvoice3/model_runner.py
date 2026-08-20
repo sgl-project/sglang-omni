@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import torch
@@ -13,8 +12,6 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 
 from .sglang_model import VOCAB_SIZE
-
-logger = logging.getLogger(__name__)
 
 
 class FunCosyVoice3ModelRunner(ModelRunner):
@@ -80,23 +77,18 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         token_ids = result.next_token_ids
         if token_ids.ndim != 1:
             token_ids = token_ids.reshape(-1)
+        # note: copy the whole batch to host once instead of calling
+        # ``.item()`` per request — each ``.item()`` forces its own
+        # host/GPU synchronization, which is a per-decode-step cost that
+        # scales with batch size.
+        token_ids_cpu = token_ids.tolist()
         for idx, sched_req in enumerate(requests):
-            token_id = int(token_ids[idx].item())
+            token_id = int(token_ids_cpu[idx])
             if token_id >= VOCAB_SIZE:
                 continue
             sched_req.data.output_codes.append(
                 torch.tensor([token_id], dtype=torch.long)
             )
-            if (
-                len(sched_req.data.output_codes) <= 3
-                or len(sched_req.data.output_codes) % 50 == 0
-            ):
-                logger.info(
-                    "CosyVoice3 decode step=%d token=%d control_start=%d",
-                    len(sched_req.data.output_codes),
-                    token_id,
-                    VOCAB_SIZE,
-                )
 
     def _build_prefill_input_embeds(
         self,

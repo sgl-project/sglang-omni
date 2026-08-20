@@ -20,6 +20,8 @@ EOS_ID = VOCAB_SIZE + 1
 TASK_ID = VOCAB_SIZE + 2
 FILL_ID = VOCAB_SIZE + 3
 
+CONTROL_TOKEN_IDS: tuple[int, ...] = tuple(range(VOCAB_SIZE, TOTAL_VOCAB_SIZE))
+
 
 class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
 
@@ -56,8 +58,8 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         get_embedding: bool = False,
         pp_proxy_tensors: Optional[Any] = None,
     ) -> Any:
-        fwd_mode = getattr(forward_batch, "forward_mode", None)
-        is_decode = fwd_mode is not None and fwd_mode.is_decode()
+        fwd_mode = forward_batch.forward_mode
+        is_decode = fwd_mode.is_decode()
 
         if is_decode:
             input_embeds = self.speech_embedding(input_ids)
@@ -70,7 +72,7 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
             pp_proxy_tensors=pp_proxy_tensors,
         )
 
-        if fwd_mode is not None and fwd_mode.is_extend():
+        if fwd_mode.is_extend():
             extend_seq_lens = forward_batch.extend_seq_lens
             if extend_seq_lens is not None:
                 last_indices = (

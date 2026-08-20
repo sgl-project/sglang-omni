@@ -74,9 +74,10 @@ class SpeechTokenizerV3:
         if audio.ndim == 1:
             audio = audio.reshape(1, -1)
 
-        assert (
-            audio.shape[1] / sample_rate <= 30
-        ), "Audio longer than 30s is not supported for speech token extraction"
+        if audio.shape[1] / sample_rate > 30:
+            raise ValueError(
+                "Audio longer than 30s is not supported for speech token extraction"
+            )
 
         feat = whisper.log_mel_spectrogram(torch.from_numpy(audio), n_mels=128)
         feat_len = feat.shape[2]
