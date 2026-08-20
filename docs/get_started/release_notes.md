@@ -1,8 +1,19 @@
 # Release Notes
 
+## v0.1.3
+
+Install: `uv pip install --prerelease=allow "sglang-omni==0.1.3"`.
+
+Highlights since v0.1.2:
+
+- **Models**: Fun-CosyVoice3 text-to-speech support
+- **ASR**: Whisper pre-LM encoder serving, fused attention projections, higher concurrency, and asynchronous decode; breakable prefill graphs for Fun-ASR
+- **TTS**: deterministic Qwen3-TTS inference, bounded admission, retraction fixes, persistent WebSocket input, stereo output preservation, Ming-Omni-TTS streaming, and breakable prefill graphs for MOSS-TTS
+- **Omni and runtime**: Qwen3-Omni encoder batching and caching, speech prefill graphs, overlapped Code2Wav output, and IPC and scheduler fixes
+
 ## v0.1.2
 
-Install: `uv pip install "sglang-omni==0.1.2"`.
+Install: `uv pip install --prerelease=allow "sglang-omni==0.1.2"`.
 
 Highlights since v0.1.1:
 
@@ -13,7 +24,7 @@ Highlights since v0.1.1:
 
 ## v0.1.1
 
-First PyPI release. Install: `uv pip install "sglang-omni==0.1.1"`.
+First PyPI release. Install: `uv pip install --prerelease=allow "sglang-omni==0.1.1"`.
 
 Highlights since the early 0.1 line:
 
