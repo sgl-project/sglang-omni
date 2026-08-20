@@ -92,7 +92,6 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         backbone_weights = []
-        custom_weights = {}
 
         for name, loaded_weight in weights:
             # note: Qwen2 backbone inside CosyVoice3LM uses llm.model.model.* prefix
