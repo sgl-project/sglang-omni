@@ -310,6 +310,153 @@ def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
     asyncio.run(_run())
 
 
+def test_coordinator_submit_failure_releases_request_id_for_retry() -> None:
+    class FailOnceControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_next_submit = True
+
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            if self.fail_next_submit:
+                self.fail_next_submit = False
+                raise RuntimeError("entry stage unavailable")
+            await super().submit_to_stage(stage, endpoint, msg)
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = FailOnceControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        with pytest.raises(RuntimeError, match="entry stage unavailable"):
+            await coordinator._submit_request("req-1", "first attempt")
+
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+        assert coordinator._stream_queues == {}
+        assert coordinator._partial_results == {}
+
+        await coordinator._submit_request("req-1", "retry")
+        assert [msg.request_id for _, _, msg in control_plane.submitted] == ["req-1"]
+
+        future = coordinator._completion_futures["req-1"]
+        assert await coordinator.abort("req-1") is True
+        with pytest.raises(asyncio.CancelledError):
+            await future
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stream_admission_failure_cleans_state_without_abort() -> None:
+    class FailingSubmitControlPlane(RecordingCoordinatorControlPlane):
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            raise RuntimeError("entry stage unavailable")
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = FailingSubmitControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        stream = coordinator.stream("req-1", "hello")
+        with pytest.raises(RuntimeError, match="entry stage unavailable"):
+            await anext(stream)
+
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+        assert coordinator._stream_queues == {}
+        assert coordinator._partial_results == {}
+        assert control_plane.aborts == []
+
+    asyncio.run(_run())
+
+
+def test_coordinator_cancelled_admission_releases_all_state() -> None:
+    class BlockingSubmitControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submit_started = asyncio.Event()
+
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            self.submit_started.set()
+            await asyncio.Event().wait()
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = BlockingSubmitControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        stream_event = asyncio.create_task(anext(coordinator.stream("req-1", "hello")))
+        await control_plane.submit_started.wait()
+        stream_event.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await stream_event
+
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+        assert coordinator._stream_queues == {}
+        assert coordinator._partial_results == {}
+        assert control_plane.aborts == []
+
+    asyncio.run(_run())
+
+
+def test_coordinator_cancelled_submit_releases_request_id() -> None:
+    class BlockingSubmitControlPlane(RecordingCoordinatorControlPlane):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submit_started = asyncio.Event()
+
+        async def submit_to_stage(self, stage: str, endpoint: str, msg) -> None:
+            self.submit_started.set()
+            await asyncio.Event().wait()
+
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        control_plane = BlockingSubmitControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        submit = asyncio.create_task(coordinator._submit_request("req-1", "hello"))
+        await control_plane.submit_started.wait()
+        submit.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await submit
+
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+        assert coordinator._stream_queues == {}
+        assert coordinator._partial_results == {}
+
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        await coordinator._submit_request("req-1", "retry")
+
+    asyncio.run(_run())
+
+
 async def _drive_stream_until_registered(coordinator: Coordinator, request_id: str):
     """Start consuming a stream and return (task, error_sink, future) once the
     request's completion future has been created."""
