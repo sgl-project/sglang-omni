@@ -276,21 +276,21 @@ def _nested_tensor_bytes(value: Any) -> int:
 def _encoder_batch_wait_ms() -> int:
     raw = os.getenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", "")
     if not raw:
-        return 50
+        return 0
     try:
         value = int(raw)
     except ValueError:
         logger.warning(
-            "Ignoring non-integer SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%r; using 50",
+            "Ignoring non-integer SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%r; using 0",
             raw,
         )
-        return 50
+        return 0
     if value < 0:
         logger.warning(
-            "Ignoring negative SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%d; using 50",
+            "Ignoring negative SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%d; using 0",
             value,
         )
-        return 50
+        return 0
     return value
 
 
@@ -897,8 +897,8 @@ def create_image_encoder_executor(
                     metadata={"modality": "image", "batch_size": len(payloads)},
                 )
 
-    # Preserve the calibrated image-encoder batching shape and add a small
-    # batch_wait so video benchmarks at concurrency=16 batch together.
+    # Preserve the calibrated image-encoder batching shape while allowing
+    # deployments to opt into a batch wait through the shared encoder knob.
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,

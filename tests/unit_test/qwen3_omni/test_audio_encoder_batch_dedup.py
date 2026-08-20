@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Same-batch dedup for the Qwen3-Omni audio encoder batch path."""
+"""Qwen3-Omni encoder batching behavior."""
 from __future__ import annotations
 
 from typing import Any
 
+import pytest
 import torch
 
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
-from sglang_omni.models.qwen3_omni.stages import _batch_audio_encoder_payloads
+from sglang_omni.models.qwen3_omni.stages import (
+    _batch_audio_encoder_payloads,
+    _encoder_batch_wait_ms,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -24,6 +28,18 @@ class _FakeAudioEncoder:
             "audio_feature_lengths": lengths,
             "audio_output_lengths": lengths,
         }
+
+
+@pytest.mark.parametrize("raw", [None, "invalid", "-1"])
+def test_encoder_batch_wait_falls_back_to_zero(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", raising=False)
+    else:
+        monkeypatch.setenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", raw)
+
+    assert _encoder_batch_wait_ms() == 0
 
 
 def _payload(request_id: str, cache_key: str, time_steps: int) -> StagePayload:
