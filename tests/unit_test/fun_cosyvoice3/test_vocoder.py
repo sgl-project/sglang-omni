@@ -66,7 +66,9 @@ def test_cosyvoice3_vocoder_does_not_pad_or_rescale_short_sequences() -> None:
     assert flow_call["prompt_token_len"].tolist() == [1]
     assert flow_call["prompt_feat_len"].tolist() == [2]
     assert flow_call["finalize"] is True
-    assert hift.calls[0][0].shape[-1] == 4  # _FakeFlow returns token_count * 2 mel frames
+    assert (
+        hift.calls[0][0].shape[-1] == 4
+    )  # _FakeFlow returns token_count * 2 mel frames
     assert wav.device.type == "cpu"
 
 

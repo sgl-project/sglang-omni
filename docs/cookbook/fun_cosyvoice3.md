@@ -25,7 +25,7 @@ Clone the CosyVoice repository with its Matcha-TTS submodule and add both to `PY
 ```bash
 COSYVOICE_PATH=/path/to/CosyVoice
 COSYVOICE_COMMIT=074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
-MATCHA_TTS_COMMIT=dd9105b34bf2be2230f4aa1e4769fb586a3c824e 
+MATCHA_TTS_COMMIT=dd9105b34bf2be2230f4aa1e4769fb586a3c824e
 
 git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git ${COSYVOICE_PATH}
 git -C ${COSYVOICE_PATH} checkout ${COSYVOICE_COMMIT}
