@@ -40,6 +40,8 @@ _TORCH_DTYPES: dict[str, torch.dtype] = {
 
 _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE = "TorchCudaIpcStreamChunk"
 _DIRECT_CUDA_IPC_PAYLOAD_TYPE = "TorchCudaIpcPayload"
+_DIRECT_CUDA_IPC_REDUCTIONS_DEFAULT = "torch_default"
+_DIRECT_CUDA_IPC_REDUCTIONS_SGLANG = "sglang_uuid"
 _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT = 64 * 1024
 
 
@@ -51,6 +53,41 @@ def relay_device(relay: Relay) -> str:
             f"{type(device).__name__}"
         )
     return device
+
+def _cuda_ipc_reductions_protocol() -> str:
+    from torch.multiprocessing import reductions
+    from sglang.srt.utils import patch_torch
+
+    registerd = ForkingPickler._extra_reducers.get(torch.Tensor)
+
+    torch_original = getattr(
+        reductions,
+        "_reduce_tensor_original",
+        reductions.reduce_tensor
+    )
+
+    if registerd is torch_original:
+        return _DIRECT_CUDA_IPC_REDUCTIONS_DEFAULT
+    
+    if (
+        registerd is patch_torch._reduce_tensor_modified and
+        reductions.rebuild_cuda_tensor is patch_torch._rebuild_cuda_tensor_modified
+    ):
+        return _DIRECT_CUDA_IPC_REDUCTIONS_SGLANG
+    
+    raise RuntimeError("Unsupported Reductions Protocol in CUDA IPC")
+
+def _prepare_cuda_ipc_reductions(protocol: str) -> None:
+    from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
+
+    if protocol == _DIRECT_CUDA_IPC_REDUCTIONS_SGLANG:
+        monkey_patch_torch_reductions()
+        return
+    
+    if protocol != _DIRECT_CUDA_IPC_REDUCTIONS_DEFAULT:
+        raise ValueError(
+            f'unsupported direct CUDA IPC reductions protocol {protocol!r}'
+        )
 
 
 def extract_tensors(obj: Any, path: str = "") -> tuple[Any, dict[str, torch.Tensor]]:
@@ -155,6 +192,7 @@ def serialize_direct_cuda_ipc_payload(payload: StagePayload) -> dict[str, Any]:
     return {
         "_type": _DIRECT_CUDA_IPC_PAYLOAD_TYPE,
         "version": 1,
+        "reductions_protocol": _cuda_ipc_reductions_protocol(),
         "header": header_bytes,
         "tensors": [
             {"path": path, "tensor_bytes": _ipc_pickle(tensor)}
@@ -176,6 +214,7 @@ def deserialize_direct_cuda_ipc_payload(data_ref: dict[str, Any]) -> StagePayloa
         raise ValueError(
             f"unsupported direct CUDA IPC payload version {data_ref.get('version')!r}"
         )
+    _prepare_cuda_ipc_reductions(data_ref.get("reductions_protocol"))
     header_bytes = data_ref.get("header")
     if not isinstance(header_bytes, bytes):
         raise TypeError(
@@ -240,6 +279,7 @@ def serialize_direct_cuda_ipc_stream_chunk(
     ref: dict[str, Any] = {
         "_type": _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE,
         "version": 1,
+        "reductions_protocol": _cuda_ipc_reductions_protocol(),
         "tensor_bytes": _ipc_pickle(data),
     }
     if metadata is not None:
@@ -263,6 +303,7 @@ def deserialize_direct_cuda_ipc_stream_chunk(
         raise ValueError(
             f"unsupported direct CUDA IPC version {data_ref.get('version')!r}"
         )
+    _prepare_cuda_ipc_reductions(data_ref.get("reductions_protocol"))
     tensor_bytes = data_ref.get("tensor_bytes")
     if not isinstance(tensor_bytes, bytes):
         raise TypeError(

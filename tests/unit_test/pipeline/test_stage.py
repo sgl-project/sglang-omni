@@ -1226,6 +1226,181 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.parametrize(
+    ("protocol", "expected_patch_calls", "expected_error"),
+    [
+        ("torch_default", 0, None),
+        ("sglang_uuid", 1, None),
+        ("unknown", 0, ValueError),
+    ],
+)
+def test_prepare_cuda_ipc_reductions(
+    monkeypatch,
+    protocol,
+    expected_patch_calls,
+    expected_error,
+) -> None:
+    from sglang.srt.utils import patch_torch
+
+    calls = []
+    monkeypatch.setattr(
+        patch_torch,
+        "monkey_patch_torch_reductions",
+        lambda: calls.append(None),
+    )
+
+    if expected_error is not None:
+        with pytest.raises(expected_error, match="unsupported direct CUDA IPC"):
+            stage_io._prepare_cuda_ipc_reductions(protocol)
+    else:
+        stage_io._prepare_cuda_ipc_reductions(protocol)
+
+    assert len(calls) == expected_patch_calls
+
+
+@pytest.mark.parametrize(
+    ("reduction_state", "expected_protocol"),
+    [
+        ("torch_default", "torch_default"),
+        ("sglang_uuid", "sglang_uuid"),
+        ("inconsistent_sglang", None),
+        ("unknown", None),
+    ],
+)
+def test_cuda_ipc_reductions_protocol(
+    monkeypatch,
+    reduction_state,
+    expected_protocol,
+) -> None:
+    from sglang.srt.utils import patch_torch
+    from torch.multiprocessing import reductions
+
+    def torch_original():
+        pass
+
+    def unknown_reducer():
+        pass
+
+    if reduction_state == "torch_default":
+        monkeypatch.delattr(
+            reductions,
+            "_reduce_tensor_original",
+            raising=False,
+        )
+        registered_reducer = reductions.reduce_tensor
+    else:
+        monkeypatch.setattr(
+            reductions,
+            "_reduce_tensor_original",
+            torch_original,
+            raising=False,
+        )
+
+    if reduction_state == "sglang_uuid":
+        registered_reducer = patch_torch._reduce_tensor_modified
+        monkeypatch.setattr(
+            reductions,
+            "rebuild_cuda_tensor",
+            patch_torch._rebuild_cuda_tensor_modified,
+        )
+    elif reduction_state == "inconsistent_sglang":
+        registered_reducer = patch_torch._reduce_tensor_modified
+        monkeypatch.setattr(
+            reductions,
+            "rebuild_cuda_tensor",
+            object(),
+        )
+    elif reduction_state == "unknown":
+        registered_reducer = unknown_reducer
+
+    monkeypatch.setitem(
+        stage_io.ForkingPickler._extra_reducers,
+        torch.Tensor,
+        registered_reducer,
+    )
+
+    if expected_protocol is None:
+        with pytest.raises(RuntimeError, match="Unsupported Reductions Protocol"):
+            stage_io._cuda_ipc_reductions_protocol()
+    else:
+        assert stage_io._cuda_ipc_reductions_protocol() == expected_protocol
+
+
+def test_direct_cuda_ipc_serializers_include_reductions_protocol(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        stage_io, "_cuda_ipc_reductions_protocol", lambda: "sglang_uuid"
+    )
+    monkeypatch.setattr(stage_io, "_ipc_pickle", lambda value: b"cuda-ipc")
+    monkeypatch.setattr(
+        stage_io,
+        "extract_cuda_tensors",
+        lambda data: ({"gpu": {"_tensor_placeholder": "gpu"}}, {"gpu": object()}),
+    )
+    monkeypatch.setattr(
+        stage_io,
+        "should_use_direct_cuda_ipc_stream_chunk",
+        lambda data, metadata: True,
+    )
+
+    payload_ref = stage_io.serialize_direct_cuda_ipc_payload(
+        make_stage_payload(data={"gpu": "placeholder"})
+    )
+    stream_ref = stage_io.serialize_direct_cuda_ipc_stream_chunk(object(), None)
+
+    assert payload_ref["reductions_protocol"] == "sglang_uuid"
+    assert stream_ref["reductions_protocol"] == "sglang_uuid"
+
+
+@pytest.mark.parametrize("ref_kind", ["payload", "stream"])
+def test_direct_cuda_ipc_deserializers_prepare_reductions_before_loads(
+    monkeypatch,
+    ref_kind,
+) -> None:
+    events = []
+    monkeypatch.setattr(
+        stage_io,
+        "_prepare_cuda_ipc_reductions",
+        lambda protocol: events.append(("prepare", protocol)),
+    )
+
+    header = make_stage_payload(data={})
+
+    def _loads(data):
+        events.append(("loads", data))
+        return header if data == b"header" else object()
+
+    monkeypatch.setattr(stage_io.pickle, "loads", _loads)
+
+    if ref_kind == "payload":
+        stage_io.deserialize_direct_cuda_ipc_payload(
+            {
+                "_type": "TorchCudaIpcPayload",
+                "version": 1,
+                "reductions_protocol": "sglang_uuid",
+                "header": b"header",
+                "tensors": [],
+            }
+        )
+        expected_load = b"header"
+    else:
+        stage_io.deserialize_direct_cuda_ipc_stream_chunk(
+            {
+                "_type": "TorchCudaIpcStreamChunk",
+                "version": 1,
+                "reductions_protocol": "sglang_uuid",
+                "tensor_bytes": b"tensor",
+            }
+        )
+        expected_load = b"tensor"
+
+    assert events == [
+        ("prepare", "sglang_uuid"),
+        ("loads", expected_load),
+    ]
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     payload = make_stage_payload(
