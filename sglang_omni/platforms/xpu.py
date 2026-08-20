@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
@@ -8,6 +9,8 @@ import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -30,6 +33,20 @@ class XPUOmniPlatform(OmniPlatform):
 
     def enable_code2wav_graph(self):
         return False
+
+    def get_fused_qk_norm_rope(self):
+        # The cache-consuming variant: it reads a cos/sin table like the rotary
+        # does, where the analytic one recomputes sin and cos per element and
+        # loses to the unfused pair once a prefill is a few hundred tokens.
+        try:
+            from sgl_kernel import fused_qk_norm_rope_with_cos_sin_cache_inplace
+        except ImportError as exc:
+            logger.info(
+                f"XPU sgl_kernel has no fused QK-norm-RoPE kernel ({exc}); "
+                "falling back to the unfused QK-norm and RoPE path"
+            )
+            return None
+        return fused_qk_norm_rope_with_cos_sin_cache_inplace
 
     def apply_model_worker_backend_policy(
         self,
