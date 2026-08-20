@@ -14,6 +14,7 @@ import torch
 from torch import nn
 
 import sglang_omni.models.qwen3_omni.components.talker as talker_module
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
@@ -43,6 +44,33 @@ from tests.unit_test.fixtures.qwen_predictor import (
 
 def _sched_req(**data_kwargs: object) -> SimpleNamespace:
     return SimpleNamespace(data=SimpleNamespace(**data_kwargs))
+
+
+def _prefill_runner() -> QwenTalkerModelRunner:
+    """Runner stub for prefill paths, which read the model's activation dtype."""
+    runner = object.__new__(QwenTalkerModelRunner)
+    runner.model = SimpleNamespace(activation_dtype=torch.float32)
+    return runner
+
+
+def _prefill_forward_batch(
+    num_tokens: int, *, input_embeds: torch.Tensor | None = None
+) -> SimpleNamespace:
+    """ForwardBatch fields the sidecar attach reads."""
+    return SimpleNamespace(
+        input_embeds=input_embeds,
+        replace_embeds=None,
+        input_ids=torch.zeros(num_tokens, dtype=torch.long),
+    )
+
+
+def _prefill_sidecar(
+    runner: QwenTalkerModelRunner,
+    forward_batch: SimpleNamespace,
+    requests: list[SimpleNamespace],
+):
+    runner.before_prefill(forward_batch, schedule_batch=None, requests=requests)
+    return get_omni_prefill_inputs(forward_batch)
 
 
 def _take_decode_input(sched_req: SimpleNamespace) -> torch.Tensor | None:
@@ -1730,23 +1758,12 @@ def test_projected_prefill_reads_tensor_from_data() -> None:
             extend_range=SimpleNamespace(length=10),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(10, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(10)
 
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner._forward_with_input_embeds = (
-        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
-            next_token_ids=None, logits_output=None, _embeds=input_embeds
-        )
-    ).__get__(runner)
+    payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
-    result = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
-
-    assert torch.equal(result._embeds, embeds)
+    assert payload is not None
+    assert torch.equal(payload.input_embeds, embeds)
 
 
 def test_projected_prefill_slices_tensor_by_prefix_indices() -> None:
@@ -1762,25 +1779,14 @@ def test_projected_prefill_slices_tensor_by_prefix_indices() -> None:
             extend_range=SimpleNamespace(length=7),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(7, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(7)
 
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner._forward_with_input_embeds = (
-        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
-            next_token_ids=None, logits_output=None, _embeds=input_embeds
-        )
-    ).__get__(runner)
-
-    result = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
+    payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
     expected = full_embeds[prefix_len:]
-    assert result._embeds.shape == expected.shape
-    assert torch.equal(result._embeds, expected)
+    assert payload is not None
+    assert payload.input_embeds.shape == expected.shape
+    assert torch.equal(payload.input_embeds, expected)
 
 
 def test_projected_prefill_slices_tensor_by_extend_range() -> None:
@@ -1797,25 +1803,14 @@ def test_projected_prefill_slices_tensor_by_extend_range() -> None:
             extend_range=SimpleNamespace(length=extend_len),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(extend_len, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(extend_len)
 
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner._forward_with_input_embeds = (
-        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
-            next_token_ids=None, logits_output=None, _embeds=input_embeds
-        )
-    ).__get__(runner)
-
-    result = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
+    payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
     expected = full_embeds[prefix_len : prefix_len + extend_len]
-    assert result._embeds.shape == expected.shape
-    assert torch.equal(result._embeds, expected)
+    assert payload is not None
+    assert payload.input_embeds.shape == expected.shape
+    assert torch.equal(payload.input_embeds, expected)
 
 
 def test_projected_prefill_list_fallback_slices_by_extend_range() -> None:
@@ -1832,88 +1827,14 @@ def test_projected_prefill_list_fallback_slices_by_extend_range() -> None:
             extend_range=SimpleNamespace(length=extend_len),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(extend_len, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(extend_len)
 
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner._forward_with_input_embeds = (
-        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
-            next_token_ids=None, logits_output=None, _embeds=input_embeds
-        )
-    ).__get__(runner)
-
-    result = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
+    payload = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
     expected = full_embeds[prefix_len : prefix_len + extend_len]
-    assert result._embeds.shape == expected.shape
-    assert torch.allclose(result._embeds, expected)
-
-
-def test_projected_prefill_prefers_request_data_over_forward_embeds() -> None:
-    """Projected rows live on request data, not ForwardBatch.input_embeds."""
-    embeds = torch.randn(4, 8)
-    stale_forward_embeds = torch.full((2, 8), -1.0)
-    sched_req = _sched_req(
-        input_embeds_are_projected=True,
-        prefill_input_embeds=embeds,
-        req=SimpleNamespace(
-            input_embeds=None, prefix_indices=[], extend_range=SimpleNamespace(length=4)
-        ),
-    )
-    forward_batch = SimpleNamespace(
-        input_embeds=stale_forward_embeds,
-        input_ids=torch.zeros(4, dtype=torch.long),
-    )
-
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner._forward_with_input_embeds = (
-        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
-            next_token_ids=None, logits_output=None, _embeds=input_embeds
-        )
-    ).__get__(runner)
-
-    result = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
-
-    assert torch.equal(result._embeds, embeds)
-
-
-def test_projected_prefill_activates_sglang_forward_context() -> None:
-    from sglang.srt.model_executor.forward_context import get_forward_context
-
-    attn_backend = SimpleNamespace(init_forward_metadata=lambda _batch: None)
-    observed_backends: list[object] = []
-
-    class _Model:
-        activation_dtype = torch.float32
-
-        def __call__(self, **_kwargs):
-            observed_backends.append(get_forward_context().attn_backend)
-            return SimpleNamespace()
-
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner.model = _Model()
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(attn_backend=attn_backend)
-    )
-    forward_batch = SimpleNamespace(
-        input_ids=torch.zeros(2, dtype=torch.long),
-        positions=torch.arange(2),
-        mrope_positions=None,
-    )
-
-    runner._forward_with_input_embeds(
-        forward_batch,
-        input_embeds=torch.zeros(2, 4),
-        input_embeds_are_projected=True,
-    )
-
-    assert observed_backends == [attn_backend]
+    assert payload is not None
+    assert payload.input_embeds.shape == expected.shape
+    assert torch.allclose(payload.input_embeds, expected)
 
 
 def test_projected_prefill_rejects_mixed_projected_and_list_batch() -> None:
@@ -1934,17 +1855,10 @@ def test_projected_prefill_rejects_mixed_projected_and_list_batch() -> None:
             extend_range=SimpleNamespace(length=2),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=torch.randn(2, 8),
-        input_ids=torch.zeros(4, dtype=torch.long),
-    )
-
-    runner = object.__new__(QwenTalkerModelRunner)
+    forward_batch = _prefill_forward_batch(4, input_embeds=torch.randn(2, 8))
 
     with pytest.raises(RuntimeError, match="cannot be batched together"):
-        runner._run_projected_prefill_forward(
-            forward_batch, schedule_batch=None, requests=[projected_req, list_req]
-        )
+        _prefill_sidecar(_prefill_runner(), forward_batch, [projected_req, list_req])
 
 
 def test_projected_prefill_full_prefix_hit_returns_none() -> None:
@@ -1959,18 +1873,9 @@ def test_projected_prefill_full_prefix_hit_returns_none() -> None:
             extend_range=SimpleNamespace(length=0),
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(0, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(0)
 
-    runner = object.__new__(QwenTalkerModelRunner)
-
-    result = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
-
-    assert result is None
+    assert _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req]) is None
 
 
 def test_post_prefill_preserves_prefill_embeds_for_retract() -> None:
@@ -1984,7 +1889,7 @@ def test_post_prefill_preserves_prefill_embeds_for_retract() -> None:
         thinker_chunks_done=True,
     )
 
-    runner = object.__new__(QwenTalkerModelRunner)
+    runner = _prefill_runner()
     runner._feedback_enabled = False
 
     runner.post_prefill(
@@ -2012,26 +1917,17 @@ def test_projected_prefill_survives_decode_retract() -> None:
         tts_pad_embed=None,
         thinker_chunks_done=True,
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(10, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(10)
 
-    runner = object.__new__(QwenTalkerModelRunner)
+    runner = _prefill_runner()
     runner._feedback_enabled = False
-    runner._forward_with_input_embeds = (
-        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
-            next_token_ids=None, logits_output=None, _embeds=input_embeds
-        )
-    ).__get__(runner)
 
-    first = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
-    assert torch.equal(first._embeds, full_embeds)
+    first = _prefill_sidecar(runner, forward_batch, [sched_req])
+    assert first is not None
+    assert torch.equal(first.input_embeds, full_embeds)
 
     runner.post_prefill(
-        first,
+        SimpleNamespace(next_token_ids=None),
         forward_batch=None,
         schedule_batch=None,
         requests=[sched_req],
@@ -2040,11 +1936,9 @@ def test_projected_prefill_survives_decode_retract() -> None:
     sched_req.data.req.prefix_indices = []
     sched_req.data.req.extend_range = SimpleNamespace(length=10)
 
-    second = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
+    second = _prefill_sidecar(runner, forward_batch, [sched_req])
     assert second is not None, "retract+re-prefill must not silently lose embeds"
-    assert torch.equal(second._embeds, full_embeds)
+    assert torch.equal(second.input_embeds, full_embeds)
 
 
 def test_write_feedback_buffers_records_decode_input_history() -> None:
@@ -2057,7 +1951,7 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
         decode_input_embeds=[],
     )
 
-    runner = object.__new__(QwenTalkerModelRunner)
+    runner = _prefill_runner()
     runner.model = SimpleNamespace(
         _feedback_buffer=feedback_buffer,
         _feedback_mask=feedback_mask,
@@ -2094,21 +1988,9 @@ def test_projected_prefill_retract_replays_generated_decode_inputs() -> None:
             output_ids=[11, 12, 13],
         ),
     )
-    forward_batch = SimpleNamespace(
-        input_embeds=None,
-        input_ids=torch.zeros(5, dtype=torch.long),
-    )
+    forward_batch = _prefill_forward_batch(5)
 
-    runner = object.__new__(QwenTalkerModelRunner)
-    runner._forward_with_input_embeds = (
-        lambda self, fb, *, input_embeds, **kw: SimpleNamespace(
-            next_token_ids=None, logits_output=None, _embeds=input_embeds
-        )
-    ).__get__(runner)
-
-    result = runner._run_projected_prefill_forward(
-        forward_batch, schedule_batch=None, requests=[sched_req]
-    )
+    result = _prefill_sidecar(_prefill_runner(), forward_batch, [sched_req])
 
     expected = torch.cat(
         [
@@ -2123,7 +2005,8 @@ def test_projected_prefill_retract_replays_generated_decode_inputs() -> None:
         ],
         dim=0,
     )
-    assert torch.equal(result._embeds, expected)
+    assert result is not None
+    assert torch.equal(result.input_embeds, expected)
     assert len(sched_req.data.decode_input_embeds) == 3
     assert len(sched_req.data.pending_feedback_queue) == 0
     assert len(sched_req.data.pending_text_queue) == 0

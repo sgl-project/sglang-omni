@@ -70,6 +70,31 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     return values
 
 
+def clamp_prefill_cuda_graph_max_bs(
+    overrides: dict[str, Any],
+    *,
+    context_length: int | None = None,
+) -> int:
+    """Clamp the prefill graph budget to the reachable token limits."""
+    caps = [
+        overrides.get("cuda_graph_max_bs_prefill"),
+        overrides.get("max_prefill_tokens"),
+        overrides.get("max_total_tokens"),
+        (
+            context_length
+            if context_length is not None
+            else overrides.get("context_length")
+        ),
+    ]
+    chunked_prefill_size = overrides.get("chunked_prefill_size")
+    if chunked_prefill_size is not None and int(chunked_prefill_size) > 0:
+        caps.append(chunked_prefill_size)
+
+    cap = min(int(value) for value in caps if value is not None)
+    overrides["cuda_graph_max_bs_prefill"] = cap
+    return cap
+
+
 def nested_prefill_overrides(overrides: Mapping[str, Any]) -> Mapping[str, Any]:
     """Extract the prefill section of a nested cuda_graph_config override."""
     config = overrides.get("cuda_graph_config")
@@ -155,6 +180,14 @@ def build_generation_batch_overrides(
     # operator-stated list is never trimmed; contradictions fail validation.
     prefill_bs = overrides.get("cuda_graph_bs_prefill")
     prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
+    if (
+        prefill_bs is None
+        and prefill_max_bs is not None
+        and overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.BREAKABLE
+    ):
+        prefill_max_bs = clamp_prefill_cuda_graph_max_bs(overrides)
+        prefill_bs = build_default_prefill_cuda_graph_bs(prefill_max_bs)
+        overrides["cuda_graph_bs_prefill"] = prefill_bs
     if prefill_bs and prefill_max_bs is None:
         overrides["cuda_graph_max_bs_prefill"] = max(int(b) for b in prefill_bs)
     elif (

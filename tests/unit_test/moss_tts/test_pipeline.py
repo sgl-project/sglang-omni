@@ -1641,6 +1641,7 @@ def test_moss_collect_step_requires_is_audio_state() -> None:
 
 
 def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
+    from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 
     class FakeModel:
@@ -1670,14 +1671,19 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
         input_ids=torch.tensor([123456, 123457], dtype=torch.long),
         positions=torch.arange(2),
         mrope_positions=None,
+        input_embeds=None,
+        replace_embeds=None,
     )
 
     result = runner.custom_prefill_forward(forward_batch, object(), [sched_req])
 
     assert result is None
     assert torch.equal(forward_batch.input_ids, torch.tensor([123456, 123457]))
+    assert forward_batch.input_embeds is None
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None
     assert torch.equal(
-        forward_batch.input_embeds,
+        prefill_inputs.input_embeds,
         torch.tensor([[4.0, 5.0], [7.0, 8.0]]),
     )
 
