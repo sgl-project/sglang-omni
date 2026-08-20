@@ -193,7 +193,12 @@ class MingTTSModelRunner(ModelRunner):
         input_embedding = self.model.get_input_embeddings()
         for sched_req in requests:
             data = sched_req.data
-            request_state = self._request_states[sched_req.request_id]
+            request_state = self._request_states.get(sched_req.request_id)
+            if request_state is None:
+                raise RuntimeError(
+                    "Ming TTS Prefill is missing request state for "
+                    f"{sched_req.request_id!r}"
+                )
             req = data.req
             prefix_len = len(req.prefix_indices)
             extend_len = int(req.extend_range.length)
@@ -220,6 +225,22 @@ class MingTTSModelRunner(ModelRunner):
             gen_start = max(prefix_len, prompt_len) - prompt_len
             gen_end = max(end - prompt_len, 0)
             if gen_end > gen_start:
+                expected_feedback_rows = gen_end - gen_start
+                found_feedback_rows = max(
+                    0,
+                    min(
+                        len(request_state.feedback_embeddings),
+                        gen_end,
+                    )
+                    - gen_start,
+                )
+                if found_feedback_rows != expected_feedback_rows:
+                    raise RuntimeError(
+                        "Ming TTS Retraction Re-Prefill Continuous Feedback Rows "
+                        f"are incomplete for request {sched_req.request_id!r}: "
+                        f"expected {expected_feedback_rows}, "
+                        f"found {found_feedback_rows}"
+                    )
                 feedback_rows = [
                     feedback.to(device=device, dtype=dtype)
                     for feedback in request_state.feedback_embeddings[gen_start:gen_end]
