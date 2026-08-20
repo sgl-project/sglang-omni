@@ -635,7 +635,10 @@ that happened to contain an older version of the test.
   - preprocessing handoff and abort cleanup behavior
   - delay-pattern runner, codec splitting, and seeded sampling contracts
   - incremental delay-row emission, bounded overlap decode parity, early-done
-    final-tail handling, and streaming abort cleanup.
+    final-tail handling, and streaming abort cleanup
+  - shared MOSS-Audio-Tokenizer transformer and vocoder decoder packing,
+    local-causal FlashAttention window equivalence, CUDA bf16 packed-vs-SDPA
+    parity, zero-length handling, and flash-unavailable fallback.
 
 - `unit_test/moss_tts_local/`: MOSS-TTS Local unit tests:
   - pipeline config, request builders, and scheduler adapter contracts
@@ -644,10 +647,7 @@ that happened to contain an older version of the test.
   - synchronous frame-decode parity harness and S0 gate coverage
   - streaming vocoder session lifecycle, per-request chunk-threshold and
     coalescing contracts, decode-failure isolation, and non-streaming full-sequence
-    decode through the codec path
-  - MOSS-TTS Local vocoder decoder packing, local-causal FlashAttention window
-    equivalence, CUDA bf16 packed-vs-SDPA parity, zero-length handling, and
-    flash-unavailable fallback.
+    decode through the codec path.
 
 - `unit_test/zonos2/`: ZONOS2 unit tests:
   - pipeline configuration, text normalization, and speaker/component caches
