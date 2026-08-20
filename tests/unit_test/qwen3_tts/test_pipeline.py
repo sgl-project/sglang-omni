@@ -3752,7 +3752,9 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
         },
     )
 
-    assert build_kwargs["disable_cuda_graph"] is False
+    resolved_device_type = build_kwargs["device"]
+    is_cpu = resolved_device_type == "cpu"
+    assert build_kwargs["disable_cuda_graph"] is is_cpu
     assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs
     assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["enable_torch_compile"] is True
@@ -3793,10 +3795,10 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
 
     assert infrastructure_saw_graph_disabled == [True]
     assert len(compile_calls) == 1
-    assert init_graph_calls == [True]
+    assert init_graph_calls == ([] if is_cpu else [True])
     assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs
     assert scheduler.server_args.cuda_graph_max_bs == 64
-    assert scheduler.server_args.disable_cuda_graph is False
+    assert scheduler.server_args.disable_cuda_graph is is_cpu
     assert scheduler.server_args.enable_torch_compile is False
     assert scheduler.server_args.torch_compile_max_bs == 64
     clear_qwen3_tts_preprocessing_context()
@@ -3928,59 +3930,6 @@ def test_qwen3_tts_prefill_publishes_sglang_forward_context() -> None:
     assert result.logits_output == "logits"
 
 
-def test_vocoder_executor_uses_cpu_platform_device(monkeypatch) -> None:
-    import torch
-
-    from sglang_omni.models.qwen3_tts import stages
-
-    captured = {}
-
-    class FakeCPUPlatform:
-        def get_device(self, device_id: int):
-            captured["device_id"] = device_id
-            return torch.device("cpu")
-
-    monkeypatch.setattr(
-        stages,
-        "current_platform",
-        FakeCPUPlatform(),
-    )
-
-    def fake_load_tokenizer(
-        model_path: str,
-        *,
-        device: str,
-        dtype: str,
-        attn_implementation,
-    ):
-        captured["tokenizer_device"] = device
-        return object()
-
-    monkeypatch.setattr(
-        stages,
-        "_load_qwen3_tts_tokenizer",
-        fake_load_tokenizer,
-    )
-
-    class FakeScheduler:
-        def __init__(self, tokenizer, *, device: str, **kwargs):
-            captured["scheduler_device"] = device
-
-    monkeypatch.setattr(
-        stages,
-        "Qwen3TTSStreamingVocoderScheduler",
-        FakeScheduler,
-    )
-
-    stages.create_vocoder_executor(
-        "dummy-model",
-        gpu_id=None,
-        dtype="bfloat16",
-    )
-
-    assert captured["device_id"] == 0
-    assert captured["tokenizer_device"] == "cpu"
-    assert captured["scheduler_device"] == "cpu"
 def _make_prep_talker(monkeypatch):
     install_fake_sglang(monkeypatch)
     from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker

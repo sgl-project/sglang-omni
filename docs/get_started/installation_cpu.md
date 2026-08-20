@@ -45,6 +45,7 @@ Create and activate an environment first:
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git
 cd sglang-omni
+OMNI_DIR="$(pwd)"
 
 uv venv .venv -p 3.12
 source .venv/bin/activate
@@ -70,18 +71,21 @@ uv pip install . --index-url https://download.pytorch.org/whl/cpu --extra-index-
 Install `sglang-omni` with the CPU pyproject:
 
 ```bash
-cd ../sglang-omni
+cd OMNI_DIR
 bash scripts/cpu/install_cpu.sh
 ```
-
-Qwen3-TTS requires the upstream qwen-tts package and SoX. Install these
-dependencies separately after the base CPU environment is set up:
+Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
+Option B install it here, because `pyproject_xpu.toml` deliberately does not pin it.
+`--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which
+would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
+`numba==0.65.1` ceiling. See
+[docs/cookbook/qwen3_tts.md](../cookbook/qwen3_tts.md).
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y sox
 
-uv pip install --no-deps sox einops
+uv pip install --no-deps sox
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 
@@ -143,7 +147,9 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     "ref_audio": "/path/to/ref.wav",
     "ref_text": "Reference transcript for the voice prompt.",
     "language": "English",
-    "response_format": "wav"
+    "response_format": "wav",
+    "do_sample": false,
+    "subtalker_dosample": false
   }' \
   --output output.wav
 ```

@@ -67,16 +67,15 @@ class SGLangGenerationEngineBuilder(ABC):
         gpu_id = torch.device(device).index or 0
         self.checkpoint_dir = checkpoint_dir
         self.device = device
-        self.gpu_id = runner_device_id
+        self.gpu_id = gpu_id
         self.dtype = dtype
 
         self.pre_infra_setup(checkpoint_dir)
+
+        resolved_type = torch.device(device).type
         effective_overrides = dict(server_args_overrides or {})
 
-        # SGLang ServerArgs wants the device type, not an indexed device string.
-        effective_overrides["device"] = current_platform.device_type
-
-        if current_platform.is_cpu():
+        if resolved_type == "cpu":
             effective_overrides["disable_cuda_graph"] = True
 
         operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
@@ -139,7 +138,7 @@ class SGLangGenerationEngineBuilder(ABC):
             model_config,
         ) = scheduling_bootstrap.create_sglang_infrastructure_defer_cuda_graph(
             server_args,
-            runner_device_id,
+            gpu_id,
             **infra_kwargs,
         )
         model = model_worker.model_runner.model
@@ -148,7 +147,7 @@ class SGLangGenerationEngineBuilder(ABC):
             model_worker=model_worker,
             checkpoint_dir=checkpoint_dir,
             device=device,
-            gpu_id=runner_device_id,
+            gpu_id=gpu_id,
             server_args=server_args,
         )
 

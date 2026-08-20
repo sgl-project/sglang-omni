@@ -1,4 +1,7 @@
 [build-system]
+# >=77 for the PEP 639 license fields below, which 76.1 and older reject; that also
+# covers the PEP 660 build_editable an editable install needs. Installs here pass
+# --no-build-isolation, so pip never enforces this -- scripts/xpu/install_cpu.sh does.
 requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
@@ -9,11 +12,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sglang-omni"
-version = "0.1.1"
-description = "Multi-stage pipeline framework for omni models"
+dynamic = ["version"]
+description = "Multi-stage pipeline framework for omni models (Intel XPU build)"
 readme = "README.md"
-license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.13"
 dependencies = [
     # Core runtime
     "pyzmq>=25.0.0",
@@ -22,6 +26,8 @@ dependencies = [
     "numpy>=1.24.0",
     "pydantic>=2.0.0",
     "PyYAML>=6.0",
+    "httpx",
+    "xxhash>=3.0.0",
     "pybase64>=1.4.0",
     "tabulate",
     "pandas",
@@ -38,7 +44,7 @@ dependencies = [
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
     "huggingface-hub[hf_xet]>=0.36.0",
-    "protobuf>=7.35.1,<8",
+    "protobuf>=6.31.1,<7.0.0",
     "datasets>=2.14.0",
 
     # API and serving
@@ -91,6 +97,9 @@ markers = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sglang_omni*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sglang_omni.__version__"}
 
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]

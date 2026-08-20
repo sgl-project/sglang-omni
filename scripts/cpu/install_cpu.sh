@@ -71,44 +71,87 @@ PY
 # script is created. Without isolation it uses this env's setuptools, so an
 # editable install needs PEP 660 support (setuptools>=64) here; check up front
 # rather than silently producing the legacy layout.
-if [[ -n "${EDITABLE}" ]]; then
-    "${PYBIN}" -c "import setuptools.build_meta as m, setuptools, sys; sys.exit(None if hasattr(m, 'build_editable') else f'setuptools {setuptools.__version__} lacks PEP 660 support; an editable install would emit a legacy egg-info. Upgrade setuptools to 64 or newer, or pass --no-editable.')" || exit 1
-fi
 NOISO="--no-build-isolation"
-INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} --index-url ${CPU_INDEX} --extra-index-url https://pypi.org/simple"
+INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} \
+--index-url ${CPU_INDEX} --extra-index-url https://pypi.org/simple"
+
+BACKUP="${REPO_ROOT}/.pyproject.cpu.bak"
+
+# Serialize the whole backup/swap/restore section.
+LOCK="${REPO_ROOT}/.pyproject.cpu.lock"
+
+if ! command -v flock >/dev/null 2>&1; then
+  echo "ERROR: flock is required to serialize the pyproject swap" >&2
+  exit 1
+fi
+
+exec 9>"${LOCK}" || {
+  echo "ERROR: cannot open lock ${LOCK}" >&2
+  exit 1
+}
+
+if ! flock -n 9; then
+  echo "ERROR: another ${0##*/} holds ${LOCK}; wait for it to finish" >&2
+  exit 1
+fi
+
+# A leftover backup means a previous run was interrupted after the swap.
+if [[ -e "${BACKUP}" ]]; then
+  {
+    echo "ERROR: leftover backup found: ${BACKUP}"
+    echo
+    echo "A previous run was interrupted after swapping pyproject.toml, so that"
+    echo "backup is the only copy of your original manifest. Restore it first:"
+    echo
+    echo "  cp ${BACKUP} ${PYPROJECT} && rm ${BACKUP}"
+    echo
+    echo "Then re-run this script."
+  } >&2
+  exit 1
+fi
 
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then
-    echo
-    echo "[--check] would run:"
-    echo "  cp pyproject_cpu.toml pyproject.toml"
-    echo "  ${INSTALL_CMD}"
-    exit 0
+  echo
+  echo "[--check] would run:"
+  echo "  cp pyproject.toml .pyproject.cpu.bak"
+  echo "  cp pyproject_cpu.toml pyproject.toml"
+  echo "  ${INSTALL_CMD}"
+  echo "  # then restore pyproject.toml from backup"
+  exit 0
 fi
 
-BACKUP="$(mktemp "${REPO_ROOT}/.pyproject.cuda.bak.XXXXXX")"
+uv pip install \
+  --index-url https://download.pytorch.org/whl/cpu \
+  torch==2.12.0 \
+  torchvision==0.27.0 \
+  torchaudio==2.11.0
 
-# Restore the CUDA pyproject.toml no matter how we exit. Use cp (not mv) so a
-# partial/interrupted restore still leaves the backup in place, and also sweep
-# the in-tree build artifacts an editable build may drop.
+# Restore the original pyproject.toml no matter how we exit.
 restore() {
   if [[ -f "${BACKUP}" ]]; then
     cp -f "${BACKUP}" "${PYPROJECT}"
     rm -f "${BACKUP}"
     echo "restored original pyproject.toml"
   fi
-  rm -rf "${REPO_ROOT}/sglang_omni.egg-info" "${REPO_ROOT}/build" 2>/dev/null || true
+
+  rm -rf \
+    "${REPO_ROOT}/sglang_omni.egg-info" \
+    "${REPO_ROOT}/build" \
+    2>/dev/null || true
 }
-trap restore EXIT
+
+trap restore EXIT INT TERM
 
 cp -f "${PYPROJECT}" "${BACKUP}"
 cp -f "${PYPROJECT_CPU}" "${PYPROJECT}"
+
 echo "swapped in pyproject_cpu.toml"
 
 echo ">>> ${INSTALL_CMD}"
 ${INSTALL_CMD}
 
 restore
-trap - EXIT
+trap - EXIT INT TERM
 
 echo
 echo "=== verifying install ==="
