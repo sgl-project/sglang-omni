@@ -94,7 +94,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         )
         top = buckets[-1]
         self._buckets = buckets[:-1] + (top + self._max_windows_for(top),)
-        self._graphs: dict[int, _CapturedGraph] = {} # bucket size -> recorded graph
+        self._graphs: dict[int, _CapturedGraph] = {}  # bucket size -> recorded graph
         self._failed: set[int] = set()
 
     @property
