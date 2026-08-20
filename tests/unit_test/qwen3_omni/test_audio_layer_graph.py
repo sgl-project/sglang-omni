@@ -66,14 +66,22 @@ def test_segment_slots_cover_every_batch_row() -> None:
     assert runner._segment_slots(256) >= 256 // WINDOW + 32
 
 
+def test_window_segments_bound_each_segment() -> None:
+    runner = _runner()
+    assert runner._window_segments(0) == []
+    assert runner._window_segments(23) == [23]
+    assert runner._window_segments(126) == [WINDOW, 22]
+    assert runner._window_segments(WINDOW * 2) == [WINDOW, WINDOW]
+
+
 def test_bucket_selection_picks_the_smallest_that_fits() -> None:
     runner = _runner()
     runner._graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
-    assert runner._select(100, 4) == 128
-    assert runner._select(130, 4) == 256
-    assert runner._select(600, 4) == 1024
+    assert runner._select(100, [25, 25, 25, 25]) == 128
+    assert runner._select(130, [104, 26]) == 256
+    assert runner._select(600, [104, 104, 104, 104, 104, 80]) == 1024
 
 
 def test_bucket_selection_declines_beyond_the_largest_bucket() -> None:
@@ -81,7 +89,8 @@ def test_bucket_selection_declines_beyond_the_largest_bucket() -> None:
     runner._graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
-    assert runner._select(max(DEFAULT_TOKEN_BUCKETS) + 1, 4) is None
+    tokens = max(DEFAULT_TOKEN_BUCKETS) + 1
+    assert runner._select(tokens, runner._window_segments(tokens)) is None
 
 
 def test_bucket_selection_declines_when_segments_exceed_slots() -> None:
@@ -89,7 +98,24 @@ def test_bucket_selection_declines_when_segments_exceed_slots() -> None:
     runner._graphs = {
         b: type("C", (), {"segment_slots": 4})() for b in DEFAULT_TOKEN_BUCKETS
     }
-    assert runner._select(100, 99) is None
+    assert runner._select(100, [1] * 100) is None
+
+
+def test_bucket_selection_counts_split_padding_segments() -> None:
+    runner = _runner(token_buckets=(256,))
+    runner._graphs = {256: type("C", (), {"segment_slots": 3})()}
+    # 129 live tokens occupy two segments. The 127 padding rows need two more
+    # window-bounded segments, so a three-slot capture cannot serve the replay.
+    assert runner._select(129, [104, 25]) is None
+
+
+@pytest.mark.parametrize("segments", ([104, -4], [104, 1], [WINDOW + 1]))
+def test_bucket_selection_declines_invalid_live_segments(segments: list[int]) -> None:
+    runner = _runner()
+    runner._graphs = {
+        b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
+    }
+    assert runner._select(100, segments) is None
 
 
 def test_disabled_runner_declines_even_with_graphs() -> None:
@@ -166,3 +192,40 @@ def test_capture_all_records_a_graph_for_every_bucket() -> None:
     runner.capture_all()
     assert runner.has_graphs, runner._disabled_reason
     assert sorted(runner._graphs) == sorted(DEFAULT_TOKEN_BUCKETS)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_replay_matches_eager_varlen_across_bucket_boundaries() -> None:
+    torch.manual_seed(0)
+    device = torch.device("cuda", 0)
+    tower = _RealTower().to(device, torch.bfloat16)
+    runner = AudioLayerGraphRunner(tower, device=device, window=WINDOW)
+    runner.capture_all()
+    assert runner.has_graphs, runner._disabled_reason
+
+    cases = (
+        [104, 23],
+        [104, 24],
+        [104, 25],
+        [104, 104, 47],
+        [104, 104, 48],
+        [104, 104, 49],
+        [37, 90],
+    )
+    with torch.no_grad():
+        for segments in cases:
+            tokens = sum(segments)
+            hidden = torch.randn(tokens, tower.config.d_model, device=device).to(
+                torch.bfloat16
+            )
+            cu_seqlens = (
+                torch.tensor([0, *segments], dtype=torch.int32)
+                .cumsum(0)
+                .to(torch.int32)
+                .to(device)
+            )
+            eager = runner._run_layers(hidden, cu_seqlens, WINDOW)
+            replayed = runner.maybe_replay(hidden, cu_seqlens, segments)
+            assert replayed is not None
+            torch.testing.assert_close(replayed, eager)

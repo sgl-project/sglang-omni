@@ -112,14 +112,18 @@ class AudioLayerGraphRunner:
         # the bucket's own window count.
         return bucket // self._window + self._max_batch_rows + 2
 
+    def _window_segments(self, tokens: int) -> list[int]:
+        full, remainder = divmod(tokens, self._window)
+        segments = [self._window] * full
+        if remainder:
+            segments.append(remainder)
+        return segments
+
     def _capture_segments(self, bucket: int) -> list[int]:
         # Note (wenyao): every dummy segment must fit the window declared as
         # max_seqlen, or capture records attention kernels sized for a shorter
         # sequence than the tail segment actually is.
-        full, remainder = divmod(bucket, self._window)
-        segments = [self._window] * full
-        if remainder:
-            segments.append(remainder)
+        segments = self._window_segments(bucket)
         segments.extend([0] * (self._segment_slots(bucket) - len(segments)))
         return segments
 
@@ -207,10 +211,17 @@ class AudioLayerGraphRunner:
             "audio layer CUDA graphs captured for buckets %s", list(self._graphs)
         )
 
-    def _select(self, tokens: int, segments: int) -> int | None:
+    def _select(self, tokens: int, segments: list[int]) -> int | None:
+        if sum(segments) != tokens or any(
+            segment < 0 or segment > self._window for segment in segments
+        ):
+            return None
         for bucket in self._token_buckets:
             if bucket >= tokens and self._graphs.get(bucket) is not None:
-                if segments <= self._graphs[bucket].segment_slots:
+                required_slots = len(segments) + len(
+                    self._window_segments(bucket - tokens)
+                )
+                if required_slots <= self._graphs[bucket].segment_slots:
                     return bucket
         return None
 
@@ -223,13 +234,11 @@ class AudioLayerGraphRunner:
         if os.getpid() != self._owner_pid or hidden_states.device != self._device:
             return None
         tokens = hidden_states.shape[0]
-        bucket = self._select(tokens, len(segments))
+        bucket = self._select(tokens, segments)
         if bucket is None:
             return None
         captured = self._graphs[bucket]
-        padded = [*segments]
-        if tokens < bucket:
-            padded.append(bucket - tokens)
+        padded = [*segments, *self._window_segments(bucket - tokens)]
         # Note (wenyao): real segments are never widened, only new ones added,
         # so padding rows form their own attention window and cannot reach the
         # real tokens sharing this replay.
