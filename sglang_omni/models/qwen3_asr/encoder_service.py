@@ -533,11 +533,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     exc_info=True,
                 )
         try:
-            with torch.cuda.device(self._device):
-                torch.cuda.empty_cache()
+            device_module = torch.get_device_module(self._device)
+            with device_module.device(self._device):
+                device_module.empty_cache()
         except Exception:
             logger.warning(
-                "Qwen3-ASR CUDA cache cleanup failed after OOM", exc_info=True
+                "Qwen3-ASR device cache cleanup failed after OOM", exc_info=True
             )
 
     def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
