@@ -19,7 +19,9 @@ import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessor
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
+from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_context import get_attn_backend
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from torch import nn
 from transformers import WhisperConfig
@@ -207,6 +209,7 @@ class WhisperSGLangSelfAttention(nn.Module):
         key = key.view(-1, self.num_heads, self.head_dim)
         value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
+        attn_output = attn_output.reshape(hidden_states.shape[:-1] + (self.embed_dim,))
         return self.out_proj(attn_output)
 
 
@@ -238,20 +241,29 @@ class WhisperSGLangCrossAttention(nn.Module):
             is_cross_attention=True,
         )
 
+    def cache_encoder_states(
+        self,
+        cross_attention_states: torch.Tensor,
+        cache_loc: torch.Tensor,
+    ) -> None:
+        key, value = self.kv_proj(cross_attention_states).chunk(2, dim=-1)
+        key = key.view(-1, self.num_heads, self.head_dim)
+        value = value.view(-1, self.num_heads, self.head_dim)
+        get_attn_backend().token_to_kv_pool.set_kv_buffer(
+            self.attn,
+            KVWriteLoc(cache_loc),
+            key,
+            value,
+        )
+
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cross_attention_states: torch.Tensor | None,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
         query = self.q_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        if cross_attention_states is None:
-            key = value = None
-        else:
-            key, value = self.kv_proj(cross_attention_states).chunk(2, dim=-1)
-            key = key.view(-1, self.num_heads, self.head_dim)
-            value = value.view(-1, self.num_heads, self.head_dim)
-        attn_output = self.attn(query, key, value, forward_batch)
+        attn_output = self.attn(query, None, None, forward_batch)
+        attn_output = attn_output.reshape(hidden_states.shape[:-1] + (self.embed_dim,))
         return self.out_proj(attn_output)
 
 
@@ -284,24 +296,17 @@ class WhisperDecoderLayer(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        cross_attention_states: torch.Tensor | None,
         forward_batch: ForwardBatch,
-        skip_cross_attention: bool,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
         hidden_states = self.self_attn(hidden_states, forward_batch)
         hidden_states = residual + hidden_states
 
-        if not skip_cross_attention:
-            residual = hidden_states
-            hidden_states = self.encoder_attn_layer_norm(hidden_states)
-            hidden_states = self.encoder_attn(
-                hidden_states,
-                cross_attention_states,
-                forward_batch,
-            )
-            hidden_states = residual + hidden_states
+        residual = hidden_states
+        hidden_states = self.encoder_attn_layer_norm(hidden_states)
+        hidden_states = self.encoder_attn(hidden_states, forward_batch)
+        hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
@@ -333,22 +338,25 @@ class WhisperDecoder(nn.Module):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        cross_attention_states: torch.Tensor | None,
         forward_batch: ForwardBatch,
-        skip_cross_attention: bool,
+        input_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        hidden_states = self.embed_tokens(input_ids)
-        hidden_states = hidden_states + self.embed_positions(positions).to(
-            hidden_states.device
+        hidden_states = (
+            self.embed_input_ids(input_ids, positions)
+            if input_embeds is None
+            else input_embeds
         )
         for layer in self.layers:
-            hidden_states = layer(
-                hidden_states,
-                cross_attention_states,
-                forward_batch,
-                skip_cross_attention,
-            )
+            hidden_states = layer(hidden_states, forward_batch)
         return self.layer_norm(hidden_states)
+
+    def embed_input_ids(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> torch.Tensor:
+        hidden_states = self.embed_tokens(input_ids)
+        return hidden_states + self.embed_positions(positions).to(hidden_states.device)
 
 
 class WhisperModel(nn.Module):
@@ -360,6 +368,32 @@ class WhisperModel(nn.Module):
         super().__init__()
         self.encoder = WhisperEncoder(config)
         self.decoder = WhisperDecoder(config, quant_config=quant_config)
+
+    @property
+    def layers(self) -> nn.ModuleList:
+        return self.decoder.layers
+
+    def cache_encoder_states(
+        self,
+        encoder_states: torch.Tensor,
+        cache_loc: torch.Tensor,
+    ) -> None:
+        for layer in self.decoder.layers:
+            layer.encoder_attn.cache_encoder_states(encoder_states, cache_loc)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.decoder(
+            input_ids,
+            positions,
+            forward_batch,
+            input_embeds=input_embeds,
+        )
 
 
 class WhisperForConditionalGeneration(nn.Module):
@@ -507,9 +541,6 @@ class WhisperForConditionalGeneration(nn.Module):
         **kwargs: Any,
     ) -> Any:
         del kwargs
-        from sglang.srt.model_executor.runner_utils.capture_mode import (
-            get_is_capture_mode,
-        )
 
         cross_attention_states = self._batch_precomputed_encoder_states(forward_batch)
         if cross_attention_states is None:
@@ -521,17 +552,18 @@ class WhisperForConditionalGeneration(nn.Module):
                     encoder_lens,
                 )
 
-        if get_is_capture_mode():
-            skip_cross_attention = False
-        else:
-            skip_cross_attention = forward_batch.encoder_lens.max() == 0
+        if cross_attention_states is not None:
+            self.model.cache_encoder_states(
+                cross_attention_states,
+                forward_batch.encoder_out_cache_loc,
+            )
 
-        hidden_states = self.model.decoder(
-            input_ids=input_ids,
-            positions=positions,
-            cross_attention_states=cross_attention_states,
-            forward_batch=forward_batch,
-            skip_cross_attention=skip_cross_attention,
+        input_embeds = self.model.decoder.embed_input_ids(input_ids, positions)
+        hidden_states = self.model(
+            input_ids,
+            positions,
+            forward_batch,
+            input_embeds=input_embeds,
         )
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
