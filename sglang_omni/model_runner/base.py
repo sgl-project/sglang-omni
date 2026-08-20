@@ -7,7 +7,6 @@ pass, sampling, logit post-processing, and output extraction.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -26,8 +25,6 @@ from sglang_omni.scheduling.types import (
     SchedulerRequest,
     sampled_logprobs_to_list,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def _current_sglang_sampling_backend() -> str | None:
@@ -83,7 +80,7 @@ class _PendingStep:
     launch(N+1) writes the other (design.md section 1.4).
     """
 
-    event: Any  # torch.cuda.Event, recorded after post_decode_launch publishes
+    event: Any  # device Event, recorded after post_decode_launch publishes
     launch_buf: Any  # post_decode_launch return: device snapshot or host staging
     scheduler_output: Any  # this step's SchedulerOutput (routing + output proc)
     forward_batch: Any  # for resolve-time finalize sampling
@@ -286,7 +283,7 @@ class ModelRunner:
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call
         ``post_decode_launch`` to publish a model-specific resolve payload
-        (returned as ``launch_buf``), and record a CUDA event right after
+        (returned as launch_buf), and record a device event right after
         publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next
@@ -394,7 +391,8 @@ class ModelRunner:
             ForwardBatch,
         )
 
-        torch.get_device_module(self.device).set_device(self.device)
+        if self.device.type != "cpu":
+            torch.get_device_module(self.device).set_device(self.device.index or 0)
 
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
@@ -702,7 +700,7 @@ class ModelRunner:
     ) -> Any:
         """Async-decode GPU half of ``post_decode``: sample now, publish
         ``result.next_token_ids``, and return the resolve payload (``launch_buf``);
-        the caller records a CUDA event right after.
+        the caller records a device event right after.
 
         Default (plain-LM): sample via ``_sample_next_token_ids`` and snapshot the
         ids into a pinned ping-pong host buffer (required — the sampler output can

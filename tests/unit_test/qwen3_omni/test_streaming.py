@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Qwen3-Omni real-streaming path."""
+
 from __future__ import annotations
 
 import asyncio
@@ -242,6 +243,27 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     )
 
 
+def _static_aux_scheduler_output(
+    *lengths: int,
+    is_extend: bool,
+) -> SchedulerOutput:
+    reqs = [
+        (
+            SimpleNamespace(extend_range=SimpleNamespace(length=length))
+            if is_extend
+            else SimpleNamespace()
+        )
+        for length in lengths
+    ]
+    return SchedulerOutput(
+        requests=[SchedulerRequest(request_id=str(i)) for i in range(len(reqs))],
+        batch_data=SimpleNamespace(
+            forward_mode=SimpleNamespace(is_extend=lambda: is_extend),
+            reqs=reqs,
+        ),
+    )
+
+
 def test_qwen_static_aux_hidden_prefill_slices_only_logical_token_rows():
     static_embed = torch.arange(12, dtype=torch.float32).reshape(6, 2)
     static_layer = torch.arange(100, 112, dtype=torch.float32).reshape(6, 2)
@@ -250,7 +272,6 @@ def test_qwen_static_aux_hidden_prefill_slices_only_logical_token_rows():
         hook_handles=[],
         max_tokens=6,
     )
-    capture.rows_written = 3
     model = SimpleNamespace(_omni_aux_hidden_capture=capture)
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
@@ -291,6 +312,25 @@ def test_qwen_static_aux_hidden_prefill_slices_only_logical_token_rows():
     )
 
 
+def test_qwen_static_aux_hidden_prefill_keeps_token_major_ambiguous_shape():
+    scheduler_output = _static_aux_scheduler_output(2, 0, is_extend=True)
+    tensor = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+
+    first = SGLangOutputProcessor._slice_static_aux_hidden_tensor(
+        tensor,
+        request_index=0,
+        scheduler_output=scheduler_output,
+    )
+    second = SGLangOutputProcessor._slice_static_aux_hidden_tensor(
+        tensor,
+        request_index=1,
+        scheduler_output=scheduler_output,
+    )
+
+    torch.testing.assert_close(first, tensor)
+    assert second.shape == (0, 2)
+
+
 def test_qwen_static_aux_hidden_decode_slices_only_request_rows():
     static_embed = torch.arange(12, dtype=torch.float32).reshape(6, 2)
     static_layer = torch.arange(100, 112, dtype=torch.float32).reshape(6, 2)
@@ -299,7 +339,6 @@ def test_qwen_static_aux_hidden_decode_slices_only_request_rows():
         hook_handles=[],
         max_tokens=6,
     )
-    capture.rows_written = 2
     model = SimpleNamespace(_omni_aux_hidden_capture=capture)
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
@@ -330,6 +369,35 @@ def test_qwen_static_aux_hidden_decode_slices_only_request_rows():
     assert outputs["text"].extra is None
     torch.testing.assert_close(audio_hidden["embed"], static_embed[1])
     torch.testing.assert_close(audio_hidden[24], static_layer[1])
+
+
+@pytest.mark.parametrize(
+    ("is_extend", "expected_rows", "actual_rows", "layout"),
+    [
+        (True, 2, 1, "token-major prefill"),
+        (False, 1, 2, "request-major decode"),
+    ],
+)
+def test_qwen_static_aux_hidden_rejects_wrong_row_count(
+    is_extend: bool,
+    expected_rows: int,
+    actual_rows: int,
+    layout: str,
+):
+    scheduler_output = _static_aux_scheduler_output(
+        expected_rows,
+        is_extend=is_extend,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"{layout}.*expected {expected_rows} rows, got {actual_rows}",
+    ):
+        SGLangOutputProcessor._slice_static_aux_hidden_tensor(
+            torch.zeros(actual_rows, 2),
+            request_index=0,
+            scheduler_output=scheduler_output,
+        )
 
 
 def test_qwen_static_aux_hidden_skips_capture_for_text_only_decode():

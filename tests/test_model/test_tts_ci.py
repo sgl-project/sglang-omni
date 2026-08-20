@@ -879,14 +879,16 @@ def test_voice_cloning_streaming_consistency(
             checks.fail(f"vc_stream_c{concurrency} results missing")
         if ns is None or st is None:
             continue
-        if _PRESET.gate_thresholds:
-            assert_streaming_consistency(
-                ns,
-                st,
-                expected_stream_count=len(ns),
-                max_failed_requests=0,
-                collector=checks,
-            )
+        # Note: (Jiaxin Deng) request coverage, the zero-failure budget and
+        # stream-vs-non-stream duration agreement are correctness, not tuned
+        # numbers, so they hold for a preset that is still observing.
+        assert_streaming_consistency(
+            ns,
+            st,
+            expected_stream_count=len(ns),
+            max_failed_requests=0,
+            collector=checks,
+        )
     checks.assert_all()
 
 

@@ -7,16 +7,23 @@ from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 
-from sglang_omni.models.moss_transcribe_diarize import request_builders
+from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 
 
 class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
     model_name = "MOSS-Transcribe-Diarize"
     model_arch_override = "MossTranscribeDiarizeForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -28,6 +35,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         mm_embedding_cache_size_bytes: int,
         encoder_cache_size_bytes: int,
         enable_torch_compile: bool,
+        torch_compile_max_bs: int,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
@@ -49,6 +57,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.encoder_cache_size_bytes = encoder_cache_size_bytes
         self.enable_torch_compile = enable_torch_compile
+        self.torch_compile_max_bs = torch_compile_max_bs
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
@@ -94,15 +103,26 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        # note (Xinyu): cached-prefix extends commonly contain one or two new
+        # tokens, so keep exact graph buckets below the shared ladder's 4-token
+        # floor instead of failing the prefill padding-factor replay guard.
+        prefill_cuda_graph_bs = [
+            1,
+            2,
+            *build_default_prefill_cuda_graph_bs(4096),
+        ]
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": self.enable_torch_compile,
+            "torch_compile_max_bs": self.torch_compile_max_bs,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
+            "cuda_graph_bs_prefill": prefill_cuda_graph_bs,
             "dtype": dtype,
         }
 

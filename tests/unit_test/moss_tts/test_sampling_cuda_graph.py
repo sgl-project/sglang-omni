@@ -127,6 +127,15 @@ def test_engine_builder_uses_backbone_capture_buckets() -> None:
     assert calls == [([1, 2, 4], True)]
 
 
+def test_engine_builder_allows_breakable_prefill_as_an_opt_in() -> None:
+    builder = MossTtsEngineBuilder()
+
+    assert builder.supports_breakable_prefill_cuda_graph is True
+    assert "cuda_graph_backend_prefill" not in builder.generation_defaults(
+        dtype="bfloat16"
+    )
+
+
 def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
     calls = []
 

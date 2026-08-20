@@ -181,10 +181,51 @@ class ArkAudioTower(nn.Module):
     def dtype(self) -> torch.dtype:
         return self.conv1.weight.dtype
 
-    def forward(self, input_features: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        input_features: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Encode mel features, optionally masking right-padded frames.
+
+        ``attention_mask`` is a [B, T] right-padded mask for the input mel
+        frames.  It clears invalid conv1 frames before conv2, then is
+        downsampled for SDPA.  This gives a short sample in a mixed-length
+        batch the same right-edge convolution context and encoder states it
+        had when encoded alone.
+        """
+        input_frame_mask = None
+        if attention_mask is not None:
+            expected_shape = (input_features.shape[0], input_features.shape[-1])
+            if attention_mask.shape != expected_shape:
+                raise ValueError(
+                    "ARK-ASR attention_mask shape "
+                    f"{tuple(attention_mask.shape)} does not match mel frames "
+                    f"{tuple(expected_shape)}"
+                )
+            input_frame_mask = attention_mask.to(
+                device=input_features.device, dtype=torch.bool
+            )
+            input_features = input_features * input_frame_mask.unsqueeze(1).to(
+                dtype=input_features.dtype
+            )
+
         inputs_embeds = F.gelu(self.conv1(input_features))
+        if input_frame_mask is not None:
+            inputs_embeds = inputs_embeds * input_frame_mask.unsqueeze(1).to(
+                dtype=inputs_embeds.dtype
+            )
         inputs_embeds = F.gelu(self.conv2(inputs_embeds))
         inputs_embeds = inputs_embeds.permute(0, 2, 1)  # [B, T_down, D]
+        frame_mask = None
+        sdpa_mask = None
+        if input_frame_mask is not None:
+            # note (nagisa-kunhah): Keep the downsampled mask contiguous for SDPA.
+            frame_mask = input_frame_mask[:, ::2].contiguous()
+            sdpa_mask = frame_mask[:, None, None, :]
+            inputs_embeds = inputs_embeds * frame_mask.unsqueeze(-1).to(
+                dtype=inputs_embeds.dtype
+            )
         if self.use_rope:
             rope = self.rotary_embedding.get_emb(
                 inputs_embeds.shape[1], inputs_embeds.dtype, inputs_embeds.device
@@ -196,7 +237,13 @@ class ArkAudioTower(nn.Module):
                 inputs_embeds + self.embed_positions.weight[: inputs_embeds.shape[1]]
             )
         for layer in self.layers:
-            hidden_states = layer(hidden_states, rotary_pos_emb=rope)[0]
+            hidden_states = layer(
+                hidden_states, attention_mask=sdpa_mask, rotary_pos_emb=rope
+            )[0]
+            if frame_mask is not None:
+                hidden_states = hidden_states * frame_mask.unsqueeze(-1).to(
+                    dtype=hidden_states.dtype
+                )
         return self.layer_norm(hidden_states)
 
 
@@ -223,10 +270,18 @@ class ArkAudioMLPAdapter(nn.Module):
     def dtype(self) -> torch.dtype:
         return self.whisper.dtype
 
-    def forward(self, audios: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        audios: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         bsz = audios.size(0)
-        encoded = self.whisper(audios)  # (B, T, D)
+        encoded = self.whisper(audios, attention_mask=attention_mask)  # (B, T, D)
         encoded = self.layer_norm(encoded)
+        if attention_mask is not None:
+            encoded = encoded * attention_mask[:, ::2].unsqueeze(-1).to(
+                dtype=encoded.dtype
+            )
         seq_len = encoded.size(1)
         if seq_len % self.merge_factor != 0:
             target_len = (seq_len // self.merge_factor) * self.merge_factor

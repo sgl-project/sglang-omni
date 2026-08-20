@@ -1,6 +1,6 @@
 # Whisper ASR
 
-Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint, but this path is experimental in the current SGLang-Omni tree. Prefer [Qwen3-ASR](qwen3_asr.md) for validated ASR serving.
+Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. This path remains experimental in the current SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior before production deployment.
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ sgl-omni serve \
 
 ## Encoder CUDA Graph
 
-The encoder CUDA Graph is enabled by default for the pipeline. The final bucket set is resolved from the serving prefill budget and the checkpoint's encoder prefix length; with the default 4,096-token budget and 1,500-token Whisper encoder prefix, only batches 1 and 2 are captured. To use eager encoder execution, override the pipeline configuration:
+The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (8), so batches **1/2/4/8** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`6144 // 1500 = 4`). To use eager encoder execution, override the pipeline configuration:
 
 ```yaml
 config_cls: WhisperASRPipelineConfig
@@ -34,11 +34,11 @@ runtime_overrides:
     enable_encoder_cuda_graph: false
 ```
 
-The graph is captured after SGLang's generation graphs. Raise `max_prefill_tokens` before configuring larger buckets. Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.
+The graph is captured after SGLang's generation graphs. With pre-LM off, raise `max_prefill_tokens` before configuring larger LM-side buckets (12/16). Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.
 
 ## Prefill Coalescing
 
-Whisper builds up to two requests concurrently and coalesces prefill at the serving-reachable batch size of two. A partial batch waits for at most 6 ms only while another request build is pending; a single request and a partial batch with no remaining build work are released immediately. This allows concurrent traffic to replay the encoder batch-2 graph without adding a fixed wait to the idle c=1 path.
+Whisper builds requests with eight worker threads by default, matching other pre-LM ASR pipelines. The coalescing gate targets two requests, while the default 6,144-token atomic budget lets the LM scheduler admit up to four 1,504-token Whisper requests together. A partial batch waits for at most 6 ms only while another request build is pending; a single request and a partial batch with no remaining build work are released immediately.
 
 `request_build_max_pending` bounds submitted request-build futures, not the request backlog. When `max_queued_requests` is unset, requests beyond that pending-build limit remain queued for later construction. Setting `max_queued_requests` retains the configured finite-queue rejection behavior.
 
@@ -49,6 +49,17 @@ runtime_overrides:
   asr:
     request_build_max_workers: 1
     prefill_coalesce_requests: 0
+```
+
+## Async Decode
+
+Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 64. Use the shared decode-mode option to compare against synchronous decode or diagnose a request lifecycle issue:
+
+```bash
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --decode-mode sync \
+  --port 8000
 ```
 
 ## Transcribe Audio
@@ -78,22 +89,57 @@ resp.raise_for_status()
 print(resp.json()["text"])
 ```
 
+## Translate Audio
+
+Whisper multilingual checkpoints can translate source speech to English via
+`/v1/audio/translations`. Use a multilingual, non-turbo checkpoint: `*.en`
+checkpoints have no translate task, and `whisper-large-v3-turbo` was distilled
+without it.
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/translations \
+  -F model=openai/whisper-large-v3 \
+  -F file=@tests/data/query_to_cars.wav \
+  -F language=fr \
+  -F response_format=json
+```
+
+For this endpoint, `language` is an optional source-language hint and a
+**SGLang-Omni extension**. OpenAI's official audio translations request schema
+does not include `language`; the translation target is English in both APIs.
+See the [audio translation support matrix](../basic_usage/audio_translations.md)
+for response formats and other ASR models.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
-| `language` | string | unset | Optional language hint |
+| `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
-| `response_format` | string | `json` | Use `json` for the current Whisper path |
+| `response_format` | string | `json` | `json`, `verbose_json`, or raw `text`; translation `srt`/`vtt` require segment timestamps and return HTTP 400 |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
 
-The request builder also supports `task` (`transcribe` by default) and
-`max_new_tokens`, but the public transcription endpoint currently exposes only
-the fields above. The route uses the ASR stage default unless the pipeline is
-configured another way. For smoke tests, keep the request minimal and use
-`response_format=json`.
+The serving route selects the internal `task` from the endpoint (`transcribe`
+or `translate`); it is not a public form field. The route uses the ASR stage
+default unless the pipeline is configured another way. For smoke tests, keep
+the request minimal and use `response_format=json`.
+
+## Long Audio
+
+Whisper reads at most 30 seconds of audio in one request: the feature extractor works on a fixed 30-second mel window and drops everything past it.
+In SGLang-Omni, we transcribe longer uploads in chunks by splitting the audio at the quietest point near each 30-second boundary,
+running each chunk as its own engine request, and joining the transcripts back in order. The behavior follows these values, which Whisper
+declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed model defaults in this release:
+
+| Name | Value | Meaning                                                                                                                                                                     |
+|---|---|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR this is not a scheduling choice: 30s is the hard edge of the model's mel window. |
+| `max_native_clip_s` | `30` | Same as the chunk length. Streaming cannot chunk, so `stream=true` takes audio up to 30s and gets HTTP 400 above that.                                                      |
+| `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run.                            |
+| `max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests.                                    |
+| `min_tail_s` | `1` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it, which keeps Whisper from hallucinating on very short clips.      |
 
 ## Benchmarking
 
@@ -102,8 +148,48 @@ Use the shared SeedTTS benchmark for end-to-end concurrency, WER, latency, and t
 ```bash
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --model-path openai/whisper-base \
-  --max-samples 20 --concurrencies 1,2,4,8 \
+  --max-samples 128 --concurrencies 1,2,4,8,16,32 \
   --repeats 5 --warmup --output whisper_concurrency.json
+```
+
+To reproduce the async-decode comparison below, resolve the pinned checkpoint and start each mode separately on the same GPU:
+
+```bash
+MODEL_REVISION=06f233fe06e710322aca913c1bc4249a0d71fce1
+MODEL_PATH=$(hf download openai/whisper-large-v3 --revision "$MODEL_REVISION")
+
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path "$MODEL_PATH" \
+  --mem-fraction-static 0.30 \
+  --port 8000
+
+# Replace the command above with this one for the synchronous baseline.
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path "$MODEL_PATH" \
+  --mem-fraction-static 0.30 \
+  --decode-mode sync \
+  --port 8000
+```
+
+Run the same client command once per mode, changing only the output filename:
+
+```bash
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 \
+  --model-path openai/whisper-large-v3 \
+  --model-revision 06f233fe06e710322aca913c1bc4249a0d71fce1 \
+  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
+  --max-samples 128 \
+  --concurrencies 1,2,4,8,16,32,64 \
+  --repeats 3 \
+  --warmup \
+  --dtype float16 \
+  --cuda-graph \
+  --torch-compile \
+  --max-running-requests 64 \
+  --mem-fraction-static 0.30 \
+  --fingerprint \
+  --output whisper_async.json
 ```
 
 ## Benchmark Results
@@ -130,17 +216,37 @@ The following W-PR2 results were measured separately on the same H200 and 20-sam
 
 All 1,200 measured requests completed successfully. Corpus WER remained 0.0415 in all three modes and at every concurrency. Logs from the optimized run showed `Replaying Whisper encoder CUDA graph batch=2 request_batch=2` and prefill batches with two sequences and 3,008 new tokens.
 
+The async-decode comparison used the 128-sample SeedTTS EN subset on the same H200 with `openai/whisper-large-v3` in FP16, one discarded warmup, and three measured repeats per concurrency. The baseline disabled async decode; all other serving settings, including the 6,144-token prefill budget, were identical.
+
+| Concurrency | Sync req/s | Async req/s | Throughput change | Sync P95 (s) | Async P95 (s) | P95 change | Corpus WER |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 11.26 | 11.44 | +1.6% | 0.117 | 0.115 | -1.7% | 0.0084 |
+| 2 | 18.45 | 19.53 | +5.8% | 0.140 | 0.133 | -5.4% | 0.0084 |
+| 4 | 27.40 | 29.35 | +7.1% | 0.197 | 0.185 | -6.2% | 0.0084 |
+| 8 | 38.77 | 40.88 | +5.4% | 0.285 | 0.268 | -6.2% | 0.0084 |
+| 16 | 55.59 | 57.90 | +4.2% | 0.396 | 0.366 | -7.6% | 0.0084 |
+| 32 | 66.47 | 69.91 | +5.2% | 0.691 | 0.639 | -7.6% | 0.0084 |
+
+All 4,608 measured requests across both modes completed successfully, and all 2,304 paired transcripts matched exactly. Batch size 1 uses the synchronous fast path, so its 1.6% difference is run-to-run noise rather than async work. At concurrency 32, request-stage profiling measured 614.3 ms synchronous versus 585.5 ms asynchronous P95 from prefill completion to request completion. A separate async-only `openai/whisper-base` budget comparison showed why 6,144 is the default: relative to 4,096, scheduler queue P95 fell from 92.2 ms to 52.2 ms and throughput rose from 134.83 to 166.69 req/s.
+
 ## Known Limitations
 
-- This path is experimental and not yet correctness-validated. Prefer Qwen3-ASR
-  for validated ASR serving.
+- Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
+  operational behavior before production deployment.
+- `verbose_json` returns a single segment spanning the audio duration; `srt`
+  and `vtt` are not supported and return HTTP 400.
 - Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA
-  Graph to remain enabled. Validate the selected buckets before production use.
-- Chunked prefill is disabled because the Whisper encoder prefix must be
+  Graph. Validate the selected buckets before production use.
+- Audio encoding runs before LM admission by default
+  (`pre_lm_max_batch_size=8`, `request_build_max_workers=8`). Set
+  `enable_pre_lm_encoder: false` under `runtime_overrides.asr` to run the
+  encoder inside prefill again.
+- Prefill budget defaults to 6,144 tokens (`⌊6144/1500⌋=4`) under atomic
+  admission (`chunked_prefill_size=0`). This caps LM-side prefill batching
+  independently of the pre-LM encoder batch limit.
+- Chunked prefill stays disabled because the Whisper encoder prefix must be
   admitted atomically. Requests that exceed the current prefill budget wait
   for the next batch instead of splitting the encoder prefix.
-- Use `response_format=json`; other response formats are not validated for this
-  experimental path.
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.

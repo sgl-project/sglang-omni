@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       tts_ci_model:
-        description: "Optional TTS CI model preset to run (higgs or moss). Leave empty for random."
+        description: "Optional TTS CI model preset to run (higgs, moss or qwen3-tts). Leave empty for random."
         required: false
         type: string
         default: ""
@@ -53,6 +53,7 @@ env:
         || format('/data/omni-ci/run-{0}', github.run_id) }}
   TTS_MODEL_PATH: bosonai/higgs-tts-3-4b
   MOSS_TTS_MODEL_PATH: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+  QWEN3_TTS_MODEL_PATH: Qwen/Qwen3-TTS-12Hz-1.7B-Base
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
   FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
@@ -123,22 +124,30 @@ jobs:
         env:
           RUN_HIGGS_LABEL: ${{ contains(fromJson(steps.pr.outputs.labels || '[]'), 'run-higgs') }}
           RUN_MOSS_LABEL: ${{ contains(fromJson(steps.pr.outputs.labels || '[]'), 'run-moss') }}
+          RUN_QWEN3_TTS_LABEL: ${{ contains(fromJson(steps.pr.outputs.labels || '[]'), 'run-qwen3-tts') }}
           TTS_CI_MODEL_OVERRIDE: ${{ github.event.inputs.tts_ci_model }}
           EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          models=(higgs moss)
+          models=(higgs moss qwen3-tts)
           override="${TTS_CI_MODEL_OVERRIDE,,}"
-          if [[ "${RUN_HIGGS_LABEL}" == "true" && "${RUN_MOSS_LABEL}" == "true" ]]; then
-            echo "::error::run-higgs and run-moss labels cannot both be set"
+          label_count=0
+          for flag in "${RUN_HIGGS_LABEL}" "${RUN_MOSS_LABEL}" "${RUN_QWEN3_TTS_LABEL}"; do
+            [[ "${flag}" == "true" ]] && label_count=$((label_count + 1))
+          done
+          if [[ "${label_count}" -gt 1 ]]; then
+            echo "::error::run-higgs, run-moss and run-qwen3-tts are mutually exclusive"
             exit 1
           fi
 
           selection_digest=""
           if [[ -n "${override}" ]]; then
-            if [[ "${override}" != "higgs" && "${override}" != "moss" ]]; then
-              echo "::error::unsupported tts_ci_model=${TTS_CI_MODEL_OVERRIDE}; expected higgs or moss"
-              exit 1
-            fi
+            case "${override}" in
+              higgs|moss|qwen3-tts) ;;
+              *)
+                echo "::error::unsupported tts_ci_model=${TTS_CI_MODEL_OVERRIDE}; expected higgs, moss or qwen3-tts"
+                exit 1
+                ;;
+            esac
             selected_model="${override}"
             selection_reason="workflow_dispatch_override"
           elif [[ "${RUN_HIGGS_LABEL}" == "true" ]]; then
@@ -147,28 +156,38 @@ jobs:
           elif [[ "${RUN_MOSS_LABEL}" == "true" ]]; then
             selected_model="moss"
             selection_reason="run-moss_label"
+          elif [[ "${RUN_QWEN3_TTS_LABEL}" == "true" ]]; then
+            selected_model="qwen3-tts"
+            selection_reason="run-qwen3-tts_label"
           else
             selection_digest="$(printf "%s" "${GITHUB_RUN_ID}" | sha256sum | awk '{print $1}')"
-            selection_index=$((16#${selection_digest: -1} % 2))
+            selection_index=$((16#${selection_digest: -1} % ${#models[@]}))
             selected_model="${models[${selection_index}]}"
             selection_reason="stable_github_run_id_digest"
           fi
 
+          # Note: (Jiaxin Deng) Qwen3-TTS is gated as a single instance, so
+          # it resolves no MPS config and the MPS stage is skipped for it.
           if [[ "${selected_model}" == "higgs" ]]; then
             resolved_config="examples/mps_dp/configs/higgs_h100_dp3.yaml"
             expected_config_cls="HiggsTtsPipelineConfig"
-          else
+          elif [[ "${selected_model}" == "moss" ]]; then
             resolved_config="examples/mps_dp/configs/moss_local_h100_dp2.yaml"
             expected_config_cls="MossTTSLocalPipelineConfig"
+          else
+            resolved_config=""
+            expected_config_cls=""
           fi
-          if [[ ! -f "${resolved_config}" ]]; then
+          if [[ -n "${resolved_config}" && ! -f "${resolved_config}" ]]; then
             echo "::error::MPS config is missing for ${selected_model}: ${resolved_config}"
             exit 1
           fi
-          actual_config_cls="$(sed -n 's/^config_cls:[[:space:]]*//p' "${resolved_config}")"
-          if [[ "${actual_config_cls}" != "${expected_config_cls}" ]]; then
-            echo "::error::resolved config mismatch for ${selected_model}: ${actual_config_cls}; expected ${expected_config_cls}"
-            exit 1
+          if [[ -n "${resolved_config}" ]]; then
+            actual_config_cls="$(sed -n 's/^config_cls:[[:space:]]*//p' "${resolved_config}")"
+            if [[ "${actual_config_cls}" != "${expected_config_cls}" ]]; then
+              echo "::error::resolved config mismatch for ${selected_model}: ${actual_config_cls}; expected ${expected_config_cls}"
+              exit 1
+            fi
           fi
 
           output_dir="${RUNNER_TEMP}/tts-preflight"
@@ -280,6 +299,7 @@ jobs:
             "${MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH}" \
             "${TTS_MODEL_PATH}" \
             "${MOSS_TTS_MODEL_PATH}" \
+            "${QWEN3_TTS_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}"
 
       - name: Mark PR environment complete

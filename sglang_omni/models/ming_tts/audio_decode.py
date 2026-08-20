@@ -1,29 +1,36 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Terminal audio decode helpers for Ming-Omni-TTS."""
+"""Audio decode helpers for Ming-Omni-TTS."""
 
 from __future__ import annotations
 
-import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 import torch
+from transformers.cache_utils import Cache
 
 from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
 from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
 from sglang_omni.models.ming_tts.payload_types import (
-    MingTTSState,
     load_ming_tts_state,
     store_ming_tts_state,
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
-from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 
+@dataclass
+class MingAudioDecoderState:
+    dynamic_cache: Cache | None = None
+    upsample_state: dict[str, Any] | None = None
+    audio_buffer: torch.Tensor | None = None
+    window_buffer: torch.Tensor | None = None
+
+
 class MingAudioDecoder(torch.nn.Module):
-    """Chunked official-path AudioVAE decoder wrapper."""
+    """Official-path AudioVAE decoder wrapper."""
 
     def __init__(self, audio_vae: AudioVAE, *, sample_rate: int) -> None:
         super().__init__()
@@ -62,169 +69,109 @@ class MingAudioDecoder(torch.nn.Module):
 
     @property
     def device(self) -> torch.device:
-        try:
-            return next(self.audio_vae.parameters()).device
-        except StopIteration:
-            return torch.device("cpu")
+        return next(self.audio_vae.parameters()).device
 
     @property
     def dtype(self) -> torch.dtype:
-        try:
-            return next(self.audio_vae.parameters()).dtype
-        except StopIteration:
-            return torch.float32
+        return next(self.audio_vae.parameters()).dtype
 
     @torch.inference_mode()
-    def decode_chunks(
+    def decode_streaming_step(
         self,
-        latents: torch.Tensor,
-        last_chunks: list[bool],
+        latent_sequence: torch.Tensor,
         *,
-        decode_mode: str = "chunked",
+        state: MingAudioDecoderState,
+        is_last: bool,
     ) -> torch.Tensor:
-        if decode_mode != "chunked":
-            raise NotImplementedError(
-                "Ming-Omni-TTS currently supports only chunked AudioVAE decode"
-            )
-
-        if not isinstance(latents, torch.Tensor):
-            latents = torch.as_tensor(latents)
-        latents = latents.to(device=self.device, dtype=self.dtype)
-
-        last_chunks = [bool(item) for item in last_chunks]
-        if int(latents.shape[0]) == 0:
-            return torch.empty((0,), device=self.device, dtype=torch.float32)
-
-        stream_state = (None, None, None)
-        past_key_values = None
-        waveform_chunks = []
-        autocast_dtype = self.dtype
-        if autocast_dtype not in (torch.float16, torch.bfloat16):
-            autocast_dtype = torch.bfloat16
+        device = self.device
+        dtype = self.dtype
+        latent_sequence = latent_sequence.to(
+            device=device,
+            dtype=dtype,
+        ).unsqueeze(0)
         context = (
-            torch.autocast(device_type="cuda", dtype=autocast_dtype)
-            if self.device.type == "cuda"
+            torch.autocast(device_type="cuda", dtype=dtype)
+            if device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)
             else nullcontext()
         )
         with context:
-            for step, last_chunk in enumerate(last_chunks):
-                chunk = latents[step : step + 1]
-                wav, stream_state, past_key_values = self.audio_vae.decode(
-                    chunk,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                    stream_state=stream_state,
-                    last_chunk=last_chunk,
-                )
-                wav = self._normalize_waveform_chunk(wav)
-                waveform_chunks.append(wav)
-
-        return torch.cat(waveform_chunks, dim=0)
-
-    @staticmethod
-    def _normalize_waveform_chunk(wav: Any) -> torch.Tensor:
-        if not isinstance(wav, torch.Tensor):
-            wav = torch.as_tensor(wav)
-        while wav.ndim > 1:
-            wav = wav[0]
-        return wav.detach()
-
-
-class MingTTSBatchVocoder(BatchVocoderBase):
-    """Terminal AudioVAE decode stage on the shared batch-vocoder base.
-
-    AudioVAE chunk decode carries streaming KV state across the chunks of a
-    single request, so decode_batch stays a per-item loop; the base provides
-    the shared scheduler/batching shell.
-    """
-
-    def __init__(
-        self,
-        decoder: MingAudioDecoder,
-        *,
-        decode_mode: str = "chunked",
-        keep_latents: bool = False,
-    ) -> None:
-        self._decoder = decoder
-        self._decode_mode = str(decode_mode)
-        self._keep_latents = bool(keep_latents)
-
-    def prepare_item(self, payload: StagePayload) -> tuple[MingTTSState, torch.Tensor]:
-        state = load_ming_tts_state(payload)
-        latents = state.generated_latents
-        if latents is not None:
-            latents = latents.to(
-                device=self._decoder.device,
-                dtype=self._decoder.dtype,
+            waveform, stream_state, dynamic_cache = self.audio_vae.decode(
+                latent_sequence,
+                past_key_values=state.dynamic_cache,
+                use_cache=True,
+                stream_state=(
+                    state.upsample_state,
+                    state.audio_buffer,
+                    state.window_buffer,
+                ),
+                last_chunk=is_last,
             )
-        return state, latents
 
-    def _decode_item(
-        self, state: MingTTSState, latents: torch.Tensor
-    ) -> tuple[torch.Tensor, int]:
-        started = time.perf_counter()
-        waveform = self._decoder.decode_chunks(
-            latents,
-            state.generated_last_chunk,
-            decode_mode=self._decode_mode,
-        )
-        state.audio_decode_time_s = time.perf_counter() - started
-        waveform = MingAudioDecoder._normalize_waveform_chunk(waveform)
-        return waveform, int(self._decoder.sample_rate)
+        state.dynamic_cache = dynamic_cache
+        state.upsample_state, state.audio_buffer, state.window_buffer = stream_state
+        return waveform[0, 0].detach()
 
-    async def decode_batch(
-        self, items: list[tuple[MingTTSState, torch.Tensor]]
-    ) -> list[tuple[torch.Tensor, int]]:
-        return [self._decode_item(state, latents) for state, latents in items]
-
-    def store_result(
+    @torch.inference_mode()
+    def decode_nonstreaming(
         self,
-        payload: StagePayload,
-        state: MingTTSState,
-        wav: torch.Tensor,
-        sample_rate: int,
-    ) -> StagePayload:
-        state.sample_rate = int(sample_rate)
-        state.duration_s = float(wav.numel() / int(sample_rate))
-        if not self._keep_latents:
-            state.generated_latents = None
+        latents: torch.Tensor,
+    ) -> torch.Tensor:
+        if int(latents.shape[0]) == 0:
+            return latents.new_empty((0,), dtype=torch.float32)
 
-        payload = store_ming_tts_state(payload, state)
-        payload.data.update(
-            audio_waveform_payload(
-                wav,
-                sample_rate=int(sample_rate),
-                modality="audio",
-                source_hint="Ming-Omni-TTS",
-            )
+        device = self.device
+        dtype = self.dtype
+        context = (
+            torch.autocast(device_type="cuda", dtype=dtype)
+            if device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)
+            else nullcontext()
         )
-        usage = build_usage(state)
-        if usage is not None:
-            payload.data["usage"] = usage
-        return payload
+        with context:
+            latents = latents.to(device=device, dtype=dtype)
+            sequence = latents.reshape(1, -1, latents.shape[-1])
+            waveform, _, _ = self.audio_vae.decode(
+                sequence,
+                past_key_values=None,
+                use_cache=False,
+                stream_state=(None, None, None),
+                last_chunk=True,
+            )
+
+        return waveform[0, 0].detach()
 
 
 def decode_ming_tts_audio_payload(
     payload: StagePayload,
     decoder: MingAudioDecoder,
     *,
-    decode_mode: str = "chunked",
     keep_latents: bool = False,
 ) -> StagePayload:
     """Decode generated acoustic latents into the terminal waveform payload."""
 
-    vocoder = MingTTSBatchVocoder(
-        decoder,
-        decode_mode=decode_mode,
-        keep_latents=keep_latents,
+    state = load_ming_tts_state(payload)
+    waveform = decoder.decode_nonstreaming(state.generated_latents)
+    state.sample_rate = int(decoder.sample_rate)
+    state.duration_s = float(waveform.numel() / int(decoder.sample_rate))
+    if not keep_latents:
+        state.generated_latents = None
+
+    payload = store_ming_tts_state(payload, state)
+    payload.data.update(
+        audio_waveform_payload(
+            waveform,
+            sample_rate=int(decoder.sample_rate),
+            modality="audio",
+            source_hint="Ming-Omni-TTS",
+        )
     )
-    state, latents = vocoder.prepare_item(payload)
-    wav, sample_rate = vocoder._decode_item(state, latents)
-    return vocoder.store_result(payload, state, wav, sample_rate)
+    usage = build_usage(state)
+    if usage is not None:
+        payload.data["usage"] = usage
+    return payload
 
 
 __all__ = [
     "MingAudioDecoder",
-    "MingTTSBatchVocoder",
+    "MingAudioDecoderState",
     "decode_ming_tts_audio_payload",
 ]

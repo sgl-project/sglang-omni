@@ -28,6 +28,22 @@ from sglang_omni.proto import (
 from tests.unit_test.fixtures.pipeline_fakes import FakeOp, FakeRelay
 
 
+@pytest.fixture(autouse=True)
+def _cuda_ipc_capable_platform(monkeypatch):
+    """Paged KV transfer is cuda_ipc-only, so pin the transport policy that provides
+    it; a platform without cuda_ipc rejects these edges instead.
+    """
+    import sglang_omni.platforms as platforms
+    from sglang_omni.comm.data_ref import TransportKind
+
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_intra_node_transport",
+        lambda: TransportKind.CUDA_IPC,
+        raising=False,
+    )
+
+
 class _PagedRelay(FakeRelay):
     def __init__(self, *, tp_rank: int = 0) -> None:
         super().__init__()

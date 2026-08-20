@@ -6,6 +6,7 @@ stream chunk routing, abort tracking, profiling.
 
 Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -51,6 +52,7 @@ from sglang_omni.scheduling.messages import IncomingMessage
 logger = logging.getLogger(__name__)
 
 _SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
+_OUTBOX_DRAIN_BATCH_SIZE = 64
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
@@ -175,12 +177,15 @@ class Stage:
                 _set_active_stage(self.name)
                 try:
                     if self.gpu_id is not None:
-                        import torch
+                        from sglang_omni.platforms import current_platform
 
-                        torch.get_device_module().set_device(int(self.gpu_id))
+                        current_platform.set_device(
+                            current_platform.get_device(int(self.gpu_id))
+                        )
                         logger.info(
-                            "Scheduler thread for stage %s set CUDA device to %s",
+                            "Scheduler thread for stage %s set %s device to %s",
                             self.name,
+                            current_platform.device_type,
                             self.gpu_id,
                         )
                     self.scheduler.start()
@@ -979,48 +984,55 @@ class Stage:
     async def _drain_outbox_external(self) -> None:
         """Drain scheduler outbox and route results downstream."""
         loop = asyncio.get_running_loop()
-        while self._running or not self.scheduler.outbox.empty():
+        outbox = self.scheduler.outbox
+        while self._running or not outbox.empty():
             try:
-                out = await loop.run_in_executor(
-                    None, lambda: self.scheduler.outbox.get(timeout=0.1)
-                )
+                out = await loop.run_in_executor(None, lambda: outbox.get(timeout=0.1))
             except _queue_mod.Empty:
                 continue
 
-            if out.request_id not in self._active_requests:
-                continue
-
-            if out.type == "result":
-                await self._route_result(out.request_id, out.data)
-            elif out.type == "stream":
-                if out.target is None:
-                    if self._stream_targets:
-                        await asyncio.gather(
-                            *(
-                                self._send_stream_to_target(
+            for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
+                if out.request_id in self._active_requests:
+                    if out.type == "result":
+                        await self._route_result(out.request_id, out.data)
+                    elif out.type == "stream":
+                        if out.target is None:
+                            if self._stream_targets:
+                                await asyncio.gather(
+                                    *(
+                                        self._send_stream_to_target(
+                                            out.request_id,
+                                            out.data,
+                                            target,
+                                            out.metadata,
+                                        )
+                                        for target in self._stream_targets
+                                    )
+                                )
+                            else:
+                                await self._send_stream_to_coordinator(
                                     out.request_id,
                                     out.data,
-                                    target,
                                     out.metadata,
                                 )
-                                for target in self._stream_targets
+                        else:
+                            await self._send_stream_to_target(
+                                out.request_id,
+                                out.data,
+                                out.target,
+                                out.metadata,
                             )
-                        )
-                    else:
-                        await self._send_stream_to_coordinator(
-                            out.request_id,
-                            out.data,
-                            out.metadata,
-                        )
-                else:
-                    await self._send_stream_to_target(
-                        out.request_id,
-                        out.data,
-                        out.target,
-                        out.metadata,
-                    )
-            elif out.type == "error":
-                await self._send_failure(out.request_id, str(out.data))
+                    elif out.type == "error":
+                        await self._send_failure(out.request_id, str(out.data))
+
+                if batch_index + 1 >= _OUTBOX_DRAIN_BATCH_SIZE:
+                    await asyncio.sleep(0)
+                    break
+
+                try:
+                    out = outbox.get_nowait()
+                except _queue_mod.Empty:
+                    break
 
     async def _drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""

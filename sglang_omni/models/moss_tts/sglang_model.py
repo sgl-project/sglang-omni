@@ -272,9 +272,11 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
+        omni_prefill_rids: list[str] | None = None,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
         input_embeds_are_projected: bool = False,
     ) -> LogitsProcessorOutput:
+        del omni_prefill_rids
         del input_embeds_are_projected
         if input_embeds is None:
             forward_mode = getattr(forward_batch, "forward_mode", None)

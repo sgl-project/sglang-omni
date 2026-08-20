@@ -13,11 +13,44 @@ from sglang_omni.models.moss_transcribe_diarize import stages
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
+from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+    MossTranscribeDiarizeEngineBuilder,
+)
 from sglang_omni.models.moss_transcribe_diarize.stages import (
     _missing_additional_chat_templates_compat,
     create_sglang_moss_transcribe_diarize_executor,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_default_prefill_cuda_graph_bs,
+    build_generation_batch_overrides,
+)
+
+
+def _make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
+    return MossTranscribeDiarizeEngineBuilder(
+        max_running_requests=16,
+        max_new_tokens=None,
+        context_length=None,
+        mem_fraction_static=0.8,
+        mm_embedding_cache_size_bytes=0,
+        encoder_cache_size_bytes=0,
+        enable_torch_compile=False,
+        torch_compile_max_bs=4,
+        enable_async_decode=True,
+        async_decode_min_batch_size=2,
+        prefill_coalesce_requests=0,
+        prefill_coalesce_wait_ms=0.0,
+        prefill_coalesce_when_idle=True,
+        prefill_coalesce_requires_pending_builds=True,
+        prefill_coalesce_after_builds_during_decode=True,
+        encoder_chunk_buckets=[1],
+        encoder_torch_compile=False,
+        encoder_max_batch_size=2,
+        request_build_max_workers=8,
+        request_build_max_pending=16,
+        stream_emit_interval_s=0.05,
+    )
 
 
 def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
@@ -34,6 +67,8 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     )
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 16
+    assert config.stages[0].factory_args["enable_torch_compile"] is True
+    assert config.stages[0].factory_args["torch_compile_max_bs"] == 4
     assert config.stages[0].factory_args["encoder_max_batch_size"] == 2
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
@@ -60,6 +95,48 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     assert MossTranscribeDiarizePipelineConfig.generation_sglang_role_to_stage() == {
         "generation": "asr"
     }
+
+
+def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
+    builder = _make_moss_engine_builder()
+
+    assert type(builder).supports_breakable_prefill_cuda_graph is True
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["enable_torch_compile"] is False
+    assert defaults["torch_compile_max_bs"] == 4
+    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    assert defaults["cuda_graph_bs_prefill"] == [
+        1,
+        2,
+        *build_default_prefill_cuda_graph_bs(4096),
+    ]
+    assert (
+        max(defaults["cuda_graph_bs_prefill"])
+        == defaults["max_prefill_tokens"]
+        == defaults["chunked_prefill_size"]
+        == 4096
+    )
+
+
+def test_moss_transcribe_diarize_compile_cap_survives_batch_overrides() -> None:
+    """torch_compile_max_bs must bind to the named builder parameter. If it
+    ever lands in **stage_defaults instead, the merge silently replaces the
+    stage cap with max_running_requests."""
+    builder = _make_moss_engine_builder()
+
+    overrides = build_generation_batch_overrides(
+        server_args_overrides=None,
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+
+    assert overrides["torch_compile_max_bs"] == 4
+    assert overrides["max_running_requests"] == 16
+
+    operator = build_generation_batch_overrides(
+        server_args_overrides={"torch_compile_max_bs": 8},
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+    assert operator["torch_compile_max_bs"] == 8
 
 
 @pytest.mark.parametrize(
@@ -124,6 +201,8 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
 
     assert signature.parameters["max_running_requests"].default == 16
     assert signature.parameters["mem_fraction_static"].default == 0.80
+    assert signature.parameters["enable_torch_compile"].default is False
+    assert signature.parameters["torch_compile_max_bs"].default == 4
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["request_build_max_pending"].default == 16
     assert signature.parameters["enable_async_decode"].default is True

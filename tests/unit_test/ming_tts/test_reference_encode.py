@@ -17,12 +17,10 @@ class _StubEncoder:
 
     sample_rate = 44100
     patch_size = 4
+    dtype = torch.bfloat16
 
     def __init__(self) -> None:
         self.encode_calls: list[str] = []
-
-    def _audio_vae_floating_dtype(self):
-        return torch.bfloat16
 
     def _encode_reference(self, ref_audio: str) -> dict:
         self.encode_calls.append(ref_audio)

@@ -83,16 +83,13 @@ def test_ming_tts_prompt_embedding_positions_match_special_tokens() -> None:
         prompt_latent_token_count=prompt_latent_token_count,
     )
 
-    speaker_position = plan.spk_token_positions[0]
     injection_position = plan.spk_injection_positions[0]
-    assert plan.input_ids[speaker_position] == tokenizer.special.spk_start
-    assert injection_position == speaker_position + 1
+    assert plan.input_ids[injection_position - 1] == tokenizer.special.spk_start
     assert plan.input_ids[injection_position] == tokenizer.special.audio_patch
 
-    audio_position = plan.audio_token_position
     latent_start = plan.prompt_latent_start_position
-    assert plan.input_ids[audio_position] == tokenizer.special.audio_start
-    assert latent_start == audio_position + 1
+    assert latent_start is not None
+    assert plan.input_ids[latent_start - 1] == tokenizer.special.audio_start
     assert (
         plan.input_ids[latent_start : latent_start + prompt_latent_token_count]
         == [tokenizer.special.audio_patch] * prompt_latent_token_count
@@ -112,6 +109,29 @@ def test_ming_tts_rejects_seed_until_fl_rng_contract_exists(
     tts_params: dict,
 ) -> None:
     with pytest.raises(ValueError, match="seed is currently unsupported"):
+        preprocess_ming_tts_payload(
+            _payload(params=params, tts_params=tts_params),
+            tokenizer=_tokenizer(),
+            context_length=MING_TTS_DEFAULT_MAX_DECODE_STEPS + 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("params", "tts_params"),
+    [
+        ({}, {"initial_codec_chunk_frames": 1}),
+        ({"initial_codec_chunk_frames": 1}, {}),
+        ({"initial_codec_chunk_frames": 0}, {}),
+    ],
+)
+def test_ming_tts_rejects_initial_codec_chunk_frames(
+    params: dict,
+    tts_params: dict,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="initial_chunk_patches.*steady_chunk_patches",
+    ):
         preprocess_ming_tts_payload(
             _payload(params=params, tts_params=tts_params),
             tokenizer=_tokenizer(),

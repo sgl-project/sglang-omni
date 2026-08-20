@@ -134,3 +134,84 @@ def test_static_capture_rejects_layer_input_dtype_mismatch() -> None:
 
     with pytest.raises(RuntimeError, match="expected torch.float32 layer input"):
         _run_layer(text_model.layers[0], torch.ones(2, 3, dtype=torch.float64), None)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_static_capture_refreshes_two_layers_under_breakable_cuda_graph_replay() -> (
+    None
+):
+    from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph import (
+        BreakableCUDAGraph,
+        BreakableCUDAGraphCapture,
+        break_graph,
+    )
+
+    model, text_model = _top_level_model()
+    text_model.to("cuda")
+    install_hidden_capture_hooks(model, [0, 1], max_tokens=4)
+    capture = model._omni_aux_hidden_capture
+    pointers = [buffer.data_ptr() for buffer in capture.buffers]
+
+    positions = torch.arange(4, device="cuda")
+    layer0_input = torch.empty((4, 3), device="cuda")
+    layer1_hidden = torch.empty((4, 3), device="cuda")
+    layer1_residual = torch.empty((4, 3), device="cuda")
+    forward_batch = SimpleNamespace()
+
+    def run_layers() -> None:
+        text_model.layers[0](positions, layer0_input, forward_batch, None)
+        break_graph()
+        text_model.layers[1](
+            positions,
+            layer1_hidden,
+            forward_batch,
+            layer1_residual,
+        )
+
+    capture_stream = torch.cuda.Stream()
+    with torch.cuda.stream(capture_stream):
+        for _ in range(2):
+            run_layers()
+    torch.cuda.current_stream().wait_stream(capture_stream)
+    torch.cuda.synchronize()
+
+    graph = BreakableCUDAGraph()
+    with BreakableCUDAGraphCapture(cuda_graph=graph, stream=capture_stream):
+        run_layers()
+    torch.cuda.current_stream().wait_stream(capture_stream)
+    assert len(graph._segments) == 2
+
+    first_layer0 = torch.arange(12, device="cuda", dtype=torch.float32).reshape(4, 3)
+    first_layer1 = first_layer0 + 20
+    first_residual = torch.full_like(first_layer1, 0.5)
+    layer0_input.copy_(first_layer0)
+    layer1_hidden.copy_(first_layer1)
+    layer1_residual.copy_(first_residual)
+    graph.replay()
+    first_logical = [view.clone() for view in capture.views(2)]
+
+    second_layer0 = first_layer0 + 100
+    second_layer1 = first_layer1 + 200
+    second_residual = torch.full_like(second_layer1, 1.5)
+    # Row 3 is graph padding for this replay and must not enter logical views.
+    second_layer0[-1].fill_(9999)
+    second_layer1[-1].fill_(9999)
+    layer0_input.copy_(second_layer0)
+    layer1_hidden.copy_(second_layer1)
+    layer1_residual.copy_(second_residual)
+    graph.replay()
+    second_logical = [view.clone() for view in capture.views(3)]
+    torch.cuda.synchronize()
+
+    assert [buffer.data_ptr() for buffer in capture.buffers] == pointers
+    torch.testing.assert_close(first_logical[0], first_layer0[:2])
+    torch.testing.assert_close(first_logical[1], (first_layer1 + first_residual)[:2])
+    torch.testing.assert_close(second_logical[0], second_layer0[:3])
+    torch.testing.assert_close(
+        second_logical[1],
+        (second_layer1 + second_residual)[:3],
+    )
+    # The first request owns clones; replaying the same bucket cannot mutate it.
+    torch.testing.assert_close(first_logical[0], first_layer0[:2])
+    torch.testing.assert_close(first_logical[1], (first_layer1 + first_residual)[:2])

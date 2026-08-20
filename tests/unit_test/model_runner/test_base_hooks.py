@@ -188,6 +188,72 @@ def test_execute_uses_explicit_custom_forward_hook(
     assert output.can_run_cuda_graph is True
 
 
+def test_execute_pins_the_runners_own_device_not_the_platforms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Routing this through current_platform broke cpu-resident runners: an
+    accelerator's set_device rejects a cpu device, so a CUDA host raised
+    'Expected a cuda device, but got: cpu' while an XPU host silently accepted it.
+    """
+    import sglang_omni.platforms as platforms
+
+    def _reject(device):
+        raise AssertionError(f"platform set_device called with {device!r}")
+
+    monkeypatch.setattr(
+        platforms.current_platform, "set_device", _reject, raising=False
+    )
+    _install_fake_forward_batch_module(monkeypatch)
+    calls: list[str] = []
+
+    _runner(calls, custom_result=None).execute(_scheduler_output(is_prefill=True))
+
+    assert calls[0] == "before_prefill"
+
+
+def test_execute_never_reaches_for_a_device_module_on_a_cpu_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cpu runner has no per-device context to bind, so it must not touch a device
+    module at all. torch.cpu.set_device is only incidentally a tolerant no-op, so
+    calling it would leave cpu-resident runners at the mercy of that detail.
+    """
+
+    _install_fake_forward_batch_module(monkeypatch)
+    calls: list[str] = []
+    runner = _runner(calls, custom_result=None)
+
+    def _reject(device):
+        raise AssertionError(f"get_device_module called with {device!r}")
+
+    monkeypatch.setattr(torch, "get_device_module", _reject)
+    runner.execute(_scheduler_output(is_prefill=True))
+
+    assert calls[0] == "before_prefill"
+
+
+def test_execute_still_binds_the_index_of_an_accelerator_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skipping cpu must not skip accelerators: the runner still binds its own card,
+    by index, since torch.xpu.set_device rejects a device object.
+    """
+    bound: list[object] = []
+    _install_fake_forward_batch_module(monkeypatch)
+    calls: list[str] = []
+
+    runner = _runner(calls, custom_result=None)
+    runner.device = torch.device("xpu", 1)
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(set_device=bound.append),
+    )
+    runner.execute(_scheduler_output(is_prefill=True))
+
+    assert bound == [1]
+
+
 def test_execute_falls_back_to_standard_forward_after_before_hook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

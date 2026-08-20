@@ -84,6 +84,8 @@ class SpeechWebSocketSession:
         self.config: SpeechStreamSessionConfig | None = None
         self.buffer = ""
         self.sentence_index = 0
+        self.committed_sentence_count = 0
+        self.segment_index = 0
         self.active_request_id: str | None = None
         self.buffered_receive_messages: deque[dict[str, Any]] = deque()
         self.buffered_receive_message_bytes = 0
@@ -161,6 +163,8 @@ class SpeechWebSocketSession:
             message_type = payload.get("type")
             if message_type == "input.text":
                 await self._handle_input_text(payload)
+            elif message_type == "input.commit":
+                await self._handle_input_commit()
             elif message_type == "input.done":
                 await self._handle_input_done()
                 return
@@ -193,11 +197,29 @@ class SpeechWebSocketSession:
         for sentence in self._pop_complete_segments():
             await self._generate_sentence(sentence)
 
-    async def _handle_input_done(self) -> None:
+    async def _flush_buffer(self) -> None:
         remaining = self.buffer.strip()
         self.buffer = ""
         if remaining:
             await self._generate_sentence(remaining)
+
+    async def _handle_input_commit(self) -> None:
+        await self._flush_buffer()
+        segment_sentences = self.sentence_index - self.committed_sentence_count
+        self.committed_sentence_count = self.sentence_index
+        await self._send_json(
+            {
+                "type": "input.committed",
+                "session_id": self.session_id,
+                "segment_index": self.segment_index,
+                "segment_sentences": segment_sentences,
+                "total_sentences": self.sentence_index,
+            }
+        )
+        self.segment_index += 1
+
+    async def _handle_input_done(self) -> None:
+        await self._flush_buffer()
         await self._send_json(
             {
                 "type": "session.done",

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
+from itertools import count
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from sglang_omni.comm.kv_transfer import (
 )
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.control_plane import PullSocket, PushSocket, send_to_endpoint
+from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import elapsed_ms as _comm_elapsed_ms
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import now_ns as _comm_now_ns
@@ -120,6 +122,7 @@ class CommEngine:
         ] = {}
         self._send_workers: dict[str, asyncio.Task] = {}
         self._pending: dict[str, _PendingTransfer] = {}
+        self._stream_send_sequence = count()
         # Failed pending KV transfers stay pinned until this dying process exits.
         self._retained_pending_kv_transfers: list[_PendingTransfer] = []
         self._kv_pools: dict[str, KVPool] = {}
@@ -231,6 +234,13 @@ class CommEngine:
         )
         return await ready
 
+    @property
+    def local_payload_device(self) -> str | None:
+        """This stage's own accelerator, or None for a host-only stage."""
+        if self.router.gpu_id is None:
+            return None
+        return f"{current_platform.device_type}:{self.router.gpu_id}"
+
     async def read_payload(
         self,
         *,
@@ -238,7 +248,9 @@ class CommEngine:
         request_id: str,
         data_ref: DataRef,
     ) -> StagePayload:
-        return await stage_io.read_payload(relay, request_id, data_ref)
+        return await stage_io.read_payload(
+            relay, request_id, data_ref, self.local_payload_device
+        )
 
     async def read_data(
         self,
@@ -324,7 +336,9 @@ class CommEngine:
         relay: Relay,
         data_ref: DataRef,
     ) -> tuple[torch.Tensor, dict[str, Any] | None]:
-        return await stage_io.read_stream_chunk(relay, data_ref)
+        return await stage_io.read_stream_chunk(
+            relay, data_ref, self.local_payload_device
+        )
 
     def register_kv_pool(self, pool: KVPool) -> None:
         self._kv_pools[pool.pool_id] = pool
@@ -809,6 +823,10 @@ class CommEngine:
 
     async def _run_stream_send(self, job: _StreamSendJob, queue_key: str) -> None:
         object_id: str | None = None
+        stream_object_id = (
+            f"{job.request_id}:stream:{job.from_stage}:{job.target_stage}:"
+            f"{job.chunk_id}:{next(self._stream_send_sequence)}"
+        )
         send_start = _comm_now_ns()
         write_ms = -1.0
         control_ms = -1.0
@@ -821,6 +839,7 @@ class CommEngine:
                 target_stage=job.target_stage,
                 from_stage=job.from_stage,
                 chunk_id=job.chunk_id,
+                object_id=stream_object_id,
                 metadata=job.metadata,
                 transport=job.transport,
             )

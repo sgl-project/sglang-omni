@@ -88,6 +88,20 @@ def test_qwen3_asr_pipeline_declares_chunking() -> None:
     assert declared.max_native_clip_s == 1200.0
 
 
+def test_whisper_asr_pipeline_declares_chunking() -> None:
+    from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+
+    declared = WhisperASRPipelineConfig.audio_chunking
+    assert declared.allow_audio_chunking is True
+    # For Whisper the chunk length IS the native limit: the feature extractor
+    # truncates everything past its 30s mel window, so without chunking a
+    # longer upload silently loses all audio past the first 30 seconds.
+    assert declared.max_audio_clip_s == 30.0
+    assert declared.max_native_clip_s == 30.0
+    # Whisper hallucinates on very short clips; keep the tail at least 1s.
+    assert declared.min_tail_s == 1.0
+
+
 def test_disabled_config_never_chunks() -> None:
     config = AudioChunkingConfig(max_audio_clip_s=60.0)
 

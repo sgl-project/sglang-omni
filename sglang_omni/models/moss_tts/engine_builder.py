@@ -14,6 +14,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
     model_name = "MOSS-TTS"
     context_length = 8192
     model_arch_override = "MossTTSDelaySGLangModel"
+    supports_breakable_prefill_cuda_graph = True
 
     def generation_defaults(
         self,

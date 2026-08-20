@@ -31,12 +31,25 @@ def create_thinker_scheduler(
         make_thinker_stream_output_builder,
         should_generate_audio_output,
     )
-    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.models.qwen3_omni.thinker_model_runner import (
+        Qwen3OmniThinkerModelRunner,
+    )
+    from sglang_omni.scheduling.bootstrap import (
+        create_sglang_infrastructure,
+        init_sglang_cuda_graphs,
+    )
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+    from sglang_omni.utils import cuda_graph_batch_validator
 
     capture_hidden_layers = [0, 24] if speech_enabled else None
     capture_hidden = speech_enabled
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
+    enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
     if defer_cuda_graph_capture:
@@ -49,6 +62,27 @@ def create_thinker_scheduler(
             disable_cuda_graph=True,
         )
 
+    try:
+        infrastructure = create_sglang_infrastructure(
+            server_args,
+            gpu_id,
+            tp_rank=tp_rank,
+            nccl_port=nccl_port,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            capture_hidden_layers=capture_hidden_layers,
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
+            defer_cuda_graph_capture=defer_cuda_graph_capture,
+            enable_prefill_input_embeds=enable_prefill_input_embeds,
+        )
+    finally:
+        if defer_cuda_graph_capture:
+            override_server_args(
+                server_args,
+                "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
+                disable_cuda_graph=saved_disable_cuda_graph,
+                enable_return_hidden_states=saved_return_hidden_states,
+            )
+
     (
         model_worker,
         tree_cache,
@@ -57,25 +91,18 @@ def create_thinker_scheduler(
         prefill_mgr,
         decode_mgr,
         model_config,
-    ) = create_sglang_infrastructure(
-        server_args,
-        gpu_id,
-        tp_rank=tp_rank,
-        nccl_port=nccl_port,
-        model_arch_override="Qwen3OmniThinkerForCausalLM",
-        capture_hidden_layers=capture_hidden_layers,
-        total_gpu_memory_fraction=total_gpu_memory_fraction,
-        defer_cuda_graph_capture=defer_cuda_graph_capture,
-    )
+    ) = infrastructure
 
     if defer_cuda_graph_capture:
-        override_server_args(
-            server_args,
-            "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
-            disable_cuda_graph=saved_disable_cuda_graph,
-            enable_return_hidden_states=saved_return_hidden_states,
+        # Deferring capture must not also skip the omni wrapper: without it the
+        # prefill embeds view is never applied, so the graph's input_embeds slot
+        # exists only when the model config happens to be multimodal.
+        init_sglang_cuda_graphs(model_worker)
+
+    if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
+        cuda_graph_batch_validator.attest_prefill_cuda_graphs(
+            model_worker.model_runner, server_args
         )
-        model_worker.model_runner.init_cuda_graphs()
 
     def _should_generate_qwen_audio_output(request: Any) -> bool:
         return should_generate_audio_output(request.data.stage_payload)
@@ -87,7 +114,10 @@ def create_thinker_scheduler(
         should_emit_hidden=_should_generate_qwen_audio_output,
     )
 
-    model_runner = ThinkerModelRunner(model_worker, output_proc)
+    if speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
+        model_runner = ThinkerModelRunner(model_worker, output_proc)
+    else:
+        model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
 
     tokenizer = get_tokenizer(
         model_config.model_path,
@@ -147,7 +177,10 @@ def create_talker_scheduler(
         QwenTalkerScheduler,
         configure_talker_server_args,
     )
-    from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.bootstrap import (
+        create_sglang_infrastructure,
+        init_sglang_cuda_graphs,
+    )
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
 
     want_cuda_graph = configure_talker_server_args(
@@ -188,7 +221,10 @@ def create_talker_scheduler(
             "sglang_omni.qwen3_omni.talker_restore_cuda_graph_capture",
             disable_cuda_graph=False,
         )
-        model_worker.model_runner.init_cuda_graphs()
+        # Equivalent to init_cuda_graphs() while the talker requests no prefill
+        # embeds slot, but keeps both stages on one path so enabling talker
+        # prefill graphs later cannot silently miss the embeds view.
+        init_sglang_cuda_graphs(model_worker)
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,

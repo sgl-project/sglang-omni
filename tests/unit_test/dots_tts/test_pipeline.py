@@ -51,6 +51,54 @@ def test_dots_tts_syncs_acoustic_limits_from_latent_engine() -> None:
     assert preprocessing["max_generate_length"] == 256
 
 
+def test_dots_tts_derives_stream_slots_from_max_running_requests() -> None:
+    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
+
+    config = DotsTTSPipelineConfig(
+        model_path="model",
+        runtime_overrides={
+            "latent_engine": {
+                "server_args_overrides": {"max_running_requests": 8},
+            }
+        },
+    )
+    stages = {stage.name: stage for stage in config.stages}
+    vocoder = resolve_stage_static_factory_args(stages["vocoder"], config)
+    assert vocoder["stream_slots"] == 8
+
+
+def test_dots_tts_rejects_mismatched_stream_slots() -> None:
+    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
+
+    with pytest.raises(ValueError, match="stream_slots .* must equal"):
+        DotsTTSPipelineConfig(
+            model_path="model",
+            runtime_overrides={
+                "latent_engine": {
+                    "server_args_overrides": {"max_running_requests": 16},
+                },
+                "vocoder": {"stream_slots": 8},
+            },
+        )
+
+
+def test_dots_tts_accepts_matching_stream_slots_override() -> None:
+    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
+
+    config = DotsTTSPipelineConfig(
+        model_path="model",
+        runtime_overrides={
+            "latent_engine": {
+                "server_args_overrides": {"max_running_requests": 8},
+            },
+            "vocoder": {"stream_slots": 8},
+        },
+    )
+    stages = {stage.name: stage for stage in config.stages}
+    vocoder = resolve_stage_static_factory_args(stages["vocoder"], config)
+    assert vocoder["stream_slots"] == 8
+
+
 def test_dots_tts_rejects_preprocessing_acoustic_limit_overrides() -> None:
     from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
 
