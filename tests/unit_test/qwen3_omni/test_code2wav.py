@@ -145,15 +145,16 @@ def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
     would reach the CUDA-only runner, so every non-CUDA platform declares itself.
     """
     from sglang_omni.platforms.cpu import CPUOmniPlatform
-    from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
+    from sglang_omni.platforms.cuda import CUDAOmniPlatform
     from sglang_omni.platforms.npu import NPUOmniPlatform
+    from sglang_omni.platforms.rocm import ROCMOmniPlatform
     from sglang_omni.platforms.xpu import XPUOmniPlatform
 
     assert XPUOmniPlatform().enable_code2wav_graph() is False
     assert NPUOmniPlatform().enable_code2wav_graph() is False
     assert CPUOmniPlatform().enable_code2wav_graph() is False
     assert CUDAOmniPlatform().enable_code2wav_graph() is True
-    assert ROCMOmniPlatform().enable_code2wav_graph() is True
+    assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
 def test_the_code2wav_stage_takes_its_graph_flag_from_the_platform() -> None:
