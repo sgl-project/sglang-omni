@@ -9,6 +9,10 @@ import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
 from sglang_omni.models.moss_tts.sampler import DelayGraphBatch
 from sglang_omni.models.moss_tts.sampling_kernels import (
@@ -37,8 +41,11 @@ class MossTTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
-            forward_batch, requests
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
+            ),
         )
         return None
 

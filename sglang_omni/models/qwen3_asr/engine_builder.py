@@ -22,6 +22,7 @@ from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
+    clamp_prefill_cuda_graph_max_bs,
     get_decode_cuda_graph_bs,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
@@ -177,21 +178,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             return
         if "cuda_graph_bs_prefill" in overrides:
             return
-        # note(ratish): derived from the merged caps: a ladder past any of
-        # them fails startup or captures buckets that can never replay.
-        caps = [
-            overrides["max_prefill_tokens"],
-            overrides.get("cuda_graph_max_bs_prefill"),
-            overrides.get("max_total_tokens"),
-            self.context_length,
-        ]
-        if overrides["chunked_prefill_size"] > 0:
-            caps.append(overrides["chunked_prefill_size"])
-        ladder = build_default_prefill_cuda_graph_bs(
-            min(int(cap) for cap in caps if cap is not None)
+        cap = clamp_prefill_cuda_graph_max_bs(
+            overrides,
+            context_length=self.context_length,
         )
+        ladder = build_default_prefill_cuda_graph_bs(cap)
         overrides["cuda_graph_bs_prefill"] = ladder
-        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
 
     def customize_server_args(self, server_args: Any) -> None:
         self.context_length = int(server_args.context_length)
