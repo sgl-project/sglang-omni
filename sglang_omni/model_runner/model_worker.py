@@ -126,6 +126,16 @@ class ModelWorker:
     def _apply_arch_override(model_config: ModelConfig, arch: str) -> None:
         """Override model config for a sub-model architecture."""
         model_config.hf_config.architectures = [arch]
+        if arch == "KimiAudioForTextGeneration":
+            cfg = model_config.hf_config
+            # Kimi embeds the union of text and audio tokens, but its text head
+            # predicts only the text vocabulary. SGLang uses this field
+            # for sampler state and CUDA graph logits buffers, independently of
+            # the embedding table constructed from cfg.vocab_size.
+            model_config.vocab_size = int(cfg.kimia_text_output_vocab)
+            model_config.num_hidden_layers = int(cfg.num_hidden_layers)
+            model_config.num_attention_layers = model_config.num_hidden_layers
+            return
         if arch == "WhisperForConditionalGeneration":
             cfg = model_config.hf_config
             model_config.hf_text_config = cfg

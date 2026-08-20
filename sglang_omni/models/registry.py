@@ -118,6 +118,21 @@ class _PipelineConfigRegistry:
             )
         return self.configs[arch]
 
+    def get_config_for_model_id(self, model_id: str) -> type[PipelineConfig] | None:
+        """Return a config registered for a canonical Hub model id."""
+        matches: list[type[PipelineConfig]] = []
+        for config_cls in set(self.configs.values()):
+            model_ids = getattr(config_cls, "model_ids", ())
+            if model_id in model_ids:
+                matches.append(config_cls)
+        if len(matches) > 1:
+            names = sorted(config_cls.__name__ for config_cls in matches)
+            raise ValueError(
+                f"Model id {model_id!r} is registered by multiple pipeline configs: "
+                f"{names}"
+            )
+        return matches[0] if matches else None
+
     def get_config_cls_by_name(self, name: str) -> Type[PipelineConfig]:
         for config_cls in self.configs.values():
             if config_cls.__name__ == name:
