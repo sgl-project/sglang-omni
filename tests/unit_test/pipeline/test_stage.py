@@ -1067,9 +1067,7 @@ def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> No
 
 
 def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> None:
-    monkeypatch.setattr(
-        stage_io, "should_use_direct_cuda_ipc_payload", lambda payload: True
-    )
+    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
     monkeypatch.setattr(
         stage_io,
         "serialize_direct_cuda_ipc_payload",
@@ -1111,9 +1109,7 @@ def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> No
 
 
 def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
-    monkeypatch.setattr(
-        stage_io, "should_use_direct_cuda_ipc_payload", lambda payload: True
-    )
+    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
 
     def _unexpected_direct_payload(payload):
         raise AssertionError("direct payload serializer should not be called")
@@ -1154,9 +1150,7 @@ def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
 
 
 def test_stage_uses_relay_when_direct_cuda_payload_is_reexported(monkeypatch) -> None:
-    monkeypatch.setattr(
-        stage_io, "should_use_direct_cuda_ipc_payload", lambda payload: True
-    )
+    monkeypatch.setattr(stage_io, "payload_has_cuda_tensor", lambda payload: True)
 
     def _raise_reexport(payload):
         raise RuntimeError(
@@ -1419,75 +1413,7 @@ def test_stage_local_object_requires_registered_target() -> None:
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_cuda_tensor_payload_nbytes_sums_only_cuda_tensors() -> None:
-    payload = make_stage_payload(
-        request_id="req-nbytes",
-        data={
-            "audio": torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0"),
-            "host_side": torch.zeros(1024, dtype=torch.float32),
-            "scalar": 7,
-        },
-    )
-    assert stage_io.cuda_tensor_payload_nbytes(payload) == 63 * 2048 * 2
-
-
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_cuda_tensor_payload_nbytes_walks_nested_containers() -> None:
-    payload = make_stage_payload(
-        request_id="req-nested",
-        data={
-            "outer": [
-                {"inner": torch.zeros(8, dtype=torch.int32, device="cuda:0")},
-                (torch.zeros(4, dtype=torch.int32, device="cuda:0"),),
-            ]
-        },
-    )
-    assert stage_io.cuda_tensor_payload_nbytes(payload) == (8 + 4) * 4
-
-
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_should_use_direct_cuda_ipc_payload_gates_the_audio_encoder_hop() -> None:
-    # 63 x 2048 bf16 = 258 KB, the measured audio_encoder -> mm_aggregate payload.
-    small = make_stage_payload(
-        request_id="req-small",
-        data={"t": torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0")},
-    )
-    assert (
-        stage_io.cuda_tensor_payload_nbytes(small)
-        < stage_io._DIRECT_CUDA_IPC_PAYLOAD_MIN_BYTES
-    )
-    assert stage_io.should_use_direct_cuda_ipc_payload(small) is False
-
-
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_should_use_direct_cuda_ipc_payload_keeps_large_payloads_on_ipc() -> None:
-    large = make_stage_payload(
-        request_id="req-large",
-        data={
-            "t": torch.zeros(
-                stage_io._DIRECT_CUDA_IPC_PAYLOAD_MIN_BYTES // 2,
-                dtype=torch.bfloat16,
-                device="cuda:0",
-            )
-        },
-    )
-    assert stage_io.should_use_direct_cuda_ipc_payload(large) is True
-
-
-def test_should_use_direct_cuda_ipc_payload_is_false_without_cuda_tensor() -> None:
-    cpu_only = make_stage_payload(
-        request_id="req-cpu",
-        data={"t": torch.zeros(8 * 1024 * 1024, dtype=torch.bfloat16)},
-    )
-    assert stage_io.should_use_direct_cuda_ipc_payload(cpu_only) is False
-
-
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_stage_routes_small_cuda_payload_over_relay_not_direct_ipc(
+def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
     monkeypatch,
 ) -> None:
     def _unexpected_direct_payload(payload):
@@ -1511,6 +1437,7 @@ def test_stage_routes_small_cuda_payload_over_relay_not_direct_ipc(
             scheduler=FakeScheduler(),
             gpu_stage_names={"mm_aggregate"},
             stage_gpu_ids={"mm_aggregate": (0,)},
+            disable_direct_cuda_ipc_payload=True,
         )
 
         tensor = torch.randn(63, 2048, dtype=torch.bfloat16, device="cuda:0")
@@ -1528,7 +1455,7 @@ def test_stage_routes_small_cuda_payload_over_relay_not_direct_ipc(
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_stage_still_uses_direct_ipc_for_large_cuda_payload() -> None:
+def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
     async def _run() -> None:
         relay = FakeRelay()
         control_plane = RecordingStageControlPlane()
@@ -1545,9 +1472,9 @@ def test_stage_still_uses_direct_ipc_for_large_cuda_payload() -> None:
             stage_gpu_ids={"mm_aggregate": (0,)},
         )
 
-        tensor = torch.zeros(2048, 2048, dtype=torch.bfloat16, device="cuda:0")
-        payload = make_stage_payload(request_id="req-large-hop", data={"t": tensor})
-        await sender._send_to_stage("req-large-hop", "mm_aggregate", payload)
+        tensor = torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0")
+        payload = make_stage_payload(request_id="req-small-hop", data={"t": tensor})
+        await sender._send_to_stage("req-small-hop", "mm_aggregate", payload)
 
         assert relay.storage == {}
         _, _, msg = control_plane.sent_to_stage[0]
@@ -1559,7 +1486,7 @@ def test_stage_still_uses_direct_ipc_for_large_cuda_payload() -> None:
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
-    """The size gate changes transport only; values must be untouched."""
+    """The scoped audio policy changes transport only; values stay untouched."""
 
     async def _run() -> None:
         relay = FakeRelay()
@@ -1575,6 +1502,7 @@ def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
             scheduler=FakeScheduler(),
             gpu_stage_names={"mm_aggregate"},
             stage_gpu_ids={"mm_aggregate": (0,)},
+            disable_direct_cuda_ipc_payload=True,
         )
 
         torch.manual_seed(0)
