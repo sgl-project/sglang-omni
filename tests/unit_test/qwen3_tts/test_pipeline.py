@@ -69,6 +69,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             sampling_params,
             eos_token_ids=None,
             vocab_size=None,
+            extra_key=None,
             **kwargs,
         ) -> None:
             del kwargs
@@ -78,9 +79,14 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             self.sampling_params = sampling_params
             self.eos_token_ids = eos_token_ids
             self.vocab_size = vocab_size
+            self.extra_key = extra_key
             self.output_ids = []
             self.prefix_indices = []
             self.extend_range = SimpleNamespace(length=len(origin_input_ids))
+
+        def reset_for_retract(self) -> None:
+            self.prefix_indices = []
+            self.extend_range = None
 
     class FakeSamplingParams:
         def __init__(self, **kwargs) -> None:
@@ -2479,6 +2485,7 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     )
 
     assert data.prompt_input_embeds is prepared.prompt_input_embeds
+    assert data.prefill_input_embeds is prepared.prompt_input_embeds
     assert data.ref_code is prepared.ref_code
     assert data.tts_pad_embed is prepared.tts_pad_embed
     assert data.stream_codec_output is True
@@ -2570,6 +2577,56 @@ def test_qwen3_tts_request_data_uses_public_seed_split(
     assert data.semantic_sampling_seed == expected_semantic_seed
     assert data.subtalker_sampling_seed == expected_subtalker_seed
     assert data.req.sampling_params.sampling_seed == expected_semantic_seed
+
+
+def _stage_qwen3_tts_prepared(payload: StagePayload) -> None:
+    prepared = Qwen3TTSPreparedRequest(
+        state=Qwen3TTSState(),
+        input_ids_list=[11, 12, 13],
+        input_ids=torch.tensor([11, 12, 13], dtype=torch.long),
+        attention_mask=torch.ones((1, 3), dtype=torch.long),
+        trailing_text_hidden=torch.randn(1, 4),
+        ref_code=None,
+        prompt_input_embeds=torch.randn(3, 4),
+        tts_pad_embed=torch.randn(4),
+        gen_kwargs={"max_new_tokens": 16},
+    )
+    payload.data = {
+        qwen3_request_builders._QWEN3_TTS_PREPARED_MARKER: payload.request_id
+    }
+    with qwen3_request_builders._PREPARED_REQUESTS_LOCK:
+        qwen3_request_builders._PREPARED_REQUESTS[payload.request_id] = prepared
+
+
+def _build_qwen3_tts_sglang_request(monkeypatch: pytest.MonkeyPatch):
+    install_fake_sglang(monkeypatch)
+    payload = make_payload(inputs="target")
+    _stage_qwen3_tts_prepared(payload)
+    return build_sglang_qwen3_tts_request(
+        payload,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200)
+        ),
+        wrapper=object(),
+    )
+
+
+def test_qwen3_tts_request_lifetime_extra_key_is_unique_and_survives_retract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _build_qwen3_tts_sglang_request(monkeypatch)
+    second = _build_qwen3_tts_sglang_request(monkeypatch)
+
+    assert first.req.rid == second.req.rid
+    assert first.req.extra_key
+    assert second.req.extra_key
+    assert first.req.extra_key.startswith("qwen3_tts:")
+    assert second.req.extra_key.startswith("qwen3_tts:")
+    assert first.req.extra_key != second.req.extra_key
+
+    kept = first.req.extra_key
+    first.req.reset_for_retract()
+    assert first.req.extra_key == kept
 
 
 def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(

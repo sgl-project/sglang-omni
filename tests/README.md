@@ -78,7 +78,8 @@ tests/
     ├── models/
     │   └── test_model_capabilities.py
     ├── model_runner/
-    │   └── test_hidden_capture.py
+    │   ├── test_hidden_capture.py
+    │   └── test_prefill_cuda_graph_usage.py
     ├── audar_tts/
     │   └── test_pipeline.py
     ├── qwen3_omni/
@@ -101,7 +102,8 @@ tests/
     │   ├── test_talker_feedback_write.py
     │   ├── test_talker_row_ownership.py
     │   ├── test_talker_token_readback.py
-    │   └── test_text_template.py
+    │   ├── test_text_template.py
+    │   └── test_thinker_prefill_contract.py
     ├── ming_omni/
     │   ├── test_omni_serve.py
     │   ├── test_pipeline.py
@@ -279,8 +281,10 @@ Relevant model CI ownership:
   BF16 thinker-TP=2 is exercised by thinker_length via `_start_qwen3_omni_tp2`.
 - `test_qwen3_omni_tts_ci.py`: gates the SeedTTS speed/WER path through the
   router at TTS generation concurrency 16 and verifies both colocated workers
-  receive traffic. WER reuses saved audio after the Qwen3-Omni server is
-  stopped, then transcribes through Qwen3-ASR at concurrency 32.
+  receive traffic. The same stage requires each thinker worker to report the
+  breakable prefill runner, registered `input_embeds`, and at least one replay.
+  WER reuses saved audio after the Qwen3-Omni server is stopped, then
+  transcribes through Qwen3-ASR at concurrency 32.
 - `test_qwen3_omni_realtime.py` keeps the lower-cost thinker-only VAD/text
   path covered; `test_qwen3_omni_realtime_audio.py` separately launches the
   speech topology and verifies VAD-driven raw PCM16 response streaming.
@@ -443,13 +447,18 @@ that happened to contain an older version of the test.
 - `unit_test/model_runner/`: Shared model-runner contract tests:
   - graph-safe hidden-state capture: stable registered buffers refreshed by
     decoder-layer pre-hooks, capacity validation, graph-replay row reads, and
-    buffer address stability across forwards.
+    buffer address stability across forwards, including real breakable CUDA
+    Graph replay without exposing padded rows.
+  - prefill CUDA Graph usage: isolated counter state, replay/eager phase
+    classification, executed-bucket counts, and JSON-safe model-info output.
 - `unit_test/models/`: Model registry and cross-model contract tests:
   - static TTS `ModelCapabilities` declarations, registry lookup, aliases, and
     launcher startup logging.
 - `unit_test/scheduling/`: Shared scheduling-service unit tests:
   - deferred request admission completion, abort, and dependency-failure
     semantics.
+  - breakable prefill CUDA Graph policy: backend/cap/bucket validation, shared
+    cap-derived ladders, disable precedence, and capability/attestation wiring.
   - `ReferenceEncodeService` cache, same-key single-flight, timeout, failure,
     and revalidation semantics.
   - `StageOutputCache` thread safety: concurrent get/put byte-accounting,
@@ -553,6 +562,9 @@ that happened to contain an older version of the test.
     ```bash
     pytest tests/unit_test/qwen3_omni/test_thinker_prefill_contract.py -q
     ```
+  - Speech prefill graph integration: H100 profile resolution, bootstrap
+    capture/attestation, custom-eager counting, and phase-defined static
+    auxiliary-hidden slicing with strict row-count validation.
 
 - `unit_test/ming_omni/` Ming-Omni unit tests:
 
