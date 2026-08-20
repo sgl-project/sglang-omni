@@ -53,11 +53,19 @@ def _run(
 
 
 def test_idle_stage_does_not_wait_out_the_coalescing_window() -> None:
-    scheduler = _batching_scheduler()
+    scheduler = _batching_scheduler(batch_wait_when_idle=False)
     _, elapsed_ms = _run(scheduler, [_msg("r1")], output_count=1)
     assert (
         elapsed_ms < WINDOW_MS / 2
     ), f"lone request waited {elapsed_ms:.1f}ms of the {WINDOW_MS}ms window"
+
+
+def test_idle_batch_wait_remains_the_default_contract() -> None:
+    scheduler = _batching_scheduler()
+    _, elapsed_ms = _run(scheduler, [_msg("r1")], output_count=1)
+    assert (
+        elapsed_ms >= WINDOW_MS / 2
+    ), f"default batch wait dispatched after only {elapsed_ms:.1f}ms"
 
 
 def test_backlog_still_coalesces_into_one_batch() -> None:
@@ -69,6 +77,7 @@ def test_backlog_still_coalesces_into_one_batch() -> None:
         ),
         max_batch_size=32,
         max_batch_wait_ms=WINDOW_MS,
+        batch_wait_when_idle=False,
     )
     _run(scheduler, [_msg(f"r{i}") for i in range(8)], output_count=8)
     assert seen_batches, "batch compute never ran"
@@ -87,6 +96,7 @@ def test_late_arrival_joins_batch_once_a_backlog_exists() -> None:
         batch_compute_fn=batch_fn,
         max_batch_size=32,
         max_batch_wait_ms=WINDOW_MS,
+        batch_wait_when_idle=False,
     )
     thread = threading.Thread(target=scheduler.start, daemon=True)
     thread.start()

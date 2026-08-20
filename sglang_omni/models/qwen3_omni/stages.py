@@ -931,6 +931,7 @@ def create_audio_encoder_executor(
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
         max_batch_wait_ms=50,
+        batch_wait_when_idle=False,
     )
 
 

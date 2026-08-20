@@ -37,6 +37,7 @@ class SimpleScheduler:
         batch_compute_fn: Callable | None = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
+        batch_wait_when_idle: bool = True,
         request_cost_fn: Callable[[Any], int] | None = None,
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
@@ -50,6 +51,7 @@ class SimpleScheduler:
         self._batch_fn = batch_compute_fn
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self._batch_wait_when_idle = bool(batch_wait_when_idle)
         self._request_cost_fn = request_cost_fn
         self._max_batch_cost = (
             max(int(max_batch_cost), 0) if max_batch_cost is not None else None
@@ -107,9 +109,11 @@ class SimpleScheduler:
             return batch
 
         batch_cost = self._message_cost(first_msg)
-        # Note (wenyao): an idle stage has nothing to coalesce with, so arming
-        # the window up front would spend all of it on this request's own TTFT.
-        deadline: float | None = None
+        deadline: float | None = (
+            time.monotonic() + self._max_batch_wait_s
+            if self._batch_wait_when_idle
+            else None
+        )
         while len(batch) < self._max_batch_size:
             try:
                 msg = self.inbox.get_nowait()
