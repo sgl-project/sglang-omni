@@ -17,8 +17,9 @@ _STOP = object()
 class _Service(PreLMEncoderService[int, list[int], int]):
     def __init__(self, *, controlled_drain: bool = False) -> None:
         self.attachments: list[tuple[int, int]] = []
-        self.cached: list[tuple[int, int]] = []
+        self.cached: list[tuple[int, int, object | None]] = []
         self.context_events: list[str] = []
+        self.stage_host_copies = False
         self.fail_multi = False
         self.fail_items: set[int] = set()
         self.retry = False
@@ -72,8 +73,16 @@ class _Service(PreLMEncoderService[int, list[int], int]):
     def attach_embedding(self, item: int, embedding: int) -> None:
         self.attachments.append((item, embedding))
 
-    def cache_embedding(self, item: int, embedding: int) -> None:
-        self.cached.append((item, embedding))
+    def stage_host_copy(self, item: int, embedding: int) -> object | None:
+        if not self.stage_host_copies:
+            return None
+        self.context_events.append("stage")
+        return ("host", embedding)
+
+    def cache_embedding(
+        self, item: int, embedding: int, host_copy: object | None = None
+    ) -> None:
+        self.cached.append((item, embedding, host_copy))
 
     def _retry_batch(self, batch, exc):  # noqa: ANN001, ANN202
         if self.retry_hook_error:
@@ -92,7 +101,22 @@ def test_successful_dispatch_attaches_and_caches() -> None:
 
         assert future.result(timeout=2) == 6
         assert service.attachments == [(3, 6)]
-        assert service.cached == [(3, 6)]
+        assert service.cached == [(3, 6, None)]
+    finally:
+        service.close()
+
+
+def test_stage_host_copy_runs_in_batch_context_and_reaches_cache() -> None:
+    service = _Service()
+    service.stage_host_copies = True
+    try:
+        future = service._submit(4)
+
+        assert future.result(timeout=2) == 8
+        # note (Jeffro): staged inside the batch context (before its exit), delivered to
+        # cache_embedding after the barrier.
+        assert service.context_events == ["enter", "stage", "exit"]
+        assert service.cached == [(4, 8, ("host", 8))]
     finally:
         service.close()
 
