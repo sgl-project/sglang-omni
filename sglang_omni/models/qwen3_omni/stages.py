@@ -273,6 +273,27 @@ def _nested_tensor_bytes(value: Any) -> int:
     return 0
 
 
+def _encoder_batch_wait_ms() -> int:
+    raw = os.getenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", "")
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring non-integer SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%r; using 0",
+            raw,
+        )
+        return 0
+    if value < 0:
+        logger.warning(
+            "Ignoring negative SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%d; using 0",
+            value,
+        )
+        return 0
+    return value
+
+
 def _encoder_cache_trace_enabled() -> bool:
     value = os.getenv("SGLANG_OMNI_TRACE_ENCODER_CACHE", "")
     return value.lower() not in ("", "0", "false", "no")
@@ -641,6 +662,9 @@ def _batch_audio_encoder_payloads(
 ) -> list[StagePayload]:
     results: list[StagePayload | None] = [None] * len(payloads)
     active: list[tuple[int, StagePayload, Any, Any]] = []
+    duplicate_waiters: dict[str, list[tuple[int, StagePayload, Any]]] = {}
+    active_cache_keys: set[str] = set()
+    active_cache_leaders: dict[str, str] = {}
 
     for idx, payload in enumerate(payloads):
         state = load_state(payload)
@@ -674,7 +698,23 @@ def _batch_audio_encoder_payloads(
             )
             continue
 
+        cache_key = request.cache_key
+        if cache_key is not None and cache_key in active_cache_keys:
+            duplicate_waiters.setdefault(cache_key, []).append((idx, payload, state))
+            _trace_encoder_cache(
+                AUDIO_STAGE,
+                "dedup_same_batch",
+                request_id=payload.request_id,
+                cache_key=cache_key,
+                input_bytes=_nested_tensor_bytes(request.model_inputs),
+                detail=f"leader={active_cache_leaders[cache_key]}",
+            )
+            continue
+
         active.append((idx, payload, state, request))
+        if cache_key is not None:
+            active_cache_keys.add(cache_key)
+            active_cache_leaders[cache_key] = payload.request_id
 
     if not active:
         return [result for result in results if result is not None]
@@ -716,6 +756,7 @@ def _batch_audio_encoder_payloads(
     embeds = combined["audio_embeds"]
     row_cursor = 0
     token_cursor = 0
+    computed_by_cache_key: dict[str, dict[str, Any]] = {}
     for item in normalized:
         row_end = row_cursor + item["count"]
         req_output_lengths = output_lengths[row_cursor:row_end]
@@ -734,10 +775,20 @@ def _batch_audio_encoder_payloads(
             cache=cache,
             result=stage_result,
         )
+        if item["request"].cache_key is not None:
+            computed_by_cache_key[item["request"].cache_key] = stage_result
         apply_encoder_result(item["state"], stage_name=AUDIO_STAGE, result=stage_result)
         results[item["idx"]] = store_state(item["payload"], item["state"])
         row_cursor = row_end
         token_cursor = token_end
+
+    for cache_key, waiters in duplicate_waiters.items():
+        stage_result = computed_by_cache_key.get(cache_key)
+        if stage_result is None:
+            continue
+        for idx, payload, state in waiters:
+            apply_encoder_result(state, stage_name=AUDIO_STAGE, result=stage_result)
+            results[idx] = store_state(payload, state)
 
     return [result for result in results if result is not None]
 
@@ -846,13 +897,13 @@ def create_image_encoder_executor(
                     metadata={"modality": "image", "batch_size": len(payloads)},
                 )
 
-    # Preserve the calibrated image-encoder batching shape and add a small
-    # batch_wait so video benchmarks at concurrency=16 batch together.
+    # Preserve the calibrated image-encoder batching shape while allowing
+    # deployments to opt into a batch wait through the shared encoder knob.
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=_encoder_batch_wait_ms(),
         request_cost_fn=_create_image_encoder_request_cost_fn(model),
         max_batch_cost=QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
     )
@@ -924,7 +975,7 @@ def create_audio_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=_encoder_batch_wait_ms(),
     )
 
 

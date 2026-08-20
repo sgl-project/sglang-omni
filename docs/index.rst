@@ -87,7 +87,6 @@ Supported Models
 
    get_started/installation.md
    get_started/installation_xpu.md
-   get_started/release_notes.md
 
 
 .. toctree::

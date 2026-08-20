@@ -241,6 +241,13 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
   (`pre_lm_max_batch_size=8`, `request_build_max_workers=8`). Set
   `enable_pre_lm_encoder: false` under `runtime_overrides.asr` to run the
   encoder inside prefill again.
+- The pre-LM encoder cache (`pre_lm_cache_max_entries=1024`) keeps its
+  entries in page-locked (pinned) host memory so device-to-host and
+  host-to-device copies run asynchronously on the DMA path instead of
+  blocking a worker thread through a pageable bounce buffer. The whole
+  budget (`entries × 3.84 MB` for large-v3, `≈3.9 GB`) is locked at start-up
+  and cannot be swapped; size container memory limits accordingly, or set
+  `pre_lm_cache_pin_host_memory: false` to fall back to pageable memory.
 - Prefill budget defaults to 6,144 tokens (`⌊6144/1500⌋=4`) under atomic
   admission (`chunked_prefill_size=0`). This caps LM-side prefill batching
   independently of the pre-LM encoder batch limit.

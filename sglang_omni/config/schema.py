@@ -292,6 +292,7 @@ class PipelineConfig(BaseModel):
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
+    speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig()
 
