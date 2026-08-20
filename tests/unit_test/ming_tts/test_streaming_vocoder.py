@@ -315,6 +315,7 @@ def test_ming_tts_streaming_retraction_preserves_latent_and_decoder_state() -> N
     runner.before_prefill(
         SimpleNamespace(
             input_ids=torch.tensor([1, 2, 3, data.audio_patch_token_id]),
+            input_embeds=None,
             replace_embeds=None,
         ),
         None,
