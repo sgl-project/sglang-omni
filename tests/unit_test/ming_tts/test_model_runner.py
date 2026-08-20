@@ -47,6 +47,61 @@ def _cpu_prefill_graph_replay(*, bucket_size: int) -> SimpleNamespace:
     )
 
 
+def _prefill_request(
+    request_id: str,
+    input_ids: torch.Tensor | list[int],
+    *,
+    extend_length: int | None = None,
+    state: SimpleNamespace | None = None,
+) -> SimpleNamespace:
+    input_ids = torch.as_tensor(input_ids)
+    if state is None:
+        state = SimpleNamespace(spk_emb=None, prompt_latent=None)
+    return SimpleNamespace(
+        request_id=request_id,
+        data=SimpleNamespace(
+            input_ids=input_ids,
+            state=state,
+            req=SimpleNamespace(
+                prefix_indices=torch.empty(0, dtype=torch.long),
+                extend_range=SimpleNamespace(
+                    length=len(input_ids) if extend_length is None else extend_length
+                ),
+            ),
+        ),
+    )
+
+
+def _prefill_forward_batch(
+    input_ids: torch.Tensor | list[int],
+    *,
+    mm_inputs: list | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        input_ids=torch.as_tensor(input_ids),
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=[None] if mm_inputs is None else mm_inputs,
+    )
+
+
+def _run_standard_prefill(
+    runner: MingTTSModelRunner,
+    requests: list[SimpleNamespace],
+    *,
+    input_ids: torch.Tensor | list[int],
+    mm_inputs: list | None = None,
+) -> tuple[SimpleNamespace, SimpleNamespace]:
+    forward_batch = _prefill_forward_batch(input_ids, mm_inputs=mm_inputs)
+    result = runner._prepare_and_forward(
+        forward_batch,
+        SimpleNamespace(is_prefill_only=True),
+        requests,
+        True,
+    )
+    return result, forward_batch
+
+
 def test_ming_tts_entry_tail_failure_is_published_before_reraise() -> None:
     runner = object.__new__(MingTTSModelRunner)
     runner._tp_rank = 0
@@ -346,6 +401,7 @@ def test_ming_tts_post_prefill_collects_the_first_acoustic_tail_step() -> None:
 
 
 def test_ming_tts_tp_ranks_compose_the_same_logical_prefill_window() -> None:
+    """Keep Prefill rows rank-identical while only rank zero owns latent state."""
     embedding = torch.nn.Embedding.from_pretrained(
         torch.tensor(
             [
@@ -469,24 +525,12 @@ def test_ming_tts_text_prefill_stages_embeddings_without_mutating_admission_fiel
         _decode_input_embedding=SimpleNamespace(weight=embedding.weight),
         get_input_embeddings=lambda: embedding,
     )
-    request = SimpleNamespace(
-        request_id="request-text",
-        data=SimpleNamespace(
-            input_ids=torch.tensor([1, 2]),
-            state=SimpleNamespace(spk_emb=None, prompt_latent=None),
-            req=SimpleNamespace(
-                prefix_indices=torch.empty(0, dtype=torch.long),
-                extend_range=SimpleNamespace(length=2),
-            ),
-        ),
+    request = _prefill_request(
+        "request-text",
+        [1, 2],
     )
     mm_inputs = [object()]
-    forward_batch = SimpleNamespace(
-        input_ids=torch.tensor([1, 2]),
-        input_embeds=None,
-        replace_embeds=None,
-        mm_inputs=mm_inputs,
-    )
+    forward_batch = _prefill_forward_batch([1, 2], mm_inputs=mm_inputs)
 
     runner.before_prefill(forward_batch, SimpleNamespace(), [request])
 
@@ -504,6 +548,7 @@ def test_ming_tts_text_prefill_stages_embeddings_without_mutating_admission_fiel
 def test_ming_tts_reference_prefill_delegates_staged_embeddings_to_standard_worker() -> (
     None
 ):
+    """Preserve reference rows, clean admission fields, and standard-worker ownership."""
     runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
     runner._tp_rank = 0
     runner._request_states = {}
@@ -549,36 +594,23 @@ def test_ming_tts_reference_prefill_delegates_staged_embeddings_to_standard_work
         latent_dim=1,
         history_patch_size=2,
     )
-    request = SimpleNamespace(
-        request_id="request-reference",
-        data=SimpleNamespace(
-            input_ids=torch.tensor([1, 2, 3, 4, 5]),
-            state=SimpleNamespace(
-                spk_emb=torch.tensor([[1.0, 2.0]]),
-                prompt_latent=torch.tensor([[3.0], [4.0]]),
-                spk_injection_positions=[1],
-                prompt_latent_start_position=2,
-                prompt_latent_token_count=2,
-            ),
-            req=SimpleNamespace(
-                prefix_indices=torch.empty(0, dtype=torch.long),
-                extend_range=SimpleNamespace(length=5),
-            ),
+    request = _prefill_request(
+        "request-reference",
+        [1, 2, 3, 4, 5],
+        state=SimpleNamespace(
+            spk_emb=torch.tensor([[1.0, 2.0]]),
+            prompt_latent=torch.tensor([[3.0], [4.0]]),
+            spk_injection_positions=[1],
+            prompt_latent_start_position=2,
+            prompt_latent_token_count=2,
         ),
     )
     mm_inputs = [object()]
-    forward_batch = SimpleNamespace(
-        input_ids=torch.tensor([1, 2, 3, 4, 5]),
-        input_embeds=None,
-        replace_embeds=None,
-        mm_inputs=mm_inputs,
-    )
-
-    result = runner._prepare_and_forward(
-        forward_batch,
-        SimpleNamespace(is_prefill_only=True),
+    result, forward_batch = _run_standard_prefill(
+        runner,
         [request],
-        True,
+        input_ids=[1, 2, 3, 4, 5],
+        mm_inputs=mm_inputs,
     )
 
     assert result.logits_output == "standard-logits"
@@ -600,6 +632,80 @@ def test_ming_tts_reference_prefill_delegates_staged_embeddings_to_standard_work
     assert input_embeds is None
     assert replace_embeds is None
     assert observed_mm_inputs is mm_inputs
+    assert get_omni_prefill_inputs(forward_batch) is None
+
+
+def test_ming_tts_mixed_prefill_batch_preserves_request_row_order() -> None:
+    """Prove differently conditioned requests keep scheduler order in one sidecar."""
+    runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
+    runner._tp_rank = 0
+    runner._request_states = {}
+    observed_sidecars: list[torch.Tensor] = []
+
+    def standard_forward(forward_batch):
+        staged = get_omni_prefill_inputs(forward_batch)
+        assert staged is not None
+        observed_sidecars.append(staged.input_embeds.clone())
+        return SimpleNamespace(
+            logits_output="standard-logits",
+            next_token_ids=None,
+            can_run_cuda_graph=True,
+        )
+
+    embedding = torch.nn.Embedding.from_pretrained(
+        torch.tensor(
+            [
+                [0.0, 0.0],
+                [10.0, 11.0],
+                [20.0, 21.0],
+                [30.0, 31.0],
+                [40.0, 41.0],
+                [50.0, 51.0],
+            ]
+        )
+    )
+    runner.tp_worker = SimpleNamespace(forward_batch_generation=standard_forward)
+    runner.model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(weight=embedding.weight),
+        get_input_embeddings=lambda: embedding,
+        spk_head=lambda _speaker: torch.tensor([[90.0, 91.0]]),
+        history_patch_size=2,
+        latent_dim=1,
+    )
+
+    requests = [
+        _prefill_request("request-text", [1, 2]),
+        _prefill_request(
+            "request-reference",
+            [3, 4, 5],
+            state=SimpleNamespace(
+                spk_emb=torch.tensor([[1.0, 2.0]]),
+                prompt_latent=None,
+                spk_injection_positions=[1],
+            ),
+        ),
+    ]
+    result, forward_batch = _run_standard_prefill(
+        runner,
+        requests,
+        input_ids=[1, 2, 3, 4, 5],
+        mm_inputs=[None, None],
+    )
+
+    assert result.logits_output == "standard-logits"
+    assert len(observed_sidecars) == 1
+    assert torch.equal(
+        observed_sidecars[0],
+        torch.tensor(
+            [
+                [10.0, 11.0],
+                [20.0, 21.0],
+                [30.0, 31.0],
+                [90.0, 91.0],
+                [50.0, 51.0],
+            ]
+        ),
+    )
     assert get_omni_prefill_inputs(forward_batch) is None
 
 
@@ -654,6 +760,7 @@ def test_ming_tts_prefill_replays_prompt_and_generated_feedback() -> None:
 
 
 def test_ming_tts_a_b_a_same_bucket_replay_uses_current_feedback_window() -> None:
+    """Reject stale static rows across an A→B→A sequence sharing one bucket."""
     graph_runner = _cpu_prefill_graph_replay(bucket_size=4)
     observed_sidecars: list[torch.Tensor] = []
 
@@ -693,30 +800,18 @@ def test_ming_tts_a_b_a_same_bucket_replay_uses_current_feedback_window() -> Non
     }
 
     def request(request_id: str, *, extend_length: int) -> SimpleNamespace:
-        return SimpleNamespace(
-            request_id=request_id,
-            data=SimpleNamespace(
-                input_ids=torch.tensor([1, 2]),
-                req=SimpleNamespace(
-                    prefix_indices=torch.empty(0, dtype=torch.long),
-                    extend_range=SimpleNamespace(length=extend_length),
-                ),
-            ),
+        return _prefill_request(
+            request_id,
+            [1, 2],
+            extend_length=extend_length,
         )
 
     def run(request_value: SimpleNamespace) -> tuple[torch.Tensor, SimpleNamespace]:
         num_tokens = int(request_value.data.req.extend_range.length)
-        forward_batch = SimpleNamespace(
-            input_ids=torch.zeros(num_tokens, dtype=torch.long),
-            input_embeds=None,
-            replace_embeds=None,
-            mm_inputs=[None],
-        )
-        result = runner._prepare_and_forward(
-            forward_batch,
-            SimpleNamespace(is_prefill_only=True),
+        result, forward_batch = _run_standard_prefill(
+            runner,
             [request_value],
-            True,
+            input_ids=torch.zeros(num_tokens, dtype=torch.long),
         )
         return result.logits_output.hidden_states, forward_batch
 
@@ -744,6 +839,7 @@ def test_ming_tts_a_b_a_same_bucket_replay_uses_current_feedback_window() -> Non
 def test_ming_tts_controlled_rng_prefill_hidden_state_parity(
     dtype: torch.dtype,
 ) -> None:
+    """Compare eager and replay Prefill hidden states under fixed dtype tolerances."""
     generator = torch.Generator(device="cpu").manual_seed(20260819)
     prefill_window = torch.randn(4, 3, generator=generator).to(dtype=dtype)
     projection = torch.tensor(
@@ -794,27 +890,14 @@ def test_ming_tts_controlled_rng_prefill_hidden_state_parity(
                 prefill_input_embeds=prefill_window.clone()
             )
         }
-        request = SimpleNamespace(
-            request_id="parity-request",
-            data=SimpleNamespace(
-                input_ids=torch.arange(4),
-                req=SimpleNamespace(
-                    prefix_indices=torch.empty(0, dtype=torch.long),
-                    extend_range=SimpleNamespace(length=4),
-                ),
-            ),
+        request = _prefill_request(
+            "parity-request",
+            torch.arange(4),
         )
-        forward_batch = SimpleNamespace(
-            input_ids=torch.zeros(4, dtype=torch.long),
-            input_embeds=None,
-            replace_embeds=None,
-            mm_inputs=[None],
-        )
-        result = runner._prepare_and_forward(
-            forward_batch,
-            SimpleNamespace(is_prefill_only=True),
+        result, forward_batch = _run_standard_prefill(
+            runner,
             [request],
-            True,
+            input_ids=torch.zeros(4, dtype=torch.long),
         )
         assert get_omni_prefill_inputs(forward_batch) is None
         return result.logits_output.hidden_states
@@ -840,6 +923,7 @@ def test_ming_tts_controlled_rng_prefill_hidden_state_parity(
 def test_ming_tts_standard_eager_fallback_preserves_prefill_semantics(
     num_tokens: int,
 ) -> None:
+    """Preserve staged rows for both bucket-cap and 2x-padding eager fallbacks."""
     expected_window = torch.arange(num_tokens * 2, dtype=torch.float32).reshape(
         num_tokens,
         2,
@@ -871,28 +955,14 @@ def test_ming_tts_standard_eager_fallback_preserves_prefill_semantics(
             prefill_input_embeds=expected_window.clone()
         )
     }
-    request = SimpleNamespace(
-        request_id="fallback-request",
-        data=SimpleNamespace(
-            input_ids=torch.arange(num_tokens),
-            req=SimpleNamespace(
-                prefix_indices=torch.empty(0, dtype=torch.long),
-                extend_range=SimpleNamespace(length=num_tokens),
-            ),
-        ),
+    request = _prefill_request(
+        "fallback-request",
+        torch.arange(num_tokens),
     )
-    forward_batch = SimpleNamespace(
-        input_ids=torch.zeros(num_tokens, dtype=torch.long),
-        input_embeds=None,
-        replace_embeds=None,
-        mm_inputs=[None],
-    )
-
-    result = runner._prepare_and_forward(
-        forward_batch,
-        SimpleNamespace(is_prefill_only=True),
+    result, forward_batch = _run_standard_prefill(
+        runner,
         [request],
-        True,
+        input_ids=torch.zeros(num_tokens, dtype=torch.long),
     )
 
     assert result.can_run_cuda_graph is False
@@ -922,22 +992,11 @@ def test_ming_tts_prefill_clears_sidecar_after_standard_forward_error() -> None:
             prefill_input_embeds=torch.tensor([[1.0, 2.0]])
         )
     }
-    request = SimpleNamespace(
-        request_id="error-request",
-        data=SimpleNamespace(
-            input_ids=torch.tensor([1]),
-            req=SimpleNamespace(
-                prefix_indices=torch.empty(0, dtype=torch.long),
-                extend_range=SimpleNamespace(length=1),
-            ),
-        ),
+    request = _prefill_request(
+        "error-request",
+        [1],
     )
-    forward_batch = SimpleNamespace(
-        input_ids=torch.tensor([1]),
-        input_embeds=None,
-        replace_embeds=None,
-        mm_inputs=[None],
-    )
+    forward_batch = _prefill_forward_batch([1])
 
     with pytest.raises(ValueError, match="standard forward failed"):
         runner._prepare_and_forward(

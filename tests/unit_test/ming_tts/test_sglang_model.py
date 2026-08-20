@@ -9,6 +9,7 @@ import torch
 
 
 def test_ming_tts_fixed_tail_sampling_inputs_match_eager_and_graph() -> None:
+    """Match fixed-input eager and graph tails through feedback and stop lifecycle."""
     from sglang_omni.models.ming_tts.model_runner import (
         MingTTSModelRunner,
         MingTTSTPStepUpdate,
