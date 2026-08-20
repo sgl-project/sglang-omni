@@ -39,11 +39,14 @@ from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
     apply_thinker_result,
     build_sglang_thinker_request,
+    merge_for_talker,
+    project_mm_aggregate_to_talker_ar,
     project_preprocessing_to_mm_aggregate,
     project_talker_to_code2wav,
     project_thinker_to_decode,
     resolve_mm_aggregate_wait_sources,
     resolve_preprocessing_next_stages,
+    resolve_preprocessing_next_stages_speech,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
@@ -94,23 +97,44 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     speech_talker = _stage(speech_config, "talker_ar")
     text_thinker = _stage(text_config, "thinker")
     preprocessing = _stage(speech_config, "preprocessing")
-    aggregate = _stage(speech_config, "mm_aggregate")
     # Speech-mode thinker streams hidden states to talker_ar AND text-token
     # ids to decode (for the streaming detokenizer); text-mode thinker
     # streams only to decode. Lock both so a regression here can't silently
     # disable per-token streaming for either path.
     request_builders_path = "sglang_omni.models.qwen3_omni.request_builders"
-    assert preprocessing.next == ["image_encoder", "audio_encoder", "mm_aggregate"]
+    assert "mm_aggregate" not in {stage.name for stage in speech_config.stages}
+    assert preprocessing.next == [
+        "image_encoder",
+        "audio_encoder",
+        "thinker",
+        "talker_ar",
+    ]
     assert preprocessing.route_fn == (
-        f"{request_builders_path}.resolve_preprocessing_next_stages"
+        f"{request_builders_path}.resolve_preprocessing_next_stages_speech"
     )
-    assert aggregate.wait_for == ["preprocessing", "image_encoder", "audio_encoder"]
-    assert aggregate.wait_for_fn == (
-        f"{request_builders_path}.resolve_mm_aggregate_wait_sources"
+    for join_stage in (speech_thinker, speech_talker):
+        assert join_stage.wait_for == [
+            "preprocessing",
+            "image_encoder",
+            "audio_encoder",
+        ]
+        assert join_stage.wait_for_fn == (
+            f"{request_builders_path}.resolve_mm_aggregate_wait_sources"
+        )
+    assert speech_thinker.merge_fn == (
+        "sglang_omni.models.qwen3_omni.merge.merge_for_thinker"
     )
-    assert aggregate.route_fn == (
-        f"{request_builders_path}.resolve_mm_aggregate_next_stages"
-    )
+    assert speech_talker.merge_fn == f"{request_builders_path}.merge_for_talker"
+    for encoder_name in ("image_encoder", "audio_encoder"):
+        encoder = _stage(speech_config, encoder_name)
+        assert encoder.next == ["thinker", "talker_ar"]
+        assert encoder.route_fn == (
+            f"{request_builders_path}.resolve_encoder_next_stages"
+        )
+        assert encoder.project_payload == {
+            "thinker": f"{request_builders_path}.project_encoder_to_mm_aggregate",
+            "talker_ar": f"{request_builders_path}.project_encoder_to_talker_ar",
+        }
     assert speech_thinker.stream_to == ["talker_ar", "decode"]
     assert speech_thinker.route_fn == (
         f"{request_builders_path}.resolve_thinker_next_stages"
@@ -140,20 +164,29 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
         "TOKENIZERS_PARALLELISM": "false",
     }
 
-    # Early-submit wiring (issue #473): the talker stage receives its
-    # new_request from mm_aggregate so it can enter its deferred state
-    # before the thinker finishes streaming. The thinker therefore only
-    # routes its final payload to decode; its hidden-state stream to
-    # talker_ar is preserved via stream_to (locked above).
-    speech_aggregate = _stage(speech_config, "mm_aggregate")
-    assert speech_aggregate.next == ["thinker", "talker_ar"]
-    assert speech_aggregate.project_payload is not None
-    assert "talker_ar" in speech_aggregate.project_payload
+    assert "talker_ar" in preprocessing.project_payload
     assert _stage(speech_config, "thinker").next == "decode"
 
     text_aggregate = _stage(text_config, "mm_aggregate")
     assert text_aggregate.next == "thinker"
+    assert text_aggregate.wait_for == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+    ]
+    assert text_aggregate.wait_for_fn == (
+        f"{request_builders_path}.resolve_mm_aggregate_wait_sources"
+    )
+    assert _stage(text_config, "preprocessing").next == [
+        "image_encoder",
+        "audio_encoder",
+        "mm_aggregate",
+    ]
+    assert _stage(text_config, "preprocessing").route_fn == (
+        f"{request_builders_path}.resolve_preprocessing_next_stages"
+    )
     assert _stage(text_config, "thinker").next == "decode"
+    assert text_thinker.wait_for is None
 
     state = Qwen3OmniPipelineState.from_dict(
         {
@@ -446,9 +479,9 @@ def test_qwen_talker_to_code2wav_projection_keeps_only_request_latch() -> None:
 
 def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="model")
-    aggregate = _stage(config, "mm_aggregate")
+    image_encoder = _stage(config, "image_encoder")
     thinker = _stage(config, "thinker")
-    aggregate_route_fn = import_string(aggregate.route_fn)
+    encoder_route_fn = import_string(image_encoder.route_fn)
     route_fn = import_string(thinker.route_fn)
     stream_done_to_fn = import_string(thinker.stream_done_to_fn)
     terminal_stages_fn = import_string(config.terminal_stages_fn)
@@ -469,17 +502,17 @@ def test_qwen_speech_config_wires_request_granular_active_subgraph() -> None:
         data={},
     )
 
-    assert aggregate_route_fn("text", text_payload) == "thinker"
+    assert encoder_route_fn("text", text_payload) == "thinker"
     assert route_fn("text", text_payload) == "decode"
     assert stream_done_to_fn("text", text_payload) == ["decode"]
     assert terminal_stages_fn(text_payload.request) == ["decode"]
 
-    assert aggregate_route_fn("audio", audio_payload) == ["thinker", "talker_ar"]
+    assert encoder_route_fn("audio", audio_payload) == ["thinker", "talker_ar"]
     assert route_fn("audio", audio_payload) == "decode"
     assert stream_done_to_fn("audio", audio_payload) == ["talker_ar", "decode"]
     assert terminal_stages_fn(audio_payload.request) == ["decode", "code2wav"]
 
-    assert aggregate_route_fn("default", default_payload) == ["thinker", "talker_ar"]
+    assert encoder_route_fn("default", default_payload) == ["thinker", "talker_ar"]
     assert route_fn("default", default_payload) == "decode"
     assert stream_done_to_fn("default", default_payload) == ["talker_ar", "decode"]
     assert terminal_stages_fn(default_payload.request) == ["decode", "code2wav"]
@@ -553,6 +586,12 @@ def test_qwen_preprocessing_routes_only_active_encoder_branches() -> None:
         assert resolve_preprocessing_next_stages(payload.request_id, payload) == (
             expected_next
         )
+        expected_speech_next = [
+            stage for stage in expected_next if stage != "mm_aggregate"
+        ] + ["thinker", "talker_ar"]
+        assert resolve_preprocessing_next_stages_speech(
+            payload.request_id, payload
+        ) == (expected_speech_next)
         aggregate_payload = project_preprocessing_to_mm_aggregate(payload)
         assert (
             resolve_mm_aggregate_wait_sources(
@@ -1519,6 +1558,63 @@ def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> 
         "video": "video:image-cache",
         "audio": "audio:audio-cache",
     }
+
+
+def test_qwen_speech_preprocessing_route_excludes_talker_for_text_output() -> None:
+    payload = StagePayload(
+        request_id="req-text",
+        request=OmniRequest(inputs=[], metadata={"output_modalities": ["text"]}),
+        data=make_qwen_state(
+            encoder_inputs={"audio_encoder": {"input_features": torch.ones((1, 2, 3))}}
+        ).to_dict(),
+    )
+
+    assert resolve_preprocessing_next_stages_speech("req-text", payload) == [
+        "audio_encoder",
+        "thinker",
+    ]
+
+
+def test_qwen_merge_for_talker_matches_projected_thinker_merge() -> None:
+    def _payloads() -> dict[str, StagePayload]:
+        state = make_qwen_state(
+            encoder_inputs={
+                "image_encoder": {
+                    "cache_key": "image-cache",
+                    "pixel_values": torch.ones((2, 3)),
+                },
+            },
+        )
+        image_state = Qwen3OmniPipelineState(
+            encoder_outs={
+                "image_encoder": {
+                    "image_embeds": torch.ones((2, 2)),
+                    "deepstack_visual_embeds_image": [torch.ones((2, 2))],
+                }
+            }
+        )
+        return {
+            "preprocessing": project_preprocessing_to_mm_aggregate(
+                make_qwen_payload(state)
+            ),
+            "image_encoder": make_qwen_payload(image_state),
+        }
+
+    talker_merged = merge_for_talker(_payloads())
+    expected = project_mm_aggregate_to_talker_ar(merge_for_thinker(_payloads()))
+
+    talker_state = Qwen3OmniPipelineState.from_dict(talker_merged.data)
+    expected_state = Qwen3OmniPipelineState.from_dict(expected.data)
+    assert sorted(talker_state.thinker_inputs["model_inputs"]) == sorted(
+        expected_state.thinker_inputs["model_inputs"]
+    )
+    model_inputs = talker_state.thinker_inputs["model_inputs"]
+    assert "image_embeds" in model_inputs
+    assert "deepstack_visual_embeds" not in model_inputs
+    assert "image_deepstack_visual_embeds" not in model_inputs
+    assert talker_state.prompt["input_ids"].tolist() == [11, 12, 13]
+    assert talker_state.encoder_outs == {}
+    assert talker_state.mm_inputs == {}
 
 
 def test_qwen_thinker_request_and_decode_contracts() -> None:
