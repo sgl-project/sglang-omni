@@ -39,6 +39,10 @@ _SEGMENT_RE = re.compile(
 
 @register_transcription_adapter("MossTranscribeDiarize")
 class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
+    @property
+    def supports_segment_timestamps(self) -> bool:
+        return True
+
     def postprocess_text(self, text: str) -> str:
         return _SPECIAL_TOKEN_RE.sub("", text).strip()
 

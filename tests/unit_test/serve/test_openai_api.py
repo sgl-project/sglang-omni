@@ -1524,6 +1524,7 @@ def _chunking_test_client(
     *,
     max_total_audio_s: float | None = None,
     max_native_clip_s: float | None = None,
+    architectures: list[str] | None = None,
 ) -> TestClient:
     from sglang_omni.config import AudioChunkingConfig
 
@@ -1534,7 +1535,12 @@ def _chunking_test_client(
         max_native_clip_s=max_native_clip_s,
     )
     return TestClient(
-        create_app(transcription_client, model_name="asr", audio_chunking=policy)
+        create_app(
+            transcription_client,
+            model_name="asr",
+            architectures=architectures,
+            audio_chunking=policy,
+        )
     )
 
 
@@ -1565,6 +1571,27 @@ def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
     assert response.json()["text"] == expected_text
     # usage reports the whole upload, not one chunk.
     assert response.json()["usage"] == {"seconds": 3, "type": "duration"}
+
+
+@pytest.mark.parametrize("response_format", ["srt", "vtt"])
+def test_chunked_subtitle_format_is_rejected_before_inference(
+    response_format: str,
+) -> None:
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(
+        transcription_client,
+        architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "response_format": response_format},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "does not support chunked transcription" in response.json()["detail"]
+    assert transcription_client.requests == []
 
 
 def test_noise_floor_chunks_are_skipped_not_transcribed() -> None:
@@ -2674,6 +2701,71 @@ def test_transcription_verbose_json_returns_diarized_segments() -> None:
         (0, 0.0, 1.2, "[S01]hello there."),
         (1, 1.3, 3.0, "[S02]bye."),
     ]
+
+
+def test_transcription_srt_returns_diarized_segments() -> None:
+    client = TestClient(
+        create_app(
+            DiarizationTranscriptionClient(),
+            model_name="moss-transcribe-diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "moss-transcribe-diarize", "response_format": "srt"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == (
+        "1\n"
+        "00:00:00,000 --> 00:00:01,200\n"
+        "[S01]hello there.\n\n"
+        "2\n"
+        "00:00:01,300 --> 00:00:03,000\n"
+        "[S02]bye.\n\n"
+    )
+
+
+def test_transcription_vtt_returns_diarized_segments() -> None:
+    client = TestClient(
+        create_app(
+            DiarizationTranscriptionClient(),
+            model_name="moss-transcribe-diarize",
+            architectures=["MossTranscribeDiarizeForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "moss-transcribe-diarize", "response_format": "vtt"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.text.startswith("WEBVTT\n\n")
+
+
+def test_transcription_srt_requires_segment_timestamp_capability() -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulTranscriptionClient(),
+            model_name="openai/whisper-large-v3",
+            architectures=["WhisperForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "openai/whisper-large-v3", "response_format": "srt"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "segment-timestamp capability" in response.json()["detail"]
 
 
 def test_transcription_verbose_json_falls_back_for_plain_text() -> None:

@@ -26,6 +26,11 @@ from sglang_omni.serve.protocol import (
 class TranscriptionAdapter(ABC):
     """Abstract base for model-specific transcription output handling."""
 
+    @property
+    def supports_segment_timestamps(self) -> bool:
+        """Whether segments carry model-derived timestamps."""
+        return False
+
     def postprocess_text(self, text: str) -> str:
         """Strip model-specific markers from the decoded text.
 
