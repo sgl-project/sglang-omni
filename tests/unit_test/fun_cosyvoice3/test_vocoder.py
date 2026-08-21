@@ -23,7 +23,13 @@ class _FakeHiFT(torch.nn.Module):
 
     def inference(self, *, speech_feat, finalize):
         self.calls.append((speech_feat, finalize))
-        return torch.arange(speech_feat.shape[-1]).reshape(1, -1).float(), None
+        return speech_feat[:, 0].clone(), None
+
+
+class _WrongBatchHiFT(_FakeHiFT):
+    def inference(self, *, speech_feat, finalize):
+        self.calls.append((speech_feat, finalize))
+        return speech_feat[:1, 0].clone(), None
 
 
 class _FakeEstimator(torch.nn.Module):
@@ -418,3 +424,38 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
         "flow_batch_admission_frames": 2000,
         "enable_dit_torch_compile": False,
     }
+
+
+def test_cosyvoice3_vocoder_batches_hift_by_exact_mel_length(monkeypatch) -> None:
+    flow = _BatchCapableFakeFlow()
+    hift = _FakeHiFT()
+    batch_calls: list[list] = []
+    _install_fake_batch_adapter(monkeypatch, batch_calls)
+    vocoder = stages._CosyVoice3Vocoder(flow, hift)
+    items = [
+        (_state(), _codes(2, 1)),
+        (_state(), _codes(3, 3)),
+        (_state(), _codes(2, 6)),
+    ]
+
+    results = asyncio.run(vocoder.decode_batch(items))
+
+    assert [len(call) for call in batch_calls] == [3]
+    assert [call[0].shape for call in hift.calls] == [(2, 80, 4), (1, 80, 6)]
+    assert [result[0].shape for result in results] == [(1, 4), (1, 6), (1, 4)]
+    assert [result[0][0, 0].item() for result in results] == [1, 3, 6]
+
+
+def test_cosyvoice3_vocoder_rejects_unexpected_hift_batch_size(monkeypatch) -> None:
+    flow = _BatchCapableFakeFlow()
+    hift = _WrongBatchHiFT()
+    batch_calls: list[list] = []
+    _install_fake_batch_adapter(monkeypatch, batch_calls)
+    vocoder = stages._CosyVoice3Vocoder(flow, hift)
+    items = [
+        (_state(), _codes(2, 1)),
+        (_state(), _codes(2, 3)),
+    ]
+
+    with pytest.raises(RuntimeError, match="unexpected batch size"):
+        asyncio.run(vocoder.decode_batch(items))

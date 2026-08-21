@@ -505,11 +505,14 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             for index, (state, codes) in enumerate(items)
         ]
         results: list[tuple[Any, int] | None] = [None] * len(prepared)
-        buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
+        flow_buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
         for request in prepared:
-            buckets[self._flow_bucket_key(request.flow_input)].append(request)
+            flow_buckets[self._flow_bucket_key(request.flow_input)].append(request)
 
-        for bucket in buckets.values():
+        mel_buckets: dict[int, list[tuple[_PreparedFlowRequest, torch.Tensor]]] = (
+            defaultdict(list)
+        )
+        for bucket in flow_buckets.values():
             with torch.autocast(
                 device_type=current_platform.device_type,
                 dtype=self._compute_dtype,
@@ -518,11 +521,20 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                 mel_list = self._flow.inference(
                     [request.flow_input for request in bucket]
                 )
-                for request, mel in zip(bucket, mel_list, strict=True):
-                    results[request.index] = (
-                        self._mel2wav(mel),
-                        request.sample_rate,
-                    )
+            for request, mel in zip(bucket, mel_list, strict=True):
+                mel_buckets[int(mel.shape[-1])].append((request, mel))
+
+        # HiFT has no per-row length mask, and right-padding changes valid tail
+        # samples through its right-context and ISTFT boundary handling.
+        for bucket in mel_buckets.values():
+            with torch.autocast(
+                device_type=current_platform.device_type,
+                dtype=self._compute_dtype,
+                enabled=self._compute_dtype is not None,
+            ):
+                waveforms = self._mel2wav_batch([item[1] for item in bucket])
+            for (request, _mel), waveform in zip(bucket, waveforms, strict=True):
+                results[request.index] = (waveform, request.sample_rate)
 
         if any(result is None for result in results):
             raise RuntimeError("Fun-CosyVoice3 vocoder did not decode every request")
@@ -584,9 +596,23 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             * self._flow_batch_bucket_frames
         )
 
-    def _mel2wav(self, tts_mel: torch.Tensor) -> torch.Tensor:
-        tts_speech, _ = self._hift.inference(speech_feat=tts_mel, finalize=True)
-        return tts_speech.detach().cpu()
+    def _mel2wav_batch(self, mel_tensors: list[torch.Tensor]) -> list[torch.Tensor]:
+        speech_feat = (
+            mel_tensors[0] if len(mel_tensors) == 1 else torch.cat(mel_tensors, dim=0)
+        )
+        tts_speech, _ = self._hift.inference(
+            speech_feat=speech_feat,
+            finalize=True,
+        )
+        if tts_speech.shape[0] != len(mel_tensors):
+            raise RuntimeError(
+                "Fun-CosyVoice3 HiFT returned an unexpected batch size: "
+                f"expected {len(mel_tensors)}, got {tts_speech.shape[0]}"
+            )
+        return [
+            tts_speech[index : index + 1].detach().cpu()
+            for index in range(len(mel_tensors))
+        ]
 
     def store_result(
         self,
