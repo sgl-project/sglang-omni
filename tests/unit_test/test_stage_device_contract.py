@@ -70,9 +70,17 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
     built: dict[str, object] = {}
 
     class _Encoder:
-        def __init__(self, *, model_path, device, dtype):
+        def __init__(
+            self,
+            *,
+            model_path,
+            device,
+            dtype,
+            enable_layer_cuda_graph: bool | None = None,
+        ):
             del model_path, dtype
             built["device"] = device
+            built["enable_layer_cuda_graph"] = enable_layer_cuda_graph
 
         def __getattr__(self, name):
             del name
@@ -90,6 +98,9 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
     getattr(stages, f"create_{factory_name}_executor")("unused", device=None)
 
     assert built["device"] == platforms.current_platform.device_type
+    assert built["enable_layer_cuda_graph"] is (
+        False if factory_name == "audio_encoder" else None
+    )
 
 
 def test_qwen3_omni_code2wav_resolves_none_to_a_concrete_device(

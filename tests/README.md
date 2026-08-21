@@ -92,6 +92,7 @@ tests/
     │   ├── test_fp8_backend_config.py
     │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
+    │   ├── test_model_fixture_overrides.py
     │   ├── test_mrope_positions.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
@@ -143,8 +144,10 @@ tests/
     │   ├── test_core.py
     │   └── test_request_builders.py
     ├── qwen3_asr/
+    │   ├── test_encoder_cuda_graph.py
     │   ├── test_pipeline.py
-    │   └── test_request_builders.py
+    │   ├── test_request_builders.py
+    │   └── test_stream_output_builder.py
     ├── fun_asr/
     │   ├── test_encoder_service.py
     │   ├── test_model.py
@@ -379,7 +382,7 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--tts-ci-model {higgs,moss}`: select the TTS CI model preset for
   `test_tts_ci.py` without editing source. Defaults to the `TTS_CI_MODEL`
   environment variable, then `higgs`.
-- CLI flag `--asr-ci-model {fun,qwen3}`: select the ASR CI model preset for
+- CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for
   `test_asr_ci_seedtts.py` without editing source. Defaults to the
   `ASR_CI_MODEL` environment variable, then `fun`.
 
@@ -482,6 +485,9 @@ that happened to contain an older version of the test.
     text round-trips for byte-level BPE output.
   - invalid encoded-audio classification versus operational loader failures,
     including transcription-route HTTP 400/500 mapping.
+  - encoder CUDA graph runner: config-derived token buckets, dummy-window
+    padding invariants, get_audio_feature routing with eager fallback, and a
+    CUDA-only graph-vs-eager parity check of the captured layer stack.
 - `unit_test/arkasr/`: ARK-ASR-3B unit tests:
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
@@ -523,6 +529,8 @@ that happened to contain an older version of the test.
   - tokenizer and preprocessing fallback behavior
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
+  - full-model fixture overrides target the preprocessing and thinker context
+    limits without leaking thinker-only arguments into the decode stage
   - `Qwen3OmniPipelineState` request builders, including projected payload container
     isolation for mutable streaming state
   - vectorized thinker M-RoPE position indexing (`test_mrope_positions.py`):

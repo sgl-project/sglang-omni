@@ -12,7 +12,7 @@ from importlib import import_module
 
 # This is the single source for both runtime and distribution metadata. Keep
 # release bumps here; setuptools reads it through tool.setuptools.dynamic.
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 _EXPORTS: dict[str, tuple[str, str]] = {
     # client

@@ -1,6 +1,6 @@
 # 🚀 Installation
 
-Current stable release: **v0.1.2** on [PyPI](https://pypi.org/project/sglang-omni/).
+Current stable release: **v0.1.3** on [PyPI](https://pypi.org/project/sglang-omni/).
 
 Two install paths. Docker is recommended — UCX, flash-attn, sglang, and CUDA are prebuilt.
 
@@ -36,10 +36,13 @@ docker run -it \
 **3. Install `sglang-omni` inside the container**
 
 ```bash
+pip install --upgrade pip
+pip install uv
+
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install "sglang-omni==0.1.2"
+uv pip install --prerelease=allow "sglang-omni==0.1.3"
 ```
 
 ## 🛠️ Option B: Manual install
@@ -52,13 +55,16 @@ Build prerequisites first:
 Then:
 
 ```bash
+pip install --upgrade pip
+pip install uv
+
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install "sglang-omni==0.1.2"
+uv pip install --prerelease=allow "sglang-omni==0.1.3"
 ```
 
-Latest on the index without a pin: `uv pip install sglang-omni`.
+Latest on the index without a pin: `uv pip install --prerelease=allow sglang-omni`.
 
 ### Install from source
 
@@ -68,8 +74,11 @@ For development or unreleased changes:
 git clone git@github.com:sgl-project/sglang-omni.git
 cd sglang-omni
 
+pip install --upgrade pip
+pip install uv
+
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install -v -e .   # drop -e for a non-editable install
+uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```

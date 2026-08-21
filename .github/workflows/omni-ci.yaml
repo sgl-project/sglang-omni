@@ -32,7 +32,7 @@ on:
         type: string
         default: ""
       asr_ci_model:
-        description: "Optional ASR CI model preset to run (fun or qwen3). Leave empty for random."
+        description: "Optional ASR CI model preset to run (fun, qwen3 or whisper). Leave empty for random."
         required: false
         type: string
         default: ""
@@ -57,6 +57,7 @@ env:
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
   FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
+  WHISPER_ASR_MODEL_PATH: openai/whisper-large-v3
 
 
 jobs:
@@ -300,7 +301,8 @@ jobs:
             "${TTS_MODEL_PATH}" \
             "${MOSS_TTS_MODEL_PATH}" \
             "${QWEN3_TTS_MODEL_PATH}" \
-            "${FUN_ASR_MODEL_PATH}"
+            "${FUN_ASR_MODEL_PATH}" \
+            "${WHISPER_ASR_MODEL_PATH}"
 
       - name: Mark PR environment complete
         shell: bash
@@ -323,9 +325,10 @@ jobs:
           PR_LABELS: ${{ needs.preflight.outputs.labels || '[]' }}
           RUN_FUN_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-fun-asr') }}
           RUN_QWEN3_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-asr') }}
+          RUN_WHISPER_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-whisper-asr') }}
           ASR_CI_MODEL_OVERRIDE: ${{ github.event.inputs.asr_ci_model }}
         run: |
-          models=(fun qwen3)
+          models=(fun qwen3 whisper)
           selected=""
           override="${ASR_CI_MODEL_OVERRIDE,,}"
           if [[ -n "${override}" ]]; then
@@ -340,14 +343,20 @@ jobs:
               exit 1
             fi
           else
-            if [[ "${RUN_FUN_ASR_LABEL}" == "true" && "${RUN_QWEN3_ASR_LABEL}" == "true" ]]; then
-              echo "::error::Multiple ASR model labels found in PR labels ${PR_LABELS}. Keep only one of: run-fun-asr run-qwen3-asr"
+            label_count=0
+            for flag in "${RUN_FUN_ASR_LABEL}" "${RUN_QWEN3_ASR_LABEL}" "${RUN_WHISPER_ASR_LABEL}"; do
+              [[ "${flag}" == "true" ]] && label_count=$((label_count + 1))
+            done
+            if [[ "${label_count}" -gt 1 ]]; then
+              echo "::error::Multiple ASR model labels found in PR labels ${PR_LABELS}. Keep only one of: run-fun-asr run-qwen3-asr run-whisper-asr"
               exit 1
             fi
             if [[ "${RUN_FUN_ASR_LABEL}" == "true" ]]; then
               selected="fun"
             elif [[ "${RUN_QWEN3_ASR_LABEL}" == "true" ]]; then
               selected="qwen3"
+            elif [[ "${RUN_WHISPER_ASR_LABEL}" == "true" ]]; then
+              selected="whisper"
             fi
           fi
           if [[ -z "${selected}" ]]; then

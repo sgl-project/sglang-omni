@@ -104,6 +104,7 @@ def _make_service(
     cache_max_entries: int = 16,
     cache_max_bytes: int | None = None,
     max_batch_size: int = 8,
+    pin_host_memory: bool = True,
 ) -> WhisperPreLMEncoderService:
     service = WhisperPreLMEncoderService(
         model or _StubModel(),
@@ -112,9 +113,123 @@ def _make_service(
         cache_max_entries=cache_max_entries,
         cache_max_bytes=cache_max_bytes,
         max_batch_size=max_batch_size,
+        pin_host_memory=pin_host_memory,
     )
     _SERVICES.append(service)
     return service
+
+
+_requires_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="pinned host memory needs a CUDA context"
+)
+
+
+def _cuda_model() -> _StubModel:
+    return _StubModel(dtype=torch.float16).to("cuda")
+
+
+def _cached_entry(
+    service: WhisperPreLMEncoderService, fingerprint: str
+) -> torch.Tensor:
+    cached = service.lookup_cached_embedding(fingerprint, _TOKENS)
+    assert cached is not None
+    return cached
+
+
+def test_pinning_is_off_without_cuda_device() -> None:
+    # note (Jeffro): the stub model lives on CPU: there is nothing to DMA against, so the
+    # service must not try to page-lock anything.
+    service = _make_service()
+    assert service.pin_host_memory is False
+    assert service._cache.pin_memory is False
+    assert service.stats()["pin_prewarm_s"] == 0.0
+
+
+@_requires_cuda
+def test_cuda_cache_entries_are_pinned_and_match_device_result() -> None:
+    model = _cuda_model()
+    service = _make_service(model)
+    assert service.pin_host_memory is True
+    item = _make_item(fingerprint="pinned", fill=2.0)
+    service.encode_item(item)
+    cached = _cached_entry(service, "pinned")
+    assert cached.device.type == "cpu"
+    assert cached.is_pinned()
+    assert cached.dtype == torch.float16
+    torch.cuda.synchronize()
+    assert torch.equal(cached.to("cuda"), item.precomputed_embeddings)
+    # note (Jeffro): no fingerprint means nothing will be cached, so nothing is staged.
+    anonymous = _make_item(fingerprint="ignored")
+    anonymous.audio_fingerprint = None
+    assert service.stage_host_copy(anonymous, item.precomputed_embeddings) is None
+
+
+@_requires_cuda
+def test_cuda_hit_attaches_device_tensor_from_pinned_entry() -> None:
+    model = _cuda_model()
+    service = _make_service(model)
+    first = _make_item(fingerprint="hit", fill=1.5)
+    second = _make_item(fingerprint="hit", fill=7.0)
+    service.encode_item(first)
+    service.encode_item(second)
+    torch.cuda.synchronize()
+    assert model.encode_calls == 1
+    assert second.precomputed_embeddings.is_cuda
+    assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
+
+
+@_requires_cuda
+def test_pin_host_memory_flag_disables_pinning() -> None:
+    service = _make_service(_cuda_model(), pin_host_memory=False)
+    assert service.pin_host_memory is False
+    item = _make_item(fingerprint="pageable")
+    service.encode_item(item)
+    cached = _cached_entry(service, "pageable")
+    assert not cached.is_pinned()
+    assert service.stats()["pin_prewarm_s"] == 0.0
+
+
+@_requires_cuda
+def test_pinned_allocation_failure_falls_back_to_pageable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _make_service(_cuda_model())
+    assert service.pin_host_memory is True
+
+    def _boom(_tokens: int) -> torch.Tensor:
+        raise RuntimeError("cudaHostAlloc failed")
+
+    monkeypatch.setattr(service, "_new_pinned_host", _boom)
+    item = _make_item(fingerprint="fallback", fill=4.0)
+    service.encode_item(item)
+    # note (Jeffro): the entry is still cached, just in pageable memory, and the service
+    # stops trying to pin so the failure is paid once, not per request.
+    cached = _cached_entry(service, "fallback")
+    assert not cached.is_pinned()
+    assert service.pin_host_memory is False
+    assert service._cache.pin_memory is False
+    assert service.stats()["pin_failures"] == 1
+    torch.cuda.synchronize()
+    assert torch.equal(cached.to("cuda"), item.precomputed_embeddings)
+
+
+@_requires_cuda
+def test_prewarm_covers_cache_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    allocations: list[int] = []
+    original = WhisperPreLMEncoderService._new_pinned_host
+
+    def _counting(self: WhisperPreLMEncoderService, tokens: int) -> torch.Tensor:
+        allocations.append(tokens)
+        return original(self, tokens)
+
+    monkeypatch.setattr(WhisperPreLMEncoderService, "_new_pinned_host", _counting)
+    service = _make_service(_cuda_model(), cache_max_entries=5)
+    assert allocations == [_TOKENS] * 5
+    assert service.stats()["pin_prewarm_s"] >= 0.0
+    # Zero capacity means nothing to warm.
+    allocations.clear()
+    _make_service(_cuda_model(), cache_max_entries=0)
+    assert allocations == []
 
 
 def test_cache_budget_is_derived_from_entry_count() -> None:

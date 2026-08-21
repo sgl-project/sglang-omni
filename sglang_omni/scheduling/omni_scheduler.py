@@ -935,6 +935,20 @@ class OmniScheduler:
         self._drain_request_build_results()
         self._drain_request_admission_results()
 
+    def request_build_queue_fits_workers(self) -> bool:
+        """True when pending+backlog still fits in the request-build pool.
+
+        Without a build executor the scheduler loop must stay free, so this
+        is False and admission stays deferred.
+        """
+        if self._request_build_executor is None:
+            return False
+        with self._request_admission_lock:
+            queued = len(self._pending_request_builds) + len(
+                self._backlogged_request_build_payloads
+            )
+        return queued <= self.request_build_max_workers
+
     def _run_request_builder(self, payload: Any, active_stage: str | None) -> Any:
         req_id = payload.request_id
         _emit_event(

@@ -22,7 +22,7 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
 )
 from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_stream_output_builder,
-    resolve_mm_aggregate_next_stages,
+    resolve_encoder_next_stages,
     resolve_terminal_stages,
     resolve_thinker_next_stages,
     resolve_thinker_stream_done_targets,
@@ -110,7 +110,7 @@ def _thinker_stage_payload(output_modalities: list[str] | None) -> StagePayload:
 def test_qwen_text_output_uses_text_only_active_subgraph():
     payload = _thinker_stage_payload(["text"])
 
-    assert resolve_mm_aggregate_next_stages("req-1", payload) == "thinker"
+    assert resolve_encoder_next_stages("req-1", payload) == "thinker"
     assert resolve_thinker_next_stages("req-1", payload) == "decode"
     assert resolve_thinker_stream_done_targets("req-1", payload) == ["decode"]
     assert resolve_terminal_stages(payload.request) == ["decode"]
@@ -119,7 +119,7 @@ def test_qwen_text_output_uses_text_only_active_subgraph():
 def test_qwen_audio_output_uses_speech_active_subgraph():
     payload = _thinker_stage_payload(["text", "audio"])
 
-    assert resolve_mm_aggregate_next_stages("req-1", payload) == [
+    assert resolve_encoder_next_stages("req-1", payload) == [
         "thinker",
         "talker_ar",
     ]
@@ -134,7 +134,7 @@ def test_qwen_audio_output_uses_speech_active_subgraph():
 def test_qwen_missing_output_modalities_uses_speech_active_subgraph():
     payload = _thinker_stage_payload(None)
 
-    assert resolve_mm_aggregate_next_stages("req-1", payload) == [
+    assert resolve_encoder_next_stages("req-1", payload) == [
         "thinker",
         "talker_ar",
     ]

@@ -9,7 +9,6 @@ _SPEECH_STAGE_ORDER = (
     "preprocessing",
     "image_encoder",
     "audio_encoder",
-    "mm_aggregate",
     "thinker",
     "decode",
     "talker_ar",
@@ -79,7 +78,7 @@ class Qwen3OmniPlacementPolicy:
             missing = sorted(_SPEECH_STAGE_SET - names)
             extra = sorted(names - _SPEECH_STAGE_SET)
             raise ValueError(
-                "Qwen speech must use the eight configured stages; "
+                "Qwen speech must use the seven configured stages; "
                 f"missing={missing}, extra={extra}"
             )
 

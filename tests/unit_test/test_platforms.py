@@ -12,7 +12,9 @@ from sglang.srt.platforms.rocm import RocmSRTPlatform
 import sglang_omni.platforms as platforms
 import sglang_omni.platforms.xpu as xpu_platform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.rocm import ROCMOmniPlatform
 
 
 class _VendorDeviceMixin(DeviceMixin):
@@ -48,12 +50,52 @@ def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
     spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
 
     assert platform.is_rocm()
+    assert not isinstance(platform, CUDAOmniPlatform)
+    assert platform.device_type == "cuda"
     assert (
         platform.get_stage_process_env(spec, {"CUDA_VISIBLE_DEVICES": "3,4"})[
             "CUDA_VISIBLE_DEVICES"
         ]
         == "4"
     )
+
+
+def test_rocm_platform_uses_conservative_omni_capabilities() -> None:
+    from sglang_omni.comm.data_ref import TransportKind
+
+    platform = ROCMOmniPlatform()
+
+    assert platform.get_intra_node_transport() is TransportKind.SHM
+    assert platform.get_fused_qk_norm_rope() is None
+
+
+def test_rocm_talker_keeps_auto_moe_backend() -> None:
+    server_args = SimpleNamespace(
+        quantization=None,
+        moe_runner_backend="auto",
+    )
+    model_config = SimpleNamespace(quantization=None)
+
+    ROCMOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3OmniTalker",
+    )
+
+    assert server_args.moe_runner_backend == "auto"
+
+
+@pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])
+def test_rocm_qwen3_omni_rejects_cutlass_moe_backends(backend: str) -> None:
+    server_args = SimpleNamespace(quantization=None, moe_runner_backend=backend)
+    model_config = SimpleNamespace(quantization=None)
+
+    with pytest.raises(ValueError, match="NVIDIA CUDA-only"):
+        ROCMOmniPlatform().apply_model_worker_backend_policy(
+            server_args,
+            model_config,
+            "Qwen3OmniThinkerForCausalLM",
+        )
 
 
 def test_srt_plugin_identity_round_trips_to_spawned_process() -> None:
