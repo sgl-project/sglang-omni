@@ -1409,3 +1409,121 @@ def test_stage_local_object_requires_registered_target() -> None:
             )
 
     asyncio.run(_run())
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
+    monkeypatch,
+) -> None:
+    def _unexpected_direct_payload(payload):
+        raise AssertionError("small payload must not take the direct CUDA IPC path")
+
+    monkeypatch.setattr(
+        stage_io, "serialize_direct_cuda_ipc_payload", _unexpected_direct_payload
+    )
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="audio_encoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"mm_aggregate": "inproc://mm"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"mm_aggregate"},
+            stage_gpu_ids={"mm_aggregate": (0,)},
+            disable_direct_cuda_ipc_payload=True,
+        )
+
+        tensor = torch.randn(63, 2048, dtype=torch.bfloat16, device="cuda:0")
+        payload = make_stage_payload(request_id="req-small-hop", data={"t": tensor})
+        await sender._send_to_stage("req-small-hop", "mm_aggregate", payload)
+
+        target, endpoint, msg = control_plane.sent_to_stage[0]
+        assert target == "mm_aggregate"
+        assert endpoint == "inproc://mm"
+        assert msg.data_ref["_type"] == "DataRef"
+        assert relay.storage
+
+    asyncio.run(_run())
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="image_encoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"mm_aggregate": "inproc://mm"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"mm_aggregate"},
+            stage_gpu_ids={"mm_aggregate": (0,)},
+        )
+
+        tensor = torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0")
+        payload = make_stage_payload(request_id="req-small-hop", data={"t": tensor})
+        await sender._send_to_stage("req-small-hop", "mm_aggregate", payload)
+
+        assert relay.storage == {}
+        _, _, msg = control_plane.sent_to_stage[0]
+        assert msg.data_ref["_type"] == "TorchCudaIpcPayload"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
+    """The scoped audio policy changes transport only; values stay untouched."""
+
+    async def _run() -> None:
+        relay = FakeRelay()
+        control_plane = RecordingStageControlPlane()
+        sender = Stage(
+            name="audio_encoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=0,
+            endpoints={"mm_aggregate": "inproc://mm"},
+            control_plane=control_plane,
+            relay=relay,
+            scheduler=FakeScheduler(),
+            gpu_stage_names={"mm_aggregate"},
+            stage_gpu_ids={"mm_aggregate": (0,)},
+            disable_direct_cuda_ipc_payload=True,
+        )
+
+        torch.manual_seed(0)
+        tensor = torch.randn(63, 2048, dtype=torch.bfloat16, device="cuda:0")
+        original = tensor.clone()
+        payload = make_stage_payload(request_id="req-bitwise", data={"t": tensor})
+        await sender._send_to_stage("req-bitwise", "mm_aggregate", payload)
+
+        _, _, msg = control_plane.sent_to_stage[0]
+        assert msg.data_ref["_type"] == "DataRef"
+        landed = await stage_io.read_payload(
+            relay,
+            "req-bitwise",
+            DataRef.from_dict(msg.data_ref),
+            local_device="cuda:0",
+        )
+        received = landed.data["t"]
+        assert received.dtype == original.dtype
+        assert tuple(received.shape) == tuple(original.shape)
+        assert torch.equal(received.to(original.device), original)
+        # the sender-side tensor must also be left alone
+        assert torch.equal(tensor, original)
+
+    asyncio.run(_run())

@@ -84,9 +84,14 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="audio_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory_args={"device": None, "dtype": None},
+        factory_args={
+            "device": None,
+            "dtype": None,
+            "enable_layer_cuda_graph": True,
+        },
         gpu=gpu,
         next="mm_aggregate",
+        disable_direct_cuda_ipc_payload=True,
         project_payload={
             "mm_aggregate": f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
         },

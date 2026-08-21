@@ -110,6 +110,20 @@ def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
         assert _stage(config, stage_name).process == stage_name
 
 
+@pytest.mark.parametrize(
+    "config_cls",
+    [Qwen3OmniSpeechPipelineConfig, Qwen3OmniSpeechColocatedPipelineConfig],
+)
+def test_audio_encoder_scopes_pooled_payload_transport(config_cls) -> None:
+    config = config_cls(model_path="dummy")
+    assert _stage(config, "audio_encoder").disable_direct_cuda_ipc_payload is True
+    assert _stage(config, "image_encoder").disable_direct_cuda_ipc_payload is False
+    assert (
+        _stage(config, "audio_encoder").factory_args["enable_layer_cuda_graph"] is True
+    )
+    assert "enable_layer_cuda_graph" not in _stage(config, "image_encoder").factory_args
+
+
 def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction() -> (
     None
 ):

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapters between stage objects and data-plane refs."""
+
 from __future__ import annotations
 
 import base64
