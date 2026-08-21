@@ -22,9 +22,8 @@ from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
 from sglang_omni.platforms import current_platform
 
 _DEVICE = get_device()
-requires_accelerator = pytest.mark.skipif(
-    _DEVICE.partition(":")[0] not in ("cuda", "xpu"),
-    reason="requires cuda or xpu",
+requires_xpu = pytest.mark.skipif(
+    _DEVICE.partition(":")[0] != "xpu", reason="describes the xpu policy"
 )
 _MROPE_SECTION = [24, 20, 20]
 
@@ -209,6 +208,87 @@ def test_installing_twice_leaves_one_wrapper_and_no_recursion(
     assert calls == ["original"]
 
 
+def test_the_installed_wrapper_hands_the_kernel_views_of_the_packed_qkv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fused path's contract, with a fake kernel and no device.
+
+    The kernel writes q and k in place, so it must receive views that alias the
+    packed projection. Copies would leave the rotation in a temporary and the
+    model would attend to unnormalized, unrotated q and k with nothing raised.
+    """
+    _pin_xpu(monkeypatch)
+    heads, kv_heads, dim, tokens = 4, 2, 128, 3
+    seen: dict = {}
+
+    def fake_kernel(q, k, q_weight, k_weight, cache, positions, is_neox, eps):
+        seen.update(
+            q=q,
+            k=k,
+            q_weight=q_weight,
+            k_weight=k_weight,
+            cache=cache,
+            positions=positions,
+            is_neox=is_neox,
+            eps=eps,
+        )
+        q.fill_(1.0)
+        k.fill_(2.0)
+
+    q_weight = torch.ones(dim, dtype=torch.bfloat16)
+    k_weight = torch.full((dim,), 0.5, dtype=torch.bfloat16)
+    table = torch.arange(8 * dim, dtype=torch.bfloat16).reshape(8, dim)
+    attn = _fake_attn(
+        apply_qk_norm_rope=lambda *a: "unfused",
+        head_dim=dim,
+        num_heads=heads,
+        num_kv_heads=kv_heads,
+        q_size=heads * dim,
+        kv_size=kv_heads * dim,
+        q_norm=SimpleNamespace(weight=q_weight, variance_epsilon=1e-5),
+        k_norm=SimpleNamespace(weight=k_weight),
+        rotary_emb=SimpleNamespace(cos_sin_cache=table, is_neox_style=False),
+    )
+    gate = install_thinker_fused_rope(
+        SimpleNamespace(layers=[SimpleNamespace(self_attn=attn)]),
+        None,
+        kernel_provider=lambda: fake_kernel,
+        prefill_graph_enabled=False,
+    )
+    positions = _positions(rows_equal=True, tokens=tokens)
+    gate.evaluate(positions, _extend_batch(mm_inputs=None))
+
+    qkv = torch.randn(tokens, (heads + 2 * kv_heads) * dim, dtype=torch.bfloat16)
+    v_before = qkv[:, (heads + kv_heads) * dim :].clone()
+
+    q, k, v = attn.apply_qk_norm_rope(qkv, positions, None)
+
+    assert seen["q"].shape == (tokens, heads, dim)
+    assert seen["k"].shape == (tokens, kv_heads, dim)
+    assert seen["q"].data_ptr() == qkv.data_ptr()
+    assert seen["k"].data_ptr() == qkv[:, heads * dim :].data_ptr()
+    assert (qkv[:, : heads * dim] == 1.0).all()
+    assert (qkv[:, heads * dim : (heads + kv_heads) * dim] == 2.0).all()
+
+    assert seen["q_weight"] is q_weight
+    assert seen["k_weight"] is k_weight
+    # The table is upcast because the kernel reads float32, and indexed by the
+    # temporal row alone.
+    assert seen["cache"].dtype == torch.float32
+    assert torch.equal(seen["cache"], table.float())
+    assert torch.equal(seen["positions"], positions[0])
+    assert seen["is_neox"] is False
+    assert seen["eps"] == 1e-5
+
+    assert q.shape == (tokens, heads * dim)
+    assert k.shape == (tokens, kv_heads * dim)
+    assert torch.equal(v, v_before)
+    assert attn._used_fused_qk_norm_rope_last_call is True
+
+    gate.evaluate(positions, _decode_batch())
+    assert attn.apply_qk_norm_rope(qkv, positions, None) == "unfused"
+
+
 def test_gate_refuses_decode_so_no_graph_can_freeze_the_decision() -> None:
     gate = ThinkerFusedRopeGate()
 
@@ -243,9 +323,7 @@ def test_install_is_refused_while_a_prefill_graph_could_freeze_it(
     )
 
 
-@pytest.mark.skipif(
-    _DEVICE.partition(":")[0] != "xpu", reason="describes the xpu policy"
-)
+@requires_xpu
 def test_install_succeeds_on_xpu() -> None:
     """The platform this exists for must actually get the patch."""
     attn = _fake_attn()
@@ -318,10 +396,14 @@ def test_the_kernel_is_not_acquired_off_xpu(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.gpu
-@requires_accelerator
+@requires_xpu
 def test_the_kernel_matches_an_unfused_reference() -> None:
-    """The kernel's rotation equals RMS-norm plus neox RoPE, read off a table."""
-    kernel = current_platform.get_fused_qk_norm_rope()
+    """The kernel's rotation equals RMS-norm plus neox RoPE, read off a table.
+
+    XPU only: this is the cos/sin-cache ABI, which no other platform's hook
+    serves.
+    """
+    kernel = current_platform.get_fused_qk_norm_rope_with_cos_sin_cache()
     if kernel is None:
         pytest.skip("this sgl_kernel build has no fused QK-norm-RoPE kernel")
 

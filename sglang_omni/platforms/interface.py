@@ -35,6 +35,15 @@ class OmniPlatform(DeviceMixin):
         """Get the fused QK norm RoPE kernel if available, else return None."""
         return None
 
+    def get_fused_qk_norm_rope_with_cos_sin_cache(self):
+        """Get the cos/sin-cache fused QK norm RoPE kernel, else return None.
+
+        A separate hook because the ABI differs from get_fused_qk_norm_rope:
+        this one takes q and k as their own tensors plus a cos/sin table, where
+        that one takes the packed QKV and the rotary parameters.
+        """
+        return None
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,

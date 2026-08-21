@@ -80,18 +80,20 @@ def _fused_apply_qk_norm_rope(
     kernel: Any,
     cos_sin_cache: torch.Tensor,
 ):
-    if not gate.enabled or qkv.dtype != torch.bfloat16:
+    if not gate.enabled or qkv.dtype != torch.bfloat16 or not qkv.is_contiguous():
         return attn._omni_unfused_apply_qk_norm_rope(qkv, positions, forward_batch)
 
     q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
     tokens = qkv.shape[0]
-    # The kernel writes q and k in place and wants them per head and contiguous,
-    # which a slice of the packed projection is not.
-    q = q.reshape(tokens, attn.num_heads, attn.head_dim).contiguous()
-    k = k.reshape(tokens, attn.num_kv_heads, attn.head_dim).contiguous()
+    # The kernel wants q and k per head and writes them in place. It requires
+    # only the head dimension to be contiguous and takes the token and head
+    # strides as they come, so hand it views and let it update the packed
+    # projection directly: making these contiguous would copy both regions
+    # every layer. view() rather than reshape() so a shape that could not alias
+    # raises here instead of quietly taking the write into a copy.
     kernel(
-        q,
-        k,
+        q.view(tokens, attn.num_heads, attn.head_dim),
+        k.view(tokens, attn.num_kv_heads, attn.head_dim),
         attn.q_norm.weight,
         attn.k_norm.weight,
         cos_sin_cache,
@@ -102,11 +104,7 @@ def _fused_apply_qk_norm_rope(
     # forward_core reads this to decide save_kv_cache: the fused path writes no
     # KV of its own, so the attention call has to.
     attn._used_fused_qk_norm_rope_last_call = True
-    return (
-        q.reshape(tokens, attn.q_size),
-        k.reshape(tokens, attn.kv_size),
-        v,
-    )
+    return q, k, v
 
 
 def _prefill_graph_enabled() -> bool:
@@ -157,7 +155,9 @@ def install_thinker_fused_rope(
         )
         return None
 
-    provider = kernel_provider or current_platform.get_fused_qk_norm_rope
+    provider = (
+        kernel_provider or current_platform.get_fused_qk_norm_rope_with_cos_sin_cache
+    )
     kernel = provider()
     if kernel is None:
         return None
