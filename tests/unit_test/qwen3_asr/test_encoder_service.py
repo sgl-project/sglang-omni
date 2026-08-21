@@ -672,7 +672,17 @@ def test_the_device_cache_is_really_reclaimed_after_an_oom() -> None:
         device_module.synchronize()
         device_module.empty_cache()
         floor = device_module.memory_reserved()
-        block = torch.empty(64 * 1024 * 1024, dtype=torch.uint8, device=_DEVICE)
+        allocated = device_module.memory_allocated()
+        cached_slack = max(0, floor - allocated)
+        block = torch.empty(
+            cached_slack + 64 * 1024 * 1024,
+            dtype=torch.uint8,
+            device=_DEVICE,
+        )
+        device_module.synchronize()
+        reserved_with_block = device_module.memory_reserved()
+        assert reserved_with_block > floor
+
         del block
         device_module.synchronize()
         reserved_before = device_module.memory_reserved()
