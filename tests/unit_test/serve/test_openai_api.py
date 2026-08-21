@@ -1918,6 +1918,19 @@ def _run_chunks(
     )
 
 
+class _ScriptedChunkClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.requests: list[tuple[str, str | None]] = []
+
+    async def completion(self, request, *, request_id, **kwargs):
+        from sglang_omni.client.types import CompletionResult
+
+        response = self.responses[len(self.requests)]
+        self.requests.append((request_id, request.extra_params.get("prompt")))
+        return CompletionResult(request_id=request_id, text=response)
+
+
 def test_chunks_run_concurrently() -> None:
     class BarrierClient:
         """completion() blocks until all expected chunks have arrived.
@@ -1989,6 +2002,123 @@ def test_whisper_chunks_chain_previous_text_in_decode_order() -> None:
             "part1",
         ]
         assert ordered_client.max_active == 1
+
+    asyncio.run(scenario())
+
+
+def test_whisper_retries_degenerate_chunk_once_without_context() -> None:
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        loop = "the decoder keeps repeating this terminal phrase " * 3
+        scripted_client = _ScriptedChunkClient(
+            ["part0", "part1", "part2", loop, "clean3", "part4"]
+        )
+        texts = await _run_chunks(
+            scripted_client,
+            _tiny_plan(5),
+            max_concurrent=5,
+            prompt="caller prompt",
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+
+        assert texts == ["part0", "part1", "part2", "clean3", "part4"]
+        assert scripted_client.requests == [
+            ("req-chunk-0", "caller prompt"),
+            ("req-chunk-1", "part0"),
+            ("req-chunk-2", "part1"),
+            ("req-chunk-3", "part2"),
+            ("req-chunk-3-retry", None),
+            ("req-chunk-4", "clean3"),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_whisper_degenerate_retry_is_bounded() -> None:
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        first_loop = "the first attempt repeats this terminal phrase " * 3
+        retry_loop = "the retry also repeats this terminal phrase " * 3
+        scripted_client = _ScriptedChunkClient([first_loop, retry_loop])
+        texts = await _run_chunks(
+            scripted_client,
+            _tiny_plan(1),
+            max_concurrent=1,
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+
+        assert texts == [retry_loop]
+        assert scripted_client.requests == [
+            ("req-chunk-0", None),
+            ("req-chunk-0-retry", None),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_whisper_retries_degenerate_caller_prompt_chunk() -> None:
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        loop = "the caller context caused this terminal phrase " * 3
+        scripted_client = _ScriptedChunkClient([loop, "clean0", "part1"])
+        texts = await _run_chunks(
+            scripted_client,
+            _tiny_plan(2),
+            max_concurrent=2,
+            prompt="caller prompt",
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+
+        assert texts == ["clean0", "part1"]
+        assert scripted_client.requests == [
+            ("req-chunk-0", "caller prompt"),
+            ("req-chunk-0-retry", None),
+            ("req-chunk-1", "clean0"),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_whisper_retry_aborts_the_retry_request() -> None:
+    class HangingRetryClient:
+        def __init__(self) -> None:
+            self.retry_started = asyncio.Event()
+            self.aborted: list[str] = []
+            self.attempts = 0
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.attempts += 1
+            if self.attempts == 1:
+                loop = "the first attempt repeats this terminal phrase " * 3
+                return CompletionResult(request_id=request_id, text=loop)
+            self.retry_started.set()
+            await asyncio.Future()
+
+        async def abort(self, request_id: str) -> None:
+            self.aborted.append(request_id)
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        hanging_client = HangingRetryClient()
+        work = asyncio.create_task(
+            _run_chunks(
+                hanging_client,
+                _tiny_plan(1),
+                max_concurrent=1,
+                adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+            )
+        )
+        await asyncio.wait_for(hanging_client.retry_started.wait(), timeout=10.0)
+        work.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await work
+        assert hanging_client.aborted == ["req-chunk-0-retry"]
 
     asyncio.run(scenario())
 

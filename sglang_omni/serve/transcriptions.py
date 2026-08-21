@@ -294,7 +294,8 @@ async def _transcribe_audio_chunks(
 
     Independent chunks run up to max_concurrent at once and return in span
     order. Adapters that condition on previous decoded text instead run speech
-    chunks in order, while separate transcription requests remain concurrent.
+    chunks in order and may retry once without context, while separate
+    transcription requests remain concurrent.
 
     Any chunk failing fails the whole request. The error names the chunk and
     its time range to make sure the failure is diagnosable.
@@ -302,7 +303,12 @@ async def _transcribe_audio_chunks(
     semaphore = asyncio.Semaphore(max_concurrent)
     in_flight: set[str] = set()
 
-    async def run_chunk(span: ChunkSpan, *, chunk_prompt: str | None) -> str:
+    async def run_chunk(
+        span: ChunkSpan,
+        *,
+        chunk_prompt: str | None,
+        retry: bool = False,
+    ) -> str:
         if not span.has_speech:
             return ""
         async with semaphore:
@@ -318,7 +324,8 @@ async def _transcribe_audio_chunks(
                 temperature=temperature,
                 max_new_tokens=max_new_tokens,
             )
-            chunk_request_id = f"{request_id}-chunk-{span.index}"
+            retry_suffix = "-retry" if retry else ""
+            chunk_request_id = f"{request_id}-chunk-{span.index}{retry_suffix}"
             in_flight.add(chunk_request_id)
             # in_flight lists engine requests that may still be running.
             # Cancelling our local task does NOT stop the engine -- the
@@ -355,6 +362,12 @@ async def _transcribe_audio_chunks(
                     is_first_decoded_chunk=is_first_decoded_chunk,
                 )
                 text = await run_chunk(span, chunk_prompt=chunk_prompt)
+                if adapter.should_retry_chunk_without_context(text):
+                    text = await run_chunk(
+                        span,
+                        chunk_prompt=None,
+                        retry=True,
+                    )
                 texts.append(text)
                 previous_text = text
                 is_first_decoded_chunk = False

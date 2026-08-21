@@ -38,6 +38,10 @@ class TranscriptionAdapter(ABC):
     ) -> str | None:
         return caller_prompt
 
+    def should_retry_chunk_without_context(self, text: str) -> bool:
+        """Whether ordered chunk decoding should retry once without context."""
+        return False
+
     def postprocess_text(self, text: str) -> str:
         """Strip model-specific markers from the decoded text.
 
