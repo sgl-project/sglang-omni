@@ -10,9 +10,12 @@ from typing import NamedTuple
 
 import torch
 
+from sglang_omni.cuda_graph import PersistentStateRegistry
+
 logger = logging.getLogger(__name__)
 
 _ATTN_ORIGINAL_UPDATE_CACHE_ATTR = "_sglang_omni_original_update_streaming_cache"
+_STREAMING_CACHE_FIELDS = ("cached_keys", "cached_values", "cached_positions")
 
 
 class _CapturedVocoderGraph(NamedTuple):
@@ -109,6 +112,7 @@ class MossVocoderCudaGraphRunner:
         self._graphs: dict[int, _CapturedVocoderGraph] = {}
         self._pool = None
         self._sealed = False
+        self._persistent_state = PersistentStateRegistry()
         # Reused all-active mask for the warmup-only state reset (avoid re-allocating it per captured T).
         self._reset_mask = torch.ones(
             self._batch_size, dtype=torch.bool, device=self._device
@@ -191,8 +195,9 @@ class MossVocoderCudaGraphRunner:
         # Bind capture to the codec's device: the stream/pool/graph use the current device, and
         # factory-time capture can precede the stage device switch (split puts the codec off cuda:0).
         with torch.cuda.device(self._device):
-            # Note: (Jiaxin Deng) capture LARGEST T first -- the graphs share one mempool; capturing a larger
-            # graph after a smaller one grows the pool and invalidates earlier graphs' addresses (replay segfaults).
+            # Note: (Jiaxin Deng) capture LARGEST T first -- the graphs share one mempool, and the smaller
+            # captures then reuse the largest one's freed blocks instead of forcing new segments (measured
+            # ~7% less reserved). Peak reservation only: replay is correct in any capture order.
             for t in sorted(dict.fromkeys(int(x) for x in frames), reverse=True):
                 if t in self._graphs:
                     continue
@@ -230,12 +235,43 @@ class MossVocoderCudaGraphRunner:
                         t,
                         exc,
                     )
+        self._declare_persistent_state()
+        self._persistent_state.snapshot_addresses()
         self._sealed = True
         logger.info(
             "MOSS vocoder CUDA graphs sealed: %d T captured %s",
             len(self._graphs),
             sorted(self._graphs.keys()),
         )
+
+    def _declare_persistent_state(self) -> None:
+        """Declare the decoder streaming attention cache the captures pin.
+
+        This is the buffer set the first version of this runner got wrong: the
+        eager update returned a fresh tensor each step, so replay kept reading
+        the address the codec had already abandoned and the audio degraded
+        without any error surfacing.
+        """
+        if not self._persistent_state.is_empty():
+            return
+        for index, module in enumerate(_decoder_attention_modules(self._codec)):
+            state = getattr(module, "_streaming_state", None)
+            if state is None:
+                continue
+            for field in _STREAMING_CACHE_FIELDS:
+                buffer = getattr(state, field, None)
+                if not isinstance(buffer, torch.Tensor):
+                    continue
+                self._persistent_state.declare(
+                    f"codec.decoder.attn.{index}.{field}",
+                    lambda module=module, field=field: getattr(
+                        module._streaming_state, field
+                    ),
+                )
+
+    def verify_persistent_state(self) -> None:
+        """Raise if a declared streaming-cache buffer moved since capture."""
+        self._persistent_state.assert_addresses_stable()
 
     def captured_frames(self) -> list[int]:
         return sorted(self._graphs.keys())

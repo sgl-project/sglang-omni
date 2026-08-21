@@ -197,6 +197,10 @@ class VoxtralSGLangTTSModel(nn.Module):
             device=embed_weight.device,
             dtype=embed_weight.dtype,
         )
+        self.acoustic_transformer.enable_frame_graph(
+            max_batch_size=max_batch_size,
+            cuda_graph_bs=getattr(server_args, "cuda_graph_bs", None),
+        )
 
     def get_input_embeddings(self):
         return self.language_model.embed_tokens

@@ -222,6 +222,43 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
 
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
+def test_streaming_cache_stays_at_its_captured_address(session_bundle):
+    """The declared streaming cache must survive real decoding in place: a
+    reassignment is invisible to the replay and is what corrupted the audio the
+    first time this runner shipped."""
+    from sglang_omni.cuda_graph import PersistentStateError
+    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+        _decoder_attention_modules,
+    )
+
+    session, n_vq, vocab, captured = session_bundle
+    runner = session._cg_runner
+    names = runner._persistent_state.declared_names()
+    assert names, "no codec streaming cache declared"
+
+    chunk_t = next((t for t in CHUNK_TS if t in captured), None)
+    if chunk_t is None:
+        pytest.skip("no captured T to drive")
+    torch.manual_seed(31)
+    seq = {
+        0: torch.randint(0, vocab, (n_vq, chunk_t * 3), device="cuda", dtype=torch.long)
+    }
+    _decode_chunks(session, seq, chunk_t)
+    runner.verify_persistent_state()
+
+    _, _, _, index, field = names[0].split(".")
+    module = _decoder_attention_modules(runner._codec)[int(index)]
+    original = getattr(module._streaming_state, field)
+    try:
+        setattr(module._streaming_state, field, original.clone())
+        with pytest.raises(PersistentStateError, match="moved"):
+            runner.verify_persistent_state()
+    finally:
+        setattr(module._streaming_state, field, original)
+    runner.verify_persistent_state()
+
+
+@pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
     """Below the configured VRAM headroom, warmup skips capture (empty graph set, serving uses eager);
     forced via an absurd min_free_gb."""

@@ -30,14 +30,19 @@ from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Model
 from sglang.srt.utils import add_prefix
 
-from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
-from sglang_omni.models.moss_tts_local.local_transformer import MossTTSLocalTransformer
+from sglang_omni.cuda_graph import KeyedGraphCache, PersistentStateRegistry
+from sglang_omni.models.moss_tts_local.local_transformer import (
+    MossTTSLocalTransformer,
+    sample_seeded_branchless,
+)
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
 logger = logging.getLogger(__name__)
+
+MOSS_LOCAL_FRAME_GRAPH_ENV = "SGLANG_OMNI_MOSS_LOCAL_FRAME_GRAPH"
 
 
 def _as_qwen3_config(config: Any) -> Any:
@@ -135,6 +140,9 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         self._state_pool = MossTTSLocalDecodeStatePool(self)
         self._compiled_frame_sampler: Callable[..., torch.Tensor] | None = None
         self._frame_compile_configured = False
+        self._frame_graph_cache: KeyedGraphCache | None = None
+        self._frame_graph_buckets: tuple[int, ...] = ()
+        self._persistent_state = PersistentStateRegistry()
 
     def acquire_row(self, rid: str) -> int:
         """Assign (or return the existing) decode-state pool row for ``rid``."""
@@ -448,83 +456,104 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return stop_choice, torch.stack(codes, dim=-1), feedback
 
     @torch.no_grad()
+    def _capture_frame_graph(
+        self, bucket: int, device: torch.device
+    ) -> tuple[Any, dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
+        static_inputs = {
+            "hidden_states": torch.zeros(
+                bucket, self.hidden_size, device=device, dtype=self.dtype
+            ),
+            "text_temperature": torch.ones(bucket, device=device, dtype=torch.float32),
+            "text_top_p": torch.ones(bucket, device=device, dtype=torch.float32),
+            "text_top_k": torch.full((bucket,), 50, device=device, dtype=torch.long),
+            "audio_temperature": torch.ones(bucket, device=device, dtype=torch.float32),
+            "audio_top_p": torch.ones(bucket, device=device, dtype=torch.float32),
+            "audio_top_k": torch.full((bucket,), 25, device=device, dtype=torch.long),
+            "seeds": torch.zeros(bucket, device=device, dtype=torch.long),
+            "base_positions": torch.zeros(bucket, device=device, dtype=torch.long),
+        }
+        frame_decode = self._decode_frame_graphable
+        warmup_stream = torch.cuda.Stream()
+        warmup_stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(warmup_stream):
+            for _ in range(2):
+                frame_decode(**static_inputs)
+        torch.cuda.current_stream().wait_stream(warmup_stream)
+        torch.cuda.synchronize()
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, pool=self._frame_graph_cache.memory_pool()):
+            stop_choice, codes, feedback = frame_decode(**static_inputs)
+        return graph, static_inputs, stop_choice, codes, feedback
+
+    @torch.no_grad()
     def init_frame_decode_graphs(self, batch_sizes: list[int]) -> None:
         """Capture the per-frame local decode (1 + n_vq micro-steps plus all
         13 seeded sampling passes) into one CUDA graph per batch-size bucket.
 
         Eager execution launches ~500 kernels per frame (~22 ms regardless of
         batch size); replay collapses that to a few milliseconds. Must run
-        during engine init while the device is otherwise idle.
+        during engine init while the device is otherwise idle: capture needs a
+        quiescent device and the buckets are known up front, so there is
+        nothing for a lazy first-use capture to discover.
         """
         buckets = sorted({int(bs) for bs in batch_sizes})
         if not buckets:
+            return
+        self._frame_graph_cache = KeyedGraphCache(
+            name="MOSS-TTS Local frame-decode",
+            batch_sizes=buckets,
+            env_var=MOSS_LOCAL_FRAME_GRAPH_ENV,
+        )
+        if not self._frame_graph_cache.enabled:
+            logger.info("MOSS-TTS Local frame-decode CUDA graphs disabled by env")
             return
         device = self.device
         # The captured graphs hold raw pointers into the local KV buffers, so
         # size them for the largest batch any path (graphed or eager fallback)
         # can see and freeze them against reallocation.
         max_eager_bs = int(self._decode_input_embedding.weight.shape[0])
-        self.local_transformer._ensure_kv_cache(
+        self.local_transformer.reserve_and_freeze_kv_cache(
             max(max(buckets), max_eager_bs), device, self.dtype
         )
-        self.local_transformer.freeze_kv_cache()
         self._ensure_frame_sampler_compile()
-        frame_decode = self._decode_frame_graphable
-        self._frame_graphs: dict[
-            int,
-            tuple[
-                Any, dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor
-            ],
-        ] = {}
+        self._declare_persistent_state()
 
-        for bucket in buckets:
-            static_inputs = {
-                "hidden_states": torch.zeros(
-                    bucket, self.hidden_size, device=device, dtype=self.dtype
-                ),
-                "text_temperature": torch.ones(
-                    bucket, device=device, dtype=torch.float32
-                ),
-                "text_top_p": torch.ones(bucket, device=device, dtype=torch.float32),
-                "text_top_k": torch.full(
-                    (bucket,), 50, device=device, dtype=torch.long
-                ),
-                "audio_temperature": torch.ones(
-                    bucket, device=device, dtype=torch.float32
-                ),
-                "audio_top_p": torch.ones(bucket, device=device, dtype=torch.float32),
-                "audio_top_k": torch.full(
-                    (bucket,), 25, device=device, dtype=torch.long
-                ),
-                "seeds": torch.zeros(bucket, device=device, dtype=torch.long),
-                "base_positions": torch.zeros(bucket, device=device, dtype=torch.long),
-            }
-            warmup_stream = torch.cuda.Stream()
-            warmup_stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(warmup_stream):
-                for _ in range(2):
-                    frame_decode(**static_inputs)
-            torch.cuda.current_stream().wait_stream(warmup_stream)
-            torch.cuda.synchronize()
-
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                stop_choice, codes, feedback = frame_decode(**static_inputs)
-            self._frame_graphs[bucket] = (
-                graph,
-                static_inputs,
-                stop_choice,
-                codes,
-                feedback,
-            )
-        logger.info(
-            f"MOSS-TTS Local frame-decode CUDA graphs captured for bs={buckets}"
+        self._frame_graph_cache.warmup(
+            [(bucket,) for bucket in buckets],
+            lambda key: self._capture_frame_graph(key[0], device),
         )
+        self._frame_graph_buckets = tuple(
+            sorted(key[0] for key in self._frame_graph_cache.graphs)
+        )
+        self._persistent_state.snapshot_addresses()
+        self.verify_persistent_state()
+        logger.info(
+            "MOSS-TTS Local frame-decode CUDA graphs captured for "
+            f"bs={list(self._frame_graph_buckets)}"
+        )
+
+    def _declare_persistent_state(self) -> None:
+        """Declare the buffers a capture pins: the frozen local KV cache and
+        the decode staging table the backbone graph reads its input embeddings
+        from."""
+        if not self._persistent_state.is_empty():
+            return
+        self.local_transformer.register_persistent_state(self._persistent_state)
+        self._persistent_state.declare(
+            "decode_input_embedding.weight",
+            lambda: self._decode_input_embedding.weight,
+        )
+
+    def verify_persistent_state(self) -> None:
+        """Raise if a graph-pinned buffer was reassigned instead of written in
+        place; a replay would keep using the abandoned address and corrupt
+        output without any error."""
+        self._persistent_state.assert_addresses_stable()
 
     @property
     def frame_graph_max_bs(self) -> int:
-        graphs = getattr(self, "_frame_graphs", None)
-        return max(graphs) if graphs else 0
+        return max(self._frame_graph_buckets, default=0)
 
     @torch.no_grad()
     def decode_frame_graphed(
@@ -548,8 +577,10 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         later prefill or decode step replays these graphs).
         """
         batch_size = hidden_states.shape[0]
-        bucket = min(b for b in self._frame_graphs if b >= batch_size)
-        graph, static_inputs, stop_choice, codes, feedback = self._frame_graphs[bucket]
+        bucket = min(b for b in self._frame_graph_buckets if b >= batch_size)
+        graph, static_inputs, stop_choice, codes, feedback = (
+            self._frame_graph_cache.graphs[(bucket,)]
+        )
 
         static_inputs["hidden_states"][:batch_size].copy_(
             hidden_states.to(dtype=self.dtype)

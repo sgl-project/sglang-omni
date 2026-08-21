@@ -26,9 +26,12 @@ except ImportError:
 
     rms_norm = RMSNorm
 
+from sglang_omni.cuda_graph import KeyedGraphCache, normalize_batch_sizes
 from sglang_omni.models.weight_loader import default_weight_loader
 
 logger = logging.getLogger(__name__)
+
+VOXTRAL_FRAME_GRAPH_ENV = "SGLANG_OMNI_VOXTRAL_FRAME_GRAPH"
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +278,107 @@ class TimeEmbedding(nn.Module):
         return torch.cat((emb.cos(), emb.sin()), dim=-1)
 
 
+class _FrameDecodeGraph:
+    """CUDA graph over the whole per-frame flow-matching chain for one bucket.
+
+    The chain is the 7 step ODE loop plus its CFG batch-doubled acoustic stack,
+    so a replay covers the frame's few hundred launches with one. Per-frame
+    inputs, including the noise drawn on the host RNG, reach the captured region
+    through persistent device buffers written with device-side copies.
+    """
+
+    def __init__(
+        self,
+        model: "FlowMatchingAudioTransformer",
+        batch_size: int,
+        *,
+        input_dim: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> None:
+        self.model = model
+        self.batch_size = batch_size
+        self.semantic_code = torch.zeros(batch_size, dtype=torch.long, device=device)
+        self.llm_hidden = torch.zeros(batch_size, input_dim, dtype=dtype, device=device)
+        self.noise = torch.zeros(
+            batch_size,
+            model.model_args.n_acoustic_codebook,
+            dtype=dtype,
+            device=device,
+        )
+        self.graph = torch.cuda.CUDAGraph()
+        self.output_codes: torch.Tensor | None = None
+        try:
+            self._capture()
+        except Exception:
+            # Note: (Jiaxin Deng) release the graph's private memory pool
+            # eagerly; the raising object may linger on traceback frames.
+            try:
+                self.graph.reset()
+            except Exception:
+                pass
+            raise
+
+    @torch.no_grad()
+    def _capture(self) -> None:
+        model = self.model
+        device = self.llm_hidden.device
+        # Note: (Jiaxin Deng) prime the dtype-cast timestep cache outside the
+        # captured region; a tensor first allocated inside it would be owned by
+        # the graph pool but then read by the eager path too.
+        model._frame_timesteps(self.llm_hidden.dtype, device)
+        with torch.cuda.device(device):
+            current_stream = torch.cuda.current_stream(device=device)
+            warmup_stream = torch.cuda.Stream(device=device)
+            warmup_stream.wait_stream(current_stream)
+            with torch.cuda.stream(warmup_stream):
+                for _ in range(2):
+                    model._decode_one_frame_chain(
+                        self.semantic_code, self.llm_hidden, self.noise
+                    )
+            current_stream.wait_stream(warmup_stream)
+
+            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream.wait_stream(current_stream)
+            with torch.cuda.graph(
+                self.graph,
+                pool=model._frame_graph_cache.memory_pool(),
+                stream=capture_stream,
+                capture_error_mode="thread_local",
+            ):
+                self.output_codes = model._decode_one_frame_chain(
+                    self.semantic_code, self.llm_hidden, self.noise
+                )
+            current_stream.wait_stream(capture_stream)
+
+        if self.output_codes is None:
+            raise RuntimeError("Voxtral-TTS frame CUDA graph captured no outputs")
+
+    @torch.no_grad()
+    def replay(
+        self,
+        semantic_code: torch.Tensor,
+        llm_hidden: torch.Tensor,
+        noise: torch.Tensor,
+    ) -> torch.Tensor:
+        live = semantic_code.shape[0]
+        if live > self.batch_size:
+            raise ValueError(
+                "Voxtral-TTS frame CUDA graph bucket is too small: "
+                f"bucket={self.batch_size}, live={live}"
+            )
+        with torch.cuda.device(self.llm_hidden.device):
+            self.semantic_code[:live].copy_(semantic_code.reshape(live))
+            self.llm_hidden[:live].copy_(llm_hidden)
+            self.noise[:live].copy_(noise)
+            if live < self.batch_size:
+                self.semantic_code[live:].zero_()
+                self.llm_hidden[live:].zero_()
+                self.noise[live:].zero_()
+            self.graph.replay()
+        return self.output_codes[:live]
+
+
 class FlowMatchingAudioTransformer(nn.Module):
     def __init__(self, audio_model_args: dict) -> None:
         super().__init__()
@@ -334,6 +438,28 @@ class FlowMatchingAudioTransformer(nn.Module):
             torch.linspace(0, 1, self._acoustic_decode_iters),
             persistent=False,
         )
+
+        self._frame_timesteps_cache: dict[tuple, torch.Tensor] = {}
+        self._frame_graph_cache: KeyedGraphCache | None = None
+        self._frame_graph_runtime_checked = True
+
+    def enable_frame_graph(
+        self,
+        *,
+        max_batch_size: int,
+        cuda_graph_bs: list[int] | None = None,
+    ) -> None:
+        """Arm per-frame CUDA graph capture for the serving decode path."""
+        self._frame_graph_cache = KeyedGraphCache(
+            name="Voxtral-TTS frame",
+            batch_sizes=normalize_batch_sizes(
+                cuda_graph_bs, max_batch_size=max_batch_size
+            ),
+            env_var=VOXTRAL_FRAME_GRAPH_ENV,
+        )
+        # Note: (Jiaxin Deng) runtime gates resolve at decode time; bootstrap
+        # forces disable_cuda_graph on during init (deferred capture).
+        self._frame_graph_runtime_checked = False
 
     def load_weight(self, weight: tuple[str, torch.Tensor]) -> str:
         params_dict = dict(self.named_parameters())
@@ -399,19 +525,101 @@ class FlowMatchingAudioTransformer(nn.Module):
             h = self.layers[str(layer_id)](h)
         return h
 
+    def _frame_timesteps(
+        self, dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        key = (dtype, device)
+        timesteps = self._frame_timesteps_cache.get(key)
+        if timesteps is None:
+            timesteps = self._timesteps.to(dtype=dtype, device=device)
+            self._frame_timesteps_cache[key] = timesteps
+        return timesteps
+
+    def _draw_frame_noise(
+        self, batch_size: int, llm_hidden: torch.Tensor
+    ) -> torch.Tensor:
+        # Note: (Jiaxin Deng) the draw stays on the host RNG and outside any
+        # captured region, so a graphed frame consumes the same seeded stream
+        # as the eager one; only the resulting values enter the graph.
+        x_0 = torch.randn(
+            batch_size, self.model_args.n_acoustic_codebook, device="cpu"
+        ).to(dtype=llm_hidden.dtype, device=llm_hidden.device)
+        return self._noise_scale * x_0
+
     def decode_one_frame(
         self, semantic_code: torch.Tensor, llm_hidden: torch.Tensor
     ) -> torch.Tensor:
-        B = semantic_code.shape[0]
-        should_decode = semantic_code != self._end_audio_token_id
+        x_0 = self._draw_frame_noise(semantic_code.shape[0], llm_hidden)
+        graphed = self._decode_one_frame_graphed(semantic_code, llm_hidden, x_0)
+        if graphed is not None:
+            return graphed
+        return self._decode_one_frame_chain(semantic_code, llm_hidden, x_0)
 
-        x_0 = torch.randn(B, self.model_args.n_acoustic_codebook).to(
-            dtype=llm_hidden.dtype, device=llm_hidden.device
+    def _check_frame_graph_runtime(self) -> None:
+        """Resolve the server-arg gates once, on the first decoded frame."""
+        if self._frame_graph_runtime_checked:
+            return
+        self._frame_graph_runtime_checked = True
+        from sglang.srt.server_args import get_global_server_args
+
+        server_args = get_global_server_args()
+        if bool(server_args.disable_cuda_graph):
+            self._frame_graph_cache.disable("disable_cuda_graph is set")
+        elif int(getattr(server_args, "tp_size", 1) or 1) != 1:
+            # Note: (Jiaxin Deng) capture under TP would record collectives; the
+            # graphed chain is only validated single-rank, so TP stays eager.
+            self._frame_graph_cache.disable("tp_size > 1")
+
+    def _decode_one_frame_graphed(
+        self,
+        semantic_code: torch.Tensor,
+        llm_hidden: torch.Tensor,
+        x_0: torch.Tensor,
+    ) -> torch.Tensor | None:
+        cache = self._frame_graph_cache
+        if cache is None:
+            return None
+        self._check_frame_graph_runtime()
+        if not cache.enabled:
+            return None
+        batch_size = semantic_code.shape[0]
+        if batch_size == 0 or semantic_code.ndim != 1 or llm_hidden.ndim != 2:
+            return None
+        if semantic_code.dtype not in (torch.int, torch.long):
+            return None
+        if not semantic_code.is_cuda or not llm_hidden.is_cuda:
+            return None
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        bucket_size = cache.bucket_for(batch_size)
+        if bucket_size is None:
+            return None
+        input_dim = int(llm_hidden.shape[-1])
+        graph = cache.get_or_capture(
+            (bucket_size, str(llm_hidden.dtype), input_dim),
+            lambda: _FrameDecodeGraph(
+                self,
+                bucket_size,
+                input_dim=input_dim,
+                dtype=llm_hidden.dtype,
+                device=llm_hidden.device,
+            ),
         )
-        x_0 = self._noise_scale * x_0
+        if graph is None:
+            return None
+        return graph.replay(semantic_code, llm_hidden, x_0)
 
-        timesteps = self._timesteps.to(dtype=llm_hidden.dtype)
-        llm_hidden_zero = torch.zeros_like(llm_hidden)
+    def _decode_one_frame_chain(
+        self,
+        semantic_code: torch.Tensor,
+        llm_hidden: torch.Tensor,
+        x_0: torch.Tensor,
+    ) -> torch.Tensor:
+        B = semantic_code.shape[0]
+        should_decode = (semantic_code != self._end_audio_token_id).view(-1, 1)
+
+        timesteps = self._frame_timesteps(llm_hidden.dtype, llm_hidden.device)
+        llm_batched = torch.cat([llm_hidden, torch.zeros_like(llm_hidden)], dim=0)
 
         sampled = x_0
         for i in range(len(timesteps) - 1):
@@ -421,7 +629,6 @@ class FlowMatchingAudioTransformer(nn.Module):
             t_emb = self.time_embedding(t.view(-1, 1).repeat(B, 1)).to(llm_hidden.dtype)
 
             x_batched = torch.cat([sampled, sampled], dim=0)
-            llm_batched = torch.cat([llm_hidden, llm_hidden_zero], dim=0)
             t_emb_batched = torch.cat([t_emb, t_emb], dim=0)
 
             v_all = self._predict_velocity(
@@ -436,7 +643,11 @@ class FlowMatchingAudioTransformer(nn.Module):
         # Scale from [-1, 1] to [0, levels-1] for quantization
         quantized_levels = ((sampled + 1) / 2) * (self.acoustic_embeddings_levels - 1)
         output_codes = quantized_levels.round().long()
-        output_codes[~should_decode] = self._empty_audio_token_id
+        # Note: (Jiaxin Deng) branchless mask; the boolean index_put_ this
+        # replaces takes a data-dependent shape and cannot be captured.
+        output_codes = torch.where(
+            should_decode, output_codes, self._empty_audio_token_id
+        )
         # Offset by the number of special tokens to avoid ID conflicts
         return output_codes + len(AudioSpecialTokens)
 

@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sglang_omni.cuda_graph import PersistentStateRegistry
+
 
 def _rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
     """Interleaved-pair rotation: [x0, x1, x2, x3, ...] -> [-x1, x0, -x3, x2, ...]."""
@@ -133,6 +135,25 @@ class MossTTSLocalTransformer(nn.Module):
             for _ in self.h
         ]
         self._kv_capacity = capacity
+
+    def reserve_and_freeze_kv_cache(
+        self, batch_size: int, device: torch.device, dtype: torch.dtype
+    ) -> None:
+        """Size the KV cache for ``batch_size``, then freeze it. Single
+        pre-capture entry point so the ensure-then-freeze ordering lives here
+        rather than in every caller."""
+        self._ensure_kv_cache(batch_size, device, dtype)
+        self.freeze_kv_cache()
+
+    def register_persistent_state(self, registry: PersistentStateRegistry) -> None:
+        """Declare the frozen KV buffers, whose addresses a frame-decode
+        capture bakes in."""
+        for layer_idx in range(len(self._kv_cache)):
+            for slot, kind in ((0, "key"), (1, "value")):
+                registry.declare(
+                    f"local_transformer.kv.{layer_idx}.{kind}",
+                    lambda layer=layer_idx, index=slot: self._kv_cache[layer][index],
+                )
 
     def step(self, hidden_states: torch.Tensor, position: int) -> torch.Tensor:
         """One micro-step for the whole batch."""

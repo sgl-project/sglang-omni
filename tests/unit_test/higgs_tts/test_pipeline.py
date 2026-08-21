@@ -767,6 +767,9 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
             self.calls += 1
             return torch.tensor([[11, 12], [21, 22]], dtype=torch.long)
 
+        def warmup_cuda_graph(self, *args, **kwargs) -> None:
+            self.warmups = getattr(self, "warmups", 0) + 1
+
     fake_codec = FakeCodec()
     monkeypatch.setattr(stages, "HiggsTokenizerAdapter", FakeAdapter)
     monkeypatch.setattr(stages, "get_or_load_codec", lambda *args, **kwargs: fake_codec)
@@ -841,6 +844,9 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
                 [[offset + 11, offset + 12], [offset + 21, offset + 22]],
                 dtype=torch.long,
             )
+
+        def warmup_cuda_graph(self, *args, **kwargs) -> None:
+            self.warmups = getattr(self, "warmups", 0) + 1
 
     cache = get_speaker_artifact_cache()
     cache.clear()
@@ -1580,6 +1586,9 @@ def _fake_codec_fixtures(monkeypatch):
         def decode_batch(self, codes_list):
             decode_batch_sizes.append(len(codes_list))
             return [torch.arange(c.shape[0], dtype=torch.float32) for c in codes_list]
+
+        def warmup_cuda_graph(self, *args, **kwargs) -> None:
+            self.warmups = getattr(self, "warmups", 0) + 1
 
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda p: p)
     monkeypatch.setattr(stages, "get_or_load_codec", lambda *a, **kw: FakeCodec())

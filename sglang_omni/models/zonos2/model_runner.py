@@ -183,22 +183,33 @@ class Zonos2ModelRunner(ModelRunner):
         p = [sr.data.params for sr in requests]
         dev = hidden.device
 
+        # Host branches of the sampler, shared by both tails. The graph key pins
+        # exactly these (with the top-k bound ladder-quantized), so a batch whose
+        # rows carry different sampling params still replays one graph.
+        top_k_max = max(
+            (x.top_k for x in p if 0 < x.top_k < model.audio_vocab), default=0
+        )
+        any_top_p = any(0.0 < x.top_p < 1.0 for x in p)
+        any_min_p = any(x.min_p > 0.0 for x in p)
+        window = int(params.repetition_window)
+
         # Compose with the tail CUDA-graph (ZONOS2_FRAME_GRAPH): when armed, run
         # head+sample+embed+hash as one captured replay, with rep_ids/break_mask
         # fed from the ON-DEVICE ring (not host-built) so no host work re-enters.
-        use_graph = (
-            self._frame_graph
-            and not is_prefill
-            and model._tail_buckets
-            and b <= model._tail_buckets[-1]
-            and all(self._params_match(x, model._tail_params) for x in p)
-        )
-        if use_graph:
-            rep_ids = self._rep_window_ring(
-                row_t, n, int(params.repetition_window), cb_size, dev
+        graph = None
+        if self._frame_graph and not is_prefill:
+            graph = model.tail_graph(
+                b,
+                top_k_max=top_k_max,
+                any_top_p=any_top_p,
+                any_min_p=any_min_p,
+                window=window,
             )
+        if graph is not None:
+            rep_ids = self._rep_window_ring(row_t, n, window, cb_size, params)
             break_mask = self._break_mask_ring(row_t, model.audio_vocab, dev)
             codes, keys, feedback = model.run_tail_graph(
+                graph,
                 hidden,
                 torch.tensor([x.temperature for x in p], device=dev),
                 torch.tensor([x.top_k for x in p], device=dev),
@@ -212,11 +223,6 @@ class Zonos2ModelRunner(ModelRunner):
             logits = model.compute_logits(hidden).float()  # [B, 9, 1026]
             rep_ids = self._rep_window(row_t, n, cb_size, params)
             self._break_frame_loops(logits, row_t)
-            top_k_max = max(
-                (x.top_k for x in p if 0 < x.top_k < model.audio_vocab), default=0
-            )
-            any_top_p = any(0.0 < x.top_p < 1.0 for x in p)
-            any_min_p = any(x.min_p > 0.0 for x in p)
             codes = self._sampler(
                 logits,
                 temperature=torch.tensor([x.temperature for x in p], device=dev),
@@ -353,31 +359,19 @@ class Zonos2ModelRunner(ModelRunner):
         cur = logits[bi, 0, tok]
         logits[bi, 0, tok] = torch.where(mask, torch.full_like(cur, float("-inf")), cur)
 
-    @staticmethod
-    def _params_match(a, b) -> bool:
-        # The tail graph bakes the structural sampler flags (top_k_max/any_top_p/
-        # any_min_p), so only replay when the request's params match those captured.
-        if b is None:
-            return False
-        return (
-            a.temperature == b.temperature
-            and a.top_k == b.top_k
-            and a.top_p == b.top_p
-            and a.min_p == b.min_p
-            and a.repetition_penalty == b.repetition_penalty
-            and a.repetition_window == b.repetition_window
-            and a.repetition_codebooks == b.repetition_codebooks
-        )
-
-    def _rep_window_ring(self, row_t, n, w, cb_size, device):
+    def _rep_window_ring(self, row_t, n, w, cb_size, params):
         # Fixed-shape [B, n, w] rep window from the on-device ring, feeding the
-        # tail graph's captured rep_ids input (mirrors _rep_window_graph but reads
-        # the GPU ring -- no host rep_hist build). Params are uniform here (graph
-        # replay requires params == _tail_params), so codebooks come from those.
+        # tail graph's captured rep_ids input (mirrors _rep_window but reads the
+        # GPU ring -- no host rep_hist build).
         ring = self.model._decode_state_pool.rep_hist[row_t]  # [B, ring, n]
         t = ring[:, -w:, :].transpose(1, 2).contiguous()  # [B, n, w]
-        rc = min(self.model._tail_params.repetition_codebooks, n)
         rep = torch.full_like(t, -1)
+        if params.repetition_penalty == 1.0:
+            # Note: (Jiaxin Deng) the eager tail passes rep_token_ids=None here;
+            # the captured chain has no such branch, and an all -1 window is its
+            # bit-exact equivalent (no token is ever marked repeated).
+            return rep
+        rc = min(params.repetition_codebooks, n)
         rep[:, :rc] = torch.where(t[:, :rc] < cb_size, t[:, :rc], rep[:, :rc])
         return rep
 

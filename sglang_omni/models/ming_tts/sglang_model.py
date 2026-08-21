@@ -209,16 +209,16 @@ class _MingTTSTailGraphCache:
         *,
         noise: torch.Tensor,
         sde_random: torch.Tensor,
-    ) -> MingTTSTailOutputs:
+    ) -> MingTTSTailOutputs | None:
+        """Replay the smallest fitting bucket, or None when none covers it."""
         batch_size = int(inputs.hidden_states.shape[0])
         for bucket in self.buckets:
             if bucket >= batch_size:
                 graph = self.graphs[bucket]
                 return graph.replay(inputs, noise=noise, sde_random=sde_random)
-        raise RuntimeError(
-            "Ming TTS tail CUDA graph bucket does not cover active batch "
-            f"{batch_size}; captured={list(self.buckets)}"
-        )
+        # Note: (Jiaxin Deng) a capacity miss is not a request failure; the
+        # caller owns an eager path for exactly this case.
+        return None
 
 
 class MingBailingMoeAttention(nn.Module):
@@ -861,11 +861,13 @@ class MingTTSSGLangModel(nn.Module):
         )
         tail_graphs = self._tail_graphs
         if tail_graphs is not None:
-            return tail_graphs.replay(
+            outputs = tail_graphs.replay(
                 inputs,
                 noise=noise,
                 sde_random=sde_random,
             )
+            if outputs is not None:
+                return outputs
         return self._compute_tail_step(
             inputs,
             noise=noise,

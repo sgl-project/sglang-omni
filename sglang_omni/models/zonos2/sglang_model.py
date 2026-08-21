@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 
+from sglang_omni.cuda_graph import KeyedGraphCache
 from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
 from sglang_omni.models.zonos2.radix_hash import poly_row_hash
@@ -31,6 +32,24 @@ from sglang_omni.vendor.sglang.layers import (
 )
 
 _QK_NORM_EPS = 1e-6
+
+ZONOS2_FRAME_GRAPH_ENV = "ZONOS2_FRAME_GRAPH"
+# Note: (Jiaxin Deng) 106 is on the ladder because it is the checkpoint default,
+# so the dominant signature keeps its exact top-k width.
+_TAIL_TOP_K_LADDER = (8, 16, 32, 64, 106, 128, 256, 512, 1024)
+
+
+def _quantize_tail_top_k(max_top_k: int, vocab: int) -> int:
+    """Smallest ladder width covering ``max_top_k``, capped at ``vocab``.
+
+    Widening the bound is bit-exact: ``_apply_top_k`` thresholds each row at the
+    value of its own k-th largest score, which does not depend on how many extra
+    ranks the shared ``torch.topk`` returned.
+    """
+    for step in _TAIL_TOP_K_LADDER:
+        if step >= max_top_k:
+            return min(step, vocab)
+    return vocab
 
 
 def softcap(x: torch.Tensor, cap: float) -> torch.Tensor:
@@ -262,14 +281,11 @@ class Zonos2SGLangModel(nn.Module):
 
         # Opt-in tail CUDA graph (ZONOS2_FRAME_GRAPH): captures the launch-heavy
         # per-frame tail (head GEMM + per-request sample + embed + radix hash) into
-        # one replay per decode bucket, cutting host dispatch in the host-bound
-        # decode loop. Built by capture_tail_graphs; empty -> eager runner path.
-        self._tail_buckets: list[int] = []
-        self._tail_graphs: dict[int, Any] = {}
-        self._tail_params: Optional[TTSSamplingParams] = None
-        self._tail_top_k_max: int = 0
-        self._tail_any_top_p: bool = False
-        self._tail_any_min_p: bool = False
+        # one replay per (decode bucket, sampling signature), cutting host dispatch
+        # in the host-bound decode loop. Armed by capture_tail_graphs; while the
+        # cache is None the runner stays on the eager path.
+        self._tail_cache: Optional[KeyedGraphCache] = None
+        self._tail_window: int = 0
         self._cg: dict[str, torch.Tensor] = {}
 
     @property
@@ -349,10 +365,16 @@ class Zonos2SGLangModel(nn.Module):
     # ---- opt-in tail CUDA graph (ZONOS2_FRAME_GRAPH) ----
 
     @torch.no_grad()
-    def _tail_compute(self, bs: int) -> None:
+    def _tail_compute(
+        self, bs: int, *, top_k_max: int, any_top_p: bool, any_min_p: bool
+    ) -> None:
         """Graph-capturable per-frame tail over the first ``bs`` static rows: head
         GEMM -> break-mask -> per-request sample (torch.multinomial, capturable)
-        -> embed -> radix hash. Reads/writes the ``_cg`` buffers in place."""
+        -> embed -> radix hash. Reads/writes the ``_cg`` buffers in place.
+
+        The three sampler flags are the only host state the capture bakes in;
+        every per-request value rides a device buffer, so one capture serves a
+        batch whose rows carry different sampling params."""
         cg = self._cg
         logits = self.compute_logits(cg["hidden"][:bs]).float()
         logits[:, 0].add_(cg["break_mask"][:bs])
@@ -363,10 +385,10 @@ class Zonos2SGLangModel(nn.Module):
             top_p=cg["top_p"][:bs],
             min_p=cg["min_p"][:bs],
             repetition_penalty=cg["rep_pen"][:bs],
-            top_k_max=self._tail_top_k_max,
+            top_k_max=top_k_max,
             rep_token_ids=cg["rep_ids"][:bs],
-            any_top_p=self._tail_any_top_p,
-            any_min_p=self._tail_any_min_p,
+            any_top_p=any_top_p,
+            any_min_p=any_min_p,
         )
         text_col = torch.full(
             (bs, 1), self.config.text_vocab, device=codes.device, dtype=torch.long
@@ -380,10 +402,13 @@ class Zonos2SGLangModel(nn.Module):
     def capture_tail_graphs(
         self, buckets: list[int], params: TTSSamplingParams
     ) -> None:
-        """Allocate static buffers + bake the structural sampler flags, then
-        capture one tail graph per batch bucket."""
+        """Allocate the static tail buffers, arm the keyed graph cache, and
+        pre-capture ``params``' signature for every bucket so the dominant
+        serving mix never pays a first-request capture. Other signatures capture
+        lazily on first use."""
         n, dim, V = self.n_codebooks, self.config.dim, self.audio_vocab
         W = int(params.repetition_window)
+        buckets = sorted({int(b) for b in buckets if int(b) >= 1})
         mb = max(buckets)
         dev, dt = self.device, self.dtype
         f32, i64 = torch.float32, torch.long
@@ -402,36 +427,115 @@ class Zonos2SGLangModel(nn.Module):
             "keys": torch.zeros(mb, device=dev, dtype=i64),
             "feedback": torch.zeros(mb, dim, device=dev, dtype=dt),
         }
-        self._tail_params = params
-        self._tail_top_k_max = params.top_k if 0 < params.top_k < V else 0
-        self._tail_any_top_p = 0.0 < params.top_p < 1.0
-        self._tail_any_min_p = params.min_p > 0.0
-        self._tail_buckets = sorted(buckets)
-        self._tail_graphs = {}
-        s = torch.cuda.Stream()
-        s.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(s):
-            for bs in self._tail_buckets:
+        self._tail_window = W
+        self._tail_cache = KeyedGraphCache(
+            name="ZONOS2 frame tail",
+            batch_sizes=buckets,
+            env_var=ZONOS2_FRAME_GRAPH_ENV,
+            max_keys=4 * len(buckets),
+        )
+        for bs in buckets:
+            self.tail_graph(
+                bs,
+                top_k_max=params.top_k if 0 < params.top_k < V else 0,
+                any_top_p=0.0 < params.top_p < 1.0,
+                any_min_p=params.min_p > 0.0,
+                window=W,
+            )
+
+    def tail_graph(
+        self,
+        batch_size: int,
+        *,
+        top_k_max: int,
+        any_top_p: bool,
+        any_min_p: bool,
+        window: int,
+    ):
+        """Captured tail graph for this batch's sampling signature, or ``None``
+        to run the tail eagerly.
+
+        The key holds only the host branches the capture pins: the batch bucket,
+        the ladder-quantized top-k bound, and whether the top-p / min-p passes
+        run. Per-request temperature/top_k/top_p/min_p/penalty are device state,
+        so rows keep their own values inside one graph."""
+        cache = self._tail_cache
+        if cache is None or not cache.enabled or batch_size < 1:
+            return None
+        if int(window) != self._tail_window:
+            # Note: (Jiaxin Deng) the window fixes the rep_ids buffer width, and
+            # that buffer is allocated once; another width has nothing to replay
+            # into.
+            return None
+        if torch.cuda.is_current_stream_capturing():
+            return None
+        bucket = cache.bucket_for(batch_size)
+        if bucket is None:
+            return None
+        top_k_max = int(top_k_max)
+        if top_k_max > 0:
+            top_k_max = _quantize_tail_top_k(top_k_max, self.audio_vocab)
+        key = (bucket, top_k_max, bool(any_top_p), bool(any_min_p))
+        return cache.get_or_capture(key, lambda: self._capture_tail_graph(key))
+
+    @torch.no_grad()
+    def _capture_tail_graph(self, key: tuple) -> torch.cuda.CUDAGraph:
+        bucket, top_k_max, any_top_p, any_min_p = key
+        flags = dict(top_k_max=top_k_max, any_top_p=any_top_p, any_min_p=any_min_p)
+        # Note: (Jiaxin Deng) captures are lazy, so this runs inside a live
+        # request's step, and both the warmups and the recorded pass reach the
+        # sampler's torch.multinomial on the shared generator. Restore it around
+        # the whole capture, on the failure path too, or the request that mints
+        # (or fails) a signature samples from a stream the others never see.
+        cpu_rng_state = torch.random.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state_all()
+        try:
+            s = torch.cuda.Stream()
+            s.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(s):
                 for _ in range(3):
-                    self._tail_compute(bs)
-        torch.cuda.current_stream().wait_stream(s)
-        torch.cuda.synchronize()
-        for bs in self._tail_buckets:
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g):
-                self._tail_compute(bs)
-            self._tail_graphs[bs] = g
-        torch.cuda.synchronize()
+                    self._tail_compute(bucket, **flags)
+            torch.cuda.current_stream().wait_stream(s)
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            try:
+                with torch.cuda.graph(
+                    graph,
+                    pool=self._tail_cache.memory_pool(),
+                    capture_error_mode="thread_local",
+                ):
+                    self._tail_compute(bucket, **flags)
+            except Exception:
+                # Note: (Jiaxin Deng) release the graph's memory eagerly; the
+                # raising object may linger on traceback frames.
+                try:
+                    graph.reset()
+                except Exception:
+                    pass
+                raise
+            torch.cuda.synchronize()
+            return graph
+        finally:
+            torch.random.set_rng_state(cpu_rng_state)
+            torch.cuda.set_rng_state_all(cuda_rng_state)
 
     @torch.no_grad()
     def run_tail_graph(
-        self, hidden, temperature, top_k, top_p, min_p, rep_pen, rep_ids, break_mask
+        self,
+        graph,
+        hidden,
+        temperature,
+        top_k,
+        top_p,
+        min_p,
+        rep_pen,
+        rep_ids,
+        break_mask,
     ):
-        """Stage inputs into the static buffers, replay the bs-bucket graph (padded
-        up to the next bucket; extra rows compute on stale data and are ignored),
-        and return views of (codes [bs,n], keys [bs], feedback [bs,dim])."""
+        """Stage inputs into the static buffers, replay ``graph`` (padded up to
+        its bucket; extra rows compute on stale data and are ignored), and return
+        views of (codes [bs,n], keys [bs], feedback [bs,dim])."""
         bs = hidden.shape[0]
-        bucket = next(g for g in self._tail_buckets if g >= bs)
         cg = self._cg
         cg["hidden"][:bs].copy_(hidden)
         cg["temperature"][:bs].copy_(temperature)
@@ -441,7 +545,7 @@ class Zonos2SGLangModel(nn.Module):
         cg["rep_pen"][:bs].copy_(rep_pen)
         cg["rep_ids"][:bs].copy_(rep_ids)
         cg["break_mask"][:bs].copy_(break_mask)
-        self._tail_graphs[bucket].replay()
+        graph.replay()
         return cg["codes"][:bs], cg["keys"][:bs], cg["feedback"][:bs]
 
     @torch.no_grad()
