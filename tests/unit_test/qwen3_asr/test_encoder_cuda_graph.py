@@ -10,6 +10,7 @@ from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     build_buckets,
     window_lens_from_token_counts,
 )
+from sglang_omni.platforms import current_platform
 
 
 def test_build_buckets_rejects_bad_limits():
@@ -64,6 +65,48 @@ def test_get_audio_feature_routing(monkeypatch):
     assert torch.equal(get(model, [item]), torch.full((1, 65, 8), 7.0))
 
 
+def test_layer_stack_forwards_precomputed_attention_metadata():
+    seen = {}
+
+    class Attention:
+        def __call__(self, **kwargs):
+            seen.update(kwargs)
+            return kwargs["x"]
+
+    def identity_linear(hidden_states):
+        return hidden_states, None
+
+    layer = SimpleNamespace(
+        self_attn_layer_norm=lambda hidden_states: hidden_states,
+        self_attn=Attention(),
+        final_layer_norm=lambda hidden_states: hidden_states,
+        fc1=identity_linear,
+        activation_fn=lambda hidden_states: hidden_states,
+        fc2=identity_linear,
+    )
+    tower = SimpleNamespace(
+        layers=[layer],
+        ln_post=lambda hidden_states: hidden_states,
+        proj1=identity_linear,
+        act=lambda hidden_states: hidden_states,
+        proj2=identity_linear,
+    )
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._tower = tower
+    runner._max_seqlen = 104
+    hidden_states = torch.zeros(8, 4)
+    cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32)
+    attention_metadata = object()
+    runner._capture_attention_metadata = attention_metadata
+
+    output = runner._layer_stack(hidden_states, cu_seqlens)
+
+    assert torch.equal(output, hidden_states)
+    assert seen["cu_seqlens"] is cu_seqlens
+    assert seen["max_seqlen"] == 104
+    assert seen["forward_metadata"] is attention_metadata
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_graph_matches_eager_tower():
@@ -79,8 +122,10 @@ def test_graph_matches_eager_tower():
     from sglang_omni.models.qwen3_asr.audio_lengths import qwen3_asr_num_audio_tokens
     from sglang_omni.models.qwen3_asr.encoder_cuda_graph import eager_preamble
 
+    is_rocm = current_platform.is_rocm()
+    mm_attention_backend = "aiter_attn" if is_rocm else "triton_attn"
     get_context().set_server_args(
-        ServerArgs(model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend="triton_attn")
+        ServerArgs(model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend)
     )
     if not model_parallel_is_initialized():
         init_distributed_environment(
