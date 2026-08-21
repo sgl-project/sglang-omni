@@ -12,6 +12,8 @@ from itertools import accumulate
 import torch
 import torch.nn.functional as F
 from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+
+# note (Zhang Yiyang): SGLang 0.5.16 exposes _is_fa3_supported from sglang.jit_kernel.flash_attention_v3; when upgrading SGLang, update this import if upstream moves the predicate to sglang.kernels.ops.attention.
 from sglang.jit_kernel.flash_attention_v3 import _is_fa3_supported
 from torch import nn
 
