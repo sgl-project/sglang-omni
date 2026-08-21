@@ -24,6 +24,7 @@ from sglang_omni.preprocessing.cache_key import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
     ReferenceEncodeService,
@@ -166,6 +167,9 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     output_codes: list[torch.Tensor] = None
     prompt_input_embeds: torch.Tensor | None = None
     engine_start_s: float = 0.0
+    # note (PoTaTo): number of speech tokens already shipped downstream as
+    # stream chunks; the stream output builder emits only the tail beyond it.
+    stream_output_code_count: int = 0
 
     def __post_init__(self):
         if self.output_codes is None:
@@ -840,3 +844,69 @@ def make_cosyvoice3_scheduler_adapters(*, model: Any):
         return apply_sglang_cosyvoice3_result(data.stage_payload, data)
 
     return request_builder, result_adapter
+
+
+def _cosyvoice3_stream_enabled(payload: StagePayload | None) -> bool:
+    """Streaming gate: the prepared state dict is authoritative (it folds the
+    ``tts_params``/``params`` stream flags parsed by ``build_cosyvoice3_state``);
+    the request params are only a fallback for unprepared payloads."""
+    data = getattr(payload, "data", None)
+    if isinstance(data, dict) and "stream" in data:
+        return bool(data["stream"])
+    params = getattr(getattr(payload, "request", None), "params", None)
+    return isinstance(params, dict) and bool(params.get("stream", False))
+
+
+def make_cosyvoice3_stream_output_builder():
+    """Emit generated speech tokens incrementally for streaming requests.
+
+    The builder ships the not-yet-emitted tail of ``output_codes`` after every
+    AR step. Speech codes only ever grow by sampled tokens (control ids are
+    dropped at collection time), so a cursor is sufficient for exactly-once
+    delivery. The terminal result payload still carries the full
+    ``audio_codes`` tensor; downstream consumers decide whether to use the
+    chunks (streaming vocoder) or the final payload (full decode).
+    """
+
+    def stream_output_builder(
+        request_id: str,
+        data: CosyVoice3SGLangRequestData,
+        req_output: Any,
+    ) -> list[OutgoingMessage]:
+        del req_output
+        if not _cosyvoice3_stream_enabled(data.stage_payload):
+            return []
+        req = data.req
+        if req is not None and int(getattr(req, "inflight_middle_chunks", 0) or 0) > 0:
+            return []
+
+        output_codes = data.output_codes
+        start = min(int(data.stream_output_code_count), len(output_codes))
+        if start >= len(output_codes):
+            return []
+
+        chunk = (
+            torch.cat([part.reshape(-1) for part in output_codes[start:]], dim=0)
+            .detach()
+            .cpu()
+            .to(dtype=torch.long)
+        )
+        row_index = int(data.stream_output_code_count)
+        data.stream_output_code_count = len(output_codes)
+        metadata = {
+            "modality": "audio_codes",
+            "stream": True,
+            "sample_rate": _SAMPLE_RATE,
+            "row_index": row_index,
+        }
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                target="vocoder",
+                data=chunk,
+                metadata=metadata,
+            )
+        ]
+
+    return stream_output_builder
