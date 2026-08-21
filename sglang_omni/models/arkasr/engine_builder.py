@@ -140,8 +140,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         if "cuda_graph_bs_prefill" in overrides:
             return
 
-        # Note: (musclemuller) SGLang clamps prefill max_bs to context_length
-        # after merging explicit buckets, so derive a ladder that remains coherent.
+        # Note (musclemuller): Bound the ladder by every effective token cap so
+        # SGLang's post-merge max_bs clamp cannot invalidate explicit buckets.
         caps = [
             self.context_length,
             overrides["max_prefill_tokens"],
