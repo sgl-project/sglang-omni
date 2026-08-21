@@ -17,9 +17,20 @@ from sglang_omni.serve.transcription_adapters.whisper import WhisperTranscriptio
         "นี่คือข้อความซ้ำที่ส่วนท้าย",
     ],
 )
-def test_sustained_terminal_repetition_triggers_retry(phrase: str) -> None:
+def test_sustained_repetition_at_end_triggers_retry(phrase: str) -> None:
     adapter = WhisperTranscriptionAdapter()
     assert adapter.should_retry_chunk_without_context(phrase * 3)
+
+
+def test_sustained_repetition_before_valid_continuation_triggers_retry() -> None:
+    adapter = WhisperTranscriptionAdapter()
+    phrase = "The Buttes Trail crosses the western ridge. "
+    text = (
+        "The speaker introduces the route. "
+        + phrase * 3
+        + "Afterward, the report continues with a valid conclusion."
+    )
+    assert adapter.should_retry_chunk_without_context(text)
 
 
 @pytest.mark.parametrize(
@@ -27,6 +38,11 @@ def test_sustained_terminal_repetition_triggers_retry(phrase: str) -> None:
     [
         "yes yes yes",
         "please try again please try again",
+        (
+            "The Buttes Trail crosses the western ridge. "
+            "The Buttes Trail winds along the western ridge. "
+            "The Buttes Trail crosses beyond the western ridge."
+        ),
         "We repeated the same phrase three times before moving on normally.",
         "好好好，我们继续讨论下一部分。",
         "はい、はい、はい。でも話は続きます。",

@@ -131,9 +131,9 @@ the request minimal and use `response_format=json`.
 Whisper reads at most 30 seconds of audio in one request: the feature extractor works on a fixed 30-second mel window and drops everything past it.
 In SGLang-Omni, we transcribe longer uploads in chunks by splitting the audio at the quietest point near each 30-second boundary,
 running each chunk as its own engine request, and joining the transcripts back in order. The caller's `prompt` conditions the first decoded
-chunk; after that, each chunk uses the previous chunk's decoded text as its Whisper previous-context prompt. If a chunk ends in a sustained
+chunk; after that, each chunk uses the previous chunk's decoded text as its Whisper previous-context prompt. If a chunk contains a sustained
 repeated character cycle, it is retried once without previous context; the first result is discarded, and the retry result conditions the next chunk.
-The detector checks terminal periods of 8–128 normalized letter, number, or combining-mark characters repeated at least three times. It does not
+The detector checks periods of 8–128 normalized letter, number, or combining-mark characters repeated at least three times. It does not
 depend on whitespace-delimited words, so it also covers languages without reliable word boundaries. The behavior follows these values, which Whisper
 declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed model defaults in this release:
 

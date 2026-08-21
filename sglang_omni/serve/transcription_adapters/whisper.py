@@ -15,8 +15,8 @@ _MAX_REPEAT_PERIOD_UNITS = 128
 _REPEAT_COPIES = 3
 
 
-def _has_sustained_terminal_repetition(text: str) -> bool:
-    """Detect 8-128 normalized units repeated at least three times at the end."""
+def _has_sustained_repetition(text: str) -> bool:
+    """Detect 8-128 normalized units repeated at least three times."""
     normalized = unicodedata.normalize("NFKC", text).casefold()
     units = tuple(
         char
@@ -25,12 +25,14 @@ def _has_sustained_terminal_repetition(text: str) -> bool:
     )
     max_period = min(_MAX_REPEAT_PERIOD_UNITS, len(units) // _REPEAT_COPIES)
     for period in range(_MIN_REPEAT_PERIOD_UNITS, max_period + 1):
-        suffix = units[-period:]
-        if all(
-            units[-copy * period : -(copy - 1) * period] == suffix
-            for copy in range(2, _REPEAT_COPIES + 1)
-        ):
-            return True
+        span = _REPEAT_COPIES * period
+        for start in range(len(units) - span + 1):
+            pattern = units[start : start + period]
+            if (
+                units[start + period : start + 2 * period] == pattern
+                and units[start + 2 * period : start + span] == pattern
+            ):
+                return True
     return False
 
 
@@ -52,4 +54,4 @@ class WhisperTranscriptionAdapter(DefaultTranscriptionAdapter):
         return previous_text
 
     def should_retry_chunk_without_context(self, text: str) -> bool:
-        return _has_sustained_terminal_repetition(text)
+        return _has_sustained_repetition(text)
