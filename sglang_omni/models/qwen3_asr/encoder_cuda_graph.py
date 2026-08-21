@@ -48,14 +48,6 @@ def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
     return tuple(buckets)
 
 
-def pick_bucket(total_tokens: int, buckets: tuple[int, ...]) -> int | None:
-    """Pick the smallest bucket that fits, or None (caller will fall back to eager)."""
-    for bucket_size in buckets:
-        if total_tokens <= bucket_size:
-            return bucket_size
-    return None
-
-
 @dataclass
 class _CapturedGraph:
     graph: torch.cuda.CUDAGraph
