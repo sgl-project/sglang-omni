@@ -35,37 +35,15 @@ class XPUOmniPlatform(OmniPlatform):
         return False
 
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
-        # This kernel reads a cos/sin table like the rotary does, where the
-        # analytic one recomputes sin and cos per element and loses to the
-        # unfused pair once a prefill is a few hundred tokens.
-        #
-        # It was renamed upstream: the pinned build exports
-        # fused_inplace_qknorm_rope, newer ones
-        # fused_qk_norm_rope_with_cos_sin_cache_inplace. Both take the same
-        # leading arguments, so accept either rather than silently disabling
-        # this on whichever build the image happens to carry.
         try:
-            import sgl_kernel
+            from sgl_kernel import fused_inplace_qknorm_rope
         except ImportError as exc:
             logger.info(
-                f"XPU has no sgl_kernel ({exc}); falling back to the unfused "
-                "QK-norm and RoPE path"
+                f"XPU sgl_kernel has no cos/sin-cache fused QK-norm-RoPE kernel "
+                f"({exc}); falling back to the unfused QK-norm and RoPE path"
             )
             return None
-
-        for name in (
-            "fused_inplace_qknorm_rope",
-            "fused_qk_norm_rope_with_cos_sin_cache_inplace",
-        ):
-            kernel = getattr(sgl_kernel, name, None)
-            if kernel is not None:
-                return kernel
-
-        logger.info(
-            "XPU sgl_kernel exports no cos/sin-cache fused QK-norm-RoPE kernel; "
-            "falling back to the unfused QK-norm and RoPE path"
-        )
-        return None
+        return fused_inplace_qknorm_rope
 
     def apply_model_worker_backend_policy(
         self,

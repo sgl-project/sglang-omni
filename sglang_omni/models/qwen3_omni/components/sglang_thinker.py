@@ -23,7 +23,6 @@ from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_w
 from sglang.srt.utils import add_prefix, logger
 
 from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
-    ThinkerFusedRopeGate,
     install_thinker_fused_rope,
 )
 from sglang_omni.quantization import get_weight_preprocessor
@@ -40,10 +39,6 @@ def _config_uses_mrope(config: Any) -> bool:
 
 class Qwen3OmniThinkerForCausalLM(nn.Module):
     """Qwen3-Omni thinker text model without duplicated audio/vision towers."""
-
-    # Callers that bypass __init__ (tests build the wrapper attribute by
-    # attribute) still reach forward, which reads this.
-    _fused_rope_gate: "ThinkerFusedRopeGate | None" = None
 
     def __init__(
         self,
@@ -72,7 +67,7 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 prefix=add_prefix("lm_head", prefix),
             )
         self.logits_processor = LogitsProcessor(self.config)
-        self._fused_rope_gate = install_thinker_fused_rope(self.model, self.config)
+        self._fused_rope_gate = install_thinker_fused_rope(self.model)
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":

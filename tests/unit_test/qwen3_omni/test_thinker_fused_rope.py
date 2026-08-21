@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The thinker may only fuse QK-norm and RoPE where MRoPE degenerates.
 
-MRoPE carries three position rows and the kernel takes one, so fusing a batch
-whose rows diverge silently applies text rotation to image and video tokens and
-still produces fluent output. These cases pin the premise that makes the fused
-path legal and the gate that decides when it applies.
+Fusing a batch whose three position rows diverge would silently rotate image and
+video tokens as text, so these pin the premise and the gate that enforces it.
 """
 
 from __future__ import annotations
@@ -29,12 +27,10 @@ _MROPE_SECTION = [24, 20, 20]
 
 
 def _yarnless_config() -> SimpleNamespace:
-    """The least install needs: compute_yarn_parameters reads rope_scaling."""
     return SimpleNamespace(rope_scaling=None, rope_parameters=None)
 
 
 def _fake_attn(**overrides) -> SimpleNamespace:
-    """An attention stub carrying what install reads."""
     attrs = dict(
         apply_qk_norm_rope=lambda *a: None,
         head_dim=128,
@@ -48,7 +44,6 @@ def _fake_attn(**overrides) -> SimpleNamespace:
 
 
 def _pin_xpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make install's platform check deterministic on any runner."""
     from sglang_omni.models.qwen3_omni.components import thinker_fused_rope
 
     monkeypatch.setattr(thinker_fused_rope.current_platform, "is_xpu", lambda: True)
@@ -76,11 +71,6 @@ def _positions(rows_equal: bool, tokens: int = 6) -> torch.Tensor:
 
 
 def test_equal_rows_make_mrope_collapse_to_the_temporal_row() -> None:
-    """Why one position per token is enough: with equal rows MRoPE selects it.
-
-    apply_interleaved_rope only ever copies from one of the three rows, so equal
-    rows leave the temporal row untouched, which is what a 1-D RoPE would use.
-    """
     from sglang.srt.layers.rotary_embedding.mrope import apply_interleaved_rope
 
     cos = torch.randn(3, 6, 64)
@@ -98,15 +88,6 @@ def test_equal_rows_make_mrope_collapse_to_the_temporal_row() -> None:
 def test_upstream_builds_identical_rows_for_a_text_only_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The invariant the gate relies on, pinned against SGLang's own builder.
-
-    The gate collapses MRoPE to row 0 without re-comparing the rows per forward,
-    because confirming it costs two device syncs. That is only sound while
-    _compute_mrope_positions keeps building all three rows from one range for a
-    text-only batch, so drive the real method and assert it. If upstream changes
-    that construction this fails here, rather than rotating image or video tokens
-    as text at runtime.
-    """
     from sglang.srt.model_executor import forward_batch_info
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -157,11 +138,6 @@ def test_gate_admits_a_text_only_batch_and_hands_over_one_row() -> None:
     ids=["single", "mixed"],
 )
 def test_gate_refuses_any_batch_carrying_multimodal_input(mm_inputs: list) -> None:
-    """Read off the raw list, not contains_mm_inputs().
-
-    That helper answers per item type, so an item type this build does not
-    recognize would read as "no image" and admit fusion for diverging rows.
-    """
     gate = ThinkerFusedRopeGate()
 
     gate.evaluate(_positions(rows_equal=False), _extend_batch(mm_inputs=mm_inputs))
@@ -173,11 +149,6 @@ def test_gate_refuses_any_batch_carrying_multimodal_input(mm_inputs: list) -> No
 def test_installing_twice_leaves_one_wrapper_and_no_recursion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A second install must not save the wrapper as its own fallback.
-
-    The behaviour is platform independent, so pin the platform rather than
-    letting a CUDA runner take the early return and never reach the guard.
-    """
     _pin_xpu(monkeypatch)
     calls: list[str] = []
 
@@ -190,20 +161,17 @@ def test_installing_twice_leaves_one_wrapper_and_no_recursion(
 
     first = install_thinker_fused_rope(
         model,
-        None,
         kernel_provider=lambda: (lambda *a: None),
         prefill_graph_enabled=False,
     )
     second = install_thinker_fused_rope(
         model,
-        None,
         kernel_provider=lambda: (lambda *a: None),
         prefill_graph_enabled=False,
     )
 
     assert first is not None
     assert second is None
-    # The gate is off, so this is the fallback: it must reach the original once.
     assert attn.apply_qk_norm_rope(None, None, None) == "unfused"
     assert calls == ["original"]
 
@@ -211,12 +179,6 @@ def test_installing_twice_leaves_one_wrapper_and_no_recursion(
 def test_the_installed_wrapper_hands_the_kernel_views_of_the_packed_qkv(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fused path's contract, with a fake kernel and no device.
-
-    The kernel writes q and k in place, so it must receive views that alias the
-    packed projection. Copies would leave the rotation in a temporary and the
-    model would attend to unnormalized, unrotated q and k with nothing raised.
-    """
     _pin_xpu(monkeypatch)
     heads, kv_heads, dim, tokens = 4, 2, 128, 3
     seen: dict = {}
@@ -251,7 +213,6 @@ def test_the_installed_wrapper_hands_the_kernel_views_of_the_packed_qkv(
     )
     gate = install_thinker_fused_rope(
         SimpleNamespace(layers=[SimpleNamespace(self_attn=attn)]),
-        None,
         kernel_provider=lambda: fake_kernel,
         prefill_graph_enabled=False,
     )
@@ -272,8 +233,6 @@ def test_the_installed_wrapper_hands_the_kernel_views_of_the_packed_qkv(
 
     assert seen["q_weight"] is q_weight
     assert seen["k_weight"] is k_weight
-    # The table is upcast because the kernel reads float32, and indexed by the
-    # temporal row alone.
     assert seen["cache"].dtype == torch.float32
     assert torch.equal(seen["cache"], table.float())
     assert torch.equal(seen["positions"], positions[0])
@@ -308,14 +267,12 @@ def test_gate_refuses_when_positions_are_not_mrope() -> None:
 def test_install_is_refused_while_a_prefill_graph_could_freeze_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A replayed prefill graph would keep whichever branch capture took."""
     _pin_xpu(monkeypatch)
     layer = SimpleNamespace(self_attn=_fake_attn())
 
     assert (
         install_thinker_fused_rope(
             SimpleNamespace(layers=[layer]),
-            None,
             kernel_provider=lambda: (lambda *a: None),
             prefill_graph_enabled=True,
         )
@@ -325,12 +282,10 @@ def test_install_is_refused_while_a_prefill_graph_could_freeze_it(
 
 @requires_xpu
 def test_install_succeeds_on_xpu() -> None:
-    """The platform this exists for must actually get the patch."""
     attn = _fake_attn()
 
     gate = install_thinker_fused_rope(
         SimpleNamespace(layers=[SimpleNamespace(self_attn=attn)]),
-        None,
         kernel_provider=lambda: (lambda *a: None),
         prefill_graph_enabled=False,
     )
@@ -342,7 +297,6 @@ def test_install_succeeds_on_xpu() -> None:
 def test_install_is_refused_off_xpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only XPU opts in; CUDA and ROCm keep their tuned unfused path."""
     from sglang_omni.models.qwen3_omni.components import thinker_fused_rope
 
     layer = SimpleNamespace(self_attn=_fake_attn())
@@ -351,7 +305,6 @@ def test_install_is_refused_off_xpu(
     assert (
         install_thinker_fused_rope(
             SimpleNamespace(layers=[layer]),
-            None,
             kernel_provider=lambda: (lambda *a: None),
             prefill_graph_enabled=False,
         )
@@ -367,7 +320,6 @@ def test_install_is_a_no_op_when_the_build_has_no_kernel(
     assert (
         install_thinker_fused_rope(
             SimpleNamespace(layers=[]),
-            None,
             kernel_provider=lambda: None,
             prefill_graph_enabled=False,
         )
@@ -376,7 +328,6 @@ def test_install_is_a_no_op_when_the_build_has_no_kernel(
 
 
 def test_the_kernel_is_not_acquired_off_xpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Same for the platform gate: CUDA must not pay for an XPU-only path."""
     from sglang_omni.models.qwen3_omni.components import thinker_fused_rope
 
     monkeypatch.setattr(thinker_fused_rope.current_platform, "is_xpu", lambda: False)
@@ -387,7 +338,6 @@ def test_the_kernel_is_not_acquired_off_xpu(monkeypatch: pytest.MonkeyPatch) -> 
     assert (
         install_thinker_fused_rope(
             SimpleNamespace(layers=[]),
-            None,
             kernel_provider=provider,
             prefill_graph_enabled=False,
         )
@@ -398,11 +348,6 @@ def test_the_kernel_is_not_acquired_off_xpu(monkeypatch: pytest.MonkeyPatch) -> 
 @pytest.mark.gpu
 @requires_xpu
 def test_the_kernel_matches_an_unfused_reference() -> None:
-    """The kernel's rotation equals RMS-norm plus neox RoPE, read off a table.
-
-    XPU only: this is the cos/sin-cache ABI, which no other platform's hook
-    serves.
-    """
     kernel = current_platform.get_fused_qk_norm_rope_with_cos_sin_cache()
     if kernel is None:
         pytest.skip("this sgl_kernel build has no fused QK-norm-RoPE kernel")

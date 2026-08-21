@@ -1,20 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fused QK-norm plus RoPE for the Qwen3-Omni thinker's attention layers.
 
-The thinker's rotary is MRoPE, so upstream Qwen3MoeAttention keeps its fused
-branch off: the kernel takes one position per token while MRoPE carries three.
-Those three rows only differ for image and video tokens. Where they agree,
-MRoPE selects the same cos/sin entry for every frequency pair, which is the
-rotation the kernel applies, so a batch carrying no multimodal input can be
-fused and one carrying any falls back whole.
-
-The decision is a Python branch, so it must not be frozen into a replayed
-graph; installation is refused while prefill graphs are enabled. It is also
-refused off XPU, so CUDA and ROCm keep the unfused path they are tuned on.
-
-It installs by default on XPU. The cache-consuming kernel beats the unfused pair
-at every prefill length measured, so there is no size for which an operator would
-want it off, and the gates below already refuse the cases it cannot serve.
+MRoPE's three position rows differ only for image and video tokens, so a
+text-only batch selects the same rotation the 1-D kernel applies and can be
+fused, while any multimodal batch falls back whole. Installs by default on XPU.
 """
 
 from __future__ import annotations
@@ -42,31 +31,18 @@ class ThinkerFusedRopeGate:
         self.positions: torch.Tensor | None = None
 
     def evaluate(self, positions: torch.Tensor, forward_batch: Any) -> None:
-        """Decide once per forward, before any layer runs.
-
-        Absence of multimodal input is read off the raw list rather than
-        contains_mm_inputs(), which answers per item type: a type this build
-        does not recognize would read as "no image" and wrongly admit fusion.
-        mm_inputs is a declared ForwardBatch field, so read it directly: reaching
-        it defensively would turn a caller that omits it into a text-only batch.
-        """
+        """Decide once per forward, before any layer runs."""
         self.enabled = False
         self.positions = None
 
         mm_inputs = forward_batch.mm_inputs
         text_only = not mm_inputs or all(item is None for item in mm_inputs)
-        # Decode stays unfused so a captured decode graph can never replay a
-        # frozen decision; prefill is where the per-layer launches are worth it.
         prefill = forward_batch.forward_mode.is_extend()
         if not (text_only and prefill) or positions is None or positions.dim() != 2:
             return
         if positions.shape[0] != 3:
             return
         self.enabled = True
-        # _compute_mrope_positions builds all three rows from one range for a
-        # text-only batch, so the temporal row carries the position. Confirming
-        # that per forward costs two device syncs, so the gate above is the
-        # guarantee; a test drives the real builder to keep it honest.
         self.positions = positions[0].contiguous()
 
 
@@ -85,12 +61,8 @@ def _fused_apply_qk_norm_rope(
 
     q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
     tokens = qkv.shape[0]
-    # The kernel wants q and k per head and writes them in place. It requires
-    # only the head dimension to be contiguous and takes the token and head
-    # strides as they come, so hand it views and let it update the packed
-    # projection directly: making these contiguous would copy both regions
-    # every layer. view() rather than reshape() so a shape that could not alias
-    # raises here instead of quietly taking the write into a copy.
+    # Views, not copies: the kernel needs only head_dim contiguous and updates
+    # the packed projection in place.
     kernel(
         q.view(tokens, attn.num_heads, attn.head_dim),
         k.view(tokens, attn.num_kv_heads, attn.head_dim),
@@ -101,18 +73,12 @@ def _fused_apply_qk_norm_rope(
         attn.rotary_emb.is_neox_style,
         attn.q_norm.variance_epsilon,
     )
-    # forward_core reads this to decide save_kv_cache: the fused path writes no
-    # KV of its own, so the attention call has to.
     attn._used_fused_qk_norm_rope_last_call = True
     return q, k, v
 
 
 def _prefill_graph_enabled() -> bool:
-    """Whether prefill runs under a graph that would freeze a Python decision.
-
-    Construction outside a serving process has no global server args to read;
-    answer yes there so the fused path stays off rather than guessing.
-    """
+    """Whether prefill runs under a graph that would freeze a Python decision."""
     from sglang.srt.model_executor.cuda_graph_config import Backend
 
     from sglang_omni.vendor.sglang.server_args import get_global_server_args
@@ -126,25 +92,17 @@ def _prefill_graph_enabled() -> bool:
 
 def install_thinker_fused_rope(
     model: Any,
-    config: Any,
     *,
     kernel_provider: Any = None,
     prefill_graph_enabled: bool | None = None,
 ) -> ThinkerFusedRopeGate | None:
     """Route eligible thinker attention layers through the fused kernel.
 
-    Every gate is evaluated here, cheapest first, so a platform that cannot use
-    this does no work at model init. In particular the kernel is not acquired
-    until the gates pass: a platform hook may import sgl_kernel eagerly and raise
-    where the build lacks it, which must not break an unaffected model.
-
-    Returns the gate the caller must evaluate once per forward, or None when
-    nothing was patched.
+    Returns the gate the caller evaluates once per forward, or None when nothing
+    was patched. Gates are ordered cheapest first, and the kernel is acquired
+    only once they pass.
     """
     if not current_platform.is_xpu():
-        # Only XPU opts in. Every other platform keeps upstream's choice to leave
-        # an MRoPE model unfused: on CUDA and ROCm that unfused path is the tuned
-        # one, and no platform should be admitted here without being measured.
         return None
     if prefill_graph_enabled is None:
         prefill_graph_enabled = _prefill_graph_enabled()
@@ -176,19 +134,15 @@ def install_thinker_fused_rope(
             skipped += 1
             continue
         if compute_yarn_parameters(attn.config)[0] != 1.0:
-            # This kernel takes a cos/sin table and no YaRN parameters, so it
-            # cannot express a scaled rotary.
+            # No YaRN parameters in this ABI, so a scaled rotary is unreachable.
             skipped += 1
             continue
         if hasattr(attn, "_omni_unfused_apply_qk_norm_rope"):
-            # A second install would save the wrapper as its own fallback and
-            # recurse until the stack blows.
+            # A second install would make the wrapper its own fallback.
             skipped += 1
             continue
         if cos_sin_cache is None:
-            # The kernel requires float32 while the rotary keeps its table in the
-            # query dtype. Upcasting the rotary's own table, once and shared by
-            # every layer, keeps the frequencies identical to the unfused path.
+            # The kernel reads float32; the rotary keeps its table in query dtype.
             cos_sin_cache = attn.rotary_emb.cos_sin_cache.float().contiguous()
 
         attn._omni_unfused_apply_qk_norm_rope = attn.apply_qk_norm_rope

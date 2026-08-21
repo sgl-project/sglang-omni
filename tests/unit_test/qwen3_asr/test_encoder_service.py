@@ -435,16 +435,10 @@ def test_encode_failure_propagates_without_poisoning_cache() -> None:
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
 
 
-def test_oom_failure_detaches_traceback_and_recovers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_oom_failure_detaches_traceback_and_recovers() -> None:
     model = _StubModel()
     model.fail_oom = True
     service = _make_service(model)
-    empty_cache_calls: list[bool] = []
-    monkeypatch.setattr(
-        torch.cuda, "empty_cache", lambda: empty_cache_calls.append(True)
-    )
 
     with pytest.raises(torch.OutOfMemoryError, match="encoder OOM") as excinfo:
         service.encode_item(_item(77, 3))
@@ -674,10 +668,6 @@ def test_the_device_cache_is_really_reclaimed_after_an_oom() -> None:
     device_module = torch.get_device_module(torch.device(_DEVICE))
     service = _make_service(_StubModel().to(_DEVICE))
 
-    # memory_reserved and empty_cache act on the current device, so hold the
-    # allocation's device for every reading. Start from a known floor too, so an
-    # earlier test's reservations cannot decide the outcome, and synchronize each
-    # time so a queued free or alloc cannot land between two reads.
     with device_module.device(_DEVICE):
         device_module.synchronize()
         device_module.empty_cache()
