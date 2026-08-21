@@ -452,41 +452,58 @@ class Coordinator:
         if stream_queue is not None:
             self._stream_queues[request_id] = stream_queue
 
-        payload = StagePayload(
-            request_id=request_id,
-            request=request,
-            data={"raw_inputs": request.inputs},
-        )
-
-        _emit_event(
-            request_id=request_id,
-            stage="coordinator",
-            event_name="request_admission",
-            metadata={"entry_stage": self.entry_stage},
-        )
-
-        await self.control_plane.submit_to_stage(
-            entry_instance,
-            entry_info.control_endpoint,
-            SubmitMessage(
+        try:
+            payload = StagePayload(
                 request_id=request_id,
-                data=payload,
-                replica_bindings=replica_bindings,
-            ),
-        )
+                request=request,
+                data={"raw_inputs": request.inputs},
+            )
 
-        # Update state
-        info = self._requests.get(request_id)
-        if info is not None:
-            info.state = RequestState.RUNNING
+            _emit_event(
+                request_id=request_id,
+                stage="coordinator",
+                event_name="request_admission",
+                metadata={"entry_stage": self.entry_stage},
+            )
 
-        logger.info(
-            "Coordinator submitted req=%s to %s at %s bindings=%s",
-            request_id,
-            entry_instance,
-            entry_info.control_endpoint,
-            replica_bindings,
-        )
+            await self.control_plane.submit_to_stage(
+                entry_instance,
+                entry_info.control_endpoint,
+                SubmitMessage(
+                    request_id=request_id,
+                    data=payload,
+                    replica_bindings=replica_bindings,
+                ),
+            )
+
+            # Update state
+            info = self._requests.get(request_id)
+            if info is not None:
+                info.state = RequestState.RUNNING
+
+            logger.info(
+                "Coordinator submitted req=%s to %s at %s bindings=%s",
+                request_id,
+                entry_instance,
+                entry_info.control_endpoint,
+                replica_bindings,
+            )
+        except BaseException:
+            logger.warning(
+                "Coordinator failed to submit req=%s to entry stage %s; "
+                "rolled back request bookkeeping",
+                request_id,
+                entry_instance,
+            )
+            self._rollback_request_state(request_id)
+            raise
+
+    def _rollback_request_state(self, request_id: str) -> None:
+        self._requests.pop(request_id, None)
+        future = self._completion_futures.pop(request_id, None)
+        if future is not None and not future.done():
+            future.cancel()
+        self._stream_queues.pop(request_id, None)
 
     def _request_id_is_reserved(self, request_id: str) -> bool:
         """Return whether any coordinator owner still holds this request ID."""
