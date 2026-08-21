@@ -1,21 +1,13 @@
 # Whisper ASR
 
-Whisper ASR checkpoints are served through the OpenAI-compatible
-`/v1/audio/transcriptions` and `/v1/audio/translations` endpoints. The
-path remains experimental in the current SGLang-Omni tree; validate
-checkpoint-specific accuracy and operational behavior before production
-deployment. The single-GPU profile below targets one RTX 4090 (24 GB).
+Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. This path remains experimental in the current SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior before production deployment.
 
 ## Prerequisites
 
-Install `sglang-omni` by following
-[Installation](../get_started/installation.md), then download the validated
-multilingual checkpoint revision:
+Install `sglang-omni` by following [Installation](../get_started/installation.md), then download a Whisper checkpoint:
 
 ```bash
-MODEL_REVISION=06f233fe06e710322aca913c1bc4249a0d71fce1
-MODEL_PATH=$(hf download openai/whisper-large-v3 \
-  --revision "${MODEL_REVISION}")
+hf download openai/whisper-large-v3
 ```
 
 ## Server Configuration
@@ -34,10 +26,8 @@ The consumer profile uses BF16, disables `torch.compile`, caps running
 requests at 16, and reserves 65% of device memory for static allocations:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+sgl-omni serve \
   --config examples/configs/whisper_asr_rtx4090.yaml \
-  --model-path "${MODEL_PATH}" \
-  --model-name openai/whisper-large-v3 \
   --port 8000
 ```
 
@@ -167,14 +157,10 @@ declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed mod
 Use the shared SeedTTS benchmark for end-to-end concurrency, WER, latency, and throughput:
 
 ```bash
-python -m benchmarks.dataset.prepare --dataset seedtts
-
 python -m benchmarks.eval.benchmark_asr_seedtts \
-  --port 8000 --model-path openai/whisper-large-v3 --lang en \
-  --model-revision 06f233fe06e710322aca913c1bc4249a0d71fce1 \
-  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
-  --concurrencies 1,2,4,8,16,32 --repeats 3 --warmup \
-  --output whisper_concurrency.json
+  --port 8000 --model-path openai/whisper-base \
+  --max-samples 128 --concurrencies 1,2,4,8,16,32 \
+  --repeats 5 --warmup --output whisper_concurrency.json
 ```
 
 To reproduce the async-decode comparison below, resolve the pinned checkpoint and start each mode separately on the same GPU:
@@ -218,8 +204,6 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 ```
 
 ## Benchmark Results
-
-### Historical H200 references
 
 The following W-PR1 results used the 20-sample SeedTTS EN subset on a single H200 with `openai/whisper-base` in FP16. Each mode ran one discarded warmup and three measured repeats per concurrency.
 
@@ -283,8 +267,6 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
   for the next batch instead of splitting the encoder prefix.
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
-- Streaming transport is supported, but Whisper currently emits terminal-only
-  transcript text rather than low-latency text deltas.
 - Audio is resampled to 16 kHz before transcription.
 - `prompt` conditions decoding via Whisper prev-context tokens. Only the last
   223 prompt tokens are kept (224 prev-context tokens including

@@ -13,10 +13,8 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 then download the model:
 
 ```bash
-# Use the -hf variant and pin the validated revision.
-MODEL_REVISION=854d88f94205cd17d2afdb24332130d86fbe654a
-MODEL_PATH=$(hf download FunAudioLLM/Fun-ASR-Nano-2512-hf \
-  --revision "${MODEL_REVISION}")
+# Use the -hf variant
+hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ```
 
 ## Server Configuration
@@ -35,10 +33,8 @@ The consumer profile uses BF16, disables `torch.compile`, caps running
 requests at 16, and reserves 65% of device memory for static allocations:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+sgl-omni serve \
   --config examples/configs/fun_asr_rtx4090.yaml \
-  --model-path "${MODEL_PATH}" \
-  --model-name FunAudioLLM/Fun-ASR-Nano-2512-hf \
   --port 8000
 ```
 
@@ -112,14 +108,13 @@ path with `--model-path`.
 # Download the test set once:
 python -m benchmarks.dataset.prepare --dataset seedtts
 
-# Launch the RTX 4090 profile as shown above.
+# Launch Fun-ASR-Nano:
+sgl-omni serve --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
 
-# Sweep the full SeedTTS EN set (1088 clips), 3 measured repeats:
+# Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
-  --model-revision 854d88f94205cd17d2afdb24332130d86fbe654a \
-  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
-  --lang en --concurrencies 1,2,4,8,16,32 --repeats 3 --warmup
+  --concurrencies 1,2,4,8,16,32,64 --repeats 3
 
 # Quick smoke on a 20-sample subset:
 python -m benchmarks.eval.benchmark_asr_seedtts \
@@ -133,8 +128,6 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 ```
 
 ## Benchmark Results
-
-### Historical H100 reference
 
 Measured on a single H100 80 GB (bf16, DP=1, default server settings)
 against the full SeedTTS sets. Each row is the mean of 3 runs with one
