@@ -19,6 +19,7 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     PlacementConfig,
     ProcessConfig,
+    RealtimeAudioConfig,
     StageConfig,
 )
 from sglang_omni.config.topology import (
@@ -52,6 +53,7 @@ __all__ = [
     "compile_logical_processes",
     "PipelineConfig",
     "ProcessConfig",
+    "RealtimeAudioConfig",
     "StageConfig",
     "EngineStageConfig",
     "EngineArgs",

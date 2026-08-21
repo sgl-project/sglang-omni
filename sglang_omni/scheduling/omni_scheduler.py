@@ -61,7 +61,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
-from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.scheduling.types import DeferredAdmission, FollowupAdmission
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,11 @@ class _NoOpGrammarManager:
 
 
 class OmniScheduler:
+    # Streaming sessions are an opt-in extension. Keeping the disabled value
+    # on the class also preserves tests and embedders that construct a partial
+    # scheduler with object.__new__.
+    _streaming_sessions_enabled = False
+
     """Stage-facing scheduler for AR stages.
 
     Public contract (used by Stage):
@@ -195,6 +200,7 @@ class OmniScheduler:
         prefill_coalesce_after_builds_during_decode: bool = False,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
+        enable_streaming_sessions: bool = False,
         shutdown_callback: Callable[[], None] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
@@ -253,6 +259,7 @@ class OmniScheduler:
 
         # --- Core scheduling state (read/written by upstream methods) -----
         self.server_args = server_args
+        self._streaming_sessions_enabled = bool(enable_streaming_sessions)
         self.model_config = model_config
         self.gpu_id = tp_worker.gpu_id
         self.tp_rank = tp_worker.tp_rank
@@ -560,13 +567,17 @@ class OmniScheduler:
         self.ngram_embedding_manager = NgramEmbeddingManager(
             enabled=False, table=None, n=0, k=0
         )
-        # Upstream pool_stats_observer.streaming_session_count iterates
-        # self.session_controller.sessions.values() during decode stats
-        # reporting. We don't host SGLang's interactive-session feature, so a
-        # stub with an empty sessions dict is sufficient.
+        # Session support is opt-in. Existing Omni models retain the lightweight
+        # observer stub; frame-streaming models use SGLang's real controller and
+        # StreamingSession cache wrapper.
         from types import SimpleNamespace
 
-        self.session_controller = SimpleNamespace(sessions={})
+        if self._streaming_sessions_enabled:
+            from sglang.srt.session.session_controller import SessionController
+
+            self.session_controller = SessionController(self.tree_cache)
+        else:
+            self.session_controller = SimpleNamespace(sessions={})
         self.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
         self.load_snapshot_writer = None
         self.kv_events_publisher = SimpleNamespace(
@@ -832,6 +843,8 @@ class OmniScheduler:
 
     def process_input_requests(self, recv_reqs):
         """Convert incoming payloads to SGLang Reqs and enqueue."""
+        if self._streaming_sessions_enabled:
+            self.session_controller.maybe_reap(time.monotonic())
         self._drain_request_admission_results()
         self._drain_request_build_results()
         recv_reqs, rejected = self._stage_request_build_payloads(recv_reqs)
@@ -1153,7 +1166,30 @@ class OmniScheduler:
         request_admission_lock_held: bool = False,
     ) -> None:
         req_id = payload.request_id
+        with self._request_admission_lock:
+            if req_id in self._aborted_request_ids:
+                return
         self._deferred_request_payloads.pop(req_id, None)
+        if self._streaming_sessions_enabled and req_data.close_streaming_session:
+            from sglang.srt.managers.io_struct import CloseSessionReqInput
+
+            session_id = req_data.streaming_session_id
+            if session_id is None:
+                raise RuntimeError(
+                    "A close_streaming_session request requires an enabled session id"
+                )
+            self.session_controller.close(CloseSessionReqInput(session_id=session_id))
+            result = self._result_adapter(req_data)
+            self.outbox.put(
+                OutgoingMessage(request_id=req_id, type="result", data=result)
+            )
+            return
+
+        if (
+            self._streaming_sessions_enabled
+            and req_data.streaming_session_id is not None
+        ):
+            self._attach_streaming_session(req_data)
         req = req_data.req
         self._normalize_req_token_arrays(req)
         req_id = req.rid
@@ -1659,6 +1695,24 @@ class OmniScheduler:
                 continue
 
             self._first_emit_done.discard(rid)
+            if isinstance(result, FollowupAdmission):
+                followup = result.value
+                try:
+                    with self._request_admission_lock:
+                        self._completed_request_ids.pop(rid, None)
+                    self._enqueue_built_request(
+                        followup.stage_payload,
+                        False,
+                        followup,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "OmniScheduler follow-up admission failed for request %s",
+                        rid,
+                    )
+                    self._emit_request_error(rid, exc)
+                    self.abort(rid)
+                continue
             self.outbox.put(
                 OutgoingMessage(
                     request_id=rid,
@@ -1666,6 +1720,66 @@ class OmniScheduler:
                     data=result,
                 )
             )
+
+    def _attach_streaming_session(self, req_data: Any) -> None:
+        """Convert a builder-produced Req into an append-only session turn."""
+        if not self._streaming_sessions_enabled:
+            raise RuntimeError(
+                "streaming_session_id requires enable_streaming_sessions=True"
+            )
+
+        from array import array
+
+        from sglang.srt.managers.io_struct import (
+            OpenSessionReqInput,
+            SessionParams,
+            TokenizedGenerateReqInput,
+        )
+
+        session_id = req_data.streaming_session_id
+        session = self.session_controller.get(session_id)
+        if session is None:
+            capacity = req_data.streaming_session_capacity or self.max_req_len
+            opened = self.session_controller.open(
+                OpenSessionReqInput(
+                    capacity_of_str_len=int(capacity),
+                    session_id=session_id,
+                    streaming=True,
+                    timeout=req_data.streaming_session_timeout,
+                )
+            )
+            if not opened.success:
+                raise RuntimeError(f"Failed to open streaming session {session_id!r}")
+            session = self.session_controller.get(session_id)
+        assert session is not None
+
+        raw_req = req_data.req
+        tokenized = TokenizedGenerateReqInput(
+            rid=raw_req.rid,
+            input_text=None,
+            input_ids=array("q", raw_req.origin_input_ids),
+            input_embeds=None,
+            mm_inputs=None,
+            token_type_ids=None,
+            sampling_params=raw_req.sampling_params,
+            return_logprob=req_data.return_logprob,
+            logprob_start_len=-1,
+            top_logprobs_num=0,
+            token_ids_logprob=None,
+            stream=False,
+            return_sampling_mask=False,
+            session_id=session_id,
+            session_params=SessionParams(id=session_id, rid=None),
+        )
+        # Omni AR stages run with skip_tokenizer_init. VoiceChat continuation
+        # turns are tokenized by their model adapter and never need BOS removal,
+        # so keep the scheduler-side Req tokenizer-free as upstream does.
+        req_data.req = session.create_req(
+            tokenized,
+            None,
+            self.model_config.vocab_size,
+            eos_token_ids=self.model_config.hf_eos_token_id,
+        )
 
     def _on_stream_chunk(self, request_id: str, chunk: Any) -> None:
         if request_id in self._completed_request_ids:
