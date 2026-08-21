@@ -353,7 +353,9 @@ def _patch_engine_dependencies(
         recorded.infra_kwargs.append(dict(kwargs))
         model_worker = SimpleNamespace(
             gpu_id=gpu_id,
-            model_runner=SimpleNamespace(model=object()),
+            model_runner=SimpleNamespace(
+                model=SimpleNamespace(init_encoder_graphs=lambda **kwargs: None)
+            ),
         )
         return want_cuda_graph, (
             model_worker,
@@ -414,7 +416,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     ]
     assert "cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]" in caplog.text
     assert "mm_attention_backend" not in build_kwargs
-    assert recorded.memory_queries == [0, 0, 0]
+    assert recorded.memory_queries == [0, 0, 0, 0]
     assert recorded.adapter_kwargs["context_length"] == 2048
     assert scheduler.enable_async_decode is False
     assert scheduler.async_decode_min_batch_size == 4
