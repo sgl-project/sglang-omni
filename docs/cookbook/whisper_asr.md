@@ -4,8 +4,7 @@ Whisper ASR checkpoints are served through the OpenAI-compatible
 `/v1/audio/transcriptions` and `/v1/audio/translations` endpoints. The
 path remains experimental in the current SGLang-Omni tree; validate
 checkpoint-specific accuracy and operational behavior before production
-deployment. The single-GPU profile below was validated on one RTX 4090
-(24 GB) against the pinned revision documented in the benchmark results.
+deployment. The single-GPU profile below targets one RTX 4090 (24 GB).
 
 ## Prerequisites
 
@@ -170,56 +169,12 @@ Use the shared SeedTTS benchmark for end-to-end concurrency, WER, latency, and t
 ```bash
 python -m benchmarks.dataset.prepare --dataset seedtts
 
-# Set this to the server's GPU worker PID reported by `nvidia-smi`.
-SERVER_HOST_PID=12345
-
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --model-path openai/whisper-large-v3 --lang en \
   --model-revision 06f233fe06e710322aca913c1bc4249a0d71fce1 \
   --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
   --concurrencies 1,2,4,8,16,32 --repeats 3 --warmup \
   --output whisper_concurrency.json
-
-python -m benchmarks.eval.benchmark_asr_stability \
-  --port 8000 --model-path openai/whisper-large-v3 \
-  --model-revision 06f233fe06e710322aca913c1bc4249a0d71fce1 \
-  --dataset-revision 27f4c1adee83b5b29b7c4b375f6b976324bda308 \
-  --duration-s 1800 --concurrencies 1,4,8,16 \
-  --request-timeout-s 120 --no-check-audio-boundary \
-  --include-translation --translation-source-language zh \
-  --dtype bfloat16 --attention-backend flashinfer \
-  --cuda-graph --no-torch-compile \
-  --max-running-requests 16 --mem-fraction-static 0.65 \
-  --gpu-process-pid "${SERVER_HOST_PID}" \
-  --min-free-memory-mib 2048 --max-retained-memory-mib 256 \
-  --output whisper_stability.json
-
-python -m benchmarks.dataset.prepare --dataset covost2-zh-en
-python -m benchmarks.eval.benchmark_whisper_translation \
-  --backend server --port 8000 \
-  --model-path openai/whisper-large-v3 \
-  --model-revision 06f233fe06e710322aca913c1bc4249a0d71fce1 \
-  --dataset-id lmms-lab/covost2 --dataset-config zh_en \
-  --dataset-split test \
-  --dataset-revision e38a7a7fba8adcd1563b2169afc3bc7eed202a25 \
-  --source-language zh --concurrency 8 --warmup-samples 8 \
-  --request-timeout-s 120 --gpu-process-pid "${SERVER_HOST_PID}" \
-  --dtype bfloat16 --attention-backend flashinfer \
-  --cuda-graph --no-torch-compile \
-  --max-running-requests 16 --mem-fraction-static 0.65 \
-  --output whisper_covost2.json
-
-# Stop the server before running the same-revision Transformers reference.
-python -m benchmarks.eval.benchmark_whisper_translation \
-  --backend transformers --port 8000 \
-  --model-path openai/whisper-large-v3 \
-  --model-revision 06f233fe06e710322aca913c1bc4249a0d71fce1 \
-  --dataset-id lmms-lab/covost2 --dataset-config zh_en \
-  --dataset-split test \
-  --dataset-revision e38a7a7fba8adcd1563b2169afc3bc7eed202a25 \
-  --source-language zh --max-samples 20 --warmup-samples 8 \
-  --request-timeout-s 120 --dtype bfloat16 \
-  --output whisper_covost2_transformers_20.json
 ```
 
 To reproduce the async-decode comparison below, resolve the pinned checkpoint and start each mode separately on the same GPU:
@@ -300,83 +255,6 @@ The async-decode comparison used the 128-sample SeedTTS EN subset on the same H2
 | 32 | 66.47 | 69.91 | +5.2% | 0.691 | 0.639 | -7.6% | 0.0084 |
 
 All 4,608 measured requests across both modes completed successfully, and all 2,304 paired transcripts matched exactly. Batch size 1 uses the synchronous fast path, so its 1.6% difference is run-to-run noise rather than async work. At concurrency 32, request-stage profiling measured 614.3 ms synchronous versus 585.5 ms asynchronous P95 from prefill completion to request completion. A separate async-only `openai/whisper-base` budget comparison showed why 6,144 is the default: relative to 4,096, scheduler queue P95 fell from 92.2 ms to 52.2 ms and throughput rose from 134.83 to 166.69 req/s.
-
-### RTX 4090 validation on base `cd45a47a`
-
-The PR stack based on `cd45a47a` was validated in the digest-pinned ASR CI
-image on one RTX 4090 (24,564 MiB), Linux 6.8, driver 590.48.01, driver CUDA
-13.1, PyTorch 2.11.0+cu130, SGLang 0.5.16, SGLang-Omni 0.1.2, and Transformers
-5.12.1. The outer image was
-`hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101`.
-The model and dataset revisions are those in the commands above. Each SeedTTS
-row is the mean of three measured repeats after one discarded warmup; all
-samples completed with zero skips.
-
-SeedTTS EN (1,088 clips):
-
-| Concurrency | Requests/s | Mean latency (s) | p95 latency (s) | Audio s/s | Corpus WER |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 9.65 | 0.103 | 0.125 | 45.70 | 0.0140 |
-| 2 | 14.29 | 0.140 | 0.177 | 67.66 | 0.0140 |
-| 4 | 21.30 | 0.187 | 0.253 | 100.88 | 0.0140 |
-| 8 | 29.41 | 0.271 | 0.370 | 139.28 | 0.0140 |
-| 16 | 37.62 | 0.424 | 0.562 | 178.15 | 0.0140 |
-| 32 | 34.02 | 0.934 | 1.144 | 161.11 | 0.0140 |
-
-SeedTTS ZH (2,020 clips; normalized error is character-spaced):
-
-| Concurrency | Requests/s | Mean latency (s) | p95 latency (s) | Audio s/s | Corpus error rate |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 7.96 | 0.125 | 0.158 | 37.28 | 0.0646 |
-| 2 | 13.99 | 0.143 | 0.177 | 65.48 | 0.0650 |
-| 4 | 20.65 | 0.193 | 0.248 | 96.66 | 0.0649 |
-| 8 | 28.67 | 0.279 | 0.362 | 134.24 | 0.0650 |
-| 16 | 36.38 | 0.439 | 0.585 | 170.33 | 0.0652 |
-| 32 | 31.22 | 1.021 | 1.239 | 146.18 | 0.0647 |
-
-The 30-minute mixed transcription/translation workload completed 43,515
-normal requests with zero unexpected errors. All 28 cancel/reconnect and 32
-malformed-audio events passed, final `/health` returned HTTP 200, sampled free
-GPU memory stayed above 6,386 MiB, and retained device memory after cooldown
-was 234 MiB (limit: 256 MiB). Whisper emits terminal-only streaming text, so
-the cancellation check disconnects while the first event is pending and then
-verifies a clean streaming reconnect.
-
-The pinned CoVoST2 `zh_en/test` server run evaluated 4,898/4,898 samples with
-zero skips in 258.88 seconds: 18.92 requests/s, 114.77 input-audio seconds/s,
-0.422-second mean latency, and 0.666-second p95 latency. A same-revision
-Transformers reference completed 20/20 samples with zero skips. The validated
-CI environment did not include the optional `sacrebleu` package, so BLEU and
-chrF are intentionally absent; these runs establish execution, coverage, and
-stability, not a translation-quality parity claim.
-
-The fixed validation base was
-`cd45a47a1838017c89fb2178f167aac0cd7412a3`, and every lane used clean
-integrated candidate `e54422c2de28e72c17dd2b744908e69c1b7ffd20`. The final
-14-patch integrated stack was then rebased to
-`b3bbff6ea1f48d50c78a4c12d059af8705f6f4f0` with a 14/14 exact `=`
-range-diff. The publication history has 15 commits because the final test
-cleanup was split between its PR #2 and PR #4 owners; its tree is
-byte-identical to the integrated stack. The two intervening upstream commits
-change only Qwen3-TTS/Moss-TTS runtime and tests plus `mps_dp.md`, not the
-Fun-ASR, Whisper, benchmark, or focused-test paths validated here.
-
-The [issue #1170](https://github.com/sgl-project/sglang-omni/issues/1170)
-validation record identifies the provider run as `vastai-48058271` and the
-artifact set as `run-artifacts-e54422c2`. Its 233-entry remote `SHA256SUMS`
-manifest has SHA-256
-`de49284660acd6a312c4f540a90232ffd3757a928578d160f5d87d81441522c8`;
-the collected 248-file tree also has a verified 247-entry local manifest. The
-set contains exact commands, per-sample output, dependency inventory, and
-checksums. These clean pinned-base runs supersede the issue's older RTX 4090
-numbers.
-
-No Nsight Compute hardware-counter profile was run; the tables report
-application metrics and NVML resource telemetry only.
-
-These results do not directly execute upstream commits added after
-`cd45a47a`; rerun the commands above when a later upstream change touches a
-validated path or when changing the serving revision or stack delta.
 
 ## Known Limitations
 
