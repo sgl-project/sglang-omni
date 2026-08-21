@@ -601,6 +601,16 @@ def test_ark_get_audio_feature_batched_matches_serial_and_uses_one_encoder_call(
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
 
 
+def test_ark_get_audio_feature_does_not_build_an_autograd_graph():
+    model = _tiny_ark_audio_mm_model()
+    item = _ark_audio_item(torch.randn(1, 8, 18), 18, hash_id=99)
+
+    output = model.get_audio_feature([item])
+
+    assert output.grad_fn is None
+    assert not output.requires_grad
+
+
 def test_ark_get_audio_feature_splits_large_batches_in_order():
     torch.manual_seed(4)
     model = _tiny_ark_audio_mm_model()
