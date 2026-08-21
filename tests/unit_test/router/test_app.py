@@ -3086,6 +3086,7 @@ def test_payload_without_content_length_is_rejected_while_streaming_body() -> No
 # ---------------------------------------------------------------------------
 
 _ROUTER_ADMIN_PATHS = [
+    ("POST", "/abort_request"),
     ("GET", "/model_info"),
     ("POST", "/model_info"),
     ("POST", "/pause_generation"),

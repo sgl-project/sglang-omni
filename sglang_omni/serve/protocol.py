@@ -597,6 +597,13 @@ class AdminRequestBase(BaseModel):
     timeout_s: float | None = None
 
 
+class AbortRequest(BaseModel):
+    """SGLang-compatible request cancellation payload."""
+
+    rid: str = ""
+    abort_all: bool = False
+
+
 class PauseGenerationRequest(AdminRequestBase):
     mode: str = "abort"
 

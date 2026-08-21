@@ -356,6 +356,8 @@ class Coordinator:
                     if not msg.success:
                         raise QueueFullError.from_message(msg.error)
                     yield msg
+                    if msg.from_stage == "coordinator":
+                        return
                     completed_stages.add(msg.from_stage)
                     if (
                         not expected_terminal_stages
@@ -526,19 +528,22 @@ class Coordinator:
             return False
 
         info.state = RequestState.ABORTED
-        self._reject_completion_future(
-            request_id, asyncio.CancelledError(f"Request {request_id} aborted")
-        )
+        abort_result = {"finish_reason": "abort"}
+        future = self._completion_futures.get(request_id)
         stream_queue = self._stream_queues.get(request_id)
         if stream_queue is not None:
+            if future is not None and not future.done():
+                future.cancel()
             await stream_queue.put(
                 CompleteMessage(
                     request_id=request_id,
                     from_stage="coordinator",
-                    success=False,
-                    error="aborted",
+                    success=True,
+                    result=abort_result,
                 )
             )
+        elif future is not None and not future.done():
+            future.set_result(abort_result)
 
         self._requests.pop(request_id, None)
         self._partial_results.pop(request_id, None)
@@ -563,6 +568,24 @@ class Coordinator:
                 request_id,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
+
+    async def abort_requests(self, rid: str = "", abort_all: bool = False) -> int:
+        """Abort active requests using SGLang's prefix-matching semantics."""
+        if abort_all:
+            request_ids = list(self._requests)
+        elif rid:
+            request_ids = [
+                request_id
+                for request_id in self._requests
+                if request_id.startswith(rid)
+            ]
+        else:
+            return 0
+
+        results = await asyncio.gather(
+            *(self.abort(request_id) for request_id in request_ids)
+        )
+        return sum(results)
 
     async def run_completion_loop(self) -> None:
         """Run the completion receiving loop.

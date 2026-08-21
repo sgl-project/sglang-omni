@@ -688,6 +688,10 @@ def register_admin_routes(
     async def continue_generation(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(app, request, "/continue_generation")
 
+    @app.post("/abort_request", dependencies=[Depends(_auth)])
+    async def abort_request(request: Request) -> JSONResponse:
+        return await _broadcast_admin_request(app, request, "/abort_request")
+
     @app.post("/update_weights_from_disk", dependencies=[Depends(_auth)])
     async def update_weights_from_disk(request: Request) -> JSONResponse:
         return await _broadcast_admin_request(

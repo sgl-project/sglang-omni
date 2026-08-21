@@ -463,6 +463,17 @@ class AdminClient:
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
+    async def abort_requests(self, rid: str = "", abort_all: bool = False) -> int:
+        self.calls.append(
+            (
+                "abort_request",
+                {"rid": rid, "abort_all": abort_all},
+                None,
+                0,
+            )
+        )
+        return 3
+
     async def model_info(
         self,
         *,
@@ -788,6 +799,7 @@ def test_admin_routes_forward_to_client() -> None:
     client = TestClient(create_app(admin, model_name="qwen3-omni"))
 
     info = client.get("/model_info")
+    abort = client.post("/abort_request", json={"abort_all": True})
     pause = client.post(
         "/pause_generation",
         json={"mode": "in_place", "stages": ["decode"], "timeout_s": 5},
@@ -808,11 +820,14 @@ def test_admin_routes_forward_to_client() -> None:
     assert info.json()["model_path"] == "/tmp/current-model"
     assert info.json()["load_format"] == "safetensors"
     assert info.json()["stages"][0]["stage"] == "decode"
+    assert abort.status_code == 200
+    assert abort.json()["num_aborted_requests"] == 3
     assert pause.status_code == 200
     assert update.status_code == 200
     assert checksum.status_code == 200
     assert admin.calls == [
         ("model_info", {}, None, 30.0),
+        ("abort_request", {"rid": "", "abort_all": True}, None, 0),
         ("pause_generation", {"mode": "in_place"}, ["decode"], 5),
         (
             "update_weights_from_disk",
@@ -2744,6 +2759,7 @@ def test_speech_request_passes_moss_token_count() -> None:
 # ---------------------------------------------------------------------------
 
 _ADMIN_PATHS_THAT_NEED_AUTH = [
+    ("POST", "/abort_request"),
     ("GET", "/model_info"),
     ("POST", "/model_info"),
     ("POST", "/pause_generation"),

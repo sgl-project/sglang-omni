@@ -283,6 +283,10 @@ class Client:
         success = await self._coordinator.abort(request_id)
         return AbortResult(success=success, level_applied=level)
 
+    async def abort_requests(self, rid: str = "", abort_all: bool = False) -> int:
+        """Abort requests by id prefix, or abort all active requests."""
+        return await self._coordinator.abort_requests(rid=rid, abort_all=abort_all)
+
     async def get_status(self, request_id: str) -> RequestState | None:
         info = self._coordinator.get_request_info(request_id)
         if info is None:

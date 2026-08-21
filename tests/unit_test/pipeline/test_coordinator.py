@@ -14,7 +14,7 @@ from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlP
 
 
 def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
-    """Preserves multi-terminal completion and abort cancellation semantics."""
+    """Preserves multi-terminal completion and graceful abort semantics."""
 
     async def _run() -> None:
         coordinator = Coordinator(
@@ -44,8 +44,7 @@ def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
         future = coordinator._completion_futures["req-2"]
         assert await coordinator.abort("req-2") is True
         assert control_plane.aborts[0].request_id == "req-2"
-        with pytest.raises(asyncio.CancelledError):
-            await future
+        assert await future == {"finish_reason": "abort"}
 
     asyncio.run(_run())
 
@@ -473,8 +472,7 @@ def test_duplicate_stream_preserves_existing_non_stream_request() -> None:
         assert control_plane.aborts == []
 
         assert await coordinator.abort("req-1") is True
-        with pytest.raises(asyncio.CancelledError):
-            await original_future
+        assert await original_future == {"finish_reason": "abort"}
 
     asyncio.run(_run())
 
@@ -655,12 +653,8 @@ def test_coordinator_stream_abort_failure_is_logged(
     assert "Failed to abort request req-1" in caplog.text
 
 
-def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception() -> (
-    None
-):
-    """Aborting a streaming request cancels its completion future instead of
-    setting an exception no one retrieves, so the event loop never reports a
-    'Future exception was never retrieved' error."""
+def test_coordinator_stream_abort_finishes_without_unretrieved_exception() -> None:
+    """A streaming abort completes cleanly while its unused future is cancelled."""
 
     async def _run() -> None:
         coordinator = Coordinator(
@@ -685,9 +679,9 @@ def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception()
         assert await coordinator.abort("req-1") is True
         await asyncio.wait_for(task, timeout=1)
 
-        # Stream terminated via its queue; the future is cancelled rather than
-        # carrying an un-retrieved exception.
-        assert error_sink == ["aborted"]
+        # Stream terminated normally via its coordinator-owned terminal message;
+        # its unused completion future remains cancelled.
+        assert error_sink == []
         assert future.cancelled() is True
         assert "req-1" not in coordinator._completion_futures
 
