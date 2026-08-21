@@ -48,6 +48,22 @@ requests, and sets `mem_fraction_static` to `0.65`. Its bounds are specific to
 the validated RTX 4090 layout; use the default configuration or a separately
 qualified profile on other GPU architectures.
 
+For a single 32 GB RTX 5090 (SM120), use the checked-in profile:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_rtx5090.yaml \
+  --port 8000
+```
+
+This qualified profile keeps the model in BF16, limits the stage to 16
+running requests, and sets `mem_fraction_static` to `0.65`. Startup must
+report SM120 with FlashInfer and Triton attention rather than inferring an
+SM100 policy. Full SeedTTS EN/ZH sweeps, a 30-minute stability run, and
+lifecycle checks passed on one RTX 5090 (EN WER matching the 0.0122
+reference); treat this as a measured qualification point, and see #1212 for
+the complete report and raw artifacts.
+
 For example, force synchronous decode when comparing modes:
 
 ```bash

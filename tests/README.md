@@ -143,6 +143,7 @@ tests/
     │   ├── test_core.py
     │   └── test_request_builders.py
     ├── qwen3_asr/
+    │   ├── test_profile_config.py
     │   ├── test_pipeline.py
     │   ├── test_request_builders.py
     │   └── test_stream_output_builder.py
@@ -473,6 +474,7 @@ that happened to contain an older version of the test.
     and `--decode-mode async|sync` CLI overrides
   - RTX 4090 profile config resolution, SM-specific multimodal-attention
     defaults, and resolved decode CUDA Graph bucket diagnostics
+  - checked-in RTX 5090 profile loading and runtime override resolution
   - single-source audio token length formula used by both processor and
     request builder paths
   - all 30 language-code/name mappings, Chinese compatibility aliases,

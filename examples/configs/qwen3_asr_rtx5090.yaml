@@ -1,0 +1,17 @@
+# Single-GPU profile validated on one RTX 5090 (SM120, 32 GB).
+config_cls: Qwen3ASRPipelineConfig
+name: qwen3-asr-rtx5090
+model_path: Qwen/Qwen3-ASR-1.7B
+
+runtime_overrides:
+  asr:
+    dtype: bfloat16
+    max_running_requests: 16
+    server_args_overrides:
+      cuda_graph_max_bs: 16
+
+stage_overrides:
+  asr:
+    runtime:
+      sglang_server_args:
+        mem_fraction_static: 0.65
