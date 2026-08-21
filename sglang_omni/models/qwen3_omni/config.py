@@ -114,8 +114,13 @@ def _audio_encoder_stage(
         name="audio_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory_args={"device": None, "dtype": None},
+        factory_args={
+            "device": None,
+            "dtype": None,
+            "enable_layer_cuda_graph": True,
+        },
         gpu=gpu,
+        disable_direct_cuda_ipc_payload=True,
         **_encoder_join_edges(speech_enabled=speech_enabled),
     )
 

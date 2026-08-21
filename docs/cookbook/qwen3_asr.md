@@ -84,6 +84,34 @@ resp.raise_for_status()
 print(resp.json()["text"])
 ```
 
+## Stream Transcription
+
+Set `stream=true` to receive incremental transcript deltas over SSE. Use
+`curl -N` to disable client-side response buffering:
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=Qwen/Qwen3-ASR-1.7B \
+  -F file=@tests/data/query_to_cars.wav \
+  -F language=en \
+  -F response_format=json \
+  -F stream=true
+```
+
+The stream contains zero or more delta events, followed by the complete final
+transcript and the SSE sentinel:
+
+```text
+data: {"type":"transcript.text.delta","delta":"..."}
+
+data: {"type":"transcript.text.done","text":"..."}
+
+data: [DONE]
+```
+
+Qwen3-ASR batches deltas for up to 50 ms by default. EOS and other terminal
+conditions flush any buffered text before the final transcript event.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
@@ -95,7 +123,7 @@ print(resp.json()["text"])
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
-| `stream` | boolean | `false` | Return transcript events over SSE |
+| `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
 
 `verbose_json` uses the model adapter's verbose response schema and includes
 duration-based usage (rounded-up audio seconds) when duration probing succeeds.
@@ -224,7 +252,12 @@ Reading, and the resulting defaults:
 
 - **Build workers scale monotonically to 8** at every concurrency ≥ 8 and cost
   nothing at concurrency 1 (0.099–0.101 s mean everywhere), so 8 is the
-  default (it is also what lets the pre-LM encoder form real batches).
+  default. Those workers do CPU request construction (decode audio,
+  optional mel FFT) and submit encoder work asynchronously. When no extra
+  builds are queued, the request builder waits for encode and returns a
+  ready request like the sync path; when pending+backlog exceeds the
+  worker pool, it returns a deferred admission so workers can pull the
+  backlog. A cache hit still skips mel extraction entirely.
 - **Pending 16 → 32 removes all concurrency-64 shedding** and lifts
   concurrency-8 throughput ~19 %; 64 adds nothing further. 32 is the default.
 - **`max_running_requests` 16 collapses concurrency 32** (queue-bound) with no

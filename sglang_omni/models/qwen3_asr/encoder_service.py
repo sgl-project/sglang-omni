@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Precompute and cache complete LM-ready Qwen3-ASR audio embeddings.
 
-Issue #1324 Q-PR4. Today the audio tower runs inside multimodal embedding
-construction on the LM forward path, so every admission stalls the running
-decode batch for the whole encoder forward on the scheduler thread and the
-default stream. This service mirrors the Fun-ASR pre-LM encoder: complete
-audio-tower execution happens at request-build time on a dedicated worker
-thread and CUDA stream, batched across concurrent requests, and the request
-is admitted with ``MultimodalDataItem.precomputed_embeddings`` already
+Issue #1324 Q-PR4 moved the audio tower off the LM forward path onto a
+dedicated worker thread and CUDA stream. Request building submits encode
+and admits only after the future completes with the LM-ready embedding
 attached.
+
+A cache hit is still resolved before mel extraction in the request builder,
+so repeated audio never enters this queue.
 """
 
 from __future__ import annotations
@@ -176,13 +175,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 )
             )
 
-    def encode_item(self, item: Any) -> None:
-        """Block until ``item.precomputed_embeddings`` holds the LM embedding.
-
-        On success ``item.feature`` is cleared to release the CPU mel tensor.
-        Raises on encode failure; the request must not be admitted without the
-        complete embedding.
-        """
+    def submit_item(self, item: Any) -> concurrent.futures.Future[torch.Tensor]:
+        """Queue the item for LM-ready encoding and return its future."""
         expected_tokens = _expected_audio_tokens(item)
         if expected_tokens is None:
             raise RuntimeError(
@@ -191,17 +185,18 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         key = self._cache_key(item)
 
         if key is None:
-            future = self._submit(item)
-            future.result(timeout=self.ENCODE_TIMEOUT_S)
-            return
+            return self._count_failed(self._submit(item))
 
         cached = self.lookup_cached_embedding(
             getattr(item, "audio_fingerprint", None), expected_tokens
         )
         if cached is not None:
             self.attach_embedding(item, cached)
-            return
+            done: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+            done.set_result(cached)
+            return done
 
+        follower_of: concurrent.futures.Future[torch.Tensor] | None = None
         leader = False
         with self._lock:
             future = self._inflight.get(key)
@@ -217,37 +212,81 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     self._inflight[key] = future
                     leader = True
                     self._misses += 1
-                    try:
-                        self._submit(item, future)
-                    except Exception:
-                        del self._inflight[key]
-                        raise
             else:
                 self._merged += 1
+                follower_of = future
         if cached is not None:
             self.attach_embedding(item, cached)
-            return
-        try:
-            embedding = future.result(timeout=self.ENCODE_TIMEOUT_S)
-        except Exception:
-            with self._lock:
-                self._failed += 1
-            raise
-        finally:
-            if leader:
-                with self._lock:
-                    if self._inflight.get(key) is future:
-                        del self._inflight[key]
-        if leader:
-            return
-        if not self._is_valid(embedding, expected_tokens):
-            with self._lock:
-                self._failed += 1
-            raise RuntimeError(
-                f"Qwen3-ASR pre-LM encode leader for {key} returned an invalid "
-                f"embedding"
+            completed: concurrent.futures.Future[torch.Tensor] = (
+                concurrent.futures.Future()
             )
-        self.attach_embedding(item, embedding)
+            completed.set_result(cached)
+            return completed
+        if leader:
+            future.add_done_callback(
+                lambda done, cache_key=key: self._clear_inflight(cache_key, done)
+            )
+            self._count_failed(future)
+            try:
+                self._submit(item, future)
+            except Exception as exc:
+                if not future.done():
+                    future.set_exception(exc)
+                raise
+            return future
+
+        item.feature = None
+        completion: concurrent.futures.Future[torch.Tensor] = (
+            concurrent.futures.Future()
+        )
+
+        def attach_follower(done: concurrent.futures.Future[torch.Tensor]) -> None:
+            try:
+                embedding = done.result()
+                if not self._is_valid(embedding, expected_tokens):
+                    raise RuntimeError(
+                        f"Qwen3-ASR pre-LM encode leader for {key} returned an "
+                        "invalid embedding"
+                    )
+                self.attach_embedding(item, embedding)
+                completion.set_result(embedding)
+            except Exception as exc:
+                completion.set_exception(exc)
+
+        follower_of.add_done_callback(attach_follower)
+        return self._count_failed(completion)
+
+    def encode_item(self, item: Any) -> None:
+        """Block until the item holds the LM-ready embedding.
+
+        On success the CPU mel tensor is cleared. Raises on encode failure;
+        the request must not be admitted without the complete embedding.
+        """
+        self.submit_item(item).result(timeout=self.ENCODE_TIMEOUT_S)
+
+    def _count_failed(
+        self, future: concurrent.futures.Future[torch.Tensor]
+    ) -> concurrent.futures.Future[torch.Tensor]:
+        def finish(done: concurrent.futures.Future[torch.Tensor]) -> None:
+            try:
+                failed = done.exception() is not None
+            except concurrent.futures.CancelledError:
+                failed = True
+            if failed:
+                with self._lock:
+                    self._failed += 1
+
+        future.add_done_callback(finish)
+        return future
+
+    def _clear_inflight(
+        self,
+        key: str,
+        future: concurrent.futures.Future[torch.Tensor],
+    ) -> None:
+        with self._lock:
+            if self._inflight.get(key) is future:
+                del self._inflight[key]
 
     def lookup_cached_embedding(
         self,

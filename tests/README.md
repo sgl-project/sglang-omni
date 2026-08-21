@@ -92,6 +92,7 @@ tests/
     │   ├── test_fp8_backend_config.py
     │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
+    │   ├── test_model_fixture_overrides.py
     │   ├── test_mrope_positions.py
     │   ├── test_pipeline.py
     │   ├── test_sglang_ar_budget.py
@@ -144,7 +145,8 @@ tests/
     │   └── test_request_builders.py
     ├── qwen3_asr/
     │   ├── test_pipeline.py
-    │   └── test_request_builders.py
+    │   ├── test_request_builders.py
+    │   └── test_stream_output_builder.py
     ├── fun_asr/
     │   ├── test_encoder_service.py
     │   ├── test_model.py
@@ -522,6 +524,8 @@ that happened to contain an older version of the test.
   - tokenizer and preprocessing fallback behavior
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
+  - full-model fixture overrides target the preprocessing and thinker context
+    limits without leaking thinker-only arguments into the decode stage
   - `Qwen3OmniPipelineState` request builders, including projected payload container
     isolation for mutable streaming state
   - vectorized thinker M-RoPE position indexing (`test_mrope_positions.py`):
