@@ -143,6 +143,7 @@ tests/
     │   ├── test_core.py
     │   └── test_request_builders.py
     ├── qwen3_asr/
+    │   ├── test_encoder_cuda_graph.py
     │   ├── test_pipeline.py
     │   └── test_request_builders.py
     ├── fun_asr/
@@ -481,6 +482,9 @@ that happened to contain an older version of the test.
     text round-trips for byte-level BPE output.
   - invalid encoded-audio classification versus operational loader failures,
     including transcription-route HTTP 400/500 mapping.
+  - encoder CUDA graph runner: config-derived token buckets, dummy-window
+    padding invariants, get_audio_feature routing with eager fallback, and a
+    CUDA-only graph-vs-eager parity check of the captured layer stack.
 - `unit_test/arkasr/`: ARK-ASR-3B unit tests:
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
