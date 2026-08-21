@@ -130,7 +130,8 @@ the request minimal and use `response_format=json`.
 
 Whisper reads at most 30 seconds of audio in one request: the feature extractor works on a fixed 30-second mel window and drops everything past it.
 In SGLang-Omni, we transcribe longer uploads in chunks by splitting the audio at the quietest point near each 30-second boundary,
-running each chunk as its own engine request, and joining the transcripts back in order. The behavior follows these values, which Whisper
+running each chunk as its own engine request, and joining the transcripts back in order. The caller's `prompt` conditions the first decoded
+chunk; after that, each chunk uses the previous chunk's decoded text as its Whisper previous-context prompt. The behavior follows these values, which Whisper
 declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed model defaults in this release:
 
 | Name | Value | Meaning                                                                                                                                                                     |
@@ -138,7 +139,7 @@ declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed mod
 | `max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR this is not a scheduling choice: 30s is the hard edge of the model's mel window. |
 | `max_native_clip_s` | `30` | Same as the chunk length. Streaming cannot chunk, so `stream=true` takes audio up to 30s and gets HTTP 400 above that.                                                      |
 | `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run.                            |
-| `max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests.                                    |
+| `max_concurrent_chunks` | `8` | Per-request concurrency cap used by models with independent chunks. Whisper decodes one request's chunks in order because each chunk depends on the previous result; chunks from different requests can still batch together. |
 | `min_tail_s` | `1` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it, which keeps Whisper from hallucinating on very short clips.      |
 
 ## Benchmarking

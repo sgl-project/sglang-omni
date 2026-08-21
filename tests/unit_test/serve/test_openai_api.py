@@ -1885,9 +1885,21 @@ def _tiny_plan(num_chunks: int):
     )
 
 
-def _run_chunks(client: Any, plan: Any, *, max_concurrent: int):
+def _run_chunks(
+    client: Any,
+    plan: Any,
+    *,
+    max_concurrent: int,
+    prompt: str | None = None,
+    adapter: Any = None,
+):
+    from sglang_omni.serve.transcription_adapters.base import (
+        DefaultTranscriptionAdapter,
+    )
     from sglang_omni.serve.transcriptions import _transcribe_audio_chunks
 
+    if adapter is None:
+        adapter = DefaultTranscriptionAdapter()
     return asyncio.wait_for(
         _transcribe_audio_chunks(
             client,
@@ -1896,10 +1908,11 @@ def _run_chunks(client: Any, plan: Any, *, max_concurrent: int):
             model="asr",
             filename=None,
             language=None,
-            prompt=None,
+            prompt=prompt,
             temperature=None,
             max_new_tokens=None,
             max_concurrent=max_concurrent,
+            adapter=adapter,
         ),
         timeout=10.0,
     )
@@ -1936,6 +1949,46 @@ def test_chunks_run_concurrently() -> None:
         texts = await _run_chunks(barrier_client, _tiny_plan(3), max_concurrent=3)
         assert texts == ["part0", "part1", "part2"]
         assert barrier_client.max_active == 3
+
+    asyncio.run(scenario())
+
+
+def test_whisper_chunks_chain_previous_text_in_decode_order() -> None:
+    class OrderedClient:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.prompts: list[str | None] = []
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.prompts.append(request.extra_params.get("prompt"))
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        ordered_client = OrderedClient()
+        texts = await _run_chunks(
+            ordered_client,
+            _tiny_plan(3),
+            max_concurrent=3,
+            prompt="SGLang vocabulary",
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+        assert texts == ["part0", "part1", "part2"]
+        assert ordered_client.prompts == [
+            "SGLang vocabulary",
+            "part0",
+            "part1",
+        ]
+        assert ordered_client.max_active == 1
 
     asyncio.run(scenario())
 
@@ -2017,6 +2070,9 @@ def test_chunk_failure_aborts_the_chunks_still_running() -> None:
 
 
 def test_client_disconnect_aborts_all_running_chunks() -> None:
+    from sglang_omni.serve.transcription_adapters.base import (
+        DefaultTranscriptionAdapter,
+    )
     from sglang_omni.serve.transcriptions import (
         _await_transcription_with_disconnect_abort,
         _transcribe_audio_chunks,
@@ -2060,6 +2116,7 @@ def test_client_disconnect_aborts_all_running_chunks() -> None:
             temperature=None,
             max_new_tokens=None,
             max_concurrent=2,
+            adapter=DefaultTranscriptionAdapter(),
         )
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(
@@ -2078,6 +2135,9 @@ def test_cancelling_the_wrapper_itself_aborts_running_chunks() -> None:
     # shutdown, ASGI teardown) rather than via is_disconnected(). The
     # finally block must stop the work task too, or its engine requests
     # keep running with nobody left to abort them.
+    from sglang_omni.serve.transcription_adapters.base import (
+        DefaultTranscriptionAdapter,
+    )
     from sglang_omni.serve.transcriptions import (
         _await_transcription_with_disconnect_abort,
         _transcribe_audio_chunks,
@@ -2116,6 +2176,7 @@ def test_cancelling_the_wrapper_itself_aborts_running_chunks() -> None:
             temperature=None,
             max_new_tokens=None,
             max_concurrent=2,
+            adapter=DefaultTranscriptionAdapter(),
         )
         wrapper_task = asyncio.create_task(
             _await_transcription_with_disconnect_abort(NeverDisconnects(), work)
