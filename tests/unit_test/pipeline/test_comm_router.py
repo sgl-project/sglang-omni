@@ -21,6 +21,12 @@ def _force_cuda_transport_policy(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
+        platforms.current_platform,
+        "get_remote_transport",
+        lambda: TransportKind.MOONCAKE,
+        raising=False,
+    )
+    monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
 
@@ -55,6 +61,31 @@ def test_comm_router_uses_mooncake_only_for_remote_edges() -> None:
     assert router.outbound_stream("remote_decode", torch.empty(1)) is (
         TransportKind.MOONCAKE
     )
+
+
+def test_comm_router_rejects_remote_edges_when_platform_has_no_transport(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_remote_transport",
+        lambda: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        platforms.current_platform, "device_name", "rocm", raising=False
+    )
+    router = CommRouter(
+        stage_name="thinker",
+        gpu_id=0,
+        same_process_targets=set(),
+        gpu_stage_names={"remote_decode"},
+        remote_stage_names={"remote_decode"},
+        comm_config={},
+    )
+
+    with pytest.raises(NotImplementedError, match="not supported on rocm"):
+        router.outbound("remote_decode")
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

@@ -146,6 +146,15 @@ class CommRouter:
             return TransportKind.SHM
         return transport
 
+    def _remote_transport(self) -> TransportKind:
+        transport = current_platform.get_remote_transport()
+        if transport is None:
+            raise NotImplementedError(
+                f"cross-node transport is not supported on "
+                f"{current_platform.device_name}"
+            )
+        return transport
+
     def outbound(self, target: str) -> TransportKind:
         if target in self.same_process_targets:
             return TransportKind.LOCAL_OBJECT
@@ -153,7 +162,7 @@ class CommRouter:
 
     def _physical_outbound(self, target: str) -> TransportKind:
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         if self.self_is_gpu and target in self.gpu_stage_names:
             return self._intra_node_transport(target)
         return TransportKind.SHM
@@ -165,7 +174,7 @@ class CommRouter:
                 f"{type(data).__name__}"
             )
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         if data.device.type != current_platform.device_type:
             return TransportKind.SHM
         if self.self_is_gpu and target in self.gpu_stage_names:
@@ -177,7 +186,7 @@ class CommRouter:
 
     def inbound(self, from_stage: str) -> TransportKind:
         if from_stage in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         if self.self_is_gpu and from_stage in self.gpu_stage_names:
             return current_platform.get_intra_node_transport()
         return TransportKind.SHM
@@ -212,7 +221,7 @@ class CommRouter:
 
     def outbound_payload(self, target: str, payload: Any) -> TransportKind:
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
+            return self._remote_transport()
         devices = _tensor_devices(getattr(payload, "data", payload))
         if not devices or devices == {"cpu"}:
             return TransportKind.SHM

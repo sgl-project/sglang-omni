@@ -6,9 +6,10 @@ from sglang.srt import platforms as srt_platforms
 from sglang.srt.platforms.interface import SRTPlatform
 
 from sglang_omni.platforms.cpu import CPUOmniPlatform
-from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
+from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
