@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -116,6 +116,7 @@ class PlacementConfig(BaseModel):
 
     max_total_gpu_memory_fraction_per_gpu: float = 1.0
     require_memory_fraction_for_colocation: bool = True
+    cpu_allocator: Literal["off", "static", "auto"] = "off"
 
     def model_post_init(self, __context: Any = None) -> None:
         value = self.max_total_gpu_memory_fraction_per_gpu
@@ -355,6 +356,18 @@ class PipelineConfig(BaseModel):
         Only a placement recommendation applied when an override makes the
         edge cross processes. An edge absent here is still splittable when the
         config already declares fractions, or when nothing else shares its GPU.
+        """
+        return {}
+
+    @classmethod
+    def stage_cpu_costs(cls) -> dict[str, dict[str, Any]]:
+        """Map stage names to host CPU cost declarations.
+
+        Entries are ``{"host_class": "serial-loop" | "parallel-pool" |
+        "gpu-bound", "exclusive_cores": int, "pool_width": int}`` and are
+        validated by ``sglang_omni.cpu_alloc.cost.resolve_stage_cpu_costs``.
+        A stage absent here defaults to the shared pool, so a model without
+        declarations is unaffected even when the CPU allocator is enabled.
         """
         return {}
 

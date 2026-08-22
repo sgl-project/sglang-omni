@@ -23,6 +23,15 @@ class DotsTTSPipelineConfig(PipelineConfig):
     )
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset({"auto_detect"})
 
+    @classmethod
+    def stage_cpu_costs(cls) -> dict[str, dict]:
+        # Note (Jiaxin Deng): latent engine and vocoder are serial dispatch
+        # loops. Applied only under --cpu-allocator.
+        return {
+            "latent_engine": {"host_class": "serial-loop", "exclusive_cores": 1},
+            "vocoder": {"host_class": "serial-loop", "exclusive_cores": 1},
+        }
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(

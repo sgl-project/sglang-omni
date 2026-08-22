@@ -127,6 +127,55 @@ class StageWorkerProcessSpec:
 
     process_name: str
     stage_specs: list[StageLaunchConfig]
+    # Note (Jiaxin Deng): None leaves the inherited affinity untouched.
+    cpu_ids: tuple[int, ...] | None = None
+
+
+@contextmanager
+def _seeded_spawn_affinity(cpu_ids: tuple[int, ...] | None):
+    """Pin the spawning thread so the child inherits the mask from birth.
+
+    Pinning only inside the child entrypoint is too late: module imports
+    (torch above all) start threads before ``stage_process_main`` runs, and
+    those threads keep whatever mask they were created under.
+    """
+    if cpu_ids is None or not hasattr(os, "sched_setaffinity"):
+        yield
+        return
+    original = os.sched_getaffinity(0)
+    try:
+        os.sched_setaffinity(0, cpu_ids)
+    except OSError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        with suppress(OSError):
+            os.sched_setaffinity(0, original)
+
+
+def _apply_cpu_affinity(spec: StageWorkerProcessSpec, log: logging.Logger) -> None:
+    if spec.cpu_ids is None:
+        return
+    if not hasattr(os, "sched_setaffinity"):
+        log.warning(
+            "Process %s: cpu_ids planned but sched_setaffinity is unavailable "
+            "on this platform; running unpinned",
+            spec.process_name,
+        )
+        return
+    try:
+        os.sched_setaffinity(0, spec.cpu_ids)
+    except OSError as exc:
+        log.error(
+            "Process %s: failed to pin to CPUs %s (%s); running unpinned",
+            spec.process_name,
+            spec.cpu_ids,
+            exc,
+        )
+        return
+    log.info("Process %s pinned to CPUs %s", spec.process_name, spec.cpu_ids)
 
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -177,6 +226,15 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
         **worker_process_env,
         "SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(current_platform),
     }
+    # Note (Jiaxin Deng): model configs size OMP pools from the whole outer
+    # cpuset; a narrower plan must cap the default or the pool oversubscribes.
+    if spec.cpu_ids is not None and "OMP_NUM_THREADS" in updates:
+        try:
+            declared = int(updates["OMP_NUM_THREADS"])
+        except ValueError:
+            declared = None
+        if declared is not None and declared > len(spec.cpu_ids):
+            updates["OMP_NUM_THREADS"] = str(len(spec.cpu_ids))
     backup = {key: os.environ.get(key) for key in updates}
     try:
         for key, value in updates.items():
@@ -257,7 +315,7 @@ class StageGroup:
                 daemon=True,
             )
             try:
-                with _patched_spawn_env(spec):
+                with _patched_spawn_env(spec), _seeded_spawn_affinity(spec.cpu_ids):
                     proc.start()
             except Exception:
                 _close_queue(startup_error_channel)
@@ -374,6 +432,9 @@ def stage_process_main(
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
+        # Note (Jiaxin Deng): pin before any allocation so NUMA first-touch
+        # lands on the right node.
+        _apply_cpu_affinity(spec, log)
         for stage_spec in spec.stage_specs:
             _prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()

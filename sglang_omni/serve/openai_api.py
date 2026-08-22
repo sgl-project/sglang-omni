@@ -274,6 +274,7 @@ def create_app(
     # Register all routes
     register_favicon(app)
     _register_health(app)
+    _register_host_contention(app)
     _register_models(app)
     _register_admin(app, resolved_key)
     _register_chat_completions(app)
@@ -413,6 +414,21 @@ def _register_health(app: FastAPI) -> None:
             },
             status_code=status_code,
         )
+
+
+def _register_host_contention(app: FastAPI) -> None:
+    from sglang_omni.cpu_alloc.host_metrics import get_process_monitor
+
+    # Note (Jiaxin Deng): one sampler per process, since create_app() runs
+    # more than once under tests and embedders and each app would leak one.
+    monitor = get_process_monitor()
+    app.state.host_contention_monitor = monitor
+    monitor.start()
+
+    @app.get("/host_contention")
+    async def host_contention() -> JSONResponse:
+        """Foreign CPU load on this server's allowed cpuset."""
+        return JSONResponse(content=monitor.snapshot())
 
 
 def _register_models(app: FastAPI) -> None:

@@ -102,8 +102,46 @@ USED_MIB=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "
 [ "$USED_MIB" -lt 1024 ] || die "GPU $GPU_ID already has ${USED_MIB} MiB in use; sizing assumes an idle card"
 
 # ---- derive CORE_BLOCKS lazily (server share = 3/4 of the cpuset) ------------
+validate_blocks() {
+  # Blocks feed sched_setaffinity for every replica, so a malformed or
+  # overlapping split is silent core sharing; reject it before launch.sh does.
+  python3 - "$1" "$2" <<'EOF'
+import os, sys
+n = int(sys.argv[1])
+blocks = [b for b in sys.argv[2].split() if b]
+if len(blocks) != n:
+    sys.exit(f"core blocks: expected {n} block(s), got {len(blocks)}: {sys.argv[2]!r}")
+universe, seen = set(os.sched_getaffinity(0)), set()
+for i, block in enumerate(blocks):
+    cpus = {int(c) for c in block.split(",") if c != ""}
+    if not cpus:
+        sys.exit(f"core blocks: block {i} is empty")
+    outside = cpus - universe
+    if outside:
+        sys.exit(f"core blocks: block {i} uses cpu(s) {sorted(outside)} outside the cpuset")
+    clash = cpus & seen
+    if clash:
+        sys.exit(f"core blocks: block {i} shares cpu(s) {sorted(clash)} with an earlier block")
+    seen |= cpus
+EOF
+}
+
 core_blocks_for() {
-  python3 - "$1" <<'EOF'
+  local planned rc err
+  # Note (Jiaxin Deng): a refusal is a real answer, so only an unavailable
+  # planner may fall back; the naive split breaks the node-local contract.
+  err=$(mktemp /tmp/autodp_plan.XXXXXX.err)
+  planned=$(PYTHONPATH="$HERE/../..${PYTHONPATH:+:$PYTHONPATH}" python3 -m sglang_omni.cpu_alloc plan --replicas "$1" --gpu-id "$GPU_ID" --format blocks 2>"$err")
+  rc=$?
+  if [ "$rc" -eq 3 ]; then
+    cat "$err" >&2; rm -f "$err"
+    die "cpu_alloc planner refused N=$1 on GPU $GPU_ID; lower N or widen the cpuset"
+  fi
+  if [ "$rc" -ne 0 ] || [ -z "$planned" ]; then
+    echo "[autodp] warning: cpu_alloc planner unavailable (exit $rc), falling back to the NUMA-blind 3/4 split" >&2
+    sed 's/^/[autodp]   /' "$err" >&2
+    rm -f "$err"
+    planned=$(python3 - "$1" <<'EOF'
 import os, sys
 n = int(sys.argv[1])
 cores = sorted(os.sched_getaffinity(0))
@@ -116,6 +154,12 @@ for b in range(n):
     out.append(",".join(map(str, srv[i:i+sz]))); i += sz
 print(" ".join(out))
 EOF
+) || die "no usable core split for N=$1"
+  else
+    rm -f "$err"
+  fi
+  validate_blocks "$1" "$planned" || die "cpu_alloc produced unusable core blocks for N=$1"
+  echo "$planned"
 }
 
 # ---- probe: boot one replica at the cap, measure s and W ---------------------
@@ -199,10 +243,18 @@ N=${N:-$D_MAX}
 M_GIB=$(python3 -c "print(round($M_MIB/1024,1))")
 echo "[autodp] plan: GPU ${GPU_ID} M=${M_GIB} GiB | s=${STATIC_GIB} GiB W=${WEIGHTS_GIB} GiB h=${H_GIB} GiB cap=${CAP} weight_share=${WS}"
 echo "[autodp] plan: max estimated DP = ${D_MAX} (launching N=${N}); static total ~${STATIC_TOT} GiB, dynamic pool ~${FREE_LEFT} GiB; derived MF=${MF_REQ} (boot-validated estimate, validate under sustained load)"
-[ "$CMD" = plan ] && exit 0
+if [ "$CMD" = plan ]; then
+  echo "[autodp] plan: core blocks for N=${N}: $(core_blocks_for "$N")"
+  exit 0
+fi
 
 # ---- launch ------------------------------------------------------------------
-BLOCKS=${CORE_BLOCKS:-$(core_blocks_for "$N")}
+if [ -n "${CORE_BLOCKS:-}" ]; then
+  BLOCKS=$CORE_BLOCKS
+  validate_blocks "$N" "$BLOCKS" || die "CORE_BLOCKS from the environment is unusable for N=$N"
+else
+  BLOCKS=$(core_blocks_for "$N") || exit 1
+fi
 echo "[autodp] launching N=$N (blocks: $BLOCKS)"
 launch_run="run-autodp-$GPU_ID-$$"
 launch_log=$(mktemp /tmp/autodp_up.XXXXXX.log)

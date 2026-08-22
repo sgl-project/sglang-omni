@@ -29,6 +29,12 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     def generation_sglang_role_to_stage(cls) -> dict[str, str]:
         return {"generation": "asr"}
 
+    @classmethod
+    def stage_cpu_costs(cls) -> dict[str, dict]:
+        # Note (Jiaxin Deng): host orchestration measures ~3.4 cores at c32
+        # saturation. Applied only under --cpu-allocator.
+        return {"asr": {"host_class": "serial-loop", "exclusive_cores": 4}}
+
     model_path: str
     entry_stage: str = "asr"
     stages: list[StageConfig] = [

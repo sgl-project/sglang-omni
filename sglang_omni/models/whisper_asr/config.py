@@ -35,6 +35,12 @@ class WhisperASRPipelineConfig(PipelineConfig):
         """Multilingual non-turbo Whisper checkpoints translate speech to English."""
         return True
 
+    @classmethod
+    def stage_cpu_costs(cls) -> dict[str, dict]:
+        # Note (Jiaxin Deng): host-orchestration-bound like the other ASR
+        # pipelines. Applied only under --cpu-allocator.
+        return {"asr": {"host_class": "serial-loop", "exclusive_cores": 4}}
+
     model_path: str
     entry_stage: str = "asr"
     stages: list[StageConfig] = [

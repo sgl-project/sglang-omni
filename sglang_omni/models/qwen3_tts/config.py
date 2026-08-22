@@ -62,6 +62,15 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             }
         }
 
+    @classmethod
+    def stage_cpu_costs(cls) -> dict[str, dict]:
+        # Note (Jiaxin Deng): the code-predictor chain keeps the engine loop
+        # host-heavier than other TTS AR loops. Applied only under --cpu-allocator.
+        return {
+            "tts_engine": {"host_class": "serial-loop", "exclusive_cores": 2},
+            "vocoder": {"host_class": "serial-loop", "exclusive_cores": 1},
+        }
+
     model_path: str
     # note (0xtoward): Keep deterministic inference opt-in because it serializes
     # preprocessing and vocoder decoding and disables Talker compilation and the
