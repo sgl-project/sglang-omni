@@ -1,0 +1,9 @@
+# Experimental single-RTX-4090 (24 GB) profile.
+# Keep the ~1B-parameter reference codec off GPU; AR and vocoder retain the
+# model's conservative colocated memory budgets.
+config_cls: MossTTSLocalPipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+
+runtime_overrides:
+  preprocessing:
+    device: cpu

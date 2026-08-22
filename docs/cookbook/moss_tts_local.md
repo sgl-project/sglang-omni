@@ -40,6 +40,24 @@ sgl-omni serve \
 
 A matching config file is available at `examples/configs/moss_tts_local.yaml`.
 
+For a single RTX 4090-class 24 GB GPU, use the experimental profile that keeps
+the reference-audio codec encoder on CPU while leaving AR generation and the
+vocoder on GPU:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 \
+  --config examples/configs/moss_tts_local_4090_24gb.yaml \
+  --port 8000
+```
+
+This trades reference-encoding latency for GPU headroom and retains the
+model's conservative colocated memory budgets. The fallback was exercised on
+an RTX 4090D in [PR #1198](https://github.com/sgl-project/sglang-omni/pull/1198),
+but has not completed quality, long-form, or sustained-load validation; treat
+it as a functional profile rather than a general
+consumer-GPU support claim.
+
 ## Synthesizing Speech
 
 ### Basic Speech
