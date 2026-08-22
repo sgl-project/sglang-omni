@@ -479,7 +479,6 @@ class TestQwenReplicaPlacementPolicy:
                     "preprocessing",
                     "image_encoder",
                     "audio_encoder",
-                    "mm_aggregate",
                     "thinker",
                     "decode",
                     "talker_ar",
