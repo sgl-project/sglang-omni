@@ -101,8 +101,12 @@ tests/
     │   ├── test_talker.py
     │   ├── test_talker_prefill_embed_cache.py
     │   ├── test_talker_emit_snapshot.py
+    │   ├── test_talker_feedback_slots.py
     │   ├── test_talker_feedback_write.py
+    │   ├── test_talker_overlap_gate.py
     │   ├── test_talker_row_ownership.py
+    │   ├── test_talker_slot_bounds.py
+    │   ├── test_talker_slot_lifetime.py
     │   ├── test_talker_token_readback.py
     │   ├── test_text_template.py
     │   └── test_thinker_prefill_contract.py
@@ -547,6 +551,29 @@ that happened to contain an older version of the test.
     `_rollback_decode_prep_after_skip` idempotency contract, projected prefill
     tensor storage/slicing, decode feedback/text FIFO consumption, and replay
     of generated-token input embeds after decode retract
+  - talker feedback slot lifetime: the recorded `feedback_slot_idx` is retired by
+    every retract, so a second retract cannot read a pool slot another request now
+    owns, and replay past the single retract snapshot raises
+  - talker feedback buffer writes: the steady-state gather and scatter index off
+    the forward batch's own `req_pool_indices` and build no index tensor at all;
+    only rows the readiness gate cannot see fall back to host-built indices
+  - talker overlap gate: `SGLANG_OMNI_TALKER_OVERLAP=1` keeps the caller's
+    `disable_overlap_schedule` while the default forces it off, with
+    CUDA-graph handling unchanged
+  - talker async decode: the launch half publishes the in-forward sampled ids and
+    scatters the feedback row without sampling, shipping, or building any index
+    tensor (each one would sync the stream and serialize the launch against its
+    own forward); the resolve half ships the codec frames and drops rows that
+    finished in an earlier step, so a finishing request produces the same frame
+    sequence as the sync path; and the feedback talker stays lookahead-eligible
+    under a repetition penalty
+  - async resolve hands upstream the staged pinned host copy of the token ids,
+    the way the sync path already does in `_make_batch_result`, so upstream's
+    `.tolist()` never enqueues a device copy behind the forward the launch just
+    submitted; runners that stage nothing keep the device tensor
+  - talker async wiring: `SGLANG_OMNI_TALKER_OVERLAP=1` reaches both the scheduler's
+    `enable_async_decode` and the late-attached runner's `_async_enabled`, and an
+    imminent retract drains the in-flight step before upstream frees its KV
   - Code2Wav streaming/cleanup behavior plus bounded batching deadlines,
     fire rules, sub-batch decomposition, output equivalence, and lifecycle
   - Code2Wav CUDA Graph lifecycle, exact-shape replay, atomic rollback, memory

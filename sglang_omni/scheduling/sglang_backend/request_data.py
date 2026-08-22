@@ -26,7 +26,9 @@ class SGLangARRequestData(ARRequestData):
     decode_input_embeds: list["torch.Tensor"] = field(default_factory=list)
     stage_payload: Any = None
     talker_model_inputs: dict[str, Any] = field(default_factory=dict)
-    pending_feedback_queue: Any = field(default_factory=collections.deque)
+    pending_feedback_count: int = 0
+    feedback_slot_idx: int | None = None
+    retracted_feedback_embed: Any = None
     pending_text_queue: Any = field(default_factory=collections.deque)
     tts_pad_embed: Any = None
     tts_eos_embed: Any = None

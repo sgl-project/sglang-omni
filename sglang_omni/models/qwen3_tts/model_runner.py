@@ -359,7 +359,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         rows = []
 
         for row_idx, sched_req in enumerate(requests):
-            combined = QwenTalkerModelRunner._take_next_decode_input_embed(
+            combined = self._take_next_decode_input_embed(
                 sched_req=sched_req,
                 device=decode_feedback_embedding.weight.device,
                 dtype=decode_feedback_embedding.weight.dtype,
@@ -392,6 +392,29 @@ class Qwen3TTSModelRunner(ModelRunner):
             self._row_ids_cache = cached
         return cached[:batch_size]
 
+    @staticmethod
+    def _take_next_decode_input_embed(
+        *,
+        sched_req: Any,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        data = sched_req.data
+        queue = data.pending_feedback_queue
+        combined = QwenTalkerModelRunner._combine_feedback_with_next_text(
+            data=data,
+            feedback=QwenTalkerModelRunner._peek_left(queue),
+            device=device,
+            dtype=dtype,
+        )
+        if combined is None:
+            return None
+
+        QwenTalkerModelRunner._pop_left(queue)
+        if data.pending_text_queue:
+            QwenTalkerModelRunner._pop_left(data.pending_text_queue)
+        return combined
+
     def _build_prefill_input_embeds(
         self,
         forward_batch: Any,
@@ -412,6 +435,7 @@ class Qwen3TTSModelRunner(ModelRunner):
                 prefix_len=prefix_len,
                 extend_len=req_len,
                 device=forward_batch.input_ids.device,
+                take_next_decode_input_embed=self._take_next_decode_input_embed,
             )
             if piece is None or int(piece.shape[0]) != req_len:
                 have = 0 if piece is None else int(piece.shape[0])

@@ -61,6 +61,7 @@ def _init_terminal_output_state(scheduler: OmniScheduler) -> None:
     scheduler._request_finished_callback = None
     scheduler._completed_request_ids = {}
     scheduler._pending_stream_ingress = {}
+    scheduler._prefill_end_done = set()
 
 
 def _new_stage_payload(request_id: str) -> StagePayload:
@@ -892,6 +893,13 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
         is_retracted=False,
         finished=lambda: False,
         _omni_terminal_claimed=False,
+        _omni_data=SimpleNamespace(
+            prefill_input_embeds=object(),
+            decode_input_embeds=object(),
+            pending_feedback_count=1,
+            retracted_feedback_embed=object(),
+            feedback_slot_idx=4,
+        ),
     )
     batch = SimpleNamespace(reqs=[req], batch_is_full=True)
     scheduler.running_batch = batch
@@ -1085,6 +1093,75 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     assert req._omni_data is None
     assert request_data.req is req
     assert model_path_ends == [("req-finished", "success")]
+
+
+def test_omni_scheduler_stream_output_clears_feedback_state_on_finish() -> None:
+    """Finish must retire the feedback slot index with the rest of the state."""
+    scheduler = object.__new__(OmniScheduler)
+    _init_terminal_output_state(scheduler)
+    scheduler.outbox = Queue()
+    scheduler._aborted_request_ids = set()
+    scheduler._abort_callback = None
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler.server_args = SimpleNamespace(weight_version="v0")
+    scheduler._result_adapter = lambda data: {"rid": "req-done"}
+
+    data = SimpleNamespace(
+        prefill_input_embeds=object(),
+        decode_input_embeds=object(),
+        pending_feedback_count=2,
+        retracted_feedback_embed=object(),
+        feedback_slot_idx=7,
+    )
+    req = SimpleNamespace(
+        rid="req-done",
+        finished=lambda: True,
+        finished_reason=None,
+        output_ids=[1],
+        _omni_data=data,
+        _omni_terminal_claimed=False,
+    )
+
+    scheduler.stream_output([req])
+
+    assert scheduler.outbox.get_nowait().request_id == "req-done"
+    assert data.feedback_slot_idx is None
+    assert data.pending_feedback_count == 0
+    assert data.retracted_feedback_embed is None
+
+
+def test_omni_scheduler_stream_output_clears_feedback_state_on_abort() -> None:
+    """The FINISH_ABORT path must not leave a stale slot index behind."""
+    scheduler = object.__new__(OmniScheduler)
+    _init_terminal_output_state(scheduler)
+    scheduler.outbox = Queue()
+    scheduler._aborted_request_ids = {"req-aborted"}
+    scheduler._abort_callback = None
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+
+    data = SimpleNamespace(
+        prefill_input_embeds=object(),
+        decode_input_embeds=object(),
+        pending_feedback_count=2,
+        retracted_feedback_embed=object(),
+        feedback_slot_idx=7,
+    )
+    req = SimpleNamespace(
+        rid="req-aborted",
+        finished=lambda: True,
+        finished_reason=None,
+        output_ids=[],
+        _omni_data=data,
+    )
+
+    scheduler.stream_output([req])
+
+    assert scheduler.outbox.empty()
+    assert data.feedback_slot_idx is None
+    assert data.pending_feedback_count == 0
+    assert data.retracted_feedback_embed is None
 
 
 def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> None:
