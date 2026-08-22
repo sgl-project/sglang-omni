@@ -147,13 +147,15 @@ concurrency writes inspectable artifacts under `<output-dir>/c<N>/`.
 
 ### Prefill Admission Coalescing
 
-Under concurrent load the `tts_engine` stage can coalesce prefill admission:
+Under concurrent load, the `tts_engine` stage can coalesce prefill admission:
 instead of admitting each prepared request into its own prefill batch, the
-scheduler briefly holds admission until several requests are ready and prefills
-them together. A prefill step costs the scheduler loop roughly the same
-regardless of batch size, so fuller batches raise throughput — at the cost of a
-time-to-first-audio (TTFA) increase, since early requests wait for the batch to
-fill.
+scheduler can briefly hold admission so that multiple ready requests are
+prefilled together.
+
+A prefill step has a largely fixed scheduler cost, so fuller batches can reduce
+prefill overhead. The end-to-end benefit depends on whether that saving
+outweighs the extra admission delay and any resulting reduction in decode
+occupancy.
 
 Coalescing is **off by default** and opt-in via the shared CLI flags:
 
@@ -161,8 +163,8 @@ Coalescing is **off by default** and opt-in via the shared CLI flags:
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --config examples/configs/qwen3_tts_1_7b.yaml \
-  --prefill-coalesce-requests 4 \
-  --prefill-coalesce-wait-ms 60 \
+  --prefill-coalesce-requests 2 \
+  --prefill-coalesce-wait-ms 30 \
   --port 8000
 ```
 
@@ -171,28 +173,29 @@ or per-stage in YAML:
 ```yaml
 runtime_overrides:
   tts_engine:
-    prefill_coalesce_requests: 4
-    prefill_coalesce_wait_ms: 60.0
+    prefill_coalesce_requests: 2
+    prefill_coalesce_wait_ms: 30.0
 ```
 
-The gate engages only when `prefill_coalesce_requests` is `>= 2`. Once engaged,
+The gate engages only when `prefill_coalesce_requests >= 2`. Once engaged,
 admission is released as soon as any of the following holds:
 
-- no decode is in flight, so an idle server never waits;
 - the waiting queue reaches `prefill_coalesce_requests`;
 - the oldest waiting request has waited `prefill_coalesce_wait_ms`.
 
-`prefill_coalesce_wait_ms` is therefore an upper bound rather than a typical
-wait: under heavy load the queue fills first and the deadline is rarely reached.
+`prefill_coalesce_wait_ms` is therefore an upper bound on the added admission
+wait. Admission may be released earlier if the target queue size is reached.
 
-Match `prefill_coalesce_requests` to the concurrency you actually serve. Light
-load is the worst operating point — with a target the arrival rate never fills,
-every request waits the full deadline in exchange for little throughput. Leave
-coalescing disabled for latency-sensitive traffic.
+The values above are an example for the Qwen3-TTS workload and are not intended
+as universal defaults. Match both `prefill_coalesce_requests` and
+`prefill_coalesce_wait_ms` to the workload you actually serve. Coalescing is
+most useful when natural prefill batches are small and a short hold can increase
+batching without materially reducing decode occupancy. If the wait is too long,
+the reduced decode occupancy can offset the prefill savings.
 
-Coalescing is force-disabled when `tp_size > 1`, with a warning logged at
-startup: the wait deadline reads each rank's local clock, so ranks could
-disagree on expiry and break lockstep scheduling.
+Leave coalescing disabled for latency-sensitive traffic or workloads where the
+added wait does not produce enough additional batching.
+
 
 ## Synthesizing Speech
 
