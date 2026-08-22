@@ -17,13 +17,8 @@ from sglang_omni.cli.serve import (
     apply_mem_fraction_cli_overrides,
     apply_parallelism_cli_overrides,
 )
-from sglang_omni.config import (
-    PipelineConfig,
-    StageConfig,
-    build_process_topology_plan,
-    build_stage_placement_plan,
-    resolve_stage_factory_args,
-)
+from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.ming_omni.config import (
     MingOmniPipelineConfig,
     MingOmniSpeechPipelineConfig,
@@ -60,6 +55,7 @@ from tests.unit_test.fixtures.qwen_fakes import (
     make_qwen_payload,
     make_qwen_state,
 )
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def _stage(config: PipelineConfig, name: str):
@@ -1315,7 +1311,7 @@ def test_qwen_cli_encoder_mem_reserve_survives_runtime_overrides_overlay() -> No
 def test_qwen_cli_thinker_tp_override_keeps_parallelism_alias_in_sync() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=2,
         thinker_gpus="0,1",
@@ -1329,8 +1325,10 @@ def test_qwen_cli_thinker_tp_override_keeps_parallelism_alias_in_sync() -> None:
     assert thinker.gpu == [0, 1]
 
 
-def test_qwen_text_thinker_tp_builds_topology_without_memory_fractions() -> None:
-    config = Qwen3OmniPipelineConfig(model_path="dummy")
+def test_qwen_text_thinker_tp_documented_cli_override_builds_topology() -> None:
+    manager = ConfigManager(Qwen3OmniPipelineConfig(model_path="dummy"))
+    extra_args = manager.parse_extra_args(["--stages.thinker.process", "thinker"])
+    config = manager.merge_config(extra_args)
 
     apply_mem_fraction_cli_overrides(
         config,
@@ -1338,21 +1336,24 @@ def test_qwen_text_thinker_tp_builds_topology_without_memory_fractions() -> None
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
     )
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
-        thinker_tp_size=2,
-        thinker_gpus="0,1",
+        thinker_tp_size=8,
+        thinker_gpus="0,1,2,3,4,5,6,7",
         talker_gpu=None,
         code2wav_gpu=None,
     )
 
-    placement = build_stage_placement_plan(config)
-    build_process_topology_plan(config, placement)
+    topology = build_compiled_process_topology(config)
 
     thinker = _stage(config, "thinker")
-    assert thinker.tp_size == 2
-    assert thinker.gpu == [0, 1]
-    assert _stage(config, "thinker").runtime.resources.total_gpu_memory_fraction is None
+    assert thinker.tp_size == 8
+    assert thinker.gpu == list(range(8))
+    assert thinker.process == "thinker"
+    assert thinker.runtime.resources.total_gpu_memory_fraction is None
+    assert topology.tp_stage_to_processes["thinker"] == tuple(
+        f"thinker_tp{rank}" for rank in range(8)
+    )
 
 
 def test_qwen_thinker_tp_disables_custom_all_reduce_across_configs() -> None:
@@ -1404,21 +1405,18 @@ def test_thinker_tp_disable_custom_all_reduce_uses_shared_config_hook() -> None:
 def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args(monkeypatch) -> None:
     """End-to-end: the CLI TP pass writes disable_custom_all_reduce into the
     thinker stage server args when TP>1 is configured (issue #760)."""
-    from sglang_omni.cli.serve import _apply_tensor_parallel_server_args_overrides
-
     monkeypatch.setattr(
         "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda *args, **kwargs: True,
     )
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=2,
         thinker_gpus="0,1",
         talker_gpu=None,
         code2wav_gpu=None,
     )
-    _apply_tensor_parallel_server_args_overrides(config)
 
     assert (
         _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
@@ -1429,21 +1427,18 @@ def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args(monkeypatch) 
 
 
 def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> None:
-    from sglang_omni.cli.serve import _apply_tensor_parallel_server_args_overrides
-
     monkeypatch.setattr(
         "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda *args, **kwargs: False,
     )
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=2,
         thinker_gpus="0,1",
         talker_gpu=None,
         code2wav_gpu=None,
     )
-    _apply_tensor_parallel_server_args_overrides(config)
 
     assert (
         _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is False

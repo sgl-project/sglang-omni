@@ -230,6 +230,7 @@ def _run_forward(talker, layer0, hidden, positions):
     return codes.detach().clone(), embeds.detach().clone()
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 @pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize(
@@ -261,6 +262,7 @@ def test_graph_bit_identity_sampled(batch_size: int, sampling_kwargs: dict):
     )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 @pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])
 def test_graph_bit_identity_argmax(batch_size: int):
@@ -277,6 +279,7 @@ def test_graph_bit_identity_argmax(batch_size: int):
     assert torch.equal(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_graph_bit_identity_argmax_none_positions():
     device = torch.device("cuda")
@@ -292,6 +295,7 @@ def test_graph_bit_identity_argmax_none_positions():
     assert torch.equal(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_graph_padded_bucket_bit_identity():
     """Live bs=3 replays through the bucket-4 graph with padded rows."""
@@ -310,6 +314,7 @@ def test_graph_padded_bucket_bit_identity():
     assert torch.equal(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_graph_multi_step_replay_bit_identity():
     """Consecutive steps reuse one captured graph and stay bit-identical."""
@@ -327,6 +332,7 @@ def test_graph_multi_step_replay_bit_identity():
     assert len(talker._predictor_graphs) == 1
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_mixed_sampled_argmax_rows_fall_back_to_eager():
     device = torch.device("cuda")
@@ -343,6 +349,7 @@ def test_mixed_sampled_argmax_rows_fall_back_to_eager():
     assert torch.equal(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_kill_switch_disables_graph_path():
     device = torch.device("cuda")
@@ -373,6 +380,7 @@ def test_env_switch_parsing(monkeypatch: pytest.MonkeyPatch):
     assert sglang_model_module._predictor_graph_env_enabled() is True
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_capture_failure_disables_key_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
@@ -403,6 +411,7 @@ def test_capture_failure_disables_key_and_falls_back(
     assert len(calls) == 1, "disabled key must not retry capture"
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_capture_failure_restores_live_sub_state(monkeypatch: pytest.MonkeyPatch):
     device = torch.device("cuda")
@@ -457,6 +466,7 @@ class _NoHostReadbackTensor(torch.Tensor):
         return super().to(*args, **kwargs)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_no_host_readback_on_graph_dispatch_and_replay():
     """Live per-step inputs must reach the graph via device-side copies only."""
@@ -479,6 +489,7 @@ def test_no_host_readback_on_graph_dispatch_and_replay():
         torch.cuda.synchronize()
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_no_host_readback_in_eager_chain():
     """The captured body itself must be free of host materialization."""
@@ -551,6 +562,7 @@ def test_quantize_predictor_top_k_ladder():
     assert quantize(9, 16) is None
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_graph_key_shared_across_request_top_k_values():
     """top_k=5 and top_k=7 land in the same ladder bucket and share one graph."""
@@ -571,6 +583,7 @@ def test_graph_key_shared_across_request_top_k_values():
     )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_row_top_k_below_bucket_width_bit_identity():
     """Rows with k below the captured bucket width stay bit-identical to eager."""
@@ -593,6 +606,7 @@ def test_row_top_k_below_bucket_width_bit_identity():
     assert torch.equal(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_replay_tracks_per_step_sampling_params():
     """One graph key, three replays with fresh temps/top_p/top_k/seeds per step;
@@ -622,6 +636,7 @@ def test_replay_tracks_per_step_sampling_params():
     assert len(talker._predictor_graphs) == 1
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_global_disable_after_max_capture_failures(monkeypatch: pytest.MonkeyPatch):
     device = torch.device("cuda")
@@ -655,6 +670,7 @@ def test_global_disable_after_max_capture_failures(monkeypatch: pytest.MonkeyPat
     assert len(calls) == 8, "globally disabled graphs must not attempt new captures"
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
     """A failed capture must release its CUDA graph (pool) via reset()."""
@@ -683,6 +699,7 @@ def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
     assert reset_calls, "failed capture must reset() its CUDAGraph"
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="seeded sampling kernel needs CUDA")
 def test_widened_top_k_masked_ranks_never_sampled():
     """Ranks past a row's true k remain impossible after log conversion."""
@@ -708,6 +725,7 @@ def test_widened_top_k_masked_ranks_never_sampled():
         )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_graph_keys_share_memory_pool(monkeypatch: pytest.MonkeyPatch):
     """Distinct graph keys must capture into one model-owned memory pool."""
@@ -736,6 +754,7 @@ def test_graph_keys_share_memory_pool(monkeypatch: pytest.MonkeyPatch):
     assert pools[0] == talker._predictor_graph_pool
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="seeded sampling kernel needs CUDA")
 def test_top_p_removed_ranks_never_sampled():
     """Nucleus-removed ranks must be impossible, same rationale as the top-k mask."""
@@ -807,6 +826,7 @@ def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     assert talker._resolve_predictor_graph_enabled() is False
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not _HAS_CUDA, reason="predictor CUDA graph needs CUDA")
 def test_server_disable_cuda_graph_gates_predictor(monkeypatch: pytest.MonkeyPatch):
     """server_args.disable_cuda_graph must gate the lazily resolved graph path."""

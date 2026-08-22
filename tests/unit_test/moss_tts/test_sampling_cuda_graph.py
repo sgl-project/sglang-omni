@@ -297,6 +297,7 @@ def _request_data(
     )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     device = torch.device("cuda")
@@ -372,6 +373,7 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     assert torch.equal(eager_state, fixed.next_delay_state)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
     device = torch.device("cuda")

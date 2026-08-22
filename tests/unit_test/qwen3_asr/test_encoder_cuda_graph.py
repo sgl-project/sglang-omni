@@ -64,6 +64,7 @@ def test_get_audio_feature_routing(monkeypatch):
     assert torch.equal(get(model, [item]), torch.full((1, 65, 8), 7.0))
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_graph_matches_eager_tower():
     from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig

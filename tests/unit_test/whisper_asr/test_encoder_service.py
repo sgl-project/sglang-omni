@@ -145,6 +145,7 @@ def test_pinning_is_off_without_cuda_device() -> None:
     assert service.stats()["pin_prewarm_s"] == 0.0
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_cuda_cache_entries_are_pinned_and_match_device_result() -> None:
     model = _cuda_model()
@@ -164,6 +165,7 @@ def test_cuda_cache_entries_are_pinned_and_match_device_result() -> None:
     assert service.stage_host_copy(anonymous, item.precomputed_embeddings) is None
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_cuda_hit_attaches_device_tensor_from_pinned_entry() -> None:
     model = _cuda_model()
@@ -178,6 +180,7 @@ def test_cuda_hit_attaches_device_tensor_from_pinned_entry() -> None:
     assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pin_host_memory_flag_disables_pinning() -> None:
     service = _make_service(_cuda_model(), pin_host_memory=False)
@@ -189,6 +192,7 @@ def test_pin_host_memory_flag_disables_pinning() -> None:
     assert service.stats()["pin_prewarm_s"] == 0.0
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pinned_allocation_failure_falls_back_to_pageable(
     monkeypatch: pytest.MonkeyPatch,
@@ -213,6 +217,7 @@ def test_pinned_allocation_failure_falls_back_to_pageable(
     assert torch.equal(cached.to("cuda"), item.precomputed_embeddings)
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_prewarm_covers_cache_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
     allocations: list[int] = []

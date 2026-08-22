@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import torch
 
-from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import FunCosyVoice3PipelineConfig
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def test_fun_cosyvoice3_config_and_registry_contract() -> None:
@@ -30,10 +30,10 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.generation_sglang_role_to_stage() == {"generation": "tts_engine"}
     assert config.mem_fraction_role_to_stage() == {"talker": "tts_engine"}
-    assert config.process_safe_edges() == frozenset({("tts_engine", "vocoder")})
+    assert config.process_local_edges() == frozenset({("preprocessing", "tts_engine")})
     assert CAPABILITIES.supports_streaming_vocoder is False
 
-    build_process_topology_plan(config, build_stage_placement_plan(config))
+    build_compiled_process_topology(config)
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("FunCosyVoice3SGLangModel")
         is FunCosyVoice3PipelineConfig

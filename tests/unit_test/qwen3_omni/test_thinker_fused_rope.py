@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.utils import get_device
 
 from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
     ThinkerFusedRopeGate,
@@ -19,9 +18,9 @@ from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
 )
 from sglang_omni.platforms import current_platform
 
-_DEVICE = get_device()
 requires_xpu = pytest.mark.skipif(
-    _DEVICE.partition(":")[0] != "xpu", reason="describes the xpu policy"
+    not (hasattr(torch, "xpu") and torch.xpu.is_available()),
+    reason="requires XPU",
 )
 _MROPE_SECTION = [24, 20, 20]
 
@@ -280,6 +279,7 @@ def test_install_is_refused_while_a_prefill_graph_could_freeze_it(
     )
 
 
+@pytest.mark.accelerator
 @requires_xpu
 def test_install_succeeds_on_xpu() -> None:
     attn = _fake_attn()
@@ -345,14 +345,14 @@ def test_the_kernel_is_not_acquired_off_xpu(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @requires_xpu
 def test_the_kernel_matches_an_unfused_reference() -> None:
     kernel = current_platform.get_fused_qk_norm_rope_with_cos_sin_cache()
     if kernel is None:
         pytest.skip("this sgl_kernel build has no fused QK-norm-RoPE kernel")
 
-    device, dtype = torch.device(_DEVICE), torch.bfloat16
+    device, dtype = torch.device("xpu"), torch.bfloat16
     heads, kv_heads, dim, seq, eps, theta = 8, 2, 128, 6, 1e-6, 1000000.0
     torch.manual_seed(0)
     q = torch.randn(seq, heads * dim, device=device, dtype=dtype)

@@ -503,6 +503,7 @@ def _build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
     return talker
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -570,6 +571,7 @@ def test_qwen_predictor_decode_graph_uses_configured_batch_buckets(
     assert (3, torch.int) not in talker._predictor_decode_graphs
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -612,6 +614,7 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -649,6 +652,7 @@ def test_qwen_predictor_decode_graph_covers_real_incremental_step(
     torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.device_count() < 2,
     reason="requires two visible CUDA devices",
@@ -2190,6 +2194,7 @@ def test_talker_prepare_decode_buffers_steady_state_reuse() -> None:
     assert torch.equal(fake._suppress_mask, fresh._suppress_mask)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="sampling staging regression requires CUDA"
 )
