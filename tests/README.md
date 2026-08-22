@@ -690,6 +690,8 @@ that happened to contain an older version of the test.
 - `unit_test/voxtral_tts/`: Voxtral-TTS unit tests:
   - pipeline config and registry contracts
   - current `StageConfig` schema wiring
+  - experimental 24 GB RTX 4090 profile resolution and derived batch caps
+  - native SDPA audio-tokenizer causal sliding-window behavior
   - SGLang-backed generation and vocoder GPU placement contracts
   - terminal stage behavior.
 
