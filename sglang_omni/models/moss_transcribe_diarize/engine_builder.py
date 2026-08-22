@@ -30,6 +30,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         *,
         max_running_requests: int,
         max_new_tokens: int | None,
+        kv_cache_bytes: int | None = None,
         context_length: int | None,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
@@ -50,6 +51,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         self.max_running_requests = max_running_requests
         self.requested_max_new_tokens = max_new_tokens
         self.requested_context_length = context_length

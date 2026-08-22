@@ -72,6 +72,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    kv_cache_bytes: int | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 16,
     max_new_tokens: int | None = None,
@@ -110,6 +111,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         else _DEFAULT_ENCODER_CHUNK_BUCKETS
     )
     return MossTranscribeDiarizeEngineBuilder(
+        kv_cache_bytes=kv_cache_bytes,
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         context_length=context_length,

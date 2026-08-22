@@ -259,6 +259,15 @@ def runtime_factory_without_total_budget(
     }
 
 
+def make_scheduler_consuming_kv_budget(**kwargs: Any) -> FakeScheduler:
+    from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+
+    scheduler = FakeScheduler()
+    scheduler.consumed_kv_cache_bytes = consume_stage_kv_cache_bytes()
+    scheduler.factory_kwargs = kwargs
+    return scheduler
+
+
 def make_scheduler_accepting_model_path(
     model_path: str, **kwargs: Any
 ) -> FakeScheduler:

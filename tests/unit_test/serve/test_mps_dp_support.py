@@ -27,6 +27,7 @@ from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from sglang_omni.utils import ipc_weights
+from sglang_omni.utils.gpu_memory import GpuDeviceInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MPS_DP_DIR = REPO_ROOT / "examples" / "mps_dp"
@@ -122,6 +123,104 @@ def test_weight_share_rejected_for_unvalidated_configs(tmp_path, config_cls):
     yaml_path = _write_yaml(tmp_path, config_cls)
     with pytest.raises(ValueError, match="not passed end-to-end validation"):
         mps_dp_config.resolve_max_total_tokens(yaml_path, weight_share=True)
+
+
+def _write_budget_yaml(
+    tmp_path: Path,
+    *,
+    kv_cache_bytes: str,
+    total_reserve_bytes: str | None = None,
+) -> Path:
+    path = tmp_path / "budget-probe.yaml"
+    lines = [
+        "config_cls: Qwen3ASRPipelineConfig",
+        "name: budget-probe",
+        "model_path: dummy/none",
+        "stage_overrides:",
+        "  asr:",
+        "    runtime:",
+        "      memory:",
+        f"        kv_cache_bytes: {kv_cache_bytes}",
+    ]
+    if total_reserve_bytes is not None:
+        lines.append(f"        total_reserve_bytes: {total_reserve_bytes}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def gpu_with_16gib(monkeypatch):
+    monkeypatch.setattr(
+        mps_dp_config,
+        "get_gpu_device_info",
+        lambda gpu_id: GpuDeviceInfo(
+            logical_gpu_id=gpu_id,
+            device_id=gpu_id,
+            name="RTX 4070 Ti",
+            total_memory_bytes=16 * 1024**3,
+        ),
+    )
+
+
+def test_budget_rejects_replica_total_over_physical_vram(tmp_path, gpu_with_16gib):
+    yaml_path = _write_budget_yaml(
+        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="9GiB"
+    )
+    with pytest.raises(ValueError, match="requested=18.00GiB"):
+        mps_dp_config.resolve_mps_memory_budget(yaml_path, gpu_id=0, replicas=2)
+
+
+def test_omitted_reserve_passes_kv_bound_and_warns_for_dp(
+    tmp_path, gpu_with_16gib, capsys
+):
+    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="6GiB")
+
+    budget = mps_dp_config.resolve_mps_memory_budget(yaml_path, gpu_id=0, replicas=2)
+
+    assert budget["total_kv_cache_bytes"] == 12 * 1024**3
+    assert "requested_total_bytes" not in budget
+    err = capsys.readouterr().err
+    assert "NOT validated" in err
+    assert "8.00GiB" in err
+
+
+def test_kv_error_only_cites_user_written_numbers(tmp_path, gpu_with_16gib):
+    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="9GiB")
+    with pytest.raises(ValueError) as exc_info:
+        mps_dp_config.resolve_mps_memory_budget(yaml_path, gpu_id=0, replicas=2)
+    message = str(exc_info.value)
+    assert "total_reserve_bytes" not in message
+    assert "even split" not in message
+
+
+def test_weight_share_budget_skips_reserve_total_check(
+    tmp_path, gpu_with_16gib, capsys
+):
+    yaml_path = _write_budget_yaml(
+        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="9GiB"
+    )
+
+    budget = mps_dp_config.resolve_mps_memory_budget(
+        yaml_path, gpu_id=0, replicas=2, weight_share=True
+    )
+
+    assert budget["per_replica_total_reserve_bytes"] == 9 * 1024**3
+    assert "requested_total_bytes" not in budget
+    assert "2-way total is NOT validated" in capsys.readouterr().err
+
+
+def test_missing_kv_budget_is_required_but_may_be_skipped(tmp_path, gpu_with_16gib):
+    yaml_path = _write_yaml(tmp_path, "Qwen3ASRPipelineConfig")
+
+    with pytest.raises(ValueError, match="kv_cache_bytes"):
+        mps_dp_config.resolve_mps_memory_budget(yaml_path, gpu_id=0, replicas=2)
+
+    assert (
+        mps_dp_config._resolve_mps_memory_budget(
+            yaml_path, gpu_id=0, replicas=2, allow_missing_budget=True
+        )
+        is None
+    )
 
 
 def test_docs_table_matches_the_code_registries():

@@ -22,6 +22,7 @@ def create_sglang_arkasr_executor(
     mm_attention_backend: str | None = None,
     request_build_max_workers: int = 2,
     request_build_max_pending: int | None = 16,
+    kv_cache_bytes: int | None = None,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
     pre_lm_cache_size_bytes: int = 2 * 1024**3,
@@ -35,6 +36,7 @@ def create_sglang_arkasr_executor(
     return ArkasrEngineBuilder(
         max_running_requests=max_running_requests,
         encoder_max_batch_size=encoder_max_batch_size,
+        kv_cache_bytes=kv_cache_bytes,
         max_new_tokens=max_new_tokens,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,

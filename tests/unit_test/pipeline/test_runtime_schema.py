@@ -9,6 +9,7 @@ from sglang_omni.config import (
     PlacementConfig,
     SGLangServerArgsConfig,
     StageConfig,
+    StageMemoryConfig,
     StageResourceConfig,
     StageRuntimeConfig,
 )
@@ -46,6 +47,50 @@ def test_stage_runtime_schema_accepts_typed_runtime_values() -> None:
 def test_invalid_total_gpu_memory_fraction_raises() -> None:
     with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
         StageResourceConfig(total_gpu_memory_fraction=0.0)
+
+
+def test_stage_memory_config_normalizes_binary_size() -> None:
+    runtime = StageRuntimeConfig(memory=StageMemoryConfig(kv_cache_bytes="2GiB"))
+
+    assert runtime.memory.kv_cache_bytes == 2 * 1024**3
+
+
+def test_legacy_total_gpu_memory_fraction_warns_about_byte_budget() -> None:
+    with pytest.warns(DeprecationWarning, match="runtime.memory.kv_cache_bytes"):
+        StageResourceConfig(total_gpu_memory_fraction=0.25)
+
+
+def test_legacy_mem_fraction_static_warns_about_byte_budget() -> None:
+    with pytest.warns(DeprecationWarning, match="runtime.memory.kv_cache_bytes"):
+        SGLangServerArgsConfig(mem_fraction_static=0.7)
+
+
+def test_stage_runtime_rejects_kv_budget_with_total_gpu_memory_fraction() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "runtime.memory.kv_cache_bytes cannot be set together with "
+            "runtime.resources.total_gpu_memory_fraction"
+        ),
+    ):
+        StageRuntimeConfig(
+            memory=StageMemoryConfig(kv_cache_bytes="2GiB"),
+            resources=StageResourceConfig(total_gpu_memory_fraction=0.25),
+        )
+
+
+def test_stage_runtime_rejects_kv_budget_with_mem_fraction_static() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "runtime.memory.kv_cache_bytes cannot be set together with "
+            "runtime.sglang_server_args.mem_fraction_static"
+        ),
+    ):
+        StageRuntimeConfig(
+            memory=StageMemoryConfig(kv_cache_bytes="2GiB"),
+            sglang_server_args=SGLangServerArgsConfig(mem_fraction_static=0.7),
+        )
 
 
 def test_invalid_sglang_mem_fraction_static_raises() -> None:

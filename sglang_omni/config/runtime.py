@@ -22,18 +22,24 @@ def resolve_stage_factory_args(
     Values are built from stage.factory_args, runtime_overrides, and typed
     stage.runtime fields, with typed runtime owning V1 resource contracts.
     Placement budgets are injected only when the factory declares them.
+
+    ``runtime.memory.kv_cache_bytes`` never appears in the returned kwargs: it
+    is delivered through the stage worker's ambient scope. Callers that invoke
+    the factory directly, outside the stage worker, do not deliver the budget.
     """
 
     args = resolve_stage_static_factory_args(stage_cfg, global_cfg)
     factory = import_string(stage_cfg.factory)
+    defaults = resolve_stage_factory_arg_defaults(
+        stage_cfg,
+        global_cfg,
+        gpu_id=gpu_id,
+    )
+    defaults.pop("kv_cache_bytes", None)
     return resolve_factory_signature_args(
         factory,
         args,
-        defaults=resolve_stage_factory_arg_defaults(
-            stage_cfg,
-            global_cfg,
-            gpu_id=gpu_id,
-        ),
+        defaults=defaults,
     )
 
 
@@ -63,6 +69,9 @@ def resolve_stage_factory_arg_defaults(
     if gpu_id is None:
         gpu_id = _resolve_primary_gpu_id(stage_cfg, global_cfg)
     defaults["gpu_id"] = gpu_id
+    kv_cache_bytes = stage_cfg.runtime.memory.kv_cache_bytes
+    if kv_cache_bytes is not None:
+        defaults["kv_cache_bytes"] = kv_cache_bytes
     total_gpu_memory_fraction = stage_cfg.runtime.resources.total_gpu_memory_fraction
     if total_gpu_memory_fraction is not None:
         defaults["total_gpu_memory_fraction"] = total_gpu_memory_fraction
@@ -104,6 +113,20 @@ def reject_untyped_total_gpu_memory_fraction(
     )
 
 
+def reject_untyped_memory_bytes(
+    stage_name: str,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    for field_name in ("kv_cache_bytes", "total_reserve_bytes"):
+        if field_name in factory_args or field_name in runtime_overrides:
+            raise ValueError(
+                f"Stage {stage_name!r} sets {field_name} through "
+                f"factory_args/runtime_overrides; set runtime.memory.{field_name} "
+                "instead"
+            )
+
+
 def reject_gpu_id_in_factory_args(
     stage_name: str,
     factory_args: dict[str, Any],
@@ -140,6 +163,37 @@ def _validate_runtime_sources(
     runtime_overrides: dict[str, Any],
 ) -> None:
     """Validate ownership of runtime fields."""
+
+    typed_kv_cache_bytes = stage_cfg.runtime.memory.kv_cache_bytes
+    if typed_kv_cache_bytes is not None:
+        # Assignment after schema construction bypasses model_post_init, so the
+        # launch choke point rechecks every conflicting fraction spelling.
+        if stage_cfg.runtime.sglang_server_args.mem_fraction_static is not None:
+            raise ValueError(
+                f"Stage {stage_cfg.name!r} sets typed "
+                "runtime.sglang_server_args.mem_fraction_static and typed "
+                "runtime.memory.kv_cache_bytes"
+            )
+        for source_name, source in (
+            ("factory_args", factory_args),
+            ("runtime_overrides", runtime_overrides),
+        ):
+            if source.get("mem_fraction_static") is not None:
+                raise ValueError(
+                    f"Stage {stage_cfg.name!r} sets mem_fraction_static through "
+                    f"{source_name} and typed runtime.memory.kv_cache_bytes"
+                )
+        if _server_args_mem_fraction_static_is_set(factory_args, runtime_overrides):
+            raise ValueError(
+                f"Stage {stage_cfg.name!r} sets mem_fraction_static through "
+                "server_args_overrides and typed runtime.memory.kv_cache_bytes"
+            )
+
+    reject_untyped_memory_bytes(
+        stage_cfg.name,
+        factory_args,
+        runtime_overrides,
+    )
 
     typed_mem_fraction = stage_cfg.runtime.sglang_server_args.mem_fraction_static
     if typed_mem_fraction is not None and _server_args_mem_fraction_static_is_set(

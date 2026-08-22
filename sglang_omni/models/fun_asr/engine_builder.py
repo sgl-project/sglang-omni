@@ -38,6 +38,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         max_running_requests: int,
         max_new_tokens: int,
         mem_fraction_static: float | None,
+        kv_cache_bytes: int | None = None,
         mm_embedding_cache_size_bytes: int,
         enable_torch_compile: bool,
         enable_encoder_torch_compile: bool,
@@ -56,6 +57,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static

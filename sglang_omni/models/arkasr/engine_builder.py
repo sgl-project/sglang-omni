@@ -41,7 +41,9 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_max_pending: int = 32,
+        kv_cache_bytes: int | None = None,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         if pre_lm_max_batch_size < 1:
             raise ValueError(
                 f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"

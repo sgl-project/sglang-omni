@@ -7,11 +7,15 @@ from sglang_omni.config import (
     PipelineConfig,
     SGLangServerArgsConfig,
     StageConfig,
+    StageMemoryConfig,
     StageResourceConfig,
     StageRuntimeConfig,
     resolve_stage_factory_args,
 )
-from sglang_omni.config.runtime import resolve_stage_static_factory_args
+from sglang_omni.config.runtime import (
+    resolve_stage_factory_arg_defaults,
+    resolve_stage_static_factory_args,
+)
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
 _FACTORY = "tests.unit_test.fixtures.pipeline_fakes.runtime_factory"
@@ -80,6 +84,17 @@ def test_total_gpu_memory_fraction_is_not_injected_into_unrelated_factories() ->
 
     assert "total_gpu_memory_fraction" not in args
     assert args["server_args_overrides"] == {"mem_fraction_static": 0.72}
+
+
+def test_factory_defaults_include_typed_kv_budget() -> None:
+    stage = _stage(
+        runtime=StageRuntimeConfig(memory=StageMemoryConfig(kv_cache_bytes="2GiB"))
+    )
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    defaults = resolve_stage_factory_arg_defaults(stage, config, gpu_id=0)
+
+    assert defaults["kv_cache_bytes"] == 2 * 1024**3
 
 
 def test_typed_sglang_runtime_rejects_compat_mem_fraction_duplicate() -> None:

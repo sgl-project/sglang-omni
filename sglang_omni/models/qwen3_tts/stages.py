@@ -145,13 +145,16 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
+    kv_cache_bytes: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
-    return Qwen3TtsEngineBuilder(
+    builder = Qwen3TtsEngineBuilder(
         attn_implementation=attn_implementation,
-    ).build(
+        kv_cache_bytes=kv_cache_bytes,
+    )
+    return builder.build(
         model_path,
         device=device,
         gpu_id=gpu_id,

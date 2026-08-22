@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import re
+import warnings
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CommConfig(BaseModel):
@@ -68,6 +70,83 @@ class StageResourceConfig(BaseModel):
             raise ValueError(
                 "runtime.resources.total_gpu_memory_fraction must be in (0, 1]"
             )
+        if value is not None:
+            warnings.warn(
+                "runtime.resources.total_gpu_memory_fraction is deprecated for KV "
+                "budgeting; use runtime.memory.kv_cache_bytes instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+
+class StageMemoryConfig(BaseModel):
+    """Typed per-stage memory budgeting configuration.
+
+    Enforcement differs sharply between the two fields, and callers must not
+    assume otherwise:
+
+    ``kv_cache_bytes`` is **authoritative**. It is injected into the KV-cache
+    configurator and becomes the stage's actual KV pool size.
+
+    ``total_reserve_bytes`` is a **declared estimate, not an enforced
+    reservation**.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kv_cache_bytes: int | None = None
+    total_reserve_bytes: int | None = None
+
+    @field_validator("kv_cache_bytes", "total_reserve_bytes", mode="before")
+    @classmethod
+    def parse_memory_bytes(
+        cls,
+        value: int | str | None,
+        info,
+    ) -> int | None:
+        field_name = info.field_name
+        assert field_name is not None
+        format_error = (
+            f"{field_name} must be a positive integer byte count or an "
+            "exact binary-size string ending in KiB, MiB, GiB, or TiB"
+        )
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(format_error)
+        if isinstance(value, int):
+            if value <= 0:
+                raise ValueError(f"{field_name} must be positive")
+            return value
+        if not isinstance(value, str):
+            raise ValueError(format_error)
+
+        match = re.fullmatch(r"([0-9]+)(KiB|MiB|GiB|TiB)", value)
+        if match is None:
+            raise ValueError(format_error)
+
+        quantity = int(match.group(1))
+        if quantity <= 0:
+            raise ValueError(f"{field_name} must be positive")
+
+        unit_multipliers = {
+            "KiB": 1024,
+            "MiB": 1024**2,
+            "GiB": 1024**3,
+            "TiB": 1024**4,
+        }
+        return quantity * unit_multipliers[match.group(2)]
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if (
+            self.kv_cache_bytes is not None
+            and self.total_reserve_bytes is not None
+            and self.kv_cache_bytes > self.total_reserve_bytes
+        ):
+            raise ValueError(
+                "runtime.memory.kv_cache_bytes must not exceed "
+                "runtime.memory.total_reserve_bytes"
+            )
 
 
 class SGLangServerArgsConfig(BaseModel):
@@ -83,6 +162,13 @@ class SGLangServerArgsConfig(BaseModel):
             raise ValueError(
                 "runtime.sglang_server_args.mem_fraction_static must be in (0, 1)"
             )
+        if value is not None:
+            warnings.warn(
+                "runtime.sglang_server_args.mem_fraction_static is deprecated for "
+                "KV budgeting; use runtime.memory.kv_cache_bytes instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
 
 class StageRuntimeConfig(BaseModel):
@@ -95,6 +181,7 @@ class StageRuntimeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    memory: StageMemoryConfig = Field(default_factory=StageMemoryConfig)
     resources: StageResourceConfig = Field(default_factory=StageResourceConfig)
     max_seq_len: int | None = None
     video_fps: float | None = None
@@ -103,6 +190,18 @@ class StageRuntimeConfig(BaseModel):
     )
 
     def model_post_init(self, __context: Any = None) -> None:
+        kv_cache_bytes = self.memory.kv_cache_bytes
+        if kv_cache_bytes is not None:
+            if self.resources.total_gpu_memory_fraction is not None:
+                raise ValueError(
+                    "runtime.memory.kv_cache_bytes cannot be set together with "
+                    "runtime.resources.total_gpu_memory_fraction"
+                )
+            if self.sglang_server_args.mem_fraction_static is not None:
+                raise ValueError(
+                    "runtime.memory.kv_cache_bytes cannot be set together with "
+                    "runtime.sglang_server_args.mem_fraction_static"
+                )
         if self.max_seq_len is not None and self.max_seq_len <= 0:
             raise ValueError("runtime.max_seq_len must be positive")
         if self.video_fps is not None and self.video_fps <= 0:

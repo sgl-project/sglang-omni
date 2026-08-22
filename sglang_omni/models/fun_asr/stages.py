@@ -94,6 +94,7 @@ def create_sglang_fun_asr_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    kv_cache_bytes: int | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
     max_new_tokens: int = 200,
@@ -129,6 +130,7 @@ def create_sglang_fun_asr_executor(
     from sglang_omni.models.fun_asr.engine_builder import FunASREngineBuilder
 
     return FunASREngineBuilder(
+        kv_cache_bytes=kv_cache_bytes,
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         mem_fraction_static=mem_fraction_static,

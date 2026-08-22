@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
@@ -15,6 +16,8 @@ from sglang_omni.scheduling.generation_batch_policy import (
     validate_generation_batch_policy,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+
+logger = logging.getLogger(__name__)
 
 
 def _operator_selected_prefill_graph_backend(
@@ -42,6 +45,12 @@ class SGLangGenerationEngineBuilder(ABC):
     # Set True only by builders whose model has adopted the breakable prefill
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
+    # Class-level default so a subclass whose ``__init__`` does not chain to
+    # ``super()`` still builds instead of raising AttributeError in build().
+    kv_cache_bytes: int | None = None
+
+    def __init__(self, *, kv_cache_bytes: int | None = None) -> None:
+        self.kv_cache_bytes = kv_cache_bytes
 
     def build(
         self,
@@ -80,6 +89,18 @@ class SGLangGenerationEngineBuilder(ABC):
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
+        # Note (Jiaxin Deng): user fractions were rejected upstream; what remains
+        # is a builder KV-tuned default, dropped so headroom derives cleanly.
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        if peek_stage_kv_cache_bytes() is not None:
+            builder_default_fraction = overrides.pop("mem_fraction_static", None)
+            if builder_default_fraction is not None:
+                logger.info(
+                    f"{self.model_name}: clearing builder default "
+                    f"mem_fraction_static={builder_default_fraction} because the "
+                    "stage declares runtime.memory.kv_cache_bytes"
+                )
         # Left unset, SGLang re-detects off a CUDA-first ladder that can contradict
         # placement. It owns the type, not the index.
         resolved_type = torch.device(device).type
@@ -101,6 +122,8 @@ class SGLangGenerationEngineBuilder(ABC):
         self.validate_before_infrastructure(server_args)
 
         infra_kwargs = dict(self.infra_kwargs())
+        if self.kv_cache_bytes is not None:
+            infra_kwargs.setdefault("kv_cache_bytes", self.kv_cache_bytes)
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
         prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)

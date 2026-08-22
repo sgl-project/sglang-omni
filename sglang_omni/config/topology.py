@@ -226,6 +226,20 @@ def _stage_gpu_ids(
     return resolve_stage_gpu_ids(gpu_placement, stage)
 
 
+def _stage_lacks_declared_memory_budget(stage: StageConfig) -> bool:
+    """True when a stage declares neither memory budget form.
+
+    Colocation needs each stage on a shared GPU to declare how much of the card
+    it intends to use. ``runtime.memory.kv_cache_bytes`` is the byte-budget
+    replacement for ``runtime.resources.total_gpu_memory_fraction``, and the
+    schema forbids setting both, so either one satisfies the requirement.
+    """
+    return (
+        stage.runtime.resources.total_gpu_memory_fraction is None
+        and stage.runtime.memory.kv_cache_bytes is None
+    )
+
+
 def _validate_gpu_process_colocation(
     config: PipelineConfig,
     gpu_placement: StagePlacementPlan,
@@ -243,7 +257,7 @@ def _validate_gpu_process_colocation(
                 if gpu_id is None:
                     continue
                 gpu_processes[gpu_id].add(group.name)
-                if stage.runtime.resources.total_gpu_memory_fraction is None:
+                if _stage_lacks_declared_memory_budget(stage):
                     missing_fraction[gpu_id].add(stage.name)
 
     for stage in stages:
@@ -255,7 +269,7 @@ def _validate_gpu_process_colocation(
             gpu_processes[gpu_id].add(
                 topology_plan.tp_stage_to_processes[stage.name][rank]
             )
-            if stage.runtime.resources.total_gpu_memory_fraction is None:
+            if _stage_lacks_declared_memory_budget(stage):
                 missing_fraction[gpu_id].add(stage.name)
 
     require = config.placement.require_memory_fraction_for_colocation
@@ -267,8 +281,8 @@ def _validate_gpu_process_colocation(
         if require and missing:
             raise ValueError(
                 f"GPU {gpu_id} is shared by multiple process groups without "
-                "runtime.resources.total_gpu_memory_fraction: "
-                f"{', '.join(missing)}"
+                "runtime.resources.total_gpu_memory_fraction or "
+                f"runtime.memory.kv_cache_bytes: {', '.join(missing)}"
             )
         total = gpu_placement.gpus[gpu_id].total_gpu_memory_fraction
         if total > limit + 1e-9:

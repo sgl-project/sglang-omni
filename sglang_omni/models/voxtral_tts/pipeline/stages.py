@@ -169,6 +169,7 @@ def create_generation_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    kv_cache_bytes: int | None = None,
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
     server_args_overrides: dict[str, Any] | None = None,
@@ -179,7 +180,7 @@ def create_generation_executor(
         VoxtralTtsEngineBuilder,
     )
 
-    return VoxtralTtsEngineBuilder().build(
+    return VoxtralTtsEngineBuilder(kv_cache_bytes=kv_cache_bytes).build(
         model_path,
         device=device,
         gpu_id=gpu_id,

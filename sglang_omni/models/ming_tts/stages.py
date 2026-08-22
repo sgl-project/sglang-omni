@@ -58,6 +58,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    kv_cache_bytes: int | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     context_length: int | None = None,
@@ -78,6 +79,7 @@ def create_sglang_tts_engine_executor(
     context_length = int(user_overrides.pop("context_length", context_length or 0) or 0)
 
     return MingTtsEngineBuilder(
+        kv_cache_bytes=kv_cache_bytes,
         context_length=context_length or None,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         tp_rank=tp_rank,

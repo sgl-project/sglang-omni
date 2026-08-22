@@ -289,6 +289,7 @@ def create_sglang_thinker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
+    kv_cache_bytes: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
     enable_streaming_tts: bool = False,
 ):
@@ -316,6 +317,7 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         tp_size=tp_size,
         nccl_port=nccl_port,
+        kv_cache_bytes=kv_cache_bytes,
         enable_streaming_tts=enable_streaming_tts,
     )
 

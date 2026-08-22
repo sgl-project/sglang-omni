@@ -71,6 +71,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         mem_fraction_static: float,
         enable_encoder_cuda_graph: bool = False,
         encoder_graph_batch_buckets: list[int] | None = None,
+        kv_cache_bytes: int | None = None,
         request_build_max_workers: int = 8,
         enable_async_decode: bool = True,
         async_decode_min_batch_size: int = 2,
@@ -87,6 +88,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_cache_pin_host_memory: bool = True,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         if pre_lm_max_batch_size < 1:
             raise ValueError(
                 f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"

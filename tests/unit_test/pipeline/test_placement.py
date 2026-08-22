@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
+    StageMemoryConfig,
     StageResourceConfig,
     StageRuntimeConfig,
     build_stage_placement_plan,
@@ -20,6 +23,7 @@ def _stage(
     *,
     gpu: int | list[int] | None = None,
     fraction: float | None = None,
+    kv_cache_bytes: int | None = None,
     tp_size: int = 1,
     terminal: bool = False,
     next_stage: str | None = None,
@@ -31,7 +35,8 @@ def _stage(
         gpu=gpu,
         tp_size=tp_size,
         runtime=StageRuntimeConfig(
-            resources=StageResourceConfig(total_gpu_memory_fraction=fraction)
+            memory=StageMemoryConfig(kv_cache_bytes=kv_cache_bytes),
+            resources=StageResourceConfig(total_gpu_memory_fraction=fraction),
         ),
         next=next_stage,
         terminal=terminal,
@@ -159,6 +164,101 @@ def test_tp_memory_fraction_is_per_rank_per_assigned_gpu() -> None:
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.30)
     assert plan.gpus[1].stage_names == ("thinker",)
     assert plan.gpus[1].total_gpu_memory_fraction == pytest.approx(0.30)
+
+
+def test_same_gpu_colocation_sums_kv_byte_budgets() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage(
+                "preprocess",
+                gpu=0,
+                kv_cache_bytes=1024**3,
+                next_stage="thinker",
+            ),
+            _stage(
+                "thinker",
+                gpu=0,
+                kv_cache_bytes=2 * 1024**3,
+                terminal=True,
+            ),
+        ],
+    )
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.stages["preprocess"].kv_cache_bytes == 1024**3
+    assert plan.stages["thinker"].kv_cache_bytes == 2 * 1024**3
+    assert plan.gpus[0].total_kv_cache_bytes == 3 * 1024**3
+    assert plan.gpus[0].missing_kv_cache_bytes_stage_names == ()
+
+
+def test_tp_kv_cache_bytes_is_per_rank_per_assigned_gpu() -> None:
+    stage = _stage(
+        "thinker",
+        gpu=[0, 1],
+        kv_cache_bytes=2 * 1024**3,
+        tp_size=2,
+        terminal=True,
+    )
+    config = PipelineConfig(model_path="dummy", stages=[stage])
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.stages["thinker"].kv_cache_bytes == 2 * 1024**3
+    assert plan.gpus[0].total_kv_cache_bytes == 2 * 1024**3
+    assert plan.gpus[1].total_kv_cache_bytes == 2 * 1024**3
+
+
+def test_fraction_only_stage_is_marked_missing_kv_byte_budget() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("preprocess", gpu=0, fraction=0.10, next_stage="thinker"),
+            _stage("thinker", gpu=0, kv_cache_bytes=2 * 1024**3, terminal=True),
+        ],
+    )
+
+    plan = build_stage_placement_plan(config)
+
+    assert plan.stages["preprocess"].kv_cache_bytes is None
+    assert plan.gpus[0].total_kv_cache_bytes == 2 * 1024**3
+    assert plan.gpus[0].missing_kv_cache_bytes_stage_names == ("preprocess",)
+
+
+def test_placement_summary_includes_kv_cache_bytes(monkeypatch) -> None:
+    pytest.importorskip("uvicorn")
+    from sglang_omni.serve import launcher
+
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("preprocess", gpu=0, fraction=0.10, next_stage="thinker"),
+            _stage("thinker", gpu=0, kv_cache_bytes=2 * 1024**3, terminal=True),
+        ],
+    )
+    plan = build_stage_placement_plan(config)
+    process_plan = SimpleNamespace(groups=(), tp_stage_to_processes={})
+
+    monkeypatch.setattr(
+        launcher,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(
+            device_id=gpu_id,
+            name=f"gpu-{gpu_id}",
+            total_memory_bytes=24 * 1024**3,
+        ),
+    )
+
+    summary = launcher._placement_log_summary(
+        plan,
+        process_plan,
+        config,
+    )
+
+    assert summary["stage_runtime"]["thinker"]["kv_cache_bytes"] == 2 * 1024**3
+    assert summary["gpus"][0]["total_kv_cache_bytes"] == 2 * 1024**3
+    assert summary["gpus"][0]["missing_kv_cache_bytes_stages"] == ["preprocess"]
 
 
 def test_tp_scalar_gpu_is_rejected() -> None:

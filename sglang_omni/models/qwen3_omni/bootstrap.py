@@ -16,6 +16,7 @@ def create_thinker_scheduler(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
+    kv_cache_bytes: int | None = None,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
     prefill_coalesce_requests: int = 0,
@@ -71,6 +72,7 @@ def create_thinker_scheduler(
             model_arch_override="Qwen3OmniThinkerForCausalLM",
             capture_hidden_layers=capture_hidden_layers,
             total_gpu_memory_fraction=total_gpu_memory_fraction,
+            kv_cache_bytes=kv_cache_bytes,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             enable_prefill_input_embeds=enable_prefill_input_embeds,
         )
@@ -162,6 +164,7 @@ def create_talker_scheduler(
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
+    kv_cache_bytes: int | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
 ):
@@ -204,6 +207,7 @@ def create_talker_scheduler(
         model_arch_override="Qwen3OmniTalker",
         weight_prefix=weight_prefix,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        kv_cache_bytes=kv_cache_bytes,
         defer_cuda_graph_capture=want_cuda_graph,
     )
     # Note:(Chenchen Hong) align the talker vocab to the codec vocab: post1 sizes

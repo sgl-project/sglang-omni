@@ -21,12 +21,14 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         *,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
+        kv_cache_bytes: int | None = None,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         total_gpu_memory_fraction: float | None,
         codec_mem_reserve: float,
         process_total_gpu_memory_fraction: float | None = None,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests

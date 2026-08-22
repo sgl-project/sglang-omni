@@ -439,12 +439,14 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
         tp_rank,
         nccl_port,
         model_arch_override,
+        kv_cache_bytes=None,
     ):
         captured["server_args_tp_size"] = server_args.tp_size
         captured["gpu_id"] = gpu_id
         captured["tp_rank"] = tp_rank
         captured["nccl_port"] = nccl_port
         captured["model_arch_override"] = model_arch_override
+        captured["kv_cache_bytes"] = kv_cache_bytes
         model = object()
         model_worker = SimpleNamespace(
             model_runner=SimpleNamespace(model=model),

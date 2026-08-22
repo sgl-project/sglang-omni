@@ -603,6 +603,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    kv_cache_bytes: int | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
@@ -619,6 +620,7 @@ def create_sglang_tts_engine_executor(
     )
 
     return MossTtsLocalEngineBuilder(
+        kv_cache_bytes=kv_cache_bytes,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,

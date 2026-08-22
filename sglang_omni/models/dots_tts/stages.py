@@ -391,6 +391,7 @@ def create_sglang_latent_engine_executor(
     model_path: str,
     *,
     precision: str = "bfloat16",
+    kv_cache_bytes: int | None = None,
     optimize: bool = True,
     max_generate_length: int = 500,
     num_steps: int = 4,
@@ -404,6 +405,7 @@ def create_sglang_latent_engine_executor(
         optimize=optimize,
         num_steps=num_steps,
         max_audio_patches=max_generate_length,
+        kv_cache_bytes=kv_cache_bytes,
     ).build(
         model_path,
         device=device or "cuda",

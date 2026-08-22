@@ -120,6 +120,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         *,
         fp8: bool = False,
         frame_graph: bool = False,
+        kv_cache_bytes: int | None = None,
         compile_sampler: bool = False,
         async_decode: bool = False,
         stream_emit_chunk_frames: int = 1,
@@ -130,6 +131,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         cuda_graph_max_bs: int = 16,
         mem_fraction_static: float = 0.5,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         self.fp8 = fp8
         self.frame_graph = frame_graph
         self.compile_sampler = compile_sampler

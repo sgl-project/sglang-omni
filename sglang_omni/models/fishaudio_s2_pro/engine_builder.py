@@ -57,7 +57,9 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         *,
         max_new_tokens: int,
         ras_window: int,
+        kv_cache_bytes: int | None = None,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         self.max_new_tokens = max_new_tokens
         self.ras_window = ras_window
         self.adapter: Any | None = None

@@ -86,6 +86,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     thinker_max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
+    kv_cache_bytes: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
@@ -112,7 +113,9 @@ def create_sglang_dllm_thinker_executor_from_config(
         server_args.dllm_algorithm,
         server_args.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, gpu_id)
+    return create_dllm_thinker_scheduler(
+        server_args, gpu_id, kv_cache_bytes=kv_cache_bytes
+    )
 
 
 def create_decode_executor(model_path: str):

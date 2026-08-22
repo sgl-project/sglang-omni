@@ -32,10 +32,12 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         *,
         context_length: int | None = None,
         total_gpu_memory_fraction: float | None = None,
+        kv_cache_bytes: int | None = None,
         tp_rank: int = 0,
         tp_size: int = 1,
         nccl_port: int | None = None,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         from sglang_omni.models.ming_tts.hf_config import MING_TTS_MODEL_ARCH_OVERRIDE
 
         tp_rank = int(tp_rank)

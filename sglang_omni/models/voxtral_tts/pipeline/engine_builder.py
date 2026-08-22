@@ -15,7 +15,8 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
     model_name = "Voxtral TTS"
     context_length = 8192
 
-    def __init__(self) -> None:
+    def __init__(self, *, kv_cache_bytes: int | None = None) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         self.decrypted_config_file: str | None = None
         self.voice_embeddings: dict[str, Any] = {}
 

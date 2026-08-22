@@ -22,7 +22,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
+        kv_cache_bytes: int | None = None,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 
         self.model_arch_override = DOTS_TTS_MODEL_ARCH_OVERRIDE

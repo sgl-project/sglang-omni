@@ -502,9 +502,10 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
+    kv_cache_bytes: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
-    return MossTtsEngineBuilder().build(
+    return MossTtsEngineBuilder(kv_cache_bytes=kv_cache_bytes).build(
         model_path,
         device=device,
         gpu_id=gpu_id,

@@ -130,12 +130,18 @@ def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any
     summary: dict[str, Any] = {}
     for stage in pipeline_config.stages:
         resources = stage.runtime.resources
+        kv_cache_bytes = stage.runtime.memory.kv_cache_bytes
         mem_fraction = stage.runtime.sglang_server_args.mem_fraction_static
-        if stage.gpu is None and resources.total_gpu_memory_fraction is None:
+        if (
+            stage.gpu is None
+            and resources.total_gpu_memory_fraction is None
+            and kv_cache_bytes is None
+        ):
             continue
         summary[stage.name] = {
             "gpu": stage.gpu,
             "total_gpu_memory_fraction": resources.total_gpu_memory_fraction,
+            "kv_cache_bytes": kv_cache_bytes,
             "mem_fraction_static": mem_fraction,
         }
     return summary
@@ -186,6 +192,10 @@ def _placement_log_summary(
                 "stages": list(gpu.stage_names),
                 "total_gpu_memory_fraction": round(gpu.total_gpu_memory_fraction, 3),
                 "missing_fraction_stages": list(gpu.missing_fraction_stage_names),
+                "total_kv_cache_bytes": gpu.total_kv_cache_bytes,
+                "missing_kv_cache_bytes_stages": list(
+                    gpu.missing_kv_cache_bytes_stage_names
+                ),
             }
             for gpu_id, gpu in placement_plan.gpus.items()
         },

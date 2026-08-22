@@ -1003,6 +1003,7 @@ def create_sglang_thinker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
+    kv_cache_bytes: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
@@ -1061,13 +1062,24 @@ def create_sglang_thinker_executor_from_config(
         server_args=server_args,
     )
     if total_gpu_memory_fraction is None:
-        encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
-            server_args,
-            has_explicit_mem_fraction_static=(
-                memory_contract.mem_fraction_static_pinned
-            ),
-            encoder_mem_reserve=encoder_mem_reserve,
-        )
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        # Note (Jiaxin Deng): under a byte budget the KV configurator ignores
+        # mem_fraction_static, so an encoder reserve would be a silent no-op.
+        if peek_stage_kv_cache_bytes() is not None:
+            logger.info(
+                "thinker declares runtime.memory.kv_cache_bytes; skipping the "
+                f"encoder_mem_reserve={encoder_mem_reserve} fraction adjustment"
+            )
+            encoder_reserve_applied = False
+        else:
+            encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
+                server_args,
+                has_explicit_mem_fraction_static=(
+                    memory_contract.mem_fraction_static_pinned
+                ),
+                encoder_mem_reserve=encoder_mem_reserve,
+            )
         effective_total_gpu_memory_fraction = total_gpu_memory_fraction
         applied_encoder_reserve = (
             encoder_mem_reserve if encoder_reserve_applied else 0.0
@@ -1098,6 +1110,7 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        kv_cache_bytes=kv_cache_bytes,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
@@ -1128,6 +1141,7 @@ def create_talker_ar_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     talker_max_seq_len: int = 4096,
+    kv_cache_bytes: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
     speech_enabled: bool = True,
     feedback_enabled: bool = True,
@@ -1188,6 +1202,7 @@ def create_talker_ar_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        kv_cache_bytes=kv_cache_bytes,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
     )

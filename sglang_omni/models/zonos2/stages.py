@@ -227,6 +227,7 @@ def create_sglang_omni_tts_engine_executor(
     model_path: str,
     *,
     gpu_id: int | None = 0,
+    kv_cache_bytes: int | None = None,
     dtype: str = "bfloat16",
     mem_fraction_static: float = 0.5,
     fp8: bool = False,
@@ -243,6 +244,7 @@ def create_sglang_omni_tts_engine_executor(
     from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
 
     return Zonos2EngineBuilder(
+        kv_cache_bytes=kv_cache_bytes,
         fp8=fp8,
         frame_graph=frame_graph,
         compile_sampler=compile_sampler,

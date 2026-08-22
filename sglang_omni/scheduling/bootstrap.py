@@ -115,15 +115,18 @@ def create_sglang_infrastructure(
         PrefillManager,
         create_tree_cache,
     )
+    from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 
     logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
 
+    kv_cache_bytes = consume_stage_kv_cache_bytes()
     model_worker = ModelWorker(
         config=ModelWorkerConfig(
             model_arch_override=model_arch_override,
             weight_prefix=weight_prefix,
             nccl_port=nccl_port,
             total_gpu_memory_fraction=total_gpu_memory_fraction,
+            kv_cache_bytes=kv_cache_bytes,
             enable_prefill_input_embeds=enable_prefill_input_embeds,
         ),
         server_args=server_args,

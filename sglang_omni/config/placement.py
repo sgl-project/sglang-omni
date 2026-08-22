@@ -8,7 +8,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
 
-from sglang_omni.config.runtime import reject_untyped_total_gpu_memory_fraction
+from sglang_omni.config.runtime import (
+    reject_untyped_memory_bytes,
+    reject_untyped_total_gpu_memory_fraction,
+)
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
 
@@ -19,6 +22,7 @@ class StagePlacement:
     gpu_ids: tuple[int, ...]
     tp_size: int
     total_gpu_memory_fraction: float | None
+    kv_cache_bytes: int | None
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,8 @@ class GpuPlacement:
     total_gpu_memory_fraction: float
     has_memory_fraction: bool
     missing_fraction_stage_names: tuple[str, ...]
+    total_kv_cache_bytes: int
+    missing_kv_cache_bytes_stage_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -54,10 +60,15 @@ class StagePlacementPlanner:
     ) -> StagePlacementPlan:
         stages = stages_cfg if stages_cfg is not None else self._config.stages
         placements: dict[str, StagePlacement] = {}
-        gpu_entries: dict[int, list[tuple[str, float | None]]] = defaultdict(list)
+        gpu_entries: dict[int, list[StagePlacement]] = defaultdict(list)
 
         for stage in stages:
             reject_untyped_total_gpu_memory_fraction(
+                stage.name,
+                stage.factory_args,
+                self._config.runtime_overrides.get(stage.name, {}),
+            )
+            reject_untyped_memory_bytes(
                 stage.name,
                 stage.factory_args,
                 self._config.runtime_overrides.get(stage.name, {}),
@@ -67,14 +78,17 @@ class StagePlacementPlanner:
                 continue
 
             fraction = stage.runtime.resources.total_gpu_memory_fraction
-            placements[stage.name] = StagePlacement(
+            kv_cache_bytes = stage.runtime.memory.kv_cache_bytes
+            placement = StagePlacement(
                 stage_name=stage.name,
                 gpu_ids=gpu_ids,
                 tp_size=stage.tp_size,
                 total_gpu_memory_fraction=fraction,
+                kv_cache_bytes=kv_cache_bytes,
             )
+            placements[stage.name] = placement
             for gpu_id in gpu_ids:
-                gpu_entries[gpu_id].append((stage.name, fraction))
+                gpu_entries[gpu_id].append(placement)
 
         gpu_plans = {
             gpu_id: _build_gpu_placement(gpu_id, entries)
@@ -159,25 +173,35 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
 
 def _build_gpu_placement(
     gpu_id: int,
-    entries: list[tuple[str, float | None]],
+    entries: list[StagePlacement],
 ) -> GpuPlacement:
     total = 0.0
+    total_kv_cache_bytes = 0
     has_memory_fraction = False
     missing: set[str] = set()
+    missing_kv_cache_bytes: set[str] = set()
     stage_names: list[str] = []
-    for stage_name, fraction in entries:
-        stage_names.append(stage_name)
+    for entry in entries:
+        stage_names.append(entry.stage_name)
+        fraction = entry.total_gpu_memory_fraction
         if fraction is None:
-            missing.add(stage_name)
-            continue
-        has_memory_fraction = True
-        total += fraction
+            missing.add(entry.stage_name)
+        else:
+            has_memory_fraction = True
+            total += fraction
+
+        if entry.kv_cache_bytes is None:
+            missing_kv_cache_bytes.add(entry.stage_name)
+        else:
+            total_kv_cache_bytes += entry.kv_cache_bytes
     return GpuPlacement(
         gpu_id=gpu_id,
         stage_names=tuple(stage_names),
         total_gpu_memory_fraction=total,
         has_memory_fraction=has_memory_fraction,
         missing_fraction_stage_names=tuple(sorted(missing)),
+        total_kv_cache_bytes=total_kv_cache_bytes,
+        missing_kv_cache_bytes_stage_names=tuple(sorted(missing_kv_cache_bytes)),
     )
 
 

@@ -461,6 +461,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    kv_cache_bytes: int | None = None,
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
     cuda_graph_max_bs: int = 64,
@@ -478,6 +479,7 @@ def create_sglang_tts_engine_executor(
     from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
 
     return HiggsTtsEngineBuilder(
+        kv_cache_bytes=kv_cache_bytes,
         max_new_tokens=max_new_tokens,
         max_running_requests=max_running_requests,
         cuda_graph_max_bs=cuda_graph_max_bs,

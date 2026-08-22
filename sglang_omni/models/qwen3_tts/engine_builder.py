@@ -17,7 +17,13 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     context_length = 8192
     model_arch_override = "Qwen3TTSTalker"
 
-    def __init__(self, *, attn_implementation: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        attn_implementation: str | None = None,
+        kv_cache_bytes: int | None = None,
+    ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         self.attn_implementation = attn_implementation
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None

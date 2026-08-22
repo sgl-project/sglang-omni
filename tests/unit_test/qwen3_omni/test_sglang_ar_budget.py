@@ -13,7 +13,9 @@ import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from tests.unit_test.fakes import FakeServerArgs
 
 
-def _configurator(*, total_gpu_memory_fraction: float | None):
+def _configurator(
+    *, total_gpu_memory_fraction: float | None, kv_cache_bytes: int | None = None
+):
     """Build the profiling surface without upstream's full field set.
 
     ``_OmniKVCacheConfigurator`` is a slots dataclass with ~25 required fields,
@@ -26,6 +28,7 @@ def _configurator(*, total_gpu_memory_fraction: float | None):
     configurator.device = "cuda"
     configurator.server_args = SimpleNamespace(mem_fraction_static=0.9)
     configurator.total_gpu_memory_fraction = total_gpu_memory_fraction
+    configurator.kv_cache_bytes = kv_cache_bytes
     return configurator
 
 

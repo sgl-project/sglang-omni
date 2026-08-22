@@ -778,18 +778,31 @@ def _construct_scheduler(
 ) -> Any:
     """Build a scheduler, serializing GPU factory work per visible device."""
 
+    from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
+
     factory = import_string(spec.factory)
+    # Note (Jiaxin Deng): the byte budget rides the ambient scope, never factory
+    # kwargs, so model factory signatures stay untouched and none can miss it.
+    factory_arg_defaults = dict(spec.factory_arg_defaults)
+    kv_cache_bytes = factory_arg_defaults.pop("kv_cache_bytes", None)
     factory_args = resolve_factory_signature_args(
         factory,
         spec.factory_args,
-        defaults=spec.factory_arg_defaults,
+        defaults=factory_arg_defaults,
     )
+
+    def _invoke() -> Any:
+        if kv_cache_bytes is None:
+            return factory(**factory_args)
+        with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
+            return factory(**factory_args)
+
     if gpu_id is None:
-        return factory(**factory_args)
+        return _invoke()
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return factory(**factory_args)
+        return _invoke()
 
 
 def _prepare_accelerator_environment(

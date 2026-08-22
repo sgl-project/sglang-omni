@@ -155,6 +155,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         assert gpu_id == 2
         assert kwargs == {
             "defer_cuda_graph_capture": True,
+            "kv_cache_bytes": 123,
             "model_arch_override": "TestArch",
         }
         infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
@@ -302,7 +303,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             events.append("post_scheduler_setup")
             model_runner.outbox = scheduler.outbox
 
-    scheduler = RecordingBuilder().build(
+    scheduler = RecordingBuilder(kv_cache_bytes=123).build(
         "model",
         device="cuda:0",
         gpu_id=2,
@@ -344,6 +345,143 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert init_graph_calls == [True]
     assert scheduler.kwargs["server_args"].disable_cuda_graph is False
     assert scheduler.kwargs["model_runner"].outbox == "outbox"
+
+
+def _build_minimal_tts_builder_harness(monkeypatch):
+    """Fakes for exercising ``build()`` without CUDA graphs or a real engine."""
+    from sglang_omni.scheduling import bootstrap, sglang_backend
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
+    )
+
+    build_kwargs: dict[str, Any] = {}
+    consumed: list[int | None] = []
+
+    class FakeModel:
+        pass
+
+    class FakeWorker:
+        def __init__(self, server_args: Any) -> None:
+            self.model_runner = SimpleNamespace(
+                model=FakeModel(), server_args=server_args
+            )
+            self.model_config = SimpleNamespace(is_multimodal=False)
+            self.enable_prefill_input_embeds = False
+
+    def fake_build_sglang_server_args(
+        checkpoint_dir: str, *, context_length: int, **kwargs: Any
+    ) -> Any:
+        build_kwargs.update(kwargs)
+        return FakeServerArgs(
+            checkpoint_dir=checkpoint_dir,
+            context_length=context_length,
+            cuda_graph_bs=None,
+            cuda_graph_max_bs=None,
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(max_bs=None, bs=None),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            ),
+            disable_cuda_graph=True,
+            enable_torch_compile=False,
+            max_running_requests=kwargs["max_running_requests"],
+            mem_fraction_static=kwargs.get("mem_fraction_static"),
+            torch_compile_max_bs=None,
+        )
+
+    def fake_create_sglang_infrastructure(
+        server_args: Any, gpu_id: int, **kwargs: Any
+    ) -> tuple[Any, ...]:
+        consumed.append(consume_stage_kv_cache_bytes())
+        return (
+            FakeWorker(server_args),
+            "tree_cache",
+            "req_pool",
+            "kv_pool",
+            "prefill",
+            "decode",
+            "model_config",
+        )
+
+    monkeypatch.setattr(
+        sglang_backend, "build_sglang_server_args", fake_build_sglang_server_args
+    )
+    monkeypatch.setattr(
+        bootstrap, "create_sglang_infrastructure", fake_create_sglang_infrastructure
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "SGLangOutputProcessor",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    class MinimalBuilder(TtsEngineBuilder):
+        model_name = "Test TTS"
+        context_length = 123
+
+        def resolve_checkpoint(self, model_path: str) -> str:
+            return model_path
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            return {
+                "max_running_requests": 4,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "mem_fraction_static": 0.2,
+            }
+
+        def setup_model(self, **kwargs: Any) -> None:
+            pass
+
+        def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+            return SimpleNamespace(model_worker=model_worker)
+
+        def make_adapters(self, model: Any) -> tuple[Any, Any]:
+            return "request_builder", "result_adapter"
+
+        def make_scheduler(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(outbox="outbox")
+
+    return MinimalBuilder, build_kwargs, consumed
+
+
+def test_byte_budget_clears_builder_default_mem_fraction(monkeypatch, caplog) -> None:
+    """A KV-tuned builder default (e.g. dots 0.20) must not shape ServerArgs when
+    the byte budget owns KV sizing, or post-capture headroom inherits it."""
+    import logging
+
+    from sglang_omni.scheduling import engine_factory
+    from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
+
+    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+        monkeypatch
+    )
+
+    with caplog.at_level(logging.INFO, logger=engine_factory.logger.name):
+        with stage_kv_cache_budget("tts_engine", 2 * 1024**3):
+            MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+
+    assert "mem_fraction_static" not in build_kwargs
+    assert consumed == [2 * 1024**3]
+    assert "clearing builder default mem_fraction_static=0.2" in caplog.text
+
+
+def test_without_byte_budget_builder_default_mem_fraction_is_kept(
+    monkeypatch,
+) -> None:
+    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+        monkeypatch
+    )
+
+    MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+
+    assert build_kwargs["mem_fraction_static"] == 0.2
+    assert consumed == [None]
 
 
 def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None:

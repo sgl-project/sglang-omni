@@ -21,6 +21,7 @@ def create_thinker_scheduler(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
+    kv_cache_bytes: int | None = None,
     enable_streaming_tts: bool = False,
 ):
     if tp_size < 1:
@@ -64,6 +65,7 @@ def create_thinker_scheduler(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         model_arch_override="BailingMoeV2ForCausalLM",
+        kv_cache_bytes=kv_cache_bytes,
     )
 
     output_proc = SGLangOutputProcessor(

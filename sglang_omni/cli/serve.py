@@ -24,6 +24,7 @@ from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gp
 
 logger = logging.getLogger(__name__)
 
+
 _STAGE_TOGGLE_MODE = Literal["default", "on", "off"]
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
 _DECODE_MODE = Literal["async", "sync"]
@@ -223,6 +224,24 @@ def _apply_stage_mem_fraction_override(
         stage.runtime.sglang_server_args.mem_fraction_static = value
 
 
+def _find_stages_with_kv_cache_bytes(
+    pipeline_config: PipelineConfig,
+    *,
+    stage_name: str,
+) -> list[str]:
+    """Return names of matching stages that declare a byte KV budget."""
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason="mem_fraction_static validation",
+    )
+    return [
+        stage.name
+        for stage in matching_stages
+        if stage.runtime.memory.kv_cache_bytes is not None
+    ]
+
+
 def _stage_has_explicit_mem_fraction_static(
     pipeline_config: PipelineConfig,
     *,
@@ -341,17 +360,35 @@ def apply_mem_fraction_cli_overrides(
         "thinker": thinker_mem_fraction_static,
         "talker": talker_mem_fraction_static,
     }
+    # Resolve every target before mutating anything so a rejected flag cannot
+    # leave a partially-applied config behind.
+    pending: list[tuple[str, float]] = []
     for role, stage_name in role_to_stage.items():
         role_value = role_values.get(role)
         # Precedence: per-role flag wins over the global flag for this role;
         # the global flag is the fallback when no per-role flag was given.
         final_value = role_value if role_value is not None else mem_fraction_static
         if final_value is not None:
-            _apply_stage_mem_fraction_override(
-                pipeline_config,
-                stage_name=stage_name,
-                value=final_value,
+            pending.append((stage_name, final_value))
+
+    for stage_name, _ in pending:
+        conflicting = _find_stages_with_kv_cache_bytes(
+            pipeline_config, stage_name=stage_name
+        )
+        if conflicting:
+            raise typer.BadParameter(
+                "mem_fraction_static cannot be combined with "
+                "runtime.memory.kv_cache_bytes, which is set on stage(s) "
+                f"{', '.join(sorted(conflicting))}. Remove the byte budget or "
+                "drop the mem_fraction_static flag."
             )
+
+    for stage_name, final_value in pending:
+        _apply_stage_mem_fraction_override(
+            pipeline_config,
+            stage_name=stage_name,
+            value=final_value,
+        )
     return pipeline_config
 
 
@@ -375,6 +412,18 @@ def apply_encoder_mem_reserve_cli_override(
         raise typer.BadParameter(
             "--encoder-mem-reserve is mutually exclusive with "
             "--mem-fraction-static and --thinker-mem-fraction-static"
+        )
+
+    # Note (Jiaxin Deng): the reserve adjusts mem_fraction_static, which a byte
+    # budget ignores; accepting it would be a silent no-op.
+    conflicting = _find_stages_with_kv_cache_bytes(
+        pipeline_config, stage_name=thinker_stage
+    )
+    if conflicting:
+        raise typer.BadParameter(
+            "--encoder-mem-reserve cannot be combined with "
+            "runtime.memory.kv_cache_bytes, which is set on stage(s) "
+            f"{', '.join(sorted(conflicting))}."
         )
 
     matching_stages = _find_matching_stages(

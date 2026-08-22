@@ -34,6 +34,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         *,
         max_new_tokens: int | None,
         max_running_requests: int,
+        kv_cache_bytes: int | None = None,
         cuda_graph_max_bs: int,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
@@ -44,6 +45,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         prefill_coalesce_wait_ms: float = 60.0,
         total_gpu_memory_fraction: float | None = None,
     ) -> None:
+        super().__init__(kv_cache_bytes=kv_cache_bytes)
         if total_gpu_memory_fraction is not None and not (
             0.0 < total_gpu_memory_fraction < 1.0
         ):

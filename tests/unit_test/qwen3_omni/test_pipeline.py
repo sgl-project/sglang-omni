@@ -20,6 +20,7 @@ from sglang_omni.cli.serve import (
 from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
+    StageMemoryConfig,
     build_process_topology_plan,
     build_stage_placement_plan,
     resolve_stage_factory_args,
@@ -1177,6 +1178,80 @@ def test_qwen_cli_rejects_invalid_mem_fraction_without_partial_write() -> None:
         )
 
     assert config.model_dump() == original
+
+
+def test_qwen_cli_rejects_global_mem_fraction_when_stage_declares_kv_cache_bytes() -> (
+    None
+):
+    """A byte KV budget must reject --mem-fraction-static instead of silently losing it.
+
+    StageRuntimeConfig.model_post_init only sees values present at construction,
+    so a CLI override that mutates mem_fraction_static afterwards would bypass
+    it and then be ignored at runtime, because _OmniKVCacheConfigurator returns
+    kv_cache_bytes before consulting any fraction.
+    """
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    _stage(config, "thinker").runtime.memory = StageMemoryConfig(kv_cache_bytes="2GiB")
+    original = config.model_dump()
+
+    with pytest.raises(typer.BadParameter, match="cannot be combined with"):
+        apply_mem_fraction_cli_overrides(
+            config,
+            mem_fraction_static=0.80,
+            thinker_mem_fraction_static=None,
+            talker_mem_fraction_static=None,
+        )
+
+    assert config.model_dump() == original
+
+
+def test_qwen_cli_rejects_per_role_mem_fraction_when_stage_declares_kv_cache_bytes() -> (
+    None
+):
+    """The per-role flag takes the same path as the global one and must also reject."""
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    _stage(config, "thinker").runtime.memory = StageMemoryConfig(kv_cache_bytes="2GiB")
+
+    with pytest.raises(typer.BadParameter, match="cannot be combined with"):
+        apply_mem_fraction_cli_overrides(
+            config,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=0.70,
+            talker_mem_fraction_static=None,
+        )
+
+
+def test_qwen_cli_mem_fraction_rejection_is_atomic_across_stages() -> None:
+    """A byte budget on one target must not leave another target partially mutated."""
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    _stage(config, "talker_ar").runtime.memory = StageMemoryConfig(
+        kv_cache_bytes="2GiB"
+    )
+
+    with pytest.raises(typer.BadParameter, match="cannot be combined with"):
+        apply_mem_fraction_cli_overrides(
+            config,
+            mem_fraction_static=None,
+            thinker_mem_fraction_static=0.70,
+            talker_mem_fraction_static=0.65,
+        )
+
+    assert _runtime_mem_fraction_static(config, "thinker") is None
+    assert _runtime_mem_fraction_static(config, "talker_ar") is None
+
+
+def test_qwen_cli_allows_mem_fraction_when_no_stage_declares_kv_cache_bytes() -> None:
+    """Guard must not fire for the ordinary fraction-only path."""
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    apply_mem_fraction_cli_overrides(
+        config,
+        mem_fraction_static=0.80,
+        thinker_mem_fraction_static=None,
+        talker_mem_fraction_static=None,
+    )
+
+    assert _runtime_mem_fraction_static(config, "thinker") == 0.80
 
 
 def test_qwen_cli_rejects_global_mem_fraction_when_pipeline_has_no_supported_roles() -> (

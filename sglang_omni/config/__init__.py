@@ -22,6 +22,7 @@ from sglang_omni.config.schema import (
     PlacementConfig,
     SGLangServerArgsConfig,
     StageConfig,
+    StageMemoryConfig,
     StageResourceConfig,
     StageRuntimeConfig,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "PipelineConfig",
     "StageConfig",
     "ParallelismConfig",
+    "StageMemoryConfig",
     "StageResourceConfig",
     "SGLangServerArgsConfig",
     "StageRuntimeConfig",
