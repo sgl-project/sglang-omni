@@ -182,6 +182,7 @@ def create_vocoder_executor(
     followup_max_batch_size: int = 8,
     followup_batch_wait_ms: int = 1,
     initial_cuda_graph: bool = True,
+    enable_deterministic_inference: bool = False,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
     tokenizer = _load_qwen3_tts_tokenizer(
@@ -206,4 +207,5 @@ def create_vocoder_executor(
         followup_max_batch_size=followup_max_batch_size,
         followup_batch_wait_ms=followup_batch_wait_ms,
         initial_cuda_graph=initial_cuda_graph,
+        enable_deterministic_inference=enable_deterministic_inference,
     )

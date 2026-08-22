@@ -773,7 +773,7 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
 
     scheduler = stages.create_audio_encoder_executor(
         "ckpt",
-        device="cuda:0",
+        device="cpu",
         num_codebooks=2,
     )
     # Ignore the construction-time codec warm-up call added by #612.
@@ -850,7 +850,7 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
 
     scheduler = stages.create_audio_encoder_executor(
         "ckpt",
-        device="cuda:0",
+        device="cpu",
         num_codebooks=2,
     )
     fake_codec.calls = 0

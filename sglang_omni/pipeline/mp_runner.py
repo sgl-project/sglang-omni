@@ -19,12 +19,14 @@ from sglang_omni.config.placement import (
     resolve_stage_gpu_ids,
 )
 from sglang_omni.config.runtime import (
+    requires_factory_gpu_id,
     resolve_stage_factory_arg_defaults,
     resolve_stage_static_factory_args,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
-from sglang_omni.config.topology import ProcessTopologyPlan
+from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
 from sglang_omni.pipeline import Coordinator
+from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.runtime_config import (
     IpcRuntimeDir,
     PipelineRuntimePrep,
@@ -41,15 +43,46 @@ from sglang_omni.utils.imports import import_string
 logger = logging.getLogger(__name__)
 
 
+def resolve_coordinator_max_in_flight(
+    config: PipelineConfig,
+    *,
+    logical_process_plan: LogicalProcessPlan,
+) -> int | None:
+    """Return total generation running+queued capacity across replicas."""
+    stage_name = type(config).generation_sglang_role_to_stage().get("generation")
+    stage = next((item for item in config.stages if item.name == stage_name), None)
+    if stage is None:
+        return None
+    values = {
+        **type(config).generation_admission_defaults(),
+        **dict((stage.factory_args or {}).get("server_args_overrides") or {}),
+        **dict(
+            (config.runtime_overrides.get(stage.name) or {}).get(
+                "server_args_overrides"
+            )
+            or {}
+        ),
+    }
+    try:
+        running = int(values["max_running_requests"])
+        queued = int(values["max_queued_requests"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if running < 1 or queued < 0:
+        return None
+    num_replicas = logical_process_plan.process_of(stage.name).num_replicas
+    return (running + queued) * num_replicas
+
+
 def _build_stage_groups(
     config: PipelineConfig,
     ctx: multiprocessing.context.BaseContext | None = None,
     *,
     stages_cfg: list[StageConfig],
-    name_map: dict[str, str],
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
+    replica_topology: ReplicaTopology | None = None,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
 
@@ -58,6 +91,8 @@ def _build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
+    if replica_topology is None:
+        replica_topology = ReplicaTopology()
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
     rank_endpoints = {
@@ -70,26 +105,17 @@ def _build_stage_groups(
     stream_receivers: set[str] = set()
     for scfg in stages_cfg:
         for target in scfg.stream_to:
-            stream_receivers.add(target)
+            stream_receivers.update(replica_topology.instances(target))
     stage_cfg_by_name = {stage.name: stage for stage in stages_cfg}
 
     nccl_port_counter = _NcclPortAllocator()
 
     # GPU-resident stages, shared by every stage so the transport router can
-    # decide GPU vs host transport per edge from static placement alone. Include the
-    # pre-fusion aliases so lookups work whether an edge names a stage by its
-    # raw or canonical (fused) name.
-    gpu_canonical = resolve_gpu_stage_names(placement_plan)
-    gpu_stage_names = set(gpu_canonical)
-    for raw_name, canonical_name in name_map.items():
-        if canonical_name in gpu_canonical:
-            gpu_stage_names.add(raw_name)
+    # decide GPU vs host transport per edge from static placement alone.
+    gpu_stage_names = resolve_gpu_stage_names(placement_plan)
     stage_gpu_ids = {
         name: placement.gpu_ids for name, placement in placement_plan.stages.items()
     }
-    for raw_name, canonical_name in name_map.items():
-        if canonical_name in stage_gpu_ids:
-            stage_gpu_ids[raw_name] = stage_gpu_ids[canonical_name]
 
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
@@ -101,8 +127,8 @@ def _build_stage_groups(
         same_process_targets = _resolve_same_process_targets(
             stage_cfg,
             stage_cfg_by_name,
-            name_map,
             process_plan,
+            replica_topology,
         )
 
         # Avoid importing stage factories in the parent process. The child
@@ -121,8 +147,9 @@ def _build_stage_groups(
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
             project_payload={
-                name_map.get(target, target): dotted_path
+                instance: dotted_path
                 for target, dotted_path in stage_cfg.project_payload.items()
+                for instance in replica_topology.instances(target)
             },
             coordinator_endpoint=endpoints["completion"],
             abort_endpoint=endpoints["abort"],
@@ -132,11 +159,12 @@ def _build_stage_groups(
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
             gpu_stage_names=gpu_stage_names,
             stage_gpu_ids=stage_gpu_ids,
+            require_factory_gpu_id=requires_factory_gpu_id(stage_cfg, config),
             same_process_targets=same_process_targets,
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
-            name_map=name_map,
+            replica_topology=replica_topology.to_dict(),
         )
         if tp_size == 1:
             single_stage_specs[stage_cfg.name] = _build_single_stage_spec(
@@ -225,14 +253,16 @@ def _attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
 def _resolve_same_process_targets(
     stage_cfg: StageConfig,
     stage_cfg_by_name: dict[str, StageConfig],
-    name_map: dict[str, str],
     process_plan: ProcessTopologyPlan,
+    replica_topology: ReplicaTopology | None = None,
 ) -> set[str]:
     if stage_cfg.tp_size > 1:
         return set()
     source_process = process_plan.stage_to_process.get(stage_cfg.name)
     if source_process is None:
         return set()
+    if replica_topology is None:
+        replica_topology = ReplicaTopology()
 
     raw_targets: list[str] = []
     if stage_cfg.next is not None:
@@ -243,12 +273,12 @@ def _resolve_same_process_targets(
 
     same_process_targets: set[str] = set()
     for raw_target in raw_targets:
-        target = name_map.get(raw_target, raw_target)
-        target_cfg = stage_cfg_by_name.get(target)
-        if target_cfg is None or target_cfg.tp_size > 1:
-            continue
-        if process_plan.stage_to_process.get(target) == source_process:
-            same_process_targets.add(target)
+        for target in replica_topology.instances(raw_target):
+            target_cfg = stage_cfg_by_name.get(target)
+            if target_cfg is None or target_cfg.tp_size > 1:
+                continue
+            if process_plan.stage_to_process.get(target) == source_process:
+                same_process_targets.add(target)
     return same_process_targets
 
 
@@ -441,10 +471,10 @@ class MultiProcessPipelineRunner:
                 self._config,
                 ctx,
                 stages_cfg=prep.stages_cfg,
-                name_map=prep.name_map,
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
+                replica_topology=prep.replica_topology,
             )
 
             terminal_stages_resolver = (
@@ -452,13 +482,25 @@ class MultiProcessPipelineRunner:
                 if self._config.terminal_stages_fn
                 else None
             )
+            max_in_flight = resolve_coordinator_max_in_flight(
+                self._config,
+                logical_process_plan=prep.logical_process_plan,
+            )
             self._coordinator = Coordinator(
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
                 terminal_stages=self._config.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
+                replica_topology=prep.replica_topology,
+                logical_process_plan=prep.logical_process_plan,
+                max_in_flight=max_in_flight,
             )
+            if max_in_flight is not None:
+                logger.info(
+                    "Coordinator in-flight cap=%s (generation running+queued)",
+                    max_in_flight,
+                )
             await self._coordinator.start()
             self._completion_task = asyncio.create_task(
                 self._coordinator.run_completion_loop()

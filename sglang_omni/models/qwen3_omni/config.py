@@ -28,7 +28,7 @@ MIN_PARTIAL_START_CHUNKS = 3
 # policy once that exists outside import-time environment globals.
 _DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
 
-# A colocated worker launches eight stage processes. Letting every PyTorch
+# A colocated worker launches seven stage processes. Letting every PyTorch
 # process size its OpenMP pool to the full host oversubscribes launch-side CPU
 # work when multiple workers share a node. Preprocessing handles one prompt per
 # scheduler call, so a host-wide tokenizer Rayon pool only adds contention.
@@ -114,8 +114,13 @@ def _audio_encoder_stage(
         name="audio_encoder",
         process=process,
         factory=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory_args={"device": None, "dtype": None},
+        factory_args={
+            "device": None,
+            "dtype": None,
+            "enable_layer_cuda_graph": True,
+        },
         gpu=gpu,
+        disable_direct_cuda_ipc_payload=True,
         **_encoder_join_edges(speech_enabled=speech_enabled),
     )
 

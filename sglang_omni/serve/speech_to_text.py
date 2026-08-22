@@ -37,6 +37,7 @@ from sglang_omni.serve.streaming import (
     ClosableStreamingResponse,
     close_async_iterator_if_supported,
 )
+from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_adapters.base import TranscriptionAdapter
 
@@ -45,6 +46,7 @@ HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
 DEFAULT_RESPONSE_FORMATS = frozenset({"json", "text", "verbose_json"})
 DEFAULT_STREAMING_RESPONSE_FORMATS = frozenset({"json", "text"})
+SEGMENT_RESPONSE_FORMATS = frozenset({"srt", "vtt"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,9 +133,12 @@ def build_speech_to_text_generate_request(
     max_new_tokens: int | None = None,
     stream: bool = False,
     task: str = "transcribe",
+    detect_language: bool = False,
 ) -> GenerateRequest:
     """Keep endpoint policy out of model-neutral request construction."""
     params: dict[str, Any] = {"task": task}
+    if detect_language:
+        params["detect_language"] = True
     metadata: dict[str, Any] = {"task": "asr"}
     explicit_fields: list[str] = []
     if language is not None:
@@ -170,6 +175,39 @@ def build_speech_to_text_generate_request(
 build_transcription_generate_request = build_speech_to_text_generate_request
 
 
+async def detect_speech_language(
+    client: Client,
+    *,
+    audio_bytes: bytes,
+    filename: str | None,
+    content_type: str | None,
+    model: str,
+    request_id: str,
+) -> str | None:
+    """Identify the spoken language with one greedy decoder step."""
+    gen_req = build_speech_to_text_generate_request(
+        audio_bytes=audio_bytes,
+        filename=filename,
+        content_type=content_type,
+        model=model,
+        language=None,
+        prompt=None,
+        temperature=None,
+        max_new_tokens=1,
+        detect_language=True,
+    )
+    try:
+        result = await client.completion(gen_req, request_id=f"{request_id}-lang")
+    except Exception:
+        logger.warning(
+            "Language detection failed for %s; using the default language",
+            request_id,
+        )
+        return None
+    code = (result.text or "").strip()
+    return code or None
+
+
 async def complete_speech_to_text_request(
     client: Client,
     gen_req: GenerateRequest,
@@ -197,14 +235,47 @@ def resolve_speech_to_text_adapter(
     return resolve_adapter(architectures)
 
 
-def probe_audio_duration(audio_bytes: bytes) -> float:
-    """Best-effort audio duration (seconds) from raw upload bytes.
+# Codecs whose container header states the exact sample count, so
+# soundfile's frame count is arithmetic, not an estimate. Notably absent:
+# MPEG_LAYER_III, legal inside RIFF/WAVE, where libsndfile extrapolates
+# from early-frame bitrate and mismeasures VBR streams severalfold.
+_EXACT_LENGTH_SUBTYPES = frozenset(
+    {"PCM_S8", "PCM_U8", "PCM_16", "PCM_24", "PCM_32", "FLOAT", "DOUBLE"}
+)
 
-    Metadata-only: reads container headers, never decodes. PyAV wraps the
-    same FFmpeg demuxers load_audio decodes with, so any upload the engine
-    can read, this probe can measure (soundfile could not inspect M4A/WebM).
-    0.0 means unknown; callers treat that as "duration not available".
-    """
+# libsndfile reports this sentinel when the header omits the count, e.g. a
+# FLAC streamed with STREAMINFO total_samples 0.
+_UNKNOWN_LENGTH_FRAMES = 2**63 - 1
+
+
+def _looks_like_wav_or_flac(audio_bytes: bytes) -> bool:
+    # Cheap prefilter so only the two formats the fast path serves are ever
+    # handed to libsndfile; every other container goes straight to PyAV.
+    header = audio_bytes[:12]
+    if header[:4] in (b"RIFF", b"RF64") and header[8:12] == b"WAVE":
+        return True
+    return header[:4] == b"fLaC"
+
+
+def _soundfile_duration(audio_bytes: bytes) -> float:
+    if not _looks_like_wav_or_flac(audio_bytes):
+        return 0.0
+    try:
+        import soundfile as sf
+
+        info = sf.info(io.BytesIO(audio_bytes))
+        if (
+            info.samplerate
+            and info.subtype in _EXACT_LENGTH_SUBTYPES
+            and 0 < info.frames < _UNKNOWN_LENGTH_FRAMES
+        ):
+            return info.frames / float(info.samplerate)
+    except (RuntimeError, ValueError):
+        pass
+    return 0.0
+
+
+def _av_duration(audio_bytes: bytes) -> float:
     try:
         import av
 
@@ -221,6 +292,22 @@ def probe_audio_duration(audio_bytes: bytes) -> float:
     return 0.0
 
 
+def probe_audio_duration(audio_bytes: bytes) -> float:
+    """Best-effort audio duration (seconds) from raw upload bytes.
+
+    Metadata-only: reads container headers, never decodes. soundfile answers
+    WAV/FLAC in microseconds of CPU and only serves formats whose header
+    states the exact sample count; every other format (MP3, M4A, WebM, ...)
+    keeps the PyAV path, which wraps the same FFmpeg demuxers load_audio
+    decodes with, so their measurements are unchanged. 0.0 means unknown;
+    callers treat that as "duration not available".
+    """
+    duration_s = _soundfile_duration(audio_bytes)
+    if duration_s > 0:
+        return duration_s
+    return _av_duration(audio_bytes)
+
+
 def assemble_speech_to_text_response(
     *,
     text: str,
@@ -231,31 +318,58 @@ def assemble_speech_to_text_response(
     audio_bytes: bytes,
     architectures: list[str] | None,
     duration_s: float | None = None,
+    response_formats: Collection[str] = DEFAULT_RESPONSE_FORMATS,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
         response_format,
         stream=False,
         endpoint_path=endpoint_path,
+        response_formats=response_formats,
     )
     if normalized_response_format == "text":
         return PlainTextResponse(text)
 
     adapter = resolve_speech_to_text_adapter(architectures)
+    if (
+        normalized_response_format in SEGMENT_RESPONSE_FORMATS
+        and not adapter.supports_segment_timestamps
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"response_format {normalized_response_format!r} requires a "
+                "segment-timestamp capability"
+            ),
+        )
     text = adapter.postprocess_text(text)
     if duration_s is None:
         duration_s = probe_audio_duration(audio_bytes)
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
-    if normalized_response_format == "verbose_json":
-        response = adapter.build_verbose_response(
-            text=text,
-            language=language,
-            audio_duration_s=duration_s,
-        )
+    if normalized_response_format in {"verbose_json", *SEGMENT_RESPONSE_FORMATS}:
+        if normalized_response_format in SEGMENT_RESPONSE_FORMATS:
+            try:
+                response = adapter.build_timestamped_response(
+                    text=text,
+                    language=language,
+                    audio_duration_s=duration_s,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            response = adapter.build_verbose_response(
+                text=text,
+                language=language,
+                audio_duration_s=duration_s,
+            )
         response.task = task
         response.usage = usage
+        if normalized_response_format == "srt":
+            return PlainTextResponse(segments_to_srt(response.segments))
+        if normalized_response_format == "vtt":
+            return PlainTextResponse(segments_to_vtt(response.segments))
         return JSONResponse(content=response.model_dump(exclude_none=True))
     return JSONResponse(
         content=TranscriptionResponse(text=text, usage=usage).model_dump(

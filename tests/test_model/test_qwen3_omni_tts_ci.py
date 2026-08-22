@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import requests
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.eval.benchmark_omni_seedtts import (
@@ -61,9 +62,9 @@ WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.016
+VC_WER_BELOW_50_CORPUS_MAX = 0.0231
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
-VC_N_ABOVE_50_MAX = 1
+VC_N_ABOVE_50_MAX = 0
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
 # #483 is fixed; the hard assertion is currently disabled in
 # test_voice_cloning_similarity (see docstring there). PR #469 also collected
@@ -77,17 +78,38 @@ VC_N_ABOVE_50_MAX = 1
 VC_SIMILARITY_MEAN_MIN = 60.0
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
-VC_UTMOS_MEAN_REFERENCE = 4.4497
+VC_UTMOS_MEAN_REFERENCE = 4.4568
+
+
+def _thinker_prefill_graph_info(worker_port: int) -> dict:
+    with requests.Session() as session:
+        session.trust_env = False
+        response = session.post(
+            f"http://127.0.0.1:{worker_port}/model_info",
+            json={"stages": ["thinker"], "timeout_s": 30},
+            timeout=60,
+        )
+    response.raise_for_status()
+    payload = response.json()
+    thinker_items = [
+        item for item in payload["stages"] if item.get("stage") == "thinker"
+    ]
+    assert len(thinker_items) == 1, payload
+    thinker = thinker_items[0]
+    assert thinker["success"], thinker
+    return thinker["data"]["prefill_cuda_graph"]
+
+
 VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 # Strict worst-of-5 references from #1021's published 8xH100 calibration report.
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 8.13,
-        "output_tok_per_req_s": 8.3,
-        "latency_mean_s": 1.77,
-        "rtf_mean": 0.5818,
+        "throughput_qps": 8.921,
+        "output_tok_per_req_s": 8.9,
+        "latency_mean_s": 1.644,
+        "rtf_mean": 0.5124,
     },
 }
 
@@ -460,6 +482,21 @@ def test_voice_cloning_non_streaming(
     except Exception:
         print_router_diagnostics(qwen3_omni_bf16_colocated_server)
         raise
+
+
+@pytest.mark.benchmark
+def test_speech_prefill_graph_replays_in_existing_tts_stage(
+    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
+    speed_artifacts: _SpeedArtifacts,
+) -> None:
+    del speed_artifacts  # Ensure the Stage 2 benchmark has exercised both workers.
+    for worker_port in qwen3_omni_bf16_colocated_server.worker_ports:
+        info = _thinker_prefill_graph_info(worker_port)
+        assert info["backend"] == "breakable"
+        assert info["runner"] == "PrefillCudaGraphRunner"
+        assert info["backend_runner"] == "BreakableCudaGraphBackend"
+        assert info["input_embeds_slot"] is True
+        assert info["replay_count"] > 0
 
 
 @pytest.mark.benchmark

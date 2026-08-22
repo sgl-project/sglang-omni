@@ -39,6 +39,7 @@ from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.utils import broadcast_pyobj
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
     emit_model_path_end as _emit_model_path_end,
@@ -63,7 +64,10 @@ from sglang_omni.scheduling.prefill_coalesce import (
     validate_prefill_coalesce_requests,
     validate_prefill_coalesce_wait_ms,
 )
+from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.vendor.sglang.parallel_state import create_parallel_state
 from sglang_omni.vendor.sglang.server_args import override_server_args
+from sglang_omni.vendor.sglang.signature import supported_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +253,9 @@ class OmniScheduler:
             self._request_build_backlog_limit = 0
             self._request_build_executor = None
         self._pending_request_builds: dict[str, tuple[Any, bool, Future]] = {}
+        self._pending_request_admissions: dict[
+            str, tuple[Any, bool, DeferredAdmission]
+        ] = {}
         self._backlogged_request_build_payloads: deque[Any] = deque()
         self._request_build_max_pending_observed = 0
 
@@ -584,7 +591,7 @@ class OmniScheduler:
         self.device_module = torch.get_device_module(self.device)
 
     def _init_upstream_scheduler_components(self) -> None:
-        """Install the scheduler components required by 0.5.15 hot paths."""
+        """Install the scheduler components required by upstream hot paths."""
         from sglang.srt.managers.scheduler_components.batch_result_processor import (
             SchedulerBatchResultProcessor,
         )
@@ -601,7 +608,7 @@ class OmniScheduler:
             SchedulerPoolStatsObserver,
         )
 
-        self.dp_attn_adapter = SchedulerDPAttnAdapter(
+        dp_attn_kwargs = dict(
             tp_group=self.tp_group,
             req_to_token_pool=self.req_to_token_pool,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
@@ -614,6 +621,13 @@ class OmniScheduler:
             spec_algorithm=self.spec_algorithm,
             get_require_mlp_sync=lambda: self.require_mlp_sync,
         )
+        dp_attn_kwargs.update(
+            supported_kwargs(
+                SchedulerDPAttnAdapter,
+                model_runner=self._model_runner,
+            )
+        )
+        self.dp_attn_adapter = SchedulerDPAttnAdapter(**dp_attn_kwargs)
         self.pool_stats_observer = SchedulerPoolStatsObserver(
             tree_cache=self.tree_cache,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
@@ -632,7 +646,12 @@ class OmniScheduler:
             get_running_batch=lambda: self.running_batch,
         )
         empty_queue = types.SimpleNamespace(queue=[], retracted_queue=[])
-        self.load_inquirer = SchedulerLoadInquirer(
+        self.total_prefill_uncached_tokens = 0
+        self.total_prefill_busy_us = 0
+        self.decode_moment_totals: list[float] = [0.0] * 6
+        self._prev_step = None
+        self._sched_idled = False
+        load_inquirer_kwargs = dict(
             disaggregation_mode=self.disaggregation_mode,
             ps=self.ps,
             server_args=self.server_args,
@@ -657,6 +676,17 @@ class OmniScheduler:
                 self.metrics_reporter.spec_total_num_forward_ct
             ),
         )
+        current_load_metrics = {
+            "get_total_prefill_uncached_tokens": (
+                lambda: self.total_prefill_uncached_tokens
+            ),
+            "get_total_prefill_busy_us": lambda: self.total_prefill_busy_us,
+            "get_decode_moment_totals": lambda: self.decode_moment_totals,
+        }
+        load_inquirer_kwargs.update(
+            supported_kwargs(SchedulerLoadInquirer, **current_load_metrics)
+        )
+        self.load_inquirer = SchedulerLoadInquirer(**load_inquirer_kwargs)
         self.output_streamer = types.SimpleNamespace(
             stream_output=self.stream_output,
             _stream_output_generation=lambda reqs, return_logprob, **_kwargs: self.stream_output(
@@ -680,8 +710,11 @@ class OmniScheduler:
             draft_worker=self.draft_worker,
             model_worker=self.model_worker,
             logprob_result_processor=SchedulerLogprobResultProcessor(
-                server_args=self.server_args,
-                model_config=self.model_config,
+                **supported_kwargs(
+                    SchedulerLogprobResultProcessor,
+                    server_args=self.server_args,
+                    model_config=self.model_config,
+                )
             ),
             output_streamer=self.output_streamer,
             abort_request=lambda request: self.abort(request.rid),
@@ -763,11 +796,13 @@ class OmniScheduler:
         self._refresh_upstream_parallel_state()
 
     def _refresh_upstream_parallel_state(self) -> None:
-        """Build the rank container expected by SGLang 0.5.15 methods."""
+        """Build the rank container expected by upstream scheduler methods."""
         from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 
-        self.ps = ParallelState(
+        self.ps = create_parallel_state(
+            ParallelState,
             tp_rank=self.tp_rank,
+            dcp_size=self.server_args.dcp_size,
             tp_size=self.tp_size,
             pp_rank=self.pp_rank,
             pp_size=self.pp_size,
@@ -783,8 +818,6 @@ class OmniScheduler:
             moe_ep_size=self.moe_ep_size,
             moe_dp_rank=self.moe_dp_rank,
             moe_dp_size=self.moe_dp_size,
-            # Added by 0.5.16; upstream sources it from server_args.
-            dcp_size=self.server_args.dcp_size,
             gpu_id=self.gpu_id,
         )
 
@@ -829,18 +862,23 @@ class OmniScheduler:
 
     def process_input_requests(self, recv_reqs):
         """Convert incoming payloads to SGLang Reqs and enqueue."""
+        self._drain_request_admission_results()
         self._drain_request_build_results()
-        recv_reqs, rejected_reqs = self._stage_request_build_payloads(recv_reqs)
-        for payload in rejected_reqs:
-            self._reject_request_build_backlog_overflow(payload)
+        recv_reqs, rejected = self._stage_request_build_payloads(recv_reqs)
+        for payload in rejected:
+            self._reject_queue_full(payload)
         for payload in recv_reqs:
             req_id = payload.request_id
             with self._request_admission_lock:
                 if (
                     req_id in self._aborted_request_ids
                     or req_id in self._pending_request_builds
+                    or req_id in self._pending_request_admissions
                 ):
                     continue
+            if self._waiting_queue_is_full():
+                self._reject_queue_full(payload)
+                continue
             ingress = self._pending_stream_ingress.get(req_id)
             buffered_chunks: list[Any] = []
             if ingress is not None and ingress.chunks:
@@ -870,6 +908,7 @@ class OmniScheduler:
                     if (
                         req_id in self._aborted_request_ids
                         or req_id in self._pending_request_builds
+                        or req_id in self._pending_request_admissions
                     ):
                         continue
                     future = request_build_executor.submit(
@@ -892,8 +931,23 @@ class OmniScheduler:
                 self._emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
-            self._enqueue_built_request(payload, pending_stream_done, req_data)
+            self._admit_or_defer_built_request(payload, pending_stream_done, req_data)
         self._drain_request_build_results()
+        self._drain_request_admission_results()
+
+    def request_build_queue_fits_workers(self) -> bool:
+        """True when pending+backlog still fits in the request-build pool.
+
+        Without a build executor the scheduler loop must stay free, so this
+        is False and admission stays deferred.
+        """
+        if self._request_build_executor is None:
+            return False
+        with self._request_admission_lock:
+            queued = len(self._pending_request_builds) + len(
+                self._backlogged_request_build_payloads
+            )
+        return queued <= self.request_build_max_workers
 
     def _run_request_builder(self, payload: Any, active_stage: str | None) -> Any:
         req_id = payload.request_id
@@ -912,8 +966,32 @@ class OmniScheduler:
 
     def _sleep_during_idle(self) -> None:
         with self._request_admission_lock:
-            request_build_pending = bool(self._pending_request_builds)
-        time.sleep(0.0001 if request_build_pending else 0.001)
+            request_admission_pending = bool(
+                self._pending_request_builds or self._pending_request_admissions
+            )
+        time.sleep(0.0001 if request_admission_pending else 0.001)
+
+    def _queued_admission_count(self) -> int:
+        return (
+            len(self.waiting_queue)
+            + len(self._pending_request_builds)
+            + len(self._pending_request_admissions)
+            + len(self._backlogged_request_build_payloads)
+            + len(self._deferred_request_payloads)
+        )
+
+    def _waiting_queue_is_full(self) -> bool:
+        if self.max_queued_requests is None:
+            return False
+        return self._queued_admission_count() >= int(self.max_queued_requests)
+
+    def _reject_queue_full(self, payload: Any) -> None:
+        req_id = payload.request_id
+        logger.warning(
+            "Rejecting request %s before build: %s", req_id, QueueFullError.MESSAGE
+        )
+        self._emit_request_error(req_id, QueueFullError())
+        self.abort(req_id)
 
     def _stage_request_build_payloads(
         self, recv_reqs: list[Any]
@@ -924,7 +1002,21 @@ class OmniScheduler:
         with self._request_admission_lock:
             backlog = self._backlogged_request_build_payloads
             pending_builds = self._pending_request_builds
+            pending_admissions = self._pending_request_admissions
             rejected: list[Any] = []
+            if self._waiting_queue_is_full():
+                while backlog:
+                    payload = backlog.popleft()
+                    if payload.request_id not in self._aborted_request_ids:
+                        rejected.append(payload)
+                rejected.extend(
+                    payload
+                    for payload in recv_reqs
+                    if payload.request_id not in self._aborted_request_ids
+                    and payload.request_id not in pending_builds
+                )
+                return [], rejected
+
             backlog_ids = {payload.request_id for payload in backlog}
             capacity = max(
                 0,
@@ -936,25 +1028,36 @@ class OmniScheduler:
                 payload = backlog.popleft()
                 req_id = payload.request_id
                 backlog_ids.discard(req_id)
-                if req_id in self._aborted_request_ids or req_id in pending_builds:
+                if (
+                    req_id in self._aborted_request_ids
+                    or req_id in pending_builds
+                    or req_id in pending_admissions
+                ):
                     continue
                 selected.append(payload)
                 selected_ids.add(req_id)
                 capacity -= 1
 
+            used = self._queued_admission_count() + len(selected)
+            queued_limit = self.max_queued_requests
             for payload in recv_reqs:
                 req_id = payload.request_id
                 if (
                     req_id in self._aborted_request_ids
                     or req_id in pending_builds
+                    or req_id in pending_admissions
                     or req_id in backlog_ids
                     or req_id in selected_ids
                 ):
+                    continue
+                if queued_limit is not None and used >= int(queued_limit):
+                    rejected.append(payload)
                     continue
                 if capacity > 0:
                     selected.append(payload)
                     selected_ids.add(req_id)
                     capacity -= 1
+                    used += 1
                     continue
                 if (
                     self._request_build_backlog_limit is not None
@@ -964,17 +1067,8 @@ class OmniScheduler:
                     continue
                 backlog.append(payload)
                 backlog_ids.add(req_id)
+                used += 1
             return selected, rejected
-
-    def _reject_request_build_backlog_overflow(self, payload: Any) -> None:
-        req_id = payload.request_id
-        error = RuntimeError(
-            "request-build backlog is full "
-            f"(backlog_limit={self._request_build_backlog_limit})"
-        )
-        logger.warning("Rejecting request %s before build: %s", req_id, error)
-        self._emit_request_error(req_id, error)
-        self.abort(req_id)
 
     def _drain_request_build_results(self) -> None:
         while True:
@@ -1002,10 +1096,81 @@ class OmniScheduler:
             with self._request_admission_lock:
                 if req_id in self._aborted_request_ids:
                     continue
-                self._enqueue_built_request(
+                self._admit_or_defer_built_request(
                     payload,
                     pending_stream_done,
                     req_data,
+                    request_admission_lock_held=True,
+                )
+
+    def _admit_or_defer_built_request(
+        self,
+        payload: Any,
+        pending_stream_done: bool,
+        result: Any,
+        *,
+        request_admission_lock_held: bool = False,
+    ) -> None:
+        if not isinstance(result, DeferredAdmission):
+            self._enqueue_built_request(
+                payload,
+                pending_stream_done,
+                result,
+                request_admission_lock_held=request_admission_lock_held,
+            )
+            return
+
+        req_id = payload.request_id
+
+        def admit_or_hold() -> None:
+            if req_id in self._aborted_request_ids:
+                return
+            if not result.ready.done():
+                self._pending_request_admissions[req_id] = (
+                    payload,
+                    pending_stream_done,
+                    result,
+                )
+                return
+            try:
+                result.ready.result()
+            except Exception as exc:
+                logger.exception(
+                    "OmniScheduler: deferred request admission failed for %s",
+                    req_id,
+                )
+                self._emit_request_error(req_id, exc)
+                self.abort(req_id)
+                return
+            self._enqueue_built_request(
+                payload,
+                pending_stream_done,
+                result.value,
+                request_admission_lock_held=True,
+            )
+
+        if request_admission_lock_held:
+            admit_or_hold()
+        else:
+            with self._request_admission_lock:
+                admit_or_hold()
+
+    def _drain_request_admission_results(self) -> None:
+        with self._request_admission_lock:
+            ready_request_ids = [
+                req_id
+                for req_id, (_, _, deferred) in self._pending_request_admissions.items()
+                if deferred.ready.done()
+            ]
+            for req_id in ready_request_ids:
+                pending = self._pending_request_admissions.pop(req_id, None)
+                if pending is None or req_id in self._aborted_request_ids:
+                    continue
+                payload, pending_stream_done, deferred = pending
+                self._admit_or_defer_built_request(
+                    payload,
+                    pending_stream_done,
+                    deferred,
                     request_admission_lock_held=True,
                 )
 
@@ -1044,6 +1209,18 @@ class OmniScheduler:
 
         def enqueue_if_live() -> None:
             if req_id in self._aborted_request_ids:
+                return
+            # note (guozhihao): Priority defaulting must run before the queued-limit abort.
+            if not self._set_or_validate_priority(req):
+                return
+            if self._abort_on_queued_limit(req):
+                logger.warning(
+                    "Rejecting request %s: waiting queue is full "
+                    "(max_queued_requests=%s, waiting=%s)",
+                    req_id,
+                    self.max_queued_requests,
+                    len(self.waiting_queue),
+                )
                 return
             _emit_event(
                 request_id=req_id,
@@ -1183,6 +1360,7 @@ class OmniScheduler:
             with self._request_admission_lock:
                 build_work_pending = bool(
                     self._pending_request_builds
+                    or self._pending_request_admissions
                     or self._backlogged_request_build_payloads
                 )
             if not build_work_pending and not (
@@ -1210,6 +1388,14 @@ class OmniScheduler:
             self._handle_batch_failure(batch, exc)
             return _FAILED_BATCH_RESULT
 
+    def _stamp_batch_launch(self, batch) -> None:
+        """Mirror upstream per-forward bookkeeping for custom runner paths."""
+        self.forward_ct += 1
+        batch.forward_iter = self.forward_ct
+        batch.launch_ts = time.monotonic()
+        batch.after_idle_gap = self._sched_idled
+        self._sched_idled = False
+
     def _run_batch(self, batch, pp_proxy_tensors=None):
         """Run a batch through the model runner.
 
@@ -1221,11 +1407,7 @@ class OmniScheduler:
         """
         del pp_proxy_tensors
         self._emit_prefill_start_for_batch(batch)
-        # Mirror upstream run_batch's per-forward counter: OmniScheduler
-        # overrides run_batch, so without this forward_ct stays 0 and
-        # SGLANG_TEST_RETRACT fires every step.
-        self.forward_ct += 1
-        batch.forward_iter = self.forward_ct
+        self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
         mr_output = self._model_runner.execute(sched_output)
         self._emit_prefill_end_for_batch(batch)
@@ -1309,10 +1491,7 @@ class OmniScheduler:
         payload), without waiting. Returns ``(sched_output, pending_step)``; the
         caller holds the pending step (launch-first keeps two steps in flight)."""
         self._emit_prefill_start_for_batch(batch)
-        # One forward per launch; mirror upstream run_batch's per-forward
-        # counter (the matching resolve does no forward, so it must not count).
-        self.forward_ct += 1
-        batch.forward_iter = self.forward_ct
+        self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
         pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
@@ -1567,6 +1746,7 @@ class OmniScheduler:
             try:
                 self._shutdown_request_build_executor()
             finally:
+                self._discard_pending_request_admissions()
                 self._shutdown_resources()
 
     def event_loop(self) -> None:
@@ -1574,7 +1754,12 @@ class OmniScheduler:
 
     def stop(self) -> None:
         self._running = False
+        self._discard_pending_request_admissions()
         self._shutdown_resources()
+
+    def _discard_pending_request_admissions(self) -> None:
+        with self._request_admission_lock:
+            self._pending_request_admissions.clear()
 
     def _shutdown_resources(self) -> None:
         with self._shutdown_lock:
@@ -1612,6 +1797,7 @@ class OmniScheduler:
             pending = self._pending_request_builds.pop(request_id, None)
             if pending is not None:
                 pending[2].cancel()
+            self._pending_request_admissions.pop(request_id, None)
             if self._backlogged_request_build_payloads:
                 retained = [
                     payload
@@ -1734,6 +1920,7 @@ class OmniScheduler:
             info.update(self.model_worker.model_info())
         with self._request_admission_lock:
             request_build_pending = len(self._pending_request_builds)
+            request_admission_pending = len(self._pending_request_admissions)
             request_build_backlog = len(self._backlogged_request_build_payloads)
             waiting_queue_size = len(self.waiting_queue)
         info.update(
@@ -1744,6 +1931,7 @@ class OmniScheduler:
                 "waiting_queue_size": waiting_queue_size,
                 "request_build_workers": self.request_build_max_workers,
                 "request_build_pending": request_build_pending,
+                "request_admission_pending": request_admission_pending,
                 "request_build_max_pending": self.request_build_max_pending,
                 "request_build_backlog": request_build_backlog,
                 "request_build_max_pending_observed": (
@@ -2006,6 +2194,8 @@ class OmniScheduler:
         with self._request_admission_lock:
             if self._pending_request_builds:
                 request_ids.update(self._pending_request_builds.keys())
+            if self._pending_request_admissions:
+                request_ids.update(self._pending_request_admissions.keys())
             if self._backlogged_request_build_payloads:
                 request_ids.update(
                     payload.request_id
@@ -2157,6 +2347,7 @@ class OmniScheduler:
                 if result is not _FAILED_BATCH_RESULT:
                     self.process_batch_result(batch, result)
             else:
+                self._sched_idled = True
                 self.self_check_during_idle()
                 self._sleep_during_idle()
 
@@ -2251,34 +2442,18 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
 
-    def _free_overrun_step_slots(self, out_cache_loc, drop_indices) -> None:
-        """Free the per-step decode KV slot for rows whose request finished or
-        retracted in a prior step (the lookahead overrun): ``prepare_for_decode``
-        allocated it but ``cache_finished_req`` truncates below it, so it leaks.
-
-        Only under RadixCache + page_size=1; ChunkCache/paged already free the slot
-        with the request, so compensating here would double-free — hence the gate.
-        """
-        if not drop_indices:
-            return
-        if self.page_size != 1 or self.server_args.disable_radix_cache:
-            return
-        if out_cache_loc is None:
-            logger.warning("overrun step-slot free skipped: out_cache_loc is None")
-            return
-        assert max(drop_indices) < out_cache_loc.numel(), (
-            f"overrun drop index {max(drop_indices)} out of range "
-            f"({out_cache_loc.numel()} step slots)"
-        )
-        idx = torch.tensor(drop_indices, dtype=torch.long, device=out_cache_loc.device)
-        self.token_to_kv_pool_allocator.free(out_cache_loc[idx])
-
     def _drop_stale_overrun(self, batch):
         """Drop reqs finished OR retracted by the just-completed drain from the
         stale fast-path batch, so run_batch does not forward/finalize them again
         (double-free of already-freed KV). Returns the filtered batch, or None if
         it empties. Mirrors the finished/is_retracted pre-drop in
         _resolve_and_process; the fast path previously dropped only finished.
+
+        The dropped rows' step slots need no compensating free: the batch's
+        prepare already advanced req.kv_committed_len over them, and the
+        drain's release_kv_cache frees or caches every committed slot, so
+        a second free here would put a slot on the free list that the radix
+        tree (or another request) still owns.
         """
         if batch is None or not batch.reqs:
             return batch
@@ -2305,12 +2480,6 @@ class OmniScheduler:
             starts = [0] * len(lens)
             for i in range(1, len(lens)):
                 starts[i] = starts[i - 1] + lens[i - 1]
-            drop_tokens = [
-                t
-                for i, d in enumerate(drop)
-                if d
-                for t in range(starts[i], starts[i] + lens[i])
-            ]
             keep_tokens = [
                 t for i in keep for t in range(starts[i], starts[i] + lens[i])
             ]
@@ -2324,7 +2493,6 @@ class OmniScheduler:
             prefix_lens = batch.prefix_lens
             extend_logprob_start_lens = batch.extend_logprob_start_lens
             lp_token_ids = batch.extend_input_logprob_token_ids
-            self._free_overrun_step_slots(out_cache_loc, drop_tokens)
             batch.filter_batch(keep_indices=keep)
             if input_ids is not None:
                 batch.input_ids = input_ids[keep_tokens]
@@ -2358,9 +2526,6 @@ class OmniScheduler:
                     ]
                     batch.extend_input_logprob_token_ids = lp_token_ids[keep_lp_tokens]
         else:
-            self._free_overrun_step_slots(
-                out_cache_loc, [i for i, d in enumerate(drop) if d]
-            )
             batch.filter_batch(keep_indices=keep)
             if out_cache_loc is not None:
                 batch.out_cache_loc = out_cache_loc[keep]
@@ -2450,6 +2615,7 @@ class OmniScheduler:
                     if result is not _FAILED_BATCH_RESULT:
                         self.process_batch_result(batch, result)
                 else:
+                    self._sched_idled = True
                     self.self_check_during_idle()
                     self._sleep_during_idle()
 

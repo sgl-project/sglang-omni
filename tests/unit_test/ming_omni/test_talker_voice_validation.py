@@ -720,6 +720,7 @@ def _stub_for_generate(talker: MingOmniTalker, num_steps_before_stop: int):
     talker.sampler_pool = SimpleNamespace(execute=_execute)
 
 
+@pytest.mark.accelerator
 def test_generate_emits_final_true_when_stop_token_fires(monkeypatch):
     """Stop-token exit terminates with last_chunk=True."""
     import torch as _torch
@@ -750,6 +751,7 @@ def test_generate_emits_final_true_when_stop_token_fires(monkeypatch):
     assert all(flag is False for flag in flags[:-1])
 
 
+@pytest.mark.accelerator
 def test_generate_emits_final_true_when_duration_cap_hits(monkeypatch):
     """Loop exit via effective_max_decode_steps ceiling must still emit a
     last_chunk=True so the streaming VAE flushes its tail."""

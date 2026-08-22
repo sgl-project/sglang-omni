@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapters between stage objects and data-plane refs."""
+
 from __future__ import annotations
 
 import base64
@@ -264,6 +265,9 @@ def serialize_inline_stream_chunk(
 ) -> dict[str, Any]:
     if not should_use_inline_stream_chunk(data, metadata):
         raise ValueError("stream chunk is not inline eligible")
+    # Pickle preserves a tensor view's backing storage. Materialize an owning
+    # tensor so the control-plane payload is bounded by the eligibility check.
+    data = data.detach().clone(memory_format=torch.contiguous_format)
     return {
         "_type": _INLINE_STREAM_CHUNK_TYPE,
         "version": 1,
@@ -484,10 +488,12 @@ async def write_stream_chunk(
     target_stage: str,
     from_stage: str,
     chunk_id: int,
+    object_id: str | None = None,
     metadata: dict | None = None,
     transport: TransportKind,
 ) -> tuple[DataRef, list[Any]]:
-    object_id = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
+    if object_id is None:
+        object_id = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
     data_ref, op = await write_tensor(
         relay,
         object_id,
@@ -539,6 +545,7 @@ async def send_stream_signal(
     from_stage: str,
     is_done: bool = False,
     error: str | None = None,
+    replica_bindings: dict[str, int] | None = None,
 ) -> None:
     await control_plane.send_to_stage(
         target_stage,
@@ -550,6 +557,7 @@ async def send_stream_signal(
             data_ref=None,
             is_done=is_done,
             error=error,
+            replica_bindings=replica_bindings,
         ),
     )
 

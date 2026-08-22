@@ -11,10 +11,10 @@ from sglang.srt.model_executor.forward_context import (
     has_forward_context,
 )
 
-from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 from sglang_omni.models.ming_tts.model_runner import (
     MingTTSModelRunner,
     MingTTSTPStepUpdate,
+    _MingTTSRequestState,
 )
 
 
@@ -62,175 +62,135 @@ def test_ming_tts_follower_rejects_tail_failure() -> None:
         runner._apply_follower_step_update(update, [SimpleNamespace()])
 
 
-def test_ming_tts_abort_callback_resets_runner_state() -> None:
+def _run_ming_tts_tail_step(
+    *,
+    stop_prob: float,
+    generation_steps: int,
+    max_new_tokens: int,
+    is_streaming: bool,
+) -> tuple[SimpleNamespace, _MingTTSRequestState, MingTTSTPStepUpdate]:
     runner = object.__new__(MingTTSModelRunner)
-    runner._request_states = {"req-ming-tts": object()}
-    builder = object.__new__(MingTtsEngineBuilder)
-    builder._model_runner = runner
-
-    abort_callback = builder.make_abort_callback()
-    abort_callback("req-ming-tts")
-    abort_callback("req-ming-tts")
-
-    assert runner._request_states == {}
-
-
-def test_ming_sparse_moe_tp_collective_uses_forward_flags(monkeypatch) -> None:
-    from sglang.srt.runtime_context import get_forward
-
-    from sglang_omni.models.ming_tts import sglang_model
-
-    helper_calls: list[tuple[bool, bool, bool]] = []
-
-    def strict_0516_helper(*, is_tp_path: bool) -> bool:
-        forward = get_forward()
-        helper_calls.append(
-            (
-                is_tp_path,
-                forward.fuse_mlp_allreduce,
-                forward.mlp_reduce_scatter,
-            )
-        )
-        return forward.fuse_mlp_allreduce or forward.mlp_reduce_scatter
-
-    all_reduce_calls: list[torch.Tensor] = []
-
-    def fake_all_reduce(hidden_states: torch.Tensor) -> torch.Tensor:
-        all_reduce_calls.append(hidden_states.clone())
-        return hidden_states + 100
-
-    monkeypatch.setattr(
-        sglang_model,
-        "should_skip_post_experts_all_reduce",
-        strict_0516_helper,
+    runner.model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4)),
+        run_tail_step=lambda _inputs: SimpleNamespace(
+            sampled=torch.tensor([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]),
+            feedback_embeddings=torch.tensor([[1.0, 2.0, 3.0, 4.0]]),
+            stop_prob=torch.tensor([stop_prob]),
+        ),
     )
-    monkeypatch.setattr(
-        sglang_model,
-        "tensor_model_parallel_all_reduce",
-        fake_all_reduce,
+    request_state = _MingTTSRequestState(latent_history=torch.zeros(1, 2, 3))
+    runner._request_states = {"req-ming-tts": request_state}
+    request = SimpleNamespace(
+        request_id="req-ming-tts",
+        data=SimpleNamespace(
+            generation_steps=generation_steps,
+            max_new_tokens=max_new_tokens,
+            is_streaming=is_streaming,
+            pending_stream_patch=None,
+            generated_latents=None,
+            stop_step=None,
+            audio_patch_token_id=7,
+            audio_eos_token_id=8,
+            state=SimpleNamespace(cfg=2.0, sigma=0.25, temperature=0.0),
+        ),
     )
-    block = SimpleNamespace(
-        tp_size=2,
-        shared_experts=None,
-        gate=lambda hidden_states: hidden_states,
-        topk=lambda _hidden_states, _router_logits: object(),
-        experts=lambda hidden_states, _topk_output: hidden_states + 1,
+    step_update = MingTTSTPStepUpdate.empty_for_broadcast(
+        batch_size=1,
+        hidden_size=4,
+        device=torch.device("cpu"),
+        feedback_dtype=torch.float32,
     )
-    hidden_states = torch.tensor([[1.0, 2.0]])
 
-    with get_forward().scoped(
-        fuse_mlp_allreduce=False,
-        mlp_reduce_scatter=False,
-    ):
-        ordinary = sglang_model.MingBailingMoeSparseMoeBlock.forward(
-            block,
-            hidden_states,
-        )
-    with get_forward().scoped(
-        fuse_mlp_allreduce=True,
-        mlp_reduce_scatter=False,
-    ):
-        fused = sglang_model.MingBailingMoeSparseMoeBlock.forward(
-            block,
-            hidden_states,
-        )
-    with get_forward().scoped(
-        fuse_mlp_allreduce=False,
-        mlp_reduce_scatter=True,
-    ):
-        reduce_scattered = sglang_model.MingBailingMoeSparseMoeBlock.forward(
-            block,
-            hidden_states,
-        )
+    runner._run_entry_tail_step(torch.ones(1, 1, 4), [request], step_update)
 
-    assert torch.equal(ordinary, hidden_states + 101)
-    assert torch.equal(fused, hidden_states + 1)
-    assert torch.equal(reduce_scattered, hidden_states + 1)
-    assert len(all_reduce_calls) == 1
-    assert helper_calls == [
-        (True, False, False),
-        (True, True, False),
-        (True, False, True),
-    ]
+    return request.data, request_state, step_update
 
 
-@pytest.mark.parametrize(
-    ("fuse_mlp_allreduce", "mlp_reduce_scatter", "postprocess_calls"),
-    [(True, False, 0), (False, True, 1)],
-)
-def test_ming_decoder_scopes_mlp_collective_flags(
-    fuse_mlp_allreduce: bool,
-    mlp_reduce_scatter: bool,
-    postprocess_calls: int,
-) -> None:
-    from sglang.srt.runtime_context import get_forward
-
-    from sglang_omni.models.ming_tts.sglang_model import MingBailingMoeDecoderLayer
-
-    class FakeCommunicator:
-        def __init__(self) -> None:
-            self.postprocess_calls = 0
-
-        def prepare_attn_and_capture_last_layer_outputs(
-            self,
-            hidden_states,
-            residual,
-            forward_batch,
-        ):
-            del forward_batch
-            return hidden_states, residual
-
-        def prepare_mlp(self, *, hidden_states, residual, forward_batch):
-            del forward_batch
-            return hidden_states, residual
-
-        def should_fuse_mlp_allreduce_with_next_layer(self, forward_batch):
-            del forward_batch
-            return fuse_mlp_allreduce
-
-        def should_use_reduce_scatter(self, forward_batch):
-            del forward_batch
-            return mlp_reduce_scatter
-
-        def postprocess_layer(self, hidden_states, residual, forward_batch):
-            del forward_batch
-            self.postprocess_calls += 1
-            return hidden_states, residual
-
-    seen_flags: list[tuple[bool, bool]] = []
-
-    def mlp(hidden_states, forward_batch):
-        del forward_batch
-        forward = get_forward()
-        seen_flags.append((forward.fuse_mlp_allreduce, forward.mlp_reduce_scatter))
-        return hidden_states.clone()
-
-    communicator = FakeCommunicator()
-    layer = SimpleNamespace(
-        layer_communicator=communicator,
-        attention=lambda _positions, hidden_states, _forward_batch: hidden_states,
-        mlp=mlp,
+def test_ming_tts_streaming_length_limit_marks_terminal_patch() -> None:
+    data, request_state, step_update = _run_ming_tts_tail_step(
+        stop_prob=0.0,
+        generation_steps=3,
+        max_new_tokens=4,
+        is_streaming=True,
     )
-    hidden_states = torch.ones((1, 2))
 
-    with get_forward().scoped(
-        fuse_mlp_allreduce=False,
-        mlp_reduce_scatter=False,
-    ):
-        output, _ = MingBailingMoeDecoderLayer.forward(
-            layer,
-            positions=torch.tensor([0]),
-            hidden_states=hidden_states,
-            forward_batch=object(),
-            residual=None,
-        )
-        assert get_forward().fuse_mlp_allreduce is False
-        assert get_forward().mlp_reduce_scatter is False
+    assert data.pending_stream_patch is not None
+    assert data.pending_stream_patch.is_last is True
+    assert torch.equal(
+        data.pending_stream_patch.latent,
+        torch.tensor([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]),
+    )
+    assert data.stop_step is None
+    assert request_state.generated_latents == []
+    assert request_state.feedback_embeddings == []
+    assert data.generated_latents is None
+    assert step_update.next_token_ids.tolist() == [7]
 
-    assert seen_flags == [(fuse_mlp_allreduce, mlp_reduce_scatter)]
-    assert communicator.postprocess_calls == postprocess_calls
-    assert getattr(output, "_sglang_needs_allreduce_fusion", False) is (
-        fuse_mlp_allreduce
+
+def test_ming_tts_streaming_stop_head_marks_terminal_patch() -> None:
+    data, request_state, step_update = _run_ming_tts_tail_step(
+        stop_prob=0.9,
+        generation_steps=4,
+        max_new_tokens=256,
+        is_streaming=True,
+    )
+
+    assert data.pending_stream_patch is not None
+    assert data.pending_stream_patch.is_last is True
+    assert data.stop_step == 4
+    assert request_state.generated_latents == []
+    assert data.generated_latents is None
+    assert step_update.next_token_ids.tolist() == [8]
+
+
+def test_ming_tts_streaming_mid_generation_patch_is_not_terminal() -> None:
+    data, request_state, step_update = _run_ming_tts_tail_step(
+        stop_prob=0.1,
+        generation_steps=4,
+        max_new_tokens=256,
+        is_streaming=True,
+    )
+
+    assert data.pending_stream_patch is not None
+    assert data.pending_stream_patch.is_last is False
+    assert len(request_state.feedback_embeddings) == 1
+    assert torch.equal(
+        request_state.latent_history,
+        torch.tensor([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]),
+    )
+    assert step_update.feedback_mask.tolist() == [1]
+    assert step_update.feedback_embeddings.tolist() == [[1.0, 2.0, 3.0, 4.0]]
+    assert step_update.next_token_ids.tolist() == [7]
+
+
+def test_ming_tts_streaming_stop_head_is_gated_until_step_four() -> None:
+    data, _request_state, step_update = _run_ming_tts_tail_step(
+        stop_prob=0.9,
+        generation_steps=3,
+        max_new_tokens=256,
+        is_streaming=True,
+    )
+
+    assert data.pending_stream_patch is not None
+    assert data.pending_stream_patch.is_last is False
+    assert step_update.next_token_ids.tolist() == [7]
+
+
+def test_ming_tts_non_streaming_step_buffers_latents_without_stream_patch() -> None:
+    data, request_state, _step_update = _run_ming_tts_tail_step(
+        stop_prob=0.9,
+        generation_steps=4,
+        max_new_tokens=256,
+        is_streaming=False,
+    )
+
+    assert data.pending_stream_patch is None
+    assert len(request_state.generated_latents) == 1
+    assert data.stop_step == 4
+    assert data.generated_latents.dtype == torch.float32
+    assert torch.equal(
+        data.generated_latents,
+        torch.tensor([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]),
     )
 
 
@@ -262,3 +222,53 @@ def test_prefill_forward_publishes_sglang_forward_context() -> None:
 
     assert seen == [attn_backend]
     assert result.logits_output == "logits"
+
+
+def test_ming_tts_prefill_replays_prompt_and_generated_feedback() -> None:
+    def fail_token_embedding(_input_ids: torch.Tensor) -> torch.Tensor:
+        raise AssertionError("continuous rows must not use token embeddings")
+
+    runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
+    runner.model = SimpleNamespace(
+        _decode_input_embedding=SimpleNamespace(
+            weight=torch.empty((1, 2), dtype=torch.float32)
+        ),
+        get_input_embeddings=lambda: fail_token_embedding,
+    )
+    runner._request_states = {
+        "req-ming-tts": _MingTTSRequestState(
+            prefill_input_embeds=torch.tensor(
+                [[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]]
+            ),
+            feedback_embeddings=[
+                torch.tensor([40.0, 41.0]),
+                torch.tensor([50.0, 51.0]),
+            ],
+        )
+    }
+    request = SimpleNamespace(
+        request_id="req-ming-tts",
+        data=SimpleNamespace(
+            input_ids=torch.tensor([1, 2, 3]),
+            req=SimpleNamespace(
+                prefix_indices=torch.empty(0, dtype=torch.long),
+                extend_range=SimpleNamespace(length=5),
+            ),
+        ),
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
+
+    actual = runner._build_prefill_input_embeds(forward_batch, [request])
+
+    assert torch.equal(
+        actual,
+        torch.tensor(
+            [
+                [10.0, 11.0],
+                [20.0, 21.0],
+                [30.0, 31.0],
+                [40.0, 41.0],
+                [50.0, 51.0],
+            ]
+        ),
+    )

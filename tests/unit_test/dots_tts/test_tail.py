@@ -377,7 +377,7 @@ def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
     assert mods.dtype == torch.bfloat16
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")

@@ -13,7 +13,6 @@ import torch
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
-from sglang_omni.config.topology import build_process_topology_plan
 from sglang_omni.models.moss_tts_local.audio_tokenizer import MossTTSLocalAudioTokenizer
 from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalColocatedPipelineConfig,
@@ -41,6 +40,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 N_VQ = 12
 
@@ -463,15 +463,11 @@ def test_pipeline_stage_wiring():
     assert placement.stages["vocoder"].gpu_ids == (0,)
     assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(1.0)
     assert placement.gpus[0].missing_fraction_stage_names == ()
-    topology = build_process_topology_plan(config, placement)
+    topology = build_compiled_process_topology(config)
     assert topology.stage_to_process["preprocessing"] == "pipeline"
     assert topology.stage_to_process["tts_engine"] == "pipeline"
     assert topology.stage_to_process["vocoder"] == "vocoder"
-    assert config.process_safe_edges() == frozenset({("tts_engine", "vocoder")})
-    edge_resources = config.process_edge_resources()[("tts_engine", "vocoder")]
-    assert edge_resources["preprocessing"] == pytest.approx(0.15)
-    assert edge_resources["tts_engine"] == pytest.approx(0.67)
-    assert edge_resources["vocoder"] == pytest.approx(0.18)
+    assert config.process_local_edges() == frozenset({("preprocessing", "tts_engine")})
 
     colocated = MossTTSLocalColocatedPipelineConfig(
         model_path="OpenMOSS-Team/moss-local-test"
@@ -500,9 +496,7 @@ def test_pipeline_stage_wiring():
     # The split variant carries no per-stage GPU budgets, so its vocoder stays in
     # the shared pipeline process; its declared topology must still validate.
     assert split_stages["vocoder"].process == "pipeline"
-    split_topology = build_process_topology_plan(
-        split, build_stage_placement_plan(split)
-    )
+    split_topology = build_compiled_process_topology(split)
     assert [(group.name, group.stage_names) for group in split_topology.groups] == [
         ("pipeline", ("preprocessing", "tts_engine", "vocoder"))
     ]
@@ -1194,6 +1188,7 @@ def test_build_generation_kwargs_precedence():
     assert kwargs["audio_temperature"] == 1.2
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_decode_frame_graphed_matches_branchless_eager():
     """The captured frame graph must reproduce the branchless eager decode."""
@@ -1727,6 +1722,7 @@ def test_cached_reference_encoder_data_uri_duration_gate():
     assert len(enc._service._inflight) == 0
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="needs CUDA: post1 multinomial_with_seed is a Triton kernel (no CPU backend)",

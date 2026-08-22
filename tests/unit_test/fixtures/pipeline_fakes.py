@@ -8,7 +8,10 @@ and Relay. They intentionally avoid real ZMQ, CUDA, SGLang, and relay backends.
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
+import os
 import queue
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -259,6 +262,12 @@ def runtime_factory_without_total_budget(
     }
 
 
+def runtime_factory_with_device(
+    *, model_path: str, device: Any = "cuda:0"
+) -> dict[str, Any]:
+    return {"model_path": model_path, "device": device}
+
+
 def make_scheduler_accepting_model_path(
     model_path: str, **kwargs: Any
 ) -> FakeScheduler:
@@ -273,6 +282,100 @@ def make_scheduler_accepting_gpu_id(gpu_id: int = -1, **kwargs: Any) -> FakeSche
     scheduler.gpu_id = gpu_id
     scheduler.factory_kwargs = kwargs
     return scheduler
+
+
+class ReplicaProcessProbeScheduler:
+    """Exercise payload and stream routing inside a replicated OS process."""
+
+    def __init__(self, marker: str, *, emit_stream: bool = False) -> None:
+        self.inbox: queue.Queue[IncomingMessage] = queue.Queue()
+        self.outbox: queue.Queue[OutgoingMessage] = queue.Queue()
+        self.requires_tp_work_fanout = True
+        self._marker = marker
+        self._emit_stream = emit_stream
+        self._running = False
+        self._stream_chunks: dict[str, list[Any]] = {}
+        self._stream_done: set[str] = set()
+
+    def start(self) -> None:
+        self._running = True
+        while self._running:
+            try:
+                msg = self.inbox.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if msg.type == "stream_chunk":
+                self._stream_chunks.setdefault(msg.request_id, []).append(msg.data.data)
+                continue
+            if msg.type == "stream_done":
+                self._stream_done.add(msg.request_id)
+                continue
+            if msg.type != "new_request":
+                continue
+            try:
+                self._handle_request(msg)
+            except Exception as exc:
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=msg.request_id,
+                        type="error",
+                        data=exc,
+                    )
+                )
+
+    def _handle_request(self, msg: IncomingMessage) -> None:
+        payload = msg.data
+        process_name = multiprocessing.current_process().name
+        process_id = os.getpid()
+        if self._emit_stream:
+            payload.data[f"{self._marker}_process"] = process_name
+            payload.data[f"{self._marker}_pid"] = process_id
+            payload.data["producer_payload_id"] = id(payload)
+            payload.data["_local_marker"] = threading.Lock()
+            self.outbox.put(
+                OutgoingMessage(
+                    request_id=msg.request_id,
+                    type="stream",
+                    data={"process": process_name, "pid": process_id},
+                )
+            )
+        else:
+            chunks = self._stream_chunks.pop(msg.request_id, [])
+            if len(chunks) != 1 or msg.request_id not in self._stream_done:
+                raise AssertionError(
+                    f"request {msg.request_id} did not receive one completed stream"
+                )
+            self._stream_done.discard(msg.request_id)
+            local_marker = payload.data.pop("_local_marker", None)
+            if local_marker is None:
+                raise AssertionError("same-process payload lost its local marker")
+            payload.data[f"{self._marker}_process"] = process_name
+            payload.data[f"{self._marker}_pid"] = process_id
+            payload.data["same_payload_object"] = payload.data[
+                "producer_payload_id"
+            ] == id(payload)
+            payload.data["stream_process"] = chunks[0]["process"]
+            payload.data["stream_pid"] = chunks[0]["pid"]
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=msg.request_id,
+                type="result",
+                data=payload,
+            )
+        )
+
+    def stop(self) -> None:
+        self._running = False
+
+    def abort(self, request_id: str) -> None:
+        self._stream_chunks.pop(request_id, None)
+        self._stream_done.discard(request_id)
+
+
+def make_replica_process_probe_scheduler(
+    *, marker: str, emit_stream: bool = False
+) -> ReplicaProcessProbeScheduler:
+    return ReplicaProcessProbeScheduler(marker, emit_stream=emit_stream)
 
 
 def identity_route(request_id: str, output: Any) -> str:

@@ -858,6 +858,11 @@ class Qwen3OmniTalker(nn.Module):
             isinstance(layer.self_attn.rotary_emb, MRotaryEmbedding)
             for layer in self.model.layers
         )
+        # The prefill CUDA graph runner picks capture-time positions by probing
+        # this; if it disagrees with forward() below, MRotaryEmbedding takes its
+        # out-of-place path and the rebuilt q/k do not survive a graph-segment
+        # boundary, leaving attention to run on zeros.
+        self.is_mrope_enabled = self._uses_mrope
         self.codec_head = ReplicatedLinear(
             config.text_config.hidden_size,
             config.text_config.vocab_size,
@@ -1221,6 +1226,7 @@ class Qwen3OmniTalker(nn.Module):
         input_deepstack_embeds: Optional[torch.Tensor] = None,
         input_deepstack_mask: Optional[torch.Tensor] = None,
         input_embeds_are_projected: bool = False,
+        omni_prefill_rids: Optional[list[str] | tuple[str, ...]] = None,
     ):
         """Forward pass through the talker MoE backbone.
 
@@ -1236,10 +1242,13 @@ class Qwen3OmniTalker(nn.Module):
             input_deepstack_embeds: optional layer-N thinker hidden states
             input_deepstack_mask: positions that should use hidden_projection
             input_embeds_are_projected: whether `input_embeds` is already in talker space
+            omni_prefill_rids: request ids SGLModelRunner forwards alongside the
+                Omni prefill sidecar; the talker keys nothing off them
 
         Returns:
             LogitsProcessorOutput with codec logits
         """
+        del omni_prefill_rids
         if forward_batch.forward_mode.is_extend():
             self.invalidate_decode_buffers()
 

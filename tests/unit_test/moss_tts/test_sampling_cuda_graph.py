@@ -127,6 +127,15 @@ def test_engine_builder_uses_backbone_capture_buckets() -> None:
     assert calls == [([1, 2, 4], True)]
 
 
+def test_engine_builder_allows_breakable_prefill_as_an_opt_in() -> None:
+    builder = MossTtsEngineBuilder()
+
+    assert builder.supports_breakable_prefill_cuda_graph is True
+    assert "cuda_graph_backend_prefill" not in builder.generation_defaults(
+        dtype="bfloat16"
+    )
+
+
 def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
     calls = []
 
@@ -288,6 +297,7 @@ def _request_data(
     )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     device = torch.device("cuda")
@@ -363,6 +373,7 @@ def test_fixed_shape_sampling_matches_current_compacted_eager() -> None:
     assert torch.equal(eager_state, fixed.next_delay_state)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
     device = torch.device("cuda")

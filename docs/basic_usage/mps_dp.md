@@ -103,6 +103,8 @@ A model is either **supported** or **not supported**; there is no intermediate t
 | Qwen3-ASR (`Qwen3ASRForConditionalGeneration`) | Supported | `qwen3_asr_h100_dp2.yaml` | none identified | all registered tensors (3.83 GiB) |
 | FunASR Nano (`FunAsrNanoForConditionalGeneration`) | Supported | `fun_asr_h100_dp2.yaml` | none identified | all registered tensors (1.57 GiB) |
 
+Validation update for #1401 Part 1: at code revision [`5e7a8c7`](https://github.com/sgl-project/sglang-omni/pull/1557/commits/5e7a8c717b9ec85b1f72aa7d3444f9f5ff7ec72e), MOSS TTS local and MOSS TTS delay passed `N=2`, `WEIGHT_SHARE=1` health, MPS attachment, leader/follower byte-identity, request completion, and clean teardown on H200. Other Supported rows were not revalidated.
+
 Each supported model launches with its config from `examples/mps_dp/configs/` and the same command shape, for example:
 
 ```bash
@@ -112,7 +114,8 @@ CONFIG=examples/mps_dp/configs/moss_delay_h100_dp2.yaml N=2 WEIGHT_SHARE=1 CORE_
 Everything else is **not supported** and is rejected in preflight, before the MPS daemon, state directory, handle file, or any replica process exists. For these, a completed architecture audit is recorded where one exists, but support is still in progress:
 
 * Ming TTS (`MingTTSSGLangModel`): audit complete; blocked on VRAM (the 16.8B leader alone reaches the 80 GB card edge), pending an H200 pass.
-* Voxtral TTS (`VoxtralSGLangTTSModel`), Fish S2-Pro (`S2ProSGLangTextModel`), Qwen3-TTS (`Qwen3TTSTalker`): audit complete; shared boots were observed in exploratory runs, but concurrent-request correctness needs each model's own client, which this validation does not have yet.
+* Voxtral TTS (`VoxtralSGLangTTSModel`), Fish S2-Pro (`S2ProSGLangTextModel`): audit complete; shared boots were observed in exploratory runs, but concurrent-request correctness needs each model's own client, which this validation does not have yet.
+* Qwen3-TTS (`Qwen3TTSTalker`): audit complete. At code revision [`cd45a47`](https://github.com/sgl-project/sglang-omni/commit/cd45a47a1838017c89fb2178f167aac0cd7412a3), deterministic inference passed the `N=2`, `WEIGHT_SHARE=1` concurrent byte-identity qualification on H200 with a 30,000-token cap. It remains not supported because that result requires `enable_deterministic_inference: true`, which serializes preprocessing and vocoder decoding and disables Talker compilation and the initial vocoder CUDA graph, materially reducing throughput. Default-mode inference has not passed the byte-identity contract, so the launcher continues to reject weight sharing for this pipeline.
 * LLaDA2 (`LLaDA2MoeModelLM`): audit complete; its pipeline declares no generation SGLang stage, so the launcher cannot drive it at any `N`.
 * Qwen3-Omni (`Qwen3OmniThinkerForCausalLM`, `Qwen3OmniTalker`): audit of both engines complete; the speech pipeline runs two SGLang engines and the text pipeline declares no generation stage, so the launcher cannot drive either.
 * Ming-Omni thinker (`BailingMoeV2ForCausalLM`) and every other architecture: no completed audit; adding one requires a post-load mutation audit, a policy entry, and the full launcher validation above.

@@ -10,6 +10,7 @@ import json
 import queue
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1199,6 +1200,7 @@ def build_sglang_qwen3_tts_request(
         sampling_params=sampling_params,
         eos_token_ids={int(model.config.codec_eos_token_id)},
         vocab_size=int(model.config.vocab_size),
+        extra_key=f"qwen3_tts:{uuid.uuid4().hex}",
     )
     req.tokenizer = None
     req._input_embeds_are_projected = True
@@ -1223,6 +1225,7 @@ def build_sglang_qwen3_tts_request(
         ref_code=prepared.ref_code,
         ref_code_len=ref_code_len,
         prompt_input_embeds=prepared.prompt_input_embeds,
+        prefill_input_embeds=prepared.prompt_input_embeds,
         semantic_sampling_seed=semantic_sampling_seed,
         subtalker_dosample=bool(gen_kwargs.get("subtalker_dosample", True)),
         subtalker_temperature=float(gen_kwargs.get("subtalker_temperature", 0.9)),

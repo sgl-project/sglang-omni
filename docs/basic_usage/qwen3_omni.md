@@ -195,6 +195,22 @@ The feature derives the exact `B=1` threshold windows from
 `T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
 Capture-time incompatibilities also fall back to eager execution.
 
+Output overlap is also enabled by default on CUDA devices: each threshold
+window's waveform readback runs as an asynchronous device-to-host copy into a
+pinned staging buffer and is materialized while the GPU computes the next
+window, and the codec EOS check runs once per window instead of once per
+frame. The first window of every request stays synchronous, so
+time-to-first-audio is unchanged. For successfully completed requests, audio
+bytes and message boundaries are identical to the synchronous path. A request
+that fails or is aborted can drop an un-emitted pending window while its
+in-flight staging buffer is retired. To disable it:
+
+```yaml
+runtime_overrides:
+  code2wav:
+    enable_output_overlap: false
+```
+
 For manual multi-GPU placement, use the example script:
 
 ```bash

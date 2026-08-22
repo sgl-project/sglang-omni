@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import queue
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import torch
 from pydantic import ValidationError
 
+import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
@@ -217,7 +219,116 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
     asyncio.run(_run())
 
 
-def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing() -> None:
+def test_outbox_drain_reuses_one_executor_wakeup_for_ready_messages(
+    monkeypatch,
+) -> None:
+    async def _run() -> None:
+        loop = asyncio.get_running_loop()
+        run_in_executor = AsyncMock(side_effect=lambda _, get: get())
+        monkeypatch.setattr(loop, "run_in_executor", run_in_executor)
+
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={"tts_engine": "inproc://tts_engine"},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            is_terminal=True,
+        )
+        stage._active_requests.add("req-live")
+
+        messages = [
+            OutgoingMessage("req-live", "stream", {"sequence": 0}),
+            OutgoingMessage("req-stale", "stream", {"sequence": 999}),
+            OutgoingMessage("req-live", "stream", {"sequence": 1}),
+            OutgoingMessage("req-live", "result", {"answer": "done"}),
+        ]
+        for message in messages:
+            scheduler.outbox.put(message)
+
+        await stage._drain_outbox_external()
+
+        assert [
+            (msg.chunk_id, msg.chunk["sequence"]) for msg in control_plane.streams
+        ] == [(0, 0), (1, 1)]
+        assert len(control_plane.completions) == 1
+        completion = control_plane.completions[0]
+        assert (completion.success, completion.result) == (True, {"answer": "done"})
+        assert scheduler.outbox.empty()
+        assert not stage._active_requests
+
+        # Before this optimization each message required an executor round trip.
+        run_in_executor.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_outbox_drain_yields_after_ready_message_batch(monkeypatch) -> None:
+    async def _run() -> None:
+        loop = asyncio.get_running_loop()
+        run_in_executor = AsyncMock(side_effect=lambda _, get: get())
+        monkeypatch.setattr(loop, "run_in_executor", run_in_executor)
+
+        execution_order: list[int | str] = []
+
+        class _RecordingControlPlane(_FakeControlPlane):
+            async def send_stream(self, msg) -> None:
+                execution_order.append(msg.chunk["sequence"])
+                await super().send_stream(msg)
+
+        control_plane = _RecordingControlPlane()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        stage = Stage(
+            name="vocoder",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={"tts_engine": "inproc://tts_engine"},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            is_terminal=True,
+        )
+        stage._active_requests.add("req-live")
+
+        for sequence in range(1, 66):
+            scheduler.outbox.put(
+                OutgoingMessage("req-live", "stream", {"sequence": sequence})
+            )
+
+        async def _competing_ready_coroutine() -> None:
+            execution_order.append("competing-coroutine")
+
+        competing_task = asyncio.create_task(_competing_ready_coroutine())
+        await stage._drain_outbox_external()
+        await competing_task
+
+        assert execution_order == [
+            *range(1, 65),
+            "competing-coroutine",
+            65,
+        ]
+        assert [msg.chunk["sequence"] for msg in control_plane.streams] == list(
+            range(1, 66)
+        )
+        assert scheduler.outbox.empty()
+        assert run_in_executor.await_count == 2
+
+    asyncio.run(_run())
+
+
+def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+
     async def _run() -> None:
         control_plane = _FakeControlPlane()
         relay = _FakeRelay()
@@ -278,6 +389,7 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline() -> None:
             scheduler=scheduler,
         )
         stage._active_requests.add("req")
+        stage._replica_bindings["req"] = {"decode": 1}
         scheduler.outbox.put(
             OutgoingMessage(
                 request_id="req",
@@ -296,6 +408,7 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline() -> None:
         assert target == "decode"
         assert endpoint == "inproc://decode"
         assert msg.chunk_id == 0
+        assert msg.replica_bindings == {"decode": 1}
         assert stage_io.is_inline_stream_chunk_ref(msg.data_ref)
         data, metadata = stage_io.deserialize_inline_stream_chunk(msg.data_ref)
         assert torch.equal(data, token)
@@ -312,6 +425,15 @@ def test_inline_stream_chunk_gate() -> None:
     assert not stage_io.should_use_inline_stream_chunk(big, None)
     assert not stage_io.should_use_inline_stream_chunk(small, {"extra": torch.zeros(2)})
     assert not stage_io.should_use_inline_stream_chunk("not-a-tensor", None)
+
+
+def test_inline_stream_chunk_materializes_small_view_storage() -> None:
+    view = torch.zeros(1024 * 1024, dtype=torch.uint8)[:8]
+
+    data_ref = stage_io.serialize_inline_stream_chunk(view, None)
+    restored, _ = stage_io.deserialize_inline_stream_chunk(data_ref)
+
+    assert restored.untyped_storage().nbytes() == restored.numel()
 
 
 def test_stage_routes_inline_stream_chunk_to_scheduler() -> None:
