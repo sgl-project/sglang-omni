@@ -32,7 +32,6 @@ def _build_groups(config, build_stage_groups, prepare_pipeline_runtime):
         return build_stage_groups(
             config,
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,

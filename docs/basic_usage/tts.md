@@ -52,7 +52,7 @@ for details.
 ## Launch the Server
 
 See [TTS Process Topology](tts_process_topology.md) for model defaults,
-`--isolate-stage`, and same-GPU memory requirements.
+declaring a different process topology, and same-GPU memory requirements.
 
 The reference-audio examples below fetch clips from Hugging Face, so the
 commands include the Hugging Face host and its current download redirect host.

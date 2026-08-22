@@ -387,6 +387,7 @@ def test_finalize_unions_finalize_skip_rids_hook():
     assert chunk_data.generation_steps == 0
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory requires CUDA")
 def test_host_staging_pingpong():
     r = _StubRunner()
@@ -398,6 +399,7 @@ def test_host_staging_pingpong():
     assert b0.is_pinned() and tuple(b0.shape) == (8, 18) and b0.dtype == torch.float32
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory requires CUDA")
 def test_default_launch_resolve_pinned_snapshot_pingpong():
     """Base (plain-LM) launch/resolve: launch snapshots the sampled ids into a
@@ -432,6 +434,7 @@ def test_default_launch_resolve_pinned_snapshot_pingpong():
     assert buf3 is buf1
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory requires CUDA")
 def test_default_launch_staging_grows_then_slices_to_smaller_batch():
     r = ModelRunner.__new__(ModelRunner)

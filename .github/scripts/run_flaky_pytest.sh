@@ -47,6 +47,34 @@ should_retry() {
   [ "${status}" -ne 0 ]
 }
 
+report_gpu_occupancy() {
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  echo "GPU occupancy at failure (index, memory.used, utilization):"
+  nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader 2>/dev/null \
+    | sed 's/^/  gpu /'
+  declare -A gpu_index_by_uuid=()
+  local index uuid pid mem owner apps
+  while IFS=, read -r index uuid; do
+    index="${index// /}"
+    uuid="${uuid// /}"
+    [ -n "${uuid}" ] && gpu_index_by_uuid["${uuid}"]="${index}"
+  done < <(nvidia-smi --query-gpu=index,uuid --format=csv,noheader 2>/dev/null)
+  apps="$(nvidia-smi --query-compute-apps=pid,used_memory,gpu_uuid --format=csv,noheader 2>/dev/null)"
+  if [ -z "${apps}" ]; then
+    echo "  no compute processes visible"
+    return 0
+  fi
+  while IFS=, read -r pid mem uuid; do
+    pid="${pid// /}"
+    uuid="${uuid// /}"
+    [ -n "${pid}" ] || continue
+    # Note (Jiaxin Deng): a PID nvidia-smi reports but /proc lacks lives in
+    # another container or the host, so the card is shared with someone else.
+    if [ -e "/proc/${pid}" ]; then owner="this-job"; else owner="EXTERNAL"; fi
+    echo "  gpu ${gpu_index_by_uuid[${uuid}]:-?} pid=${pid} mem=${mem# } owner=${owner}"
+  done <<< "${apps}"
+}
+
 cleanup_between_attempts() {
   echo "Cleaning GPU state before retry..."
   if ! bash .github/scripts/delete_gpu_process.sh --kill-orphans; then
@@ -78,6 +106,7 @@ while [ "${attempt}" -le "${max_attempts}" ]; do
 
   echo "${stage_label} attempt ${attempt}/${max_attempts} failed with exit code ${last_status}."
   echo "Attempt log: ${log_file}"
+  report_gpu_occupancy
 
   if [ "${attempt}" -ge "${max_attempts}" ]; then
     break

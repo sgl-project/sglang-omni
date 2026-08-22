@@ -10,6 +10,8 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.moss_tts.sampling_kernels import seeded_gumbel_argmax
 
+pytestmark = pytest.mark.accelerator
+
 _UINT32_MAX_HASH_POSITION = 1_707_985_137
 
 

@@ -7,12 +7,15 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from sglang.srt.utils import get_device
+import torch
 
 import sglang_omni.utils.gpu_memory as gpu_memory
 
 _ACCELERATOR_ONLY = pytest.mark.skipif(
-    get_device().partition(":")[0] not in ("cuda", "xpu"),
+    not (
+        torch.cuda.is_available()
+        or (hasattr(torch, "xpu") and torch.xpu.is_available())
+    ),
     reason="requires cuda or xpu",
 )
 
@@ -276,7 +279,7 @@ def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
     assert info.total_memory_bytes == 96 * 1024**3
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @_ACCELERATOR_ONLY
 def test_device_info_reports_real_memory_on_this_accelerator() -> None:
     """The live half, where an accelerator is actually present."""

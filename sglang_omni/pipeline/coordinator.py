@@ -5,11 +5,18 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
+from sglang_omni.pipeline.replicas import (
+    BindingPolicy,
+    ReplicaTopology,
+    RoundRobinBindingPolicy,
+    assign_replica_bindings,
+)
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import (
     AbortMessage,
@@ -59,6 +66,9 @@ class Coordinator:
         terminal_stages_resolver: (
             Callable[[OmniRequest], list[str] | None] | None
         ) = None,
+        replica_topology: ReplicaTopology | None = None,
+        logical_process_plan: LogicalProcessPlan | None = None,
+        binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
     ):
         """Initialize coordinator.
@@ -66,9 +76,12 @@ class Coordinator:
         Args:
             completion_endpoint: ZMQ endpoint to receive completions
             abort_endpoint: ZMQ endpoint for abort broadcasts
-            entry_stage: Name of the entry stage for new requests
+            entry_stage: Logical name of the entry stage for new requests
             terminal_stages: Terminal stage names. When multiple are given,
                 the coordinator waits for all to complete before resolving.
+            replica_topology: Logical stage to expanded instance mapping.
+            logical_process_plan: Compiled Process topology; the coordinator
+                selects one replica per replicated Process from it.
             max_in_flight: If set, reject new submits once this many requests
                 are already tracked. Intended as generation capacity
                 (max_running_requests + max_queued_requests).
@@ -79,6 +92,11 @@ class Coordinator:
         )
         self._terminal_stages_resolver = terminal_stages_resolver
         self._partial_results: dict[str, dict[str, Any]] = {}
+        self._replica_topology = replica_topology or ReplicaTopology()
+        self._logical_process_plan = logical_process_plan or LogicalProcessPlan(
+            processes=(), stage_to_process={}
+        )
+        self._binding_policy = binding_policy or RoundRobinBindingPolicy()
         if max_in_flight is None:
             self.max_in_flight = None
         else:
@@ -356,7 +374,9 @@ class Coordinator:
                     if not msg.success:
                         raise QueueFullError.from_message(msg.error)
                     yield msg
-                    completed_stages.add(msg.from_stage)
+                    completed_stages.add(
+                        self._replica_topology.logical_name(msg.from_stage)
+                    )
                     if (
                         not expected_terminal_stages
                         or completed_stages >= expected_terminal_stages
@@ -392,9 +412,6 @@ class Coordinator:
         if self._request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
 
-        if self.entry_stage not in self._stages:
-            raise ValueError(f"Entry stage {self.entry_stage} not registered")
-
         if self.max_in_flight is not None and len(self._requests) >= self.max_in_flight:
             logger.warning(
                 "Rejecting request %s before pipeline submit: in-flight cap "
@@ -406,6 +423,19 @@ class Coordinator:
 
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
+
+        replica_bindings = assign_replica_bindings(
+            self._logical_process_plan, self._binding_policy, request_id
+        )
+        bindings = replica_bindings or {}
+        entry_instance = (
+            self._replica_topology.resolve(self.entry_stage, bindings[self.entry_stage])
+            if self._replica_topology.is_replicated(self.entry_stage)
+            else self.entry_stage
+        )
+        if entry_instance not in self._stages:
+            raise ValueError(f"Entry stage {entry_instance} not registered")
+        entry_info = self._stages[entry_instance]
 
         # Track request
         self._requests[request_id] = RequestInfo(
@@ -435,12 +465,14 @@ class Coordinator:
             metadata={"entry_stage": self.entry_stage},
         )
 
-        # Submit to entry stage
-        entry_info = self._stages[self.entry_stage]
         await self.control_plane.submit_to_stage(
-            self.entry_stage,
+            entry_instance,
             entry_info.control_endpoint,
-            SubmitMessage(request_id=request_id, data=payload),
+            SubmitMessage(
+                request_id=request_id,
+                data=payload,
+                replica_bindings=replica_bindings,
+            ),
         )
 
         # Update state
@@ -449,10 +481,11 @@ class Coordinator:
             info.state = RequestState.RUNNING
 
         logger.info(
-            "Coordinator submitted req=%s to %s at %s",
+            "Coordinator submitted req=%s to %s at %s bindings=%s",
             request_id,
-            self.entry_stage,
+            entry_instance,
             entry_info.control_endpoint,
+            replica_bindings,
         )
 
     def _request_id_is_reserved(self, request_id: str) -> bool:
@@ -604,12 +637,20 @@ class Coordinator:
         )
 
         if request_id not in self._requests:
-            logger.warning(
-                "Coordinator received completion for unknown req=%s", request_id
+            logger.debug(
+                "Coordinator ignored completion for inactive req=%s from %s",
+                request_id,
+                msg.from_stage,
             )
             return
 
         info = self._requests[request_id]
+
+        # Note (wenyao): the client reads ``from_stage`` off the completion.
+        # Observability emits above keep the instance name.
+        from_stage = self._replica_topology.logical_name(msg.from_stage)
+        if from_stage != msg.from_stage:
+            msg = replace(msg, from_stage=from_stage)
 
         # Fail-fast: any terminal failure -> fail entire request
         if not msg.success:
@@ -622,13 +663,14 @@ class Coordinator:
             self._reject_completion_future(
                 request_id, QueueFullError.from_message(msg.error)
             )
-            if request_id in self._stream_queues:
-                await self._stream_queues[request_id].put(msg)
+            stream_queue = self._stream_queues.get(request_id)
+            if stream_queue is not None:
+                await stream_queue.put(msg)
             self._requests.pop(request_id, None)
             return
 
         expected_terminal_stages = self._expected_terminal_stages(request_id)
-        if expected_terminal_stages and msg.from_stage not in expected_terminal_stages:
+        if expected_terminal_stages and from_stage not in expected_terminal_stages:
             logger.debug(
                 "Coordinator ignoring completion from inactive terminal: "
                 "req=%s stage=%s expected=%s",
@@ -653,7 +695,7 @@ class Coordinator:
 
         # Multi-terminal: collect partial results
         partials = self._partial_results.setdefault(request_id, {})
-        partials[msg.from_stage] = msg.result
+        partials[from_stage] = msg.result
 
         # Forward stream completion per-stage
         if request_id in self._stream_queues:
@@ -699,6 +741,17 @@ class Coordinator:
                 "modality": msg.modality,
             },
         )
+        # Note (wenyao): normalize both fields -- the client falls back to
+        # ``stage_name or from_stage``. Observability emits above keep the
+        # instance name.
+        logical = self._replica_topology.logical_name(msg.from_stage)
+        stage_name = (
+            self._replica_topology.logical_name(msg.stage_name)
+            if msg.stage_name is not None
+            else msg.stage_name
+        )
+        if logical != msg.from_stage or stage_name != msg.stage_name:
+            msg = replace(msg, from_stage=logical, stage_name=stage_name)
         await self._stream_queues[request_id].put(msg)
 
     def _handle_admin_result(self, result: AdminResult) -> None:
@@ -721,7 +774,13 @@ class Coordinator:
     def _resolve_admin_stages(self, stages: Sequence[str] | None) -> list[str]:
         if stages is None:
             return sorted(self._stages)
-        resolved = list(stages)
+        # Note (wenyao): dedup preserving order so a caller passing both a
+        # logical name and one of its instances does not double-send admin ops.
+        resolved: list[str] = []
+        for name in stages:
+            for instance in self._replica_topology.instances(name):
+                if instance not in resolved:
+                    resolved.append(instance)
         unknown = sorted(set(resolved) - set(self._stages))
         if unknown:
             raise ValueError(f"Unknown admin target stage(s): {unknown}")
@@ -814,43 +873,3 @@ class Coordinator:
             "pending_completions": len(self._completion_futures),
             "request_states": state_counts,
         }
-
-
-async def run_coordinator(
-    completion_endpoint: str,
-    abort_endpoint: str,
-    entry_stage: str,
-    stages: dict[str, str],  # name -> endpoint
-    terminal_stages: list[str] | None = None,
-    terminal_stages_resolver: Callable[[OmniRequest], list[str] | None] | None = None,
-    max_in_flight: int | None = None,
-) -> Coordinator:
-    """Create and start a coordinator.
-
-    Args:
-        completion_endpoint: ZMQ endpoint to receive completions
-        abort_endpoint: ZMQ endpoint for abort broadcasts
-        entry_stage: Name of the entry stage
-        stages: Dict of stage_name -> stage_endpoint
-        terminal_stages: Optional list of terminal stage names for multi-terminal merge
-
-    Returns:
-        Started Coordinator instance
-    """
-    coordinator = Coordinator(
-        completion_endpoint=completion_endpoint,
-        abort_endpoint=abort_endpoint,
-        entry_stage=entry_stage,
-        terminal_stages=terminal_stages,
-        terminal_stages_resolver=terminal_stages_resolver,
-        max_in_flight=max_in_flight,
-    )
-
-    # Register stages
-    for name, endpoint in stages.items():
-        coordinator.register_stage(name, endpoint)
-
-    # Start
-    await coordinator.start()
-
-    return coordinator

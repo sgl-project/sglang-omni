@@ -128,7 +128,7 @@ pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
-    "gpu: requires a CUDA device (auto-skipped without one)",
+    "accelerator: requires accelerator hardware",
 ]
 
 [tool.setuptools.packages.find]

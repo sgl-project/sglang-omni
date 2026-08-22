@@ -7,6 +7,7 @@ from sglang_omni.config import (
     ParallelismConfig,
     PipelineConfig,
     PlacementConfig,
+    ProcessConfig,
     SGLangServerArgsConfig,
     StageConfig,
     StageResourceConfig,
@@ -88,6 +89,34 @@ def test_parallelism_tp_normalizes_back_to_tp_size() -> None:
 def test_conflicting_tp_size_and_parallelism_tp_raise() -> None:
     with pytest.raises(ValueError, match="conflicts"):
         _stage(tp_size=2, parallelism=ParallelismConfig(tp=3), gpu=[0, 1])
+
+
+@pytest.mark.parametrize(
+    ("gpu", "tp_size", "message"),
+    [
+        (None, 2, "gpu is required"),
+        (0, 2, "gpu has 1 entries"),
+        ([0, 0], 2, "GPU ids must be unique"),
+        (-1, 1, "GPU ids must be >= 0"),
+    ],
+)
+def test_invalid_stage_gpu_placement_raises(
+    gpu: int | list[int] | None,
+    tp_size: int,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _stage(gpu=gpu, tp_size=tp_size)
+
+
+def test_process_replica_devices_are_normalized_at_entry() -> None:
+    assert ProcessConfig(replica_devices="0, 2").replica_devices == [0, 2]
+
+
+@pytest.mark.parametrize("replica_devices", ["0,,1", [-1]])
+def test_invalid_process_replica_devices_raise(replica_devices: object) -> None:
+    with pytest.raises(ValueError, match="replica_devices"):
+        ProcessConfig(replica_devices=replica_devices)
 
 
 def test_pipeline_accepts_placement_config() -> None:

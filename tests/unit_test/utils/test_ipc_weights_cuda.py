@@ -25,9 +25,12 @@ from sglang_omni.pipeline.stage_workers import (
 )
 from sglang_omni.utils import ipc_weights
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="weight-share CUDA test requires CUDA"
-)
+pytestmark = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="weight-share CUDA test requires CUDA"
+    ),
+]
 
 
 class _Tiny(nn.Module):
