@@ -2179,6 +2179,7 @@ def test_moss_compact_candidate_sampler_maps_greedy_indices() -> None:
     assert sampled.tolist() == [13, 12]
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="requires CUDA seeded sampler"
 )

@@ -68,6 +68,7 @@ from sglang_omni.scheduling.speaker_cache import (
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +380,7 @@ def create_audio_encoder_executor(
     model_path: str,
     *,
     device: str = "cuda:0",
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
 ):
@@ -388,6 +390,7 @@ def create_audio_encoder_executor(
     client-supplied pre-encoded fast path). Codec weights are extracted from
     the TTS checkpoint itself (bundled at ``tied.embedding.modality_embeddings``).
     """
+    device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)

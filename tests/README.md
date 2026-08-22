@@ -65,6 +65,7 @@ tests/
     │   ├── test_gpu_memory.py
     │   ├── test_ipc.py
     │   ├── test_placement.py
+    │   ├── test_replicas.py
     │   ├── test_runtime_adapter.py
     │   ├── test_runtime_schema.py
     │   ├── test_scheduler.py
@@ -245,8 +246,14 @@ filter runs.
   requirements.
 - `tts_stage(name)`: in-file CI stage selector for TTS benchmarks.
   Combined with `--tts-stage` (see `test_model/conftest.py`).
-- `gpu`: tests that require a CUDA device. Pair this marker with an availability
-  guard so the test skips cleanly when CUDA is unavailable.
+- `accelerator`: tests that require accelerator hardware. Pair this marker with
+  a backend-specific availability guard so the test skips cleanly when that
+  hardware is unavailable. The marker must be declared unconditionally; a
+  runtime or artifact-based skip does not assign the test to the accelerator
+  CI job. Marker filtering happens after test modules are imported, so keep
+  accelerator runtime probes such as `torch.cuda.is_available()` and
+  `torch.cuda.device_count()` out of module scope and collection-time skip
+  conditions. Perform them in the test body or a fixture instead.
 
 
 ## Root Files
@@ -389,8 +396,8 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 
 Fast contract tests that should run without model downloads or real server
 startup. Keep these focused on the smallest component that owns the behavior.
-Most unit tests run on CPU. CUDA-only cases use the `gpu` marker and explicit
-availability guards.
+Most unit tests run on CPU. Accelerator-dependent cases use the `accelerator`
+marker and explicit backend availability guards.
 
 Expected command:
 
@@ -406,6 +413,8 @@ that happened to contain an older version of the test.
   - runtime wiring
   - runtime schema/adapter behavior
   - coordinator behavior
+  - process replicas: whole-process stage expansion, instance naming, device
+    assignment, process-level binding, and logical-to-physical routing
   - stage routing
   - centralized comm router selection, data-reference serialization, ack
     lifecycle, and sender backpressure release
@@ -548,17 +557,17 @@ that happened to contain an older version of the test.
     fire rules, sub-batch decomposition, output equivalence, and lifecycle
   - Code2Wav CUDA Graph lifecycle, exact-shape replay, atomic rollback, memory
     budget enforcement, eager fallbacks, replay failures, and JSON-safe stats;
-    the `gpu`-marked cases exercise real CUDA stream restoration and graph
-    capture/replay. Run them with:
+    the `accelerator`-marked cases exercise real CUDA stream restoration and
+    graph capture/replay. Run them with:
 
     ```bash
-    pytest tests/unit_test/qwen3_omni/test_code2wav_cuda_graph.py -m gpu -q
+    pytest tests/unit_test/qwen3_omni/test_code2wav_cuda_graph.py -m accelerator -q
     ```
   - Code2Wav output overlap (depth-2 pipelined D2H): message-for-message byte
     identity against the synchronous path, first-window sync cadence,
     stream-done pending flush, lazy batched EOS scanning, pinned-slot pool
     lifecycle across abort/replay-failure/exhaustion, and profiler event
-    shape; the `gpu`-marked case runs real pinned buffers and CUDA events
+    shape; the `accelerator`-marked case runs real pinned buffers and CUDA events
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
   - Thinker prefill contracts: `OmniPrefillInputs` adoption for text and
     audio-input → text-output prefills, whole-batch fail-closed qualification,
@@ -736,7 +745,7 @@ that happened to contain an older version of the test.
 - `unit_test/dots_tts/`: dots.tts pipeline and registry contracts, request
   lowering, reference encoding, model-runner lifecycle, flow matching, bounded
   acoustic state, vocoder batching, and streaming cleanup. CUDA Graph parity in
-  `test_tail.py` is marked `gpu`; the remaining tests run on CPU.
+  `test_tail.py` is marked `accelerator`; the remaining tests run on CPU.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
@@ -744,7 +753,7 @@ that happened to contain an older version of the test.
 - `unit_test/minimax_music3/`: MiniMax Music 3 request validation, placement,
   acoustic configuration, hidden-frame buffering, deterministic sampling,
   attention and decoder contracts, abort handling, and relay tensor validation.
-  Kernel and CUDA Graph parity cases in `test_core.py` are marked `gpu`.
+  Kernel and CUDA Graph parity cases in `test_core.py` are marked `accelerator`.
 
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution, duration validation, fingerprinting,

@@ -408,7 +408,7 @@ def test_cuda_api_restores_original_stream_when_capture_exit_raises(
     assert current["stream"] is original_stream
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_real_cuda_invalid_capture_preserves_current_stream() -> None:
     api = code2wav_cuda_graph._TorchCudaApi()
@@ -440,7 +440,7 @@ def test_real_cuda_invalid_capture_preserves_current_stream() -> None:
     assert current_after == original_stream
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_real_cuda_shared_pool_replays_batch_sizes_with_eager_parity() -> None:
     class _TinyCode2WavModel(torch.nn.Module):
@@ -484,7 +484,7 @@ def test_real_cuda_shared_pool_replays_batch_sizes_with_eager_parity() -> None:
         assert torch.equal(graph_output, eager)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
     """Real graph replay + the depth-2 pipelined D2H produce the exact bytes

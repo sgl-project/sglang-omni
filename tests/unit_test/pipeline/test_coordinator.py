@@ -8,9 +8,13 @@ import gc
 import pytest
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.config import PipelineConfig, ProcessConfig
+from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.pipeline.replicas import ReplicaTopology, expand_replica_stages
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
+from tests.unit_test.pipeline.helpers import stage
 
 
 def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
@@ -799,5 +803,274 @@ def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
             "req-1",
             "req-2",
         ]
+
+    asyncio.run(_run())
+
+
+def test_admin_resolves_logical_replica_target_to_all_instances() -> None:
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="preprocess",
+        replica_topology=ReplicaTopology(
+            replicas={"talker_ar": ("talker_ar@r0", "talker_ar@r1")}
+        ),
+    )
+    coordinator.control_plane = RecordingCoordinatorControlPlane()
+    coordinator.register_stage("talker_ar@r0", "inproc://t0")
+    coordinator.register_stage("talker_ar@r1", "inproc://t1")
+    coordinator.register_stage("thinker", "inproc://thinker")
+
+    assert coordinator._resolve_admin_stages(["talker_ar"]) == [
+        "talker_ar@r0",
+        "talker_ar@r1",
+    ]
+    assert coordinator._resolve_admin_stages(
+        ["talker_ar", "talker_ar@r0", "thinker"]
+    ) == ["talker_ar@r0", "talker_ar@r1", "thinker"]
+    assert coordinator._resolve_admin_stages(None) == [
+        "talker_ar@r0",
+        "talker_ar@r1",
+        "thinker",
+    ]
+    with pytest.raises(ValueError, match="Unknown admin target"):
+        coordinator._resolve_admin_stages(["nope"])
+
+
+def test_coordinator_normalizes_replica_instance_name_on_stream_chunk() -> None:
+    async def _run() -> None:
+        logical_plan, replica_topology = _multi_terminal_replica_runtime()
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["code2wav"],
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        queue: asyncio.Queue = asyncio.Queue()
+        await coordinator._submit_request("req-1", "hello", stream_queue=queue)
+        bindings = coordinator.control_plane.submitted[0][2].replica_bindings
+        instance = replica_topology.resolve("code2wav", bindings["code2wav"])
+
+        await coordinator._handle_stream(
+            StreamMessage(
+                request_id="req-1",
+                from_stage=instance,
+                chunk={"audio": "x"},
+                stage_name=instance,
+                modality="audio",
+                chunk_id=0,
+            )
+        )
+
+        routed = queue.get_nowait()
+        assert routed.from_stage == "code2wav"
+        assert routed.stage_name == "code2wav"
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_coordinator_normalizes_replica_instance_name_on_completion(
+    success: bool,
+) -> None:
+    async def _run() -> None:
+        logical_plan, replica_topology = _multi_terminal_replica_runtime()
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["code2wav"],
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        queue: asyncio.Queue = asyncio.Queue()
+        await coordinator._submit_request(
+            "req-1", {"text": "hello"}, stream_queue=queue
+        )
+        bindings = coordinator.control_plane.submitted[0][2].replica_bindings
+        instance = replica_topology.resolve("code2wav", bindings["code2wav"])
+
+        await coordinator._handle_completion(
+            CompleteMessage(
+                "req-1",
+                instance,
+                success,
+                result={"audio": "ok"} if success else None,
+                error=None if success else "boom",
+            )
+        )
+
+        assert queue.get_nowait().from_stage == "code2wav"
+
+    asyncio.run(_run())
+
+
+def _compile_replica_runtime(stages, **replicas: int):
+    config = PipelineConfig(
+        stages=stages,
+        model_path="dummy",
+        processes={
+            process: ProcessConfig(num_replicas=count)
+            for process, count in replicas.items()
+            if count > 1
+        },
+    )
+    logical_plan, compiled_stages = compile_logical_processes(config)
+    _, replica_topology = expand_replica_stages(compiled_stages, logical_plan)
+    return logical_plan, replica_topology
+
+
+def _linear_replica_runtime(**replicas: int):
+    return _compile_replica_runtime(
+        [
+            stage("normalize", process="front", next="decode"),
+            stage("decode", process="tail", next="postprocess"),
+            stage("postprocess", process="tail", terminal=True),
+        ],
+        **replicas,
+    )
+
+
+def _multi_terminal_replica_runtime():
+    return _compile_replica_runtime(
+        [
+            stage(
+                "preprocess",
+                process="front",
+                next=["decode", "code2wav"],
+            ),
+            stage("decode", process="text", terminal=True),
+            stage("code2wav", process="audio", terminal=True),
+        ],
+        audio=2,
+    )
+
+
+def test_coordinator_projects_one_process_choice_onto_member_stages() -> None:
+    async def _run() -> None:
+        logical_plan, replica_topology = _linear_replica_runtime(tail=2)
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("normalize", "inproc://normalize")
+
+        await coordinator._submit_request("req-0", "hello")
+        await coordinator._submit_request("req-1", "hello")
+
+        bindings = [
+            msg.replica_bindings for _stage, _ep, msg in control_plane.submitted
+        ]
+        assert bindings == [
+            {"decode": 0, "postprocess": 0},
+            {"decode": 1, "postprocess": 1},
+        ]
+        assert [stage for stage, _ep, _msg in control_plane.submitted] == [
+            "normalize",
+            "normalize",
+        ]
+
+    asyncio.run(_run())
+
+
+def test_binding_validation_precedes_request_registration() -> None:
+    class FailOnceBindingPolicy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def bind(self, process_name, num_replicas, request_id):
+            del process_name, request_id
+            self.calls += 1
+            return num_replicas if self.calls == 1 else 0
+
+    async def _run() -> None:
+        logical_plan, replica_topology = _linear_replica_runtime(tail=2)
+        policy = FailOnceBindingPolicy()
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+            binding_policy=policy,
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("normalize", "inproc://normalize")
+
+        with pytest.raises(ValueError, match="selected replica 2"):
+            await coordinator._submit_request("req-retry", "hello")
+
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+
+        await coordinator._submit_request("req-retry", "hello")
+        assert control_plane.submitted[0][2].replica_bindings == {
+            "decode": 0,
+            "postprocess": 0,
+        }
+
+    asyncio.run(_run())
+
+
+def test_coordinator_submits_to_the_bound_entry_replica() -> None:
+    async def _run() -> None:
+        logical_plan, replica_topology = _linear_replica_runtime(front=2)
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("normalize@r0", "inproc://n0")
+        coordinator.register_stage("normalize@r1", "inproc://n1")
+
+        await coordinator._submit_request("req-0", "hello")
+        await coordinator._submit_request("req-1", "hello")
+
+        assert [stage for stage, _ep, _msg in control_plane.submitted] == [
+            "normalize@r0",
+            "normalize@r1",
+        ]
+        assert [endpoint for _stage, endpoint, _msg in control_plane.submitted] == [
+            "inproc://n0",
+            "inproc://n1",
+        ]
+
+    asyncio.run(_run())
+
+
+def test_coordinator_without_replicas_sends_no_bindings() -> None:
+    async def _run() -> None:
+        logical_plan, replica_topology = _linear_replica_runtime()
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="normalize",
+            replica_topology=replica_topology,
+            logical_process_plan=logical_plan,
+        )
+        control_plane = RecordingCoordinatorControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("normalize", "inproc://normalize")
+
+        await coordinator._submit_request("req-0", "hello")
+
+        assert control_plane.submitted[0][2].replica_bindings is None
 
     asyncio.run(_run())

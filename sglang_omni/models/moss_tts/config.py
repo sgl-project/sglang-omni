@@ -37,24 +37,10 @@ class MossTTSPipelineConfig(PipelineConfig):
         return {"generation": "tts_engine"}
 
     @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): preprocessing -> tts_engine is excluded because
-        # preprocessing publishes into the module-level PreparedRequestQueue that the
-        # AR stage pops in-process. The vocoder loads its own processor and reads
-        # delayed codes from MossTTSState.
-        return frozenset({("tts_engine", "vocoder")})
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {
-            ("tts_engine", "vocoder"): {
-                "preprocessing": 0.05,
-                "tts_engine": 0.85,
-                "vocoder": 0.10,
-            }
-        }
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): preprocessing publishes into the module-level
+        # PreparedRequestQueue that the AR stage pops in-process.
+        return frozenset({("preprocessing", "tts_engine")})
 
     model_path: str
     stages: list[StageConfig] = [

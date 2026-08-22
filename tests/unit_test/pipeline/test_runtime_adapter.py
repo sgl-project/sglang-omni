@@ -5,6 +5,7 @@ import pytest
 
 from sglang_omni.config import (
     PipelineConfig,
+    ProcessConfig,
     SGLangServerArgsConfig,
     StageConfig,
     StageResourceConfig,
@@ -222,6 +223,55 @@ def test_rank_gpu_id_can_be_supplied_by_launch_planner() -> None:
     args = resolve_stage_factory_args(stage, config, gpu_id=3)
 
     assert args["gpu_id"] == 3
+
+
+def test_fixed_placement_preserves_legacy_device_only_factory() -> None:
+    stage = _stage(
+        factory="tests.unit_test.fixtures.pipeline_fakes.runtime_factory_with_device",
+        factory_args={"device": "cuda:0"},
+    )
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    args = resolve_stage_factory_args(stage, config, gpu_id=3)
+
+    assert args == {"model_path": "dummy-model", "device": "cuda:0"}
+
+
+def test_replica_device_placement_rejects_legacy_device_only_factory() -> None:
+    stage = _stage(
+        factory="tests.unit_test.fixtures.pipeline_fakes.runtime_factory_with_device",
+        factory_args={"device": "cuda:0"},
+    )
+    config = PipelineConfig(
+        model_path="dummy-model",
+        stages=[stage],
+        processes={"pipeline": ProcessConfig(replica_devices=[3])},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="processes.replica_devices.*does not declare a gpu_id parameter",
+    ):
+        resolve_stage_factory_args(stage, config, gpu_id=3)
+
+
+def test_replica_device_placement_does_not_require_gpu_id_for_cpu_stage() -> None:
+    cpu_stage = _stage(
+        name="preprocess",
+        gpu=None,
+        factory="tests.unit_test.fixtures.pipeline_fakes.runtime_factory_with_device",
+        factory_args={"device": "cpu"},
+    )
+    gpu_stage = _stage(name="thinker", gpu=0)
+    config = PipelineConfig(
+        model_path="dummy-model",
+        stages=[cpu_stage, gpu_stage],
+        processes={"pipeline": ProcessConfig(replica_devices=[3])},
+    )
+
+    args = resolve_stage_factory_args(cpu_stage, config)
+
+    assert args == {"model_path": "dummy-model", "device": "cpu"}
 
 
 def test_runtime_override_wins_over_qwen_model_default() -> None:

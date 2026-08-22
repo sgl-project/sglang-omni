@@ -57,6 +57,7 @@ def test_comm_router_uses_mooncake_only_for_remote_edges() -> None:
     )
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_comm_router_uses_cuda_ipc_for_mixed_gpu_payloads() -> None:
     router = CommRouter(
@@ -74,6 +75,7 @@ def test_comm_router_uses_cuda_ipc_for_mixed_gpu_payloads() -> None:
     assert router.outbound_payload("thinker", payload) is TransportKind.CUDA_IPC
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_comm_router_uses_shm_for_cuda_payloads_to_cpu_targets() -> None:
     router = CommRouter(
@@ -218,6 +220,7 @@ def test_comm_router_rejects_narrowed_direct_cuda_ipc_namespace() -> None:
     assert not router.can_use_direct_cuda_ipc("talker")
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_comm_router_uses_cuda_ipc_for_cuda_stream_chunks_only() -> None:
     router = CommRouter(

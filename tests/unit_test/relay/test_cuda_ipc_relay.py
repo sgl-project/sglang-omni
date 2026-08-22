@@ -668,16 +668,19 @@ def _run_paged_case(gpu: int) -> None:
         assert value is True
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_ipc_same_gpu_round_trip() -> None:
     _run_case(0, 0)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets() -> None:
     _run_paged_case(0)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2, reason="requires >= 2 GPUs for cross-GPU transfer"
 )

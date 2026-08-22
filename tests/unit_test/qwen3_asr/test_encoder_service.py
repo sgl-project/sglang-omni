@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.utils import get_device
 
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
@@ -18,9 +17,14 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
 )
 
 _HIDDEN_SIZE = 4
-_DEVICE = get_device()
+if torch.cuda.is_available():
+    _DEVICE = "cuda"
+elif hasattr(torch, "xpu") and torch.xpu.is_available():
+    _DEVICE = "xpu"
+else:
+    _DEVICE = "cpu"
 requires_accelerator = pytest.mark.skipif(
-    _DEVICE.partition(":")[0] not in ("cuda", "xpu"),
+    _DEVICE == "cpu",
     reason="requires cuda or xpu",
 )
 _NAMESPACE = "testns"
@@ -661,7 +665,7 @@ def test_flat_2d_encoder_output_is_also_accepted() -> None:
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @requires_accelerator
 def test_the_device_cache_is_really_reclaimed_after_an_oom() -> None:
     """The behaviour the fix exists for, on the live accelerator."""

@@ -74,6 +74,7 @@ class _PayloadSendJob(msgspec.Struct, frozen=True):
     target_endpoint: str
     ready: asyncio.Future[DataRef]
     enqueued_ns: int
+    replica_bindings: dict[str, int] | None = None
 
 
 class _StreamSendJob(msgspec.Struct, frozen=True):
@@ -89,6 +90,7 @@ class _StreamSendJob(msgspec.Struct, frozen=True):
     transport: TransportKind
     ready: asyncio.Future[DataRef]
     enqueued_ns: int
+    replica_bindings: dict[str, int] | None = None
 
 
 class CommEngine:
@@ -199,6 +201,7 @@ class CommEngine:
         from_stage: str,
         to_stage: str,
         target_endpoint: str,
+        replica_bindings: dict[str, int] | None = None,
     ) -> DataRef:
         if not isinstance(payload, StagePayload):
             raise TypeError(
@@ -220,6 +223,7 @@ class CommEngine:
                 target_endpoint=target_endpoint,
                 ready=ready,
                 enqueued_ns=enqueue_start,
+                replica_bindings=replica_bindings,
             )
         )
         _comm_trace(
@@ -296,6 +300,7 @@ class CommEngine:
         chunk_id: int,
         metadata: dict[str, Any] | None,
         transport: TransportKind,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
         queue = self._send_queue_for(target_stage)
         loop = asyncio.get_running_loop()
@@ -315,6 +320,7 @@ class CommEngine:
                 transport=transport,
                 ready=ready,
                 enqueued_ns=enqueue_start,
+                replica_bindings=replica_bindings,
             )
         )
         _comm_trace(
@@ -881,6 +887,7 @@ class CommEngine:
                 target_endpoint=job.target_endpoint,
                 data_ref=data_ref,
                 ops=[op],
+                replica_bindings=job.replica_bindings,
             )
             control_ms = _comm_elapsed_ms(control_start)
             _comm_trace(
@@ -936,6 +943,7 @@ class CommEngine:
                 data_ref=data_ref,
                 ops=ops,
                 chunk_id=job.chunk_id,
+                replica_bindings=job.replica_bindings,
             )
             control_ms = _comm_elapsed_ms(control_start)
             _comm_trace(
@@ -970,6 +978,7 @@ class CommEngine:
         data_ref: DataRef,
         ops: list[Any],
         chunk_id: int | None = None,
+        replica_bindings: dict[str, int] | None = None,
     ) -> asyncio.Task:
         """Publish a relay object and arm its existing ACK lifecycle."""
 
@@ -983,6 +992,7 @@ class CommEngine:
             target_endpoint=target_endpoint,
             data_ref=data_ref,
             chunk_id=chunk_id,
+            replica_bindings=replica_bindings,
         )
 
     async def _publish_registered_data_ready(
@@ -995,6 +1005,7 @@ class CommEngine:
         target_endpoint: str,
         data_ref: DataRef,
         chunk_id: int | None = None,
+        replica_bindings: dict[str, int] | None = None,
     ) -> asyncio.Task:
         object_id = data_ref.object_id
         try:
@@ -1007,6 +1018,7 @@ class CommEngine:
                     to_stage=to_stage,
                     data_ref=data_ref.to_dict(),
                     chunk_id=chunk_id,
+                    replica_bindings=replica_bindings,
                 ),
             )
         except BaseException as exc:

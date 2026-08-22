@@ -113,7 +113,7 @@ DEFAULT_CONFIGS = {
     "higgs": "examples/mps_dp/configs/higgs_h100_dp3.yaml",
     "moss": "examples/mps_dp/configs/moss_local_h100_dp2.yaml",
 }
-pytestmark = [pytest.mark.benchmark, pytest.mark.gpu]
+pytestmark = [pytest.mark.benchmark, pytest.mark.accelerator]
 
 
 def _selected_model() -> str:

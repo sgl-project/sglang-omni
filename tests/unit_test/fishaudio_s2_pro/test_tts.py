@@ -413,6 +413,7 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
     assert int(audio_decoder.seen_embedding_ids[0][0].item()) == 0
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="multinomial_with_seed needs CUDA"
 )

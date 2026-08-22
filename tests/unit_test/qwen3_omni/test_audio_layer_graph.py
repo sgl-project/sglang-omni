@@ -184,7 +184,7 @@ class _RealTower(nn.Module):
         self.layers = nn.ModuleList(_RealLayer(dim) for _ in range(n))
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_capture_all_records_a_graph_for_every_bucket() -> None:
     tower = _RealTower().to(torch.device("cuda", 0), torch.bfloat16)
@@ -194,7 +194,7 @@ def test_capture_all_records_a_graph_for_every_bucket() -> None:
     assert sorted(runner._graphs) == sorted(DEFAULT_TOKEN_BUCKETS)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_replay_matches_eager_varlen_across_bucket_boundaries() -> None:
     torch.manual_seed(0)

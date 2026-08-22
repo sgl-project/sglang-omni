@@ -101,8 +101,8 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
         return {"generation": "minimax_music3_ar"}
 
     @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        return frozenset({("minimax_music3_ar", "dit_dav")})
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        return frozenset({("preprocessing", "minimax_music3_ar")})
 
 
 class MiniMaxMusic3SingleGPUPipelineConfig(MiniMaxMusic3PipelineConfig):

@@ -16,7 +16,7 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
 
-pytestmark = pytest.mark.gpu
+pytestmark = pytest.mark.accelerator
 
 _HAS_CUDA = torch.cuda.is_available()
 

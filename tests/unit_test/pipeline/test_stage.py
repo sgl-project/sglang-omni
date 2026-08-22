@@ -19,7 +19,7 @@ from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
-from sglang_omni.proto import DataReadyMessage
+from sglang_omni.proto import DataReadyMessage, SubmitMessage
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -121,8 +121,12 @@ def test_aggregated_input_rejects_dynamic_sources_outside_static_fanin() -> None
         handler.receive("req-1", "preprocess", make_stage_payload())
 
 
-def test_stage_routes_results_streams_and_clears_abort_state() -> None:
+def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> None:
     """Preserves result routing, stream forwarding, and abort cleanup."""
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
 
     async def _run() -> None:
         relay = FakeRelay()
@@ -421,6 +425,7 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_payload_round_trip_preserves_cpu_tensor_devices() -> None:
     async def _run() -> None:
@@ -1019,6 +1024,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
     ]
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -1226,6 +1232,7 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     payload = make_stage_payload(
@@ -1411,7 +1418,79 @@ def test_stage_local_object_requires_registered_target() -> None:
     asyncio.run(_run())
 
 
-@pytest.mark.gpu
+def test_local_dispatch_propagates_replica_bindings_to_receiver() -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        receiver = make_stage(
+            name="thinker",
+            scheduler=FakeScheduler(),
+            replica_topology={"decode": ["decode@r0", "decode@r1"]},
+        )
+        sender = make_stage(
+            name="mm_aggregate",
+            endpoints={"thinker": "inproc://thinker"},
+            same_process_targets={"thinker"},
+            local_dispatcher=dispatcher,
+        )
+        sender._record_replica_bindings("req-local", {"decode": 1})
+        dispatcher.register_many([sender, receiver])
+
+        await sender._send_to_stage(
+            "req-local",
+            "thinker",
+            make_stage_payload(request_id="req-local", data={"x": 1}),
+            allow_local_object=True,
+        )
+
+        assert receiver._replica_bindings["req-local"] == {"decode": 1}
+        assert receiver._resolve_target_instance("req-local", "decode") == "decode@r1"
+
+    asyncio.run(_run())
+
+
+def test_resolve_target_instance_without_binding_raises() -> None:
+    stage = make_stage(
+        name="talker_ar",
+        replica_topology={"code2wav": ["code2wav@r0", "code2wav@r1"]},
+    )
+    with pytest.raises(RuntimeError, match="no replica binding"):
+        stage._resolve_target_instance("req-x", "code2wav")
+
+
+def test_completed_request_id_can_record_new_replica_bindings() -> None:
+    async def _run() -> None:
+        stage = make_stage(
+            name="thinker",
+            replica_topology={"decode": ["decode@r0", "decode@r1"]},
+        )
+        stage._record_replica_bindings("req-1", {"decode": 0})
+        stage._clear_request_state("req-1")
+
+        await stage._on_submit(
+            SubmitMessage(
+                request_id="req-1",
+                data=make_stage_payload(request_id="req-1"),
+                replica_bindings={"decode": 1},
+            )
+        )
+
+        assert stage._replica_bindings["req-1"] == {"decode": 1}
+        assert stage._resolve_target_instance("req-1", "decode") == "decode@r1"
+
+    asyncio.run(_run())
+
+
+def test_replica_bindings_not_recorded_after_abort() -> None:
+    stage = make_stage(
+        name="thinker",
+        replica_topology={"decode": ["decode@r0", "decode@r1"]},
+    )
+    stage._record_aborted_request_id("req-1")
+    stage._record_replica_bindings("req-1", {"decode": 1})
+    assert "req-1" not in stage._replica_bindings
+
+
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
     monkeypatch,
@@ -1453,7 +1532,7 @@ def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
     asyncio.run(_run())
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
     async def _run() -> None:
@@ -1483,7 +1562,7 @@ def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
     asyncio.run(_run())
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
     """The scoped audio policy changes transport only; values stay untouched."""
