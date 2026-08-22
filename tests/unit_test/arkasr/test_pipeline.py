@@ -10,6 +10,7 @@ import torch.nn as nn
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from transformers import WhisperConfig
 
+import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.arkasr.engine_builder as arkasr_builder
 import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
@@ -59,6 +60,13 @@ def test_arkasr_config_registered():
     assert config.stages[0].name == "asr"
     assert config.stages[0].terminal
     assert config.stages[0].factory_args["encoder_max_batch_size"] == 8
+    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 16
+    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 32
+    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
+    assert (
+        config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
+        is True
+    )
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("ArkasrForConditionalGeneration")
         is ArkasrPipelineConfig
@@ -75,6 +83,12 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
     assert signature.parameters["pre_lm_max_pending"].default == 32
+    assert signature.parameters["prefill_coalesce_requests"].default == 16
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 32.0
+    assert signature.parameters["prefill_coalesce_when_idle"].default is True
+    assert (
+        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
+    )
 
 
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
@@ -249,6 +263,11 @@ def _stub_arkasr_engine_build(
         "init_sglang_cuda_graphs",
         lambda worker: graph_init_workers.append(worker),
     )
+    monkeypatch.setattr(
+        model_runner_base,
+        "ModelRunner",
+        lambda *args, **kwargs: object(),
+    )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
     return SimpleNamespace(
@@ -278,6 +297,8 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
         mm_attention_backend="triton_attn",
         enable_async_decode=False,
         async_decode_min_batch_size=4,
+        prefill_coalesce_requests=8,
+        prefill_coalesce_wait_ms=24.0,
     )
 
     assert stub.graph_init_workers == ([stub.model_worker] if want_cuda_graph else [])
@@ -290,6 +311,10 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert stub.adapter_kwargs["merge_factor"] == 7
     assert stub.adapter_kwargs["audio_token_id"] == 4242
     assert stub.adapter_kwargs["max_new_tokens"] == 256
+    assert scheduler.prefill_coalesce_requests == 8
+    assert scheduler.prefill_coalesce_wait_ms == 24.0
+    assert scheduler.prefill_coalesce_when_idle is True
+    assert scheduler.prefill_coalesce_requires_pending_builds is True
     # note (jiannan-17): context_length and model_arch_override moved from
     # stages.py into the builder. Keep both pinned so a missing value fails
     # here instead of at serve time.

@@ -41,6 +41,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_max_pending: int = 32,
+        prefill_coalesce_requests: int = 16,
+        prefill_coalesce_wait_ms: float = 32.0,
+        prefill_coalesce_when_idle: bool = True,
+        prefill_coalesce_requires_pending_builds: bool = True,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -71,6 +75,12 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self.pre_lm_max_batch_size = pre_lm_max_batch_size
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.pre_lm_max_pending = pre_lm_max_pending
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
+        self.prefill_coalesce_requires_pending_builds = (
+            prefill_coalesce_requires_pending_builds
+        )
         self.tokenizer: Any = None
         self.feature_extractor: Any = None
         self.merge_factor = 4
@@ -170,4 +180,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
+            "prefill_coalesce_requires_pending_builds": (
+                self.prefill_coalesce_requires_pending_builds
+            ),
         }

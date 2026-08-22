@@ -50,7 +50,7 @@ class _StubModel(torch.nn.Module):
         self.encode_delay_s = 0.0
         self.grad_enabled_during_encode: bool | None = None
 
-    def get_audio_feature(self, items):  # noqa: ANN001
+    def get_audio_feature(self, items):
         self.grad_enabled_during_encode = torch.is_grad_enabled()
         self.encode_calls += 1
         self.encode_batch_sizes.append(len(items))
@@ -236,7 +236,7 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
     service = object.__new__(ArkasrPreLMEncoderService)
     service._stream = object()
 
-    def fail_stream(_stream):  # noqa: ANN001, ANN202
+    def fail_stream(_stream):
         raise RuntimeError("stream context failed")
 
     monkeypatch.setattr(torch.cuda, "stream", fail_stream)
@@ -261,6 +261,51 @@ def test_cache_hit_skips_reencode() -> None:
     assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
     assert second.feature is None
     assert service.stats()["hits"] == 1
+
+
+def test_lookup_cached_embedding_returns_only_valid_entries() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    item = _item(11, 3)
+    service.encode_item(item)
+
+    cached = service.lookup_cached_embedding(item.audio_fingerprint, 3)
+
+    assert cached is not None
+    assert torch.equal(cached, item.precomputed_embeddings.cpu())
+    assert service.stats()["hits"] == 1
+
+    assert service.lookup_cached_embedding(item.audio_fingerprint, 4) is None
+    assert len(service._cache) == 0
+
+
+def test_submit_item_accepts_prevalidated_cached_embedding() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    item = _item(11, 3)
+    cached = torch.zeros((3, _HIDDEN_SIZE), dtype=model.dtype)
+
+    future = service.submit_item(item, cached_embedding=cached)
+
+    assert future.result() is cached
+    assert item.precomputed_embeddings is cached
+    assert item.feature is None
+    assert model.encode_calls == 0
+    assert service.stats()["submitted"] == 1
+    assert service.stats()["pending"] == 0
+
+
+def test_submit_item_rejects_invalid_prevalidated_cached_embedding() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    item = _item(11, 3)
+    cached = torch.zeros((4, _HIDDEN_SIZE), dtype=model.dtype)
+
+    with pytest.raises(RuntimeError, match="cached embedding"):
+        service.submit_item(item, cached_embedding=cached)
+
+    assert item.precomputed_embeddings is None
+    assert model.encode_calls == 0
 
 
 def test_extended_audio_never_reuses_prefix_embedding() -> None:
@@ -335,7 +380,7 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
     release_stale_reader = threading.Event()
     original_get = service._cache.get
 
-    def controlled_get(key: str | None):  # noqa: ANN202
+    def controlled_get(key: str | None):
         cached = original_get(key)
         if (
             threading.current_thread().name == "stale-cache-reader"
