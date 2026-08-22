@@ -11,15 +11,15 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.utils import get_device
 
 from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
     ThinkerFusedRopeGate,
     install_thinker_fused_rope,
 )
 from sglang_omni.platforms import current_platform
+from tests.unit_test.accel import get_device_or_cpu
 
-_DEVICE = get_device()
+_DEVICE = get_device_or_cpu()
 requires_xpu = pytest.mark.skipif(
     _DEVICE.partition(":")[0] != "xpu", reason="describes the xpu policy"
 )
@@ -280,6 +280,7 @@ def test_install_is_refused_while_a_prefill_graph_could_freeze_it(
     )
 
 
+@pytest.mark.gpu
 @requires_xpu
 def test_install_succeeds_on_xpu() -> None:
     attn = _fake_attn()

@@ -9,18 +9,18 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.utils import get_device
 
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     _expected_audio_tokens,
     build_cache_namespace,
 )
+from tests.unit_test.accel import get_device_or_cpu, has_accelerator
 
 _HIDDEN_SIZE = 4
-_DEVICE = get_device()
+_DEVICE = get_device_or_cpu()
 requires_accelerator = pytest.mark.skipif(
-    _DEVICE.partition(":")[0] not in ("cuda", "xpu"),
+    not has_accelerator(),
     reason="requires cuda or xpu",
 )
 _NAMESPACE = "testns"

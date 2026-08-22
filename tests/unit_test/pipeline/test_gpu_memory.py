@@ -7,12 +7,12 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from sglang.srt.utils import get_device
 
 import sglang_omni.utils.gpu_memory as gpu_memory
+from tests.unit_test.accel import has_accelerator
 
 _ACCELERATOR_ONLY = pytest.mark.skipif(
-    get_device().partition(":")[0] not in ("cuda", "xpu"),
+    not has_accelerator(),
     reason="requires cuda or xpu",
 )
 

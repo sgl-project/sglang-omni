@@ -17,6 +17,8 @@ from tests.unit_test.fixtures.qwen_predictor import (
     build_real_step_predictor_graph_talker,
 )
 
+pytestmark = pytest.mark.gpu
+
 # note (EdwardZhang1108): cpu/fp32 covers the math backend; cuda/bf16 locks the
 # production-dtype evidence into CI instead of living only in the PR description.
 _DEVICE_DTYPE_PARAMS = [

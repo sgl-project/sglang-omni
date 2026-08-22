@@ -321,6 +321,7 @@ def test_outbox_drain_yields_after_ready_message_batch(monkeypatch) -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.gpu
 def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing() -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()

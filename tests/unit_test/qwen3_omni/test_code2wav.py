@@ -192,6 +192,7 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
     assert load_calls == 0
 
 
+@pytest.mark.gpu
 def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
@@ -222,6 +223,7 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
     assert scheduler._chunk_aligned_dispatch is True
 
 
+@pytest.mark.gpu
 def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
@@ -268,6 +270,7 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
     )
 
 
+@pytest.mark.gpu
 def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
     monkeypatch,
 ) -> None:

@@ -12,6 +12,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+pytestmark = pytest.mark.gpu
+
 _N_VQ = 12
 
 

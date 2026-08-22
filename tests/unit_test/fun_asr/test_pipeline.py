@@ -103,6 +103,7 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
     assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
+@pytest.mark.gpu
 def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) -> None:
     from sglang_omni.scheduling.generation_batch_policy import (
         build_default_prefill_cuda_graph_bs,

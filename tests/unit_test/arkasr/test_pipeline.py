@@ -256,6 +256,7 @@ def _stub_arkasr_engine_build(
     )
 
 
+@pytest.mark.gpu
 @pytest.mark.parametrize("want_cuda_graph", [True, False])
 def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     monkeypatch: pytest.MonkeyPatch, want_cuda_graph: bool
@@ -297,6 +298,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert stub.encoder_service_kwargs["max_queue_size"] == 32
 
 
+@pytest.mark.gpu
 def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -317,6 +319,7 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
     assert stub.encoder_batch_sizes == [8]
 
 
+@pytest.mark.gpu
 def test_arkasr_pre_lm_encoder_can_be_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -121,6 +121,7 @@ def test_aggregated_input_rejects_dynamic_sources_outside_static_fanin() -> None
         handler.receive("req-1", "preprocess", make_stage_payload())
 
 
+@pytest.mark.gpu
 def test_stage_routes_results_streams_and_clears_abort_state() -> None:
     """Preserves result routing, stream forwarding, and abort cleanup."""
 
@@ -421,6 +422,7 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_payload_round_trip_preserves_cpu_tensor_devices() -> None:
     async def _run() -> None:
@@ -1019,6 +1021,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
     ]
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -1226,6 +1229,7 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     payload = make_stage_payload(

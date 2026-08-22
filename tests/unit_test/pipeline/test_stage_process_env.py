@@ -143,6 +143,7 @@ def test_xpu_tp_process_env_requires_gpu_id() -> None:
         )
 
 
+@pytest.mark.gpu
 def test_xpu_tp_rank_keeps_its_card_despite_an_inherited_cuda_marker(
     monkeypatch,
 ) -> None:

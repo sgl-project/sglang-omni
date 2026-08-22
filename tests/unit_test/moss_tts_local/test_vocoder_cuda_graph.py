@@ -89,6 +89,7 @@ def _decode_chunks(session, slot_seqs, chunk_t):
     return {s: torch.cat(parts[s], dim=-1) for s in slots}
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_some_graphs_captured(session_bundle):
     _, _, _, captured = session_bundle
@@ -128,6 +129,7 @@ def test_cuda_graph_capture_uses_thread_local_error_mode():
     ), "MOSS vocoder CUDA graph capture must use thread-local error mode"
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 @pytest.mark.parametrize("chunk_t", CHUNK_TS)
 @pytest.mark.parametrize("n_active", [1, 8])
@@ -155,6 +157,7 @@ def test_streaming_pcm_bit_identical(session_bundle, chunk_t, n_active):
         )
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 @pytest.mark.parametrize("chunk_t", [5, 25])
 def test_graph_tracks_eager_across_chunkings(session_bundle, chunk_t):
@@ -179,6 +182,7 @@ def test_graph_tracks_eager_across_chunkings(session_bundle, chunk_t):
     )
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_bundle):
     """A replay exception disables the runner (future steps go eager, bit-identical to a pure-eager
@@ -221,6 +225,7 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
         session._cg_runner = runner
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
     """Below the configured VRAM headroom, warmup skips capture (empty graph set, serving uses eager);
@@ -242,6 +247,7 @@ def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
     ), "VRAM guard must skip all captures under insufficient headroom"
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
 def test_capture_failure_falls_back_to_eager(session_bundle):
     """A capture exception is caught per-T, that T dropped, serving uses eager; forced via _capture_frame_count raising. (A real mid-capture OOM does not wedge the CUDA context, verified empirically.)"""
