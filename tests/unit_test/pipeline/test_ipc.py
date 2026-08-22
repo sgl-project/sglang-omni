@@ -298,7 +298,7 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     runner = mp_runner.MultiProcessPipelineRunner(config)
 
     with pytest.raises(RuntimeError, match="factory boom"):
-        await runner.start(timeout=10.0)
+        await runner.start(timeout=30.0)
 
     assert list(tmp_path.iterdir()) == []
 

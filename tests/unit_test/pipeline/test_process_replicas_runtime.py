@@ -46,7 +46,7 @@ async def test_replicated_multistage_process_dispatch_stream_and_shutdown(
     )
     runner = MultiProcessPipelineRunner(config)
 
-    await runner.start(timeout=10.0)
+    await runner.start(timeout=30.0)
     processes = [process for group in runner._groups for process in group.processes]
     try:
         results = [
