@@ -123,7 +123,8 @@ tests/
     │   ├── test_engine_io.py
     │   ├── test_model_runner.py
     │   ├── test_reference_encode.py
-    │   └── test_request_builders.py
+    │   ├── test_request_builders.py
+    │   └── test_transcription_adapter.py
     ├── dots_tts/
     │   ├── test_engine_builder.py
     │   ├── test_flow_head.py
