@@ -47,8 +47,7 @@ def load_stt_benchmark_samples(
     split: str = STT_BENCHMARK_SPLIT,
     revision: str | None = None,
 ) -> list[SampleInput]:
-    """Load STT benchmark samples from a HuggingFace Parquet repo.
-    """
+    """Load STT benchmark samples from a HuggingFace Parquet repo."""
     if revision is None and repo_id == STT_BENCHMARK_DATASET_ID:
         revision = STT_BENCHMARK_DATASET_REVISION
 

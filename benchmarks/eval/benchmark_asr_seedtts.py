@@ -469,8 +469,7 @@ def _print_table(aggregates: list[dict]) -> None:
 def add_common_args(
     parser: argparse.ArgumentParser, *, default_output: str
 ) -> argparse.ArgumentParser:
-    """Add the router, sweep, provenance, monitoring, and output options.
-    """
+    """Add the router, sweep, provenance, monitoring, and output options."""
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--port",
