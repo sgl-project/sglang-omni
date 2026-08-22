@@ -296,6 +296,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
 
     from transformers import AutoProcessor
 
+    from sglang_omni import platforms
     from sglang_omni.models.moss_transcribe_diarize import (
         engine_builder,
         request_builders,
@@ -334,6 +335,10 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         enable_prefill_input_embeds=False,
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
 
     processor = SimpleNamespace(
         tokenizer=object(),
@@ -396,7 +401,6 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
     return calls
 
 
-@pytest.mark.accelerator
 def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -421,7 +425,6 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert scheduler_kwargs["prefill_coalesce_after_builds_during_decode"] is True
 
 
-@pytest.mark.accelerator
 def test_factory_context_length_override_uses_final_server_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

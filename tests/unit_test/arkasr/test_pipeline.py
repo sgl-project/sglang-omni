@@ -11,6 +11,7 @@ from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from transformers import WhisperConfig
 
 import sglang_omni.models.arkasr.engine_builder as arkasr_builder
+import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
@@ -173,6 +174,10 @@ def _stub_arkasr_engine_build(
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
 
     monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
+
+    monkeypatch.setattr(
         arkasr_builder,
         "AutoTokenizer",
         SimpleNamespace(from_pretrained=lambda *a, **k: object()),
@@ -256,7 +261,6 @@ def _stub_arkasr_engine_build(
     )
 
 
-@pytest.mark.accelerator
 @pytest.mark.parametrize("want_cuda_graph", [True, False])
 def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     monkeypatch: pytest.MonkeyPatch, want_cuda_graph: bool
@@ -298,7 +302,6 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert stub.encoder_service_kwargs["max_queue_size"] == 32
 
 
-@pytest.mark.accelerator
 def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -319,7 +322,6 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
     assert stub.encoder_batch_sizes == [8]
 
 
-@pytest.mark.accelerator
 def test_arkasr_pre_lm_encoder_can_be_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

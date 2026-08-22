@@ -39,6 +39,14 @@ class _FactoryModel(FakeCode2WavModel):
         return self
 
 
+def _pin_cuda_platform(monkeypatch) -> None:
+    import sglang_omni.platforms as platforms
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+
+
 class _FakeCudaGraphRunner:
     def __init__(self, model, *, replay_error: Exception | None = None) -> None:
         self.model = model
@@ -192,10 +200,10 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
     assert load_calls == 0
 
 
-@pytest.mark.accelerator
 def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
+    _pin_cuda_platform(monkeypatch)
     model = _FactoryModel(num_quantizers=12)
     runner = SimpleNamespace(
         available_batch_sizes=lambda frames: (8, 4, 2, 1),
@@ -223,10 +231,10 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
     assert scheduler._chunk_aligned_dispatch is True
 
 
-@pytest.mark.accelerator
 def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
+    _pin_cuda_platform(monkeypatch)
     captured_keys: list[tuple] = []
 
     class _RecordingRunner:
@@ -270,10 +278,10 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
     )
 
 
-@pytest.mark.accelerator
 def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
     monkeypatch,
 ) -> None:
+    _pin_cuda_platform(monkeypatch)
     build_calls: list[tuple] = []
 
     class _DisabledRunner:

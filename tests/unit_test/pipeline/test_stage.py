@@ -121,9 +121,12 @@ def test_aggregated_input_rejects_dynamic_sources_outside_static_fanin() -> None
         handler.receive("req-1", "preprocess", make_stage_payload())
 
 
-@pytest.mark.accelerator
-def test_stage_routes_results_streams_and_clears_abort_state() -> None:
+def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> None:
     """Preserves result routing, stream forwarding, and abort cleanup."""
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
 
     async def _run() -> None:
         relay = FakeRelay()

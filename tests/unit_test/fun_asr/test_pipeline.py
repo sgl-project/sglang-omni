@@ -9,6 +9,7 @@ import pytest
 
 import sglang_omni.models.fun_asr.engine_builder as fun_asr_builder
 import sglang_omni.models.fun_asr.stages as fun_asr_stages
+import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.engine_factory as engine_factory
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
@@ -103,7 +104,6 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
     assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
-@pytest.mark.accelerator
 def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) -> None:
     from sglang_omni.scheduling.generation_batch_policy import (
         build_default_prefill_cuda_graph_bs,
@@ -119,6 +119,10 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         return SimpleNamespace(input_ids=[0] * len(text))
 
     adapter_kwargs: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
 
     monkeypatch.setattr(
         fun_asr_builder.AutoTokenizer,
