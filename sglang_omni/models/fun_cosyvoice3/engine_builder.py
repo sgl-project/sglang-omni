@@ -52,7 +52,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             "torch_compile_max_bs": 32,
             "dtype": dtype,
             "disable_cuda_graph": False,
-            "disable_overlap_schedule": True,
+            "disable_overlap_schedule": False,
             "enable_torch_compile": False,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 4096,
