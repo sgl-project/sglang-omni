@@ -470,7 +470,6 @@ def test_qwen3_omni_speech_default_topology_compiles() -> None:
         "preprocessing",
         "image_encoder",
         "audio_encoder",
-        "mm_aggregate",
         "thinker",
         "decode",
         "talker_ar",
