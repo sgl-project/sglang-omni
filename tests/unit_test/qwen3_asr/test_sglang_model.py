@@ -172,6 +172,7 @@ def test_get_audio_feature_rejects_mismatched_mask_shape() -> None:
         Qwen3ASRForConditionalGeneration.get_audio_feature(model, items)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_get_audio_feature_normalizes_cpu_masks_for_cuda_features() -> None:
     tower = _RecordingAudioTower().cuda()

@@ -121,6 +121,7 @@ def test_aggregated_input_rejects_dynamic_sources_outside_static_fanin() -> None
         handler.receive("req-1", "preprocess", make_stage_payload())
 
 
+@pytest.mark.accelerator
 def test_stage_routes_results_streams_and_clears_abort_state() -> None:
     """Preserves result routing, stream forwarding, and abort cleanup."""
 
@@ -421,6 +422,7 @@ def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_payload_round_trip_preserves_cpu_tensor_devices() -> None:
     async def _run() -> None:
@@ -1019,6 +1021,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
     ]
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> None:
     monkeypatch.setattr(
@@ -1226,6 +1229,7 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     payload = make_stage_payload(
@@ -1483,7 +1487,7 @@ def test_replica_bindings_not_recorded_after_abort() -> None:
     assert "req-1" not in stage._replica_bindings
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
     monkeypatch,
@@ -1525,7 +1529,7 @@ def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
     asyncio.run(_run())
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
     async def _run() -> None:
@@ -1555,7 +1559,7 @@ def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
     asyncio.run(_run())
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
     """The scoped audio policy changes transport only; values stay untouched."""

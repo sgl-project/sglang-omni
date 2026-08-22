@@ -64,6 +64,7 @@ def test_dtype_and_contiguity_preserved() -> None:
     assert out.is_contiguous()
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_accelerator_pack_matches_cpu_reference() -> None:
     lengths = [1000, 3000, 512]
@@ -74,6 +75,7 @@ def test_accelerator_pack_matches_cpu_reference() -> None:
     torch.testing.assert_close(out.cpu(), _reference(feats, mask))
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_accelerator_fallback_gather_matches_cpu_reference() -> None:
     feats = torch.randn(2, MEL, 16)

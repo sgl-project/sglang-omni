@@ -714,6 +714,7 @@ def test_query_chunked_sdpa_matches_dense_reference(
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-4)
 
 
+@pytest.mark.accelerator
 def test_query_chunked_sdpa_matches_dense_reference_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
@@ -737,6 +738,7 @@ def test_query_chunked_sdpa_matches_dense_reference_cuda() -> None:
     torch.testing.assert_close(actual, expected, atol=4e-2, rtol=3e-2)
 
 
+@pytest.mark.accelerator
 def test_auto_backend_runs_query_chunked_sdpa_for_cuda_float32() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
@@ -811,6 +813,7 @@ def test_query_chunked_sdpa_handles_empty_and_zero_length_inputs() -> None:
     assert torch.count_nonzero(padded[1]) == 0
 
 
+@pytest.mark.accelerator
 def test_local_causal_attention_keeps_packed_flash_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
@@ -1059,6 +1062,7 @@ def test_projected_transformer_single_padded_input_uses_masked_pack() -> None:
     assert torch.equal(out_lengths, lengths)
 
 
+@pytest.mark.accelerator
 def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
@@ -1096,6 +1100,7 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
     torch.testing.assert_close(flash_out, sdpa_out, atol=4e-2, rtol=3e-2)
 
 
+@pytest.mark.accelerator
 def test_sglang_local_packed_flash_matches_sdpa_reference_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
@@ -1181,6 +1186,7 @@ def test_cached_packed_rope_matches_moss_interleaved_reference() -> None:
     assert cache._cos.data_ptr() == cos_ptr
 
 
+@pytest.mark.accelerator
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_exact_packed_rope_matches_reference_cuda(dtype: torch.dtype) -> None:
     if not torch.cuda.is_available():

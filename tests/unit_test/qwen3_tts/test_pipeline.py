@@ -966,6 +966,7 @@ def test_qwen3_tts_reference_code_batcher_has_no_stream_for_cpu_device() -> None
         batcher.close()
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_qwen3_tts_reference_code_batcher_encodes_on_dedicated_cuda_stream() -> None:
     device = torch.device("cuda", torch.cuda.current_device())

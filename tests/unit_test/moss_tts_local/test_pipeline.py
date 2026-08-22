@@ -1188,6 +1188,7 @@ def test_build_generation_kwargs_precedence():
     assert kwargs["audio_temperature"] == 1.2
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_decode_frame_graphed_matches_branchless_eager():
     """The captured frame graph must reproduce the branchless eager decode."""
@@ -1721,6 +1722,7 @@ def test_cached_reference_encoder_data_uri_duration_gate():
     assert len(enc._service._inflight) == 0
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="needs CUDA: post1 multinomial_with_seed is a Triton kernel (no CPU backend)",

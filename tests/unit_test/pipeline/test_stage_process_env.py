@@ -156,6 +156,7 @@ def test_xpu_tp_rank_keeps_its_card_despite_an_inherited_cuda_marker(
 
     monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.delenv("ZE_AFFINITY_MASK", raising=False)
     spec = StageLaunchConfig(
         stage_name="thinker",

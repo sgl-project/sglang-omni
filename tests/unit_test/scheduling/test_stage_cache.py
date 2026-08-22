@@ -168,6 +168,7 @@ def test_pin_memory_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch) -> No
     assert cached is not None and cached.device.type == "cpu"
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pinned_cache_stores_device_tensors_in_page_locked_memory() -> None:
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
@@ -184,6 +185,7 @@ def test_pinned_cache_stores_device_tensors_in_page_locked_memory() -> None:
     assert all(t.is_pinned() for t in nested["a"])
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
@@ -195,6 +197,7 @@ def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
     assert cached_host.data_ptr() == host.data_ptr() and cached_host.is_pinned()
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pinned_cache_falls_back_to_pageable_on_alloc_failure(
     monkeypatch: pytest.MonkeyPatch,
