@@ -90,8 +90,6 @@ def parse_args() -> argparse.Namespace:
     )
     add_common_args(parser, default_output=RESULTS_FILE)
     args = finalize_args(parser.parse_args())
-    # note: the set is English only; the sweep reads args.lang for the
-    # request language and the WER normalizer.
     args.lang = STT_BENCHMARK_LANG
     return args
 
@@ -175,8 +173,6 @@ def main() -> None:
         "results": aggregates,
     }
     if args.fingerprint:
-        # The client fingerprint equals the server's only when both share one
-        # host and checkout; the server block records what the server reports.
         payload["environment_fingerprint"] = {
             "client": collect_environment_fingerprint(args.model_path),
             "server": collect_server_identity(f"http://{args.host}:{args.port}"),
