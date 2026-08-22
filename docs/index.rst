@@ -87,7 +87,6 @@ Supported Models
 
    get_started/installation.md
    get_started/installation_xpu.md
-   get_started/release_notes.md
 
 
 .. toctree::
@@ -121,6 +120,7 @@ Supported Models
    basic_usage/audio_translations.md
    basic_usage/tts.md
    basic_usage/tts_process_topology.md
+   basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
 

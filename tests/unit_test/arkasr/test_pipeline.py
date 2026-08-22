@@ -11,6 +11,7 @@ from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from transformers import WhisperConfig
 
 import sglang_omni.models.arkasr.engine_builder as arkasr_builder
+import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
@@ -171,6 +172,10 @@ def _stub_arkasr_engine_build(
         ),
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
 
     monkeypatch.setattr(
         arkasr_builder,

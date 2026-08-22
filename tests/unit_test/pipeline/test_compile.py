@@ -5,9 +5,12 @@ from __future__ import annotations
 import pytest
 
 import sglang_omni.platforms as platforms
+from sglang_omni.config.runtime import resolve_factory_signature_args
 from sglang_omni.config.schema import (
     EndpointsConfig,
     PipelineConfig,
+    PlacementConfig,
+    ProcessConfig,
     StageResourceConfig,
     StageRuntimeConfig,
 )
@@ -17,8 +20,16 @@ from sglang_omni.pipeline.mp_runner import (
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
+
+
+@pytest.fixture
+def synthetic_gpu_topology(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sglang_omni.pipeline import runtime_config
+
+    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: None)
 
 
 def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
@@ -123,7 +134,6 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -156,6 +166,7 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
 def test_runner_specs_defer_factory_signature_import_to_child(
     tmp_path,
     monkeypatch,
+    synthetic_gpu_topology,
 ) -> None:
     import sglang_omni.config.runtime as runtime_config
 
@@ -183,7 +194,6 @@ def test_runner_specs_defer_factory_signature_import_to_child(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -215,7 +225,6 @@ def test_runner_specs_wire_same_process_targets_only_for_local_edges() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -276,7 +285,6 @@ def test_runner_specs_expose_process_total_in_construction_order(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -292,15 +300,14 @@ def test_runner_specs_expose_process_total_in_construction_order(
     ] == pytest.approx(expected_fractions)
 
 
-def test_fused_stages_compile_to_same_process_local_edges() -> None:
+def test_shared_process_name_compiles_to_same_process_local_edges() -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
-            stage("preprocess", next="encoder", process="preprocess"),
-            stage("encoder", next="decode", gpu=0, process="encoder"),
+            stage("preprocess", next="encoder", process="front"),
+            stage("encoder", next="decode", gpu=0, process="front"),
             stage("decode", terminal=True, process="decode"),
         ],
-        fused_stages=[["preprocess", "encoder"]],
     )
     prep = prepare_pipeline_runtime(config)
 
@@ -309,11 +316,6 @@ def test_fused_stages_compile_to_same_process_local_edges() -> None:
         "encoder",
         "decode",
     ]
-    assert prep.name_map == {
-        "preprocess": "preprocess",
-        "encoder": "encoder",
-        "decode": "decode",
-    }
     assert prep.entry_stage == "preprocess"
     assert prep.process_plan.stage_to_process["preprocess"] == (
         prep.process_plan.stage_to_process["encoder"]
@@ -326,7 +328,6 @@ def test_fused_stages_compile_to_same_process_local_edges() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -350,7 +351,6 @@ def test_runner_specs_wire_same_process_stream_targets() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -377,7 +377,6 @@ def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:
         config,
         ctx=FakeMpContext(),
         stages_cfg=prep.stages_cfg,
-        name_map=prep.name_map,
         endpoints=prep.endpoints,
         placement_plan=prep.placement_plan,
         process_plan=prep.process_plan,
@@ -388,7 +387,9 @@ def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:
     assert specs["thinker"].disable_direct_cuda_ipc_payload is False
 
 
-def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
+def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages(
+    synthetic_gpu_topology,
+) -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
@@ -405,7 +406,6 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
         _resolve_same_process_targets(
             preprocess,
             stage_cfg_by_name,
-            prep.name_map,
             prep.process_plan,
         )
         == set()
@@ -414,38 +414,85 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
         _resolve_same_process_targets(
             thinker,
             stage_cfg_by_name,
-            prep.name_map,
             prep.process_plan,
         )
         == set()
     )
 
 
-def test_fused_stages_reject_unsupported_internal_stage_contracts() -> None:
-    with pytest.raises(ValueError, match="cannot include TP stage"):
-        PipelineConfig(
-            model_path="model",
-            stages=[
-                stage("preprocess", next="encoder", process="preprocess"),
-                stage("encoder", gpu=[0, 1], tp_size=2, terminal=True),
-            ],
-            fused_stages=[["preprocess", "encoder"]],
+def test_runner_copies_whole_process_and_injects_replica_devices(
+    tmp_path,
+    synthetic_gpu_topology,
+) -> None:
+    config = PipelineConfig(
+        model_path="model",
+        stages=[
+            stage("src", next="gen"),
+            stage(
+                "gen",
+                next="wav",
+                process="speech",
+                gpu=0,
+                factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+            ),
+            stage(
+                "wav",
+                terminal=True,
+                process="speech",
+                gpu=0,
+                factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+            ),
+        ],
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        processes={"speech": ProcessConfig(num_replicas=2, replica_devices="1,2")},
+        placement=PlacementConfig(require_memory_fraction_for_colocation=False),
+    )
+    prep = prepare_pipeline_runtime(config)
+    by_name = {stage_cfg.name: stage_cfg for stage_cfg in prep.stages_cfg}
+
+    def resolve(name: str) -> set[str]:
+        return _resolve_same_process_targets(
+            by_name[name],
+            by_name,
+            prep.process_plan,
+            prep.replica_topology,
         )
 
-    with pytest.raises(ValueError, match="must route only to 'encoder'"):
-        PipelineConfig(
-            model_path="model",
-            stages=[
-                stage("preprocess", next="decode", process="preprocess"),
-                stage("encoder", next="decode", process="encoder"),
-                stage("decode", terminal=True, process="decode"),
-            ],
-            fused_stages=[["preprocess", "encoder"]],
+    try:
+        groups = _build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+            replica_topology=prep.replica_topology,
         )
+    finally:
+        prep.runtime_dir.close()
+
+    by_group = {group.group_name: group for group in groups}
+    for replica_id, gpu_id in enumerate((1, 2)):
+        suffix = f"@r{replica_id}"
+        specs = by_group[f"speech{suffix}"].specs
+        assert [spec.stage_name for spec in specs] == [f"gen{suffix}", f"wav{suffix}"]
+        assert resolve(f"gen{suffix}") == {f"wav{suffix}"}
+        for spec in specs:
+            factory_args = resolve_factory_signature_args(
+                import_string(spec.factory),
+                spec.factory_args,
+                defaults=spec.factory_arg_defaults,
+                require_gpu_id=spec.require_factory_gpu_id,
+                stage_name=spec.stage_name,
+            )
+            assert spec.require_factory_gpu_id is True
+            assert factory_args["gpu_id"] == gpu_id
 
 
 def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
-    tmp_path, monkeypatch
+    tmp_path,
+    monkeypatch,
+    synthetic_gpu_topology,
 ) -> None:
     """Preserves TP process specs and one-visible-device env mapping."""
     monkeypatch.setattr(
@@ -472,7 +519,6 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,
@@ -515,7 +561,6 @@ def test_mp_runner_keeps_cpu_stage_without_gpu_identity(tmp_path) -> None:
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
-            name_map=prep.name_map,
             endpoints=prep.endpoints,
             placement_plan=prep.placement_plan,
             process_plan=prep.process_plan,

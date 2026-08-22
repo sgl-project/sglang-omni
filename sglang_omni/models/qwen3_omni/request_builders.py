@@ -85,7 +85,7 @@ def resolve_thinker_next_stages(
     return DECODE_STAGE
 
 
-def resolve_mm_aggregate_next_stages(
+def resolve_encoder_next_stages(
     request_id: str, output: StagePayload
 ) -> str | list[str]:
     del request_id
@@ -118,6 +118,20 @@ def resolve_preprocessing_next_stages(
         *_encoder_stages_with_model_inputs(state.encoder_inputs),
         MM_AGGREGATE_STAGE,
     ]
+
+
+def resolve_preprocessing_next_stages_speech(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    del request_id
+    state = Qwen3OmniPipelineState.from_dict(output.data)
+    targets = [
+        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        THINKER_STAGE,
+    ]
+    if should_generate_audio_output(output):
+        targets.append(TALKER_STAGE)
+    return targets
 
 
 def resolve_mm_aggregate_wait_sources(
@@ -266,6 +280,31 @@ _TALKER_UNUSED_MODEL_INPUT_KEYS = (
     "video_deepstack_visual_embeds",
     "deepstack_visual_embeds",
 )
+
+_TALKER_UNUSED_ENCODER_OUT_KEYS = (
+    "deepstack_visual_embeds_image",
+    "deepstack_visual_embeds_video",
+)
+
+
+def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
+    state = Qwen3OmniPipelineState.from_dict(payload.data)
+    stage_name = _single_encoder_stage_name(state)
+    encoder_out = state.encoder_outs.get(stage_name, {})
+    if isinstance(encoder_out, dict):
+        encoder_out = {
+            k: v
+            for k, v in encoder_out.items()
+            if k not in _TALKER_UNUSED_ENCODER_OUT_KEYS
+        }
+    projected = Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_out})
+    return _payload_with_state(payload, projected)
+
+
+def merge_for_talker(payloads: dict[str, StagePayload]) -> StagePayload:
+    from sglang_omni.models.qwen3_omni.merge import merge_for_thinker
+
+    return project_mm_aggregate_to_talker_ar(merge_for_thinker(payloads))
 
 
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:

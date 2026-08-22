@@ -15,7 +15,12 @@ from sglang_omni.cli.serve import (
     apply_torch_compile_cli_overrides,
     serve,
 )
-from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.config import (
+    PipelineConfig,
+    ProcessConfig,
+    StageConfig,
+    resolve_stage_factory_args,
+)
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -293,6 +298,54 @@ def test_qwen_text_encoder_mem_reserve_still_targets_thinker():
     assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
 
 
+def test_qwen_text_tp_override_rejects_shared_process():
+    original = Qwen3OmniPipelineConfig(model_path="dummy")
+
+    with pytest.raises(typer.BadParameter, match="cannot be shared"):
+        apply_parallelism_cli_overrides(
+            original,
+            thinker_tp_size=2,
+            thinker_gpus="0,1",
+            talker_gpu=None,
+            code2wav_gpu=None,
+        )
+
+    assert _stage(original, "thinker").tp_size == 1
+
+
+@pytest.mark.parametrize("stage_name", ["thinker", "image_encoder"])
+def test_tp_override_to_one_materializes_implicit_process(stage_name):
+    original = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name=stage_name,
+                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                gpu=[0, 1],
+                tp_size=2,
+                terminal=True,
+            )
+        ],
+    )
+    overrides = {
+        "thinker_tp_size": None,
+        "thinker_gpus": None,
+        "image_encoder_tp_size": None,
+        "image_encoder_gpus": None,
+        "talker_gpu": None,
+        "code2wav_gpu": None,
+    }
+    overrides[f"{stage_name}_tp_size"] = 1
+    overrides[f"{stage_name}_gpus"] = "0"
+
+    config = apply_parallelism_cli_overrides(original, **overrides)
+
+    stage = _stage(config, stage_name)
+    assert stage.tp_size == 1
+    assert stage.gpu == 0
+    assert stage.process == stage_name
+
+
 def test_qwen_speech_encoder_mem_reserve_still_targets_thinker():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
@@ -352,7 +405,7 @@ def test_speech_colocated_rejects_code2wav_gpu_override_to_other_gpu():
 def test_speech_colocated_allows_gpu_override_to_same_gpu():
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -362,6 +415,52 @@ def test_speech_colocated_allows_gpu_override_to_same_gpu():
 
     assert next(stage for stage in config.stages if stage.name == "talker_ar").gpu == 0
     assert next(stage for stage in config.stages if stage.name == "code2wav").gpu == 0
+
+
+@pytest.mark.parametrize(
+    ("stage_name", "flag_name", "override_name", "override_value"),
+    [
+        ("thinker", "--thinker-gpus", "thinker_gpus", "3"),
+        (
+            "image_encoder",
+            "--image-encoder-gpus",
+            "image_encoder_gpus",
+            "3",
+        ),
+        ("talker_ar", "--talker-gpu", "talker_gpu", 3),
+        ("code2wav", "--code2wav-gpu", "code2wav_gpu", 3),
+    ],
+)
+def test_gpu_cli_override_rejects_process_replica_devices(
+    stage_name: str,
+    flag_name: str,
+    override_name: str,
+    override_value: str | int,
+) -> None:
+    config = Qwen3OmniSpeechPipelineConfig(
+        model_path="dummy",
+        processes={
+            stage_name: ProcessConfig(
+                num_replicas=2,
+                replica_devices=[1, 2],
+            )
+        },
+    )
+    overrides = {
+        "thinker_tp_size": None,
+        "thinker_gpus": None,
+        "image_encoder_tp_size": None,
+        "image_encoder_gpus": None,
+        "talker_gpu": None,
+        "code2wav_gpu": None,
+    }
+    overrides[override_name] = override_value
+
+    with pytest.raises(
+        typer.BadParameter,
+        match=rf"{flag_name}.*process {stage_name!r} declares replica_devices",
+    ):
+        apply_parallelism_cli_overrides(config, **overrides)
 
 
 def test_cuda_graph_cli_override_reaches_resolved_sglang_args():

@@ -11,9 +11,12 @@ import torch
 
 from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="multinomial_with_seed needs CUDA"
-)
+pytestmark = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="multinomial_with_seed needs CUDA"
+    ),
+]
 
 B, N, V = 3, 8, 64
 

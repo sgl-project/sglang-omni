@@ -428,6 +428,9 @@ async def _run_server(
             speech_reference_text_required=(
                 pipeline_config.speech_reference_text_required
             ),
+            speech_reference_text_excludes_instructions=(
+                pipeline_config.speech_reference_text_excludes_instructions
+            ),
             additional_speech_languages=pipeline_config.additional_speech_languages,
             enable_realtime=enable_realtime,
             supports_realtime_audio_output=(

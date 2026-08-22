@@ -292,6 +292,7 @@ def test_rollout_logprob_host_staging_grows_with_async_batch(
     assert smaller.shape == (2, 8)
 
 
+@pytest.mark.accelerator
 def test_async_real_pinned_path_matches_sync():
     """CUDA-guarded: run the async path through the REAL _next_host_staging
     (pinned host buffer + non-blocking copy on a CUDA model) and confirm it

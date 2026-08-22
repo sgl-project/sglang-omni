@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sglang_omni.config.schema import StageConfig
-from sglang_omni.pipeline.stage.runtime import Stage
+from sglang_omni.config.placement import build_stage_placement_plan
+from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.topology import (
+    ProcessTopologyPlan,
+    build_process_topology_plan,
+    compile_logical_processes,
+)
+from sglang_omni.pipeline.replicas import expand_replica_stages
 from sglang_omni.scheduling.messages import IncomingMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeRelay,
@@ -18,12 +24,32 @@ from tests.unit_test.fixtures.pipeline_fakes import (
 
 FACTORY = fake_factory_path("make_scheduler")
 
+if TYPE_CHECKING:
+    from sglang_omni.pipeline.stage.runtime import Stage
+
 
 def stage(name: str, **kwargs: Any) -> StageConfig:
     kwargs.setdefault("factory", FACTORY)
     if kwargs.get("tp_size", 1) == 1:
         kwargs.setdefault("process", "pipeline")
     return StageConfig(name=name, **kwargs)
+
+
+def build_compiled_process_topology(
+    config: PipelineConfig,
+) -> ProcessTopologyPlan:
+    logical_plan, stages = compile_logical_processes(config)
+    stages, replica_topology = expand_replica_stages(stages, logical_plan)
+    placement = build_stage_placement_plan(
+        config,
+        stages_cfg=stages,
+        replica_instances=replica_topology.replicas,
+    )
+    return build_process_topology_plan(
+        config,
+        placement,
+        stages_cfg=stages,
+    )
 
 
 def make_stage(
@@ -38,6 +64,8 @@ def make_stage(
     control_plane: RecordingStageControlPlane | None = None,
     **kwargs: Any,
 ) -> Stage:
+    from sglang_omni.pipeline.stage.runtime import Stage
+
     return Stage(
         name=name,
         role=role,

@@ -5,7 +5,34 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+REPLICA_SEPARATOR = "@r"
+
+
+def replica_instance_name(logical_name: str, replica_id: int) -> str:
+    return f"{logical_name}{REPLICA_SEPARATOR}{replica_id}"
+
+
+def parse_replica_instance_name(name: str) -> tuple[str, int | None]:
+    """Split ``stage@rN`` into ``(stage, N)``; plain names get ``None``."""
+    logical, sep, suffix = name.rpartition(REPLICA_SEPARATOR)
+    if not sep or not suffix.isdigit():
+        return name, None
+    return logical, int(suffix)
+
+
+def stage_process_name(stage: "StageConfig") -> str:
+    """Process Name that owns *stage*.
+
+    Non-TP stages declare it explicitly. A TP stage owns its process outright,
+    so it falls back to the stage name when no process is declared.
+    """
+    if stage.tp_size > 1:
+        return stage.process or stage.name
+    if not stage.process:
+        raise ValueError(f"Stage {stage.name!r} must declare process")
+    return stage.process
 
 
 class CommConfig(BaseModel):
@@ -125,6 +152,57 @@ class PlacementConfig(BaseModel):
             )
 
 
+# Note (kaige): validation follows the context each layer owns. StageConfig and
+# ProcessConfig check object-local fields, PipelineConfig checks declarations
+# and references, and logical-process compilation checks derived topology once
+# before workers start. Runtime only consumes the compiled plans.
+class ProcessConfig(BaseModel):
+    """Replica policy for one logical process.
+
+    Keyed by Process Name in ``PipelineConfig.processes``. Member stages come
+    from ``StageConfig.process``, so this never repeats them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    num_replicas: int = 1
+    replica_devices: list[int] | None = None
+
+    @field_validator("replica_devices", mode="before")
+    @classmethod
+    def _parse_replica_devices(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return [value]
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",")]
+            if any(not part for part in parts):
+                raise ValueError("processes.replica_devices must contain GPU ids")
+            try:
+                return [int(part) for part in parts]
+            except ValueError as exc:
+                raise ValueError(
+                    "processes.replica_devices must contain only integer GPU ids"
+                ) from exc
+        return value
+
+    @field_validator("replica_devices")
+    @classmethod
+    def _validate_replica_devices(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("processes.replica_devices must not be empty")
+        if any(device_id < 0 for device_id in value):
+            raise ValueError("processes.replica_devices GPU ids must be >= 0")
+        return value
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.num_replicas < 1:
+            raise ValueError("processes.num_replicas must be >= 1")
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -211,6 +289,25 @@ class StageConfig(BaseModel):
         ):
             self.tp_size = self.parallelism.tp
 
+        gpu = self.gpu
+        if gpu is None:
+            if self.tp_size > 1:
+                raise ValueError(
+                    f"Stage {self.name!r}: gpu is required when tp_size={self.tp_size}"
+                )
+            return
+
+        gpu_ids = [gpu] if isinstance(gpu, int) else gpu
+        if len(gpu_ids) != self.tp_size:
+            raise ValueError(
+                f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries "
+                f"but tp_size={self.tp_size}"
+            )
+        if any(gpu_id < 0 for gpu_id in gpu_ids):
+            raise ValueError(f"Stage {self.name!r}: GPU ids must be >= 0")
+        if len(set(gpu_ids)) != len(gpu_ids):
+            raise ValueError(f"Stage {self.name!r}: GPU ids must be unique")
+
 
 class AudioChunkingConfig(BaseModel):
     """Per-model long-audio policy for the transcription endpoint.
@@ -292,6 +389,7 @@ class PipelineConfig(BaseModel):
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
+    speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig()
 
@@ -299,7 +397,7 @@ class PipelineConfig(BaseModel):
     stages: list[StageConfig]
     name: str | None = None
     entry_stage: str | None = None
-    fused_stages: list[list[str]] = Field(default_factory=list)
+    processes: dict[str, ProcessConfig] = Field(default_factory=dict)
     runtime_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     env_defaults: dict[str, str] = Field(default_factory=dict)
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
@@ -310,7 +408,7 @@ class PipelineConfig(BaseModel):
 
     def model_post_init(self, __context: Any = None) -> None:
         self._validate_general()
-        self._validate_fusion()
+        self._validate_processes()
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
@@ -326,36 +424,20 @@ class PipelineConfig(BaseModel):
         return [s.name for s in self.stages if s.terminal]
 
     @classmethod
-    def isolation_role_to_stage(cls) -> dict[str, str]:
-        """Map public isolation roles to model-specific stage names."""
-        return {}
-
-    @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        """Pipeline edges that stay correct once they become cross-process.
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        """Pipeline edges whose stages must stay in the same process.
 
         Keyed by edge rather than by stage because correctness depends on which
         handoff crosses a process boundary, not on which stage moved. Grouping
         ``preprocessing`` with ``audio_encoder`` leaves their shared handoff
-        local and only crosses ``audio_encoder -> tts_engine``.
+        local and permits ``audio_encoder -> tts_engine`` to cross processes.
 
-        An edge is safe when the downstream stage rebuilds everything it needs
-        from the payload rather than from a process-local registry. Independent
-        of whether the split also needs GPU memory fractions.
+        Declare an edge when the downstream stage depends on process-local
+        state that the payload does not carry. A model may also retain an edge
+        temporarily to preserve an established support boundary; document that
+        compatibility guard at the declaration.
         """
         return frozenset()
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        """Map newly crossed pipeline edges to GPU memory fractions.
-
-        Only a placement recommendation applied when an override makes the
-        edge cross processes. An edge absent here is still splittable when the
-        config already declares fractions, or when nothing else shares its GPU.
-        """
-        return {}
 
     @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
@@ -461,18 +543,6 @@ class PipelineConfig(BaseModel):
                 raise ValueError(
                     f"Stage {s.name!r} cannot set stream_done_to_fn without stream_to"
                 )
-            if s.tp_size < 1:
-                raise ValueError(f"Stage {s.name!r} must have tp_size >= 1")
-            if s.parallelism.tp != s.tp_size:
-                raise ValueError(
-                    f"Stage {s.name!r}: tp_size={s.tp_size} conflicts with "
-                    f"parallelism.tp={s.parallelism.tp}"
-                )
-            if isinstance(s.gpu, list) and len(s.gpu) != s.tp_size:
-                raise ValueError(
-                    f"Stage {s.name!r}: gpu has {len(s.gpu)} entries "
-                    f"but tp_size={s.tp_size}"
-                )
             if s.wait_for:
                 if not s.merge_fn:
                     raise ValueError(f"Stage {s.name!r} has wait_for but no merge_fn")
@@ -501,6 +571,13 @@ class PipelineConfig(BaseModel):
                         f"Stage {s.name!r} project_payload references unknown stage {t!r}"
                     )
 
+        for s in self.stages:
+            if parse_replica_instance_name(s.name)[1] is not None:
+                raise ValueError(
+                    f"Stage name {s.name!r} uses the '@r<N>' suffix reserved "
+                    "for replica instances"
+                )
+
         for stage_name in self.runtime_overrides:
             if stage_name not in names:
                 raise ValueError(
@@ -516,89 +593,43 @@ class PipelineConfig(BaseModel):
                 f"missing process for {missing_process}"
             )
 
-    def _validate_fusion(self) -> None:
-        names = [s.name for s in self.stages]
-        fused = self.fused_stages or []
-        if not fused:
-            return
-        index_map = {n: i for i, n in enumerate(names)}
-        stage_by_name = {s.name: s for s in self.stages}
-        seen: set[str] = set()
-        for group in fused:
-            if not group or len(group) < 2:
-                raise ValueError("fused_stages groups must have at least 2 stage names")
-            for n in group:
-                if n not in index_map:
-                    raise ValueError(f"fused stage {n!r} is not defined")
-                if n in seen:
-                    raise ValueError(f"stage {n!r} appears in multiple fused groups")
-                seen.add(n)
-            indices = [index_map[n] for n in group]
-            if indices != list(range(indices[0], indices[0] + len(indices))):
-                raise ValueError(f"fused group not adjacent/ordered: {group}")
-            self._validate_fused_group_contract(group, stage_by_name)
+    def _validate_processes(self) -> None:
+        """Check Process Names and the sparse ``processes`` replica policy.
 
-    def _validate_fused_group_contract(
-        self,
-        group: list[str],
-        stage_by_name: dict[str, StageConfig],
-    ) -> None:
-        stages = [stage_by_name[name] for name in group]
+        Membership grouping, cross-process edges, and device counts belong to
+        the logical-process compile step; only declaration-level facts that
+        need nothing but this config are checked here.
+        """
+        members: dict[str, list[StageConfig]] = {}
+        for stage in self.stages:
+            members.setdefault(stage_process_name(stage), []).append(stage)
 
-        for stage in stages:
-            if stage.tp_size != 1:
+        for process_name, stages in members.items():
+            if parse_replica_instance_name(process_name)[1] is not None:
                 raise ValueError(
-                    f"fused group {group} cannot include TP stage {stage.name!r}"
+                    f"Process name {process_name!r} uses the '@r<N>' suffix "
+                    "reserved for replica instances"
+                )
+            tp_stages = [stage.name for stage in stages if stage.tp_size > 1]
+            if len(tp_stages) > 1:
+                raise ValueError(
+                    f"Process name {process_name!r} is claimed by multiple TP "
+                    f"stages: {tp_stages}"
+                )
+            if tp_stages and len(stages) > 1:
+                others = [s.name for s in stages if s.name not in tp_stages]
+                raise ValueError(
+                    f"Process {process_name!r} holds TP stage {tp_stages[0]!r} "
+                    f"and cannot be shared with {others}"
                 )
 
-        gpu_ids = {
-            gpu_id for stage in stages for gpu_id in _stage_gpu_ids_for_fusion(stage)
-        }
-        if len(gpu_ids) > 1:
+        unknown = sorted(set(self.processes) - set(members))
+        if unknown:
             raise ValueError(
-                f"fused group {group} must fit on one GPU; got {sorted(gpu_ids)}"
+                f"processes references unknown process name(s): {unknown}. "
+                f"Declared process names: {sorted(members)}"
             )
-
-        for index, stage in enumerate(stages):
-            if index > 0 and stage.wait_for:
-                raise ValueError(
-                    f"fused group {group} cannot include internal fan-in stage "
-                    f"{stage.name!r}"
-                )
-            if index < len(stages) - 1:
-                expected_next = group[index + 1]
-                if stage.terminal or stage.route_fn is not None:
-                    raise ValueError(
-                        f"fused group {group} must be linear; internal stage "
-                        f"{stage.name!r} cannot be terminal or dynamic-routed"
-                    )
-                if _target_list(stage.next) != [expected_next]:
-                    raise ValueError(
-                        f"fused group {group} must be linear; stage "
-                        f"{stage.name!r} must route only to {expected_next!r}"
-                    )
-
-    def apply_fusion(self) -> tuple[list[StageConfig], dict[str, str], str]:
-        name_map = {s.name: s.name for s in self.stages}
-        return list(self.stages), name_map, self.resolved_entry_stage
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> PipelineConfig:
         return PipelineConfig(**data)
-
-
-def _target_list(targets: str | list[str] | None) -> list[str]:
-    if targets is None:
-        return []
-    if isinstance(targets, str):
-        return [targets]
-    return list(targets)
-
-
-def _stage_gpu_ids_for_fusion(stage: StageConfig) -> tuple[int, ...]:
-    gpu = stage.gpu
-    if gpu is None:
-        return ()
-    if isinstance(gpu, int):
-        return (gpu,)
-    return tuple(int(gpu_id) for gpu_id in gpu)

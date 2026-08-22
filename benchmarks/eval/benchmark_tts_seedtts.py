@@ -111,6 +111,8 @@ outlier-excluded corpus WER is 1.54%.
 | Higgs TTS | EN, stream=False | 4.68%   | 4.16%               | 0.00%                 | 91.2%              | 1088/1088 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | Higgs TTS | ZH, stream=False | 1.14%   | 1.08%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | MOSS-TTS | EN, stream=False | 1.93%   | 1.98%               | 0.00%                 | 8.1%               | 1088/1088 | 0       | PR #609 [H100, full-set, c=16, token-count=auto] |
+| Fun-CosyVoice3-0.5B | EN, stream=False | 1.37% | 1.27%       | 0.00%                 | 5.1%               | 1088/1088 | 0       | PR #1331 [H200, full-set, c=16, voice-clone (ref_text)] |
+| Fun-CosyVoice3-0.5B | ZH, stream=False | 0.74% | 0.72%       | 0.00%                 | 2.6%               | 2020/2020 | 0       | PR #1331 [H200, full-set, c=16, cross-lingual (no ref_text)] |
 
 Generation speed (generation.speed)
 
@@ -131,6 +133,8 @@ Generation speed (generation.speed)
 | Higgs TTS | EN, stream=False | 1.749       | 2.600         | 0.425    | 9.104          | 112.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | Higgs TTS | ZH, stream=False | 1.629       | 2.110         | 0.282    | 9.792          | 109.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
 | MOSS-TTS | EN, stream=False | 3.890       | 4.781         | 0.913    | 4.091          | 54.1                           | PR #609 [H100, full-set, c=16, token-count=auto] |
+| Fun-CosyVoice3-0.5B | EN, stream=False | 4.734 | 6.323     | 1.0791   | 3.327          | 104.7                          | PR #1331 [H200, full-set, c=16, voice-clone (ref_text)] |
+| Fun-CosyVoice3-0.5B | ZH, stream=False | 5.087 | 6.661     | 0.8058   | 3.137          | 84.0                           | PR #1331 [H200, full-set, c=16, cross-lingual (no ref_text)] |
 
 Higgs TTS concurrency sweep
 
@@ -236,6 +240,10 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    # Keeps ref_audio but drops ref_text/references[].text — for cross-lingual
+    # runs where the reference speaker is cloned but no reference transcript is
+    # sent. Only meaningful when voice_clone=True; ignored otherwise.
+    no_ref_text: bool = False
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
@@ -307,6 +315,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "no_ref_text": config.no_ref_text,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -377,6 +386,7 @@ async def run_tts_seedtts_benchmark(
         initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
+        no_ref_text=config.no_ref_text,
         voice=config.voice,
         task_type=config.task_type,
         instructions=config.instructions,
@@ -421,6 +431,7 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "no_ref_text": config.no_ref_text,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -459,6 +470,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        no_ref_text=args.no_ref_text,
         response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
@@ -780,6 +792,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         dest="no_ref_audio",
         action="store_true",
         help="Skip ref audio/text from testset (TTS without voice cloning).",
+    )
+    parser.add_argument(
+        "--no-ref-text",
+        dest="no_ref_text",
+        action="store_true",
+        help=(
+            "Keep ref_audio (voice cloning) but drop ref_text/references[].text "
+            "from the request, for cross-lingual-style runs. Ignored when "
+            "--no-ref-audio is also set."
+        ),
     )
     parser.add_argument(
         "--ref-format",

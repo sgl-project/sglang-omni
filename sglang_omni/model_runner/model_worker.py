@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import socket
-from dataclasses import dataclass
+from bisect import bisect_left
+from collections import Counter
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +32,14 @@ class ModelWorkerConfig:
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
     enable_prefill_input_embeds: bool = False
+
+
+@dataclass(slots=True)
+class _PrefillCudaGraphUsage:
+    replay_count: int = 0
+    standard_eager_count: int = 0
+    custom_eager_count: int = 0
+    replay_buckets: Counter[int] = field(default_factory=Counter)
 
 
 _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
@@ -68,6 +78,7 @@ class ModelWorker:
         self._configure_backend_policy()
         self._init_model_runner()
         self._init_dllm_algorithm()
+        self._prefill_cuda_graph_usage = _PrefillCudaGraphUsage()
 
         self.device = self.model_runner.device
         from sglang.srt.utils import broadcast_pyobj, set_random_seed
@@ -277,12 +288,71 @@ class ModelWorker:
 
         out = self.model_runner.forward(forward_batch=forward_batch)
         logits_output, can_run_cuda_graph = out.logits_output, out.can_run_graph
+        self._record_prefill_cuda_graph_usage(
+            forward_batch,
+            can_run_graph=bool(can_run_cuda_graph),
+        )
         batch_result = GenerationBatchResult(
             logits_output=logits_output,
             can_run_cuda_graph=can_run_cuda_graph,
             expert_distribution_metrics=out.expert_distribution_metrics,
         )
         return batch_result
+
+    def _record_prefill_cuda_graph_usage(
+        self,
+        forward_batch: Any,
+        *,
+        can_run_graph: bool,
+    ) -> None:
+        mode = forward_batch.forward_mode
+        if not mode.is_extend() or mode.is_cuda_graph():
+            return
+
+        if not can_run_graph:
+            # Note (wenyao): custom eager forwards (visual/deepstack) return
+            # before ModelWorker is called; intentionally absent here.
+            self._prefill_cuda_graph_usage.standard_eager_count += 1
+            return
+
+        runner = self.model_runner.prefill_cuda_graph_runner
+        buckets = runner.capture_num_tokens
+        actual_bucket = buckets[bisect_left(buckets, len(forward_batch.input_ids))]
+        self._prefill_cuda_graph_usage.replay_count += 1
+        self._prefill_cuda_graph_usage.replay_buckets[int(actual_bucket)] += 1
+
+    def record_custom_prefill_eager(self) -> None:
+        """Record a custom prefill forward that bypasses SGLang graph dispatch."""
+        self._prefill_cuda_graph_usage.custom_eager_count += 1
+
+    def _prefill_cuda_graph_info(self) -> dict[str, Any]:
+        from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+            PrefillCudaGraphRunner,
+        )
+
+        runner = self.model_runner.prefill_cuda_graph_runner
+        if isinstance(runner, PrefillCudaGraphRunner):
+            capture_num_tokens = [int(value) for value in runner.capture_num_tokens]
+            backend_runner = type(runner.backend).__name__
+            input_embeds_slot = runner.buffer_registry.has_slot("input_embeds")
+        else:
+            capture_num_tokens, backend_runner, input_embeds_slot = None, None, False
+        backend = self.server_args.cuda_graph_config.prefill.backend
+        usage = self._prefill_cuda_graph_usage
+        return {
+            "backend": backend,
+            "runner": type(runner).__name__ if runner is not None else None,
+            "backend_runner": backend_runner,
+            "capture_num_tokens": capture_num_tokens,
+            "input_embeds_slot": input_embeds_slot,
+            "replay_count": int(usage.replay_count),
+            "standard_eager_count": int(usage.standard_eager_count),
+            "custom_eager_count": int(usage.custom_eager_count),
+            "replay_buckets": {
+                str(bucket): int(count)
+                for bucket, count in sorted(usage.replay_buckets.items())
+            },
+        }
 
     def model_info(self) -> dict[str, Any]:
         return {
@@ -296,6 +366,7 @@ class ModelWorker:
                 self.model_runner, "update_weights_from_disk"
             ),
             "supports_weight_checker": True,
+            "prefill_cuda_graph": self._prefill_cuda_graph_info(),
         }
 
     def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:

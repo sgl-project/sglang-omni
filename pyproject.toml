@@ -95,6 +95,16 @@ audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",
 ]
+fun-cosyvoice3 = [
+    "conformer==0.3.2",
+    "HyperPyYAML==1.2.3",
+    "pyworld==0.3.4",
+    "wetext==0.0.4",
+    "inflect==7.3.1",
+    "gdown==5.1.0",
+    "lightning==2.6.5",
+    "matplotlib==3.11.1",
+]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
@@ -118,7 +128,7 @@ pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
-    "gpu: requires a CUDA device (auto-skipped without one)",
+    "accelerator: requires accelerator hardware",
 ]
 
 [tool.setuptools.packages.find]

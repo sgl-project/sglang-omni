@@ -59,6 +59,7 @@ class StageLaunchConfig:
     factory: str = ""
     factory_args: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
+    require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
 
     # Routing: static next stage(s)
@@ -97,8 +98,8 @@ class StageLaunchConfig:
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
 
-    # Fusion name map
-    name_map: dict[str, str] = field(default_factory=dict)
+    # Replica topology (logical stage name -> instance names)
+    replica_topology: dict[str, list[str]] = field(default_factory=dict)
 
     # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
@@ -605,19 +606,13 @@ def _construct_stage(
             f"unsupported target value {targets!r}"
         )
 
-    def _map_target_list(targets: str | list[str] | None) -> list[str]:
-        return [spec.name_map.get(t, t) for t in _target_list(targets)]
-
-    def _map_wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
+    def _wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
         if sources is None:
             return None
         if isinstance(sources, str):
-            return [spec.name_map.get(sources, sources)]
+            return [sources]
         if isinstance(sources, Iterable):
-            return [
-                spec.name_map.get(source, source) if isinstance(source, str) else source
-                for source in sources
-            ]
+            return list(sources)
         raise ValueError(
             f"wait_for_fn for stage {spec.stage_name!r} returned unsupported "
             f"source value {sources!r}"
@@ -630,29 +625,29 @@ def _construct_stage(
         allow_empty: bool,
         hook_name: str,
     ) -> str | list[str] | None:
-        mapped_targets = _map_target_list(targets)
-        if not mapped_targets:
+        returned_targets = _target_list(targets)
+        if not returned_targets:
             if allow_empty:
                 return None
             raise ValueError(
                 f"{hook_name} for stage {spec.stage_name!r} returned no targets; "
                 "dynamic route functions must return downstream stage(s)"
             )
-        unknown = set(mapped_targets) - allowed_targets
+        unknown = set(returned_targets) - allowed_targets
         if unknown:
             raise ValueError(
                 f"{hook_name} for stage {spec.stage_name!r} returned targets "
                 f"outside the static topology: {sorted(unknown)}. "
                 f"Allowed targets: {sorted(allowed_targets)}"
             )
-        return mapped_targets[0] if isinstance(targets, str) else mapped_targets
+        return returned_targets[0] if isinstance(targets, str) else returned_targets
 
     # --- Build routing ---
     if spec.is_terminal:
         get_next = lambda request_id, output: None
     elif spec.route_fn:
         route_fn = import_string(spec.route_fn)
-        allowed_route_targets = set(_map_target_list(spec.next_stages))
+        allowed_route_targets = set(_target_list(spec.next_stages))
 
         def get_next(request_id, output, _fn=route_fn):
             return _target_result(
@@ -665,17 +660,15 @@ def _construct_stage(
     else:
         target = spec.next_stages
         if isinstance(target, str):
-            mapped = spec.name_map.get(target, target)
-            get_next = lambda request_id, output, _t=mapped: _t
+            get_next = lambda request_id, output, _t=target: _t
         elif isinstance(target, list):
-            mapped = [spec.name_map.get(t, t) for t in target]
-            get_next = lambda request_id, output, _t=mapped: _t
+            get_next = lambda request_id, output, _t=list(target): _t
         else:
             get_next = lambda request_id, output: None
 
     if spec.stream_done_to_fn:
         stream_done_to_fn = import_string(spec.stream_done_to_fn)
-        allowed_stream_targets = set(_map_target_list(spec.stream_targets))
+        allowed_stream_targets = set(spec.stream_targets)
         get_stream_done_targets = (
             lambda request_id, output, _fn=stream_done_to_fn: _target_result(
                 _fn(request_id, output),
@@ -690,14 +683,14 @@ def _construct_stage(
     # --- Build input handler ---
     if spec.wait_for and spec.merge_fn:
         merge_fn = import_string(spec.merge_fn)
-        sources = {spec.name_map.get(n, n) for n in spec.wait_for}
+        sources = set(spec.wait_for)
         expected_sources_fn = None
         if spec.wait_for_fn:
             wait_for_fn = import_string(spec.wait_for_fn)
 
             def expected_sources_fn(request_id, from_stage, data, _fn=wait_for_fn):
                 resolved_sources = _fn(request_id, from_stage, data)
-                return _map_wait_source_list(resolved_sources)
+                return _wait_source_list(resolved_sources)
 
         input_handler = AggregatedInput(
             sources=sources,
@@ -763,6 +756,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        replica_topology=spec.replica_topology or None,
     )
 
     if spec.is_stream_receiver:
@@ -783,6 +777,8 @@ def _construct_scheduler(
         factory,
         spec.factory_args,
         defaults=spec.factory_arg_defaults,
+        require_gpu_id=spec.require_factory_gpu_id,
+        stage_name=spec.stage_name,
     )
     if gpu_id is None:
         return factory(**factory_args)

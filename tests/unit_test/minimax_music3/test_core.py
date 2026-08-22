@@ -77,7 +77,7 @@ def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
         buffer.concatenate(0, 10)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     # A request's codes must not depend on which other requests share its
@@ -104,7 +104,7 @@ def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     assert torch.equal(batched, alone)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
     torch.manual_seed(0)
@@ -255,7 +255,7 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
     assert remove_weight_norm(convolution) == 0
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
     torch.manual_seed(17)
@@ -288,7 +288,7 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
     torch.testing.assert_close(actual, expected, rtol=0, atol=1e-6)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
     def depth_forward(
@@ -344,6 +344,7 @@ def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
     assert torch.equal(actual_codes, preserved_codes)
 
 
+@pytest.mark.accelerator
 def test_rvq_cuda_graph_declines_a_batch_larger_than_every_bucket() -> None:
     def depth_forward(hidden, c0, seeds, positions, forced, replay):
         del c0, seeds, positions, replay
@@ -392,7 +393,7 @@ class _TinyCacheDiffusion(torch.nn.Module):
         self.transformer = _TinyCacheTransformer()
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
     model = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)

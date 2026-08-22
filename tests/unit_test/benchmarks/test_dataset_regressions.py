@@ -427,6 +427,7 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         "test_asr_ci_seedtts.py": [
             "FunAudioLLM/Fun-ASR-Nano-2512-hf",
             "Qwen/Qwen3-ASR-1.7B",
+            "openai/whisper-large-v3",
         ],
     }
     assert {
@@ -447,9 +448,10 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
     seedtts_presets = config["metric_sources"]["test_asr_ci_seedtts.py"][
         "calibration_presets"
     ]
-    assert set(seedtts_presets) == {"fun", "qwen3"}
+    assert set(seedtts_presets) == {"fun", "qwen3", "whisper"}
     assert seedtts_presets["fun"]["extra_env"] == {"ASR_CI_MODEL": "fun"}
     assert seedtts_presets["qwen3"]["extra_env"] == {"ASR_CI_MODEL": "qwen3"}
+    assert seedtts_presets["whisper"]["extra_env"] == {"ASR_CI_MODEL": "whisper"}
     assert (
         config["metric_sources"]["test_asr_ci_multi_speaker.py"]["json_file"]
         == "test_moss_transcribe_diarize_m0/moss_transcribe_diarize_results.json"
@@ -480,6 +482,9 @@ def test_tune_ci_threshold_asr_config_tracks_current_asr_ci_stages() -> None:
         "seedtts_qwen3_en_wer",
         "seedtts_qwen3_en_speed",
         "seedtts_qwen3_zh_wer",
+        "seedtts_whisper_en_wer",
+        "seedtts_whisper_en_speed",
+        "seedtts_whisper_zh_wer",
     }
     assert stages["multi_speaker_diarization"]["test"] == (
         "tests/test_model/test_asr_ci_multi_speaker.py"

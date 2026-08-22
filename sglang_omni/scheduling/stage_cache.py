@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -9,6 +10,8 @@ from typing import Any
 
 import torch
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class _CacheEntry:
@@ -16,16 +19,40 @@ class _CacheEntry:
     size_bytes: int
 
 
-def _detach_value(value: Any, *, device: torch.device | None) -> Any:
+def _to_pinned_host(value: torch.Tensor) -> torch.Tensor:
+    if value.device.type == "cpu" and value.is_pinned():
+        return value
+    host = torch.empty(value.shape, dtype=value.dtype, device="cpu", pin_memory=True)
+    host.copy_(value, non_blocking=False)
+    return host
+
+
+def _detach_value(
+    value: Any, *, device: torch.device | None, pin_memory: bool = False
+) -> Any:
     if isinstance(value, torch.Tensor):
         value = value.detach()
         if device is not None:
+            if pin_memory and device.type == "cpu":
+                try:
+                    return _to_pinned_host(value)
+                except RuntimeError as exc:
+                    logger.warning(
+                        "StageOutputCache pinned host copy failed (%s); "
+                        "falling back to pageable memory for this entry",
+                        exc,
+                    )
             value = value.to(device=device)
         return value
     if isinstance(value, dict):
-        return {key: _detach_value(item, device=device) for key, item in value.items()}
+        return {
+            key: _detach_value(item, device=device, pin_memory=pin_memory)
+            for key, item in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return type(value)(_detach_value(item, device=device) for item in value)
+        return type(value)(
+            _detach_value(item, device=device, pin_memory=pin_memory) for item in value
+        )
     return value
 
 
@@ -50,6 +77,7 @@ class StageOutputCache:
         max_bytes: int | None = None,
         cache_device: torch.device | str | None = None,
         size_fn: Callable[[Any], int] | None = None,
+        pin_memory: bool = False,
     ) -> None:
         if max_size is not None and max_size < 0:
             raise ValueError("max_size must be non-negative")
@@ -57,10 +85,15 @@ class StageOutputCache:
             raise ValueError("max_bytes must be non-negative")
         if isinstance(cache_device, str):
             cache_device = torch.device(cache_device)
+        if pin_memory and (cache_device is None or cache_device.type != "cpu"):
+            raise ValueError("pin_memory requires cache_device='cpu'")
         self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
         self.max_size = max_size
         self.max_bytes = max_bytes
         self.cache_device = cache_device
+        # note (Jeffro): pinning needs a CUDA context to be meaningful, so on
+        # CUDA-less hosts (CI runners, dev boxes) it degrades to pageable storage.
+        self.pin_memory = bool(pin_memory) and torch.cuda.is_available()
         self.current_bytes = 0
         self.eviction_count = 0
         self._size_fn = size_fn or _value_size_bytes
@@ -89,7 +122,9 @@ class StageOutputCache:
             if self.max_bytes is not None and size_bytes > self.max_bytes:
                 return
             self._cache[key] = _CacheEntry(
-                data=_detach_value(data, device=self.cache_device),
+                data=_detach_value(
+                    data, device=self.cache_device, pin_memory=self.pin_memory
+                ),
                 size_bytes=size_bytes,
             )
             self.current_bytes += size_bytes

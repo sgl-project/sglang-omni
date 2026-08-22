@@ -7,8 +7,17 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import torch
 
 import sglang_omni.utils.gpu_memory as gpu_memory
+
+_ACCELERATOR_ONLY = pytest.mark.skipif(
+    not (
+        torch.cuda.is_available()
+        or (hasattr(torch, "xpu") and torch.xpu.is_available())
+    ),
+    reason="requires cuda or xpu",
+)
 
 
 class _FakeNVML(ModuleType):
@@ -251,7 +260,7 @@ def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
             assert device_id == 0
             return SimpleNamespace(name="NVIDIA H20", total_memory=96 * 1024**3)
 
-    fake_torch = SimpleNamespace(cuda=_FakeCuda())
+    fake_torch = SimpleNamespace(get_device_module=lambda: _FakeCuda())
 
     def _import_module(name: str):
         if name == "pynvml":
@@ -268,6 +277,16 @@ def test_get_gpu_device_info_falls_back_to_torch_when_nvml_import_fails(
     assert info.device_id == 1
     assert info.name == "NVIDIA H20"
     assert info.total_memory_bytes == 96 * 1024**3
+
+
+@pytest.mark.accelerator
+@_ACCELERATOR_ONLY
+def test_device_info_reports_real_memory_on_this_accelerator() -> None:
+    """The live half, where an accelerator is actually present."""
+    info = gpu_memory.get_gpu_device_info(0)
+
+    assert info.name
+    assert info.total_memory_bytes is not None and info.total_memory_bytes > 0
 
 
 def test_get_process_gpu_memory_rejects_invalid_device_mapping(

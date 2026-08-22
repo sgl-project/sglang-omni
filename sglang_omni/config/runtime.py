@@ -7,7 +7,12 @@ import inspect
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    StageConfig,
+    parse_replica_instance_name,
+    stage_process_name,
+)
 from sglang_omni.utils.imports import import_string
 
 
@@ -34,7 +39,27 @@ def resolve_stage_factory_args(
             global_cfg,
             gpu_id=gpu_id,
         ),
+        require_gpu_id=requires_factory_gpu_id(stage_cfg, global_cfg),
+        stage_name=stage_cfg.name,
     )
+
+
+def _runtime_overrides_for(
+    stage_name: str,
+    global_cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """Overrides for *stage_name*, falling back to its logical stage.
+
+    Replica expansion renames stages to ``talker_ar@r0``, but
+    ``runtime_overrides`` stays keyed by the logical name the user wrote.
+    """
+    override = global_cfg.runtime_overrides.get(stage_name)
+    if override is not None:
+        return override
+    logical, replica_id = parse_replica_instance_name(stage_name)
+    if replica_id is None:
+        return {}
+    return global_cfg.runtime_overrides.get(logical, {})
 
 
 def resolve_stage_static_factory_args(
@@ -44,7 +69,7 @@ def resolve_stage_static_factory_args(
     """Resolve factory kwargs that do not require importing the factory."""
 
     args = dict(stage_cfg.factory_args)
-    runtime_overrides = global_cfg.runtime_overrides.get(stage_cfg.name, {})
+    runtime_overrides = _runtime_overrides_for(stage_cfg.name, global_cfg)
     _validate_runtime_sources(stage_cfg, args, runtime_overrides)
     _merge_factory_arg_overrides(args, runtime_overrides)
     _apply_typed_runtime_args(args, stage_cfg)
@@ -74,17 +99,39 @@ def resolve_factory_signature_args(
     args: dict[str, Any],
     *,
     defaults: Mapping[str, Any],
+    require_gpu_id: bool = False,
+    stage_name: str | None = None,
 ) -> dict[str, Any]:
     """Inject standard factory kwargs when the resolved factory declares them."""
 
     args = dict(args)
     sig = inspect.signature(factory)
+    if require_gpu_id and "gpu_id" not in sig.parameters:
+        factory_name = f"{factory.__module__}.{factory.__qualname__}"
+        stage_context = f"Stage {stage_name!r} " if stage_name is not None else "Stage "
+        raise ValueError(
+            f"{stage_context}uses processes.replica_devices, but factory "
+            f"{factory_name!r} does not declare a gpu_id parameter"
+        )
 
     for name, value in defaults.items():
         if name in sig.parameters and name not in args:
             args[name] = value
 
     return args
+
+
+def requires_factory_gpu_id(
+    stage_cfg: StageConfig,
+    global_cfg: PipelineConfig,
+) -> bool:
+    """Return whether replica placement requires an explicit gpu_id contract."""
+
+    if stage_cfg.gpu is None:
+        return False
+    process_name, _ = parse_replica_instance_name(stage_process_name(stage_cfg))
+    process_cfg = global_cfg.processes.get(process_name)
+    return process_cfg is not None and process_cfg.replica_devices is not None
 
 
 def reject_untyped_total_gpu_memory_fraction(

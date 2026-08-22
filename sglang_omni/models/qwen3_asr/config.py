@@ -56,6 +56,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 "pre_lm_cache_size_bytes": 2 * 1024**3,
                 "pre_lm_max_batch_size": 8,
                 "pre_lm_max_batch_wait_ms": 0,
+                "enable_encoder_cuda_graph": True,
             },
             gpu=0,
             terminal=True,

@@ -7,7 +7,13 @@ from typing import Any, ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config.schema import PipelineConfig, PlacementConfig, StageConfig
+from sglang_omni.config.schema import (
+    PipelineConfig,
+    PlacementConfig,
+    ProcessConfig,
+    StageConfig,
+    stage_process_name,
+)
 from sglang_omni.models.ming_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -28,17 +34,51 @@ def _stage_by_name(stages: list[StageConfig], name: str) -> StageConfig | None:
     return next((stage for stage in stages if stage.name == name), None)
 
 
-def _stage_gpu_set(gpu: int | list[int] | None, tp_size: int) -> set[int]:
-    """Return GPUs occupied by a stage.
+def _stage_gpu_set(
+    stage: StageConfig,
+    processes: dict[str, ProcessConfig],
+) -> set[int]:
+    """Return GPUs declared for a stage at the configuration boundary.
 
-    Explicit list placement is authoritative; scalar placement preserves the
-    legacy contiguous TP range interpretation.
+    ``replica_devices`` overrides stage placement, including every replica.
     """
+    process = processes.get(stage_process_name(stage))
+    if process is not None:
+        devices = process.replica_devices
+        if devices is not None:
+            return set(devices)
+
+    gpu = stage.gpu
     if isinstance(gpu, list):
-        return {int(gpu_id) for gpu_id in gpu}
+        return set(gpu)
     if gpu is None:
         return set()
-    return set(range(int(gpu), int(gpu) + tp_size))
+    return {gpu}
+
+
+def _reject_thinker_talker_collision(
+    stages: list[StageConfig],
+    talker_stage_name: str,
+    processes: dict[str, ProcessConfig],
+) -> None:
+    """Reject a thinker/talker GPU collision before startup."""
+    thinker = _stage_by_name(stages, THINKER_STAGE)
+    talker = _stage_by_name(stages, talker_stage_name)
+    if thinker is None or talker is None:
+        return
+
+    thinker_gpus = _stage_gpu_set(thinker, processes)
+    talker_gpus = _stage_gpu_set(talker, processes)
+    collisions = thinker_gpus & talker_gpus
+    if not collisions:
+        return
+
+    raise ValueError(
+        f"Ming-Omni speech talker {talker_stage_name!r} GPU collides with "
+        f"thinker TP range: talker gpus={sorted(talker_gpus)}, "
+        f"thinker gpus={sorted(thinker_gpus)}, "
+        f"collisions={sorted(collisions)}"
+    )
 
 
 def _validate_ming_stage_tp_support(stages: list[StageConfig]) -> None:
@@ -279,23 +319,7 @@ class MingOmniSpeechPipelineConfig(_MingOmniBasePipelineConfig):
         self._validate_talker_gpu_not_in_thinker_tp_range()
 
     def _validate_talker_gpu_not_in_thinker_tp_range(self) -> None:
-        thinker = _stage_by_name(self.stages, THINKER_STAGE)
-        talker = _stage_by_name(self.stages, TALKER_STAGE)
-        if thinker is None or talker is None:
-            return
-
-        thinker_gpus = _stage_gpu_set(thinker.gpu, thinker.tp_size)
-        talker_gpus = _stage_gpu_set(talker.gpu, talker.tp_size)
-        collisions = thinker_gpus & talker_gpus
-        if not collisions:
-            return
-
-        raise ValueError(
-            "Ming-Omni speech talker GPU collides with thinker TP range: "
-            f"talker gpus={sorted(talker_gpus)}, "
-            f"thinker gpus={sorted(thinker_gpus)}, "
-            f"collisions={sorted(collisions)}"
-        )
+        _reject_thinker_talker_collision(self.stages, TALKER_STAGE, self.processes)
 
 
 class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
@@ -327,22 +351,8 @@ class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
         self._validate_talker_stream_gpu_not_in_thinker_tp_range()
 
     def _validate_talker_stream_gpu_not_in_thinker_tp_range(self) -> None:
-        thinker = _stage_by_name(self.stages, THINKER_STAGE)
-        talker = _stage_by_name(self.stages, TALKER_STREAM_STAGE)
-        if thinker is None or talker is None:
-            return
-
-        thinker_gpus = _stage_gpu_set(thinker.gpu, thinker.tp_size)
-        talker_gpus = _stage_gpu_set(talker.gpu, talker.tp_size)
-        collisions = thinker_gpus & talker_gpus
-        if not collisions:
-            return
-
-        raise ValueError(
-            "Ming-Omni streaming-speech talker GPU collides with thinker TP range: "
-            f"talker gpus={sorted(talker_gpus)}, "
-            f"thinker gpus={sorted(thinker_gpus)}, "
-            f"collisions={sorted(collisions)}"
+        _reject_thinker_talker_collision(
+            self.stages, TALKER_STREAM_STAGE, self.processes
         )
 
 

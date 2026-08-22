@@ -192,12 +192,13 @@ def _get_torch_gpu_device_info(
     logical_gpu_id: int,
     device_id: int | str | None,
 ) -> GpuDeviceInfo:
-    """Return CUDA device metadata available through PyTorch."""
+    """Return accelerator device metadata available through PyTorch."""
     try:
         torch = importlib.import_module("torch")
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is unavailable")
-        properties = torch.cuda.get_device_properties(logical_gpu_id)
+        device_module = torch.get_device_module()
+        if not device_module.is_available():
+            raise RuntimeError(f"{device_module.__name__} is unavailable")
+        properties = device_module.get_device_properties(logical_gpu_id)
         return GpuDeviceInfo(
             logical_gpu_id=logical_gpu_id,
             device_id=device_id,
