@@ -37,6 +37,7 @@ from sglang_omni.serve.streaming import (
     ClosableStreamingResponse,
     close_async_iterator_if_supported,
 )
+from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_adapters.base import TranscriptionAdapter
 
@@ -45,6 +46,7 @@ HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
 DEFAULT_RESPONSE_FORMATS = frozenset({"json", "text", "verbose_json"})
 DEFAULT_STREAMING_RESPONSE_FORMATS = frozenset({"json", "text"})
+SEGMENT_RESPONSE_FORMATS = frozenset({"srt", "vtt"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,31 +318,58 @@ def assemble_speech_to_text_response(
     audio_bytes: bytes,
     architectures: list[str] | None,
     duration_s: float | None = None,
+    response_formats: Collection[str] = DEFAULT_RESPONSE_FORMATS,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
         response_format,
         stream=False,
         endpoint_path=endpoint_path,
+        response_formats=response_formats,
     )
     if normalized_response_format == "text":
         return PlainTextResponse(text)
 
     adapter = resolve_speech_to_text_adapter(architectures)
+    if (
+        normalized_response_format in SEGMENT_RESPONSE_FORMATS
+        and not adapter.supports_segment_timestamps
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"response_format {normalized_response_format!r} requires a "
+                "segment-timestamp capability"
+            ),
+        )
     text = adapter.postprocess_text(text)
     if duration_s is None:
         duration_s = probe_audio_duration(audio_bytes)
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
-    if normalized_response_format == "verbose_json":
-        response = adapter.build_verbose_response(
-            text=text,
-            language=language,
-            audio_duration_s=duration_s,
-        )
+    if normalized_response_format in {"verbose_json", *SEGMENT_RESPONSE_FORMATS}:
+        if normalized_response_format in SEGMENT_RESPONSE_FORMATS:
+            try:
+                response = adapter.build_timestamped_response(
+                    text=text,
+                    language=language,
+                    audio_duration_s=duration_s,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            response = adapter.build_verbose_response(
+                text=text,
+                language=language,
+                audio_duration_s=duration_s,
+            )
         response.task = task
         response.usage = usage
+        if normalized_response_format == "srt":
+            return PlainTextResponse(segments_to_srt(response.segments))
+        if normalized_response_format == "vtt":
+            return PlainTextResponse(segments_to_vtt(response.segments))
         return JSONResponse(content=response.model_dump(exclude_none=True))
     return JSONResponse(
         content=TranscriptionResponse(text=text, usage=usage).model_dump(

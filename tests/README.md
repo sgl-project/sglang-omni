@@ -197,6 +197,7 @@ tests/
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
     │   ├── test_speech_to_text.py
+    │   ├── test_subtitles.py
     │   ├── test_translation_capability.py
     │   └── test_translations.py
     ├── scheduling/
