@@ -26,6 +26,11 @@ class TranscriptionAdapter(ABC):
     """Abstract base for model-specific transcription output handling."""
 
     @property
+    def supports_segment_timestamps(self) -> bool:
+        """Whether segments carry model-derived timestamps."""
+        return False
+
+    @property
     def requires_ordered_chunk_decoding(self) -> bool:
         return False
 
@@ -58,6 +63,15 @@ class TranscriptionAdapter(ABC):
         audio_duration_s: float,
     ) -> TranscriptionVerboseResponse:
         """Build a verbose_json response with segments / timestamps."""
+
+    def build_timestamped_response(
+        self,
+        text: str,
+        language: str | None,
+        audio_duration_s: float,
+    ) -> TranscriptionVerboseResponse:
+        """Build a response whose segments have model-derived timestamps."""
+        raise ValueError("model did not produce segment timestamps")
 
     def build_verbose_response_from_chunks(
         self,
