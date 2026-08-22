@@ -138,7 +138,7 @@ def test_fused_asr_qk_norm_rope_falls_back_before_projection() -> None:
 
 def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:
     tower = _RecordingAudioTower()
-    model = SimpleNamespace(audio_tower=tower)
+    model = SimpleNamespace(_encoder_graph_runner=None, audio_tower=tower)
     items = [
         SimpleNamespace(
             feature=torch.tensor([[[1.0, 2.0, 90.0, 91.0]]]),
@@ -158,7 +158,9 @@ def test_get_audio_feature_preserves_masks_in_mixed_batch() -> None:
 
 
 def test_get_audio_feature_rejects_mismatched_mask_shape() -> None:
-    model = SimpleNamespace(audio_tower=_RecordingAudioTower())
+    model = SimpleNamespace(
+        _encoder_graph_runner=None, audio_tower=_RecordingAudioTower()
+    )
     items = [
         SimpleNamespace(
             feature=torch.ones((1, 2, 4)),
@@ -170,10 +172,11 @@ def test_get_audio_feature_rejects_mismatched_mask_shape() -> None:
         Qwen3ASRForConditionalGeneration.get_audio_feature(model, items)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_get_audio_feature_normalizes_cpu_masks_for_cuda_features() -> None:
     tower = _RecordingAudioTower().cuda()
-    model = SimpleNamespace(audio_tower=tower)
+    model = SimpleNamespace(_encoder_graph_runner=None, audio_tower=tower)
     items = [
         SimpleNamespace(
             feature=torch.tensor([[[1.0, 2.0, 90.0, 91.0]]], device="cuda"),

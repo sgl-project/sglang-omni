@@ -62,7 +62,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=False,
-        supports_breakable_prefill_cuda_graph=False,
+        supports_breakable_prefill_cuda_graph=True,
     ),
     "MossTTSLocalModel": ModelCapabilities(
         supports_reference_audio=True,
@@ -82,8 +82,8 @@ EXPECTED_MODEL_CAPABILITIES = {
     ),
     "BailingMMNativeForConditionalGeneration": ModelCapabilities(
         supports_reference_audio=True,
-        supports_batch_vocoder=True,
-        supports_streaming_vocoder=False,
+        supports_batch_vocoder=False,
+        supports_streaming_vocoder=True,
         supports_cuda_graph=True,
         supports_torch_compile=False,
         supports_breakable_prefill_cuda_graph=False,

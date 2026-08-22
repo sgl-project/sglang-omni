@@ -38,7 +38,7 @@ class _AlwaysPackedVocoderDecoder(nn.Module):
     def __len__(self) -> int:
         return len(self.stages)
 
-    def supports_packed_flash(self, device, dtype) -> bool:
+    def supports_packed_attention(self, device, dtype) -> bool:
         del device, dtype
         return True
 
@@ -60,7 +60,7 @@ class _AlwaysPackedVocoderDecoder(nn.Module):
 
 
 class _NeverPackedVocoderDecoder(_AlwaysPackedVocoderDecoder):
-    def supports_packed_flash(self, device, dtype) -> bool:
+    def supports_packed_attention(self, device, dtype) -> bool:
         del device, dtype
         return False
 

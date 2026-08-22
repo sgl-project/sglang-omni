@@ -16,6 +16,7 @@ hf_model_ids_by_test:
   test_asr_ci_seedtts.py:
     - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
     - "Qwen/Qwen3-ASR-1.7B"
+    - "openai/whisper-large-v3"
 hf_datasets:
   - "zhaochenyang20/movies800time"
   - "zhaochenyang20/AISHELL4"
@@ -184,9 +185,17 @@ metric_sources:
         constant_filter: "^QWEN3_ASR_"
         hf_model_ids:
           - "Qwen/Qwen3-ASR-1.7B"
+      whisper:
+        extra_env:
+          ASR_CI_MODEL: "whisper"
+        gpus: 2
+        # discover: only WHISPER_ASR_* constants
+        constant_filter: "^WHISPER_ASR_"
+        hf_model_ids:
+          - "openai/whisper-large-v3"
     variants:
       en:
-        constant_filter: "^FUN_ASR_(?!ZH_).*|^QWEN3_ASR_(?!ZH_).*"
+        constant_filter: "^FUN_ASR_(?!ZH_).*|^QWEN3_ASR_(?!ZH_).*|^WHISPER_ASR_(?!ZH_).*"
         context_vars:
           - SEEDTTS_ASR_EN_SAMPLES
         json_file: "asr_seedtts_en_results.json"
@@ -202,7 +211,7 @@ metric_sources:
           rtf_mean: "speed.rtf_mean"
           rtf_p95: "speed.rtf_p95"
       zh:
-        constant_filter: "^FUN_ASR_ZH_|^QWEN3_ASR_ZH_"
+        constant_filter: "^FUN_ASR_ZH_|^QWEN3_ASR_ZH_|^WHISPER_ASR_ZH_"
         context_vars:
           - SEEDTTS_ASR_ZH_SAMPLES
         json_file: "asr_seedtts_zh_results.json"

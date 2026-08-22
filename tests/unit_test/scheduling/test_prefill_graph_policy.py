@@ -220,6 +220,36 @@ def test_nested_prefill_max_bs_composes_as_a_flat_cap() -> None:
     assert "cuda_graph_bs_prefill" not in overrides
 
 
+def test_breakable_prefill_cap_builds_the_shared_default_ladder() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_max_bs_prefill": 512,
+        },
+    )
+
+    assert overrides["cuda_graph_bs_prefill"] == (
+        build_default_prefill_cuda_graph_bs(512)
+    )
+
+
+def test_breakable_prefill_cap_is_clamped_to_reachable_tokens() -> None:
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_max_bs_prefill": 2048,
+            "max_prefill_tokens": 768,
+        },
+    )
+
+    assert overrides["cuda_graph_max_bs_prefill"] == 768
+    assert overrides["cuda_graph_bs_prefill"] == (
+        build_default_prefill_cuda_graph_bs(768)
+    )
+
+
 def test_nested_prefill_max_bs_trims_a_stage_default_ladder() -> None:
     overrides = build_generation_batch_overrides(
         max_running_requests=4,

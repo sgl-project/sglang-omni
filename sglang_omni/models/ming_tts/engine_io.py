@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
@@ -16,12 +16,19 @@ from sglang_omni.models.ming_tts.payload_types import (
 )
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 
 @dataclass
+class MingTTSLatentPatch:
+    latent: torch.Tensor
+    is_last: bool
+
+
+@dataclass
 class MingTTSSGLangRequestData(SGLangARRequestData):
-    """CPU scheduler state; recurrent GPU tensors live in the model runner."""
+    """Per-request scheduler state for Ming-Omni-TTS."""
 
     enforce_request_limits: bool = True
     state: MingTTSState | None = None
@@ -29,8 +36,9 @@ class MingTTSSGLangRequestData(SGLangARRequestData):
     audio_eos_token_id: int = 0
     engine_start_s: float = 0.0
     generated_latents: torch.Tensor | None = None
-    generated_last_chunk: list[bool] = field(default_factory=list)
     stop_step: int | None = None
+    is_streaming: bool = False
+    pending_stream_patch: MingTTSLatentPatch | None = None
 
 
 def make_ming_tts_scheduler_adapters(
@@ -46,34 +54,9 @@ def make_ming_tts_scheduler_adapters(
         from sglang.srt.managers.schedule_batch import Req
         from sglang.srt.sampling.sampling_params import SamplingParams
 
-        def config_value(config: Any, field: str) -> Any:
-            if config is None:
-                return None
-            if isinstance(config, dict):
-                return config.get(field)
-            return getattr(config, field, None)
-
         state = load_ming_tts_state(payload)
         input_ids_list = [int(token_id) for token_id in (state.input_ids or [])]
-
-        vocab_size = None
-        for owner in (
-            getattr(model, "config", None),
-            getattr(model, "model_config", None),
-            getattr(model, "hf_text_config", None),
-            model,
-        ):
-            value = config_value(owner, "vocab_size")
-            if value is not None:
-                vocab_size = int(value)
-                break
-            llm_config = config_value(owner, "llm_config")
-            value = config_value(llm_config, "vocab_size")
-            if value is not None:
-                vocab_size = int(value)
-                break
-        if vocab_size is None:
-            vocab_size = int(len(tokenizer.tokenizer))
+        vocab_size = int(model.vocab_size)
 
         sampling_params = SamplingParams(
             max_new_tokens=int(state.max_decode_steps),
@@ -87,21 +70,19 @@ def make_ming_tts_scheduler_adapters(
             state.spk_emb is not None or state.prompt_latent is not None
         )
 
-        req_input_ids_list = input_ids_list
-        req_extra_key = f"ming_tts:{payload.request_id}"
         req = Req(
             rid=payload.request_id,
             origin_input_text="",
-            origin_input_ids=req_input_ids_list,
+            origin_input_ids=input_ids_list,
             sampling_params=sampling_params,
             eos_token_ids={int(tokenizer.special.end_of_audio)},
             vocab_size=vocab_size,
-            extra_key=req_extra_key,
+            extra_key=f"ming_tts:{payload.request_id}",
         )
         req.tokenizer = None
         req._input_embeds_are_projected = requires_projected_prefill
 
-        input_ids = torch.tensor(req_input_ids_list, dtype=torch.long)
+        input_ids = torch.tensor(input_ids_list, dtype=torch.long)
         data = MingTTSSGLangRequestData(
             input_ids=input_ids,
             max_new_tokens=int(state.max_decode_steps),
@@ -113,6 +94,7 @@ def make_ming_tts_scheduler_adapters(
             audio_patch_token_id=int(tokenizer.special.audio_patch),
             audio_eos_token_id=int(tokenizer.special.end_of_audio),
             engine_start_s=time.perf_counter(),
+            is_streaming=bool((payload.request.params or {}).get("stream", False)),
         )
         data.stage_payload = payload
         return data
@@ -125,11 +107,16 @@ def make_ming_tts_scheduler_adapters(
             payload = data.stage_payload
             state = data.state
             generated = data.generated_latents
-            if generated is None:
+            if generated is None and not data.is_streaming:
                 generated = torch.empty(
                     (0, int(model.patch_size), int(model.latent_dim)),
                     dtype=torch.float32,
                 )
+            completion_tokens = (
+                int(data.generation_steps)
+                if data.is_streaming
+                else int(generated.shape[0])
+            )
 
             raw = data.finish_reason
             if raw is None and data.req is not None:
@@ -151,20 +138,17 @@ def make_ming_tts_scheduler_adapters(
                     finish_reason = "error"
                 else:
                     finish_reason = str(raw)
-            elif int(generated.shape[0]) >= int(data.max_new_tokens):
+            elif completion_tokens >= int(data.max_new_tokens):
                 finish_reason = "length"
             else:
                 finish_reason = "stop"
 
-            state.generated_last_chunk = [
-                bool(item) for item in data.generated_last_chunk
-            ]
             state.stop_step = data.stop_step
             state.finish_reason = finish_reason
             state.prompt_tokens = len(data.input_ids)
-            state.completion_tokens = int(generated.shape[0])
+            state.completion_tokens = completion_tokens
             state.engine_time_s = time.perf_counter() - data.engine_start_s
-            state.generated_latents = generated
+            state.generated_latents = None if data.is_streaming else generated
 
             return store_ming_tts_state(payload, state)
         finally:
@@ -173,7 +157,36 @@ def make_ming_tts_scheduler_adapters(
     return request_builder, result_adapter
 
 
+def build_ming_tts_stream_output(
+    request_id: str,
+    data: MingTTSSGLangRequestData,
+    req_output: Any,
+) -> list[OutgoingMessage]:
+    del req_output
+    patch = data.pending_stream_patch
+    if not data.is_streaming or patch is None:
+        return []
+
+    latent = patch.latent.detach().to(device="cpu", dtype=torch.float32).contiguous()
+    data.pending_stream_patch = None
+    return [
+        OutgoingMessage(
+            request_id=request_id,
+            type="stream",
+            data=latent,
+            target="audio_decode",
+            metadata={
+                "modality": "audio_latents",
+                "stream": True,
+                "is_last": bool(patch.is_last),
+            },
+        )
+    ]
+
+
 __all__ = [
+    "MingTTSLatentPatch",
     "MingTTSSGLangRequestData",
+    "build_ming_tts_stream_output",
     "make_ming_tts_scheduler_adapters",
 ]

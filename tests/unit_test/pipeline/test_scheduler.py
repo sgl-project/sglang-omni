@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.messages import IncomingMessage
@@ -41,9 +42,15 @@ def _init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler.request_build_max_pending = 0
     scheduler._pending_request_builds = {}
     scheduler._pending_request_admissions = {}
-    scheduler._backlogged_request_build_payloads = []
+    scheduler._backlogged_request_build_payloads = deque()
     scheduler._request_build_max_pending_observed = 0
     scheduler._async_pending = None
+    scheduler.enable_priority_scheduling = False
+    scheduler.abort_on_priority_when_disabled = False
+    if not hasattr(scheduler, "max_queued_requests"):
+        scheduler.max_queued_requests = None
+    if not hasattr(scheduler, "_deferred_request_payloads"):
+        scheduler._deferred_request_payloads = {}
 
 
 def _init_terminal_output_state(scheduler: OmniScheduler) -> None:
@@ -397,6 +404,204 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     assert scheduler.waiting_queue == []
 
 
+def _enqueue_limit_scheduler(monkeypatch):
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_emit_event",
+        lambda **kwargs: events.append(kwargs["event_name"]),
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.is_entry_rank = True
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
+    scheduler.enable_priority_scheduling = True
+    scheduler.schedule_low_priority_values_first = False
+    scheduler.abort_on_priority_when_disabled = False
+    scheduler.max_queued_requests = 1
+    scheduler.waiting_queue = []
+    scheduler.enable_hicache_storage = False
+    scheduler.enable_hierarchical_cache = False
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler._deferred_request_payloads = {}
+    scheduler._pending_stream_ingress = {}
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._abort_callback = None
+    aborts: list[str] = []
+    scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(rid)
+    scheduler.send_to_detokenizer = omni_scheduler_module._NoOpSender()
+    scheduler.ipc_channels = omni_scheduler_module._OmniIpcChannels(scheduler)
+    scheduler._request_kv_capacity_error = lambda req: None
+    scheduler._initialize_request_stream_state = lambda req_data, payload: None
+    scheduler._append_stream_chunk = lambda *args, **kwargs: None
+    scheduler._mark_stream_done = lambda *args, **kwargs: None
+    return scheduler, events, aborts
+
+
+def test_enqueue_built_request_honors_max_queued_requests(monkeypatch) -> None:
+    scheduler, events, aborts = _enqueue_limit_scheduler(monkeypatch)
+
+    def _req(rid: str):
+        return SimpleNamespace(
+            rid=rid,
+            priority=None,
+            origin_input_ids=array("q", [1]),
+            origin_input_ids_unpadded=array("q", [1]),
+            time_stats=SimpleNamespace(
+                wait_queue_entry_time=0.0,
+                trace_ctx=SimpleNamespace(abort=lambda *, abort_info: None),
+            ),
+        )
+
+    first, second = _req("req-ok"), _req("req-reject")
+    for req in (first, second):
+        OmniScheduler._enqueue_built_request(
+            scheduler,
+            SimpleNamespace(request_id=req.rid),
+            False,
+            SimpleNamespace(req=req, enforce_request_limits=False),
+        )
+
+    assert [req.rid for req in scheduler.waiting_queue] == ["req-ok"]
+    assert first.priority is not None
+    assert second.priority is not None
+    assert events.count("scheduler_queue_enter") == 1
+    reject = scheduler.outbox.get_nowait()
+    assert reject.request_id == "req-reject"
+    assert reject.type == "error"
+    assert "queue is full" in str(reject.data)
+    assert aborts == ["req-reject"]
+
+
+def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
+    None
+):
+    built: list[str] = []
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.is_entry_rank = True
+    scheduler.max_queued_requests = 1
+    scheduler.waiting_queue = [SimpleNamespace(rid="req-occupant")]
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    _init_sync_request_build_state(scheduler)
+    aborts: list[str] = []
+    scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(rid)
+    scheduler._request_builder = lambda payload: built.append(payload.request_id)
+
+    scheduler.process_input_requests([_new_stage_payload("req-new")])
+
+    assert built == []
+    assert [req.rid for req in scheduler.waiting_queue] == ["req-occupant"]
+    output = scheduler.outbox.get_nowait()
+    assert output.request_id == "req-new"
+    assert output.type == "error"
+    assert str(output.data) == QueueFullError.MESSAGE
+    assert isinstance(output.data, QueueFullError)
+    assert aborts == ["req-new"]
+
+
+def _staging_scheduler(
+    *,
+    max_queued_requests: int,
+    waiting: bool = False,
+    pending: tuple[str, ...] = (),
+    admission_pending: tuple[str, ...] = (),
+    backlog: tuple[str, ...] = (),
+    request_build_max_pending: int = 4,
+    backlog_limit: int = 4,
+) -> OmniScheduler:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._request_build_executor = object()
+    scheduler.request_build_max_pending = request_build_max_pending
+    scheduler._request_build_backlog_limit = backlog_limit
+    scheduler._pending_request_builds = {
+        rid: (object(), False, object()) for rid in pending
+    }
+    scheduler._pending_request_admissions = {
+        rid: (object(), False, object()) for rid in admission_pending
+    }
+    scheduler._backlogged_request_build_payloads = deque(
+        [_new_stage_payload(rid) for rid in backlog]
+    )
+    scheduler._deferred_request_payloads = {}
+    scheduler._aborted_request_ids = set()
+    scheduler.max_queued_requests = max_queued_requests
+    scheduler.waiting_queue = [SimpleNamespace(rid="req-occupant")] if waiting else []
+    return scheduler
+
+
+def _stage_ids(payloads) -> list[str]:
+    return [payload.request_id for payload in payloads]
+
+
+@pytest.mark.parametrize(
+    "setup, recv, selected, rejected, leftover_backlog",
+    [
+        pytest.param(
+            {
+                "max_queued_requests": 1,
+                "waiting": True,
+                "pending": ("req-busy",),
+                "backlog": ("req-backlog",),
+                "request_build_max_pending": 1,
+                "backlog_limit": 1,
+            },
+            ["req-new"],
+            [],
+            ["req-backlog", "req-new"],
+            [],
+            id="waiting-full-dumps-backlog",
+        ),
+        pytest.param(
+            {"max_queued_requests": 1, "pending": ("req-busy",)},
+            ["req-new"],
+            [],
+            ["req-new"],
+            [],
+            id="pending-counts-toward-limit",
+        ),
+        pytest.param(
+            {"max_queued_requests": 1, "admission_pending": ("req-busy",)},
+            ["req-new"],
+            [],
+            ["req-new"],
+            [],
+            id="pending-admission-counts-toward-limit",
+        ),
+        pytest.param(
+            {"max_queued_requests": 1},
+            ["req-a", "req-b"],
+            ["req-a"],
+            ["req-b"],
+            [],
+            id="does-not-over-select",
+        ),
+    ],
+)
+def test_stage_request_build_payloads(
+    setup: dict,
+    recv: list[str],
+    selected: list[str],
+    rejected: list[str],
+    leftover_backlog: list[str],
+) -> None:
+    scheduler = _staging_scheduler(**setup)
+    got_selected, got_rejected = OmniScheduler._stage_request_build_payloads(
+        scheduler, [_new_stage_payload(rid) for rid in recv]
+    )
+    assert _stage_ids(got_selected) == selected
+    assert _stage_ids(got_rejected) == rejected
+    assert _stage_ids(scheduler._backlogged_request_build_payloads) == leftover_backlog
+
+
 def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
@@ -569,10 +774,11 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     """The synchronous fast path runs after _resolve_pending_async, whose drain can
     retract a req still present in the stale batch. The fast path must drop finished
     AND retracted reqs (not only finished) before run_batch, or a retracted req is
-    forwarded/finalized again and re-frees its already-freed KV.
+    forwarded/finalized again. The dropped rows' step slots are not freed here:
+    the drain's release_kv_cache already covered them (see the real-pool test in
+    test_async_decode.py).
     """
     captured: dict = {}
-    freed: list[int] = []
 
     class FakeBatch:
         def __init__(self, reqs):
@@ -587,11 +793,6 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
             self.out_cache_loc = None
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler.page_size = 1
-    scheduler.server_args = SimpleNamespace(disable_radix_cache=False)
-    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
-        free=lambda t: freed.extend(t.tolist())
-    )
     keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
     retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
 
@@ -600,21 +801,16 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     assert captured["keep_indices"] == [0]
     assert [r.rid for r in out.reqs] == ["keep"]
     assert out.out_cache_loc.tolist() == [100]
-    assert freed == [101]
 
     # all dropped -> None so run_batch is skipped
-    freed.clear()
     fin = SimpleNamespace(rid="fin", finished=lambda: True, is_retracted=False)
     assert scheduler._drop_stale_overrun(FakeBatch([retr, fin])) is None
-    assert freed == [100, 101]
 
     # nothing stale -> batch returned unchanged, filter_batch never called
     captured.clear()
-    freed.clear()
     clean = FakeBatch([keep])
     assert scheduler._drop_stale_overrun(clean) is clean
     assert "keep_indices" not in captured
-    assert freed == []
 
 
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
@@ -1618,6 +1814,7 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=SimpleNamespace(max_new_tokens=1, min_new_tokens=0),
         output_ids=[],
+        priority=None,
     )
     scheduler._request_builder = lambda payload: SimpleNamespace(
         req=req,
@@ -1811,6 +2008,7 @@ def test_request_build_pending_limit_does_not_cap_unconfigured_backlog(
 
 
 def test_request_build_backlog_honors_configured_queue_limit(monkeypatch) -> None:
+    """Queued occupancy includes pending builds, so a full limit rejects extras."""
     scheduler = _construct_omni_scheduler(
         monkeypatch,
         server_max_queued_requests=16,
@@ -1826,8 +2024,8 @@ def test_request_build_backlog_honors_configured_queue_limit(monkeypatch) -> Non
 
     assert scheduler._request_build_backlog_limit == 16
     assert len(selected) == 16
-    assert len(scheduler._backlogged_request_build_payloads) == 16
-    assert len(rejected) == 8
+    assert len(scheduler._backlogged_request_build_payloads) == 0
+    assert len(rejected) == 24
 
 
 @pytest.mark.parametrize(
@@ -2237,6 +2435,7 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=sampling_params,
         output_ids=[],
+        priority=None,
     )
     req_data = SimpleNamespace(req=req, max_new_tokens=10, enforce_request_limits=True)
     scheduler._request_builder = lambda payload: req_data
@@ -2392,6 +2591,7 @@ def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=sampling_params,
         output_ids=[],
+        priority=None,
     )
     req_data = SimpleNamespace(
         req=req,

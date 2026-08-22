@@ -90,9 +90,22 @@ def _make_engine_builder(
         prefill_coalesce_when_idle=True,
         prefill_coalesce_requires_pending_builds=True,
         prefill_coalesce_after_builds_during_decode=True,
+        stream_emit_interval_s=0.05,
     )
     builder.context_length = context_length
     return builder
+
+
+def test_qwen3_asr_engine_builder_binds_encode_wait_policy() -> None:
+    builder = _make_engine_builder()
+    assert builder.should_wait_for_encode() is False
+
+    builder.post_scheduler_setup(
+        SimpleNamespace(request_build_queue_fits_workers=lambda: True),
+        object(),
+    )
+
+    assert builder.should_wait_for_encode() is True
 
 
 @pytest.mark.parametrize(
@@ -197,6 +210,7 @@ def test_qwen3_asr_stage_default_allows_64_running_requests() -> None:
         signature.parameters["prefill_coalesce_after_builds_during_decode"].default
         is True
     )
+    assert signature.parameters["stream_emit_interval_s"].default == 0.05
     assert "request_build_max_backlog" not in signature.parameters
 
 
@@ -289,12 +303,16 @@ def _patch_engine_dependencies(
         attest_calls=[],
         graph_init_calls=[],
         encoder_service=SimpleNamespace(close=lambda: None),
+        encoder_service_kwargs={},
+        tokenizer=object(),
+        stream_output_builder=object(),
+        stream_builder_calls=[],
     )
 
     monkeypatch.setattr(
         qwen3_asr_builder.AutoTokenizer,
         "from_pretrained",
-        lambda *args, **kwargs: object(),
+        lambda *args, **kwargs: recorded.tokenizer,
     )
     monkeypatch.setattr(
         qwen3_asr_builder.AutoFeatureExtractor,
@@ -312,10 +330,15 @@ def _patch_engine_dependencies(
         lambda gpu_id: recorded.memory_queries.append(gpu_id) or 0,
     )
     monkeypatch.setattr(qwen3_asr_builder, "init_mm_embedding_cache", lambda size: None)
+
+    def _make_encoder_service(*args, **kwargs):
+        recorded.encoder_service_kwargs.update(kwargs)
+        return recorded.encoder_service
+
     monkeypatch.setattr(
         qwen3_asr_builder,
         "Qwen3ASRPreLMEncoderService",
-        lambda *args, **kwargs: recorded.encoder_service,
+        _make_encoder_service,
     )
     monkeypatch.setattr(
         qwen3_asr_builder,
@@ -326,6 +349,12 @@ def _patch_engine_dependencies(
         request_builders,
         "make_qwen3_asr_scheduler_adapters",
         lambda **kwargs: (recorded.adapter_kwargs.update(kwargs) or object(), object()),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "make_qwen3_asr_stream_output_builder",
+        lambda **kwargs: recorded.stream_builder_calls.append(kwargs)
+        or recorded.stream_output_builder,
     )
     monkeypatch.setattr(
         sglang_backend,
@@ -340,7 +369,10 @@ def _patch_engine_dependencies(
     monkeypatch.setattr(
         omni_scheduler,
         "OmniScheduler",
-        lambda **kwargs: SimpleNamespace(**kwargs),
+        lambda **kwargs: SimpleNamespace(
+            request_build_queue_fits_workers=lambda: False,
+            **kwargs,
+        ),
     )
     monkeypatch.setattr(
         sglang_backend,
@@ -353,7 +385,9 @@ def _patch_engine_dependencies(
         recorded.infra_kwargs.append(dict(kwargs))
         model_worker = SimpleNamespace(
             gpu_id=gpu_id,
-            model_runner=SimpleNamespace(model=object()),
+            model_runner=SimpleNamespace(
+                model=SimpleNamespace(init_encoder_graphs=lambda **kwargs: None)
+            ),
         )
         return want_cuda_graph, (
             model_worker,
@@ -394,6 +428,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
             "dummy",
             enable_async_decode=False,
             async_decode_min_batch_size=4,
+            stream_emit_interval_s=0.125,
             server_args_overrides={"context_length": 2048},
         )
 
@@ -414,7 +449,7 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     ]
     assert "cuda_graph_bs=[1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]" in caplog.text
     assert "mm_attention_backend" not in build_kwargs
-    assert recorded.memory_queries == [0, 0, 0]
+    assert recorded.memory_queries == [0, 0, 0, 0]
     assert recorded.adapter_kwargs["context_length"] == 2048
     assert scheduler.enable_async_decode is False
     assert scheduler.async_decode_min_batch_size == 4
@@ -424,6 +459,10 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.prefill_coalesce_after_builds_during_decode is True
     assert scheduler.shutdown_callback is recorded.encoder_service.close
+    assert scheduler.stream_output_builder is recorded.stream_output_builder
+    assert recorded.stream_builder_calls == [
+        {"tokenizer": recorded.tokenizer, "min_emit_interval_s": 0.125}
+    ]
 
 
 @pytest.mark.parametrize(

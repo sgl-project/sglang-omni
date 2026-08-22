@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapters between stage objects and data-plane refs."""
+
 from __future__ import annotations
 
 import base64
@@ -489,6 +490,7 @@ async def send_stream_signal(
     from_stage: str,
     is_done: bool = False,
     error: str | None = None,
+    replica_bindings: dict[str, int] | None = None,
 ) -> None:
     await control_plane.send_to_stage(
         target_stage,
@@ -500,6 +502,7 @@ async def send_stream_signal(
             data_ref=None,
             is_done=is_done,
             error=error,
+            replica_bindings=replica_bindings,
         ),
     )
 

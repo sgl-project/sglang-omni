@@ -189,7 +189,11 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
                 "--max-running-requests 64 "
                 "--cuda-graph-max-bs 64 "
                 "--talker-torch-compile-max-bs 64 "
-                "--isolate-stage vocoder"
+                "--stages.vocoder.process vocoder "
+                "--stages.tts_engine.runtime.resources."
+                "total-gpu-memory-fraction 0.85 "
+                "--stages.vocoder.runtime.resources."
+                "total-gpu-memory-fraction 0.10"
             ),
             startup_timeout=300,
             gate_thresholds=True,

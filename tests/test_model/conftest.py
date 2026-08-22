@@ -76,7 +76,7 @@ def pin_omni_ci_cpuset() -> "Generator[None, None, None]":
         return
     from tests.utils.ci_cpu_contention import ContentionSampler
 
-    sampler = ContentionSampler(cpus)
+    sampler = ContentionSampler(cpus, root_pid=1)
     sampler.start()
     try:
         yield
@@ -124,7 +124,7 @@ QWEN3_OMNI_FP8_COLOCATED_CONFIG = "examples/configs/qwen3_omni_colocated_h100_fp
 QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS = (
     f"--config {QWEN3_OMNI_FP8_COLOCATED_CONFIG} --colocate "
     f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
-    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
+    f"--stages.thinker.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
 QWEN3_OMNI_BF16_COLOCATED_CONFIG = (
     "examples/configs/qwen3_omni_colocated_h100_bf16.yaml"
@@ -132,7 +132,7 @@ QWEN3_OMNI_BF16_COLOCATED_CONFIG = (
 QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS = (
     f"--config {QWEN3_OMNI_BF16_COLOCATED_CONFIG} --colocate "
     f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
-    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
+    f"--stages.thinker.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
 QWEN3_OMNI_BF16_THINKER_CONFIG = "examples/configs/qwen3_omni_mmmu_h100.yaml"
 QWEN3_OMNI_BF16_THINKER_ARGS = f"--config {QWEN3_OMNI_BF16_THINKER_CONFIG}"

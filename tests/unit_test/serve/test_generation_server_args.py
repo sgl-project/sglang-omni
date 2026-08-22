@@ -14,7 +14,12 @@ from sglang_omni.cli.serve import (
     apply_backbone_server_args_cli_overrides,
     serve,
 )
-from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.config import (
+    PipelineConfig,
+    ProcessConfig,
+    StageConfig,
+    compile_logical_processes,
+)
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
@@ -70,6 +75,16 @@ def _apply_generation_server_args(config: PipelineConfig) -> None:
         stage_name=stage_name,
         updates=GENERATION_SERVER_ARGS,
         reason="SGLang generation server args override",
+    )
+
+
+def _coordinator_max_in_flight(config: PipelineConfig) -> int | None:
+    from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
+
+    logical_process_plan, _ = compile_logical_processes(config)
+    return resolve_coordinator_max_in_flight(
+        config,
+        logical_process_plan=logical_process_plan,
     )
 
 
@@ -217,6 +232,53 @@ def test_qwen3_tts_cli_routes_64_batch_policy_to_tts_engine(
     assert overrides["cuda_graph_max_bs"] == 64
     assert overrides["torch_compile_max_bs"] == 64
     assert "server_args_overrides" not in _stage_args(launched_config, "vocoder")
+
+
+def test_qwen3_tts_coordinator_cap_uses_engine_defaults_and_cli_overlay() -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    defaults = Qwen3TTSPipelineConfig.generation_admission_defaults()
+    kwargs = Qwen3TtsEngineBuilder().extra_scheduler_kwargs()
+    config = Qwen3TTSPipelineConfig(model_path="dummy")
+    assert _coordinator_max_in_flight(config) == (
+        int(defaults["max_running_requests"]) + int(defaults["max_queued_requests"])
+    )
+    assert kwargs["request_build_max_workers"] == 4
+    assert kwargs["request_build_max_pending"] == 16
+
+    _apply_stage_server_args_override(
+        config,
+        stage_name="tts_engine",
+        updates={"max_running_requests": 32, "max_queued_requests": 16},
+        reason="SGLang generation server args override",
+    )
+    assert _coordinator_max_in_flight(config) == 48
+
+
+def test_coordinator_cap_follows_queued_bound_for_any_generation_pipeline() -> None:
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+    assert _coordinator_max_in_flight(config) is None
+    assert _coordinator_max_in_flight(FunASRPipelineConfig(model_path="dummy")) is None
+
+    _apply_stage_server_args_override(
+        config,
+        stage_name="tts_engine",
+        updates={"max_running_requests": 8, "max_queued_requests": 4},
+        reason="SGLang generation server args override",
+    )
+    assert _coordinator_max_in_flight(config) == 12
+
+    replicated = HiggsTtsPipelineConfig(
+        model_path="dummy",
+        processes={"pipeline": ProcessConfig(num_replicas=2, replica_devices=[0, 1])},
+    )
+    _apply_stage_server_args_override(
+        replicated,
+        stage_name="tts_engine",
+        updates={"max_running_requests": 8, "max_queued_requests": 4},
+        reason="SGLang generation server args override",
+    )
+    assert _coordinator_max_in_flight(replicated) == 24
 
 
 @patch("sglang_omni.cli.serve.launch_server")

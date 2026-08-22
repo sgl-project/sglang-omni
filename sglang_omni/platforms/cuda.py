@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from sglang.srt.platforms.cuda import CudaDeviceMixin
-from sglang.srt.platforms.rocm import RocmDeviceMixin
 
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.quantization import resolve_quant_config
@@ -191,7 +190,3 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             f"fp8_gemm_backend={fp8_gemm_backend}"
         )
         return effective_quantization
-
-
-class ROCMOmniPlatform(RocmDeviceMixin, CUDAOmniPlatform):
-    pass

@@ -296,6 +296,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
 
     from transformers import AutoProcessor
 
+    from sglang_omni import platforms
     from sglang_omni.models.moss_transcribe_diarize import (
         engine_builder,
         request_builders,
@@ -334,6 +335,10 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         enable_prefill_input_embeds=False,
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
 
     processor = SimpleNamespace(
         tokenizer=object(),

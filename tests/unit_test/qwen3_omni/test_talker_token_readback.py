@@ -160,6 +160,7 @@ def test_pingpong_alternates_slots_and_reuses_backing_buffer(monkeypatch):
     assert third is first
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_stage_token_ids_cuda_matches_reference():
     runner = _bare_runner()

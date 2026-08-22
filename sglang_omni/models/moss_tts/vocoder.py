@@ -148,7 +148,7 @@ class MossTTSVocoder(BatchVocoderBase):
                 nonstream_decoder = MossAudioTokenizerVocoderDecoder(
                     self._codec.decoder
                 )
-                supports_packed_flash = nonstream_decoder.supports_packed_flash(
+                supports_packed_attention = nonstream_decoder.supports_packed_attention(
                     codec_device,
                     self._compute_dtype,
                 )
@@ -158,7 +158,7 @@ class MossTTSVocoder(BatchVocoderBase):
                     "packed decoder; falling back to standalone codec decode"
                 )
             else:
-                if supports_packed_flash:
+                if supports_packed_attention:
                     self._quantizer.to(dtype=torch.float32)
                     try:
                         self._quantizer_decoder = MossAudioTokenizerQuantizerDecoder(
