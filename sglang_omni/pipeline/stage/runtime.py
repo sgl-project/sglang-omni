@@ -27,6 +27,7 @@ from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
+from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
@@ -583,6 +584,18 @@ class Stage:
                 request_id=msg.request_id,
                 from_stage=msg.from_stage,
                 chunk_id=msg.chunk_id,
+            )
+            # This branch never reaches CommEngine.read_stream_chunk, so it
+            # emits the read event itself. Without it the held-byte accounting
+            # for an edge misses every same-GPU chunk.
+            _comm_trace(
+                "comm_stream_read",
+                request_id=msg.request_id,
+                from_stage=msg.from_stage,
+                to_stage=self.name,
+                chunk_id=msg.chunk_id,
+                transport="torch_cuda_ipc",
+                bytes=data.nbytes,
             )
             await self._route_stream_item_or_fail(request_id, item)
             return
@@ -1398,6 +1411,18 @@ class Stage:
                     "modality": chunk_modality,
                     "transport": "torch_cuda_ipc",
                 },
+            )
+            # This branch skips the stream send worker and router.outbound_stream,
+            # so it records both the transport it chose and the bytes it sent.
+            self._comm.router.note_transport_choice("stream", target, "torch_cuda_ipc")
+            _comm_trace(
+                "comm_stream_send",
+                request_id=request_id,
+                from_stage=self.name,
+                to_stage=target,
+                chunk_id=chunk_id,
+                transport="torch_cuda_ipc",
+                bytes=data.nbytes,
             )
             await self.control_plane.send_to_stage(
                 target,
