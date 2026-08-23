@@ -134,7 +134,9 @@ running each chunk as its own engine request, and joining the transcripts back i
 chunk; after that, each chunk uses the previous chunk's decoded text as its Whisper previous-context prompt. If a chunk contains a sustained
 repeated character cycle, it is retried once without previous context; the first result is discarded, and the retry result conditions the next chunk.
 The detector checks periods of 8–128 normalized letter, number, or combining-mark characters repeated at least three times. It does not
-depend on whitespace-delimited words, so it also covers languages without reliable word boundaries. The behavior follows these values, which Whisper
+depend on whitespace-delimited words, so it also covers languages without reliable word boundaries. A single Latin-script word repeated three
+times is excluded to preserve literal repetition. The three-copy threshold caught the observed pathological loops while producing zero retries
+on the submitted TED-LIUM evaluation; it remains a conservative recovery heuristic rather than a transcription guarantee. The behavior follows these values, which Whisper
 declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed model defaults in this release:
 
 | Name | Value | Meaning                                                                                                                                                                     |

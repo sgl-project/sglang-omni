@@ -37,6 +37,7 @@ def test_sustained_repetition_before_valid_continuation_triggers_retry() -> None
     "text",
     [
         "yes yes yes",
+        "important important important",
         "please try again please try again",
         (
             "The Buttes Trail crosses the western ridge. "

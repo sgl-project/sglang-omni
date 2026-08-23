@@ -396,7 +396,11 @@ async def _transcribe_audio_chunks(
                     is_first_decoded_chunk=is_first_decoded_chunk,
                 )
                 text = await run_chunk(span, chunk_prompt=chunk_prompt)
-                if adapter.should_retry_chunk_without_context(text):
+                should_retry = await asyncio.to_thread(
+                    adapter.should_retry_chunk_without_context,
+                    text,
+                )
+                if should_retry:
                     text = await run_chunk(
                         span,
                         chunk_prompt=None,

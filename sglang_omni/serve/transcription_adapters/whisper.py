@@ -15,14 +15,32 @@ _MAX_REPEAT_PERIOD_UNITS = 128
 _REPEAT_COPIES = 3
 
 
+def _is_repeat_unit(char: str) -> bool:
+    return char.isalnum() or unicodedata.category(char).startswith("M")
+
+
+def _is_single_latin_word(
+    normalized: str,
+    unit_offsets: tuple[int, ...],
+    start: int,
+    period: int,
+) -> bool:
+    candidate = normalized[unit_offsets[start] : unit_offsets[start + period - 1] + 1]
+    return all(_is_repeat_unit(char) for char in candidate) and all(
+        char.isdigit()
+        or unicodedata.category(char).startswith("M")
+        or "LATIN" in unicodedata.name(char, "")
+        for char in candidate
+    )
+
+
 def _has_sustained_repetition(text: str) -> bool:
     """Detect 8-128 normalized units repeated at least three times."""
     normalized = unicodedata.normalize("NFKC", text).casefold()
-    units = tuple(
-        char
-        for char in normalized
-        if char.isalnum() or unicodedata.category(char).startswith("M")
+    unit_offsets = tuple(
+        index for index, char in enumerate(normalized) if _is_repeat_unit(char)
     )
+    units = tuple(normalized[index] for index in unit_offsets)
     max_period = min(_MAX_REPEAT_PERIOD_UNITS, len(units) // _REPEAT_COPIES)
     for period in range(_MIN_REPEAT_PERIOD_UNITS, max_period + 1):
         span = _REPEAT_COPIES * period
@@ -32,6 +50,13 @@ def _has_sustained_repetition(text: str) -> bool:
                 units[start + period : start + 2 * period] == pattern
                 and units[start + 2 * period : start + span] == pattern
             ):
+                if _is_single_latin_word(
+                    normalized,
+                    unit_offsets,
+                    start,
+                    period,
+                ):
+                    continue
                 return True
     return False
 
