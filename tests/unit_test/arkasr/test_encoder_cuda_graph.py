@@ -34,18 +34,27 @@ _COMMON_GRAPH_KEYS = {
 @pytest.mark.parametrize(
     ("batch_size", "buckets", "expected"),
     [
-        (1, (1, 2, 4, 8), 1),
-        (2, (1, 2, 4, 8), 2),
-        (3, (1, 2, 4, 8), 4),
-        (5, (1, 2, 4, 8), 8),
-        (9, (1, 2, 4, 8), None),
+        (1, None, 1),
+        (2, None, 2),
+        (3, None, 4),
+        (5, None, 8),
+        (9, None, 16),
+        (17, None, 32),
+        (33, None, None),
         (2, (1, 4, 8), 4),
     ],
 )
 def test_bucket_batch_rounds_up_to_configured_bucket(
-    batch_size: int, buckets: tuple[int, ...], expected: int | None
+    batch_size: int,
+    buckets: tuple[int, ...] | None,
+    expected: int | None,
 ) -> None:
-    assert _bucket_batch(batch_size, buckets) == expected
+    actual = (
+        _bucket_batch(batch_size)
+        if buckets is None
+        else _bucket_batch(batch_size, buckets)
+    )
+    assert actual == expected
 
 
 @pytest.mark.parametrize(
@@ -101,7 +110,7 @@ def _precapture_runner(
     enough_free_vram: bool = True,
 ) -> ArkasrEncoderCudaGraphRunner:
     runner = object.__new__(ArkasrEncoderCudaGraphRunner)
-    runner._batch_buckets = (1, 2, 4, 8)
+    runner._batch_buckets = (1, 2, 4, 8, 16, 32)
     runner._mel_bins = _MEL_BINS
     runner._device = torch.device("cpu")
     runner._min_free_bytes = 3 * 1024**3

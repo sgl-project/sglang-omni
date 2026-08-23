@@ -19,7 +19,8 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BATCH_BUCKETS = (1, 2, 4, 8)
+_DEFAULT_BATCH_BUCKETS = (1, 2, 4, 8, 16, 32)
+_DEFAULT_PRECAPTURE_BATCH_BUCKETS = (1, 2, 4, 8)
 _DEFAULT_PRECAPTURE_FRAME_BUCKETS = (512, 768, 1024)
 _DEFAULT_FRAME_BUCKET_STEP = 256
 _DEFAULT_MAX_FRAMES = 3000
@@ -212,6 +213,8 @@ class ArkasrEncoderCudaGraphRunner:
         """Capture common serving shapes before the server becomes ready."""
         with self._lock:
             for batch_bucket in self._batch_buckets:
+                if batch_bucket not in _DEFAULT_PRECAPTURE_BATCH_BUCKETS:
+                    continue
                 for frame_bucket in _DEFAULT_PRECAPTURE_FRAME_BUCKETS:
                     self._get_or_capture(
                         batch_bucket,

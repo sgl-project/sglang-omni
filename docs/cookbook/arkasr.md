@@ -104,8 +104,10 @@ runtime_overrides:
 The feature captures the complete audio encoder, including the Whisper/RoPE
 tower and MLP adapter. Before the server becomes ready, it captures the common
 batch buckets `1, 2, 4, 8` at mel-frame buckets `512, 768, 1024`. Other
-supported shapes are captured lazily on first use. Bucket policy and the
-free-memory safety margin are model-internal settings.
+supported shapes, including batch buckets `16, 32`, are captured lazily on
+first use. The larger batch buckets are reachable only when the encoder batch
+limits are raised above their default of 8. Bucket policy and the free-memory
+safety margin are model-internal settings.
 
 A request runs through the existing eager encoder path when its shape is not
 covered by an internal bucket, available GPU memory is below the capture safety
