@@ -16,7 +16,12 @@ PATCH_SIZE = 2
 NFE = 2
 
 
-def _flow_head(tmp_path) -> DotsTTSFlowHead:
+def _flow_head(
+    tmp_path,
+    *,
+    meanflow: bool = True,
+    sampling: dict | None = None,
+) -> DotsTTSFlowHead:
     torch.save(
         {"mean": torch.zeros(LATENT_DIM), "var": torch.ones(LATENT_DIM)},
         tmp_path / "latent_stats.pt",
@@ -41,8 +46,12 @@ def _flow_head(tmp_path) -> DotsTTSFlowHead:
             "rotary_bias": True,
         },
         "vocoder": {"sample_rate": 48000},
-        "meanflow": {"enabled": True, "use_duration_embedding": True},
+        "meanflow": (
+            {"enabled": True, "use_duration_embedding": True} if meanflow else None
+        ),
     }
+    if sampling is not None:
+        config["sampling"] = sampling
     flow = DotsTTSFlowHead(
         config,
         llm_hidden_size=LLM_HIDDEN,
@@ -334,6 +343,7 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
 def test_validate_request_batched_gates_prompt_and_span_budget() -> None:
     flow = SimpleNamespace(
         is_batched=True,
+        config=SimpleNamespace(sampling=None),
         _batched_nfe=4,
         _tail=SimpleNamespace(spec=SimpleNamespace(patch_capacity=9)),
     )
@@ -360,7 +370,7 @@ def test_validate_request_batched_gates_prompt_and_span_budget() -> None:
             total_span_count=10,
         )
 
-    single = SimpleNamespace(is_batched=False)
+    single = SimpleNamespace(is_batched=False, config=SimpleNamespace(sampling=None))
     validate(
         single,
         num_steps=8,
@@ -436,6 +446,30 @@ def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> No
     assert step.latent_patch.shape == (1, PATCH_SIZE, LATENT_DIM)
     assert torch.isfinite(step.latent_patch).all()
     assert torch.isfinite(step.feedback_embedding).all()
+
+
+def test_scm_checkpoint_uses_artifact_solver_contract(tmp_path) -> None:
+    from dots_tts.modules.backbone.scm_inference import SCMDiTSolver
+
+    sampling = {
+        "solver": "scm",
+        "ode_method": "euler",
+        "num_steps": 2,
+        "guidance_scale": 0.0,
+        "tau_mid": 1.3,
+    }
+    flow = _flow_head(tmp_path, meanflow=False, sampling=sampling)
+
+    assert flow.mode == "scm"
+    assert isinstance(flow._solver(), SCMDiTSolver)
+    flow.validate_request(num_steps=2, ode_method="euler", guidance_scale=0.0)
+    with pytest.raises(ValueError, match="scm artifact requires"):
+        flow.validate_request(num_steps=1, ode_method="euler", guidance_scale=0.0)
+
+    batched_flow = _flow_head(tmp_path, meanflow=False, sampling=sampling)
+    batched_flow.init_batched_tail(num_slots=2, nfe=2, max_audio_patches=8)
+    assert batched_flow.is_batched
+    assert batched_flow._tail.spec.solver == "scm"
 
 
 def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
