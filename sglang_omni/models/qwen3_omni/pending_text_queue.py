@@ -43,7 +43,7 @@ class PendingTextTensorQueue:
     _pending_rows: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        # Initialize the remaining-row count after construction or copy.
+        # Note (cuzmi): Initialize the remaining-row count after construction or copy.
         head_rows = (
             max(0, int(self.rows.shape[0]) - self.cursor)
             if self.rows is not None
@@ -85,13 +85,13 @@ class PendingTextTensorQueue:
             raise TypeError("PendingTextTensorQueue indices must be integers")
         if self.rows is None:
             raise IndexError(idx)
-        # Talker only peeks at the first row during decode, so keep this hot
-        # path O(1) and avoid consolidating the queued tensor chunks.
+        # Note (cuzmi): Talker only peeks at the first row during decode, so
+        # keep this hot path O(1) and avoid consolidating the queued tensor chunks.
         if idx == 0:
             return self.rows[self.cursor]
 
-        # Preserve the original queue's arbitrary-index behavior for callers
-        # outside the decode hot path.
+        # Note (cuzmi): Preserve the original queue's arbitrary-index behavior
+        # for callers outside the decode hot path.
         remaining = self.rows[self.cursor :]
         if not self._chunks:
             return remaining[idx]
@@ -102,7 +102,8 @@ class PendingTextTensorQueue:
         self.cursor += 1
         self._pending_rows -= 1
         if self.rows is not None and self.cursor >= int(self.rows.shape[0]):
-            # Drop the consumed head and promote the next chunk without copying.
+            # Note (cuzmi): Drop the consumed head and promote the next chunk
+            # without copying.
             self.rows = self._chunks.popleft() if self._chunks else None
             self.cursor = 0
         return row
