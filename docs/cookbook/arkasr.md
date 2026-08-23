@@ -247,6 +247,36 @@ The script reports corpus WER, throughput, and latency per concurrency level.
 Transcription accuracy tracks the official `transformers` checkpoint on the same
 audio.
 
+### Request-event profiling
+
+Add `--profile-events` to run one dedicated profiled pass after the measured
+repeats at each concurrency. The profiled pass is excluded from the reported
+accuracy and speed aggregates.
+
+```bash
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --max-samples 20 \
+  --concurrencies 1 \
+  --repeats 1 \
+  --profile-events \
+  --profile-event-dir /tmp/ark_asr_profile \
+  --output ark_asr_profile.json
+```
+
+After successful collection, each result entry gains a `profile` object
+containing the profiled pass metrics, request count, and request-level
+`stage_breakdown` and `hop_breakdown`. ARK-ASR uses a single model stage, so an
+empty hop breakdown is expected. Its expected stage coverage includes audio
+preprocessing, request construction, queueing, first prefill, and decode
+completion.
+
+The event directory is a server-side path. Report generation therefore requires
+the benchmark process and every profiled worker to share that filesystem and
+event directory. For router or data-parallel deployments, pass every worker
+serve URL through comma-separated `--profile-urls`.
+
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.

@@ -28,6 +28,7 @@ from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_i
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.proto import OmniRequest, StagePayload
 from tests.unit_test.fakes import FakeServerArgs
 
 
@@ -559,6 +560,102 @@ def test_ark_suppressed_token_ids():
     assert 103 in ids and 104 in ids and 106 in ids  # <...> added tokens
     assert 105 not in ids  # normal token untouched
     assert ids == sorted(ids)  # deterministic order
+
+
+class _RequestBuilderTokenizer:
+    eos_token_id = 2
+    vocab_size = 200_000
+    all_special_ids: list[int] = []
+
+    def get_added_vocab(self) -> dict[str, int]:
+        return {}
+
+    def __call__(self, text: str, *, add_special_tokens: bool = False):
+        assert add_special_tokens is False
+        audio_token_count = text.count("<|audio|>")
+        return SimpleNamespace(input_ids=[10] + [151663] * audio_token_count + [11])
+
+
+def _ark_request_builder(feature_extractor):
+    request_builder, _ = request_builders.make_arkasr_scheduler_adapters(
+        tokenizer=_RequestBuilderTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=feature_extractor,
+    )
+    return request_builder
+
+
+def _ark_payload() -> StagePayload:
+    return StagePayload(
+        request_id="req-ark-profile",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+        data={},
+    )
+
+
+def test_ark_request_builder_emits_preprocess_profile_interval(monkeypatch) -> None:
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        request_builders,
+        "prepare_audio",
+        lambda *args, **kwargs: SimpleNamespace(
+            waveform=torch.zeros(1600),
+            duration_s=0.1,
+            fingerprint="audio-fingerprint",
+            fingerprint_int=123,
+        ),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_emit_event",
+        lambda **event: events.append(event),
+    )
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 8)),
+        attention_mask=torch.ones((1, 8), dtype=torch.long),
+    )
+
+    _ark_request_builder(feature_extractor)(_ark_payload())
+
+    assert events == [
+        {
+            "request_id": "req-ark-profile",
+            "stage": None,
+            "event_name": "preprocess_start",
+        },
+        {
+            "request_id": "req-ark-profile",
+            "stage": None,
+            "event_name": "preprocess_end",
+        },
+    ]
+
+
+def test_ark_request_builder_closes_profile_interval_on_failure(monkeypatch) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        request_builders,
+        "prepare_audio",
+        lambda *args, **kwargs: SimpleNamespace(
+            waveform=torch.zeros(1600),
+            duration_s=0.1,
+            fingerprint="audio-fingerprint",
+            fingerprint_int=123,
+        ),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_emit_event",
+        lambda **event: events.append(event["event_name"]),
+    )
+
+    def failing_feature_extractor(*args, **kwargs):
+        raise RuntimeError("mel extraction failed")
+
+    with pytest.raises(RuntimeError, match="mel extraction failed"):
+        _ark_request_builder(failing_feature_extractor)(_ark_payload())
+
+    assert events == ["preprocess_start", "preprocess_end"]
 
 
 def test_ark_encoder_layer_fp16_clamp():

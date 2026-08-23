@@ -186,7 +186,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
-| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling and request-event profiling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR, ARK-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -207,12 +207,14 @@ and MOSS-TTS. MOSS-TTS additionally supports duration control through
 docstring (sequential phases on CI to reduce OOM risk).
 
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
-transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
-or Fun-ASR router and reports WER + speed + per-worker routing balance per
-concurrency level. It reports evaluation coverage and RTFx (successful
+transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR,
+Fun-ASR, or ARK-ASR router and reports WER + speed + per-worker routing balance
+per concurrency level. It reports evaluation coverage and RTFx (successful
 input-audio seconds per wall-clock second) alongside the existing RTF. Use it
 to measure how ASR concurrency affects capacity, latency, and WER for a given
-workload.
+workload. Its optional `--profile-events` pass records request-level stage and
+hop breakdowns after measured repeats, keeping profiling overhead out of the
+reported benchmark metrics.
 
 Add `--stream` to exercise the transcription SSE path and report text TTFT and
 inter-chunk latency while retaining the terminal transcript for WER:
