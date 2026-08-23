@@ -61,6 +61,20 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Flow solver steps
+
+The Flow decoder runs `flow_steps` Euler ODE steps, default `10`, set engine-wide through
+the `vocoder` stage's runtime overrides:
+
+```yaml
+runtime_overrides:
+  vocoder:
+    flow_steps: 4
+```
+
+Lower `flow_steps` only for a **step-distilled** flow checkpoint; on the un-distilled
+checkpoint, sampling below `10` is a quality reduction rather than a free win.
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
