@@ -1918,6 +1918,7 @@ def _run_chunks(
     *,
     max_concurrent: int,
     prompt: str | None = None,
+    condition_on_previous_text: bool = False,
     adapter: Any = None,
 ):
     from sglang_omni.serve.transcription_adapters.base import (
@@ -1939,6 +1940,7 @@ def _run_chunks(
             temperature=None,
             max_new_tokens=None,
             max_concurrent=max_concurrent,
+            condition_on_previous_text=condition_on_previous_text,
             adapter=adapter,
         ),
         timeout=10.0,
@@ -1993,6 +1995,42 @@ def test_chunks_run_concurrently() -> None:
     asyncio.run(scenario())
 
 
+def test_whisper_chunks_do_not_condition_on_previous_text_by_default() -> None:
+    class IndependentWhisperClient:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.prompts: list[str | None] = []
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.prompts.append(request.extra_params.get("prompt"))
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        independent_client = IndependentWhisperClient()
+        texts = await _run_chunks(
+            independent_client,
+            _tiny_plan(3),
+            max_concurrent=3,
+            prompt="SGLang vocabulary",
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+        assert texts == ["part0", "part1", "part2"]
+        assert independent_client.prompts == ["SGLang vocabulary"] * 3
+        assert independent_client.max_active == 3
+
+    asyncio.run(scenario())
+
+
 def test_whisper_chunks_chain_previous_text_in_decode_order() -> None:
     class OrderedClient:
         def __init__(self) -> None:
@@ -2020,6 +2058,7 @@ def test_whisper_chunks_chain_previous_text_in_decode_order() -> None:
             _tiny_plan(3),
             max_concurrent=3,
             prompt="SGLang vocabulary",
+            condition_on_previous_text=True,
             adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
         )
         assert texts == ["part0", "part1", "part2"]
@@ -2046,6 +2085,7 @@ def test_whisper_retries_degenerate_chunk_once_without_context() -> None:
             _tiny_plan(5),
             max_concurrent=5,
             prompt="caller prompt",
+            condition_on_previous_text=True,
             adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
         )
 
@@ -2073,6 +2113,7 @@ def test_whisper_degenerate_retry_is_bounded() -> None:
             scripted_client,
             _tiny_plan(1),
             max_concurrent=1,
+            condition_on_previous_text=True,
             adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
         )
 
@@ -2096,6 +2137,7 @@ def test_whisper_retries_degenerate_caller_prompt_chunk() -> None:
             _tiny_plan(2),
             max_concurrent=2,
             prompt="caller prompt",
+            condition_on_previous_text=True,
             adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
         )
 
@@ -2138,6 +2180,7 @@ def test_cancelling_whisper_retry_aborts_the_retry_request() -> None:
                 hanging_client,
                 _tiny_plan(1),
                 max_concurrent=1,
+                condition_on_previous_text=True,
                 adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
             )
         )
@@ -2273,6 +2316,7 @@ def test_client_disconnect_aborts_all_running_chunks() -> None:
             temperature=None,
             max_new_tokens=None,
             max_concurrent=2,
+            condition_on_previous_text=False,
             adapter=DefaultTranscriptionAdapter(),
         )
         with pytest.raises(asyncio.CancelledError):
@@ -2333,6 +2377,7 @@ def test_cancelling_the_wrapper_itself_aborts_running_chunks() -> None:
             temperature=None,
             max_new_tokens=None,
             max_concurrent=2,
+            condition_on_previous_text=False,
             adapter=DefaultTranscriptionAdapter(),
         )
         wrapper_task = asyncio.create_task(

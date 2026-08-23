@@ -209,6 +209,7 @@ def register_transcriptions(app: FastAPI) -> None:
                     temperature=form.temperature,
                     max_new_tokens=form.max_new_tokens,
                     max_concurrent=chunking.max_concurrent_chunks,
+                    condition_on_previous_text=chunking.condition_on_previous_text,
                     adapter=adapter,
                 ),
             )
@@ -322,14 +323,15 @@ async def _transcribe_audio_chunks(
     temperature: float | None,
     max_new_tokens: int | None,
     max_concurrent: int,
+    condition_on_previous_text: bool,
     adapter: TranscriptionAdapter,
 ) -> list[str]:
     """Transcribe the chunks of a plan, returning one text per chunk.
 
     Independent chunks run up to max_concurrent at once and return in span
-    order. Adapters that condition on previous decoded text instead run speech
-    chunks in order and may retry once without context, while separate
-    transcription requests remain concurrent.
+    order. When previous-text conditioning is enabled, capable adapters instead
+    run speech chunks in order and may retry once without context, while
+    separate transcription requests remain concurrent.
 
     Any chunk failing fails the whole request. The error names the chunk and
     its time range to make sure the failure is diagnosable.
@@ -382,7 +384,7 @@ async def _transcribe_audio_chunks(
 
     tasks: list[asyncio.Task[str]] = []
     try:
-        if adapter.requires_ordered_chunk_decoding:
+        if condition_on_previous_text and adapter.requires_ordered_chunk_decoding:
             texts: list[str] = []
             previous_text: str | None = None
             is_first_decoded_chunk = True

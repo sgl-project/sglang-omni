@@ -313,8 +313,8 @@ class AudioChunkingConfig(BaseModel):
     """Per-model long-audio policy for the transcription endpoint.
 
     Each ASR model declares the longest clip it can take in one request; anything
-    longer gets split into non-overlapping chunks that are transcribed
-    independently.
+    longer gets split into non-overlapping chunks. Models may opt into ordered
+    previous-text conditioning; otherwise chunks are transcribed independently.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -341,6 +341,8 @@ class AudioChunkingConfig(BaseModel):
     # upload grabs every batch slot and queues out everyone else's requests.
     # This is a pre-request cap.
     max_concurrent_chunks: int = Field(default=8, ge=1)
+
+    condition_on_previous_text: bool = False
 
     def model_post_init(self, __context: Any = None) -> None:
         if (
