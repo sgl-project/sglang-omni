@@ -81,6 +81,8 @@ class PendingTextTensorQueue:
             yield from chunk
 
     def __getitem__(self, idx: int) -> torch.Tensor:
+        if not isinstance(idx, int):
+            raise TypeError("PendingTextTensorQueue indices must be integers")
         if self.rows is None:
             raise IndexError(idx)
         # Talker only peeks at the first row during decode, so keep this hot
@@ -113,13 +115,20 @@ class PendingTextTensorQueue:
         if rows is None:
             return
         appended_rows = int(rows.shape[0])
-        if self.rows is None:
+        if self.rows is None or len(self) == 0:
             self.rows = rows
             self.cursor = 0
-        else:
-            rows = rows.to(device=self.rows.device, dtype=self.rows.dtype)
-            self._chunks.append(rows)
+            self._chunks.clear()
+            self._pending_rows = appended_rows
+            return
 
+        if int(rows.shape[1]) != int(self.rows.shape[1]):
+            raise ValueError(
+                "pending text row hidden dimension must match the existing queue"
+            )
+
+        rows = rows.to(device=self.rows.device, dtype=self.rows.dtype)
+        self._chunks.append(rows)
         self._pending_rows += appended_rows
 
 
