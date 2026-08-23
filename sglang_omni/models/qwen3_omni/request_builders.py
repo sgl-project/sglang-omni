@@ -972,7 +972,7 @@ def make_thinker_stream_output_builder():
         extra = req_output.extra
         if isinstance(extra, dict) and "hidden_states" in extra:
             embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
-            hidden = layer_hidden if layer_hidden is not None else embed
+            hidden = embed if embed is not None else layer_hidden
             if hidden is not None:
                 messages.append(
                     OutgoingMessage(

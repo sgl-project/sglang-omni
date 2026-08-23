@@ -194,6 +194,45 @@ def test_qwen_thinker_stream_builder_keeps_talker_when_modalities_missing():
     assert [msg.target for msg in messages] == ["decode", "talker_ar"]
 
 
+def test_qwen_thinker_stream_builder_prefers_embed_over_layer_hidden():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    embed = torch.tensor([[1.0, 2.0]])
+    layer_hidden = torch.tensor([[3.0, 4.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {"embed": embed, 24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+
+    talker_message = next(msg for msg in messages if msg.target == "talker_ar")
+    assert torch.equal(talker_message.data, embed[0])
+    assert talker_message.metadata == {"token_id": 11}
+
+
+def test_qwen_thinker_stream_builder_falls_back_to_layer_hidden():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    layer_hidden = torch.tensor([[3.0, 4.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+
+    talker_message = next(msg for msg in messages if msg.target == "talker_ar")
+    assert torch.equal(talker_message.data, layer_hidden[0])
+    assert talker_message.metadata == {"token_id": 11}
+
+
 def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,

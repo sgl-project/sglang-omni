@@ -185,11 +185,7 @@ class QwenTalkerModelRunner(ModelRunner):
         has_tensor_requests = any(
             req.data.prefill_input_embeds is not None for req in requests
         )
-        if (
-            forward_batch.input_embeds is None
-            and not any(projected_flags)
-            and not has_tensor_requests
-        ):
+        if not any(projected_flags) and not has_tensor_requests:
             return None
 
         has_projected_requests = any(projected_flags)
