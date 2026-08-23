@@ -27,6 +27,17 @@ sgl-omni serve \
   --port 8000
 ```
 
+### RTX 4090 (24 GB)
+
+The consumer profile uses BF16, disables `torch.compile`, caps running
+requests at 16, and reserves 65% of device memory for static allocations:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/fun_asr_rtx4090.yaml \
+  --port 8000
+```
+
 ## Transcribe Audio
 
 ```bash

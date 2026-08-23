@@ -20,6 +20,17 @@ sgl-omni serve \
   --port 8000
 ```
 
+### RTX 4090 (24 GB)
+
+The consumer profile uses BF16, disables `torch.compile`, caps running
+requests at 16, and reserves 65% of device memory for static allocations:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/whisper_asr_rtx4090.yaml \
+  --port 8000
+```
+
 ## Encoder CUDA Graph
 
 The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (8), so batches **1/2/4/8** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`6144 // 1500 = 4`). To use eager encoder execution, override the pipeline configuration:

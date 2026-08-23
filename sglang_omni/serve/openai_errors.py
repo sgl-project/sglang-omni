@@ -17,7 +17,13 @@ _BAD_REQUEST_MARKERS = (
     "disallowed special token",
 )
 
+_MODEL_AUDIO_DECODE_PREFIX = "Could not decode "
+_MODEL_AUDIO_DECODE_SUFFIX = " audio input"
+
 
 def is_bad_request_error(exc: Exception) -> bool:
     message = str(exc)
-    return any(marker in message for marker in _BAD_REQUEST_MARKERS)
+    return any(marker in message for marker in _BAD_REQUEST_MARKERS) or (
+        message.startswith(_MODEL_AUDIO_DECODE_PREFIX)
+        and message.endswith(_MODEL_AUDIO_DECODE_SUFFIX)
+    )
