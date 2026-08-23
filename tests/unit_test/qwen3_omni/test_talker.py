@@ -329,14 +329,19 @@ def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
     assert result.dtype == torch.float16
 
 
-def test_pending_text_queue_rejects_unexpected_rank() -> None:
-    """Keeps queue shape handling explicit instead of flattening unknown ranks."""
+def test_pending_text_queue_rejects_invalid_shapes() -> None:
+    """Keeps queue shape validation explicit."""
     queue = PendingTextTensorQueue()
 
     with pytest.raises(ValueError, match="1D row tensor or a 2D row batch"):
         queue.append_rows(torch.zeros((1, 2, 3)))
     with pytest.raises(ValueError, match="non-empty hidden dimension"):
         queue.append_rows(torch.zeros((1, 0)))
+
+    queue = PendingTextTensorQueue.from_tensor(torch.zeros((2, 3)))
+    with pytest.raises(ValueError, match="hidden dimension must match"):
+        queue.append_rows(torch.zeros((1, 4)))
+    assert len(queue) == 2
 
 
 def test_pending_text_queue_rejects_non_tensor_input() -> None:
@@ -348,6 +353,16 @@ def test_pending_text_queue_rejects_non_tensor_input() -> None:
         coerce_pending_text_queue([torch.tensor([1.0]), object()])
     with pytest.raises(TypeError, match="pending text queue must be None"):
         coerce_pending_text_queue(object())
+
+
+def test_pending_text_queue_rejects_non_integer_indices() -> None:
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+
+    for idx in (slice(None), torch.tensor(0)):
+        with pytest.raises(
+            TypeError, match="PendingTextTensorQueue indices must be integers"
+        ):
+            queue.__getitem__(idx)
 
 
 def test_coerce_pending_text_queue_copies_cursor_state() -> None:
@@ -383,16 +398,36 @@ def test_pending_text_queue_preserves_fifo_across_chunks() -> None:
     assert not queue
 
 
-def test_pending_text_queue_appends_after_partial_consumption() -> None:
+def test_pending_text_queue_appends_without_cat_after_partial_consumption(
+    monkeypatch,
+) -> None:
     queue = PendingTextTensorQueue.from_tensor(
         torch.tensor([[1.0], [2.0], [3.0]], dtype=torch.float32)
     )
 
     assert queue.popleft().item() == 1.0
-    queue.append_rows(torch.tensor([[4.0], [5.0]], dtype=torch.float64))
 
-    assert [row.item() for row in queue] == [2.0, 3.0, 4.0, 5.0]
+    def fail_cat(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("pending-text queue append must not invoke torch.cat")
+
+    monkeypatch.setattr(torch, "cat", fail_cat)
+    queue.append_rows(torch.tensor([[4.0], [5.0]], dtype=torch.float64))
+    queue.append(torch.tensor([6.0]))
+
+    assert [row.item() for row in queue] == [2.0, 3.0, 4.0, 5.0, 6.0]
     assert all(row.dtype == torch.float32 for row in queue)
+
+
+def test_pending_text_queue_appends_after_exhausted_cursor() -> None:
+    queue = PendingTextTensorQueue(rows=torch.tensor([[1.0], [2.0]]), cursor=2)
+
+    assert len(queue) == 0
+    queue.append(torch.tensor([3.0]))
+
+    assert len(queue) == 1
+    assert queue.cursor == 0
+    assert queue[0].item() == 3.0
 
 
 def test_pending_text_queue_runtime_append_reuses_request_queue() -> None:
