@@ -165,14 +165,15 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 ### Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)
 
 The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
-`--text-only` serves the thinker (chat) without the talker/speech stages:
+`--text-only` serves the thinker (chat) without the talker/speech stages. The text-only config normally puts every stage in the `pipeline` process, so give the TP thinker an otherwise-unused process name before enabling TP:
 
 ```bash
 # thinker across 8 cards (TP=8). Large shards over shared storage load slowly, so give
 # startup more headroom than the default 600 s.
 export SGLANG_OMNI_STARTUP_TIMEOUT=1800
 sgl-omni serve --model-path /path/to/Qwen3-Omni-30B-A3B-Instruct \
-  --text-only --thinker-tp-size 8 --thinker-gpus 0,1,2,3,4,5,6,7 \
+  --text-only --stages.thinker.process thinker \
+  --thinker-tp-size 8 --thinker-gpus 0,1,2,3,4,5,6,7 \
   --host 0.0.0.0 --port 8000
 # chat:
 curl -s -X POST http://localhost:8000/v1/chat/completions \

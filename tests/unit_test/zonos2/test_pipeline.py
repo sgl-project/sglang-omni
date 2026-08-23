@@ -6,11 +6,7 @@ import pytest
 import torch
 
 from sglang_omni.client import Client
-from sglang_omni.config import (
-    build_process_topology_plan,
-    build_stage_placement_plan,
-    resolve_stage_factory_args,
-)
+from sglang_omni.config import resolve_stage_factory_args
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2 import engine_builder as eb
 from sglang_omni.models.zonos2.components import text_frontend
@@ -30,6 +26,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def test_zonos2_decode_buffers_pad_async_lookahead_rows() -> None:
@@ -107,8 +104,7 @@ def test_zonos2_stream_metadata_preserves_request_override_provenance(
 def test_zonos2_multi_gpu_uses_typed_gpu_one_process() -> None:
     config = Zonos2MultiGPUPipelineConfig(model_path="fake-model")
     stages_by_name = {stage.name: stage for stage in config.stages}
-    placement = build_stage_placement_plan(config)
-    topology = build_process_topology_plan(config, placement)
+    topology = build_compiled_process_topology(config)
 
     for stage_name in ("speaker_encode", "vocoder"):
         stage = stages_by_name[stage_name]

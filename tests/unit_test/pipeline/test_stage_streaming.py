@@ -10,6 +10,7 @@ import pytest
 import torch
 from pydantic import ValidationError
 
+import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
@@ -321,7 +322,13 @@ def test_outbox_drain_yields_after_ready_message_batch(monkeypatch) -> None:
     asyncio.run(_run())
 
 
-def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing() -> None:
+def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+
     async def _run() -> None:
         control_plane = _FakeControlPlane()
         relay = _FakeRelay()

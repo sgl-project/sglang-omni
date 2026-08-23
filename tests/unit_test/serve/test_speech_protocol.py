@@ -82,6 +82,48 @@ def test_speech_generation_accepts_seedtts_reference_payload_without_voice(
     ]
 
 
+def test_speech_service_rejects_reference_text_with_instructions_when_configured() -> (
+    None
+):
+    service = SpeechRequestValidator(
+        default_model="cosyvoice",
+        required_speech_reference_count=1,
+        speech_reference_text_excludes_instructions=True,
+    )
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {
+                "input": "hello",
+                "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+                "ref_text": "reference transcript",
+                "instructions": "speak warmly",
+            }
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "instructions"
+    assert "reference transcript" in exc_info.value.message
+
+
+def test_speech_service_allows_reference_text_with_instructions_by_default() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+            "ref_text": "reference transcript",
+            "instructions": "speak warmly",
+        }
+    )
+
+    assert request.ref_text == "reference transcript"
+    assert request.instructions == "speak warmly"
+
+
 @pytest.mark.parametrize("response_format", ["wav", "mp3", "flac", "aac", "opus"])
 def test_speech_service_requires_pcm_for_http_streaming(
     response_format: str,

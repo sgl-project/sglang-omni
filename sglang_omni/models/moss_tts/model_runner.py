@@ -9,6 +9,10 @@ import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
 from sglang_omni.models.moss_tts.sampler import DelayGraphBatch
 from sglang_omni.models.moss_tts.sampling_kernels import (
@@ -37,8 +41,11 @@ class MossTTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
-            forward_batch, requests
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
+            ),
         )
         return None
 
@@ -88,7 +95,21 @@ class MossTTSModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
+            if data.output_rows:
+                # note (Richard Wang): prompt_rows is short by the generated tail
+                generated = torch.stack(data.output_rows, dim=0)
+                rows = torch.cat([rows.to(generated.device), generated], dim=0)
             current_rows = rows[prefix_len : prefix_len + req_len]
+            if int(current_rows.shape[0]) != req_len:
+                raise RuntimeError(
+                    f"MOSS-TTS prefill row mismatch for {req.rid}: have "
+                    f"{int(current_rows.shape[0])} rows, need {req_len} "
+                    f"(prefix={prefix_len}, prompt={int(data.prompt_rows.shape[0])}, "
+                    f"generated={len(data.output_rows)})"
+                )
+            if data.output_rows:
+                # note (Richard Wang): leftover row would decode instead of new sample
+                data.pending_feedback_queue.clear()
             embeds = self.model._prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )

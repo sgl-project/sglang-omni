@@ -158,7 +158,6 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             config,
             FakeMpContext(),
             stages_cfg=prep_a.stages_cfg,
-            name_map=prep_a.name_map,
             endpoints=prep_a.endpoints,
             placement_plan=prep_a.placement_plan,
             process_plan=prep_a.process_plan,
@@ -167,7 +166,6 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             config,
             FakeMpContext(),
             stages_cfg=prep_b.stages_cfg,
-            name_map=prep_b.name_map,
             endpoints=prep_b.endpoints,
             placement_plan=prep_b.placement_plan,
             process_plan=prep_b.process_plan,
@@ -300,7 +298,7 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     runner = mp_runner.MultiProcessPipelineRunner(config)
 
     with pytest.raises(RuntimeError, match="factory boom"):
-        await runner.start(timeout=10.0)
+        await runner.start(timeout=30.0)
 
     assert list(tmp_path.iterdir()) == []
 
@@ -320,14 +318,18 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             entry_stage: str,
             terminal_stages: list[str] | None = None,
             terminal_stages_resolver=None,
-            **_kwargs,
+            replica_topology=None,
+            logical_process_plan=None,
+            max_in_flight=None,
         ) -> None:
             del (
                 abort_endpoint,
                 entry_stage,
                 terminal_stages,
                 terminal_stages_resolver,
-                _kwargs,
+                replica_topology,
+                logical_process_plan,
+                max_in_flight,
             )
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint

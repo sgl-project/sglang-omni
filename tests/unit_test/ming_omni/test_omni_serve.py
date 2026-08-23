@@ -127,7 +127,7 @@ def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce(monkeypatch) -> 
     )
     config = MingOmniPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=4,
         thinker_gpus="0,1,2,3",
@@ -150,7 +150,7 @@ def test_ming_cli_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> None:
     )
     config = MingOmniPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=4,
         thinker_gpus="0,1,2,3",
@@ -196,7 +196,7 @@ def test_hard_custom_all_reduce_disable_is_not_topology_relaxed(
         ],
     )
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -271,7 +271,7 @@ def test_topology_gated_custom_all_reduce_reuses_topology_decision(
 def test_ming_cli_applies_image_encoder_tp_and_gpus() -> None:
     config = MingOmniPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -290,7 +290,7 @@ def test_ming_cli_applies_image_encoder_tp_and_gpus() -> None:
 def test_ming_cli_image_encoder_tp1_collapses_to_scalar_gpu() -> None:
     config = MingOmniPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -323,7 +323,7 @@ def test_ming_cli_leaves_image_encoder_untouched_when_flags_omitted() -> None:
     before_tp = _stage(config, "image_encoder").tp_size
     before_gpu = _stage(config, "image_encoder").gpu
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -347,7 +347,7 @@ def test_ming_cli_applies_tp_server_args_for_config_mutated_tp(monkeypatch) -> N
     thinker.parallelism.tp = 2
     thinker.gpu = [0, 1]
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,
@@ -459,7 +459,7 @@ def test_ming_speech_cli_rejects_talker_thinker_gpu_collision() -> None:
 def test_ming_cli_talker_gpu_targets_talker_stage() -> None:
     config = MingOmniSpeechPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=2,
         thinker_gpus="0,1",
@@ -587,7 +587,7 @@ def test_ming_cli_rejects_talker_torch_compile_with_stable_message(
 def test_qwen_cli_talker_gpu_still_targets_talker_ar_stage() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    apply_parallelism_cli_overrides(
+    config = apply_parallelism_cli_overrides(
         config,
         thinker_tp_size=None,
         thinker_gpus=None,

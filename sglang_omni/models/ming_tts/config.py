@@ -181,24 +181,15 @@ class MingTTSPipelineConfig(PipelineConfig):
         return {"generation": TTS_ENGINE_STAGE}
 
     @classmethod
-    def isolation_role_to_stage(cls) -> dict[str, str]:
-        return {"vocoder": AUDIO_DECODE_STAGE}
-
-    @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        return frozenset({(TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE)})
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {
-            (TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE): {
-                REFERENCE_ENCODE_STAGE: 0.08,
-                TTS_ENGINE_STAGE: 0.72,
-                AUDIO_DECODE_STAGE: 0.12,
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (kaige): both payloads are transport-complete, but preserve the
+        # previous process-split allowlist in this PR and relax it separately.
+        return frozenset(
+            {
+                (PREPROCESSING_STAGE, REFERENCE_ENCODE_STAGE),
+                (REFERENCE_ENCODE_STAGE, TTS_ENGINE_STAGE),
             }
-        }
+        )
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
@@ -313,32 +304,13 @@ class MingTTSPipelineConfig(PipelineConfig):
         )
 
         for stage in self.stages:
-            if stage.name != TTS_ENGINE_STAGE:
-                if stage.tp_size != 1:
-                    raise ValueError(
-                        "Ming-Omni-TTS supports tensor parallelism only on "
-                        f"{TTS_ENGINE_STAGE!r}; stage {stage.name!r} has "
-                        f"tp_size={stage.tp_size}."
-                    )
+            if stage.name == TTS_ENGINE_STAGE or stage.tp_size == 1:
                 continue
-
-            if stage.tp_size <= 0:
-                raise ValueError(
-                    "Ming-Omni-TTS tts_engine tp_size must be positive; "
-                    f"got tp_size={stage.tp_size}."
-                )
-            if stage.tp_size == 1:
-                continue
-            if not isinstance(stage.gpu, list):
-                raise ValueError(
-                    "Ming-Omni-TTS tts_engine tensor parallelism requires "
-                    "gpu=[rank0_gpu, rank1_gpu, ...]."
-                )
-            if len(stage.gpu) != stage.tp_size:
-                raise ValueError(
-                    "Ming-Omni-TTS tts_engine TP GPU list length must match "
-                    f"tp_size; got gpu={stage.gpu!r}, tp_size={stage.tp_size}."
-                )
+            raise ValueError(
+                "Ming-Omni-TTS supports tensor parallelism only on "
+                f"{TTS_ENGINE_STAGE!r}; stage {stage.name!r} has "
+                f"tp_size={stage.tp_size}."
+            )
 
 
 EntryClass = MingTTSPipelineConfig

@@ -29,6 +29,9 @@ from sglang_omni.serve.transcription_chunking import (
 logger = logging.getLogger(__name__)
 
 TRANSCRIPTIONS_ENDPOINT = "/v1/audio/transcriptions"
+TRANSCRIPTION_RESPONSE_FORMATS = (
+    speech_to_text.DEFAULT_RESPONSE_FORMATS | speech_to_text.SEGMENT_RESPONSE_FORMATS
+)
 
 _first_transcription_chunk = speech_to_text._first_speech_to_text_chunk
 _transcription_stream = speech_to_text.speech_to_text_stream
@@ -59,6 +62,21 @@ def register_transcriptions(app: FastAPI) -> None:
         default_model: str = app.state.model_name
         request_id = f"transcription-{uuid.uuid4()}"
 
+        if (
+            form.response_format.strip().lower()
+            in speech_to_text.SEGMENT_RESPONSE_FORMATS
+            and not speech_to_text.resolve_speech_to_text_adapter(
+                getattr(app.state, "architectures", None)
+            ).supports_segment_timestamps
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"response_format {form.response_format.strip().lower()!r} "
+                    "requires a segment-timestamp capability"
+                ),
+            )
+
         # TODO(Ratish): add the same pre-parser body limit used by voice uploads
         # once transcription upload limits are defined.
         audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
@@ -72,6 +90,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 form.response_format,
                 stream=True,
                 endpoint_path=TRANSCRIPTIONS_ENDPOINT,
+                response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
             )
             duration_s = await asyncio.to_thread(_probe_audio_duration, audio_bytes)
             if (
@@ -129,6 +148,20 @@ def register_transcriptions(app: FastAPI) -> None:
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        if (
+            plan is not None
+            and form.response_format.strip().lower()
+            in speech_to_text.SEGMENT_RESPONSE_FORMATS
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"response_format {form.response_format.strip().lower()!r} "
+                    "does not support chunked transcription because chunk "
+                    "boundary timestamps are not model-derived"
+                ),
+            )
+
         if plan is None:
             gen_req = speech_to_text.build_speech_to_text_generate_request(
                 audio_bytes=audio_bytes,
@@ -155,6 +188,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 audio_bytes=audio_bytes,
                 architectures=getattr(app.state, "architectures", None),
                 duration_s=duration_s,
+                response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
             )
 
         try:
