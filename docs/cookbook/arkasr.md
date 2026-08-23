@@ -87,6 +87,34 @@ reached; it can release earlier when pending request-build work drains. Set
 `--prefill-coalesce-requests 0` to disable coalescing. Tune these values for the
 target request distribution and latency requirements.
 
+## Encoder CUDA Graph
+
+ARK-ASR encoder CUDA Graph is opt-in. Enable it with a pipeline configuration:
+
+```yaml
+config_cls: ArkasrPipelineConfig
+name: arkasr
+model_path: AutoArk-AI/ARK-ASR-3B
+
+runtime_overrides:
+  asr:
+    enable_encoder_cuda_graph: true
+```
+
+The feature lazily captures the complete audio encoder, including the
+Whisper/RoPE tower and MLP adapter. Batch and mel-frame buckets, together with
+the free-memory safety margin, are model-internal settings.
+
+A request runs through the existing eager encoder path when its shape is not
+covered by an internal bucket, available GPU memory is below the capture safety
+margin, or graph capture/replay fails. A bucket that fails capture or replay is
+marked unavailable so later requests do not repeatedly retry it.
+
+CUDA Graph replay is serialized because each bucket reuses static input and
+output buffers. The returned rows are cloned before the bucket can be reused.
+The feature is disabled by default and should be validated with the target GPU,
+traffic shape, and accuracy workload before production rollout.
+
 ## Transcribe Audio
 
 ```bash

@@ -157,6 +157,7 @@ tests/
     │   ├── test_stream_output_builder.py
     │   └── test_streaming_client.py
     ├── arkasr/
+    │   ├── test_encoder_cuda_graph.py
     │   ├── test_encoder_service.py
     │   └── test_pipeline.py
     ├── moss_transcribe_diarize/
@@ -498,6 +499,9 @@ that happened to contain an older version of the test.
     padding invariants, get_audio_feature routing with eager fallback, and a
     CUDA-only graph-vs-eager parity check of the captured layer stack.
 - `unit_test/arkasr/`: ARK-ASR-3B unit tests:
+  - encoder CUDA Graph bucketing, graph routing and eager fallback,
+    failed-bucket serialization, pre-LM embedding splitting, and CUDA-only
+    graph-versus-eager parity
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
   - pipeline config, stage factory concurrency defaults, deferred CUDA-graph

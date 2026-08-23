@@ -48,12 +48,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_max_pending: int = 32,
-        enable_encoder_torch_compile: bool = False,
         enable_encoder_cuda_graph: bool = False,
-        encoder_graph_batch_buckets: list[int] | tuple[int, ...] = (1, 2, 4, 8),
-        encoder_graph_frame_bucket_step: int = 256,
-        encoder_graph_max_frames: int = 3000,
-        encoder_graph_min_free_gb: float = 3.0,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -90,14 +85,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self.pre_lm_max_batch_size = pre_lm_max_batch_size
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.pre_lm_max_pending = pre_lm_max_pending
-        self.enable_encoder_torch_compile = enable_encoder_torch_compile
         self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
-        self.encoder_graph_batch_buckets = tuple(
-            sorted({int(bucket) for bucket in encoder_graph_batch_buckets})
-        )
-        self.encoder_graph_frame_bucket_step = encoder_graph_frame_bucket_step
-        self.encoder_graph_max_frames = encoder_graph_max_frames
-        self.encoder_graph_min_free_gb = encoder_graph_min_free_gb
         self.tokenizer: Any = None
         self.feature_extractor: Any = None
         self.merge_factor = 4
@@ -151,30 +139,16 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         model.set_encoder_max_batch_size(self.encoder_max_batch_size)
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_encoder_cuda_graph:
-            if self.enable_encoder_torch_compile:
-                logger.warning(
-                    "enable_encoder_cuda_graph supersedes "
-                    "enable_encoder_torch_compile; the ARK-ASR audio encoder "
-                    "runs from captured CUDA graphs (eager capture), not dynamo"
-                )
             from sglang_omni.models.arkasr.encoder_cuda_graph import (
                 ArkasrEncoderCudaGraphRunner,
             )
 
             model.encoder_cuda_graph_runner = ArkasrEncoderCudaGraphRunner(
-                model.audio_encoder,
-                batch_buckets=self.encoder_graph_batch_buckets,
-                frame_bucket_step=self.encoder_graph_frame_bucket_step,
-                max_frames=self.encoder_graph_max_frames,
-                min_free_gb=self.encoder_graph_min_free_gb,
+                model.audio_encoder
             )
             logger.info(
                 "ARK-ASR encoder CUDA graphs enabled "
-                "(lazy capture per batch/frame bucket, batch_buckets=%s, "
-                "frame_step=%d, max_frames=%d)",
-                self.encoder_graph_batch_buckets,
-                self.encoder_graph_frame_bucket_step,
-                self.encoder_graph_max_frames,
+                "(lazy capture using internal batch/frame buckets)"
             )
         if self.enable_pre_lm_encoder:
             # Note (Akazaakane): Constructed after generation CUDA graphs so the

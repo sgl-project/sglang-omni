@@ -221,6 +221,11 @@ class ArkasrEncoderCudaGraphRunner:
             return None
 
         with self._lock:
+            # A queued caller may have observed this bucket before the caller
+            # holding the lock marked it failed.
+            if key in self._failed:
+                return None
+
             entry = self._graphs.get(key)
             if entry is None:
                 enough, free = self._enough_free_vram()

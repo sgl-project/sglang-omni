@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -65,6 +66,27 @@ def test_bucket_frames_rounds_up_with_final_max_bucket(
         )
         == expected
     )
+
+
+def test_run_rechecks_failed_bucket_after_acquiring_lock() -> None:
+    runner = object.__new__(ArkasrEncoderCudaGraphRunner)
+    runner._batch_buckets = (1,)
+    runner._frame_bucket_step = 256
+    runner._max_frames = 3000
+    runner._failed = set()
+    runner._graphs = {}
+
+    key = (1, 256)
+    runner._lock = MagicMock()
+    runner._lock.__enter__.side_effect = lambda: runner._failed.add(key)
+    runner._enough_free_vram = MagicMock(
+        side_effect=AssertionError("failed bucket must not retry capture")
+    )
+
+    result = runner.run(torch.zeros(1, _MEL_BINS, 17), [17])
+
+    assert result is None
+    runner._enough_free_vram.assert_not_called()
 
 
 class _RecordingAudioEncoder(nn.Module):
