@@ -675,6 +675,15 @@ class Stage:
                 from_stage=msg.from_stage,
                 chunk_id=msg.chunk_id,
             )
+            _comm_trace(
+                "comm_stream_read",
+                request_id=msg.request_id,
+                from_stage=msg.from_stage,
+                to_stage=self.name,
+                chunk_id=msg.chunk_id,
+                transport="inline",
+                bytes=data.nbytes,
+            )
             await self._route_stream_item_or_fail(request_id, item)
             return
 
@@ -1540,6 +1549,16 @@ class Stage:
                     "modality": chunk_modality,
                     "transport": "inline",
                 },
+            )
+            self._comm.router.note_transport_choice("stream", target, "inline")
+            _comm_trace(
+                "comm_stream_send",
+                request_id=request_id,
+                from_stage=self.name,
+                to_stage=target,
+                chunk_id=chunk_id,
+                transport="inline",
+                bytes=data.nbytes,
             )
             await self.control_plane.send_to_stage(
                 target,

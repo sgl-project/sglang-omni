@@ -21,6 +21,7 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.messages import OutgoingMessage
+from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
 
 
 class _FakeControlPlane:
@@ -372,7 +373,9 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
     asyncio.run(_run())
 
 
-def test_small_cpu_scheduler_stream_chunk_rides_inline() -> None:
+def test_small_cpu_scheduler_stream_chunk_rides_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
         relay = _FakeRelay()
@@ -414,7 +417,22 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline() -> None:
         assert torch.equal(data, token)
         assert metadata == {"token_id": 42}
 
-    asyncio.run(_run())
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(_run())
+
+    selected = events_named(events, "comm_transport_selected")
+    assert len(selected) == 1
+    assert selected[0]["direction"] == "stream"
+    assert selected[0]["peer_stage"] == "decode"
+    assert selected[0]["transport"] == "inline"
+
+    sent = events_named(events, "comm_stream_send")
+    assert len(sent) == 1
+    assert sent[0]["request_id"] == "req"
+    assert sent[0]["from_stage"] == "thinker"
+    assert sent[0]["to_stage"] == "decode"
+    assert sent[0]["transport"] == "inline"
+    assert sent[0]["bytes"] == 8
 
 
 def test_inline_stream_chunk_gate() -> None:
@@ -436,7 +454,28 @@ def test_inline_stream_chunk_materializes_small_view_storage() -> None:
     assert restored.untyped_storage().nbytes() == restored.numel()
 
 
-def test_stage_routes_inline_stream_chunk_to_scheduler() -> None:
+def test_inline_stream_chunk_does_not_clone_small_owning_tensor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tensor = torch.tensor([7], dtype=torch.long)
+    serialized_tensor: torch.Tensor | None = None
+
+    def capture_payload(payload) -> bytes:
+        nonlocal serialized_tensor
+        serialized_tensor = payload[0]
+        return b"payload"
+
+    monkeypatch.setattr(stage_io.pickle, "dumps", capture_payload)
+
+    stage_io.serialize_inline_stream_chunk(tensor, None)
+
+    assert serialized_tensor is not None
+    assert serialized_tensor.data_ptr() == tensor.data_ptr()
+
+
+def test_stage_routes_inline_stream_chunk_to_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _run() -> None:
         control_plane = _FakeControlPlane()
         relay = ShmRelay(engine_id="t-inline", device="cpu")
@@ -483,7 +522,16 @@ def test_stage_routes_inline_stream_chunk_to_scheduler() -> None:
         assert torch.equal(chunk_msg.data.data, token)
         assert chunk_msg.data.metadata == {"token_id": 7}
 
-    asyncio.run(_run())
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(_run())
+
+    received = events_named(events, "comm_stream_read")
+    assert len(received) == 1
+    assert received[0]["request_id"] == "req"
+    assert received[0]["from_stage"] == "thinker"
+    assert received[0]["to_stage"] == "decode"
+    assert received[0]["transport"] == "inline"
+    assert received[0]["bytes"] == 8
 
 
 def test_stage_config_rejects_unknown_model_transport_field() -> None:

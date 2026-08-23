@@ -195,26 +195,22 @@ class QwenTalkerModelRunner(ModelRunner):
                 "batched together"
             )
 
-        input_embeds = forward_batch.input_embeds
-        if has_projected_requests or has_tensor_requests:
-            parts: list[torch.Tensor] = []
-            for sched_req in requests:
-                req = sched_req.data.req
-                prefix_len = len(req.prefix_indices)
-                extend_len = int(req.extend_range.length)
-                part = self._projected_prefill_slice(
-                    sched_req=sched_req,
-                    prefix_len=prefix_len,
-                    extend_len=extend_len,
-                    device=forward_batch.input_ids.device,
-                )
-                if part is not None and part.shape[0] > 0:
-                    parts.append(part)
-            if not parts:
-                return None
-            input_embeds = torch.cat(parts, dim=0)
-        elif input_embeds is None:
+        parts: list[torch.Tensor] = []
+        for sched_req in requests:
+            req = sched_req.data.req
+            prefix_len = len(req.prefix_indices)
+            extend_len = int(req.extend_range.length)
+            part = self._projected_prefill_slice(
+                sched_req=sched_req,
+                prefix_len=prefix_len,
+                extend_len=extend_len,
+                device=forward_batch.input_ids.device,
+            )
+            if part is not None and part.shape[0] > 0:
+                parts.append(part)
+        if not parts:
             return None
+        input_embeds = torch.cat(parts, dim=0)
 
         expected_rows = int(forward_batch.input_ids.shape[0])
         if input_embeds.shape[0] != expected_rows:
