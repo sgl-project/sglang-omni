@@ -351,10 +351,14 @@ def test_arkasr_encoder_cuda_graph_constructs_runner(
     import sglang_omni.models.arkasr.encoder_cuda_graph as graph_module
 
     constructed: list[dict[str, object]] = []
+    precaptured: list[object] = []
 
     class _FakeGraphRunner:
         def __init__(self, audio_encoder, **kwargs):  # noqa: ANN001, ANN003
             constructed.append({"audio_encoder": audio_encoder, "kwargs": kwargs})
+
+        def capture_common_buckets(self):
+            precaptured.append(self)
 
     encoder_service = SimpleNamespace(close=lambda: None)
     stub = _stub_arkasr_engine_build(
@@ -381,6 +385,7 @@ def test_arkasr_encoder_cuda_graph_constructs_runner(
     assert len(constructed) == 1
     assert constructed[0]["audio_encoder"] is audio_encoder
     assert constructed[0]["kwargs"] == {}
+    assert len(precaptured) == 1
 
 
 def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(

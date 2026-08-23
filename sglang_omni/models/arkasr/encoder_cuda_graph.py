@@ -20,6 +20,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BATCH_BUCKETS = (1, 2, 4, 8)
+_DEFAULT_PRECAPTURE_FRAME_BUCKETS = (512, 768, 1024)
 _DEFAULT_FRAME_BUCKET_STEP = 256
 _DEFAULT_MAX_FRAMES = 3000
 _DEFAULT_MIN_FREE_GB = 3.0
@@ -82,6 +83,7 @@ class ArkasrEncoderCudaGraphRunner:
         reference = next(audio_encoder.parameters())
         self._device = reference.device
         self._dtype = reference.dtype
+        self._mel_bins = int(audio_encoder.whisper.conv1.in_channels)
         self._batch_buckets = _normalize_batch_buckets(batch_buckets)
         self._frame_bucket_step = int(frame_bucket_step)
         self._max_frames = int(max_frames)
@@ -163,6 +165,60 @@ class ArkasrEncoderCudaGraphRunner:
         )
         return graph, static_features, static_mask, frame_index, static_out
 
+    def _get_or_capture(
+        self,
+        batch_bucket: int,
+        frame_bucket: int,
+        mel_bins: int,
+    ) -> tuple | None:
+        key = (batch_bucket, frame_bucket)
+        if key in self._failed:
+            return None
+
+        entry = self._graphs.get(key)
+        if entry is not None:
+            return entry
+
+        enough, free = self._enough_free_vram()
+        if not enough:
+            logger.warning(
+                "ARK-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
+                "headroom; running batch=%d frames=%d eager",
+                free / 1024**3,
+                self._min_free_bytes / 1024**3,
+                batch_bucket,
+                frame_bucket,
+            )
+            self._failed.add(key)
+            return None
+        try:
+            with torch.cuda.device(self._device):
+                entry = self._capture(batch_bucket, frame_bucket, mel_bins)
+        except Exception as exc:
+            logger.warning(
+                "ARK-ASR encoder CUDA graph capture failed for "
+                "batch=%d frames=%d: %s; using eager for this bucket",
+                batch_bucket,
+                frame_bucket,
+                exc,
+            )
+            self._failed.add(key)
+            return None
+        self._graphs[key] = entry
+        return entry
+
+    @torch.no_grad()
+    def capture_common_buckets(self) -> None:
+        """Capture common serving shapes before the server becomes ready."""
+        with self._lock:
+            for batch_bucket in self._batch_buckets:
+                for frame_bucket in _DEFAULT_PRECAPTURE_FRAME_BUCKETS:
+                    self._get_or_capture(
+                        batch_bucket,
+                        frame_bucket,
+                        self._mel_bins,
+                    )
+
     def _copy_inputs(
         self,
         static_features: torch.Tensor,
@@ -226,34 +282,9 @@ class ArkasrEncoderCudaGraphRunner:
             if key in self._failed:
                 return None
 
-            entry = self._graphs.get(key)
+            entry = self._get_or_capture(batch_bucket, frame_bucket, mel_bins)
             if entry is None:
-                enough, free = self._enough_free_vram()
-                if not enough:
-                    logger.warning(
-                        "ARK-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
-                        "headroom; running batch=%d frames=%d eager",
-                        free / 1024**3,
-                        self._min_free_bytes / 1024**3,
-                        batch_bucket,
-                        frame_bucket,
-                    )
-                    self._failed.add(key)
-                    return None
-                try:
-                    with torch.cuda.device(self._device):
-                        entry = self._capture(batch_bucket, frame_bucket, mel_bins)
-                except Exception as exc:
-                    logger.warning(
-                        "ARK-ASR encoder CUDA graph capture failed for "
-                        "batch=%d frames=%d: %s; using eager for this bucket",
-                        batch_bucket,
-                        frame_bucket,
-                        exc,
-                    )
-                    self._failed.add(key)
-                    return None
-                self._graphs[key] = entry
+                return None
 
             graph, static_features, static_mask, static_frame_index, static_out = entry
             stream = torch.cuda.current_stream(self._device)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -24,6 +26,9 @@ from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneratio
 _MEL_BINS = 8
 _HIDDEN_SIZE = 4
 _MERGE_FACTOR = 4
+_COMMON_GRAPH_KEYS = {
+    (batch, frames) for batch in (1, 2, 4, 8) for frames in (512, 768, 1024)
+}
 
 
 @pytest.mark.parametrize(
@@ -87,6 +92,68 @@ def test_run_rechecks_failed_bucket_after_acquiring_lock() -> None:
 
     assert result is None
     runner._enough_free_vram.assert_not_called()
+
+
+def _precapture_runner(
+    *,
+    graphs: dict[tuple[int, int], tuple] | None = None,
+    failed: set[tuple[int, int]] | None = None,
+    enough_free_vram: bool = True,
+) -> ArkasrEncoderCudaGraphRunner:
+    runner = object.__new__(ArkasrEncoderCudaGraphRunner)
+    runner._batch_buckets = (1, 2, 4, 8)
+    runner._mel_bins = _MEL_BINS
+    runner._device = torch.device("cpu")
+    runner._min_free_bytes = 3 * 1024**3
+    runner._graphs = dict(graphs or {})
+    runner._failed = set(failed or set())
+    runner._lock = threading.Lock()
+    runner._enough_free_vram = MagicMock(
+        return_value=(enough_free_vram, 4 * 1024**3 if enough_free_vram else 0)
+    )
+    runner._capture = MagicMock(
+        side_effect=lambda batch, frames, mel_bins: (batch, frames, mel_bins)
+    )
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("graphs", "failed", "expected_captured"),
+    [
+        ({}, set(), _COMMON_GRAPH_KEYS),
+        (
+            {(1, 512): ("existing",)},
+            {(2, 768)},
+            _COMMON_GRAPH_KEYS - {(1, 512), (2, 768)},
+        ),
+    ],
+)
+def test_capture_common_buckets_skips_existing_and_failed_buckets(
+    monkeypatch: pytest.MonkeyPatch,
+    graphs: dict[tuple[int, int], tuple],
+    failed: set[tuple[int, int]],
+    expected_captured: set[tuple[int, int]],
+) -> None:
+    runner = _precapture_runner(graphs=graphs, failed=failed)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
+
+    runner.capture_common_buckets()
+
+    assert set(runner._graphs) == _COMMON_GRAPH_KEYS - failed
+    assert {
+        (call.args[0], call.args[1]) for call in runner._capture.call_args_list
+    } == expected_captured
+    assert all(call.args[2] == _MEL_BINS for call in runner._capture.call_args_list)
+
+
+def test_capture_common_buckets_preserves_eager_fallback_on_low_vram() -> None:
+    runner = _precapture_runner(enough_free_vram=False)
+
+    runner.capture_common_buckets()
+
+    assert runner._graphs == {}
+    assert runner._failed == _COMMON_GRAPH_KEYS
+    runner._capture.assert_not_called()
 
 
 class _RecordingAudioEncoder(nn.Module):
