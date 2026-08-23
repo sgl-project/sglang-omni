@@ -372,6 +372,7 @@ async def _run_server(
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
     enable_realtime: bool = False,
+    enable_metrics: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -436,6 +437,7 @@ async def _run_server(
             supports_realtime_audio_output=(
                 type(pipeline_config).code2wav_stage() is not None
             ),
+            enable_metrics=enable_metrics,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
@@ -508,6 +510,7 @@ def launch_server(
     log_level: str = "info",
     client_kwargs: dict[str, Any] | None = None,
     enable_realtime: bool = False,
+    enable_metrics: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -525,6 +528,9 @@ def launch_server(
             :class:`~sglang_omni.client.Client`.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
+        enable_metrics: If True, expose the Omni API/coordinator Prometheus
+            ``/metrics`` endpoint. This does not enable or aggregate
+            underlying SGLang stage metrics.
         allowed_local_media_path: Directory allowed for ``file://`` media
             references in TTS requests.
         allowed_media_domains: Domains allowed for remote TTS reference audio.
@@ -541,6 +547,7 @@ def launch_server(
             log_level=log_level,
             client_kwargs=client_kwargs,
             enable_realtime=enable_realtime,
+            enable_metrics=enable_metrics,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
