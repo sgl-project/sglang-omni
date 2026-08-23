@@ -21,6 +21,7 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.ming_omni.config import (
     MingOmniPipelineConfig,
     MingOmniSpeechPipelineConfig,
+    MingOmniStreamingSpeechPipelineConfig,
 )
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 from sglang_omni.models.registry import (
@@ -118,6 +119,35 @@ def test_ming_text_variant_uses_text_image_pipeline(monkeypatch) -> None:
         "decode",
     ]
     assert config_manager.config.terminal_stages == ["decode"]
+
+
+def test_ming_streaming_speech_variant_uses_streaming_pipeline(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(
+            architectures=["BailingMM2NativeForConditionalGeneration"]
+        ),
+    )
+
+    config_manager = ConfigManager.from_model_path(
+        "dummy-ming", variant="streaming_speech"
+    )
+
+    assert isinstance(config_manager.config, MingOmniStreamingSpeechPipelineConfig)
+    assert [stage.name for stage in config_manager.config.stages] == [
+        "preprocessing",
+        "audio_encoder",
+        "image_encoder",
+        "mm_aggregate",
+        "thinker",
+        "decode",
+        "segmenter",
+        "talker_stream",
+    ]
+    assert config_manager.config.terminal_stages == ["decode", "talker_stream"]
+    assert type(config_manager.config).talker_role_to_stage() == {
+        "talker": "talker_stream"
+    }
 
 
 def test_ming_cli_applies_tp_gpus_and_disable_custom_all_reduce(monkeypatch) -> None:
@@ -762,3 +792,118 @@ def test_omni_serve_builds_ming_speech_config_by_default(monkeypatch) -> None:
     assert captured["kwargs"]["host"] == "127.0.0.1"
     assert captured["kwargs"]["port"] == 8000
     assert captured["kwargs"]["model_name"] == "ming-omni"
+
+
+def test_omni_serve_builds_ming_streaming_speech_config(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
+        lambda *args, **kwargs: True,
+    )
+
+    from typer.testing import CliRunner
+
+    from sglang_omni.cli import app
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(
+            architectures=["BailingMM2NativeForConditionalGeneration"]
+        ),
+    )
+
+    def fake_launch_server(config, **kwargs):
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", fake_launch_server)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "serve",
+            "--model-path",
+            "inclusionAI/Ming-flash-omni-2.0",
+            "--streaming",
+            "--thinker-tp-size",
+            "2",
+            "--thinker-gpus",
+            "0,1",
+            "--talker-gpu",
+            "3",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8000",
+            "--model-name",
+            "ming-omni",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    config = captured["config"]
+    assert isinstance(config, MingOmniStreamingSpeechPipelineConfig)
+    assert config.terminal_stages == ["decode", "talker_stream"]
+    assert [stage.name for stage in config.stages] == [
+        "preprocessing",
+        "audio_encoder",
+        "image_encoder",
+        "mm_aggregate",
+        "thinker",
+        "decode",
+        "segmenter",
+        "talker_stream",
+    ]
+    assert _stage(config, "thinker").tp_size == 2
+    assert _stage(config, "thinker").gpu == [0, 1]
+    assert _stage(config, "talker_stream").gpu == 3
+    assert (
+        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
+    )
+
+
+def test_omni_serve_rejects_streaming_with_text_only(monkeypatch) -> None:
+    from typer.testing import CliRunner
+
+    from sglang_omni.cli import app
+
+    monkeypatch.setattr(
+        "sglang_omni.config.manager.AutoConfig.from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(
+            architectures=["BailingMM2NativeForConditionalGeneration"]
+        ),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.launch_server",
+        lambda *args, **kwargs: None,
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "serve",
+            "--model-path",
+            "inclusionAI/Ming-flash-omni-2.0",
+            "--streaming",
+            "--text-only",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--streaming cannot be combined with --text-only" in result.output
+
+
+def test_ming_cli_streaming_talker_gpu_targets_talker_stream() -> None:
+    config = MingOmniStreamingSpeechPipelineConfig(model_path="dummy")
+
+    apply_parallelism_cli_overrides(
+        config,
+        thinker_tp_size=2,
+        thinker_gpus="0,1",
+        talker_gpu=3,
+        code2wav_gpu=None,
+    )
+
+    assert _stage(config, "thinker").gpu == [0, 1]
+    assert _stage(config, "talker_stream").gpu == 3

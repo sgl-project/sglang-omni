@@ -88,11 +88,16 @@ def _validate_colocate_cli_request(
     colocate: bool,
     config: str | None,
     text_only: bool,
+    streaming: bool = False,
 ) -> None:
+    if text_only and streaming:
+        raise typer.BadParameter("--streaming cannot be combined with --text-only")
     if not colocate:
         return
     if text_only:
         raise typer.BadParameter("--colocate cannot be combined with --text-only")
+    if streaming:
+        raise typer.BadParameter("--colocate cannot be combined with --streaming")
     if not config:
         raise typer.BadParameter("--colocate requires --config")
 
@@ -1045,6 +1050,17 @@ def serve(
             help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
         ),
     ] = False,
+    streaming: Annotated[
+        bool,
+        typer.Option(
+            "--streaming",
+            help=(
+                "Use the model's streaming-speech pipeline variant when "
+                "available (chunked audio over SSE). Mutually exclusive with "
+                "--text-only."
+            ),
+        ),
+    ] = False,
     colocate: Annotated[
         bool,
         typer.Option(
@@ -1424,6 +1440,7 @@ def serve(
         colocate=colocate,
         config=config,
         text_only=text_only,
+        streaming=streaming,
     )
 
     # --- Resolve config ---
@@ -1433,6 +1450,15 @@ def serve(
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
         config_manager = ConfigManager.from_model_path(model_path, variant="text")
+    elif streaming:
+        if model_path is None:
+            raise typer.BadParameter("--model-path is required unless --config is set")
+        try:
+            config_manager = ConfigManager.from_model_path(
+                model_path, variant="streaming_speech"
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     else:
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
