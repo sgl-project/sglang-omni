@@ -255,7 +255,7 @@ _INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
 def serialize_inline_stream_chunk(
     data: Any, metadata: dict[str, Any] | None
 ) -> dict[str, Any] | None:
-    if not isinstance(data, torch.Tensor) or data.is_cuda:
+    if not isinstance(data, torch.Tensor) or data.device.type != "cpu":
         return None
     if _contains_cuda_tensor(metadata) or _contains_cpu_tensor(metadata):
         return None
@@ -303,6 +303,11 @@ def deserialize_inline_stream_chunk(
         raise TypeError(
             f"inline stream chunk data must be torch.Tensor, got "
             f"{type(data).__name__}"
+        )
+    if data.device.type != "cpu":
+        device_type = data.device.type
+        raise ValueError(
+            f"inline stream chunk data must be a CPU tensor, got {device_type}"
         )
     if metadata is not None and not isinstance(metadata, dict):
         raise TypeError(

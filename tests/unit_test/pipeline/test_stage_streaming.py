@@ -456,6 +456,14 @@ def test_inline_stream_chunk_rejects_oversized_serialized_payload() -> None:
     assert data_ref is None
 
 
+def test_inline_stream_chunk_rejects_non_cpu_tensor() -> None:
+    tensor = torch.empty(1, device="meta")
+
+    data_ref = stage_io.serialize_inline_stream_chunk(tensor, None)
+
+    assert data_ref is None
+
+
 def test_inline_stream_chunk_rejects_invalid_metadata_type() -> None:
     data_ref = {
         "_type": stage_io._INLINE_STREAM_CHUNK_TYPE,
@@ -475,6 +483,17 @@ def test_inline_stream_chunk_rejects_oversized_received_payload() -> None:
     }
 
     with pytest.raises(ValueError, match="payload exceeds"):
+        stage_io.deserialize_inline_stream_chunk(data_ref)
+
+
+def test_inline_stream_chunk_rejects_non_cpu_received_tensor() -> None:
+    data_ref = {
+        "_type": stage_io._INLINE_STREAM_CHUNK_TYPE,
+        "version": 1,
+        "payload": stage_io.pickle.dumps((torch.empty(1, device="meta"), None)),
+    }
+
+    with pytest.raises(ValueError, match="data must be a CPU tensor"):
         stage_io.deserialize_inline_stream_chunk(data_ref)
 
 
