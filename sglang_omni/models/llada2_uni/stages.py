@@ -11,6 +11,24 @@ from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 logger = logging.getLogger(__name__)
 
 
+def attach_thinking_trace(result: dict[str, Any], state: Any) -> None:
+    """Expose Phase 1 reasoning only for combined text-and-image requests."""
+    modalities = state.request_metadata.get("output_modalities")
+    if isinstance(modalities, str):
+        modalities = (modalities,)
+    if not isinstance(modalities, (list, tuple, set)):
+        return
+    normalized_modalities = {str(modality).lower() for modality in modalities}
+    if not {"text", "image"}.issubset(normalized_modalities):
+        return
+    thinking = state.generation_state.get("thinking")
+    if not isinstance(thinking, dict):
+        return
+    trace = thinking.get("trace")
+    if isinstance(trace, str):
+        result["text"] = trace
+
+
 def _event_to_dict(event) -> dict[str, Any]:
     return {
         "type": event.type,
@@ -89,15 +107,36 @@ def create_sglang_dllm_thinker_executor_from_config(
     server_args_overrides: dict[str, Any] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
-    from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
-    from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
-
     overrides: dict[str, Any] = {
         "attention_backend": "flashinfer",
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
     }
     overrides.update(server_args_overrides or {})
+
+    if (
+        dllm_algorithm == "LowConfidenceCFG"
+        and overrides["attention_backend"] != "flashinfer"
+    ):
+        raise ValueError(
+            "LLaDA2-Uni native image CFG requires attention_backend='flashinfer'"
+        )
+
+    from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
+    from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
+
+    if dllm_algorithm == "LowConfidenceCFG":
+        from sglang.srt.dllm.algorithm import algo_name_to_cls
+
+        from sglang_omni.models.llada2_uni.algorithm.low_confidence_cfg import (
+            LowConfidenceCFG,
+        )
+        from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+            register_llada2_cfg_flashinfer_backend,
+        )
+
+        algo_name_to_cls["LowConfidenceCFG"] = LowConfidenceCFG
+        register_llada2_cfg_flashinfer_backend()
 
     server_args = build_sglang_server_args(
         model_path,
@@ -113,6 +152,74 @@ def create_sglang_dllm_thinker_executor_from_config(
         server_args.mem_fraction_static,
     )
     return create_dllm_thinker_scheduler(server_args, gpu_id)
+
+
+def create_image_decode_executor(
+    model_path: str,
+    *,
+    device: str = "cuda",
+    dtype: Any = None,
+    decode_mode: str = "normal",
+    num_steps: int = 50,
+    resolution_multiplier: int = 2,
+):
+    """Create the native VQ-to-image terminal stage."""
+    import base64
+
+    from sglang_omni.models.llada2_uni.components.image_decoder import (
+        LLaDA2ImageDecoder,
+    )
+    from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
+    from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+    from sglang_omni.models.weight_loader import resolve_dtype
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+
+    decoder = LLaDA2ImageDecoder(
+        model_path=model_path,
+        device=device,
+        dtype=resolve_dtype(dtype),
+        decode_mode=decode_mode,
+        num_steps=num_steps,
+        resolution_multiplier=resolution_multiplier,
+    )
+
+    def _decode_image(payload):
+        state = LLaDA2UniPipelineState.from_dict(payload.data)
+        extracted = extract_image_vq_tokens(state)
+        if extracted is None:
+            raise ValueError("image decoder received a non-image request")
+        token_ids, height, width, params = extracted
+        call_kwargs: dict[str, Any] = {}
+        if isinstance(params.get("decode_mode"), str):
+            call_kwargs["decode_mode"] = params["decode_mode"]
+        if isinstance(params.get("decoder_steps"), int):
+            call_kwargs["num_steps"] = params["decoder_steps"]
+        if isinstance(params.get("resolution_multiplier"), int):
+            call_kwargs["resolution_multiplier"] = params["resolution_multiplier"]
+        if isinstance(params.get("seed"), int):
+            call_kwargs["seed"] = params["seed"]
+
+        image_bytes, image_width, image_height = decoder.decode_to_bytes(
+            token_ids, height, width, **call_kwargs
+        )
+        result = {
+            "modality": "image",
+            "images": [
+                {
+                    "id": f"image-{payload.request_id}-0",
+                    "data": base64.b64encode(image_bytes).decode("ascii"),
+                    "format": "png",
+                    "width": image_width,
+                    "height": image_height,
+                }
+            ],
+            "finish_reason": "stop",
+        }
+        attach_thinking_trace(result, state)
+        payload.data = result
+        return payload
+
+    return SimpleScheduler(_decode_image)
 
 
 def create_decode_executor(model_path: str):
