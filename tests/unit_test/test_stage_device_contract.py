@@ -24,6 +24,9 @@ _MODELS = sorted(
 # Every stage that relies on device=None. Adding one means adding a test below that
 # proves the factory resolves it.
 _NONE_DEVICE_STAGES = {
+    ("higgs_tts", "audio_encoder"),
+    ("higgs_tts", "tts_engine"),
+    ("higgs_tts", "vocoder"),
     ("qwen3_asr", "asr"),
     ("qwen3_omni", "audio_encoder"),
     ("qwen3_omni", "code2wav"),
@@ -155,3 +158,51 @@ def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
     # Placement injects gpu_id only when the signature declares it. Without it the
     # builder resolved a bare accelerator and told SGLang card 0.
     assert seen["gpu_id"] == 1
+
+
+def test_higgs_engine_stage_forwards_none_and_the_card_to_the_shared_builder() -> None:
+    """Same contract as Qwen3-ASR: pass None down, and do not drop gpu_id."""
+    from sglang_omni.models.higgs_tts import stages
+    from sglang_omni.scheduling import engine_factory
+
+    seen: dict[str, object] = {}
+
+    def spy_build(self, model_path, **kwargs):
+        del self, model_path
+        seen.update(kwargs)
+        return SimpleNamespace()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(engine_factory.SGLangGenerationEngineBuilder, "build", spy_build)
+        stages.create_sglang_tts_engine_executor("unused", device=None, gpu_id=1)
+
+    assert "device" in seen, "the factory did not route through the shared builder"
+    assert seen["device"] is None
+    assert seen["gpu_id"] == 1
+
+
+@pytest.mark.parametrize("factory_name", ["audio_encoder", "vocoder"])
+def test_higgs_codec_stages_resolve_none_before_the_checkpoint_work(
+    monkeypatch: pytest.MonkeyPatch, factory_name: str
+) -> None:
+    """These place the codec themselves; stopping in the resolver skips the load."""
+    from sglang_omni.models.higgs_tts import stages
+
+    class _Stop(Exception):
+        pass
+
+    seen: dict[str, object] = {}
+
+    def spy_resolve(device, gpu_id):
+        seen["device"] = device
+        seen["gpu_id"] = gpu_id
+        raise _Stop
+
+    monkeypatch.setattr(stages, "resolve_device_spec", spy_resolve)
+
+    with pytest.raises(_Stop):
+        getattr(stages, f"create_{factory_name}_executor")(
+            "unused", device=None, gpu_id=1
+        )
+
+    assert seen == {"device": None, "gpu_id": 1}

@@ -70,7 +70,7 @@ def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
             require_gpu_id=audio_encoder.require_factory_gpu_id,
             stage_name=audio_encoder.stage_name,
         )
-        assert factory_args["device"] == "cuda"
+        assert factory_args["device"] is None
         assert factory_args["gpu_id"] == 0
 
     gpu_plan = prep.placement_plan.gpus[0]

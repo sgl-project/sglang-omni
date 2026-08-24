@@ -379,7 +379,7 @@ def create_preprocessing_executor(
 def create_audio_encoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
@@ -463,7 +463,8 @@ def create_audio_encoder_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
     cuda_graph_max_bs: int = 64,
@@ -495,6 +496,7 @@ def create_sglang_tts_engine_executor(
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         server_args_overrides=server_args_overrides,
     )
 
@@ -502,7 +504,8 @@ def create_sglang_tts_engine_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     vocoder_decode_batch_size: int = 16,
     max_batch_wait_ms: int = 2,
@@ -518,6 +521,7 @@ def create_vocoder_executor(
 
     Codec weights are extracted from the TTS checkpoint itself.
     """
+    device = resolve_device_spec(device, gpu_id)
     if compile_decode and decode_cuda_graph_frame_counts:
         raise ValueError(
             "compile_decode and decode_cuda_graph_frame_counts are mutually exclusive"

@@ -38,6 +38,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     HiggsStreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.speaker_cache import get_speaker_artifact_cache
 from tests.unit_test.fakes import FakeServerArgs
@@ -74,6 +75,18 @@ def test_higgs_vocoder_rejects_compile_and_graph_domain_together() -> None:
             compile_decode=True,
             decode_cuda_graph_frame_counts=(1, 2),
         )
+
+
+def test_higgs_vocoder_graph_domain_tracks_the_platform() -> None:
+    """A declining platform must not be handed a domain it would capture anyway."""
+    config = HiggsTtsPipelineConfig(model_path="unused")
+    vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
+    domain = vocoder.factory_args["decode_cuda_graph_frame_counts"]
+
+    if current_platform.enable_codec_decode_graph():
+        assert domain == tuple(range(1, 151))
+    else:
+        assert domain == ()
 
 
 def test_higgs_request_row_seed_tracks_request_seed() -> None:
