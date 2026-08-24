@@ -370,14 +370,12 @@ class SGLModelRunner(ModelRunner):
             from sglang_omni.utils import ipc_weights
 
             ipc_weights.verify_attachment(self.model, record)
-        # 0.5.16 seeds the capture flags once at ServerArgs publish, before
-        # engine builders disable enable_torch_compile; re-seed so capture
-        # honors the override.
-        from sglang.srt.runtime_context import get_flags
+        # The capture flags are seeded from the record once at publish, before
+        # engine builders turn enable_torch_compile off on the exec bag after
+        # compiling omni layers. Re-seed from the bag so capture honors that.
+        from sglang.srt.runtime_context import get_exec, get_flags
 
-        get_flags().capture.enable_torch_compile = bool(
-            self.server_args.enable_torch_compile
-        )
+        get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         result = super().init_cuda_graphs(capture_decode_cuda_graph)
         token_to_kv_pool = getattr(self, "token_to_kv_pool", None)
         if bool(getattr(token_to_kv_pool, "post_capture_active", False)):

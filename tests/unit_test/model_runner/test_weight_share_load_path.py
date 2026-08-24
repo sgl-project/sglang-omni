@@ -24,6 +24,7 @@ sglang_model_runner = pytest.importorskip(
     reason="sglang (and its sgl_kernel dependency) not importable here",
 )
 from sglang.srt.model_executor.model_runner import ModelRunner  # noqa: E402
+from sglang.srt.runtime_context import get_context, get_flags  # noqa: E402
 
 from sglang_omni.utils import ipc_weights  # noqa: E402
 
@@ -175,6 +176,23 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
         runner.init_cuda_graphs()
 
     assert calls == ["capture", "resize"]
+
+
+def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():
+    runner = _bare_runner()
+    runner.token_to_kv_pool = SimpleNamespace(post_capture_active=False)
+
+    with get_context().override_server_args(enable_torch_compile=True):
+        assert get_flags().capture.enable_torch_compile is True
+        get_context().override("test-engine-builder", enable_torch_compile=False)
+        with mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: None,
+        ):
+            runner.init_cuda_graphs()
+
+        assert get_flags().capture.enable_torch_compile is False
 
 
 def test_follower_requires_explicit_kv_cap(tmp_path, monkeypatch):
