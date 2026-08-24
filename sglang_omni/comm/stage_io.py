@@ -252,26 +252,25 @@ _INLINE_STREAM_CHUNK_TYPE = "InlineStreamChunk"
 _INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
 
 
-def should_use_inline_stream_chunk(data: Any, metadata: dict[str, Any] | None) -> bool:
-    if not isinstance(data, torch.Tensor) or data.is_cuda:
-        return False
-    if _contains_cuda_tensor(metadata) or _contains_cpu_tensor(metadata):
-        return False
-    return data.element_size() * data.numel() <= _INLINE_STREAM_CHUNK_BYTES_LIMIT
-
-
 def serialize_inline_stream_chunk(
-    data: torch.Tensor, metadata: dict[str, Any] | None
-) -> dict[str, Any]:
-    if not should_use_inline_stream_chunk(data, metadata):
-        raise ValueError("stream chunk is not inline eligible")
+    data: Any, metadata: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not isinstance(data, torch.Tensor) or data.is_cuda:
+        return None
+    if _contains_cuda_tensor(metadata) or _contains_cpu_tensor(metadata):
+        return None
+    if data.element_size() * data.numel() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+        return None
     data = data.detach()
     if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         data = data.clone(memory_format=torch.contiguous_format)
+    payload = pickle.dumps((data, metadata))
+    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+        return None
     return {
         "_type": _INLINE_STREAM_CHUNK_TYPE,
         "version": 1,
-        "payload": pickle.dumps((data, metadata)),
+        "payload": payload,
     }
 
 
@@ -294,11 +293,21 @@ def deserialize_inline_stream_chunk(
             f"inline stream chunk payload must be bytes, got "
             f"{type(payload).__name__}"
         )
+    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+        raise ValueError(
+            "inline stream chunk payload exceeds "
+            f"{_INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
+        )
     data, metadata = pickle.loads(payload)
     if not isinstance(data, torch.Tensor):
         raise TypeError(
             f"inline stream chunk data must be torch.Tensor, got "
             f"{type(data).__name__}"
+        )
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError(
+            "inline stream chunk metadata must be dict or None, got "
+            f"{type(metadata).__name__}"
         )
     return data, metadata
 

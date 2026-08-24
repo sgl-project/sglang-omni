@@ -1537,8 +1537,8 @@ class Stage:
                 ),
             )
             return
-        if stage_io.should_use_inline_stream_chunk(data, metadata):
-            inline_ref = stage_io.serialize_inline_stream_chunk(data, metadata)
+        inline_ref = stage_io.serialize_inline_stream_chunk(data, metadata)
+        if inline_ref is not None:
             _emit_event(
                 request_id=request_id,
                 stage=self.name,

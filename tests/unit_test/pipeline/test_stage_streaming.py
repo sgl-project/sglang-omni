@@ -437,12 +437,45 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline(
 
 def test_inline_stream_chunk_gate() -> None:
     small = torch.zeros(8, dtype=torch.long)
-    assert stage_io.should_use_inline_stream_chunk(small, {"token_id": 1})
-    assert stage_io.should_use_inline_stream_chunk(small, None)
+    assert stage_io.serialize_inline_stream_chunk(small, {"token_id": 1}) is not None
+    assert stage_io.serialize_inline_stream_chunk(small, None) is not None
     big = torch.zeros(stage_io._INLINE_STREAM_CHUNK_BYTES_LIMIT + 1, dtype=torch.uint8)
-    assert not stage_io.should_use_inline_stream_chunk(big, None)
-    assert not stage_io.should_use_inline_stream_chunk(small, {"extra": torch.zeros(2)})
-    assert not stage_io.should_use_inline_stream_chunk("not-a-tensor", None)
+    assert stage_io.serialize_inline_stream_chunk(big, None) is None
+    assert (
+        stage_io.serialize_inline_stream_chunk(small, {"extra": torch.zeros(2)}) is None
+    )
+    assert stage_io.serialize_inline_stream_chunk("not-a-tensor", None) is None
+
+
+def test_inline_stream_chunk_rejects_oversized_serialized_payload() -> None:
+    token = torch.tensor([7], dtype=torch.long)
+    metadata = {"text": "x" * stage_io._INLINE_STREAM_CHUNK_BYTES_LIMIT}
+
+    data_ref = stage_io.serialize_inline_stream_chunk(token, metadata)
+
+    assert data_ref is None
+
+
+def test_inline_stream_chunk_rejects_invalid_metadata_type() -> None:
+    data_ref = {
+        "_type": stage_io._INLINE_STREAM_CHUNK_TYPE,
+        "version": 1,
+        "payload": stage_io.pickle.dumps((torch.tensor([7]), ["invalid"])),
+    }
+
+    with pytest.raises(TypeError, match="metadata must be dict or None"):
+        stage_io.deserialize_inline_stream_chunk(data_ref)
+
+
+def test_inline_stream_chunk_rejects_oversized_received_payload() -> None:
+    data_ref = {
+        "_type": stage_io._INLINE_STREAM_CHUNK_TYPE,
+        "version": 1,
+        "payload": b"x" * (stage_io._INLINE_STREAM_CHUNK_BYTES_LIMIT + 1),
+    }
+
+    with pytest.raises(ValueError, match="payload exceeds"):
+        stage_io.deserialize_inline_stream_chunk(data_ref)
 
 
 def test_inline_stream_chunk_materializes_small_view_storage() -> None:
