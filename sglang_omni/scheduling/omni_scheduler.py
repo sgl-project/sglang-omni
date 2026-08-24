@@ -61,7 +61,6 @@ from sglang_omni.proto.admin import (
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import DeferredAdmission
-from sglang_omni.vendor.sglang.parallel_state import create_parallel_state
 
 logger = logging.getLogger(__name__)
 
@@ -773,10 +772,8 @@ class OmniScheduler:
         """Build the rank container expected by upstream scheduler methods."""
         from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 
-        self.ps = create_parallel_state(
-            ParallelState,
+        self.ps = ParallelState(
             tp_rank=self.tp_rank,
-            dcp_size=self.server_args.dcp_size,
             tp_size=self.tp_size,
             pp_rank=self.pp_rank,
             pp_size=self.pp_size,
@@ -786,6 +783,8 @@ class OmniScheduler:
             attn_tp_size=self.attn_tp_size,
             attn_cp_rank=self.attn_cp_rank,
             attn_cp_size=self.attn_cp_size,
+            attn_dcp_rank=self.tp_rank % self.server_args.dcp_size,
+            attn_dcp_size=self.server_args.dcp_size,
             attn_dp_rank=self.attn_dp_rank,
             attn_dp_size=self.attn_dp_size,
             moe_ep_rank=self.moe_ep_rank,

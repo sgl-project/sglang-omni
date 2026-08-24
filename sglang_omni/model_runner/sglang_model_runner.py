@@ -21,7 +21,6 @@ from sglang_omni.utils.gpu_memory import (
     get_gpu_device_info,
     get_process_gpu_memory_bytes,
 )
-from sglang_omni.vendor.sglang.parallel_state import create_parallel_state
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
@@ -201,10 +200,8 @@ class SGLModelRunner(ModelRunner):
                 server_args.attn_cp_size,
             )
         )
-        ps = create_parallel_state(
-            ParallelState,
+        ps = ParallelState(
             tp_rank=tp_rank,
-            dcp_size=server_args.dcp_size,
             tp_size=tp_size,
             pp_rank=pp_rank,
             pp_size=pp_size,
@@ -214,6 +211,8 @@ class SGLModelRunner(ModelRunner):
             attn_tp_size=attn_tp_size,
             attn_cp_rank=0,
             attn_cp_size=server_args.attn_cp_size,
+            attn_dcp_rank=tp_rank % server_args.dcp_size,
+            attn_dcp_size=server_args.dcp_size,
             attn_dp_rank=attn_dp_rank,
             attn_dp_size=attn_dp_size,
             moe_ep_rank=moe_ep_rank,
