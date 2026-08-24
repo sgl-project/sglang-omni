@@ -596,6 +596,7 @@ class OmniScheduler:
         from sglang.srt.managers.scheduler_components.pool_stats_observer import (
             SchedulerPoolStatsObserver,
         )
+        from sglang.srt.runtime_context import get_parallel
 
         self.dp_attn_adapter = SchedulerDPAttnAdapter(
             model_runner=self.tp_worker.model_runner,
@@ -623,7 +624,7 @@ class OmniScheduler:
             full_tokens_per_layer=self.full_tokens_per_layer,
             swa_tokens_per_layer=self.swa_tokens_per_layer,
             max_total_num_tokens=(
-                self.max_total_num_tokens * self.server_args.dcp_size
+                self.max_total_num_tokens * get_parallel().attn_dcp_size
             ),
             get_last_batch=lambda: self.last_batch,
             get_running_batch=lambda: self.running_batch,

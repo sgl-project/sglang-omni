@@ -1891,6 +1891,7 @@ def _construct_omni_scheduler(
     class StrictParallelContext:
         def __init__(self) -> None:
             object.__setattr__(self, "pp_max_micro_batch_size", None)
+            object.__setattr__(self, "attn_dcp_size", 1)
 
         def __setattr__(self, name, value) -> None:
             raise AttributeError(f"bare mutation of {name}")
@@ -2081,7 +2082,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         ),
         raising=False,
     )
-    bridge_parallel = SimpleNamespace(pp_max_micro_batch_size=None)
+    bridge_parallel = SimpleNamespace(pp_max_micro_batch_size=None, attn_dcp_size=1)
 
     def _override(_source, **fields) -> None:
         for name, value in fields.items():
