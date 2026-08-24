@@ -266,8 +266,6 @@ def serialize_inline_stream_chunk(
     if not should_use_inline_stream_chunk(data, metadata):
         raise ValueError("stream chunk is not inline eligible")
     data = data.detach()
-    # Pickle preserves a tensor view's backing storage. Materialize an owning
-    # tensor only when that storage would exceed the inline payload bound.
     if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         data = data.clone(memory_format=torch.contiguous_format)
     return {
