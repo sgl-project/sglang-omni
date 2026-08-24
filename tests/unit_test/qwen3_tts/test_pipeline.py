@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 import time
@@ -3529,6 +3530,46 @@ def test_qwen3_tts_deterministic_inference_skips_private_compile(
     assert server_args.enable_torch_compile is False
 
 
+def test_qwen3_tts_rocm_runtime_policy_disables_aiter_rope_and_compile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
+
+    monkeypatch.setattr(
+        engine_builder_mod,
+        "current_platform",
+        SimpleNamespace(is_rocm=lambda: True),
+    )
+    monkeypatch.setenv("USE_ROCM_AITER_ROPE_BACKEND", "1")
+    monkeypatch.setattr(
+        qwen3_stages,
+        "apply_qwen_tts_transformers_compatibility_patches",
+        lambda: None,
+    )
+    monkeypatch.setattr(qwen3_stages, "_register_qwen3_tts_hf_config", lambda: None)
+
+    builder = engine_builder_mod.Qwen3TtsEngineBuilder()
+    builder.pre_infra_setup("unused-checkpoint")
+
+    assert os.environ["USE_ROCM_AITER_ROPE_BACKEND"] == "0"
+
+    compiled = []
+    monkeypatch.setattr(
+        qwen3_stages,
+        "_compile_qwen3_tts_backbone",
+        lambda model: compiled.append(model),
+    )
+    server_args = FakeServerArgs(
+        enable_deterministic_inference=False,
+        enable_torch_compile=True,
+    )
+
+    builder.compile_model(object(), server_args)
+
+    assert compiled == []
+    assert server_args.enable_torch_compile is False
+
+
 def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3537,6 +3578,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
     from transformers.utils import generic
 
+    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
     from sglang_omni.models.qwen3_tts import model_runner as model_runner_mod
     from sglang_omni.models.qwen3_tts import request_builders as request_builders_mod
     from sglang_omni.models.qwen3_tts import stages
@@ -3546,6 +3588,12 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     from sglang_omni.scheduling import bootstrap as bootstrap_mod
     from sglang_omni.scheduling import omni_scheduler as scheduler_mod
     from sglang_omni.scheduling import sglang_backend
+
+    monkeypatch.setattr(
+        engine_builder_mod,
+        "current_platform",
+        SimpleNamespace(is_rocm=lambda: False),
+    )
 
     check_model_inputs_calls = []
     expected_cuda_graph_bs = [
