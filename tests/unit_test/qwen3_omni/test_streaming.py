@@ -249,6 +249,15 @@ def test_qwen_thinker_stream_embed_preserves_talker_prefill_contract():
 
     messages = builder("req-1", req_data, req_output)
     talker_chunk = next(msg for msg in messages if msg.target == "talker_ar")
+
+    class _TokenMetadataOnlyChunk:
+        metadata = talker_chunk.metadata
+
+        @property
+        def data(self):
+            raise AssertionError("prompt prefill must reconstruct assistant rows")
+
+    token_metadata_only_chunk = _TokenMetadataOnlyChunk()
     legacy_chunk = SimpleNamespace(
         data=embed[0],
         metadata={"token_id": 11, "layer_hidden": layer_hidden[0]},
@@ -311,7 +320,7 @@ def test_qwen_thinker_stream_embed_preserves_talker_prefill_contract():
     )
     current = prefill_builder.build_prompt_prefill(
         payload,
-        [talker_chunk],
+        [token_metadata_only_chunk],
         thinker_done=True,
     )
     current_projection_calls = list(hidden_projection_calls)
