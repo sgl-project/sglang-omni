@@ -21,7 +21,6 @@ from sglang_omni.utils.gpu_memory import (
     get_gpu_device_info,
     get_process_gpu_memory_bytes,
 )
-from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +257,20 @@ class SGLModelRunner(ModelRunner):
             )
         return kwargs
 
+    def _resolve_draft_load_format(self) -> str | None:
+        """A weight-share follower builds its module tree with dummy weights.
+
+        This is the runner's own load format, which upstream resolves in
+        ModelRunner.__init__ and feeds to the loader, so the published
+        load_format record is never touched.
+        """
+        from sglang_omni.utils import ipc_weights
+
+        ws = ipc_weights.get_weight_share_config()
+        if ws is not None and ws.role == "follower":
+            return "dummy"
+        return super()._resolve_draft_load_format()
+
     def load_model(self):
         """Load weights, honoring the same-GPU weight-share role, if any.
 
@@ -323,20 +336,7 @@ class SGLModelRunner(ModelRunner):
         import torch
 
         ipc_weights.wait_for_any_export(ws.dir_path, timeout_s=ws.attach_timeout_s)
-        original_load_format = self.server_args.load_format
-        override_server_args(
-            self.server_args,
-            "sglang_omni.weight_share.follower_dummy_load",
-            load_format="dummy",
-        )
-        try:
-            super().load_model()
-        finally:
-            override_server_args(
-                self.server_args,
-                "sglang_omni.weight_share.restore_load_format",
-                load_format=original_load_format,
-            )
+        super().load_model()
         self._weight_share_record, self._weight_ipc_leader_monitor = (
             ipc_weights.follower_attach(
                 self.model,

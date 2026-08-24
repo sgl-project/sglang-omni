@@ -3,7 +3,7 @@
 
 Runs the real SGLModelRunner.load_model / init_cuda_graphs overrides with the
 upstream ModelRunner methods mocked out, on CPU tensors. Verifies role dispatch,
-the dummy load-format toggle (set for the super() call, restored after),
+the follower's dummy load format resolved as the runner's own draft_load_format,
 attach-before-capture ordering, and the weight-update guards.
 
 Requires sglang to be importable.
@@ -56,6 +56,8 @@ def _bare_runner(load_format="auto"):
     runner._weight_share_config = None
     runner._weight_share_record = None
     runner._weight_ipc_leader_monitor = None
+    runner.is_draft_worker = False
+    runner.draft_load_format = runner._resolve_draft_load_format()
     return runner
 
 
@@ -64,7 +66,7 @@ def _fake_upstream_load(fill_by_format):
     values depend on the load format actually in effect during the call."""
 
     def fake_load(self):
-        fmt = self.server_args.load_format
+        fmt = self.draft_load_format or self.server_args.load_format
         assert fmt in fill_by_format, f"unexpected load_format {fmt!r}"
         self.model = SmallModel(fill=fill_by_format[fmt])
 
@@ -92,6 +94,7 @@ def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
         ModelRunner, "load_model", _fake_upstream_load({"auto": 1.0})
     ):
         runner.load_model()
+    assert runner.draft_load_format is None
     assert runner.server_args.load_format == "auto"  # untouched for leader
     handle = tmp_path / "SmallModel.weights-ipc"
     assert handle.exists()
@@ -111,7 +114,7 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     seen_formats = []
 
     def fake_load(self):
-        seen_formats.append(self.server_args.load_format)
+        seen_formats.append(self.draft_load_format or self.server_args.load_format)
         self.model = SmallModel(fill=0.0)  # dummy values
 
     with mock.patch.object(ModelRunner, "load_model", fake_load):
@@ -119,8 +122,8 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
         runner.load_model()
     runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
 
-    # Dummy format was in effect exactly during the super() call, restored after.
     assert seen_formats == ["dummy"]
+    assert runner.draft_load_format == "dummy"
     assert runner.server_args.load_format == "auto"
     # Values came from the leader export, not the dummy init.
     assert torch.all(runner.model.linear.weight == 7.0)
