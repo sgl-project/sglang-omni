@@ -43,6 +43,8 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["enable_encoder_cuda_graph"].default is False
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
+    assert signature.parameters["enable_encoder_torch_compile"].default is False
+    assert signature.parameters["encoder_torch_compile_mode"].default is None
     assert signature.parameters["request_build_max_workers"].default == 8
     assert signature.parameters["enable_async_decode"].default is True
     assert signature.parameters["async_decode_min_batch_size"].default == 2
@@ -84,6 +86,70 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
         generation_cuda_graph_enabled=False,
     )
     assert calls == [([1, 2, 4], 3000)]
+
+
+def test_whisper_encoder_compile_runs_before_graph_capture() -> None:
+    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    calls: list[tuple[str, object]] = []
+    builder = WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+        enable_encoder_cuda_graph=True,
+        enable_encoder_torch_compile=True,
+        encoder_torch_compile_mode="max-autotune-no-cudagraphs",
+    )
+    builder.processor = SimpleNamespace(
+        feature_extractor=SimpleNamespace(nb_max_frames=3000)
+    )
+    builder.encoder_token_count = 1500
+    model = SimpleNamespace(
+        compile_encoder=lambda feature_len, mode=None: calls.append(
+            ("compile", (feature_len, mode))
+        ),
+        init_encoder_graphs=lambda buckets, feature_len: calls.append(
+            ("graphs", list(buckets))
+        ),
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        generation_cuda_graph_enabled=True,
+    )
+    assert calls[0] == ("compile", (3000, "max-autotune-no-cudagraphs"))
+    assert calls[1][0] == "graphs"
+    assert len(calls) == 2
+
+    calls.clear()
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        generation_cuda_graph_enabled=False,
+    )
+    assert calls == [("compile", (3000, "max-autotune-no-cudagraphs"))]
+
+
+def test_whisper_encoder_compile_is_opt_in_at_builder() -> None:
+    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    builder = WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    )
+    builder.processor = SimpleNamespace(
+        feature_extractor=SimpleNamespace(nb_max_frames=3000)
+    )
+    builder.encoder_token_count = 1500
+    model = SimpleNamespace()  # no compile_encoder / init_encoder_graphs
+
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        generation_cuda_graph_enabled=True,
+    )
 
 
 def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -> None:
@@ -216,6 +282,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert config.stages[0].factory_args["device"] == "cuda:0"
     assert config.stages[0].factory_args["max_running_requests"] == 64
     assert config.stages[0].factory_args["enable_encoder_cuda_graph"] is True
+    assert config.stages[0].factory_args["enable_encoder_torch_compile"] is True
     assert config.stages[0].factory_args["request_build_max_workers"] == 8
     assert config.stages[0].factory_args["enable_async_decode"] is True
     assert config.stages[0].factory_args["async_decode_min_batch_size"] == 2

@@ -36,6 +36,39 @@ runtime_overrides:
 
 The graph is captured after SGLang's generation graphs. With pre-LM off, raise `max_prefill_tokens` before configuring larger LM-side buckets (12/16). Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.
 
+## Encoder torch.compile
+
+The encoder layers are compiled with `torch.compile` by default. The shared
+encoder-layer `forward` is compiled once and bound to every layer, so Inductor
+folds layer norm, GELU and residual adds into the surrounding matmuls; the
+compiled layers are warmed up before encoder graph capture, so the CUDA graphs
+above replay the fused kernels, and the eager fallback path (uncaptured batch
+sizes) runs them too. Compilation adds a few seconds of one-time startup. On
+any compile failure the encoder falls back to the eager layers and logs a
+warning with the traceback.
+
+The gain depends on how much of the encoder is elementwise work on the target
+GPU. SeedTTS EN, whisper-large-v3, 200 clips x 3 repeats, CUDA Graph default
+-> CUDA Graph + compile, WER unchanged:
+
+| GPU | c1 | c4 | c8 | isolated encoder call |
+|---|---|---|---|---|
+| A100-SXM-64GB | +1.6% | +0.3% | +2.5% | -13% |
+| RTX 6000D | +0.3% | +1.9% | +1.4% | -1% |
+| RTX A6000 | +1.0% | +4.4% | +4.9% | n/a |
+
+To disable:
+
+```yaml
+runtime_overrides:
+  asr:
+    enable_encoder_torch_compile: false
+```
+
+`encoder_torch_compile_mode` forwards a `torch.compile` mode string; leave it
+unset for the default mode (`max-autotune-no-cudagraphs` was slower on both
+GPUs because Triton matmuls lost to cuBLAS).
+
 ## Prefill Coalescing
 
 Whisper builds requests with eight worker threads by default, matching other pre-LM ASR pipelines. The coalescing gate targets two requests, while the default 6,144-token atomic budget lets the LM scheduler admit up to four 1,504-token Whisper requests together. A partial batch waits for at most 6 ms only while another request build is pending; a single request and a partial batch with no remaining build work are released immediately.

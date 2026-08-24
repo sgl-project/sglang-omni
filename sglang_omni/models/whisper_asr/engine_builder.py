@@ -71,6 +71,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         mem_fraction_static: float,
         enable_encoder_cuda_graph: bool = False,
         encoder_graph_batch_buckets: list[int] | None = None,
+        enable_encoder_torch_compile: bool = False,
+        encoder_torch_compile_mode: str | None = None,
         request_build_max_workers: int = 8,
         enable_async_decode: bool = True,
         async_decode_min_batch_size: int = 2,
@@ -103,6 +105,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.encoder_graph_batch_buckets = _normalize_encoder_graph_buckets(
             encoder_graph_batch_buckets
         )
+        self.enable_encoder_torch_compile = bool(enable_encoder_torch_compile)
+        self.encoder_torch_compile_mode = encoder_torch_compile_mode
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.request_build_max_workers = request_build_max_workers
@@ -160,6 +164,13 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
+        input_feature_len = int(self.processor.feature_extractor.nb_max_frames)
+        # note (Junnan Li): compile before capture so the graphs replay fused
+        # kernels; compile is independent of the generation-graph gate.
+        if self.enable_encoder_torch_compile:
+            model.compile_encoder(
+                input_feature_len, mode=self.encoder_torch_compile_mode
+            )
         if not self.enable_encoder_cuda_graph or not generation_cuda_graph_enabled:
             return
 
@@ -188,10 +199,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             self.encoder_token_count,
             max_running_requests,
         )
-        model.init_encoder_graphs(
-            resolved_buckets,
-            int(self.processor.feature_extractor.nb_max_frames),
-        )
+        model.init_encoder_graphs(resolved_buckets, input_feature_len)
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del server_args

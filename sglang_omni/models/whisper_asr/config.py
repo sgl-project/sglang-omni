@@ -47,6 +47,7 @@ class WhisperASRPipelineConfig(PipelineConfig):
                 "device": "cuda:0",
                 "max_running_requests": 64,
                 "enable_encoder_cuda_graph": True,
+                "enable_encoder_torch_compile": True,
                 "request_build_max_workers": 8,
                 "enable_async_decode": True,
                 "async_decode_min_batch_size": 2,

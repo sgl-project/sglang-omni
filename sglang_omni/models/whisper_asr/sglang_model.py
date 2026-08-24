@@ -25,6 +25,7 @@ from torch import nn
 from transformers import WhisperConfig
 from transformers.activations import ACT2FN
 
+from sglang_omni.models.whisper_asr.encoder_compile import compile_encoder_layers
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
@@ -379,6 +380,22 @@ class WhisperForConditionalGeneration(nn.Module):
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
         self._encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
+        self.encoder_compiled = False
+
+    def compile_encoder(
+        self,
+        input_feature_len: int,
+        *,
+        mode: str | None = None,
+    ) -> bool:
+        """Fuse the encoder layers with torch.compile before graph capture."""
+        self.encoder_compiled = compile_encoder_layers(
+            self.model.encoder,
+            num_mel_bins=self.config.num_mel_bins,
+            input_feature_len=input_feature_len,
+            mode=mode,
+        )
+        return self.encoder_compiled
 
     def init_encoder_graphs(
         self,
