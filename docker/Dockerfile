@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:687efca081e85f4e3126456ff389b1af515fc08a604de4c61f947f531963aba7
+ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:9e148f5ac788e856a06166bd6347a831831eb9fcfab4d1770874823a7c29a1a1
 ARG FLASHINFER_CACHE_IMAGE=hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
 
 FROM ${FLASHINFER_CACHE_IMAGE} AS flashinfer-cache
@@ -33,14 +33,14 @@ RUN git clone --filter=blob:none https://github.com/openucx/ucx.git /tmp/ucx \
 COPY pyproject.toml /tmp/pyproject.toml
 RUN uv pip install --system --break-system-packages --no-build-isolation \
         -r /tmp/pyproject.toml \
-    && uv pip install --system --break-system-packages --no-deps --reinstall flashinfer-python==0.6.14 \
+    && uv pip install --system --break-system-packages --no-deps --reinstall flashinfer-python==0.6.17 \
     && python3 -m pip uninstall -y flashinfer-cubin flashinfer-jit-cache \
     && rm /tmp/pyproject.toml
 
 # Docker builds do not have a GPU to regenerate architecture-specific JIT
 # artifacts. Reuse the Python 3.12 cache validated on Ada (SM89) and Hopper
 # (SM90a); other architectures compile into their own cache directory.
-COPY --from=flashinfer-cache /root/.cache/flashinfer/0.6.14 /root/.cache/flashinfer/0.6.14
+COPY --from=flashinfer-cache /root/.cache/flashinfer/0.6.17 /root/.cache/flashinfer/0.6.17
 
 ENV FLASHINFER_WORKSPACE_BASE=/root \
     FLASHINFER_JIT_DEBUG=0
