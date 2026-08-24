@@ -50,6 +50,41 @@ class _FakeTorch:
         self.cuda = _FakeCuda()
 
 
+class _UnavailableCuda:
+    def is_available(self) -> bool:
+        return False
+
+
+class _FakeNPU:
+    def is_available(self) -> bool:
+        return True
+
+    def device_count(self) -> int:
+        return 2
+
+    def get_device_properties(self, index: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=f"Ascend910-test-{index}",
+            total_memory=64 * 1024**3,
+            uuid=f"npu-uuid-{index}",
+            cube_core_num=24,
+            vector_core_num=48,
+            L2_cache_size=192 * 1024**2,
+        )
+
+    def mem_get_info(self, index: int) -> tuple[int, int]:
+        return ((60 - index) * 1024**3, 64 * 1024**3)
+
+
+class _FakeNPUTorch:
+    __version__ = "2.10.0+cpu"
+    version = SimpleNamespace(cuda=None)
+
+    def __init__(self) -> None:
+        self.cuda = _UnavailableCuda()
+        self.npu = _FakeNPU()
+
+
 class _FakeNVML(ModuleType):
     def __init__(self) -> None:
         super().__init__("pynvml")
@@ -119,12 +154,50 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
         "schema_version",
         "environment",
         "gpus",
+        "npus",
         "backends",
         "warnings",
     }
     rendered = gpu_diagnostics.render_gpu_diagnostics(report)
     assert "logical 0 -> physical 1" in rendered
     assert fake_nvml.shutdown_called is True
+
+
+def test_collect_gpu_diagnostics_reports_npu_devices_without_nvml(monkeypatch) -> None:
+    fake_nvml = _FakeNVML()
+    monkeypatch.setattr(gpu_diagnostics, "_npu_backend_inventory", lambda: [])
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "_distribution_version",
+        lambda name: "2.10.0" if name == "torch-npu" else None,
+    )
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={
+            "ASCEND_RT_VISIBLE_DEVICES": "7,3",
+            "ASCEND_VISIBLE_DEVICES": "7,3",
+        },
+        torch_module=_FakeNPUTorch(),
+        pynvml_module=fake_nvml,
+    )
+
+    assert report["environment"]["platform"] == "npu"
+    assert report["environment"]["accelerator_available"] is True
+    assert report["environment"]["npu_available"] is True
+    assert report["environment"]["cuda_available"] is False
+    assert report["environment"]["logical_device_count"] == 2
+    assert report["gpus"] == []
+    assert [npu["physical_index"] for npu in report["npus"]] == [7, 3]
+    assert report["npus"][0]["name"] == "Ascend910-test-0"
+    assert report["npus"][0]["free_memory_bytes"] == 60 * 1024**3
+    assert report["npus"][0]["cube_core_count"] == 24
+    assert report["npus"][0]["vector_core_count"] == 48
+    assert fake_nvml.shutdown_called is False
+
+    rendered = gpu_diagnostics.render_gpu_diagnostics(report)
+    assert "SGLang-Omni NPU diagnostics" in rendered
+    assert "logical 0 -> physical 7" in rendered
+    assert "Ascend910-test-0" in rendered
 
 
 def test_nvml_inventory_failure_is_isolated_per_physical_device(
@@ -280,6 +353,31 @@ def test_backend_inventory_resolves_cuda_variant_distributions(monkeypatch) -> N
     assert all(backend["importable"] for backend in backends)
 
 
+def test_npu_backend_inventory_prefers_platform_distribution(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "_NPU_BACKENDS",
+        (("compiler", "triton-ascend", "triton", "triton-ascend"),),
+    )
+    monkeypatch.setattr(gpu_diagnostics, "_module_import_error", lambda module: None)
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "_distribution_info",
+        lambda module: ("triton", "3.5.0"),
+    )
+    monkeypatch.setattr(
+        gpu_diagnostics,
+        "_distribution_version",
+        lambda distribution: "3.2.1.dev20260530",
+    )
+
+    backend = gpu_diagnostics._npu_backend_inventory()[0]
+
+    assert backend["distribution"] == "triton-ascend"
+    assert backend["version"] == "3.2.1.dev20260530"
+    assert backend["importable"] is True
+
+
 def test_module_import_probe_survives_hard_crash(tmp_path, monkeypatch) -> None:
     assert gpu_diagnostics._module_import_error("json") is None
 
@@ -367,6 +465,34 @@ def test_check_gpu_strict_fails_without_visible_cuda_device(monkeypatch) -> None
     result = CliRunner().invoke(app, ["check-gpu", "--json", "--strict"])
 
     assert result.exit_code == 1
+    assert json.loads(result.stdout) == report
+
+
+def test_check_gpu_strict_accepts_visible_npu(monkeypatch) -> None:
+    check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
+    report = {
+        "schema_version": 1,
+        "environment": {
+            "platform": "npu",
+            "accelerator_available": True,
+            "cuda_available": False,
+            "npu_available": True,
+            "logical_device_count": 1,
+        },
+        "gpus": [],
+        "npus": [{"logical_index": 0}],
+        "backends": [],
+        "warnings": [],
+    }
+    monkeypatch.setattr(
+        check_gpu_module,
+        "collect_gpu_diagnostics",
+        lambda: report,
+    )
+
+    result = CliRunner().invoke(app, ["check-gpu", "--json", "--strict"])
+
+    assert result.exit_code == 0
     assert json.loads(result.stdout) == report
 
 
