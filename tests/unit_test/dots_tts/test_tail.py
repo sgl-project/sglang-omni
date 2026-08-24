@@ -46,7 +46,7 @@ def test_batched_tail_mask_hides_padding_and_preserves_causality() -> None:
 
 
 class _TailModel(torch.nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, *, mode: str = "meanflow") -> None:
         super().__init__()
         self.velocity_field_predictor = DiT(
             in_dim=FM_HIDDEN,
@@ -60,7 +60,7 @@ class _TailModel(torch.nn.Module):
                 qk_norm=True,
                 rotary_bias=True,
             ),
-            mode="meanflow",
+            mode=mode,
         )
         self.coordinate_proj = torch.nn.Linear(LATENT_DIM, FM_HIDDEN)
         self.latent_proj = torch.nn.Linear(LATENT_DIM, FM_HIDDEN)
@@ -93,6 +93,7 @@ def _build_tail(
     dtype: torch.dtype = torch.float32,
     patch_capacity: int = 8,
     optimize: bool = False,
+    solver: str = "meanflow",
 ):
     encoder = _patch_encoder().to(device=device, dtype=dtype)
     with torch.no_grad():
@@ -111,6 +112,7 @@ def _build_tail(
             latent_patch_size=PATCH_SIZE,
             latent_dim=LATENT_DIM,
             fm_hidden_size=FM_HIDDEN,
+            solver=solver,
         ),
         device=device,
         dtype=dtype,
@@ -156,6 +158,50 @@ def _reference_meanflow(
     return latent
 
 
+def _reference_scm(
+    dit: torch.nn.Module,
+    coordinate_proj: torch.nn.Module,
+    sequence: torch.Tensor,
+    fm_seq_len: int,
+    g_cond: torch.Tensor,
+    initial_noise: torch.Tensor,
+    renoise: torch.Tensor,
+) -> torch.Tensor:
+    from dots_tts.modules.backbone.scm_inference import _denoise, _to_flow_matching
+
+    total = fm_seq_len + PATCH_SIZE
+    x_base = sequence.new_zeros(1, total, FM_HIDDEN)
+    x_base[:, :fm_seq_len] = sequence[:, :fm_seq_len]
+    mask = torch.zeros((1, total, total), dtype=torch.bool)
+    block_start = fm_seq_len - 1
+    mask[:, :block_start, :block_start] = torch.ones(
+        block_start, block_start, dtype=torch.bool
+    ).tril()
+    mask[:, block_start:fm_seq_len, :fm_seq_len] = True
+    mask[:, block_start:fm_seq_len, fm_seq_len:] = True
+    mask[:, fm_seq_len:, :] = True
+    positions = torch.arange(total, dtype=torch.float32).reshape(1, total)
+    taus = torch.tensor([torch.pi / 2, 1.3])
+    x_tau = initial_noise
+    for step, tau in enumerate(taus):
+        tau = tau.reshape(1)
+        latent, flow_time = _to_flow_matching(x_tau, tau, 0.0)
+        value = x_base.clone()
+        value[:, fm_seq_len:] = coordinate_proj(latent)
+        velocity = dit(
+            x=value,
+            timesteps=flow_time,
+            attn_mask=mask,
+            pos_ids=positions,
+            g_cond=g_cond,
+        )[:, fm_seq_len:]
+        denoised = _denoise(latent, velocity, tau, 0.0)
+        if step == 1:
+            return denoised
+        x_tau = torch.cos(taus[1]) * denoised + torch.sin(taus[1]) * renoise
+    raise AssertionError("unreachable")
+
+
 @pytest.mark.parametrize("slots", [1, 2])
 def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
     torch.manual_seed(1234)
@@ -190,6 +236,40 @@ def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
 
     torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
     assert acoustic_tail._dit_contiguous_view_steps == (NFE if slots == 1 else 0)
+
+
+def test_kv_cached_scm_tail_matches_full_recompute() -> None:
+    torch.manual_seed(1234)
+    model = _TailModel(mode="flow_matching").eval()
+    acoustic_tail = _build_tail(model, slots=1, solver="scm")
+    unit = acoustic_tail.spec.unit_len
+    g_cond = torch.randn(1, FM_HIDDEN)
+    prompt_rows = torch.randn(3 * unit, FM_HIDDEN)
+    slot = acoustic_tail.acquire_slot()
+    acoustic_tail.seed_fm_history(
+        slot, fm_rows=prompt_rows, all_mods=acoustic_tail.build_mods(g_cond)
+    )
+    sequence = torch.zeros(1, acoustic_tail.spec.dit_cache_tokens + unit, FM_HIDDEN)
+    sequence[0, : prompt_rows.size(0)] = prompt_rows
+    hidden = torch.randn(1, FM_HIDDEN)
+    sequence[0, prompt_rows.size(0)] = hidden[0]
+
+    generator = torch.Generator().manual_seed(9)
+    initial_noise = torch.randn(1, PATCH_SIZE, LATENT_DIM, generator=generator)
+    renoise = torch.randn(1, PATCH_SIZE, LATENT_DIM, generator=generator)
+    expected = _reference_scm(
+        acoustic_tail.dit,
+        model.coordinate_proj,
+        sequence,
+        prompt_rows.size(0) + 1,
+        g_cond,
+        initial_noise,
+        renoise,
+    )
+    acoustic_tail.initialize_slot_rng(slot, 9)
+    actual = acoustic_tail.sample_patches([slot], fm_hidden_rows=hidden)
+
+    torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
 
 
 def test_tail_slots_are_bounded_and_reusable() -> None:

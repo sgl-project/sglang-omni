@@ -82,7 +82,7 @@ dependencies = [
     # Gradio playground
     "gradio>=4.0.0",
     # dots.tts model operators; serving/runtime stays owned by sglang-omni
-    "dots.tts==0.2.1",
+    "dots.tts==0.3.1",
     # Ming-Omni
     "diffusers==0.37.0",      # Omni's own Ming-Omni pin; not an sglang core dependency
     "x-transformers",          # Ming talker rotary embeddings

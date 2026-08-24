@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
@@ -167,11 +168,18 @@ class DotsTtsTailSpec:
     latent_patch_size: int
     latent_dim: int
     fm_hidden_size: int
+    solver: str = "meanflow"
+    fm_sigma: float = 0.0
+    tau_mid: float = 1.3
 
     def __post_init__(self) -> None:
         for name in ("nfe", "patch_capacity", "num_slots"):
             if int(getattr(self, name)) <= 0:
                 raise ValueError(f"dots.tts tail {name} must be positive")
+        if self.solver not in {"meanflow", "scm"}:
+            raise ValueError(f"unsupported dots.tts batched solver {self.solver!r}")
+        if self.solver == "scm" and self.nfe != 2:
+            raise ValueError("dots.tts batched sCM requires nfe=2")
 
     @property
     def unit_len(self) -> int:
@@ -422,7 +430,22 @@ class DotsTtsAcousticTail:
 
         self._mods_width = int(dit.fused_adaln[-1].out_features)
         self._allocate_pools(self._mods_width)
-        self._times = torch.linspace(0.0, 1.0, spec.nfe + 1, device=device, dtype=dtype)
+        if spec.solver == "scm":
+            from dots_tts.modules.backbone.scm_inference import _to_flow_matching
+
+            self._taus = torch.tensor(
+                [math.pi / 2, spec.tau_mid], device=device, dtype=torch.float32
+            )
+            _, self._times = _to_flow_matching(
+                torch.zeros(spec.nfe, 1, 1, device=device),
+                self._taus,
+                spec.fm_sigma,
+            )
+        else:
+            self._taus = None
+            self._times = torch.linspace(
+                0.0, 1.0, spec.nfe + 1, device=device, dtype=dtype
+            )
         self._dit_layer_index = torch.arange(self._dit_layers, device=device)
         self._encoder_layer_index = torch.arange(self._encoder_layers, device=device)
         self._fm_seq_len = [0] * spec.num_slots
@@ -624,6 +647,15 @@ class DotsTtsAcousticTail:
         generator = self._generators[int(slot)]
         return None if generator is None else generator.get_state().clone()
 
+    def build_mods(self, g_cond: torch.Tensor | None) -> torch.Tensor:
+        if self.spec.solver == "scm":
+            return self.dit.build_mods(self._times, g_cond=g_cond)
+        return self.dit.build_mods(
+            self._times[:-1],
+            duration=self._times[1:] - self._times[:-1],
+            g_cond=g_cond,
+        )
+
     def fm_seq_len(self, slot: int) -> int:
         return self._fm_seq_len[int(slot)]
 
@@ -744,6 +776,7 @@ class DotsTtsAcousticTail:
             persistent, device=self.device, dtype=torch.long
         )
         noise = self._sample_noise(slots)
+        renoise = self._sample_noise(slots) if spec.solver == "scm" else None
         direct_kv = len(slots) == spec.num_slots and sorted(slots) == list(
             range(spec.num_slots)
         )
@@ -753,6 +786,7 @@ class DotsTtsAcousticTail:
             work_persistent = persistent_index.index_select(0, order)
             work_hidden = fm_hidden_rows.index_select(0, order)
             work_noise = noise.index_select(0, order)
+            work_renoise = None if renoise is None else renoise.index_select(0, order)
             self._dit_contiguous_view_steps += spec.nfe
             if self._dit_contiguous_view_steps == spec.nfe:
                 logger.info("dots.tts contiguous DiT KV view is active")
@@ -761,6 +795,7 @@ class DotsTtsAcousticTail:
             work_persistent = persistent_index
             work_hidden = fm_hidden_rows
             work_noise = noise
+            work_renoise = renoise
         graph = self._select_graph(self._meanflow_graphs, len(slots), capacity)
         if graph is None:
             self._graph_misses["meanflow"] += 1
@@ -770,6 +805,7 @@ class DotsTtsAcousticTail:
                 capacity,
                 work_hidden,
                 work_noise,
+                work_renoise,
                 direct_kv=direct_kv,
             )
         else:
@@ -777,11 +813,16 @@ class DotsTtsAcousticTail:
             graph.inputs["starts"].copy_(work_persistent)
             graph.inputs["hidden"].copy_(work_hidden)
             graph.inputs["noise"].copy_(work_noise)
+            if work_renoise is not None:
+                graph.inputs["renoise"].copy_(work_renoise)
             graph.graph.replay()
             latent = graph.output.clone()
             self._graph_replays["meanflow"] += 1
             if self._graph_replays["meanflow"] == 1:
-                logger.info("dots.tts batched MeanFlow CUDA graph replay is active")
+                logger.info(
+                    "dots.tts batched %s CUDA graph replay is active",
+                    self.spec.solver,
+                )
         if direct_kv:
             latent = latent.index_select(0, slot_index)
         for slot in slots:
@@ -795,6 +836,7 @@ class DotsTtsAcousticTail:
         capacity: int,
         fm_hidden_rows: torch.Tensor,
         noise: torch.Tensor,
+        renoise: torch.Tensor | None = None,
         *,
         direct_kv: bool = False,
     ) -> torch.Tensor:
@@ -805,11 +847,12 @@ class DotsTtsAcousticTail:
         window[:, spec.unit_len :] = fm_hidden_rows.unsqueeze(1).to(self.dtype)
         if not direct_kv:
             self._window[slot_index] = window
-        latent = self._run_meanflow(
+        latent = self._run_solver(
             slot_index,
             persistent_index,
             capacity,
             noise,
+            renoise,
             direct_kv=direct_kv,
         )
         window = (
@@ -824,12 +867,13 @@ class DotsTtsAcousticTail:
             self._window[slot_index] = window
         return latent
 
-    def _run_meanflow(
+    def _run_solver(
         self,
         slot_index: torch.Tensor,
         persistent_index: torch.Tensor,
         capacity: int,
         latent: torch.Tensor,
+        renoise: torch.Tensor | None,
         *,
         direct_kv: bool = False,
     ) -> torch.Tensor:
@@ -858,6 +902,17 @@ class DotsTtsAcousticTail:
         layer_index = self._dit_layer_index.reshape(self._dit_layers, 1, 1)
         batch_index = slot_index.reshape(1, rows, 1)
         promote = slice(capacity, capacity + unit)
+        if spec.solver == "scm":
+            from dots_tts.modules.backbone.scm_inference import (
+                _denoise,
+                _to_flow_matching,
+            )
+
+            assert self._taus is not None and renoise is not None
+            latent, _ = _to_flow_matching(
+                latent, self._taus[:1].expand(latent.size(0)), spec.fm_sigma
+            )
+            latent = latent.to(self.dtype)
         with sdpa_kernel(_TAIL_SDPA_BACKENDS):
             for ode_index in range(spec.nfe):
                 if direct_kv:
@@ -906,8 +961,24 @@ class DotsTtsAcousticTail:
                 velocity = self.dit.apply_final_layer(
                     value[:, latent_slice], final_mods
                 )
-                duration = self._times[ode_index + 1] - self._times[ode_index]
-                latent = (latent + duration * velocity).clone()
+                if spec.solver == "scm":
+                    tau = self._taus[ode_index : ode_index + 1].expand(rows)
+                    latent = _denoise(latent, velocity, tau, spec.fm_sigma).to(
+                        self.dtype
+                    )
+                    if ode_index + 1 < spec.nfe:
+                        next_tau = self._taus[ode_index + 1 : ode_index + 2].expand(
+                            rows
+                        )
+                        x_tau = (
+                            torch.cos(next_tau)[:, None, None] * latent
+                            + torch.sin(next_tau)[:, None, None] * renoise
+                        )
+                        latent, _ = _to_flow_matching(x_tau, next_tau, spec.fm_sigma)
+                        latent = latent.to(self.dtype)
+                else:
+                    duration = self._times[ode_index + 1] - self._times[ode_index]
+                    latent = (latent + duration * velocity).clone()
                 self._dit_k[ode_index][layer_index, batch_index, :, token_index] = keys[
                     :, :, :, promote
                 ].permute(0, 1, 3, 2, 4)
@@ -1093,7 +1164,7 @@ class DotsTtsAcousticTail:
         current_stream.wait_stream(self._capture_stream)
         torch.cuda.synchronize(self.device)
         logger.info(
-            "dots.tts acoustic-tail CUDA graphs: meanflow=%d semantic_encoder=%d "
+            "dots.tts acoustic-tail CUDA graphs: solver=%d semantic_encoder=%d "
             "batch_buckets=%s context_patch_buckets=%s",
             len(self._meanflow_graphs),
             len(self._encoder_graphs),
@@ -1132,14 +1203,20 @@ class DotsTtsAcousticTail:
                     dtype=self.dtype,
                 ),
             }
-            run = lambda: self._sample_patches_core(
-                inputs["slots"],
-                inputs["starts"],
-                capacity,
-                inputs["hidden"],
-                inputs["noise"],
-                direct_kv=batch_size == self.spec.num_slots,
-            )
+            if self.spec.solver == "scm":
+                inputs["renoise"] = torch.zeros_like(inputs["noise"])
+
+            def run():
+                return self._sample_patches_core(
+                    inputs["slots"],
+                    inputs["starts"],
+                    capacity,
+                    inputs["hidden"],
+                    inputs["noise"],
+                    inputs.get("renoise"),
+                    direct_kv=batch_size == self.spec.num_slots,
+                )
+
         else:
             inputs = {
                 "slots": slots,
@@ -1152,12 +1229,14 @@ class DotsTtsAcousticTail:
                     dtype=self.dtype,
                 ),
             }
-            run = lambda: self._encode_feedback_core(
-                inputs["slots"],
-                inputs["starts"],
-                capacity,
-                inputs["latent"],
-            )
+
+            def run():
+                return self._encode_feedback_core(
+                    inputs["slots"],
+                    inputs["starts"],
+                    capacity,
+                    inputs["latent"],
+                )
 
         graph = torch.cuda.CUDAGraph()
         try:
@@ -1188,10 +1267,10 @@ class DotsTtsAcousticTail:
         if self._meanflow_graphs and self._encoder_graphs:
             return (
                 "CUDA graph batched tail with eager fallback "
-                f"(meanflow={len(self._meanflow_graphs)}, "
+                f"(solver={len(self._meanflow_graphs)}, "
                 f"semantic_encoder={len(self._encoder_graphs)})"
             )
-        return "fused eager batched tail"
+        return f"fused eager batched {self.spec.solver} tail"
 
 
 __all__ = [

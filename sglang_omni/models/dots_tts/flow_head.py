@@ -68,9 +68,13 @@ class DotsTTSFlowHead(nn.Module):
         self.latent_dim = int(config.latent_dim)
         self.optimize = bool(optimize)
         self.mode = (
-            "meanflow"
-            if config.meanflow is not None and config.meanflow.enabled
-            else "flow_matching"
+            config.sampling.solver
+            if config.sampling is not None
+            else (
+                "meanflow"
+                if config.meanflow is not None and config.meanflow.enabled
+                else "flow_matching"
+            )
         )
         dit_mode = (
             "meanflow"
@@ -139,12 +143,26 @@ class DotsTTSFlowHead(nn.Module):
                 DiTSolver,
             )
 
-            self._dit_solver = DiTSolver(
-                DiTInferenceContext.from_core(self),
-                optimize=self.optimize,
-                bucket_resolver=self._bucket,
-                meanflow=self.mode == "meanflow",
-            )
+            context = DiTInferenceContext.from_core(self)
+            if self.mode == "scm":
+                from dots_tts.modules.backbone.scm_inference import SCMDiTSolver
+
+                sampling = self.config.sampling
+                if sampling is None:
+                    raise RuntimeError("sCM solver requires artifact sampling config")
+                self._dit_solver = SCMDiTSolver(
+                    context,
+                    optimize=self.optimize,
+                    bucket_resolver=self._bucket,
+                    tau_mid=sampling.tau_mid,
+                )
+            else:
+                self._dit_solver = DiTSolver(
+                    context,
+                    optimize=self.optimize,
+                    bucket_resolver=self._bucket,
+                    meanflow=self.mode == "meanflow",
+                )
         return self._dit_solver
 
     @property
@@ -159,14 +177,13 @@ class DotsTTSFlowHead(nn.Module):
         max_audio_patches: int,
         optimize: bool = False,
     ) -> None:
-        if self.mode != "meanflow":
-            # note (luojiaxuan): flow-matching checkpoints (SOAR, base) need the
-            # CFG double branch, which the batched tail does not implement. They
-            # serve on the single-request solver instead.
+        if self.mode not in {"meanflow", "scm"}:
+            # note (luojiaxuan): legacy flow-matching checkpoints need the CFG
+            # double branch, which the batched tail does not implement.
             raise ValueError(
-                "dots.tts continuous batching requires a MeanFlow checkpoint; "
+                "dots.tts continuous batching requires a MeanFlow or sCM checkpoint; "
                 f"this checkpoint is {self.mode}. Serve it with "
-                "max_running_requests=1 (see examples/configs/dots_tts_soar.yaml)"
+                "max_running_requests=1"
             )
         from sglang_omni.models.dots_tts.tail import (
             DotsTtsAcousticTail,
@@ -188,6 +205,13 @@ class DotsTTSFlowHead(nn.Module):
                 latent_patch_size=self.latent_patch_size,
                 latent_dim=self.latent_dim,
                 fm_hidden_size=self.fm_hidden_size,
+                solver=self.mode,
+                fm_sigma=float(self.config.fm_sigma),
+                tau_mid=(
+                    float(self.config.sampling.tau_mid)
+                    if self.config.sampling is not None
+                    else 1.3
+                ),
             ),
             device=parameter.device,
             dtype=parameter.dtype,
@@ -201,9 +225,17 @@ class DotsTTSFlowHead(nn.Module):
         *,
         num_steps: int,
         ode_method: str,
+        guidance_scale: float | None = None,
         prompt_patch_count: int | None = None,
         total_span_count: int | None = None,
     ) -> None:
+        sampling = self.config.sampling
+        if sampling is not None:
+            sampling.resolve(
+                ode_method=ode_method,
+                num_steps=num_steps,
+                guidance_scale=guidance_scale,
+            )
         if not self.is_batched:
             return
         if int(num_steps) != self._batched_nfe:
@@ -251,18 +283,7 @@ class DotsTTSFlowHead(nn.Module):
                 if speaker_embedding is not None:
                     speaker_embedding = speaker_embedding.to(device=device, dtype=dtype)
                     g_cond = self.xvec_proj(speaker_embedding * float(speaker_scale))
-                grid = torch.linspace(
-                    0.0,
-                    1.0,
-                    int(self._batched_nfe) + 1,
-                    device=device,
-                    dtype=dtype,
-                )
-                all_mods = self._tail.dit.build_mods(
-                    grid[:-1],
-                    duration=grid[1:] - grid[:-1],
-                    g_cond=g_cond,
-                )
+                all_mods = self._tail.build_mods(g_cond)
                 prompt_latents = prompt_latents.to(device=device, dtype=dtype)
                 prompt_embeddings = self._tail.encode_prompt_patches(
                     slot, self._patch_encoder_input(prompt_latents)
@@ -387,11 +408,20 @@ class DotsTTSFlowHead(nn.Module):
         generation_schedule: torch.Tensor,
         prefill_end: int,
         decoded_latent_patches: list[torch.Tensor],
+        interleaved: bool = False,
     ) -> None:
         if hidden_states.ndim == 2:
             hidden_states = hidden_states.unsqueeze(0)
         decoded_count = len(decoded_latent_patches)
-        assert hidden_states.shape[:2] == (1, int(prefill_end) + decoded_count)
+        if (
+            hidden_states.size(0) != 1
+            or hidden_states.size(1) < int(prefill_end)
+            or (
+                not interleaved
+                and hidden_states.size(1) != int(prefill_end) + decoded_count
+            )
+        ):
+            raise RuntimeError("dots.tts re-prefill history does not match the request")
         if state.slot is not None:
             prompt_patches = state.prompt_patches
             if prompt_patches is None or state.all_mods is None:
@@ -416,10 +446,20 @@ class DotsTTSFlowHead(nn.Module):
                 )
                 return
             fm_parts = [prompt_fm_rows]
-            conditioning_hidden = hidden_states[
-                0,
-                prefill_end - 1 : prefill_end - 1 + decoded_count,
-            ]
+            if interleaved:
+                audio_positions = self._generated_audio_positions(
+                    generation_schedule,
+                    prefill_end=prefill_end,
+                    generated_count=hidden_states.size(1) - prefill_end,
+                    audio_span_token_ids=audio_span_token_ids,
+                    expected=decoded_count,
+                )
+                conditioning_hidden = hidden_states[0, audio_positions - 1]
+            else:
+                conditioning_hidden = hidden_states[
+                    0,
+                    prefill_end - 1 : prefill_end - 1 + decoded_count,
+                ]
             normalized = self.io.normalize(
                 torch.cat(
                     [
@@ -472,27 +512,67 @@ class DotsTTSFlowHead(nn.Module):
                     state, hidden_states[:, span_position : span_position + 1]
                 )
             cursor = next_position
-        if prefill_end > cursor:
+        if (not interleaved or not decoded_count) and prefill_end > cursor:
             self.append_hidden(state, hidden_states[:, prefill_end - 1 : prefill_end])
+        audio_positions = (
+            self._generated_audio_positions(
+                generation_schedule,
+                prefill_end=prefill_end,
+                generated_count=hidden_states.size(1) - prefill_end,
+                audio_span_token_ids=audio_span_token_ids,
+                expected=decoded_count,
+            )
+            if interleaved
+            else None
+        )
         for patch_index, patch in enumerate(decoded_latent_patches):
+            if audio_positions is not None:
+                position = int(audio_positions[patch_index])
+                self.append_hidden(state, hidden_states[:, position - 1 : position])
             self._append_history(
                 state,
                 self.io.normalize(patch.to(device=hidden_states.device)).to(
                     dtype=state.fm_sequence.dtype
                 ),
             )
-            next_hidden_position = prefill_end + patch_index
-            self.append_hidden(
-                state,
-                hidden_states[
-                    :,
-                    next_hidden_position : next_hidden_position + 1,
-                ],
-            )
+            if audio_positions is None:
+                next_hidden_position = prefill_end + patch_index
+                self.append_hidden(
+                    state,
+                    hidden_states[
+                        :,
+                        next_hidden_position : next_hidden_position + 1,
+                    ],
+                )
         if decoded_count:
             state.drop_regenerated_prompt_patch = False
             state.suppress_first_eos_check = False
             state.decoded_patches = decoded_count
+
+    @staticmethod
+    def _generated_audio_positions(
+        generation_schedule: torch.Tensor,
+        *,
+        prefill_end: int,
+        generated_count: int,
+        audio_span_token_ids: set[int],
+        expected: int,
+    ) -> torch.Tensor:
+        ids = torch.tensor(
+            sorted(audio_span_token_ids), device=generation_schedule.device
+        )
+        positions = torch.nonzero(
+            torch.isin(
+                generation_schedule[0, prefill_end : prefill_end + generated_count],
+                ids,
+            ),
+            as_tuple=False,
+        ).squeeze(-1) + int(prefill_end)
+        if positions.numel() != expected:
+            raise RuntimeError(
+                "dots.tts STTS replay audio positions do not match decoded patches"
+            )
+        return positions
 
     @torch.inference_mode()
     def append_hidden(self, state: DotsFlowState, hidden_states: torch.Tensor) -> None:
@@ -558,7 +638,9 @@ class DotsTTSFlowHead(nn.Module):
             normalized_patch = solver.decode_next(
                 state.dit_state,
                 sequence=state.fm_sequence,
-                cfg_sequence=state.fm_cfg_sequence,
+                cfg_sequence=(
+                    state.fm_cfg_sequence if self.mode == "flow_matching" else None
+                ),
                 fm_seq_len=state.fm_seq_len,
                 null_g_cond=state.fm_null_g_cond,
                 g_cond=state.g_cond,

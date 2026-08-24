@@ -169,6 +169,11 @@ tests/
     ├── qwen3_tts/
     │   ├── test_pipeline.py
     │   └── test_predictor_cuda_graph.py
+    ├── dots_tts/
+    │   ├── test_flow_head.py
+    │   ├── test_model_runner.py
+    │   ├── test_preprocessing.py
+    │   └── test_tail.py
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py

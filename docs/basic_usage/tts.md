@@ -46,7 +46,7 @@ for details.
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 | [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 48 kHz stereo local-transformer MOSS-TTS; voice cloning / reference-less; streaming |
 | [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |
-| [dots.tts](../cookbook/dots_tts.md) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow (`dots.tts-mf`) uses continuous batching (`max_running_requests=16` by default) with engine-wide `num_steps=4` and Euler. SOAR (`dots.tts-soar`) and base (`dots.tts-base`) are flow matching and run the single-request solver with CFG at `max_running_requests=1`; both use the SOAR config. All require `ref_audio` + `ref_text`. TP1 only |
+| [dots.tts](../cookbook/dots_tts.md) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_scm.yaml` (two-step sCM), `examples/configs/dots_tts_stts.yaml` (STTS), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow and sCM use continuous batching; the STTS artifact additionally interleaves text and audio positions using its artifact cadence. SOAR/base remain single-request. TP1 only |
 | [ZONOS2](../cookbook/zonos2.md) | `--model-path Zyphra/zonos2` | MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook) |
 
 ## Launch the Server
@@ -160,11 +160,23 @@ sgl-omni serve \
   --port 8000
 ```
 
+For dots.tts two-step sCM:
+
+```bash
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-mf-2steps \
+  --config examples/configs/dots_tts_scm.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
+  --port 8000
+```
+
 `dots.tts-base` uses the same config; pass `--model-path dots-studio/dots.tts-base`.
 
-SOAR and base are flow-matching checkpoints, so they run the single-request solver
-(`max_running_requests=1`) with classifier-free guidance. Continuous batching is
-MeanFlow-only for now. `rednote-hilab/dots.tts-*` is the old org name and redirects to
+SOAR and base run the single-request solver (`max_running_requests=1`). The sCM
+artifacts fix Euler, NFE 2, and CFG 0 and support the batched acoustic tail; omit
+those request overrides. `rednote-hilab/dots.tts-*` is the old org name and redirects to
 `dots-studio/dots.tts-*`; both work as `--model-path`.
 
 For Ming-Omni-TTS:

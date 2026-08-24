@@ -2,7 +2,7 @@
 
 [dots.tts](https://huggingface.co/dots-studio/dots.tts-mf) is a text-to-speech model from rednote-hilab. It outputs 48 kHz speech and clones a speaker from a short reference clip plus its transcript.
 
-dots.tts is a continuous-latent model, not a codec model. The backbone emits no audio tokens. Each AR step gives a hidden state; a MeanFlow DiT uses it to sample one latent patch (4 frames × 128 dims); a semantic encoder turns the patch back into the next backbone input; an AudioVAE decodes latents to waveform. No codebook, no token sampler. So `temperature` and `top_k` do nothing here — use the solver knobs (`num_steps`, `guidance_scale`) instead.
+dots.tts is a continuous-latent model, not a codec model. The backbone emits no audio tokens. Each AR step gives a hidden state; an acoustic DiT uses it to sample one latent patch (4 frames × 128 dims); a semantic encoder turns the patch back into the next backbone input; an AudioVAE decodes latents to waveform. No codebook, no token sampler. So `temperature` and `top_k` do nothing here — use the solver knobs (`num_steps`, `guidance_scale`) instead.
 
 | Component | Spec |
 |---|---|
@@ -11,13 +11,15 @@ dots.tts is a continuous-latent model, not a codec model. The backbone emits no 
 | Latent patch | 4 frames × 128 dims (one patch ≈ 160 ms of audio) |
 | Context length | 2,048 tokens |
 | Sample rate | 48 kHz |
-| Solver | MeanFlow + Euler, engine-wide `num_steps=4` (SOAR: flow matching + CFG, `num_steps=10`) |
+| Solver | MeanFlow + Euler, engine-wide `num_steps=4`; SOAR uses flow matching + CFG; the two-step artifact uses its fixed sCM contract |
 
 ## Supported checkpoints
 
 | Checkpoint | Status |
 |---|---|
 | [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow. Continuous batching, `num_steps=4`. `examples/configs/dots_tts.yaml` |
+| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | sCM. Artifact-locked Euler, `num_steps=2`, CFG `0`. Continuous batching with `examples/configs/dots_tts_scm.yaml` |
+| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts) | Streaming TTS with artifact-declared text/audio cadence and batched sCM. `examples/configs/dots_tts_stts.yaml` |
 | [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | Flow matching. Single request at a time (`max_running_requests=1`) with CFG, `num_steps=10`. `examples/configs/dots_tts_soar.yaml` |
 | [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Flow matching, same as SOAR. Serve it with `examples/configs/dots_tts_soar.yaml` and `--model-path dots-studio/dots.tts-base` |
 
@@ -47,7 +49,30 @@ sgl-omni serve \
   --port 8000
 ```
 
-SOAR is a flow-matching checkpoint. It runs the single-request solver with classifier-free guidance, so its config pins `max_running_requests: 1` and `num_steps: 10`; continuous batching is MeanFlow-only. Every request example below works on either checkpoint — only the `model` field changes.
+SOAR is a legacy flow-matching checkpoint. It runs the single-request solver with classifier-free guidance, so its config pins `max_running_requests: 1` and `num_steps: 10`. MeanFlow and sCM checkpoints support continuous batching. Every request example below works on either checkpoint — only the `model` field changes.
+
+For the two-step sCM checkpoint, use its config and omit solver overrides from requests:
+
+```bash
+hf download dots-studio/dots.tts-mf-2steps
+
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-mf-2steps \
+  --config examples/configs/dots_tts_scm.yaml \
+  --allowed-local-media-path docs/_static/audio \
+  --port 8000
+```
+
+The checkpoint declares Euler, NFE 2, CFG 0, and `tau_mid`. Serving applies those values automatically and rejects incompatible `ode_method`, `num_steps`, or `guidance_scale` overrides.
+
+For STTS, swap to `dots.tts-mf-2steps-stts` and
+`examples/configs/dots_tts_stts.yaml`. Serving constructs the prompt/target
+interleave from the checkpoint's `streaming` config. Backbone rows at text
+positions stay in the continuous batch; only rows at audio positions enter the
+batched sCM acoustic tail, so requests with different text/audio phases do not
+serialize each other. The OpenAI speech API accepts normal `input` text; the
+low-level pipeline also accepts `text_token_ids` (or `input_ids`) for an upstream
+LLM token stream that has already been collected.
 
 `examples/configs/dots_tts.yaml` is the canonical MeanFlow deployment. It is already tuned; compiled acoustic tail and vocoder (`optimize: true`, on by default); continuous batching at `max_running_requests=16`; and the backbone decode CUDA graph. `--model-path` alone keeps the compiled tail and batching but leaves backbone decode eager, which is slower per request (see [Performance](#performance)). Use the config file.
 
@@ -179,10 +204,10 @@ Solver knobs go under `stage_params.latent_engine`. They are **not** top-level f
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `speaker_scale` | float | `1.5` | Scales the speaker x-vector before conditioning. Higher values push harder toward the reference timbre |
-| `guidance_scale` | float | `1.2` | Classifier-free guidance strength for the flow sampler |
+| `guidance_scale` | float | `1.2` or artifact value | Classifier-free guidance strength for the flow sampler. Fixed-step artifacts reject overrides |
 | `eos_threshold` | float | `0.8` | Probability above which the EOS head ends generation. Lower values cut utterances earlier |
-| `num_steps` | int | `4` (MF), `10` (SOAR) | Flow solver steps. MeanFlow fixes this engine-wide: another value fails the request. SOAR and base run one request at a time and honour it |
-| `ode_method` | string | `"euler"` | Flow solver. MeanFlow accepts only `euler` |
+| `num_steps` | int | `4` (MF), `10` (SOAR), artifact value | Flow solver steps. MeanFlow fixes this engine-wide; artifact-locked checkpoints reject overrides |
+| `ode_method` | string | `"euler"` or artifact value | Flow solver. MeanFlow and current fixed-step artifacts accept only `euler` |
 | `max_generate_length` | int | `500` | Cap on generated latent patches (≈ 160 ms each), bounded by the engine's `max_generate_length` |
 | `normalize_text` | bool | `false` | Run the upstream text normalizer (numbers, symbols) before tokenizing |
 

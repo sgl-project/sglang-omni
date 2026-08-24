@@ -84,19 +84,41 @@ class DotsTTSModelRunner(ModelRunner):
                 assert prefix_len == 0, "dots.tts radix prefix reuse is disabled"
                 prompt_len = embeddings.size(1)
                 generated_count = req_len - prompt_len
-                assert (
-                    generated_count
-                    == len(data.req.output_ids)
-                    == len(data.decoded_latent_patches)
+                assert generated_count == len(
+                    data.req.output_ids
                 ), "dots.tts re-prefill history must match generated tokens"
                 request_rows = [embeddings[0]]
                 if generated_count:
-                    request_rows.append(
-                        self.model.flow.replay_feedback(
-                            flow_state,
-                            data.decoded_latent_patches,
-                        ).to(device=device, dtype=embeddings.dtype)
-                    )
+                    feedback = self.model.flow.replay_feedback(
+                        flow_state,
+                        data.decoded_latent_patches,
+                    ).to(device=device, dtype=embeddings.dtype)
+                    if getattr(data.state, "interleaved", False):
+                        generated_ids = torch.tensor(
+                            data.req.output_ids,
+                            device=device,
+                            dtype=torch.long,
+                        )
+                        generated = self.model.get_input_embeddings()(
+                            generated_ids
+                        ).clone()
+                        audio_mask = torch.isin(
+                            generated_ids,
+                            torch.tensor(
+                                data.state.audio_span_token_ids,
+                                device=device,
+                                dtype=torch.long,
+                            ),
+                        )
+                        if int(audio_mask.sum()) != feedback.size(0):
+                            raise RuntimeError(
+                                "dots.tts STTS replay tokens do not match audio patches"
+                            )
+                        generated[audio_mask] = feedback
+                        request_rows.append(generated)
+                    else:
+                        assert generated_count == len(data.decoded_latent_patches)
+                        request_rows.append(feedback)
                 rows.append(torch.cat(request_rows, dim=0))
             forward_batch.input_embeds = torch.cat(rows, dim=0)
         except BaseException:
@@ -122,7 +144,12 @@ class DotsTTSModelRunner(ModelRunner):
             if not queue:
                 raise RuntimeError("dots.tts decode is missing its latent feedback")
             feedback = queue.popleft()
-            if feedback.ndim > 1:
+            if isinstance(feedback, int):
+                token = torch.tensor(
+                    [feedback], device=forward_batch.input_ids.device, dtype=torch.long
+                )
+                feedback = self.model.get_input_embeddings()(token)[0]
+            elif feedback.ndim > 1:
                 feedback = feedback.reshape(-1, feedback.shape[-1])[-1]
             rows.append(feedback)
         buffer = self.model.graph_feedback_buffer
@@ -190,17 +217,29 @@ class DotsTTSModelRunner(ModelRunner):
                 generation_schedule=data.generation_schedule.to(hidden.device),
                 prefill_end=data.prefill_end,
                 decoded_latent_patches=data.decoded_latent_patches,
+                interleaved=getattr(data.state, "interleaved", False),
             )
             last_hidden.append(request_hidden[0, -1])
             offset += length
         if offset != hidden.size(0):
             raise RuntimeError("dots.tts prefill hidden rows do not match requests")
-        launch_buf = self._launch_flow_batch(
-            result,
-            requests,
-            torch.stack(last_hidden),
-            append_hidden=False,
-        )
+        hidden = torch.stack(last_hidden)
+        if all(
+            getattr(request.data.state, "interleaved", False) for request in requests
+        ):
+            launch_buf = self._advance_interleaved_batch(
+                result,
+                requests,
+                hidden,
+                initial=[not request.data.req.output_ids for request in requests],
+            )
+        else:
+            launch_buf = self._launch_flow_batch(
+                result,
+                requests,
+                hidden,
+                append_hidden=False,
+            )
         self._resolve_flow_finish(launch_buf)
 
     def post_decode(
@@ -224,6 +263,15 @@ class DotsTTSModelRunner(ModelRunner):
             raise RuntimeError(
                 f"dots.tts expected rank-2/3 decode hidden, got {hidden.ndim}"
             )
+        interleaved = [
+            getattr(request.data.state, "interleaved", False) for request in requests
+        ]
+        if any(interleaved):
+            if not all(interleaved):
+                raise RuntimeError(
+                    "dots.tts STTS and non-STTS requests cannot share a decode batch"
+                )
+            return self._advance_interleaved_batch(result, requests, hidden)
         return self._launch_flow_batch(result, requests, hidden, append_hidden=True)
 
     def post_decode_resolve(
@@ -246,16 +294,39 @@ class DotsTTSModelRunner(ModelRunner):
         append_hidden: bool,
     ) -> _DotsFlowLaunchBuf:
         data_rows = [request.data for request in requests]
+        launch = self._decode_flow_rows(requests, hidden, append_hidden=append_hidden)
+        result.next_token_ids = torch.tensor(
+            [data.control_token_id for data in data_rows],
+            dtype=torch.long,
+            device=hidden.device,
+        )
+        return launch
+
+    def _decode_flow_rows(
+        self,
+        requests: list,
+        hidden: torch.Tensor,
+        *,
+        append_hidden: bool,
+    ) -> _DotsFlowLaunchBuf:
+        data_rows = [request.data for request in requests]
         steps = self.model.flow.decode_batch(
             [data.flow_state for data in data_rows],
             hidden_states=hidden,
             num_steps=[data.state.num_steps for data in data_rows],
             ode_methods=[data.state.ode_method for data in data_rows],
             guidance_scales=[data.state.guidance_scale for data in data_rows],
-            eos_thresholds=[data.state.eos_threshold for data in data_rows],
+            eos_thresholds=[
+                (
+                    data.state.eos_threshold
+                    if not getattr(data.state, "interleaved", False)
+                    or data.text_finished
+                    else float("inf")
+                )
+                for data in data_rows
+            ],
             append_hidden=append_hidden,
         )
-        next_token_ids = []
         for data, step in zip(data_rows, steps, strict=True):
             data.pending_feedback_queue.append(step.feedback_embedding.detach())
             decoded_latent = step.latent_patch.detach()
@@ -263,17 +334,60 @@ class DotsTTSModelRunner(ModelRunner):
             if step.emit:
                 data.latest_latent_patch = decoded_latent
                 data.latent_patches.append(decoded_latent)
-            next_token_ids.append(data.control_token_id)
-        result.next_token_ids = torch.tensor(
-            next_token_ids,
-            dtype=torch.long,
-            device=hidden.device,
-        )
         return _DotsFlowLaunchBuf(
             data_rows=data_rows,
             steps=steps,
             batched=bool(self.model.flow.is_batched),
         )
+
+    def _advance_interleaved_batch(
+        self,
+        result: Any,
+        requests: list,
+        hidden: torch.Tensor,
+        *,
+        initial: list[bool] | None = None,
+    ) -> _DotsFlowLaunchBuf | None:
+        initial = initial or [False] * len(requests)
+        next_ids: list[int] = []
+        audio_requests = []
+        audio_rows = []
+        for row, request in enumerate(requests):
+            data = request.data
+            if initial[row]:
+                audio_requests.append(request)
+                audio_rows.append(row)
+                next_ids.append(data.control_token_id)
+                continue
+            schedule = data.generation_schedule[0]
+            if data.interleave_cursor >= schedule.numel():
+                next_ids.append(data.control_token_id)
+                continue
+            token_id = int(schedule[data.interleave_cursor])
+            data.interleave_cursor += 1
+            if token_id in data.state.audio_span_token_ids:
+                audio_requests.append(request)
+                audio_rows.append(row)
+                next_ids.append(data.control_token_id)
+            else:
+                data.pending_feedback_queue.append(token_id)
+                data.text_finished |= token_id == data.text_cond_end_id
+                next_ids.append(token_id)
+        launch = None
+        if audio_requests:
+            if any(initial) and not all(initial) and not self.model.flow.is_batched:
+                raise RuntimeError(
+                    "dots.tts STTS mixed initial/replay prefill requires batched tail"
+                )
+            launch = self._decode_flow_rows(
+                audio_requests,
+                hidden[audio_rows],
+                append_hidden=not all(initial),
+            )
+        result.next_token_ids = torch.tensor(
+            next_ids, dtype=torch.long, device=hidden.device
+        )
+        return launch
 
     def _resolve_flow_finish(self, launch_buf: _DotsFlowLaunchBuf | None) -> None:
         if launch_buf is None:
