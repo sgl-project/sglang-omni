@@ -68,8 +68,6 @@ def create_thinker_scheduler(
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_config,
     ) = infrastructure
 
@@ -118,8 +116,6 @@ def create_thinker_scheduler(
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         server_args=server_args,
         model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
@@ -173,8 +169,6 @@ def create_talker_scheduler(
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_config,
     ) = create_sglang_infrastructure(
         server_args,
@@ -254,8 +248,6 @@ def create_talker_scheduler(
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         server_args=server_args,
         model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_chunk_handler=stream_chunk_handler,

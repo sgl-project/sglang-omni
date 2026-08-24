@@ -445,8 +445,6 @@ def _patch_engine_dependencies(
             object(),
             object(),
             object(),
-            object(),
-            object(),
         )
 
     monkeypatch.setattr(

@@ -467,8 +467,6 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 

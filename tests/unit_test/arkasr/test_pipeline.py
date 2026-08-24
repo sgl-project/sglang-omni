@@ -191,7 +191,7 @@ def _stub_arkasr_engine_build(
             model=SimpleNamespace(set_encoder_max_batch_size=encoder_batch_sizes.append)
         ),
     )
-    infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+    infra = (want_cuda_graph, (model_worker, None, None, None, None))
 
     monkeypatch.setattr(
         platforms.current_platform, "get_device", lambda index: "cpu", raising=False

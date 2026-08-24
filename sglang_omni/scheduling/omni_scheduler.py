@@ -177,8 +177,6 @@ class OmniScheduler:
         server_args: Any,
         model_config: Any,
         *,
-        prefill_manager: Any = None,
-        decode_manager: Any = None,
         model_runner: Any = None,
         request_builder: Callable | None = None,
         result_adapter: Callable | None = None,
@@ -351,8 +349,6 @@ class OmniScheduler:
         self.tree_cache = tree_cache
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
-        self.prefill_manager = prefill_manager
-        self.decode_manager = decode_manager
 
         # Batch state
         self.waiting_queue: list = []

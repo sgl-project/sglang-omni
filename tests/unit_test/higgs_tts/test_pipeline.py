@@ -288,8 +288,6 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
             object(),
             object(),
             object(),
-            object(),
-            object(),
         )
 
     class FakeOutputProcessor:

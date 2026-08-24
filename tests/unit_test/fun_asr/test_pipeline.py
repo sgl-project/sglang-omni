@@ -227,8 +227,6 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         object(),
         object(),
         object(),
-        object(),
-        object(),
     )
 
     monkeypatch.setattr(

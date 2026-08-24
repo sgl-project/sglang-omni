@@ -326,8 +326,6 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
             object(),
             object(),
             object(),
-            object(),
-            object(),
         )
 
     monkeypatch.setattr(

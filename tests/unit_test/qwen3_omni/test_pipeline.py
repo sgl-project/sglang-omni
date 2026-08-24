@@ -917,8 +917,6 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
             object(),
             object(),
             object(),
-            object(),
-            object(),
             model_config,
         )
 
@@ -1036,8 +1034,6 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
         captured.update(kwargs)
         return (
             model_worker,
-            object(),
-            object(),
             object(),
             object(),
             object(),

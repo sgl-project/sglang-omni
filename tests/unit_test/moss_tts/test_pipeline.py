@@ -429,8 +429,6 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
             object(),
             object(),
             object(),
-            object(),
-            object(),
         )
 
     class FakeOutputProcessor:

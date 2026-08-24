@@ -102,13 +102,9 @@ def create_sglang_infrastructure(
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
 ):
-    """Create SGLang worker, memory pools, tree cache, and prefill/decode managers."""
+    """Create SGLang worker, memory pools, and tree cache."""
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
-    from sglang_omni.scheduling.sglang_backend import (
-        DecodeManager,
-        PrefillManager,
-        create_tree_cache,
-    )
+    from sglang_omni.scheduling.sglang_backend import create_tree_cache
 
     logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
 
@@ -157,32 +153,11 @@ def create_sglang_infrastructure(
         server_args.page_size,
     )
 
-    enable_overlap = not server_args.disable_overlap_schedule
-
-    prefill_mgr = PrefillManager(
-        page_size=server_args.page_size,
-        chunked_prefill_size=server_args.chunked_prefill_size,
-        max_prefill_tokens=server_args.max_prefill_tokens,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        tree_cache=tree_cache,
-        model_config=model_worker.model_config,
-        enable_overlap=enable_overlap,
-    )
-
-    decode_mgr = DecodeManager(
-        server_args=server_args,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        on_retract=lambda req: prefill_mgr.add_one_request(req),
-    )
-
     return (
         model_worker,
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_worker.model_config,
     )
 

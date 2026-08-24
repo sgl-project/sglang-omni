@@ -4446,8 +4446,6 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
             object(),
             object(),
             object(),
-            object(),
-            object(),
             SimpleNamespace(),
         )
 

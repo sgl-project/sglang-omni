@@ -537,8 +537,6 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
             object(),
             object(),
             object(),
-            object(),
-            object(),
             SimpleNamespace(),
         )
 

@@ -665,8 +665,6 @@ def _install_fake_moss_ar_factory(
             object(),
             object(),
             object(),
-            object(),
-            object(),
             model_worker.model_config,
         )
 

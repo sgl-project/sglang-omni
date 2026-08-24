@@ -106,20 +106,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
             events.append("get_memory_pool")
             return "req_pool", "kv_pool"
 
-    class FakePrefillManager:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-
-        def add_one_request(self, req) -> None:
-            del req
-
-    class FakeDecodeManager:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-
     monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
-    monkeypatch.setattr(sglang_backend, "PrefillManager", FakePrefillManager)
-    monkeypatch.setattr(sglang_backend, "DecodeManager", FakeDecodeManager)
     monkeypatch.setattr(
         sglang_backend,
         "create_tree_cache",
@@ -276,17 +263,6 @@ def test_hidden_capture_is_installed_before_graph_initialization(monkeypatch) ->
             events.append("get_memory_pool")
             return "req_pool", "kv_pool"
 
-    class FakePrefillManager:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-
-        def add_one_request(self, req) -> None:
-            del req
-
-    class FakeDecodeManager:
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-
     def fake_install(model, layers, *, max_tokens) -> None:
         events.append(("install_hidden_capture", model, layers, max_tokens))
 
@@ -301,8 +277,6 @@ def test_hidden_capture_is_installed_before_graph_initialization(monkeypatch) ->
         "install_hidden_capture_hooks",
         fake_install,
     )
-    monkeypatch.setattr(sglang_backend, "PrefillManager", FakePrefillManager)
-    monkeypatch.setattr(sglang_backend, "DecodeManager", FakeDecodeManager)
     monkeypatch.setattr(
         sglang_backend,
         "create_tree_cache",

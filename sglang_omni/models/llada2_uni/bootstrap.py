@@ -44,8 +44,6 @@ def create_dllm_thinker_scheduler(
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        _,
-        _,
         model_config,
     ) = create_sglang_infrastructure(
         server_args,

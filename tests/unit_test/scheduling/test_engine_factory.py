@@ -160,8 +160,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 
@@ -271,8 +269,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             token_to_kv_pool_allocator: Any,
             server_args: Any,
             model_config: Any,
-            prefill_manager: Any,
-            decode_manager: Any,
             model_runner: Any,
             request_builder: Any,
             result_adapter: Any,
@@ -289,8 +285,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
                     "token_to_kv_pool_allocator": token_to_kv_pool_allocator,
                     "server_args": server_args,
                     "model_config": model_config,
-                    "prefill_manager": prefill_manager,
-                    "decode_manager": decode_manager,
                     "model_runner": model_runner,
                 },
             )
@@ -386,8 +380,6 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 
@@ -556,8 +548,6 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
         token_to_kv_pool_allocator="kv_pool",
         server_args="server_args",
         model_config="model_config",
-        prefill_manager="prefill",
-        decode_manager="decode",
         model_runner="runner",
         request_builder="request_builder",
         result_adapter="result_adapter",

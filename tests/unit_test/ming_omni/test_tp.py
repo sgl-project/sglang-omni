@@ -448,8 +448,6 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
             "tree_cache",
             "req_to_token_pool",
             "token_to_kv_pool_allocator",
-            "prefill_mgr",
-            "decode_mgr",
             "model_config",
         )
 
