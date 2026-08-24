@@ -233,6 +233,13 @@ sweep loop, table, and common arguments from `benchmark_asr_seedtts.py`, so
 both result JSONs share one `config`/`results` layout and differ only in the
 dataset fields (`repo_id`/`split` instead of `meta`).
 
+This only reuses Pipecat's dataset, not their metric definitions. The upstream
+[pipecat-ai/stt-benchmark](https://github.com/pipecat-ai/stt-benchmark)
+reports Semantic WER and TTFS (end of speech to final transcript over a
+simulated realtime stream); this sweep reports Whisper-normalized WER and
+whole-request latency/RTF, and `--stream` uploads the complete file. The
+numbers are not comparable to the Pipecat leaderboard.
+
 ```bash
 python -m benchmarks.dataset.prepare --dataset stt-benchmark
 python -m benchmarks.eval.benchmark_asr_stt_benchmark \

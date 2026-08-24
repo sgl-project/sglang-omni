@@ -32,6 +32,10 @@ Usage:
         --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \\
         --concurrencies 32 --repeats 3 --warmup --stream
 
+Pipecat's own benchmark reports Semantic WER and TTFS for this dataset; this
+script does not reproduce those metrics, so its numbers are not comparable to
+the Pipecat leaderboard.
+
 The dataset is English only, so WER uses the Whisper English normalizer and
 the request language is fixed to ``en``. Use ``--repo-id`` to point at a
 re-upload with the same columns; the canonical repo loads at its pinned
