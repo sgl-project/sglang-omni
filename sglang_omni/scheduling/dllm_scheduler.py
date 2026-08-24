@@ -70,6 +70,10 @@ class DllmScheduler:
         self._waiting_queue: list[Req] = []
         self._staging_queue: list[Req] = []
 
+        self.tp_rank = getattr(tp_worker, "tp_rank", 0)
+        self.tp_size = server_args.tp_size
+        self.requires_tp_work_fanout = self.tp_size > 1
+
     def start(self) -> None:
         self._running = True
         self._event_loop()

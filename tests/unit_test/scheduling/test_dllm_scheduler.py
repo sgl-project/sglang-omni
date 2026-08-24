@@ -47,6 +47,35 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
     return scheduler
 
 
+@pytest.mark.parametrize(
+    ("tp_size", "tp_rank", "expected_fanout"),
+    [(1, 0, False), (4, 1, True)],
+)
+def test_dllm_scheduler_declares_tp_work_fanout(
+    tp_size: int,
+    tp_rank: int,
+    expected_fanout: bool,
+) -> None:
+    scheduler = DllmScheduler(
+        tp_worker=SimpleNamespace(tp_rank=tp_rank),
+        tree_cache=object(),
+        req_to_token_pool=object(),
+        token_to_kv_pool_allocator=object(),
+        server_args=SimpleNamespace(
+            tp_size=tp_size,
+            chunked_prefill_size=128,
+        ),
+        model_config=object(),
+        dllm_config=SimpleNamespace(block_size=128),
+        request_builder=lambda payload: payload,
+        result_adapter=lambda result: result,
+    )
+
+    assert scheduler.tp_rank == tp_rank
+    assert scheduler.tp_size == tp_size
+    assert scheduler.requires_tp_work_fanout is expected_fanout
+
+
 def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> None:
     carried_states = [{"round": 1}, None]
     next_states = [{"round": 2}, None]
