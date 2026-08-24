@@ -74,6 +74,7 @@ from sglang_omni.serve.protocol import (
     AdminRequestBase,
     ChatCompletionAudio,
     ChatCompletionChoice,
+    ChatCompletionImage,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionStreamChoice,
@@ -114,7 +115,9 @@ from sglang_omni.serve.speech_limits import (
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
-from sglang_omni.serve.streaming import STREAM_DONE_SENTINEL
+from sglang_omni.serve.streaming import (
+    STREAM_DONE_SENTINEL,
+)
 from sglang_omni.serve.streaming import (
     ClosableStreamingResponse as _ClosableStreamingResponse,
 )
@@ -662,6 +665,8 @@ def _register_chat_completions(app: FastAPI) -> None:
 
         gen_req = _build_chat_generate_request(req)
 
+        _reject_streaming_image_generation(req)
+
         # Determine audio format from request
         audio_format = "wav"
         if req.audio and isinstance(req.audio, dict):
@@ -694,6 +699,29 @@ def _register_chat_completions(app: FastAPI) -> None:
         )
 
 
+def _requested_modalities(req: ChatCompletionRequest) -> list[str]:
+    return req.modalities or ["text"]
+
+
+def _validate_chat_image_generation_request(req: ChatCompletionRequest) -> None:
+    if req.image_generation is not None and "image" not in _requested_modalities(req):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                'image_generation requires modalities to include "image"; '
+                "image_generation configures image output but does not request it"
+            ),
+        )
+
+
+def _reject_streaming_image_generation(req: ChatCompletionRequest) -> None:
+    if req.stream and "image" in _requested_modalities(req):
+        raise HTTPException(
+            status_code=400,
+            detail="streaming image generation is not supported",
+        )
+
+
 async def _chat_non_stream(
     client: Client,
     gen_req: GenerateRequest,
@@ -721,7 +749,7 @@ async def _chat_non_stream(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    requested_modalities = req.modalities or ["text"]
+    requested_modalities = _requested_modalities(req)
 
     # Build message content
     message: dict[str, Any] = {"role": "assistant"}
@@ -736,7 +764,13 @@ async def _chat_non_stream(
             "transcript": result.audio.transcript,
         }
 
-    if "content" not in message and "audio" not in message:
+    if "image" in requested_modalities and result.images:
+        message["images"] = [
+            ChatCompletionImage(**image.to_dict()).model_dump()
+            for image in result.images
+        ]
+
+    if not any(key in message for key in ("content", "audio", "images")):
         message["content"] = result.text
 
     # Build usage
@@ -901,6 +935,8 @@ def _explicit_generation_params(request: Any) -> list[str]:
 
 def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     """Convert a ChatCompletionRequest into a client GenerateRequest."""
+    _validate_chat_image_generation_request(req)
+
     # Parse stop sequences
     stop: list[str] = []
     if isinstance(req.stop, str):
@@ -926,7 +962,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     messages = [Message(role=m.role, content=m.content) for m in req.messages]
 
     # Determine output modalities
-    output_modalities = req.modalities or ["text"]  # e.g. ["text", "audio"]
+    output_modalities = _requested_modalities(req)
 
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
@@ -952,6 +988,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     metadata: dict[str, Any] = {}
     if req.audio:
         metadata["audio_config"] = req.audio
+    if req.image_generation is not None:
+        metadata["image_generation"] = dict(req.image_generation)
     if audios:
         metadata["audios"] = audios
     if images:
