@@ -500,7 +500,7 @@ that happened to contain an older version of the test.
     CUDA-only graph-vs-eager parity check of the captured layer stack.
 - `unit_test/arkasr/`: ARK-ASR-3B unit tests:
   - encoder CUDA Graph bucketing, graph routing and eager fallback,
-    failed-bucket serialization, pre-LM embedding splitting, and CUDA-only
+    replay-failure fallback, pre-LM embedding splitting, and CUDA-only
     graph-versus-eager parity
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery

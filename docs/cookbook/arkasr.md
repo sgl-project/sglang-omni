@@ -103,14 +103,14 @@ runtime_overrides:
 
 The feature captures the complete audio encoder, including the Whisper/RoPE
 tower and MLP adapter. Before the server becomes ready, it captures the common
-batch buckets `1, 2, 4, 8` at mel-frame buckets `512, 768, 1024`. Other
-supported frame buckets for those batch sizes are captured lazily on first use.
-Bucket policy and the free-memory safety margin are model-internal settings.
+batch buckets `1, 2, 4, 8` at mel-frame buckets `512, 768, 1024`, for 12
+graphs total. Other shapes use the eager encoder path. Bucket policy and the
+free-memory safety margin are model-internal settings.
 
 A request runs through the existing eager encoder path when its shape is not
 covered by an internal bucket, available GPU memory is below the capture safety
-margin, or graph capture/replay fails. A bucket that fails capture or replay is
-marked unavailable so later requests do not repeatedly retry it.
+margin, or graph capture/replay fails. A bucket that fails capture or replay
+remains unavailable so later requests do not repeatedly retry it.
 
 CUDA Graph replay is serialized because each bucket reuses static input and
 output buffers. The returned rows are cloned before the bucket can be reused.

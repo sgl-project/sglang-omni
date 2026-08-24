@@ -12,71 +12,57 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Iterable, Sequence
-from typing import Optional
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 import torch
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BATCH_BUCKETS = (1, 2, 4, 8)
-_DEFAULT_PRECAPTURE_BATCH_BUCKETS = (1, 2, 4, 8)
-_DEFAULT_PRECAPTURE_FRAME_BUCKETS = (512, 768, 1024)
-_DEFAULT_FRAME_BUCKET_STEP = 256
-_DEFAULT_MAX_FRAMES = 3000
+_DEFAULT_FRAME_BUCKETS = (512, 768, 1024)
 _DEFAULT_MIN_FREE_GB = 3.0
 _DEFAULT_WARMUP_ITERS = 3
 
 
-def _normalize_batch_buckets(batch_buckets: Iterable[int]) -> tuple[int, ...]:
-    return tuple(sorted({int(bucket) for bucket in batch_buckets}))
+@dataclass
+class _CapturedGraph:
+    graph: torch.cuda.CUDAGraph
+    features: torch.Tensor
+    mask: torch.Tensor
+    frame_index: torch.Tensor
+    output: torch.Tensor
 
 
-def _bucket_batch(
-    batch_size: int,
-    batch_buckets: Sequence[int] = _DEFAULT_BATCH_BUCKETS,
-) -> int | None:
-    """Return the smallest configured batch bucket that can fit ``batch_size``."""
-    for bucket in batch_buckets:
+def _bucket_batch(batch_size: int) -> int | None:
+    """Return the smallest captured batch bucket that fits ``batch_size``."""
+    for bucket in _DEFAULT_BATCH_BUCKETS:
         if bucket >= batch_size:
-            return int(bucket)
+            return bucket
     return None
 
 
-def _bucket_frames(
-    mel_frames: int,
-    *,
-    frame_bucket_step: int = _DEFAULT_FRAME_BUCKET_STEP,
-    max_frames: int = _DEFAULT_MAX_FRAMES,
-) -> int | None:
-    """Round ``mel_frames`` up to a graph bucket within the configured ceiling."""
-    mel_frames = int(mel_frames)
-    frame_bucket_step = int(frame_bucket_step)
-    max_frames = int(max_frames)
-    if mel_frames > max_frames:
-        return None
-    bucket = (
-        (mel_frames + frame_bucket_step - 1) // frame_bucket_step
-    ) * frame_bucket_step
-    return min(max(bucket, frame_bucket_step), max_frames)
+def _bucket_frames(mel_frames: int) -> int | None:
+    """Return the smallest captured frame bucket that fits ``mel_frames``."""
+    for bucket in _DEFAULT_FRAME_BUCKETS:
+        if bucket >= mel_frames:
+            return bucket
+    return None
 
 
 class ArkasrEncoderCudaGraphRunner:
-    """Capture-once/replay-per-bucket runner for ARK-ASR encoder forwards.
+    """Startup-captured CUDA graph runner for ARK-ASR encoder forwards.
 
     The runner owns one set of mutable static buffers per ``(batch, frames)``
-    bucket.  Capture and replay are serialized because each replay overwrites
-    those buffers; callers get a cloned tensor for the real batch rows before a
-    later replay can reuse the bucket.
+    bucket. Replay is serialized because each replay overwrites those buffers;
+    callers get a cloned tensor for the real batch rows before a later replay
+    can reuse the bucket. Shapes not captured before serving use eager fallback.
     """
 
     def __init__(
         self,
         audio_encoder: torch.nn.Module,
         *,
-        batch_buckets: Iterable[int] = _DEFAULT_BATCH_BUCKETS,
-        frame_bucket_step: int = _DEFAULT_FRAME_BUCKET_STEP,
-        max_frames: int = _DEFAULT_MAX_FRAMES,
         min_free_gb: float = _DEFAULT_MIN_FREE_GB,
         warmup_iters: int = _DEFAULT_WARMUP_ITERS,
     ) -> None:
@@ -85,21 +71,13 @@ class ArkasrEncoderCudaGraphRunner:
         self._device = reference.device
         self._dtype = reference.dtype
         self._mel_bins = int(audio_encoder.whisper.conv1.in_channels)
-        self._batch_buckets = _normalize_batch_buckets(batch_buckets)
-        self._frame_bucket_step = int(frame_bucket_step)
-        self._max_frames = int(max_frames)
         self._min_free_bytes = int(float(min_free_gb) * (1024**3))
         self._warmup_iters = int(warmup_iters)
-        self._graphs: dict[tuple[int, int], tuple] = {}
-        self._failed: set[tuple[int, int]] = set()
+        self._graphs: dict[tuple[int, int], _CapturedGraph] = {}
         self._pool = None
         self._lock = threading.Lock()
         self._done_event = torch.cuda.Event()
         self._event_recorded = False
-
-    @property
-    def batch_buckets(self) -> tuple[int, ...]:
-        return self._batch_buckets
 
     def _enough_free_vram(self) -> tuple[bool, int]:
         if self._min_free_bytes <= 0:
@@ -107,22 +85,14 @@ class ArkasrEncoderCudaGraphRunner:
         free, _ = torch.cuda.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
-    def _forward(
-        self,
-        static_features: torch.Tensor,
-        static_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        return self._audio_encoder(static_features, attention_mask=static_mask)
-
     def _capture(
         self,
         batch_bucket: int,
         frame_bucket: int,
-        mel_bins: int,
-    ) -> tuple:
+    ) -> _CapturedGraph:
         static_features = torch.zeros(
             batch_bucket,
-            mel_bins,
+            self._mel_bins,
             frame_bucket,
             device=self._device,
             dtype=self._dtype,
@@ -141,19 +111,18 @@ class ArkasrEncoderCudaGraphRunner:
         stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(stream):
             for _ in range(self._warmup_iters):
-                self._forward(static_features, static_mask)
+                self._audio_encoder(static_features, attention_mask=static_mask)
         torch.cuda.current_stream(self._device).wait_stream(stream)
         torch.cuda.synchronize(self._device)
 
         if self._pool is None:
             self._pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(
-            graph,
-            pool=self._pool,
-            capture_error_mode="thread_local",
-        ):
-            static_out = self._forward(static_features, static_mask)
+        with torch.cuda.graph(graph, pool=self._pool):
+            static_out = self._audio_encoder(
+                static_features,
+                attention_mask=static_mask,
+            )
         frame_index = torch.arange(frame_bucket, device=self._device).unsqueeze(0)
 
         logger.info(
@@ -164,86 +133,59 @@ class ArkasrEncoderCudaGraphRunner:
             tuple(static_out.shape),
             len(self._graphs) + 1,
         )
-        return graph, static_features, static_mask, frame_index, static_out
-
-    def _get_or_capture(
-        self,
-        batch_bucket: int,
-        frame_bucket: int,
-        mel_bins: int,
-    ) -> tuple | None:
-        key = (batch_bucket, frame_bucket)
-        if key in self._failed:
-            return None
-
-        entry = self._graphs.get(key)
-        if entry is not None:
-            return entry
-
-        enough, free = self._enough_free_vram()
-        if not enough:
-            logger.warning(
-                "ARK-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
-                "headroom; running batch=%d frames=%d eager",
-                free / 1024**3,
-                self._min_free_bytes / 1024**3,
-                batch_bucket,
-                frame_bucket,
-            )
-            self._failed.add(key)
-            return None
-        try:
-            with torch.cuda.device(self._device):
-                entry = self._capture(batch_bucket, frame_bucket, mel_bins)
-        except Exception as exc:
-            logger.warning(
-                "ARK-ASR encoder CUDA graph capture failed for "
-                "batch=%d frames=%d: %s; using eager for this bucket",
-                batch_bucket,
-                frame_bucket,
-                exc,
-            )
-            self._failed.add(key)
-            return None
-        self._graphs[key] = entry
-        return entry
+        return _CapturedGraph(
+            graph=graph,
+            features=static_features,
+            mask=static_mask,
+            frame_index=frame_index,
+            output=static_out,
+        )
 
     @torch.no_grad()
-    def capture_common_buckets(self) -> None:
-        """Capture common serving shapes before the server becomes ready."""
+    def capture_startup_buckets(self) -> None:
+        """Capture the supported serving shapes before the server becomes ready."""
         with self._lock:
-            for batch_bucket in self._batch_buckets:
-                if batch_bucket not in _DEFAULT_PRECAPTURE_BATCH_BUCKETS:
-                    continue
-                for frame_bucket in _DEFAULT_PRECAPTURE_FRAME_BUCKETS:
-                    self._get_or_capture(
-                        batch_bucket,
-                        frame_bucket,
-                        self._mel_bins,
-                    )
+            for batch_bucket in _DEFAULT_BATCH_BUCKETS:
+                for frame_bucket in _DEFAULT_FRAME_BUCKETS:
+                    enough, free = self._enough_free_vram()
+                    if not enough:
+                        logger.warning(
+                            "ARK-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
+                            "headroom; remaining shapes use eager",
+                            free / 1024**3,
+                            self._min_free_bytes / 1024**3,
+                        )
+                        return
+                    try:
+                        with torch.cuda.device(self._device):
+                            self._graphs[(batch_bucket, frame_bucket)] = self._capture(
+                                batch_bucket,
+                                frame_bucket,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "ARK-ASR encoder CUDA graph capture failed for "
+                            "batch=%d frames=%d: %s; using eager for this bucket",
+                            batch_bucket,
+                            frame_bucket,
+                            exc,
+                        )
 
     def _copy_inputs(
         self,
-        static_features: torch.Tensor,
-        static_mask: torch.Tensor,
-        static_frame_index: torch.Tensor,
+        entry: _CapturedGraph,
         features: torch.Tensor,
-        lengths: list[int],
+        lengths: Sequence[int],
     ) -> None:
-        batch_size, _mel_bins, mel_frames = features.shape
-        frame_bucket = static_features.shape[-1]
-        static_features.zero_()
-        static_features[:batch_size, :, :mel_frames].copy_(
-            features,
-            non_blocking=True,
-        )
-        static_mask.zero_()
+        batch_size, _, mel_frames = features.shape
+        entry.features.zero_()
+        entry.features[:batch_size, :, :mel_frames].copy_(features)
+        entry.mask.zero_()
         # Padded batch rows use one valid zero frame and are discarded.
-        static_mask[:, 0] = True
+        entry.mask[:, 0] = True
         real_lengths = torch.as_tensor(lengths, device=self._device, dtype=torch.long)
-        static_mask[:batch_size].copy_(
-            static_frame_index[:, :frame_bucket] < real_lengths.unsqueeze(1),
-            non_blocking=True,
+        entry.mask[:batch_size].copy_(
+            entry.frame_index < real_lengths.unsqueeze(1),
         )
 
     @torch.no_grad()
@@ -251,7 +193,7 @@ class ArkasrEncoderCudaGraphRunner:
         self,
         features: torch.Tensor,
         mel_lengths: Sequence[int],
-    ) -> Optional[torch.Tensor]:
+    ) -> torch.Tensor | None:
         """Replay a graph for ``features`` or return ``None`` for eager fallback.
 
         Args:
@@ -264,45 +206,26 @@ class ArkasrEncoderCudaGraphRunner:
             static graph output buffer, or ``None`` when the caller should use
             the eager encoder path.
         """
-        batch_size, mel_bins, mel_frames = features.shape
-        lengths = [int(length) for length in mel_lengths]
+        batch_size, _, mel_frames = features.shape
 
-        batch_bucket = _bucket_batch(batch_size, self._batch_buckets)
-        frame_bucket = _bucket_frames(
-            mel_frames,
-            frame_bucket_step=self._frame_bucket_step,
-            max_frames=self._max_frames,
-        )
+        batch_bucket = _bucket_batch(batch_size)
+        frame_bucket = _bucket_frames(mel_frames)
         if batch_bucket is None or frame_bucket is None:
             return None
         key = (batch_bucket, frame_bucket)
-        if key in self._failed:
-            return None
 
         with self._lock:
-            # A queued caller may have observed this bucket before the caller
-            # holding the lock marked it failed.
-            if key in self._failed:
-                return None
-
-            entry = self._get_or_capture(batch_bucket, frame_bucket, mel_bins)
+            entry = self._graphs.get(key)
             if entry is None:
                 return None
 
-            graph, static_features, static_mask, static_frame_index, static_out = entry
-            stream = torch.cuda.current_stream(self._device)
-            if self._event_recorded:
-                self._done_event.wait(stream)
             try:
-                self._copy_inputs(
-                    static_features,
-                    static_mask,
-                    static_frame_index,
-                    features,
-                    lengths,
-                )
-                graph.replay()
-                out = static_out[:batch_size].clone()
+                stream = torch.cuda.current_stream(self._device)
+                if self._event_recorded:
+                    self._done_event.wait(stream)
+                self._copy_inputs(entry, features, mel_lengths)
+                entry.graph.replay()
+                out = entry.output[:batch_size].clone()
                 self._done_event.record(stream)
                 self._event_recorded = True
                 return out
@@ -314,7 +237,7 @@ class ArkasrEncoderCudaGraphRunner:
                     frame_bucket,
                     exc,
                 )
-                self._failed.add(key)
+                self._graphs.pop(key, None)
                 return None
 
 

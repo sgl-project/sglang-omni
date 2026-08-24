@@ -145,10 +145,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
 
             graph_runner = ArkasrEncoderCudaGraphRunner(model.audio_encoder)
             model.encoder_cuda_graph_runner = graph_runner
-            graph_runner.capture_common_buckets()
+            graph_runner.capture_startup_buckets()
             logger.info(
                 "ARK-ASR encoder CUDA graphs enabled "
-                "(common buckets captured at startup; other buckets capture lazily)"
+                "(supported buckets captured at startup; other shapes use eager)"
             )
         if self.enable_pre_lm_encoder:
             # Note (Akazaakane): Constructed after generation CUDA graphs so the

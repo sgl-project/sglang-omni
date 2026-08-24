@@ -357,7 +357,7 @@ def test_arkasr_encoder_cuda_graph_constructs_runner(
         def __init__(self, audio_encoder, **kwargs):  # noqa: ANN001, ANN003
             constructed.append({"audio_encoder": audio_encoder, "kwargs": kwargs})
 
-        def capture_common_buckets(self):
+        def capture_startup_buckets(self):
             precaptured.append(self)
 
     encoder_service = SimpleNamespace(close=lambda: None)

@@ -26,141 +26,120 @@ from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneratio
 _MEL_BINS = 8
 _HIDDEN_SIZE = 4
 _MERGE_FACTOR = 4
-_COMMON_GRAPH_KEYS = {
+_STARTUP_GRAPH_KEYS = {
     (batch, frames) for batch in (1, 2, 4, 8) for frames in (512, 768, 1024)
 }
 
 
 @pytest.mark.parametrize(
-    ("batch_size", "buckets", "expected"),
+    ("batch_size", "expected"),
     [
-        (1, None, 1),
-        (2, None, 2),
-        (3, None, 4),
-        (5, None, 8),
-        (9, None, None),
-        (2, (1, 4, 8), 4),
+        (1, 1),
+        (2, 2),
+        (3, 4),
+        (5, 8),
+        (9, None),
     ],
 )
 def test_bucket_batch_rounds_up_to_configured_bucket(
     batch_size: int,
-    buckets: tuple[int, ...] | None,
     expected: int | None,
 ) -> None:
-    actual = (
-        _bucket_batch(batch_size)
-        if buckets is None
-        else _bucket_batch(batch_size, buckets)
-    )
-    assert actual == expected
+    assert _bucket_batch(batch_size) == expected
 
 
 @pytest.mark.parametrize(
-    ("mel_frames", "step", "max_frames", "expected"),
+    ("mel_frames", "expected"),
     [
-        (1, 256, 3000, 256),
-        (256, 256, 3000, 256),
-        (257, 256, 3000, 512),
-        (2800, 256, 3000, 2816),
-        (2999, 256, 3000, 3000),
-        (3000, 256, 3000, 3000),
-        (3001, 256, 3000, None),
+        (1, 512),
+        (512, 512),
+        (513, 768),
+        (769, 1024),
+        (1025, None),
     ],
 )
-def test_bucket_frames_rounds_up_with_final_max_bucket(
-    mel_frames: int, step: int, max_frames: int, expected: int | None
+def test_bucket_frames_selects_captured_bucket(
+    mel_frames: int, expected: int | None
 ) -> None:
-    assert (
-        _bucket_frames(
-            mel_frames,
-            frame_bucket_step=step,
-            max_frames=max_frames,
-        )
-        == expected
-    )
+    assert _bucket_frames(mel_frames) == expected
 
 
-def test_run_rechecks_failed_bucket_after_acquiring_lock() -> None:
+def test_run_falls_back_for_non_precaptured_bucket_without_capture() -> None:
     runner = object.__new__(ArkasrEncoderCudaGraphRunner)
-    runner._batch_buckets = (1,)
-    runner._frame_bucket_step = 256
-    runner._max_frames = 3000
-    runner._failed = set()
     runner._graphs = {}
 
-    key = (1, 256)
-    runner._lock = MagicMock()
-    runner._lock.__enter__.side_effect = lambda: runner._failed.add(key)
-    runner._enough_free_vram = MagicMock(
-        side_effect=AssertionError("failed bucket must not retry capture")
-    )
-
-    result = runner.run(torch.zeros(1, _MEL_BINS, 17), [17])
+    result = runner.run(torch.zeros(1, _MEL_BINS, 1100), [1100])
 
     assert result is None
-    runner._enough_free_vram.assert_not_called()
 
 
 def _precapture_runner(
     *,
-    graphs: dict[tuple[int, int], tuple] | None = None,
-    failed: set[tuple[int, int]] | None = None,
     enough_free_vram: bool = True,
 ) -> ArkasrEncoderCudaGraphRunner:
     runner = object.__new__(ArkasrEncoderCudaGraphRunner)
-    runner._batch_buckets = (1, 2, 4, 8, 16, 32)
     runner._mel_bins = _MEL_BINS
     runner._device = torch.device("cpu")
     runner._min_free_bytes = 3 * 1024**3
-    runner._graphs = dict(graphs or {})
-    runner._failed = set(failed or set())
+    runner._graphs = {}
     runner._lock = threading.Lock()
     runner._enough_free_vram = MagicMock(
         return_value=(enough_free_vram, 4 * 1024**3 if enough_free_vram else 0)
     )
-    runner._capture = MagicMock(
-        side_effect=lambda batch, frames, mel_bins: (batch, frames, mel_bins)
-    )
+    runner._capture = MagicMock(side_effect=lambda batch, frames: (batch, frames))
     return runner
 
 
-@pytest.mark.parametrize(
-    ("graphs", "failed", "expected_captured"),
-    [
-        ({}, set(), _COMMON_GRAPH_KEYS),
-        (
-            {(1, 512): ("existing",)},
-            {(2, 768)},
-            _COMMON_GRAPH_KEYS - {(1, 512), (2, 768)},
-        ),
-    ],
-)
-def test_capture_common_buckets_skips_existing_and_failed_buckets(
+def test_capture_startup_buckets_captures_fixed_set(
     monkeypatch: pytest.MonkeyPatch,
-    graphs: dict[tuple[int, int], tuple],
-    failed: set[tuple[int, int]],
-    expected_captured: set[tuple[int, int]],
 ) -> None:
-    runner = _precapture_runner(graphs=graphs, failed=failed)
+    runner = _precapture_runner()
     monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
 
-    runner.capture_common_buckets()
+    runner.capture_startup_buckets()
 
-    assert set(runner._graphs) == _COMMON_GRAPH_KEYS - failed
+    assert set(runner._graphs) == _STARTUP_GRAPH_KEYS
     assert {
         (call.args[0], call.args[1]) for call in runner._capture.call_args_list
-    } == expected_captured
-    assert all(call.args[2] == _MEL_BINS for call in runner._capture.call_args_list)
+    } == _STARTUP_GRAPH_KEYS
 
 
-def test_capture_common_buckets_preserves_eager_fallback_on_low_vram() -> None:
+def test_capture_startup_buckets_stops_on_low_vram() -> None:
     runner = _precapture_runner(enough_free_vram=False)
 
-    runner.capture_common_buckets()
+    runner.capture_startup_buckets()
 
     assert runner._graphs == {}
-    assert runner._failed == _COMMON_GRAPH_KEYS
     runner._capture.assert_not_called()
+    runner._enough_free_vram.assert_called_once()
+
+
+def test_replay_failure_removes_graph_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = MagicMock()
+    graph.replay.side_effect = RuntimeError("replay failed")
+    runner = object.__new__(ArkasrEncoderCudaGraphRunner)
+    runner._device = torch.device("cpu")
+    runner._lock = threading.Lock()
+    runner._done_event = MagicMock()
+    runner._event_recorded = False
+    runner._graphs = {
+        (1, 512): SimpleNamespace(
+            graph=graph,
+            features=torch.zeros(1, _MEL_BINS, 512),
+            mask=torch.zeros(1, 512, dtype=torch.bool),
+            frame_index=torch.arange(512).unsqueeze(0),
+            output=torch.zeros(1, 128, _HIDDEN_SIZE),
+        )
+    }
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: object())
+
+    features = torch.zeros(1, _MEL_BINS, 17)
+    assert runner.run(features, [17]) is None
+    assert runner.run(features, [17]) is None
+    assert runner._graphs == {}
+    graph.replay.assert_called_once()
 
 
 class _RecordingAudioEncoder(nn.Module):
@@ -339,7 +318,7 @@ def _tiny_config() -> ArkasrConfig:
         encoder_attention_heads=4,
         encoder_ffn_dim=64,
         num_mel_bins=_MEL_BINS,
-        max_source_positions=64,
+        max_source_positions=512,
     )
     return ArkasrConfig(
         whisper_config=whisper,
@@ -365,12 +344,10 @@ def test_cuda_graph_matches_eager_embeddings_on_mixed_mel_lengths() -> None:
         eager = model.get_audio_feature(items)
         model.encoder_cuda_graph_runner = ArkasrEncoderCudaGraphRunner(
             model.audio_encoder,
-            batch_buckets=(1, 2, 4),
-            frame_bucket_step=8,
-            max_frames=32,
             min_free_gb=0.0,
             warmup_iters=1,
         )
+        model.encoder_cuda_graph_runner.capture_startup_buckets()
         graph = model.get_audio_feature(items)
         torch.cuda.synchronize()
 
