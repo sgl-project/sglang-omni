@@ -186,9 +186,9 @@ def test_qwen3_asr_defaults_prefill_to_triton_only_on_rocm_72_gfx95(
         lambda: hip_version,
     )
 
-    defaults = _make_engine_builder(
-        mm_attention_backend="fa3"
-    ).generation_defaults(dtype="bfloat16")
+    defaults = _make_engine_builder(mm_attention_backend="fa3").generation_defaults(
+        dtype="bfloat16"
+    )
 
     if expected_backend is None:
         assert "prefill_attention_backend" not in defaults

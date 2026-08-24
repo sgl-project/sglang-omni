@@ -125,7 +125,9 @@ def test_graph_matches_eager_tower():
     is_rocm = current_platform.is_rocm()
     mm_attention_backend = "aiter_attn" if is_rocm else "triton_attn"
     get_context().set_server_args(
-        ServerArgs(model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend)
+        ServerArgs(
+            model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend
+        )
     )
     if not model_parallel_is_initialized():
         init_distributed_environment(
