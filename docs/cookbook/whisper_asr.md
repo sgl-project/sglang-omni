@@ -118,13 +118,17 @@ for response formats and other ASR models.
 | `model` | string | server default | Model identifier |
 | `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
-| `response_format` | string | `json` | `json`, `verbose_json`, or raw `text`; translation `srt`/`vtt` require segment timestamps and return HTTP 400 |
+| `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
 or `translate`); it is not a public form field. The route uses the ASR stage
 default unless the pipeline is configured another way. For smoke tests, keep
 the request minimal and use `response_format=json`.
+
+For both transcription and translation, `srt` and `vtt` request Whisper's
+model-derived segment timestamps. Non-streaming subtitle requests are
+supported; `stream=true` with either subtitle format returns HTTP 400.
 
 ## Long Audio
 

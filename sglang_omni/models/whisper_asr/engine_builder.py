@@ -233,6 +233,9 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
                 "prefix must be admitted atomically"
             )
         overrides["chunked_prefill_size"] = 0
+        # Note (Akazaakane): Timestamped Whisper requests install an internal
+        # per-request processor; this flag permits SGLang to execute it.
+        overrides["enable_custom_logit_processor"] = True
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {

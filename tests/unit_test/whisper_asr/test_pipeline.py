@@ -158,6 +158,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
     overrides = {"chunked_prefill_size": 0}
     builder.adjust_overrides(overrides)
     assert overrides["chunked_prefill_size"] == 0
+    assert overrides["enable_custom_logit_processor"] is True
 
     with pytest.raises(ValueError, match="encoder prefix must be admitted atomically"):
         builder.adjust_overrides({"chunked_prefill_size": 4096})
@@ -358,6 +359,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
     assert build_kwargs["chunked_prefill_size"] == 0
+    assert build_kwargs["enable_custom_logit_processor"] is True
     assert build_kwargs["max_prefill_tokens"] == 6144
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4

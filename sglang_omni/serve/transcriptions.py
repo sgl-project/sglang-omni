@@ -63,9 +63,10 @@ def register_transcriptions(app: FastAPI) -> None:
         default_model: str = app.state.model_name
         request_id = f"transcription-{uuid.uuid4()}"
 
+        response_format = form.response_format.strip().lower()
+        segment_timestamps = response_format in speech_to_text.SEGMENT_RESPONSE_FORMATS
         if (
-            form.response_format.strip().lower()
-            in speech_to_text.SEGMENT_RESPONSE_FORMATS
+            segment_timestamps
             and not speech_to_text.resolve_speech_to_text_adapter(
                 getattr(app.state, "architectures", None)
             ).supports_segment_timestamps
@@ -73,7 +74,7 @@ def register_transcriptions(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"response_format {form.response_format.strip().lower()!r} "
+                    f"response_format {response_format!r} "
                     "requires a segment-timestamp capability"
                 ),
             )
@@ -173,6 +174,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 prompt=form.prompt,
                 temperature=form.temperature,
                 max_new_tokens=form.max_new_tokens,
+                segment_timestamps=segment_timestamps,
             )
             result = await speech_to_text.complete_speech_to_text_request(
                 client,
