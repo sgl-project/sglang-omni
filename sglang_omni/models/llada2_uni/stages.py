@@ -115,6 +115,64 @@ def create_sglang_dllm_thinker_executor_from_config(
     return create_dllm_thinker_scheduler(server_args, gpu_id)
 
 
+def create_t2i_generator_executor(model_path: str, *, device: str = "cuda"):
+    from sglang_omni.models.llada2_uni.components.t2i_generator import (
+        LLaDA2T2IGenerator,
+    )
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+
+    return SimpleScheduler(LLaDA2T2IGenerator(model_path, device=device))
+
+
+def create_image_decoder_executor(
+    model_path: str,
+    *,
+    device: str = "cuda",
+    num_steps: int = 50,
+    decode_mode: str = "normal",
+):
+    import base64
+    import io
+
+    import torch
+
+    from sglang_omni.models.llada2_uni.components.common import resolve_local_model_dir
+    from sglang_omni.models.llada2_uni.components.decoder import decode_vq_tokens
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+
+    model_dir = resolve_local_model_dir(model_path)
+    torch_device = torch.device(device)
+
+    def _decode(payload):
+        data = payload.data
+        image = decode_vq_tokens(
+            data["vq_token_ids"],
+            data["grid_h"],
+            data["grid_w"],
+            model_dir,
+            torch_device,
+            num_steps=num_steps,
+            decode_mode=decode_mode,
+        )
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        completion_tokens = len(data["vq_token_ids"])
+        payload.data = {
+            "text": "",
+            "modality": "image",
+            "images": [base64.b64encode(buffer.getvalue()).decode()],
+            "finish_reason": "stop",
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": completion_tokens,
+                "total_tokens": completion_tokens,
+            },
+        }
+        return payload
+
+    return SimpleScheduler(_decode)
+
+
 def create_decode_executor(model_path: str):
     from sglang_omni.models.llada2_uni.components.common import load_llada2_tokenizer
     from sglang_omni.models.llada2_uni.merge import decode_events
