@@ -107,7 +107,7 @@ def load_stt_benchmark_samples(
         if audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
             raise ValueError(
                 f"Non-WAV audio bytes for {repo_id}/{split}/{sample_id}; "
-                "this loader expects PCM WAV audio"
+                "missing RIFF/WAVE magic"
             )
         wav_path.write_bytes(audio_bytes)
 

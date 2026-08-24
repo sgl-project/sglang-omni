@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
+import struct
 import sys
 import types
+import wave
 from pathlib import Path
 
 import pytest
@@ -607,7 +610,14 @@ def test_download_stt_benchmark_uses_pinned_revision(
 
 
 def _stt_wav_bytes(idx: int) -> bytes:
-    return b"RIFF\x00\x00\x00\x00WAVE" + f"audio-{idx}".encode()
+    """A valid minimal 16 kHz mono PCM WAV whose frames vary with *idx*."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(struct.pack("<4h", idx, -idx, idx + 1, 0))
+    return buffer.getvalue()
 
 
 def _stt_rows(count: int) -> list[dict]:
