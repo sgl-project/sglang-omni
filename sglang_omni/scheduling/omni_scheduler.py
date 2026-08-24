@@ -410,9 +410,7 @@ class OmniScheduler:
             NewTokenRatioTracker,
         )
 
-        self.new_token_ratio_tracker = NewTokenRatioTracker.from_server_args(
-            server_args
-        )
+        self.new_token_ratio_tracker = NewTokenRatioTracker.from_config()
         self.prefill_delayer = None
         self.lora_drainer = None
 

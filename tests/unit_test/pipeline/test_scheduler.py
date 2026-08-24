@@ -1952,6 +1952,12 @@ def _construct_omni_scheduler(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
     )
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
+        lambda: SimpleNamespace(
+            schedule_conservativeness=server_args.schedule_conservativeness
+        ),
+    )
 
     scheduler = OmniScheduler(
         tp_worker=tp_worker,
@@ -2140,6 +2146,12 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
+        lambda: SimpleNamespace(
+            schedule_conservativeness=server_args.schedule_conservativeness
+        ),
     )
 
     scheduler = OmniScheduler(
