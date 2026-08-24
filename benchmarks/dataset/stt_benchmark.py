@@ -99,7 +99,10 @@ def load_stt_benchmark_samples(
         audio = row["audio"] or {}
         audio_bytes = audio.get("bytes")
         if not audio_bytes:
-            raise ValueError(f"Empty audio bytes for {repo_id}/{split}/{sample_id}")
+            audio_path = audio.get("path")
+            if not audio_path:
+                raise ValueError(f"Empty audio bytes for {repo_id}/{split}/{sample_id}")
+            audio_bytes = Path(audio_path).read_bytes()
 
         if audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
             raise ValueError(
