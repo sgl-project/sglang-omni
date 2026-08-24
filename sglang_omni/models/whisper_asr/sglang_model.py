@@ -10,7 +10,9 @@ CUDA Graph, and torch.compile paths apply to decode.
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, Tuple
+import os
+from collections.abc import Iterable
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -27,10 +29,33 @@ from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
 
+try:
+    from flashinfer.norm import layernorm as flashinfer_layer_norm
+except (ImportError, AttributeError):
+    flashinfer_layer_norm = None
+
 logger = logging.getLogger(__name__)
 
 _QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
 _KV_SHARDS = {"k_proj": 0, "v_proj": 1}
+
+
+class WhisperDecoderLayerNorm(nn.LayerNorm):
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if (
+            flashinfer_layer_norm is not None
+            and os.environ.get("FLASHINFER_USE_CUDA_NORM") != "1"
+            and hidden_states.is_cuda
+            and hidden_states.dtype == torch.float16
+            and self.weight is not None
+            and self.bias is not None
+            and self.weight.dtype == hidden_states.dtype
+            and self.bias.dtype == hidden_states.dtype
+        ):
+            return flashinfer_layer_norm(
+                hidden_states, self.weight, self.bias, self.eps
+            )
+        return super().forward(hidden_states)
 
 
 def _load_projection_shard(
@@ -244,16 +269,16 @@ class WhisperDecoderLayer(nn.Module):
             layer_id=layer_idx,
             quant_config=quant_config,
         )
-        self.self_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.self_attn_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.encoder_attn = WhisperSGLangCrossAttention(
             config,
             layer_id=num_decoder_layers + layer_idx,
             quant_config=quant_config,
         )
-        self.encoder_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.encoder_attn_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.fc1 = nn.Linear(config.d_model, config.decoder_ffn_dim)
         self.fc2 = nn.Linear(config.decoder_ffn_dim, config.d_model)
-        self.final_layer_norm = nn.LayerNorm(config.d_model)
+        self.final_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.activation_fn = ACT2FN[config.activation_function]
 
     def forward(
@@ -302,7 +327,7 @@ class WhisperDecoder(nn.Module):
                 for i in range(config.decoder_layers)
             ]
         )
-        self.layer_norm = nn.LayerNorm(config.d_model)
+        self.layer_norm = WhisperDecoderLayerNorm(config.d_model)
 
     def forward(
         self,

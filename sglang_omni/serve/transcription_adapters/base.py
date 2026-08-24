@@ -6,10 +6,9 @@ TranscriptionAdapter, decorate with register_transcription_adapter("Key"), and
 the /v1/audio/transcriptions handler resolves the right adapter by matching Key
 as a substring against the served model's HF architectures.
 
-Only the pieces the omni HTTP layer needs are kept: markup post-processing and
-verbose_json segment building. Sampling / prompt construction already live in
-each model's pipeline (stages.py / request_builders.py), so they are
-intentionally not part of this interface.
+Only the pieces the omni HTTP layer needs are kept: chunk orchestration, markup
+post-processing, and verbose_json segment building. Sampling and prompt token
+construction remain in each model's pipeline (stages.py / request_builders.py).
 """
 
 from __future__ import annotations
@@ -29,6 +28,23 @@ class TranscriptionAdapter(ABC):
     @property
     def supports_segment_timestamps(self) -> bool:
         """Whether segments carry model-derived timestamps."""
+        return False
+
+    @property
+    def requires_ordered_chunk_decoding(self) -> bool:
+        return False
+
+    def chunk_prompt(
+        self,
+        *,
+        caller_prompt: str | None,
+        previous_text: str | None,
+        is_first_decoded_chunk: bool,
+    ) -> str | None:
+        return caller_prompt
+
+    def should_retry_chunk_without_context(self, text: str) -> bool:
+        """Whether ordered chunk decoding should retry once without context."""
         return False
 
     def postprocess_text(self, text: str) -> str:

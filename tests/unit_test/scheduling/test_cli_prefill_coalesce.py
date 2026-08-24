@@ -19,6 +19,7 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_arg_defaults,
     resolve_stage_static_factory_args,
 )
+from sglang_omni.models.arkasr.config import ArkasrPipelineConfig
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.moss_transcribe_diarize.config import (
@@ -48,6 +49,7 @@ def _ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]
 @pytest.mark.parametrize(
     ("config_cls", "stage_name"),
     [
+        (ArkasrPipelineConfig, "asr"),
         (HiggsTtsPipelineConfig, "tts_engine"),
         (MossTTSLocalPipelineConfig, "tts_engine"),
         (MossTranscribeDiarizePipelineConfig, "asr"),
@@ -74,6 +76,24 @@ def test_omitting_both_flags_is_a_noop():
         config, prefill_coalesce_requests=None, prefill_coalesce_wait_ms=None
     )
     assert _ar_stage_args(config, "tts_engine") == before
+
+
+def test_cli_can_disable_arkasr_coalescing():
+    config = ArkasrPipelineConfig(model_path="dummy")
+    config.runtime_overrides["asr"] = {
+        "prefill_coalesce_requests": 8,
+        "prefill_coalesce_wait_ms": 24.0,
+    }
+
+    apply_prefill_coalesce_cli_overrides(
+        config, prefill_coalesce_requests=0, prefill_coalesce_wait_ms=None
+    )
+
+    args = _ar_stage_args(config, "asr")
+    assert args["prefill_coalesce_requests"] == 0
+    assert args["prefill_coalesce_wait_ms"] == 24.0
+    assert args["prefill_coalesce_when_idle"] is True
+    assert args["prefill_coalesce_requires_pending_builds"] is True
 
 
 def test_per_stage_yaml_runtime_overrides_reach_factory(tmp_path):
