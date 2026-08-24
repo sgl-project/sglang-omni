@@ -1890,9 +1890,7 @@ class OmniScheduler:
         }
 
     def _admin_model_info(self) -> dict[str, Any]:
-        info = {}
-        if hasattr(self.model_worker, "model_info"):
-            info.update(self.model_worker.model_info())
+        info = self.model_worker.model_info()
         with self._request_admission_lock:
             request_build_pending = len(self._pending_request_builds)
             request_admission_pending = len(self._pending_request_admissions)
@@ -1963,12 +1961,6 @@ class OmniScheduler:
     def _admin_update_weights_from_disk(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        if not hasattr(self.model_worker, "update_weights_from_disk"):
-            return {
-                "success": True,
-                "message": "stage does not support update_weights_from_disk",
-                "data": {"skipped": True, "unsupported": True},
-            }
         return self._run_weight_update_with_lifecycle(
             payload,
             self.model_worker.update_weights_from_disk,
@@ -2063,12 +2055,6 @@ class OmniScheduler:
     def _admin_update_weights_from_tensor(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        if not hasattr(self.model_worker, "update_weights_from_tensor"):
-            return {
-                "success": True,
-                "message": "stage does not support update_weights_from_tensor",
-                "data": {"skipped": True, "unsupported": True},
-            }
         with self._admin_lock:
             success, message = self.model_worker.update_weights_from_tensor(payload)
         return {
@@ -2083,12 +2069,6 @@ class OmniScheduler:
     def _admin_update_weights_from_distributed(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        if not hasattr(self.model_worker, "update_weights_from_distributed"):
-            return {
-                "success": True,
-                "message": "stage does not support update_weights_from_distributed",
-                "data": {"skipped": True, "unsupported": True},
-            }
         return self._run_weight_update_with_lifecycle(
             payload,
             self.model_worker.update_weights_from_distributed,
@@ -2102,12 +2082,6 @@ class OmniScheduler:
     def _admin_init_weights_update_group(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        if not hasattr(self.model_worker, "init_weights_update_group"):
-            return {
-                "success": True,
-                "message": "stage does not support init_weights_update_group",
-                "data": {"skipped": True, "unsupported": True},
-            }
         # Note (Xuesong): init blocks on a NCCL/TCP rendezvous and runs on the
         # scheduler serving thread (admin is drained inline in the event loop), so
         # the serving loop is frozen until the trainer (rank 0) joins. sglang's
@@ -2131,12 +2105,6 @@ class OmniScheduler:
     def _admin_destroy_weights_update_group(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        if not hasattr(self.model_worker, "destroy_weights_update_group"):
-            return {
-                "success": True,
-                "message": "stage does not support destroy_weights_update_group",
-                "data": {"skipped": True, "unsupported": True},
-            }
         with self._admin_lock:
             success, message = self.model_worker.destroy_weights_update_group(payload)
         return {
@@ -2147,12 +2115,6 @@ class OmniScheduler:
         }
 
     def _admin_weights_checker(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if not hasattr(self.model_worker, "weights_checker"):
-            return {
-                "success": True,
-                "message": "stage does not support weights_checker",
-                "data": {"skipped": True, "unsupported": True},
-            }
         action = str(payload.get("action") or "checksum")
         with self._admin_lock:
             data = self.model_worker.weights_checker(action)

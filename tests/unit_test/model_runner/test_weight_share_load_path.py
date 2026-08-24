@@ -59,6 +59,7 @@ def _bare_runner(load_format="auto"):
     runner._weight_ipc_leader_monitor = None
     runner.is_draft_worker = False
     runner.draft_load_format = runner._resolve_draft_load_format()
+    runner.token_to_kv_pool = SimpleNamespace(post_capture_active=False)
     return runner
 
 
@@ -180,7 +181,6 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
 
 def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():
     runner = _bare_runner()
-    runner.token_to_kv_pool = SimpleNamespace(post_capture_active=False)
 
     with get_context().override_server_args(enable_torch_compile=True):
         assert get_flags().capture.enable_torch_compile is True

@@ -188,7 +188,10 @@ def test_cuda_graph_init_scopes_prefill_embedding_capture_flag() -> None:
                 max_prefill_tokens=16384,
                 context_length=8192,
                 max_running_requests=64,
-                cuda_graph_config=None,
+                cuda_graph_config=SimpleNamespace(
+                    decode=SimpleNamespace(max_bs=None),
+                    prefill=SimpleNamespace(max_bs=None),
+                ),
             ),
             16384,
         ),
@@ -220,7 +223,10 @@ def test_hidden_capture_max_tokens_covers_non_chunked_context_length() -> None:
         max_prefill_tokens=8192,
         context_length=32768,
         max_running_requests=64,
-        cuda_graph_config=None,
+        cuda_graph_config=SimpleNamespace(
+            decode=SimpleNamespace(max_bs=None),
+            prefill=SimpleNamespace(max_bs=None),
+        ),
     )
 
     assert bootstrap._hidden_capture_max_tokens(server_args) == 32768
@@ -230,8 +236,12 @@ def test_hidden_capture_max_tokens_rejects_missing_capacity_sources() -> None:
     server_args = SimpleNamespace(
         chunked_prefill_size=-1,
         max_prefill_tokens=None,
+        context_length=None,
         max_running_requests=0,
-        cuda_graph_config=None,
+        cuda_graph_config=SimpleNamespace(
+            decode=SimpleNamespace(max_bs=None),
+            prefill=SimpleNamespace(max_bs=None),
+        ),
     )
 
     with pytest.raises(ValueError, match="hidden capture capacity"):

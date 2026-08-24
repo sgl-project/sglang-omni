@@ -303,7 +303,7 @@ class SGLModelRunner(ModelRunner):
         architectures = (
             [self._model_arch_override]
             if self._model_arch_override is not None
-            else getattr(self.model_config.hf_config, "architectures", None)
+            else self.model_config.hf_config.architectures
         )
         policy = ipc_weights.validate_weight_share_architecture(architectures)
 
@@ -377,8 +377,7 @@ class SGLModelRunner(ModelRunner):
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         result = super().init_cuda_graphs(capture_decode_cuda_graph)
-        token_to_kv_pool = getattr(self, "token_to_kv_pool", None)
-        if bool(getattr(token_to_kv_pool, "post_capture_active", False)):
+        if self.token_to_kv_pool.post_capture_active:
             self.post_capture_resize_kv_pool()
         return result
 

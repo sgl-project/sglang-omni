@@ -66,23 +66,18 @@ def _hidden_capture_max_tokens(server_args: Any) -> int:
     configured CUDA graph bucket maximum, so the capture buffers are large
     enough for both eager forwards and graph replay.
     """
-    chunked_prefill_size = getattr(server_args, "chunked_prefill_size", None)
+    chunked_prefill_size = server_args.chunked_prefill_size
     candidates: list[Any] = []
     if chunked_prefill_size is not None and chunked_prefill_size > 0:
         candidates.append(chunked_prefill_size)
     else:
-        candidates.append(getattr(server_args, "max_prefill_tokens", None))
+        candidates.append(server_args.max_prefill_tokens)
         # Note(wenyao): Without chunking, SGLang always admits the first prefill request even
         # when it exceeds the batch token budget, up to the model context bound.
-        candidates.append(getattr(server_args, "context_length", None))
-    candidates.append(getattr(server_args, "max_running_requests", None))
-
-    cuda_graph_config = getattr(server_args, "cuda_graph_config", None)
-    if cuda_graph_config is not None:
-        for phase in ("decode", "prefill"):
-            phase_config = getattr(cuda_graph_config, phase, None)
-            if phase_config is not None:
-                candidates.append(getattr(phase_config, "max_bs", None))
+        candidates.append(server_args.context_length)
+    candidates.append(server_args.max_running_requests)
+    candidates.append(server_args.cuda_graph_config.decode.max_bs)
+    candidates.append(server_args.cuda_graph_config.prefill.max_bs)
 
     positive = [int(value) for value in candidates if value is not None and value > 0]
     if not positive:
