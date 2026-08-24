@@ -393,10 +393,9 @@ class SGLModelRunner(ModelRunner):
             "whole replica group with new weights instead"
         )
 
-    # SGLang 0.5.16 moved the weight-update entry points off ModelRunner onto the
-    # composed WeightUpdater. Keep them on the runner: ModelWorker probes them
-    # with getattr/hasattr, so dropping them would silently downgrade every
-    # update to "not supported" instead of raising.
+    # The weight-update entry points live on the composed WeightUpdater
+    # upstream. Keep them on the runner so ModelWorker has one call target and
+    # the weight-share guard applies to every update path.
     def update_weights_from_disk(self, *args, **kwargs):
         reason = self._weight_update_blocked_reason()
         if reason is not None:

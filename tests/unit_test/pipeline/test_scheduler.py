@@ -26,6 +26,15 @@ from sglang_omni.scheduling.types import ModelRunnerOutput
 from tests.unit_test.pipeline.helpers import run_scheduler
 
 
+@pytest.fixture(autouse=True)
+def _serving_bag(monkeypatch):
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_serving",
+        lambda: SimpleNamespace(weight_version=None),
+    )
+
+
 def _ingress(
     *chunks, done: bool = False
 ) -> omni_scheduler_module._PendingStreamIngress:
@@ -1030,7 +1039,6 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     scheduler = object.__new__(OmniScheduler)
     _init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = {"req-finished"}
     scheduler._prefill_start_done = {"req-finished"}
@@ -1189,7 +1197,6 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda data: {"ok": True}
-    scheduler.server_args = SimpleNamespace(weight_version=None)
 
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
     scheduler._model_runner = SimpleNamespace(
@@ -1225,7 +1232,6 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     cleanup_calls: list[str] = []
     scheduler._request_finished_callback = cleanup_calls.append
 
@@ -1262,7 +1268,6 @@ def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     cleanup_calls: list[str] = []
     scheduler._request_finished_callback = cleanup_calls.append
 
@@ -1358,7 +1363,6 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     scheduler._aborted_request_ids = set()
     scheduler._aborted_request_id_order = deque()
     scheduler._completed_request_ids = {}
@@ -1571,7 +1575,6 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda _data: None
-    scheduler.server_args = SimpleNamespace(weight_version=None)
 
     gc_was_enabled = gc.isenabled()
     gc.disable()
@@ -1641,7 +1644,6 @@ def test_stream_output_closes_late_stream_ingress() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda _data: {"ok": True}
-    scheduler.server_args = SimpleNamespace(weight_version=None)
 
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
     req = SimpleNamespace(
@@ -2626,7 +2628,6 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     _init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = {"req-adapter"}
     scheduler._prefill_start_done = {"req-adapter"}

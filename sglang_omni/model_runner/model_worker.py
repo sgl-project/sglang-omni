@@ -355,16 +355,16 @@ class ModelWorker:
         }
 
     def model_info(self) -> dict[str, Any]:
+        from sglang.srt.runtime_context import get_model, get_serving
+
         return {
-            "model_path": self.server_args.model_path,
-            "load_format": self.server_args.load_format,
-            "weight_version": self.server_args.weight_version,
+            "model_path": get_model().model_path,
+            "load_format": get_model().load_format,
+            "weight_version": get_serving().weight_version,
             "tp_rank": self.tp_rank,
             "tp_size": self.server_args.tp_size,
             "model_arch_override": self.model_arch_override,
-            "supports_weight_update": hasattr(
-                self.model_runner, "update_weights_from_disk"
-            ),
+            "supports_weight_update": True,
             "supports_weight_checker": True,
             "prefill_cuda_graph": self._prefill_cuda_graph_info(),
         }
@@ -373,36 +373,24 @@ class ModelWorker:
         model_path = payload.get("model_path")
         if not model_path:
             return False, "model_path is required"
+        from sglang.srt.runtime_context import get_model
+
         update = self.model_runner.update_weights_from_disk
-        load_format = payload.get("load_format") or self.server_args.load_format
+        load_format = payload.get("load_format") or get_model().load_format
         success, message = update(
             model_path,
             load_format,
             recapture_cuda_graph=bool(payload.get("recapture_cuda_graph", False)),
         )
-        if success:
-            runner_args = self.model_runner.server_args
-            updated_fields = {
-                "model_path": model_path,
-                "load_format": load_format,
-            }
-            weight_version = payload.get("weight_version")
-            if weight_version is not None:
-                updated_fields["weight_version"] = weight_version
-
+        # The runner's WeightUpdater already records model_path and
+        # load_format in the model bag; weight_version is omni's own field.
+        weight_version = payload.get("weight_version")
+        if success and weight_version is not None:
             override_server_args(
                 self.server_args,
                 "sglang-omni-weight-update-disk",
-                **updated_fields,
+                weight_version=weight_version,
             )
-            if runner_args is not self.server_args:
-                override_server_args(
-                    runner_args,
-                    "sglang-omni-weight-update-disk",
-                    **updated_fields,
-                )
-
-            self.model_runner.model_config.model_path = model_path
         return bool(success), str(message)
 
     def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
@@ -476,13 +464,6 @@ class ModelWorker:
                     "sglang-omni-weight-update-distributed",
                     weight_version=weight_version,
                 )
-                runner_args = self.model_runner.server_args
-                if runner_args is not self.server_args:
-                    override_server_args(
-                        runner_args,
-                        "sglang-omni-weight-update-distributed",
-                        weight_version=weight_version,
-                    )
         return bool(success), str(message)
 
     def weights_checker(self, action: str) -> dict[str, Any]:

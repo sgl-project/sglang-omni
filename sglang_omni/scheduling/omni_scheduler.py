@@ -37,6 +37,7 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
+from sglang.srt.runtime_context import get_model, get_serving
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.admission import QueueFullError
@@ -1616,7 +1617,7 @@ class OmniScheduler:
                 if model_runner is not None:
                     model_runner.on_request_finished(rid, data)
                 data.output_ids = list(req.output_ids)
-                data.weight_version = self.server_args.weight_version
+                data.weight_version = get_serving().weight_version
                 finished_reason = req.finished_reason
                 data.finish_reason = (
                     finished_reason.to_json().get("type")
@@ -1912,9 +1913,9 @@ class OmniScheduler:
                     self._request_build_max_pending_observed
                 ),
                 "running_batch_size": len(self.running_batch.reqs),
-                "model_path": self.server_args.model_path,
-                "load_format": self.server_args.load_format,
-                "weight_version": self.server_args.weight_version,
+                "model_path": get_model().model_path,
+                "load_format": get_model().load_format,
+                "weight_version": get_serving().weight_version,
             }
         )
         return {"success": True, "message": "ok", "data": info}
