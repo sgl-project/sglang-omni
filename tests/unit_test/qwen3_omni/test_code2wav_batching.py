@@ -21,7 +21,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.scheduling.messages import IncomingMessage
-from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel
+from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload
 
 
 class _FakeGraphRunner:
@@ -992,3 +992,18 @@ def test_next_message_keeps_steady_chunks_in_fifo_order() -> None:
     assert scheduler._next_message() is None
     assert batches == [2]
     assert scheduler._stream_states["req-a"].emitted == 4
+
+
+def test_initial_codec_chunk_frames_request_override_fires_first_window_early() -> None:
+    scheduler = _make_batching_scheduler(max_batch_wait_ms=0, batch_floor=2)
+    payload = make_qwen_payload(
+        request_id="req-1", params={"initial_codec_chunk_frames": 1}
+    )
+    scheduler._stream_payloads["req-1"] = payload
+    scheduler.on_streaming_new_request("req-1", payload)
+
+    _feed_batch(scheduler, [("req-1", 1)])
+
+    assert [m.type for m in _drain_outbox(scheduler)] == ["stream"]
+    assert scheduler._model.calls == [(1, 2, 1)]
+    assert scheduler._stream_states["req-1"].emitted == 1

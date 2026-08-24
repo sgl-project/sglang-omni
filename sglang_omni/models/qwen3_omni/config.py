@@ -235,6 +235,9 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         factory_args={
             "device": None,
             "enable_cuda_graph": current_platform.enable_code2wav_graph(),
+            "stream_chunk_size": 10,
+            "left_context_size": 25,
+            "initial_codec_chunk_frames": 0,
         },
         gpu=gpu,
         runtime=StageRuntimeConfig(

@@ -58,6 +58,9 @@ def test_default_speech_topology_stays_disaggregated() -> None:
         code2wav_args["enable_cuda_graph"] is current_platform.enable_code2wav_graph()
     )
     assert code2wav_args["total_gpu_memory_fraction"] == pytest.approx(0.02)
+    assert code2wav_args["stream_chunk_size"] == 10
+    assert code2wav_args["left_context_size"] == 25
+    assert code2wav_args["initial_codec_chunk_frames"] == 0
     assert "enable_batching" not in code2wav.factory_args
     assert "max_batch_wait_ms" not in code2wav.factory_args
     assert "batch_floor" not in code2wav.factory_args
