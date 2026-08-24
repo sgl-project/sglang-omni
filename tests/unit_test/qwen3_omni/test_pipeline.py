@@ -54,7 +54,6 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
 from sglang_omni.utils.imports import import_string
-from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
     make_qwen_payload,
@@ -703,7 +702,7 @@ def test_qwen_builder_forwards_explicit_mem_fraction_static() -> None:
 
 
 def test_qwen_encoder_mem_reserve_applies_only_to_valid_auto_values() -> None:
-    server_args = FakeServerArgs(mem_fraction_static=0.929)
+    server_args = SimpleNamespace(mem_fraction_static=0.929)
 
     apply_encoder_mem_reserve(server_args, 0.05)
 
@@ -877,7 +876,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     from sglang_omni.scheduling import omni_scheduler, sglang_backend
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
-    server_args = FakeServerArgs(
+    server_args = SimpleNamespace(
         disable_cuda_graph=False,
         enable_return_hidden_states=False,
         cuda_graph_config=SimpleNamespace(
@@ -1009,7 +1008,7 @@ def test_qwen_thinker_cuda_graph_capture_restores_args_when_infrastructure_fails
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 
-    server_args = FakeServerArgs(
+    server_args = SimpleNamespace(
         disable_cuda_graph=False,
         enable_return_hidden_states=original_return_hidden_states,
         cuda_graph_config=SimpleNamespace(
@@ -1060,7 +1059,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
     from sglang_omni.utils import cuda_graph_batch_validator
 
-    server_args = FakeServerArgs(
+    server_args = SimpleNamespace(
         disable_cuda_graph=False,
         enable_return_hidden_states=False,
         cuda_graph_config=SimpleNamespace(
@@ -1305,7 +1304,7 @@ def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> No
 
 
 def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:
-    server_args = FakeServerArgs(mem_fraction_static=0.929)
+    server_args = SimpleNamespace(mem_fraction_static=0.929)
 
     applied = qwen_stages._apply_qwen_thinker_encoder_reserve(
         server_args,

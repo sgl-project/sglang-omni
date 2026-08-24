@@ -1,57 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import sys
 from types import SimpleNamespace
-from unittest.mock import Mock
+
+from sglang.srt.runtime_context import get_context
 
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
-def test_override_server_args_uses_legacy_server_args_api() -> None:
-    server_args = SimpleNamespace(override=Mock())
+def test_override_server_args_resolves_an_unpublished_record_in_place() -> None:
+    server_args = SimpleNamespace(disable_cuda_graph=False)
 
     override_server_args(server_args, "test-source", disable_cuda_graph=True)
 
-    server_args.override.assert_called_once_with("test-source", disable_cuda_graph=True)
+    assert server_args.disable_cuda_graph is True
+    assert server_args._runtime_mutations == [
+        ("test-source", {"disable_cuda_graph": True})
+    ]
 
 
-def test_override_server_args_declares_unpublished_current_config(monkeypatch) -> None:
-    server_args = SimpleNamespace()
-    declare_late_resolution = Mock()
+def test_override_server_args_writes_the_bags_of_the_published_record() -> None:
+    with get_context().override_server_args(disable_cuda_graph=False) as published:
+        override_server_args(published, "test-source", disable_cuda_graph=True)
 
-    class _UnpublishedContext:
-        @property
-        def server_args(self):
-            raise ValueError("Global server args is not set yet!")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.runtime_context",
-        SimpleNamespace(get_context=lambda: _UnpublishedContext()),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.arg_groups.overrides",
-        SimpleNamespace(declare_late_resolution=declare_late_resolution),
-    )
-
-    override_server_args(server_args, "test-source", disable_cuda_graph=True)
-
-    declare_late_resolution.assert_called_once_with(
-        server_args, "test-source", disable_cuda_graph=True
-    )
-
-
-def test_override_server_args_uses_current_published_context(monkeypatch) -> None:
-    server_args = SimpleNamespace()
-    context = SimpleNamespace(server_args=server_args, override=Mock())
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.runtime_context",
-        SimpleNamespace(get_context=lambda: context),
-    )
-
-    override_server_args(server_args, "test-source", disable_cuda_graph=True)
-
-    context.override.assert_called_once_with("test-source", disable_cuda_graph=True)
+        assert get_context().config_leaf("disable_cuda_graph") is True
+        assert get_context().overrides_log() == [
+            ("test-source", {"disable_cuda_graph": True})
+        ]
+        assert published.disable_cuda_graph is False

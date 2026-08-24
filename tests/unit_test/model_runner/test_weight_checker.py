@@ -9,28 +9,25 @@ import torch
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import StrictWeightChecker, _tensor_bytes
-from tests.unit_test.fakes import FakeServerArgs
 
 
 class _StrictServerArgsDouble:
-    """Minimal ServerArgs double that rejects every bare post-resolution write."""
+    """Minimal ServerArgs double with the resolved-record mutation guard."""
 
     def __init__(self, **fields: Any) -> None:
-        object.__setattr__(self, "_locked", False)
-        object.__setattr__(self, "override_calls", [])
+        object.__setattr__(self, "_declarations_materialized", False)
         for name, value in fields.items():
             object.__setattr__(self, name, value)
-        object.__setattr__(self, "_locked", True)
+        object.__setattr__(self, "_declarations_materialized", True)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if self._locked and not name.startswith("_"):
+        if (
+            not name.startswith("_")
+            and self._declarations_materialized
+            and not getattr(self, "_internal_write", False)
+        ):
             raise AttributeError(f"bare mutation of {name}")
         object.__setattr__(self, name, value)
-
-    def override(self, source: str, **fields: Any) -> None:
-        self.override_calls.append((source, dict(fields)))
-        for name, value in fields.items():
-            object.__setattr__(self, name, value)
 
 
 def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
@@ -105,12 +102,12 @@ def test_model_worker_update_weights_from_disk_updates_visible_model_info() -> N
         calls.append((model_path, load_format, recapture_cuda_graph))
         return True, "ok"
 
-    worker_args = FakeServerArgs(
+    worker_args = SimpleNamespace(
         model_path="/tmp/old-model",
         load_format="auto",
         weight_version="old",
     )
-    runner_args = FakeServerArgs(
+    runner_args = SimpleNamespace(
         model_path="/tmp/old-model",
         load_format="auto",
         weight_version="old",
@@ -171,7 +168,7 @@ def test_model_worker_update_weights_from_disk_uses_server_args_override() -> No
     )
 
     assert (success, message) == (True, "ok")
-    assert server_args.override_calls == [
+    assert server_args._runtime_mutations == [
         (
             "sglang-omni-weight-update-disk",
             {
@@ -306,13 +303,13 @@ def test_model_worker_update_weights_from_distributed_passes_positional_args() -
         calls.append((names, dtypes, shapes, group_name, load_format))
         return True, "ok"
 
-    runner_args = FakeServerArgs(weight_version="old")
+    runner_args = SimpleNamespace(weight_version="old")
     runner = SimpleNamespace(
         server_args=runner_args,
         update_weights_from_distributed=update_weights_from_distributed,
     )
     worker = object.__new__(ModelWorker)
-    worker.server_args = FakeServerArgs(weight_version="old")
+    worker.server_args = SimpleNamespace(weight_version="old")
     worker.model_runner = runner
 
     success, message = ModelWorker.update_weights_from_distributed(
@@ -356,7 +353,7 @@ def test_model_worker_distributed_update_uses_server_args_override() -> None:
     )
 
     assert (success, message) == (True, "ok")
-    assert server_args.override_calls == [
+    assert server_args._runtime_mutations == [
         (
             "sglang-omni-weight-update-distributed",
             {"weight_version": "v2"},

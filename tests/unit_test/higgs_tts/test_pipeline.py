@@ -41,7 +41,6 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.speaker_cache import get_speaker_artifact_cache
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
@@ -225,7 +224,7 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
             locked.add(("prefill", "bs"))
         if "cuda_graph_backend_prefill" in overrides:
             locked.add(("prefill", "backend"))
-        server_args = FakeServerArgs(
+        server_args = SimpleNamespace(
             disable_cuda_graph=overrides["disable_cuda_graph"],
             disable_overlap_schedule=False,
             enable_torch_compile=False,
@@ -490,7 +489,7 @@ def test_higgs_tts_engine_prefill_backend_policy() -> None:
     assert defaults["cuda_graph_backend_prefill"] == "breakable"
     assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
 
-    server_args = FakeServerArgs(
+    server_args = SimpleNamespace(
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
     )
     builder.customize_server_args(server_args)

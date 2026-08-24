@@ -31,7 +31,6 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     S2ProTokenizerAdapter,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
-from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
     make_s2pro_payload,
@@ -675,10 +674,10 @@ def _run_s2pro_engine_with_fake_buffers(
         model_path: str,
         context_length: int,
         **kwargs: object,
-    ) -> FakeServerArgs:
+    ) -> SimpleNamespace:
         del model_path
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
