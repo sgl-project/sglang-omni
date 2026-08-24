@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,6 +12,7 @@ from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_c
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 from torch.nn import functional as F
 
+from sglang_omni.models.minimax_music3 import config as minimax_music3_config
 from sglang_omni.models.minimax_music3.acoustic import (
     MiniMaxMusic3AcousticScheduler,
     _resolve_acoustic_dtype,
@@ -225,6 +227,71 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     assert MiniMaxMusic3PipelineConfig.mem_fraction_role_to_stage() == {
         "talker": "minimax_music3_ar"
     }
+
+
+@pytest.mark.parametrize(
+    ("is_rocm", "server_args_overrides"),
+    [
+        (False, {}),
+        (True, {"disable_cuda_graph": True}),
+    ],
+)
+def test_minimax_music3_rocm_disables_generation_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+    is_rocm: bool,
+    server_args_overrides: dict[str, bool],
+) -> None:
+    monkeypatch.setattr(
+        minimax_music3_config,
+        "current_platform",
+        SimpleNamespace(is_rocm=lambda: is_rocm),
+    )
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+
+    config = MiniMaxMusic3PipelineConfig(model_path="/models/minimax")
+    stages = {stage.name: stage for stage in config.stages}
+
+    assert (
+        stages["minimax_music3_ar"].factory_args["server_args_overrides"]
+        == server_args_overrides
+    )
+    assert stages["dit_dav"].factory_args["compile_acoustic"] is True
+
+
+@pytest.mark.parametrize(
+    ("disable_cuda_graph", "generation_cuda_graph_enabled", "expected_buckets"),
+    [
+        (False, True, [2, 4, 8, 16, 32]),
+        (True, True, None),
+        (False, False, None),
+    ],
+)
+def test_minimax_music3_rvq_graph_follows_generation_graph_state(
+    monkeypatch: pytest.MonkeyPatch,
+    disable_cuda_graph: bool,
+    generation_cuda_graph_enabled: bool,
+    expected_buckets: list[int] | None,
+) -> None:
+    from sglang_omni.models.minimax_music3 import sglang_model
+    from sglang_omni.models.minimax_music3.engine_builder import (
+        MiniMaxMusic3EngineBuilder,
+    )
+
+    captured: list[tuple[object, list[int]]] = []
+    monkeypatch.setattr(
+        sglang_model,
+        "enable_rvq_depth_cuda_graph",
+        lambda model, buckets: captured.append((model, buckets)),
+    )
+    model = object()
+
+    MiniMaxMusic3EngineBuilder().setup_model_resources(
+        model,
+        SimpleNamespace(disable_cuda_graph=disable_cuda_graph),
+        generation_cuda_graph_enabled=generation_cuda_graph_enabled,
+    )
+
+    assert captured == ([] if expected_buckets is None else [(model, expected_buckets)])
 
 
 def test_native_attention_preserves_checkpoint_state_dict_keys() -> None:
