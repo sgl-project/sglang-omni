@@ -186,10 +186,9 @@ class SGLModelRunner(ModelRunner):
         # model_config is already fully configured by ModelWorker._init_model_config()
         # (architecture override, text_config swap, etc. are all done there)
 
-        # SGLang 0.5.16 replaced the flat rank arguments with a ParallelState.
-        # Mirror upstream's own construction (Scheduler.__init__), but keep the
-        # moe_ep_size / pp_size this wrapper is called with rather than reading
-        # them back off server_args.
+        # Mirror upstream's ParallelState construction (Scheduler.__init__), but
+        # keep the moe_ep_size / pp_size this wrapper is called with rather than
+        # reading them back off server_args.
         attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
             compute_dp_attention_world_info(
                 server_args.enable_dp_attention,
@@ -359,7 +358,7 @@ class SGLModelRunner(ModelRunner):
         after attach (would silently serve dummy weights). Leader: catches a
         post-export .data rebind (would silently orphan the followers).
 
-        SGLang 0.5.16 optionally reserves the KV pool as virtual memory and
+        SGLang optionally reserves the KV pool as virtual memory and
         backs its serving span only after CUDA graph capture. Omni has several
         deferred graph-capture call sites, so finalize here at the common
         capture boundary instead of relying on every stage to mirror the
@@ -414,7 +413,7 @@ class SGLModelRunner(ModelRunner):
         return self.weight_updater.update_weights_from_distributed(*args, **kwargs)
 
     # Process-group lifecycle does not mutate weights, so it stays unguarded by
-    # the weight-share check — matching the pre-0.5.16 inherited behavior.
+    # the weight-share check, as the inherited upstream methods behave.
     def init_weights_update_group(self, *args, **kwargs):
         return self.weight_updater.init_weights_update_group(*args, **kwargs)
 
@@ -470,8 +469,8 @@ class SGLModelRunner(ModelRunner):
     def init_kv_cache_configurator(self):
         """Swap in the Omni configurator so the colocated budget stays hooked.
 
-        SGLang 0.5.16 moved ``_profile_available_bytes`` off the ModelRunner MRO
-        onto the composed ``KVCacheConfigurator``. Rebuild upstream's instance as
+        Upstream keeps _profile_available_bytes on the composed
+        KVCacheConfigurator, not on the ModelRunner MRO. Rebuild upstream's instance as
         the Omni subclass, copying every declared field so upstream can add
         fields without silently dropping them here.
         """

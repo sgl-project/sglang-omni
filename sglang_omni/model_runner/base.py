@@ -412,8 +412,8 @@ class ModelRunner:
         if capture_hidden_mode is None and self.output_processor._capture_hidden:
             capture_hidden_mode = CaptureHiddenMode.LAST
 
-        # sglang 0.5.16 dropped ScheduleBatch.capture_hidden_mode: init_new no
-        # longer reads it off the batch, so setting it there is a dead write.
+        # ScheduleBatch has no capture_hidden_mode: init_new does not read it
+        # off the batch, so setting it there would be a dead write.
         # Pass the per-forward override explicitly (None lets upstream derive it).
         forward_batch = ForwardBatch.init_new(
             schedule_batch,

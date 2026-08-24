@@ -548,7 +548,7 @@ class OmniScheduler:
         self.return_health_check_ipcs = []
         self.enable_overlap_mlx = False
 
-        # Instance state introduced by SGLang 0.5.16's Scheduler.__init__. We
+        # Instance state upstream's Scheduler.__init__ sets. We
         # borrow upstream methods rather than inheriting, so anything they read
         # off ``self`` has to be mirrored here or __getattr__ raises.
         # init_req_max_new_tokens() clamps against this one.
@@ -1215,7 +1215,7 @@ class OmniScheduler:
 
     @staticmethod
     def _normalize_req_token_arrays(req: Any) -> None:
-        """Normalize builder-produced token containers to the 0.5.16 Req shape."""
+        """Normalize builder-produced token containers to the upstream Req shape."""
         origin_input_ids = req.origin_input_ids
         if not isinstance(origin_input_ids, array):
             req.origin_input_ids = array("q", origin_input_ids)
@@ -1307,10 +1307,10 @@ class OmniScheduler:
         )
 
     def get_next_batch_to_run(self):
-        """Bridge Omni's batch-owning loops to the 0.5.16 scheduler contract.
+        """Bridge Omni's batch-owning loops to the upstream scheduler contract.
 
-        0.5.16 stopped reading ``running_batch``/``last_batch`` off ``self`` and
-        now returns a ``NextBatchPlan`` instead of the batch. Omni's event loops
+        Upstream takes running_batch and last_batch as arguments instead of
+        reading them off self and returns a NextBatchPlan instead of the batch. Omni's event loops
         own that state, so feed it in and write the (possibly rebuilt) running
         batch back before handing the runnable batch to the caller.
         """
@@ -1324,7 +1324,7 @@ class OmniScheduler:
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
         #
-        # 0.5.16 passes ``running_batch`` in and expects a ``NextBatchPlan`` back,
+        # Upstream passes running_batch in and expects a NextBatchPlan back,
         # so the coalesce hold-off returns an empty plan rather than None.
         if self.prefill_coalesce_requests <= 1 or self.chunked_req is not None:
             return _Upstream.get_new_batch_prefill(self, running_batch)
@@ -1450,7 +1450,7 @@ class OmniScheduler:
 
         # Note (wenyao): reuse the runner-staged pinned host copy so the mixin's
         # .tolist() is host-only. The GPU FutureMap relay independently drives
-        # the next-forward input chain under the 0.5.16 execution contract.
+        # the next-forward input chain under the upstream execution contract.
         next_token_ids = mr_output.next_token_ids
         if mr_output.host_token_ids is not None:
             next_token_ids = mr_output.host_token_ids
@@ -1477,7 +1477,7 @@ class OmniScheduler:
         return its GenerationBatchResult.
 
         next_token_ids comes from the resolved step's own batch_result; the
-        live batch carries no token side channel under the 0.5.16 FutureMap
+        live batch carries no token side channel under the upstream FutureMap
         contract.
         """
         from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -2171,7 +2171,7 @@ class OmniScheduler:
         batch.filter_batch()
         if len(batch.reqs) == 0:
             return 0
-        # sglang 0.5.16 dropped ScheduleBatch.retract_all; the module-level
+        # ScheduleBatch has no retract_all method; the module-level
         # function returns None and leaves batch.reqs in place, so snapshot the
         # requests and clear the batch here (what the old method did for us).
         retracted_reqs = list(batch.reqs)

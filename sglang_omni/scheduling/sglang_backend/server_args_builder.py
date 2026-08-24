@@ -22,7 +22,7 @@ def _platform_device_type() -> str:
 
 
 def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
-    """Translate Omni's legacy public knobs to SGLang 0.5.16 decode fields."""
+    """Translate Omni's legacy public knobs to SGLang's decode fields."""
     for legacy_name, decode_name in _DECODE_CUDA_GRAPH_ALIASES.items():
         if legacy_name not in kwargs:
             continue

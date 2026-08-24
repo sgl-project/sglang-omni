@@ -137,11 +137,10 @@ def create_sglang_infrastructure(
             max_tokens=_hidden_capture_max_tokens(server_args),
         )
 
-    # SGLang 0.5.15 split model loading, KV-pool allocation, attention-backend
-    # (order re-verified against 0.5.16 Scheduler.init_model_worker)
-    # initialization, and CUDA-graph initialization into explicit phases. Keep
-    # the same order as upstream's Scheduler.init_model_worker(), while
-    # preserving Omni's pre-backend hidden-capture hook installation above.
+    # Upstream runs model loading, KV-pool allocation, attention-backend
+    # initialization, and CUDA-graph initialization as explicit phases. Keep
+    # the same order as Scheduler.init_model_worker(), while preserving Omni's
+    # pre-backend hidden-capture hook installation above.
     model_runner = model_worker.model_runner
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()
