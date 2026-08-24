@@ -844,6 +844,37 @@ def apply_partial_start_cli_overrides(
     return pipeline_config
 
 
+def apply_talker_prefill_interleave_cli_overrides(
+    pipeline_config: PipelineConfig,
+    *,
+    talker_prefill_decode_interleave: str,
+) -> PipelineConfig:
+    mode = _normalize_stage_toggle_mode(
+        "talker_prefill_decode_interleave", talker_prefill_decode_interleave
+    )
+    if mode == "default":
+        return pipeline_config
+    flag_name = "--talker-prefill-decode-interleave"
+    stage_name = _resolve_talker_stage(pipeline_config, flag_name=flag_name)
+    matching_stages = _find_matching_stages(
+        pipeline_config,
+        stage_name=stage_name,
+        reason="talker prefill interleave overrides",
+    )
+    for stage in matching_stages:
+        if stage.factory != _QWEN_PARTIAL_START_TALKER_FACTORY:
+            raise typer.BadParameter(
+                f"{flag_name} currently supports only the Qwen3-Omni "
+                f"talker; stage {stage.name!r} uses factory {stage.factory!r}"
+            )
+    _apply_factory_args_updates(
+        pipeline_config,
+        matching_stages,
+        {"prefill_decode_interleave": mode == "on"},
+    )
+    return pipeline_config
+
+
 def _apply_factory_args_updates(
     pipeline_config: PipelineConfig,
     stages: list[StageConfig],
@@ -1236,6 +1267,19 @@ def serve(
             ),
         ),
     ] = "default",
+    talker_prefill_decode_interleave: Annotated[
+        str,
+        typer.Option(
+            "--talker-prefill-decode-interleave",
+            "--talker_prefill_decode_interleave",
+            help=(
+                "default|on|off. When on, the Qwen3-Omni talker guarantees a "
+                "decode step between prefill steps so ongoing audio streams "
+                "keep their decode cadence while queued prefills trickle in. "
+                "'default' uses the pipeline config default (off)."
+            ),
+        ),
+    ] = "default",
     thinker_torch_compile: Annotated[
         str,
         typer.Option(
@@ -1526,6 +1570,10 @@ def serve(
     merged_config = apply_partial_start_cli_overrides(
         merged_config,
         talker_partial_start=talker_partial_start,
+    )
+    merged_config = apply_talker_prefill_interleave_cli_overrides(
+        merged_config,
+        talker_prefill_decode_interleave=talker_prefill_decode_interleave,
     )
 
     if _should_print_merged_config(colocate=colocate, log_level=log_level):

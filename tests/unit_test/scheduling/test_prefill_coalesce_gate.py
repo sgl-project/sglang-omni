@@ -64,7 +64,7 @@ class _StubScheduler:
     def get_new_batch_prefill(self):
         # sglang 0.5.16 takes running_batch in and hands back a NextBatchPlan;
         # unwrap it so the assertions below stay about the gate decision.
-        plan = OmniScheduler.get_new_batch_prefill(self, self.running_batch)
+        plan = OmniScheduler._get_new_batch_prefill_coalesced(self, self.running_batch)
         return plan.batch_to_run
 
 

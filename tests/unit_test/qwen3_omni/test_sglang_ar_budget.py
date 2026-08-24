@@ -369,6 +369,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
                 "cuda_graph_bs": server_args.cuda_graph_bs,
                 "torch_compile_max_bs": server_args.torch_compile_max_bs,
                 "weight_prefix": kwargs["weight_prefix"],
+                "prefill_decode_interleave": kwargs["prefill_decode_interleave"],
             }
         )
         return object()
@@ -390,7 +391,9 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
         lambda gpu_id: None,
     )
 
-    qwen_stages.create_talker_ar_executor_from_config("dummy")
+    qwen_stages.create_talker_ar_executor_from_config(
+        "dummy", prefill_decode_interleave=True
+    )
 
     assert build_calls == [
         {
@@ -412,6 +415,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
             "cuda_graph_bs": [1, 2, 4, 8, 12, 16, 24, 32],
             "torch_compile_max_bs": 32,
             "weight_prefix": "talker.",
+            "prefill_decode_interleave": True,
         }
     ]
 

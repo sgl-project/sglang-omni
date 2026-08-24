@@ -201,6 +201,7 @@ class OmniScheduler:
         prefill_coalesce_when_idle: bool = False,
         prefill_coalesce_requires_pending_builds: bool = False,
         prefill_coalesce_after_builds_during_decode: bool = False,
+        prefill_decode_interleave: bool = False,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
@@ -315,6 +316,8 @@ class OmniScheduler:
         self.prefill_coalesce_after_builds_during_decode = bool(
             prefill_coalesce_after_builds_during_decode
         )
+        self.prefill_decode_interleave = bool(prefill_decode_interleave)
+        self._interleave_defer_prefill = False
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
         mr = tp_worker.model_runner
@@ -1346,6 +1349,24 @@ class OmniScheduler:
         return plan.batch_to_run
 
     def get_new_batch_prefill(self, running_batch):
+        if not self.prefill_decode_interleave:
+            return self._get_new_batch_prefill_coalesced(running_batch)
+        if (
+            self._interleave_defer_prefill
+            and self.chunked_req is None
+            and running_batch is not None
+            and not running_batch.is_empty()
+            and not running_batch.is_prefill_only
+        ):
+            self._interleave_defer_prefill = False
+            return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
+        self._interleave_defer_prefill = False
+        plan = self._get_new_batch_prefill_coalesced(running_batch)
+        if plan.batch_to_run is not None:
+            self._interleave_defer_prefill = True
+        return plan
+
+    def _get_new_batch_prefill_coalesced(self, running_batch):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
         #
