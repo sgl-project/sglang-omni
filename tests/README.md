@@ -767,7 +767,8 @@ that happened to contain an older version of the test.
   state layouts, server-argument publication, and version-dependent call
   signatures.
 
-- `unit_test/whisper_asr/`: Whisper pipeline configuration, encoder CUDA Graph
+- `unit_test/whisper_asr/`: Whisper pipeline configuration, encoder CUDA Graph,
+  decoder LayerNorm fast-path placement, and PyTorch fallback behavior
   policy, pre-LM encoder batching and caching, prompt budgeting, concurrent
   tokenizer access, and request construction. These tests use fakes and run on
   CPU despite validating CUDA Graph policy.
