@@ -6,7 +6,6 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from sgl_kernel import fused_qk_norm_rope
 from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
@@ -24,6 +23,8 @@ from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.platforms import current_platform
+
 from .configuration_qwen3_asr import Qwen3ASRConfig
 from .encoder_cuda_graph import (
     Qwen3ASREncoderLayerStackGraphRunner,
@@ -33,6 +34,7 @@ from .encoder_cuda_graph import (
 )
 
 logger = logging.getLogger(__name__)
+fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 
 _MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
@@ -70,6 +72,11 @@ def _fused_asr_forward_prepare_native(
         # note(ratish): the prefill CUDA graph bypasses forward()'s int32
         # cast; the kernel rejects int64 positions.
         positions = positions.to(torch.int32)
+    if fused_qk_norm_rope is None:
+        return attention._asr_unfused_forward_prepare_native(
+            positions,
+            hidden_states,
+        )
     qkv, _ = attention.qkv_proj(hidden_states)
     fused_qk_norm_rope(
         qkv,
