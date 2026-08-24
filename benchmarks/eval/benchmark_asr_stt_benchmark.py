@@ -75,7 +75,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repo-id",
         default=STT_BENCHMARK_DATASET_ID,
-        help="HF dataset repo with sample_id/audio/transcription columns.",
+        help=(
+            "HF dataset repo with sample_id/audio/transcription columns "
+            "and PCM WAV audio."
+        ),
     )
     parser.add_argument(
         "--split",

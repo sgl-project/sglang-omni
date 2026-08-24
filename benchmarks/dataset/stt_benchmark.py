@@ -87,13 +87,25 @@ def load_stt_benchmark_samples(
     staging_root = tmpdir.resolve()
 
     samples: list[SampleInput] = []
+    seen_ids: set[str] = set()
     for row in ds:
         sample_id = row["sample_id"]
+        if sample_id in seen_ids:
+            raise ValueError(
+                f"Duplicate sample_id for {repo_id}/{split}: {sample_id!r}"
+            )
+        seen_ids.add(sample_id)
         wav_path = _staged_wav_path(staging_root, sample_id, repo_id=repo_id)
         audio = row["audio"] or {}
         audio_bytes = audio.get("bytes")
         if not audio_bytes:
             raise ValueError(f"Empty audio bytes for {repo_id}/{split}/{sample_id}")
+            
+        if audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
+            raise ValueError(
+                f"Non-WAV audio bytes for {repo_id}/{split}/{sample_id}; "
+                "this loader expects PCM WAV audio"
+            )
         wav_path.write_bytes(audio_bytes)
 
         transcription = str(row["transcription"] or "").strip()

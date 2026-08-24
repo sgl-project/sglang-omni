@@ -606,11 +606,15 @@ def test_download_stt_benchmark_uses_pinned_revision(
     }
 
 
+def _stt_wav_bytes(idx: int) -> bytes:
+    return b"RIFF\x00\x00\x00\x00WAVE" + f"audio-{idx}".encode()
+
+
 def _stt_rows(count: int) -> list[dict]:
     return [
         {
             "sample_id": f"sample-{idx}",
-            "audio": {"bytes": f"audio-{idx}".encode(), "path": None},
+            "audio": {"bytes": _stt_wav_bytes(idx), "path": None},
             "duration_seconds": 1.0 + idx,
             "transcription": f"Transcript {idx}.",
         }
@@ -661,7 +665,7 @@ def test_load_stt_benchmark_samples_stages_selected_rows(
     assert samples[0].ref_text == "Transcript 0."
     assert samples[0].target_text == "Transcript 0."
     assert Path(samples[0].ref_audio) == stage_dir / "sample-0.wav"
-    assert (stage_dir / "sample-0.wav").read_bytes() == b"audio-0"
+    assert (stage_dir / "sample-0.wav").read_bytes() == _stt_wav_bytes(0)
     assert sorted(path.name for path in stage_dir.glob("*.wav")) == [
         "sample-0.wav",
         "sample-1.wav",
