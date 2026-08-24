@@ -100,7 +100,7 @@ def load_stt_benchmark_samples(
         audio_bytes = audio.get("bytes")
         if not audio_bytes:
             raise ValueError(f"Empty audio bytes for {repo_id}/{split}/{sample_id}")
-            
+
         if audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
             raise ValueError(
                 f"Non-WAV audio bytes for {repo_id}/{split}/{sample_id}; "
