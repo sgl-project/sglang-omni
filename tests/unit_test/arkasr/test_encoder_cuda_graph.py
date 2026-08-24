@@ -38,9 +38,7 @@ _COMMON_GRAPH_KEYS = {
         (2, None, 2),
         (3, None, 4),
         (5, None, 8),
-        (9, None, 16),
-        (17, None, 32),
-        (33, None, None),
+        (9, None, None),
         (2, (1, 4, 8), 4),
     ],
 )
