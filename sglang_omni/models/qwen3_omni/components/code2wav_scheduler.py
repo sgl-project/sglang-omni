@@ -84,7 +84,14 @@ def load_code2wav_model(
     from transformers import AutoConfig
 
     from sglang_omni.models.weight_loader import load_module, resolve_dtype
+    from sglang_omni.utils.hf_transformers_patches import (
+        patch_transformers_stream_capture_detection,
+    )
 
+    # Transformers only checks CUDA stream capture in is_tracing(). During an
+    # NPUGraph capture that misses the guard around tensor-to-Python scalar
+    # conversions in masking_utils and triggers an illegal stream synchronize.
+    patch_transformers_stream_capture_detection()
     torch_dtype = resolve_dtype(dtype)
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     code2wav_config = config.code2wav_config
