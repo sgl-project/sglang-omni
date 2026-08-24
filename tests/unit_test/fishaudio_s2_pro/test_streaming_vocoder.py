@@ -207,20 +207,56 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
 
 def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None:
     state = _StreamVocoderState(
-        pending_tail=torch.tensor([10.0, 20.0, 30.0]),
+        pending_tail=torch.tensor([10.0, 20.0]),
     )
-    delta_audio = torch.tensor([100.0, 200.0, 300.0, 400.0])
+    audio_tensor = torch.tensor([100.0, 200.0, 300.0, 400.0, 500.0, 600.0])
 
     output = _apply_stream_crossfade(
         state,
-        delta_audio,
+        audio_tensor,
+        overlap_samples=2,
         stream_crossfade_samples=2,
         is_final=False,
     )
 
     assert output is not None
-    torch.testing.assert_close(output, torch.tensor([10.0, 20.0, 200.0]))
-    torch.testing.assert_close(state.pending_tail, torch.tensor([300.0, 400.0]))
+    torch.testing.assert_close(output, torch.tensor([10.0, 200.0, 300.0, 400.0]))
+    torch.testing.assert_close(state.pending_tail, torch.tensor([500.0, 600.0]))
+
+
+@pytest.mark.parametrize("stream_overlap_tokens", [0, 1])
+def test_streaming_vocoder_crossfade_preserves_new_content_across_seams(
+    stream_overlap_tokens: int,
+) -> None:
+    codec = _FakeCodec()
+    state = _StreamVocoderState()
+    outputs = []
+
+    for value in range(4):
+        output = build_stream_vocoder_chunk(
+            state,
+            torch.full((11, 2), value, dtype=torch.long),
+            codec=codec,
+            device=torch.device("cpu"),
+            stream_stride=2,
+            stream_followup_stride=2,
+            stream_overlap_tokens=stream_overlap_tokens,
+            stream_crossfade_samples=2,
+        )
+        assert output is not None
+        outputs.append(output)
+
+    flush = flush_stream_vocoder_chunk(
+        state,
+        codec=codec,
+        device=torch.device("cpu"),
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_crossfade_samples=2,
+    )
+
+    assert flush is not None
+    outputs.append(flush)
+    assert sum(_audio_len(output) for output in outputs) == 32
 
 
 def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> None:
