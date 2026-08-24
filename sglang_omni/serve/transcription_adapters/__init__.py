@@ -9,6 +9,7 @@ from __future__ import annotations
 # Imported for its registration side effect (@register_transcription_adapter).
 from sglang_omni.serve.transcription_adapters import (  # noqa: F401
     moss_transcribe_diarize,
+    whisper,
 )
 from sglang_omni.serve.transcription_adapters.base import (
     TranscriptionAdapter,

@@ -17,6 +17,7 @@ from sglang_omni.config import AudioChunkingConfig
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import TranscriptionResponse, TranscriptionUsage
+from sglang_omni.serve.transcription_adapters import TranscriptionAdapter
 from sglang_omni.serve.transcription_chunking import (
     ChunkPlan,
     ChunkSpan,
@@ -192,6 +193,9 @@ def register_transcriptions(app: FastAPI) -> None:
             )
 
         try:
+            adapter = speech_to_text.resolve_speech_to_text_adapter(
+                getattr(app.state, "architectures", None)
+            )
             chunk_texts = await _await_transcription_with_disconnect_abort(
                 request,
                 _transcribe_audio_chunks(
@@ -205,6 +209,8 @@ def register_transcriptions(app: FastAPI) -> None:
                     temperature=form.temperature,
                     max_new_tokens=form.max_new_tokens,
                     max_concurrent=chunking.max_concurrent_chunks,
+                    condition_on_previous_text=chunking.condition_on_previous_text,
+                    adapter=adapter,
                 ),
             )
         except ClientError as exc:
@@ -317,13 +323,15 @@ async def _transcribe_audio_chunks(
     temperature: float | None,
     max_new_tokens: int | None,
     max_concurrent: int,
+    condition_on_previous_text: bool,
+    adapter: TranscriptionAdapter,
 ) -> list[str]:
     """Transcribe the chunks of a plan, returning one text per chunk.
 
-    Texts come back in span order no matter which chunk finishes first
-    (asyncio.gather preserves input order); the caller joins them and,
-    for verbose_json, pairs them with the spans' timestamps. Up to
-    max_concurrent chunks run in the engine at once.
+    Independent chunks run up to max_concurrent at once and return in span
+    order. When previous-text conditioning is enabled, capable adapters instead
+    run speech chunks in order and may retry once without context, while
+    separate transcription requests remain concurrent.
 
     Any chunk failing fails the whole request. The error names the chunk and
     its time range to make sure the failure is diagnosable.
@@ -331,7 +339,12 @@ async def _transcribe_audio_chunks(
     semaphore = asyncio.Semaphore(max_concurrent)
     in_flight: set[str] = set()
 
-    async def run_chunk(span: ChunkSpan) -> str:
+    async def run_chunk(
+        span: ChunkSpan,
+        *,
+        chunk_prompt: str | None,
+        retry: bool = False,
+    ) -> str:
         if not span.has_speech:
             return ""
         async with semaphore:
@@ -343,11 +356,12 @@ async def _transcribe_audio_chunks(
                 model=model,
                 filename=filename,
                 language=language,
-                prompt=prompt,
+                prompt=chunk_prompt,
                 temperature=temperature,
                 max_new_tokens=max_new_tokens,
             )
-            chunk_request_id = f"{request_id}-chunk-{span.index}"
+            retry_suffix = "-retry" if retry else ""
+            chunk_request_id = f"{request_id}-chunk-{span.index}{retry_suffix}"
             in_flight.add(chunk_request_id)
             # in_flight lists engine requests that may still be running.
             # Cancelling our local task does NOT stop the engine -- the
@@ -368,9 +382,42 @@ async def _transcribe_audio_chunks(
             in_flight.discard(chunk_request_id)
             return result.text
 
-    tasks = [asyncio.create_task(run_chunk(span)) for span in plan.spans]
+    tasks: list[asyncio.Task[str]] = []
     try:
-        texts = await asyncio.gather(*tasks)
+        if condition_on_previous_text and adapter.requires_ordered_chunk_decoding:
+            texts: list[str] = []
+            previous_text: str | None = None
+            is_first_decoded_chunk = True
+            for span in plan.spans:
+                if not span.has_speech:
+                    texts.append("")
+                    continue
+                chunk_prompt = adapter.chunk_prompt(
+                    caller_prompt=prompt,
+                    previous_text=previous_text,
+                    is_first_decoded_chunk=is_first_decoded_chunk,
+                )
+                text = await run_chunk(span, chunk_prompt=chunk_prompt)
+                should_retry = await asyncio.to_thread(
+                    adapter.should_retry_chunk_without_context,
+                    text,
+                )
+                if should_retry:
+                    text = await run_chunk(
+                        span,
+                        chunk_prompt=None,
+                        retry=True,
+                    )
+                texts.append(text)
+                previous_text = text
+                is_first_decoded_chunk = False
+            return texts
+
+        tasks = [
+            asyncio.create_task(run_chunk(span, chunk_prompt=prompt))
+            for span in plan.spans
+        ]
+        return await asyncio.gather(*tasks)
     except BaseException:
         # One chunk failed (or we were cancelled by a client disconnect).
         # in_flight holds every chunk whose engine request has not finished,
@@ -386,7 +433,6 @@ async def _transcribe_audio_chunks(
             except Exception:
                 logger.warning("Failed to abort chunk request %s", chunk_request_id)
         raise
-    return texts
 
 
 async def _await_transcription_with_disconnect_abort(

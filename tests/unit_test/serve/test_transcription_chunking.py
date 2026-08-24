@@ -100,6 +100,7 @@ def test_whisper_asr_pipeline_declares_chunking() -> None:
     assert declared.max_native_clip_s == 30.0
     # Whisper hallucinates on very short clips; keep the tail at least 1s.
     assert declared.min_tail_s == 1.0
+    assert declared.condition_on_previous_text is False
 
 
 def test_disabled_config_never_chunks() -> None:

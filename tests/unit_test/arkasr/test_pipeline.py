@@ -71,6 +71,10 @@ def test_arkasr_config_registered():
         PIPELINE_CONFIG_REGISTRY.get_config("ArkasrForConditionalGeneration")
         is ArkasrPipelineConfig
     )
+    assert ArkasrPipelineConfig.mem_fraction_role_to_stage() == {"asr": "asr"}
+    assert ArkasrPipelineConfig.generation_sglang_role_to_stage() == {
+        "generation": "asr"
+    }
 
 
 def test_arkasr_stage_defaults():
