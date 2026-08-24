@@ -80,13 +80,11 @@ def test_compile_fun_asr_audio_encoder_compiles_forwards_with_dynamic_shapes(
     # intact — load_weights and weight updates match checkpoint names against
     # named_parameters, so no _orig_mod prefixes may appear.
     assert set(dict(model.audio_tower.named_parameters())) == tower_param_names
-    # Warmup covers serving signatures: B1/None, B1/mask, B2/mask
+    # Warmup covers serving signatures: B1/None and B2/mask.
     # (each through encoder then projector).
     assert forward_shapes == [
         ((1, 16, 8), True),
         ((1, 16, 8), True),
-        ((1, 16, 8), False),
-        ((1, 16, 8), False),
         ((2, 16, 8), False),
         ((2, 16, 8), False),
     ]
@@ -115,15 +113,15 @@ def test_compile_fun_asr_audio_encoder_warmup_matches_service_grad_mode(
     monkeypatch.setattr(torch, "compile", _fake_compile)
 
     fun_asr_stages._compile_fun_asr_audio_encoder(model, warmup_lfr_frames=16)
-    # Three signatures × (encoder + projector).
-    assert modes == [(True, True)] * 6
+    # Two signatures x (encoder + projector).
+    assert modes == [(True, True)] * 4
 
     modes.clear()
     model = _tiny_model()
     fun_asr_stages._compile_fun_asr_audio_encoder(
         model, warmup_lfr_frames=16, warmup_inference_mode=False
     )
-    assert modes == [(False, False)] * 6
+    assert modes == [(False, False)] * 4
 
 
 def test_compile_fun_asr_audio_encoder_rejects_degenerate_warmup_length(

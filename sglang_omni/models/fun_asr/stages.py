@@ -59,9 +59,9 @@ def _compile_fun_asr_audio_encoder(
         t = int(warmup_lfr_frames)
         feat_dim = int(model.config.encoder_config.input_size)
 
-        # note(guozhihao-224): Dynamo specializes B=0/1 and mask=None vs tensor;
-        # B1/None + B1/mask + B2/mask cover the mask branch and the B>=2 dynamic graph.
-        for batch, with_mask in ((1, False), (1, True), (2, True)):
+        # note(guozhihao-224): get_audio_feature always uses mask=None for B=1;
+        # B1/None + B2/mask cover every serving path and the B>=2 dynamic graph.
+        for batch, with_mask in ((1, False), (2, True)):
             xs = (
                 torch.zeros(
                     (batch, feat_dim, t), device=param.device, dtype=param.dtype
@@ -84,7 +84,7 @@ def _compile_fun_asr_audio_encoder(
         "Compiled Fun-ASR audio encoder + adaptor "
         "(dynamic=True, warmup_lfr_frames=%d, "
         "warmup_inference_mode=%s, "
-        "signatures=B1/None+B1/mask+B2/mask)",
+        "signatures=B1/None+B2/mask)",
         warmup_lfr_frames,
         warmup_inference_mode,
     )
@@ -112,7 +112,7 @@ def create_sglang_fun_asr_executor(
     pre_lm_cache_size_bytes: int = 2 * 1024**3,
     pre_lm_max_batch_size: int = 8,
     pre_lm_max_batch_wait_ms: int = 4,
-    request_build_max_workers: int = 8,
+    request_build_max_workers: int = 16,
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,

@@ -36,7 +36,7 @@ def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
     assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
     assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
     assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 4
-    assert config.stages[0].factory_args["request_build_max_workers"] == 8
+    assert config.stages[0].factory_args["request_build_max_workers"] == 16
     assert config.stages[0].factory_args["request_build_max_pending"] == 16
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("FunAsrNanoForConditionalGeneration")
@@ -54,7 +54,7 @@ def test_fun_asr_stage_default_allows_32_running_requests() -> None:
     assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 4
-    assert signature.parameters["request_build_max_workers"].default == 8
+    assert signature.parameters["request_build_max_workers"].default == 16
     assert signature.parameters["request_build_max_pending"].default == 16
     assert signature.parameters["stream_emit_interval_s"].default == 0.05
 
@@ -252,7 +252,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
     ]
     assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
-    assert scheduler.request_build_max_workers == 8
+    assert scheduler.request_build_max_workers == 16
     assert scheduler.request_build_max_pending == 16
     assert stream_builder_calls == [
         {"tokenizer": tokenizer, "min_emit_interval_s": 0.05}
