@@ -290,6 +290,7 @@ class Code2WavGraphRunner:
         self._fallback_counts: Counter[str] = Counter()
         self._graph_replays = 0
         self._replay_failures = 0
+        self._logged_replay_keys: set[GraphKey] = set()
 
     @classmethod
     def build(
@@ -730,6 +731,14 @@ class Code2WavGraphRunner:
             self._disable_runtime(reason)
             raise
         self._graph_replays += 1
+        if key not in self._logged_replay_keys:
+            logger.info(
+                "Code2Wav %s graph replay active: execution_mode=%s key=%s",
+                self._BACKEND_LABEL,
+                self._EXECUTION_MODE,
+                key,
+            )
+            self._logged_replay_keys.add(key)
         return Code2WavRunResult(
             output=captured.static_output,
             execution_mode=self._EXECUTION_MODE,
