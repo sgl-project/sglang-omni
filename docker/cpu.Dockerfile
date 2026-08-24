@@ -18,6 +18,8 @@ RUN apt-get update && \
     vim \
     gcc \
     g++ \
+    cmake \
+    ninja-build \
     make \
     libsqlite3-dev \
     google-perftools \
@@ -35,9 +37,21 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
 ENV VIRTUAL_ENV=/opt/.venv
 ENV PATH="/opt/.venv/bin:$PATH"
 
-RUN echo -e '[[index]]\nname = "torch"\nurl = "https://download.pytorch.org/whl/cpu"\n\n[[index]]\nname = "torchvision"\nurl = "https://download.pytorch.org/whl/cpu"\n\n[[index]]\nname = "torchaudio"\nurl = "https://download.pytorch.org/whl/cpu"\n\n[[index]]\nname = "triton"\nurl = "https://download.pytorch.org/whl/cpu"' > .venv/uv.toml
+RUN uv pip install \
+    --default-index https://pypi.org/simple \
+    -U \
+    "packaging>=24.2" \
+    "setuptools>=77.0.0" \
+    setuptools-scm \
+    wheel \
+    scikit-build-core
 
-ENV UV_CONFIG_FILE=/opt/.venv/uv.toml
+RUN uv pip install \
+    --default-index https://download.pytorch.org/whl/cpu \
+    "torch==2.12.0" \
+    "torchvision==0.27.0" \
+    "torchaudio==2.11.0" \
+    "triton==3.7.0"
 
 WORKDIR /sgl-workspace
 RUN source /opt/.venv/bin/activate && \
@@ -46,11 +60,11 @@ RUN source /opt/.venv/bin/activate && \
     git checkout ${VER_SGLANG} && \
     cd python && \
     cp pyproject_cpu.toml pyproject.toml && \
-    uv pip install . && \
+    uv pip install . --no-build-isolation && \
     cd .. && \
     cd sgl-kernel && \
     cp pyproject_cpu.toml pyproject.toml && \
-    uv pip install .
+    uv pip install . --no-build-isolation
 COPY . /sgl-workspace/sglang-omni
 
 RUN cd /sgl-workspace/sglang-omni && \
@@ -58,7 +72,7 @@ RUN cd /sgl-workspace/sglang-omni && \
     uv pip install -e . --no-build-isolation
 
 
-RUN uv pip install --no-deps sox einops && \
+RUN uv pip install sox einops onnxruntime && \
     uv pip install --no-deps qwen-tts==0.1.1
 
 ENV SGLANG_USE_CPU_ENGINE=1
