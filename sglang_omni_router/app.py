@@ -779,6 +779,10 @@ def register_data_routes(
     async def audio_transcriptions(request: Request) -> Response:
         return await _forward(request, "/v1/audio/transcriptions")
 
+    @app.post("/v1/audio/translations")
+    async def audio_translations(request: Request) -> Response:
+        return await _forward(request, "/v1/audio/translations")
+
 
 def register_tts_routes(
     app: FastAPI,
