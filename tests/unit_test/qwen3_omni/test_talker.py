@@ -326,6 +326,53 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert queue[0].device.type == "meta"
 
 
+def _single_token_builder(cached: dict[int, torch.Tensor]):
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._thinker_embed_cache = cached
+    builder._slow_path_calls = []
+
+    def _slow_path(token_ids: torch.Tensor) -> torch.Tensor:
+        builder._slow_path_calls.append(token_ids.tolist())
+        return torch.full((1, 3), 9.0, dtype=torch.float32)
+
+    builder._load_prompt_token_embeddings = _slow_path
+    return builder
+
+
+def test_qwen_talker_embed_single_token_hit_skips_the_gather() -> None:
+    row = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    builder = _single_token_builder({7: row})
+
+    out = builder._embed_single_token(7)
+
+    assert builder._slow_path_calls == []
+    assert out.shape == (1, 3)
+    assert out.dtype == row.dtype
+    assert out.device == row.device
+    assert torch.equal(out[0], row)
+
+
+def test_qwen_talker_embed_single_token_hit_does_not_alias_the_cache() -> None:
+    row = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    cache = {7: row}
+    builder = _single_token_builder(cache)
+
+    out = builder._embed_single_token(7)
+    out += 100.0
+
+    assert torch.equal(cache[7], torch.tensor([1.0, 2.0, 3.0]))
+    assert torch.equal(builder._embed_single_token(7)[0], row)
+
+
+def test_qwen_talker_embed_single_token_miss_falls_back() -> None:
+    builder = _single_token_builder({})
+
+    out = builder._embed_single_token(11)
+
+    assert builder._slow_path_calls == [[11]]
+    assert out.shape == (1, 3)
+
+
 def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
     """Mixed CPU/CUDA thinker chunks must not crash torch.stack in build_prompt_prefill."""
     builder = object.__new__(TalkerPrefillBuilder)

@@ -300,13 +300,22 @@ class TalkerPrefillBuilder:
             return layer_hidden
         return chunk.data
 
+    def _embed_single_token(self, token_id: int) -> torch.Tensor:
+        row = self._thinker_embed_cache.get(token_id)
+        if row is None:
+            return self._load_prompt_token_embeddings(
+                torch.tensor([token_id], dtype=torch.long)
+            )
+        # Note (wenyao): clone so both paths hand back a tensor the caller owns —
+        # the slow path stacks, and a view here would let a caller write through
+        # into the cache.
+        return row.view(1, -1).clone()
+
     def project_assistant_chunk(self, chunk: Any) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
         if token_id is not None:
-            chunk_tensor = self._load_prompt_token_embeddings(
-                torch.tensor([int(token_id)], dtype=torch.long)
-            )
+            chunk_tensor = self._embed_single_token(int(token_id))
         else:
             chunk_tensor = chunk.data.to(
                 device=self._device, dtype=self._dtype
