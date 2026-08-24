@@ -21,8 +21,8 @@ def configure_talker_server_args(
 ) -> bool:
     """Apply talker-specific scheduler/runtime defaults.
 
-    Returns whether CUDA graphs were originally requested so the caller can
-    re-enable graph capture after the model worker is constructed.
+    Returns whether CUDA graphs were requested so the caller can capture them
+    after the model worker is constructed.
     """
 
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
@@ -32,8 +32,6 @@ def configure_talker_server_args(
     }
     if feedback_enabled:
         overrides["disable_overlap_schedule"] = True
-        if want_cuda_graph:
-            overrides["disable_cuda_graph"] = True
     override_server_args(server_args, "qwen3_omni.talker", **overrides)
     return want_cuda_graph
 

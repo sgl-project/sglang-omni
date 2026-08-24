@@ -95,21 +95,17 @@ def test_configure_talker_server_args_uses_override_in_strict_mode() -> None:
 
     assert want_cuda_graph is True
     assert server_args.disable_overlap_schedule is True
-    assert server_args.disable_cuda_graph is True
+    assert server_args.disable_cuda_graph is False
     assert server_args.disable_radix_cache is True
     assert server_args.chunked_prefill_size == 0
     audited_overrides = {}
-    for source, fields in [
-        *server_args._resolved_overrides,
-        *server_args._runtime_mutations,
-    ]:
+    for source, fields in server_args._runtime_mutations:
         assert source == "qwen3_omni.talker"
         audited_overrides.update(fields)
     assert audited_overrides == {
         "disable_radix_cache": True,
         "chunked_prefill_size": 0,
         "disable_overlap_schedule": True,
-        "disable_cuda_graph": True,
     }
 
 

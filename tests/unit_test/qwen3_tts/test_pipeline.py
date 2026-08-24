@@ -4316,7 +4316,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     monkeypatch.delitem(ROPE_INIT_FUNCTIONS, "default", raising=False)
 
     build_kwargs: dict = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
+    infrastructure_saw_deferred_capture: list[bool] = []
     init_graph_calls: list[bool] = []
     compile_calls: list[bool] = []
 
@@ -4437,8 +4437,10 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id, kwargs
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        del gpu_id
+        infrastructure_saw_deferred_capture.append(
+            bool(kwargs.get("defer_cuda_graph_capture"))
+        )
         return (
             FakeWorker(server_args),
             object(),
@@ -4525,7 +4527,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
         torch.tensor([1.0, 0.01], dtype=torch.float32),
     )
 
-    assert infrastructure_saw_graph_disabled == [True]
+    assert infrastructure_saw_deferred_capture == [True]
     assert len(compile_calls) == 1
     assert init_graph_calls == [True]
     assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs

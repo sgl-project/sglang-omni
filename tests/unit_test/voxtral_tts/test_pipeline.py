@@ -464,7 +464,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     from sglang_omni.scheduling import sglang_backend
 
     build_kwargs: dict = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
+    infrastructure_saw_deferred_capture: list[bool] = []
     init_graph_calls: list[bool] = []
 
     class FakeModel:
@@ -528,8 +528,10 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id, kwargs
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        del gpu_id
+        infrastructure_saw_deferred_capture.append(
+            bool(kwargs.get("defer_cuda_graph_capture"))
+        )
         return (
             FakeWorker(server_args),
             object(),
@@ -574,7 +576,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["torch_compile_max_bs"] == 16
-    assert infrastructure_saw_graph_disabled == [True]
+    assert infrastructure_saw_deferred_capture == [True]
     assert init_graph_calls == [True]
     assert scheduler.server_args.cuda_graph_bs == [1, 2, 4, 8, 12, 16]
     assert scheduler.server_args.cuda_graph_max_bs == 16

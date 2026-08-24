@@ -212,7 +212,7 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
     captured: dict[str, object] = {}
     records = {
         "captured": captured,
-        "infrastructure_saw_graph_disabled": [],
+        "infrastructure_saw_deferred_capture": [],
         "init_graph_calls": [],
         "attest_calls": [],
     }
@@ -262,8 +262,8 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
         captured["gpu_id"] = gpu_id
         captured["infra_kwargs"] = dict(kwargs)
-        records["infrastructure_saw_graph_disabled"].append(
-            bool(server_args.disable_cuda_graph)
+        records["infrastructure_saw_deferred_capture"].append(
+            bool(kwargs.get("defer_cuda_graph_capture"))
         )
         model = SimpleNamespace(
             backbone=SimpleNamespace(),
@@ -386,7 +386,7 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
     assert captured["server_args"].disable_overlap_schedule is True
     assert captured["server_args"].enable_torch_compile is False
     assert captured["server_args"].torch_compile_max_bs == 32
-    assert records["infrastructure_saw_graph_disabled"] == [True]
+    assert records["infrastructure_saw_deferred_capture"] == [True]
     assert records["init_graph_calls"] == [True]
     assert captured["adapter_kwargs"] == {
         "max_new_tokens_cap": 2048,

@@ -10,7 +10,6 @@ from sglang_omni.utils.gpu_compat import (
     get_visible_gpu_sm_version,
     gpu_architecture_for_sm,
 )
-from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -194,11 +193,11 @@ def create_sglang_infrastructure(
     )
 
 
-# note (luojiaxuan): Some Omni generation stages cannot let the generic SGLang
-# worker capture CUDA graphs immediately during infrastructure construction. At
-# that point the shared request pools exist, but stage-owned decode state may not:
-# speech tokenizers may still need to be attached, sampler or feedback buffers
-# may not be allocated, stage-local decode helpers may not be compiled, and the
+# note (luojiaxuan): Some Omni generation stages cannot capture CUDA graphs
+# immediately during infrastructure construction. At that point the shared
+# request pools exist, but stage-owned decode state may not: speech tokenizers
+# may still need to be attached, sampler or feedback buffers may not be
+# allocated, stage-local decode helpers may not be compiled, and the
 # model-specific buffer capacity may not yet have been checked against the
 # serving batch policy. Capturing before that work would freeze replay around an
 # incomplete decode path and can make later steady-state requests either miss the
@@ -208,10 +207,10 @@ def create_sglang_infrastructure(
 # and request-token slots, with all per-request model buffers already allocated.
 # One-time bootstrap work such as processor loading, cache construction, audio
 # decoder/vocoder setup, and other host-side staging should stay outside CUDA
-# graph coverage because graph replay will not amortize it. This helper therefore
-# disables worker-time capture only long enough to build the shared SGLang
-# infrastructure, restores the user's CUDA-graph setting, and tells the caller
-# whether it should call init_cuda_graphs() after its stage-specific setup.
+# graph coverage because graph replay will not amortize it. Capture is a phase
+# omni triggers itself through init_sglang_cuda_graphs(), so deferring it is
+# just skipping that call inside create_sglang_infrastructure() and telling the
+# caller whether to run it after its stage-specific setup.
 def create_sglang_infrastructure_defer_cuda_graph(
     server_args: Any,
     gpu_id: int,
@@ -223,24 +222,10 @@ def create_sglang_infrastructure_defer_cuda_graph(
     init_cuda_graphs() only when this returns that CUDA graphs were requested.
     """
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
-    if want_cuda_graph:
-        override_server_args(
-            server_args,
-            "sglang_omni.defer_cuda_graph_capture",
-            disable_cuda_graph=True,
-        )
-    try:
-        infrastructure = create_sglang_infrastructure(
-            server_args,
-            gpu_id,
-            defer_cuda_graph_capture=want_cuda_graph,
-            **kwargs,
-        )
-    finally:
-        if want_cuda_graph:
-            override_server_args(
-                server_args,
-                "sglang_omni.restore_cuda_graph_capture",
-                disable_cuda_graph=False,
-            )
+    infrastructure = create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        defer_cuda_graph_capture=want_cuda_graph,
+        **kwargs,
+    )
     return want_cuda_graph, infrastructure

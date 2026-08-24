@@ -97,7 +97,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
     init_graph_calls: list[bool] = []
 
     class FakeModel:
@@ -156,7 +155,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             "defer_cuda_graph_capture": True,
             "model_arch_override": "TestArch",
         }
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
         return (
             FakeWorker(server_args),
             "tree_cache",
@@ -339,7 +337,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert build_kwargs["torch_compile_max_bs"] == 8
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
-    assert infrastructure_saw_graph_disabled == [True]
     assert init_graph_calls == [True]
     assert scheduler.kwargs["server_args"].disable_cuda_graph is False
     assert scheduler.kwargs["model_runner"].outbox == "outbox"

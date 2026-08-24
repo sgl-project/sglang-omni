@@ -331,7 +331,9 @@ def test_hidden_capture_is_installed_before_graph_initialization(monkeypatch) ->
     ]
 
 
-def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:
+def test_defer_cuda_graph_requests_deferred_capture_without_touching_args(
+    monkeypatch,
+) -> None:
     server_args = SimpleNamespace(disable_cuda_graph=False)
     seen: list[bool] = []
 
@@ -354,7 +356,7 @@ def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:
     )
 
     assert want_cuda_graph is True
-    assert seen == [True]
+    assert seen == [False]
     assert server_args.disable_cuda_graph is False
     assert infrastructure == (
         "infra",
@@ -368,11 +370,13 @@ def test_defer_cuda_graph_restores_requested_graph_capture(monkeypatch) -> None:
 
 def test_defer_cuda_graph_leaves_disabled_graph_capture_disabled(monkeypatch) -> None:
     server_args = SimpleNamespace(disable_cuda_graph=True)
-    seen: list[bool] = []
+    seen: list[tuple[bool, bool]] = []
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id, kwargs
-        seen.append(bool(server_args.disable_cuda_graph))
+        del gpu_id
+        seen.append(
+            (bool(server_args.disable_cuda_graph), kwargs["defer_cuda_graph_capture"])
+        )
         return object()
 
     monkeypatch.setattr(
@@ -387,5 +391,5 @@ def test_defer_cuda_graph_leaves_disabled_graph_capture_disabled(monkeypatch) ->
     )
 
     assert want_cuda_graph is False
-    assert seen == [True]
+    assert seen == [(True, False)]
     assert server_args.disable_cuda_graph is True
