@@ -19,6 +19,8 @@ import torch
 
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
+    Code2WavGraphRunner,
+    Code2WavNpuGraphRunner,
     Code2WavRunResult,
     GraphKey,
 )
@@ -162,7 +164,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         batch_ceiling: int = 8,
         enable_output_overlap: bool = True,
         enable_cuda_graph: bool = False,
-        _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
+        _cuda_graph_runner: Code2WavGraphRunner | None = None,
     ):
         self._model = model
         self._device = torch.device(device)
@@ -998,7 +1000,7 @@ def create_code2wav_scheduler(
     """Factory: returns Code2WavScheduler."""
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(
-            "Code2Wav CUDA graph requires "
+            "Code2Wav accelerator graph requires "
             "runtime.resources.total_gpu_memory_fraction"
         )
     concrete_device = torch.device(resolve_device_spec(device, gpu_id))
@@ -1023,7 +1025,16 @@ def create_code2wav_scheduler(
                 stream_chunk_size,
                 left_context_size,
             )
-        cuda_graph_runner = Code2WavCudaGraphRunner.build(
+        if concrete_device.type in ("cuda", "musa"):
+            graph_runner_cls = Code2WavCudaGraphRunner
+        elif concrete_device.type == "npu":
+            graph_runner_cls = Code2WavNpuGraphRunner
+        else:
+            raise ValueError(
+                "Code2Wav graph requires a concrete CUDA, MUSA, or NPU device, got "
+                f"{concrete_device}"
+            )
+        cuda_graph_runner = graph_runner_cls.build(
             model,
             device=concrete_device,
             num_quantizers=int(model.config.num_quantizers),
@@ -1042,7 +1053,8 @@ def create_code2wav_scheduler(
             )
             enable_batching = False
         logger.info(
-            "Code2Wav CUDA graph startup stats=%s",
+            "Code2Wav %s graph startup stats=%s",
+            concrete_device.type.upper(),
             json.dumps(
                 cuda_graph_runner.stats(),
                 sort_keys=True,
