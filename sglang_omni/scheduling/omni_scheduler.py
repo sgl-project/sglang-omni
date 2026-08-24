@@ -62,7 +62,6 @@ from sglang_omni.proto.admin import (
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.vendor.sglang.parallel_state import create_parallel_state
-from sglang_omni.vendor.sglang.server_args import override_server_args
 from sglang_omni.vendor.sglang.signature import supported_kwargs
 
 logger = logging.getLogger(__name__)
@@ -333,13 +332,11 @@ class OmniScheduler:
         self.min_free_slots_delayer = None
         self.enable_fpm = False
 
-        # Global server_args field upstream sets in its __init__
-        from sglang.srt.server_args import get_global_server_args
+        # Global config leaf upstream sets in its __init__
+        from sglang.srt.runtime_context import get_context, get_parallel
 
-        gsa = get_global_server_args()
-        if gsa is not None and gsa.pp_max_micro_batch_size is None:
-            override_server_args(
-                gsa,
+        if not get_parallel().pp_max_micro_batch_size:
+            get_context().override(
                 "sglang_omni.scheduler.pp_max_micro_batch_size_default",
                 pp_max_micro_batch_size=max(
                     self.max_running_requests // self.pp_size,
