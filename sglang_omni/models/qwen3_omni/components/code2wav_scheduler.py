@@ -28,7 +28,10 @@ from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recor
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
-from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
+from sglang_omni.scheduling.streaming_vocoder import (
+    StreamingVocoderBase,
+    resolve_initial_codec_chunk_frames,
+)
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_device_spec
 
@@ -138,6 +141,7 @@ class Code2WavStreamState:
     due_since: float | None = None
     checked: int = 0
     pending: _PendingWindow | None = None
+    initial_chunk_frames: int | None = None
 
 
 class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
@@ -236,10 +240,29 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         origin: str,
     ) -> None:
         del request_id
+        if origin == "payload":
+            self._latch_initial_chunk_frames(state, source.request.params)
+            return
         if origin != "stream metadata":
             return
         if state.stream_enabled is None:
             state.stream_enabled = bool(source["stream"])
+
+    def _latch_initial_chunk_frames(
+        self, state: Code2WavStreamState, params: Mapping[str, Any] | None
+    ) -> None:
+        if state.initial_chunk_frames is not None:
+            return
+        state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
+            params if isinstance(params, Mapping) else None,
+            steady_chunk_frames=self._stream_chunk_size,
+            default_frames=self._initial_codec_chunk_frames,
+        )
+
+    def _initial_frames(self, state: Code2WavStreamState) -> int:
+        if state.initial_chunk_frames is None:
+            return self._initial_codec_chunk_frames
+        return state.initial_chunk_frames
 
     def validate_chunk(
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
@@ -262,15 +285,21 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
 
     def should_decode(self, state: Code2WavStreamState, *, is_final: bool) -> bool:
         del is_final
+        threshold = self._decode_threshold(state)
         if (
             self._eos_lazy_scan
             and state.checked < len(state.chunks)
-            and self._ready(state) >= self._stream_chunk_size
+            and self._ready(state) >= threshold
         ):
             # Note (edwardzh): scan before gating — a staged EOS would
             # inflate the count and fire a short window, missing the graph key.
             self._scan_unchecked(state)
-        return self._ready(state) >= self._stream_chunk_size
+        return self._ready(state) >= threshold
+
+    def _decode_threshold(self, state: Code2WavStreamState) -> int:
+        if state.emitted == 0:
+            return self._initial_frames(state) or self._stream_chunk_size
+        return self._stream_chunk_size
 
     def _scan_unchecked(self, state: Code2WavStreamState) -> None:
         """Batched EOS scan over frames staged by the lazy-ingest path.
@@ -698,8 +727,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         """New frames the next step consumes; capped at one chunk so a backlog
         cannot push the window outside the captured key set."""
         ready = self._ready(state)
-        if state.emitted == 0 and self._initial_codec_chunk_frames:
-            ready = min(ready, self._initial_codec_chunk_frames)
+        initial_frames = self._initial_frames(state)
+        if state.emitted == 0 and initial_frames:
+            ready = min(ready, initial_frames)
         if self._chunk_aligned_dispatch:
             return min(ready, self._stream_chunk_size)
         return ready
@@ -779,9 +809,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         due: dict[tuple[int, int], list[tuple[str, Code2WavStreamState]]] = {}
         for rid, state in self._stream_state_items():
             ready = self._ready(state)
-            if state.emitted == 0 and ready >= (
-                self._initial_codec_chunk_frames or self._stream_chunk_size
-            ):
+            if state.emitted == 0 and ready >= self._decode_threshold(state):
                 first_ready.append((rid, state))
                 continue
             if state.emitted > 0 and ready >= self._stream_chunk_size:

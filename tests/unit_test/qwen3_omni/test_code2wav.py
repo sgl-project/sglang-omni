@@ -932,3 +932,126 @@ def test_qwen_code2wav_emits_full_chunk_despite_model_output_deficit() -> None:
     assert second_audio.shape == (4,)
 
     assert first_audio.shape[0] + second_audio.shape[0] == 4 * 2 - 1
+
+
+def _make_initial_chunk_scheduler(
+    model: FakeCode2WavModel,
+    *,
+    stream_chunk_size: int = 3,
+    left_context_size: int = 5,
+    initial_codec_chunk_frames: int = 2,
+) -> Code2WavScheduler:
+    return Code2WavScheduler(
+        model,
+        device="cpu",
+        stream_chunk_size=stream_chunk_size,
+        left_context_size=left_context_size,
+        initial_codec_chunk_frames=initial_codec_chunk_frames,
+        sample_rate=24000,
+    )
+
+
+def test_initial_chunk_flushes_early_and_hands_whole_chunk_to_the_seam() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_initial_chunk_scheduler(model)
+    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+
+    _feed(scheduler, "req-1", (1, 2), stream=True)
+    state = scheduler._stream_states["req-1"]
+    assert model.calls == [(1, 2, 2)]
+    assert state.emitted == 2
+
+    _feed(scheduler, "req-1", (3, 4, 5), stream=True)
+    assert model.calls[-1] == (1, 2, 5)
+    assert state.emitted == 5
+
+    _feed(scheduler, "req-1", (6, 7, 8), stream=True)
+    assert model.calls[-1] == (1, 2, 8)
+    assert state.emitted == 8
+
+
+def test_initial_chunk_frames_request_override_drives_the_first_window() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_initial_chunk_scheduler(model, initial_codec_chunk_frames=0)
+    payload = make_qwen_payload(
+        request_id="req-1", params={"initial_codec_chunk_frames": 1}
+    )
+    scheduler._stream_payloads["req-1"] = payload
+    scheduler.on_streaming_new_request("req-1", payload)
+
+    state = scheduler._stream_states["req-1"]
+    assert state.initial_chunk_frames == 1
+
+    _feed(scheduler, "req-1", (1,), stream=True)
+    assert model.calls == [(1, 2, 1)]
+    assert state.emitted == 1
+
+
+def test_initial_chunk_frames_without_override_keeps_the_stage_default() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_initial_chunk_scheduler(model, initial_codec_chunk_frames=2)
+    payload = make_qwen_payload(request_id="req-1")
+    scheduler._stream_payloads["req-1"] = payload
+    scheduler.on_streaming_new_request("req-1", payload)
+
+    assert scheduler._stream_states["req-1"].initial_chunk_frames == 2
+
+
+def test_initial_chunk_frames_override_is_clamped_to_the_steady_chunk() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_initial_chunk_scheduler(model, stream_chunk_size=3)
+    payload = make_qwen_payload(
+        request_id="req-1", params={"initial_codec_chunk_frames": 99}
+    )
+    scheduler._stream_payloads["req-1"] = payload
+    scheduler.on_streaming_new_request("req-1", payload)
+
+    assert scheduler._stream_states["req-1"].initial_chunk_frames == 3
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_error"),
+    [(-1, ValueError), ("two", TypeError)],
+)
+def test_initial_chunk_frames_override_rejects_invalid_values(
+    value, expected_error
+) -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_initial_chunk_scheduler(model)
+    payload = make_qwen_payload(
+        request_id="req-1", params={"initial_codec_chunk_frames": value}
+    )
+    scheduler._stream_payloads["req-1"] = payload
+
+    with pytest.raises(expected_error):
+        scheduler.on_streaming_new_request("req-1", payload)
+
+
+def test_initial_chunk_frames_latch_is_immutable() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_initial_chunk_scheduler(model, initial_codec_chunk_frames=0)
+    first = make_qwen_payload(
+        request_id="req-1", params={"initial_codec_chunk_frames": 1}
+    )
+    scheduler._stream_payloads["req-1"] = first
+    scheduler.on_streaming_new_request("req-1", first)
+    state = scheduler._stream_states["req-1"]
+
+    relatch = make_qwen_payload(
+        request_id="req-1", params={"initial_codec_chunk_frames": 3}
+    )
+    scheduler.latch_stream_contract("req-1", state, relatch, origin="payload")
+
+    assert state.initial_chunk_frames == 1
+
+
+def test_initial_chunk_frames_unlatched_state_uses_the_stage_default() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = _make_initial_chunk_scheduler(model, initial_codec_chunk_frames=2)
+    state = scheduler.create_stream_state("req-1")
+
+    assert state.initial_chunk_frames is None
+    assert scheduler._initial_frames(state) == 2
+    assert scheduler._decode_threshold(state) == 2
+    state.emitted = 2
+    assert scheduler._decode_threshold(state) == 3
