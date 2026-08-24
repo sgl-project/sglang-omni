@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -258,6 +259,23 @@ def test_npu_runner_reuses_graph_lifecycle_and_reports_backend_mode() -> None:
     assert result.execution_mode == "npu_graph"
     assert result.key == graph_keys[0]
     assert torch.equal(result.output, model(codes))
+
+
+def test_graph_runner_logs_first_successful_replay_per_key(caplog) -> None:
+    runner, backend, _model = _build_runner()
+    codes = _codes(backend, 1, 10)
+
+    with caplog.at_level(logging.INFO, logger=code2wav_cuda_graph.__name__):
+        runner.run(codes)
+        runner.run(codes)
+
+    replay_records = [
+        record
+        for record in caplog.records
+        if "graph replay active" in record.getMessage()
+    ]
+    assert len(replay_records) == 1
+    assert "execution_mode=cuda_graph" in replay_records[0].getMessage()
 
 
 def test_npu_api_enables_auto_dispatch_during_capture(monkeypatch) -> None:
