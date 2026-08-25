@@ -1170,9 +1170,17 @@ def create_talker_ar_executor_from_config(
     )
     pre_load_avail_mem = avail_gpu_mem(gpu_id)
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
+    decode_graph_config = getattr(
+        getattr(server_args, "cuda_graph_config", None), "decode", None
+    )
     logger.info(
         f"sglang_ar_startup stage=talker_ar gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
         f"context_length={max_seq_len} "
+        f"disable_cuda_graph={server_args.disable_cuda_graph} "
+        f"disable_decode_cuda_graph="
+        f"{getattr(server_args, 'disable_decode_cuda_graph', None)} "
+        f"decode_cuda_graph_backend="
+        f"{getattr(decode_graph_config, 'backend', None)} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"mem_fraction_static={server_args.mem_fraction_static} "
         f"pre_load_avail_mem={pre_load_avail_mem} "

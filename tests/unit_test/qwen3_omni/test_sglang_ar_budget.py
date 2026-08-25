@@ -416,6 +416,69 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
     ]
 
 
+def test_qwen_talker_ar_logs_effective_decode_graph_settings(
+    monkeypatch,
+    caplog,
+) -> None:
+    def _fake_server_args_builder(model_path, context_length, **overrides):
+        del model_path, context_length
+        disable_decode = overrides.get("disable_decode_cuda_graph", False)
+        return FakeServerArgs(
+            mem_fraction_static=0.55,
+            sampling_backend=overrides["sampling_backend"],
+            max_running_requests=overrides["max_running_requests"],
+            cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
+            cuda_graph_bs=overrides["cuda_graph_bs"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    backend="disabled" if disable_decode else "full",
+                    max_bs=overrides["cuda_graph_max_bs"],
+                    bs=overrides["cuda_graph_bs"],
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            ),
+            disable_cuda_graph=overrides["disable_cuda_graph"],
+            disable_decode_cuda_graph=disable_decode,
+            enable_torch_compile=overrides.get("enable_torch_compile", False),
+            torch_compile_max_bs=overrides["torch_compile_max_bs"],
+        )
+
+    monkeypatch.setattr(
+        qwen_stages,
+        "build_sglang_server_args",
+        _fake_server_args_builder,
+    )
+    monkeypatch.setattr(
+        qwen_bootstrap,
+        "create_talker_scheduler",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
+    monkeypatch.setattr(
+        qwen_stages,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: None,
+    )
+
+    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
+        qwen_stages.create_talker_ar_executor_from_config(
+            "dummy",
+            server_args_overrides={
+                "disable_cuda_graph": True,
+                "disable_decode_cuda_graph": True,
+            },
+        )
+
+    startup = next(
+        record.getMessage()
+        for record in caplog.records
+        if "sglang_ar_startup stage=talker_ar" in record.getMessage()
+    )
+    assert "disable_cuda_graph=True" in startup
+    assert "disable_decode_cuda_graph=True" in startup
+    assert "decode_cuda_graph_backend=disabled" in startup
+
+
 def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
     """talker_ar default max_running_requests is 32; a config override still wins."""
     captured: list[dict[str, object]] = []
