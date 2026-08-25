@@ -105,14 +105,10 @@ def test_upstream_builds_identical_rows_for_a_text_only_batch(
     )
     forward_batch = SimpleNamespace(
         seq_lens_cpu=torch.tensor([tokens]),
-        forward_mode=SimpleNamespace(
-            is_decode=lambda: False,
-            is_extend=lambda **kwargs: True,
-        ),
         mrope_positions=None,
     )
 
-    ForwardBatch._compute_mrope_positions(
+    ForwardBatch._compute_mrope_positions_extend(
         forward_batch, SimpleNamespace(device="cpu"), batch
     )
 

@@ -148,6 +148,7 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
         runner.load_model()
     runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
     with (
+        get_context().override_server_args(),
         mock.patch.object(
             ModelRunner,
             "init_cuda_graphs",
@@ -169,10 +170,13 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
     calls = []
     runner.post_capture_resize_kv_pool = lambda: calls.append("resize")
 
-    with mock.patch.object(
-        ModelRunner,
-        "init_cuda_graphs",
-        lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+        ),
     ):
         runner.init_cuda_graphs()
 
