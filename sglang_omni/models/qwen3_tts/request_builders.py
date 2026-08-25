@@ -1204,11 +1204,6 @@ def build_sglang_qwen3_tts_request(
     )
     req.tokenizer = None
     req._input_embeds_are_projected = True
-    req._codec_suppress_tokens = tuple(
-        token_id
-        for token_id in range(model.config.vocab_size - 1024, model.config.vocab_size)
-        if token_id != int(model.config.codec_eos_token_id)
-    )
 
     ref_code_len = (
         int(prepared.ref_code.shape[0]) if prepared.ref_code is not None else 0
@@ -1235,7 +1230,6 @@ def build_sglang_qwen3_tts_request(
         stream_codec_output=not state.non_streaming_mode,
         engine_start_s=time.perf_counter(),
     )
-    data.suppress_tokens = list(req._codec_suppress_tokens)
     data.pending_text_queue = PendingTextTensorQueue.from_tensor(
         prepared.trailing_text_hidden
     )
