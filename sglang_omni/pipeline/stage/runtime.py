@@ -948,6 +948,8 @@ class Stage:
 
     async def _execute(self, payload: Any) -> None:
         request_id = payload.request_id
+        if request_id in self._aborted:
+            return
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -959,9 +961,12 @@ class Stage:
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
             self._tp_fanout.fanout_work(payload)
-        self.scheduler.inbox.put(
-            IncomingMessage(request_id=request_id, type="new_request", data=payload)
-        )
+        msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
+        enqueue = getattr(self.scheduler, "enqueue", None)
+        if enqueue is not None:
+            enqueue(msg)
+        else:
+            self.scheduler.inbox.put(msg)
 
     async def _on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
