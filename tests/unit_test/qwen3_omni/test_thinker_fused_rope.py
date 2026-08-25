@@ -92,8 +92,10 @@ def test_upstream_builds_identical_rows_for_a_text_only_batch(
 
     monkeypatch.setattr(
         forward_batch_info,
-        "get_server_args",
-        lambda: SimpleNamespace(rl_on_policy_target=None),
+        "get_exec",
+        lambda: SimpleNamespace(
+            deterministic=SimpleNamespace(rl_on_policy_target=None)
+        ),
     )
     tokens = 6
     batch = SimpleNamespace(
