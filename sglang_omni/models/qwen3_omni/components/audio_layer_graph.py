@@ -25,43 +25,31 @@ class _Captured:
     segment_slots: int
 
 
-# CUDA compute capability as torch.cuda.get_device_capability reports it:
-# major 9 is Hopper (H100, H200), major 10 is datacenter Blackwell (B200, and
-# B300 at minor 3), major 12 is workstation Blackwell, major 8 is Ampere and Ada.
+# CUDA compute capability major (torch.cuda.get_device_capability): H100, H200.
 _HOPPER = 9
-_BLACKWELL = 10
-_BLACKWELL_ULTRA = (10, 3)
 
 
 def _packed_attention_backend(capability: tuple[int, int]) -> str:
-    """Name the CUDA backend sglang's VisionAttention picks for this device.
+    """FA3 on Hopper, Triton on every other CUDA device.
 
-    Mirrors the CUDA branch of _determine_attention_backend: FA3 on Hopper,
-    FA4 on Blackwell except B300, which sglang routes to Triton (sglang
-    #25570), and Triton on everything else.
+    sglang's VisionAttention rule also picks FA4 on Blackwell. Omni validates
+    Hopper only, and Triton is the arm sglang itself uses on the other parts.
     """
     major, _ = capability
-    if major == _HOPPER:
-        return "fa3"
-    if major == _BLACKWELL and capability != _BLACKWELL_ULTRA:
-        return "fa4"
-    return "triton_attn"
+    return "fa3" if major == _HOPPER else "triton_attn"
 
 
 def _resolve_packed_attention(device: torch.device) -> tuple[nn.Module, str]:
-    # sglang's vision module imports the CUDA kernel stack when it loads, so
-    # it is loaded here, when graphs are requested, rather than by every
-    # process that imports the encoder.
+    # Imported here so only a process that requests the graphs loads sglang's
+    # CUDA kernel stack.
     from sglang.srt.layers.attention import vision
 
     backend = _packed_attention_backend(torch.cuda.get_device_capability(device))
-    impl_class = {
-        "fa3": vision.VisionFlash3Attention,
-        "fa4": vision.VisionFlash4Attention,
-        "triton_attn": vision.VisionTritonAttention,
-    }[backend]
-    # The encoder stage process initializes no sglang parallel state, and
-    # use_data_parallel is what keeps the impl from reading it.
+    if backend == "fa3":
+        impl_class = vision.VisionFlash3Attention
+    else:
+        impl_class = vision.VisionTritonAttention
+    # The encoder process holds no sglang parallel state to read.
     return impl_class(use_data_parallel=True), backend
 
 
@@ -72,15 +60,13 @@ def _packed_attention_forward(
     cu_seqlens: torch.Tensor,
     max_seqlen: int,
 ) -> torch.Tensor:
-    """Run one HF audio attention layer through the packed impl."""
     seq_length, _ = hidden_states.size()
     heads = attention.num_heads
     query_states = attention.q_proj(hidden_states).reshape(seq_length, heads, -1)
     key_states = attention.k_proj(hidden_states).reshape(seq_length, heads, -1)
     value_states = attention.v_proj(hidden_states).reshape(seq_length, heads, -1)
-    # The impl takes the packed [tokens, heads, head_dim] layout the
-    # projections produce. An int max_seqlen keeps it off the device-to-host
-    # max() it would otherwise take, which is what keeps the stack capturable.
+    # An int max_seqlen keeps the impl off a device-to-host max(), which is
+    # what keeps the stack capturable.
     attn_output = packed_attention(
         query_states,
         key_states,
@@ -166,9 +152,7 @@ class AudioLayerGraphRunner:
                 self._device
             )
         except Exception as exc:
-            # The graphs are an optimization over the eager path, so a kernel
-            # stack that cannot be resolved leaves the encoder eager, like a
-            # failed capture does, rather than failing the stage.
+            # Like a failed capture: the encoder stays eager, the stage lives.
             self._disabled_reason = f"packed attention unavailable: {exc}"
             logger.warning(
                 "audio layer CUDA graphs unavailable: %s",
