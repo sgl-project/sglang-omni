@@ -8,6 +8,7 @@ import os
 from typing import Any
 
 import torch
+from sglang.srt.arg_groups.overrides import register_model_override
 
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -90,6 +91,18 @@ def _register_qwen3_tts_hf_config() -> None:
         AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
     except ValueError:
         pass
+
+
+@register_model_override("Qwen3TTSForConditionalGeneration")
+def _qwen3_tts_overrides(server_args: Any, hf_config: Any) -> dict[str, Any]:
+    """Auto-select the intel_xpu attention backend"""
+    del hf_config
+    if server_args.device != "xpu":
+        return {}
+    if not server_args.is_attention_backend_not_set():
+        return {}
+    logger.warning("Use intel_xpu as attention backend on xpu for Qwen3-TTS model")
+    return {"attention_backend": "intel_xpu"}
 
 
 def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
