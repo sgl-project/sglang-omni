@@ -15,6 +15,7 @@ TTS_MODEL_LABELS = {
 ASR_MODEL_LABELS = {
     "fun-asr": "run-fun-asr",
     "qwen3-asr": "run-qwen3-asr",
+    "whisper-asr": "run-whisper-asr",
 }
 
 
@@ -61,11 +62,8 @@ def parse_model_targets(tokens):
 
     asr_targets = [token for token in tokens[1:] if token in ASR_MODEL_LABELS]
     if len(set(asr_targets)) > 1:
-        return (
-            None,
-            None,
-            "Specify only one ASR CI model target: fun-asr or qwen3-asr.",
-        )
+        allowed = ", ".join(sorted(ASR_MODEL_LABELS))
+        return None, None, f"Specify only one ASR CI model target: {allowed}."
     return (
         tts_targets[0] if tts_targets else None,
         asr_targets[0] if asr_targets else None,

@@ -774,10 +774,11 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     """The synchronous fast path runs after _resolve_pending_async, whose drain can
     retract a req still present in the stale batch. The fast path must drop finished
     AND retracted reqs (not only finished) before run_batch, or a retracted req is
-    forwarded/finalized again and re-frees its already-freed KV.
+    forwarded/finalized again. The dropped rows' step slots are not freed here:
+    the drain's release_kv_cache already covered them (see the real-pool test in
+    test_async_decode.py).
     """
     captured: dict = {}
-    freed: list[int] = []
 
     class FakeBatch:
         def __init__(self, reqs):
@@ -792,11 +793,6 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
             self.out_cache_loc = None
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler.page_size = 1
-    scheduler.server_args = SimpleNamespace(disable_radix_cache=False)
-    scheduler.token_to_kv_pool_allocator = SimpleNamespace(
-        free=lambda t: freed.extend(t.tolist())
-    )
     keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
     retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
 
@@ -805,21 +801,16 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     assert captured["keep_indices"] == [0]
     assert [r.rid for r in out.reqs] == ["keep"]
     assert out.out_cache_loc.tolist() == [100]
-    assert freed == [101]
 
     # all dropped -> None so run_batch is skipped
-    freed.clear()
     fin = SimpleNamespace(rid="fin", finished=lambda: True, is_retracted=False)
     assert scheduler._drop_stale_overrun(FakeBatch([retr, fin])) is None
-    assert freed == [100, 101]
 
     # nothing stale -> batch returned unchanged, filter_batch never called
     captured.clear()
-    freed.clear()
     clean = FakeBatch([keep])
     assert scheduler._drop_stale_overrun(clean) is clean
     assert "keep_indices" not in captured
-    assert freed == []
 
 
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
@@ -2223,35 +2214,14 @@ def test_omni_scheduler_normalizes_prefill_coalesce_args(monkeypatch) -> None:
     assert enabled.prefill_coalesce_wait_s == pytest.approx(0.3)
 
 
-@pytest.mark.parametrize(
-    "coalesce_kwargs",
-    [
-        {"prefill_coalesce_requests": None},
-        {"prefill_coalesce_wait_ms": None},
-        {"prefill_coalesce_requests": -1},
-        {"prefill_coalesce_requests": True},
-        {"prefill_coalesce_requests": -0.5},
-        {"prefill_coalesce_requests": 2.9},
-        {"prefill_coalesce_requests": float("inf")},
-        {"prefill_coalesce_wait_ms": 0.0},
-        {"prefill_coalesce_wait_ms": float("nan")},
-        {"prefill_coalesce_wait_ms": float("inf")},
-    ],
-)
-def test_omni_scheduler_rejects_invalid_prefill_coalesce_args(
-    monkeypatch, coalesce_kwargs
-) -> None:
-    """Config-file values never pass through the CLI, so __init__ is the shared
-    choke point where both entrypoints have to fail fast."""
-    with pytest.raises(ValueError):
-        _construct_omni_scheduler(monkeypatch, **coalesce_kwargs)
-
-
-def test_omni_scheduler_null_coalesce_error_points_at_zero(monkeypatch) -> None:
-    """An explicit YAML null is ambiguous, so it must name the documented off
-    switch rather than trip an assert that -O would strip."""
-    with pytest.raises(ValueError, match="use 0 to disable"):
-        _construct_omni_scheduler(monkeypatch, prefill_coalesce_requests=None)
+def test_omni_scheduler_trusts_validated_coalesce_values(monkeypatch) -> None:
+    """Range and type are configuration rules (FactoryArgs and the lossless
+    conversion in ConfigPath.coerce); the scheduler trusts its callers and
+    keeps only its own TP-interaction rule."""
+    scheduler = _construct_omni_scheduler(
+        monkeypatch, prefill_coalesce_requests=0, prefill_coalesce_wait_ms=1.0
+    )
+    assert scheduler.prefill_coalesce_requests == 0
 
 
 def test_stage_output_cache_eviction_uses_lru_order() -> None:

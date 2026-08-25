@@ -12,10 +12,7 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 import torch
-import typer
 
-from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
-from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
@@ -40,6 +37,7 @@ from tests.unit_test.fixtures.fish_fakes import (
     make_s2pro_payload,
     make_s2pro_state,
 )
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 @pytest.fixture(autouse=True)
@@ -68,11 +66,9 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
         "pipeline",
     ]
     assert [
-        stage.runtime.resources.total_gpu_memory_fraction
-        for stage in config.stages
-        if stage.gpu is not None
+        stage.gpu_memory_fraction for stage in config.stages if stage.gpu is not None
     ] == [None, None]
-    build_process_topology_plan(config, build_stage_placement_plan(config))
+    build_compiled_process_topology(config)
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.supports_uploaded_voice_references() is True
@@ -474,65 +470,62 @@ def test_fish_tts_accepts_default_top_k_sentinel() -> None:
 
 
 def _server_args_overrides(config: S2ProPipelineConfig, name: str) -> dict[str, object]:
-    stage = next(stage for stage in config.stages if stage.name == name)
-    return dict(stage.factory_args.get("server_args_overrides") or {})
+    engine = config.stage_named(name).engine
+    return engine.overrides() if engine is not None else {}
 
 
 @pytest.mark.parametrize(
-    "talker_mode,talker_max_bs,expected",
+    "flags,expected",
     [
-        ("on", None, {"enable_torch_compile": True}),
-        ("off", None, {"enable_torch_compile": False}),
-        ("default", 2, {"torch_compile_max_bs": 2}),
-        ("on", 4, {"enable_torch_compile": True, "torch_compile_max_bs": 4}),
+        (
+            [("tts_engine.engine.enable_torch_compile", "true")],
+            {"enable_torch_compile": True},
+        ),
+        (
+            [("tts_engine.engine.enable_torch_compile", "false")],
+            {"enable_torch_compile": False},
+        ),
+        (
+            [("tts_engine.engine.torch_compile_max_bs", "2")],
+            {"torch_compile_max_bs": 2},
+        ),
+        (
+            [
+                ("tts_engine.engine.enable_torch_compile", "true"),
+                ("tts_engine.engine.torch_compile_max_bs", "4"),
+            ],
+            {"enable_torch_compile": True, "torch_compile_max_bs": 4},
+        ),
     ],
 )
-def test_s2pro_cli_talker_torch_compile_targets_tts_engine(
-    talker_mode: str,
-    talker_max_bs: int | None,
+def test_s2pro_dotted_torch_compile_targets_tts_engine(
+    flags: list[tuple[str, str]],
     expected: dict[str, object],
 ) -> None:
+    from sglang_omni.config.manager import ConfigManager
+
     config = S2ProPipelineConfig(model_path="model")
 
-    apply_torch_compile_cli_overrides(
-        config,
-        thinker_torch_compile="default",
-        talker_torch_compile=talker_mode,
-        thinker_torch_compile_max_bs=None,
-        talker_torch_compile_max_bs=talker_max_bs,
-    )
+    merged = ConfigManager(config).merge_config(flags)
 
-    assert _server_args_overrides(config, "tts_engine") == expected
-    assert _server_args_overrides(config, "vocoder") == {}
+    assert _server_args_overrides(merged, "tts_engine") == expected
+    assert _server_args_overrides(merged, "vocoder") == {}
 
 
-def test_s2pro_cli_talker_torch_compile_default_is_noop() -> None:
+def test_s2pro_without_compile_flags_is_a_noop() -> None:
     config = S2ProPipelineConfig(model_path="model")
-
-    apply_torch_compile_cli_overrides(
-        config,
-        thinker_torch_compile="default",
-        talker_torch_compile="default",
-        thinker_torch_compile_max_bs=None,
-        talker_torch_compile_max_bs=None,
-    )
 
     assert _server_args_overrides(config, "tts_engine") == {}
 
 
-def test_s2pro_cli_talker_torch_compile_max_bs_rejects_non_positive() -> None:
+def test_s2pro_torch_compile_max_bs_rejects_non_positive() -> None:
+    from sglang_omni.config.manager import ConfigManager
+
     config = S2ProPipelineConfig(model_path="model")
 
-    with pytest.raises(
-        typer.BadParameter,
-        match="torch compile max batch size must be >= 1",
-    ):
-        apply_torch_compile_cli_overrides(
-            config,
-            thinker_torch_compile="default",
-            talker_torch_compile="default",
-            thinker_torch_compile_max_bs=None,
-            talker_torch_compile_max_bs=0,
+    with pytest.raises(ValueError, match="torch_compile_max_bs"):
+        ConfigManager(config).merge_config(
+            [("tts_engine.engine.torch_compile_max_bs", "0")]
         )
 
 

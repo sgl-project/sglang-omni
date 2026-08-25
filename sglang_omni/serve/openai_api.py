@@ -181,6 +181,7 @@ def create_app(
     supports_audio_translation: bool = False,
     required_speech_reference_count: int | None = None,
     speech_reference_text_required: bool = False,
+    speech_reference_text_excludes_instructions: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
     enable_realtime: bool = False,
     supports_realtime_audio_output: bool = False,
@@ -206,6 +207,8 @@ def create_app(
             dispatching a speech request to the backend.
         speech_reference_text_required: Whether each speech reference requires
             a transcript.
+        speech_reference_text_excludes_instructions: Whether a reference
+            transcript and style instructions are mutually exclusive.
         additional_speech_languages: Pipeline-specific accepted languages.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
@@ -256,6 +259,9 @@ def create_app(
         supports_uploaded_voice_references=supports_uploaded_voice_references,
         required_speech_reference_count=required_speech_reference_count,
         speech_reference_text_required=speech_reference_text_required,
+        speech_reference_text_excludes_instructions=(
+            speech_reference_text_excludes_instructions
+        ),
         additional_speech_languages=additional_speech_languages,
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,

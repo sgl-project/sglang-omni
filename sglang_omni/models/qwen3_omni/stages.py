@@ -97,14 +97,14 @@ def _apply_colocated_ar_memory_contract(
         if encoder_mem_reserve:
             raise ValueError(
                 f"Stage {stage_name} cannot apply encoder_mem_reserve when "
-                "runtime.sglang_server_args.mem_fraction_static is explicitly set."
+                "engine.mem_fraction_static is explicitly set."
             )
         if abs(float(explicit_mem_fraction) - total_gpu_memory_fraction) > 1e-3:
             raise ValueError(
                 f"Stage {stage_name} sets conflicting colocated memory "
                 "contracts: runtime.resources.total_gpu_memory_fraction="
                 f"{total_gpu_memory_fraction:.3f} and "
-                "runtime.sglang_server_args.mem_fraction_static="
+                "engine.mem_fraction_static="
                 f"{float(explicit_mem_fraction):.3f}. Use one value or make "
                 "the explicit SGLang override match the stage total budget."
             )
@@ -271,6 +271,27 @@ def _nested_tensor_bytes(value: Any) -> int:
     if isinstance(value, (list, tuple)):
         return sum(_nested_tensor_bytes(item) for item in value)
     return 0
+
+
+def _encoder_batch_wait_ms() -> int:
+    raw = os.getenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", "")
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Ignoring non-integer SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%r; using 0",
+            raw,
+        )
+        return 0
+    if value < 0:
+        logger.warning(
+            "Ignoring negative SGLANG_OMNI_ENCODER_BATCH_WAIT_MS=%d; using 0",
+            value,
+        )
+        return 0
+    return value
 
 
 def _encoder_cache_trace_enabled() -> bool:
@@ -641,6 +662,9 @@ def _batch_audio_encoder_payloads(
 ) -> list[StagePayload]:
     results: list[StagePayload | None] = [None] * len(payloads)
     active: list[tuple[int, StagePayload, Any, Any]] = []
+    duplicate_waiters: dict[str, list[tuple[int, StagePayload, Any]]] = {}
+    active_cache_keys: set[str] = set()
+    active_cache_leaders: dict[str, str] = {}
 
     for idx, payload in enumerate(payloads):
         state = load_state(payload)
@@ -674,7 +698,23 @@ def _batch_audio_encoder_payloads(
             )
             continue
 
+        cache_key = request.cache_key
+        if cache_key is not None and cache_key in active_cache_keys:
+            duplicate_waiters.setdefault(cache_key, []).append((idx, payload, state))
+            _trace_encoder_cache(
+                AUDIO_STAGE,
+                "dedup_same_batch",
+                request_id=payload.request_id,
+                cache_key=cache_key,
+                input_bytes=_nested_tensor_bytes(request.model_inputs),
+                detail=f"leader={active_cache_leaders[cache_key]}",
+            )
+            continue
+
         active.append((idx, payload, state, request))
+        if cache_key is not None:
+            active_cache_keys.add(cache_key)
+            active_cache_leaders[cache_key] = payload.request_id
 
     if not active:
         return [result for result in results if result is not None]
@@ -716,6 +756,7 @@ def _batch_audio_encoder_payloads(
     embeds = combined["audio_embeds"]
     row_cursor = 0
     token_cursor = 0
+    computed_by_cache_key: dict[str, dict[str, Any]] = {}
     for item in normalized:
         row_end = row_cursor + item["count"]
         req_output_lengths = output_lengths[row_cursor:row_end]
@@ -734,10 +775,20 @@ def _batch_audio_encoder_payloads(
             cache=cache,
             result=stage_result,
         )
+        if item["request"].cache_key is not None:
+            computed_by_cache_key[item["request"].cache_key] = stage_result
         apply_encoder_result(item["state"], stage_name=AUDIO_STAGE, result=stage_result)
         results[item["idx"]] = store_state(item["payload"], item["state"])
         row_cursor = row_end
         token_cursor = token_end
+
+    for cache_key, waiters in duplicate_waiters.items():
+        stage_result = computed_by_cache_key.get(cache_key)
+        if stage_result is None:
+            continue
+        for idx, payload, state in waiters:
+            apply_encoder_result(state, stage_name=AUDIO_STAGE, result=stage_result)
+            results[idx] = store_state(payload, state)
 
     return [result for result in results if result is not None]
 
@@ -750,7 +801,7 @@ def _batch_audio_encoder_payloads(
 def create_preprocessing_executor(
     model_path: str,
     *,
-    thinker_max_seq_len: int | None = None,
+    max_seq_len: int | None = None,
     video_fps: float | None = None,
     video_max_frames: int | None = None,
     video_min_pixels: int | None = None,
@@ -761,7 +812,7 @@ def create_preprocessing_executor(
 
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
-        max_seq_len=thinker_max_seq_len,
+        max_seq_len=max_seq_len,
         video_fps=video_fps,
         video_max_frames=video_max_frames,
         video_min_pixels=video_min_pixels,
@@ -846,13 +897,13 @@ def create_image_encoder_executor(
                     metadata={"modality": "image", "batch_size": len(payloads)},
                 )
 
-    # Preserve the calibrated image-encoder batching shape and add a small
-    # batch_wait so video benchmarks at concurrency=16 batch together.
+    # Preserve the calibrated image-encoder batching shape while allowing
+    # deployments to opt into a batch wait through the shared encoder knob.
     return SimpleScheduler(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=_encoder_batch_wait_ms(),
         request_cost_fn=_create_image_encoder_request_cost_fn(model),
         max_batch_cost=QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
     )
@@ -863,12 +914,18 @@ def create_audio_encoder_executor(
     *,
     device: str | None = None,
     dtype: str | None = None,
+    enable_layer_cuda_graph: bool = False,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_device_spec
 
     device = resolve_device_spec(device)
-    model = Qwen3OmniAudioEncoder(model_path=model_path, device=device, dtype=dtype)
+    model = Qwen3OmniAudioEncoder(
+        model_path=model_path,
+        device=device,
+        dtype=dtype,
+        enable_layer_cuda_graph=enable_layer_cuda_graph,
+    )
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
@@ -924,7 +981,8 @@ def create_audio_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=50,
+        max_batch_wait_ms=_encoder_batch_wait_ms(),
+        batch_wait_when_idle=False,
     )
 
 
@@ -944,7 +1002,7 @@ def create_sglang_thinker_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    thinker_max_seq_len: int = 8192,
+    max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
@@ -995,7 +1053,7 @@ def create_sglang_thinker_executor_from_config(
     )
     server_args = build_sglang_server_args(
         model_path,
-        context_length=thinker_max_seq_len,
+        context_length=max_seq_len,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -1024,7 +1082,7 @@ def create_sglang_thinker_executor_from_config(
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_startup stage=thinker gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
-        f"context_length={thinker_max_seq_len} "
+        f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
         f"mem_fraction_static={server_args.mem_fraction_static} "
@@ -1049,7 +1107,7 @@ def create_sglang_thinker_executor_from_config(
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_started stage=thinker gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
-        f"context_length={thinker_max_seq_len} "
+        f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
         f"mem_fraction_static={server_args.mem_fraction_static} "
@@ -1069,7 +1127,7 @@ def create_talker_ar_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    talker_max_seq_len: int = 4096,
+    max_seq_len: int = 4096,
     server_args_overrides: dict[str, Any] | None = None,
     speech_enabled: bool = True,
     feedback_enabled: bool = True,
@@ -1084,7 +1142,7 @@ def create_talker_ar_executor_from_config(
     # Note (Xuesong, Chenyang): cuda_graph defaults to ON for the talker
     # after #384, which routed talker MoE through `self.experts` (FusedMoE)
     # — the `fused_experts (full graph)` backend picked in #344. Caller can
-    # override via factory_args or the `--talker-cuda-graph off` CLI flag.
+    # override via the talker stage's engine.disable_cuda_graph setting.
     # Note (Xuesong): pytorch backend works around an sglang upstream gap —
     # Sampler.forward doesn't forward seed to flashinfer, so
     # under cuda graph the captured RNG is boot-dependent and ~5% of prompts
@@ -1103,7 +1161,7 @@ def create_talker_ar_executor_from_config(
     )
     server_args = build_sglang_server_args(
         model_path,
-        context_length=talker_max_seq_len,
+        context_length=max_seq_len,
         **overrides,
     )
     validate_generation_batch_policy(
@@ -1114,7 +1172,7 @@ def create_talker_ar_executor_from_config(
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_startup stage=talker_ar gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
-        f"context_length={talker_max_seq_len} "
+        f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"mem_fraction_static={server_args.mem_fraction_static} "
         f"pre_load_avail_mem={pre_load_avail_mem} "
@@ -1136,7 +1194,7 @@ def create_talker_ar_executor_from_config(
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_started stage=talker_ar gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
-        f"context_length={talker_max_seq_len} "
+        f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"mem_fraction_static={server_args.mem_fraction_static} "
         f"pre_load_avail_mem={pre_load_avail_mem} "

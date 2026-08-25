@@ -1,23 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CLI override tests for prefill admission coalescing.
+"""Prefill coalescing is plain per-stage configuration.
 
-``--prefill-coalesce-requests/--prefill-coalesce-wait-ms`` apply to the
-supported OmniScheduler AR stages; omitting both is a no-op and unsupported
-pipelines are rejected.
+The knobs live in the stage's ``factory`` group, so they are set with the
+same dotted spelling as everything else (``--<stage>.factory.prefill_coalesce_requests``)
+or under the stage's ``stages:`` entry in YAML. These tests pin that the
+values reach the AR stage factories of every supported pipeline, and that
+the schema rejects nonsense eagerly.
 """
 
 from __future__ import annotations
 
 import pytest
-import typer
 
-from sglang_omni.cli.serve import apply_prefill_coalesce_cli_overrides
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
     resolve_factory_signature_args,
     resolve_stage_factory_arg_defaults,
-    resolve_stage_static_factory_args,
+    resolve_stage_factory_kwargs,
+    resolve_stage_typed_kwargs,
 )
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
@@ -27,20 +29,24 @@ from sglang_omni.models.moss_transcribe_diarize.config import (
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
-from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
-from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from sglang_omni.utils.imports import import_string
 
 
 def _ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]:
     # Compose the resolver sequence the launch path uses -- mp_runner resolves
-    # static args plus defaults in the parent, stage_workers filters by factory
-    # signature in the child -- rather than the resolve_stage_factory_args
-    # convenience wrapper, which nothing on that path calls.
+    # the two kwarg channels in the parent, stage_workers overlays them against
+    # the factory signature in the child.
     stage = next(s for s in config.stages if s.name == stage_name)
+    factory = import_string(stage.factory_path)
+    args = apply_typed_stage_kwargs(
+        factory,
+        resolve_stage_factory_kwargs(stage, config),
+        resolve_stage_typed_kwargs(stage),
+        stage_name=stage_name,
+    )
     return resolve_factory_signature_args(
-        import_string(stage.factory),
-        resolve_stage_static_factory_args(stage, config),
+        factory,
+        args,
         defaults=resolve_stage_factory_arg_defaults(stage, config),
     )
 
@@ -53,39 +59,33 @@ def _ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]
         (MossTranscribeDiarizePipelineConfig, "asr"),
         (FunASRPipelineConfig, "asr"),
         (Qwen3ASRPipelineConfig, "asr"),
-        (WhisperASRPipelineConfig, "asr"),
         (Qwen3OmniPipelineConfig, "thinker"),
     ],
 )
-def test_cli_sets_coalesce_args(config_cls, stage_name):
+def test_dotted_flags_set_coalesce_args(config_cls, stage_name):
     config = config_cls(model_path="dummy")
-    apply_prefill_coalesce_cli_overrides(
-        config, prefill_coalesce_requests=32, prefill_coalesce_wait_ms=300.0
+    merged = ConfigManager(config).merge_config(
+        [
+            (f"{stage_name}.factory.prefill_coalesce_requests", "32"),
+            (f"{stage_name}.factory.prefill_coalesce_wait_ms", "300.0"),
+        ]
     )
-    args = _ar_stage_args(config, stage_name)
+    args = _ar_stage_args(merged, stage_name)
     assert args["prefill_coalesce_requests"] == 32
     assert args["prefill_coalesce_wait_ms"] == 300.0
 
 
-def test_omitting_both_flags_is_a_noop():
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-    before = _ar_stage_args(config, "tts_engine")
-    apply_prefill_coalesce_cli_overrides(
-        config, prefill_coalesce_requests=None, prefill_coalesce_wait_ms=None
-    )
-    assert _ar_stage_args(config, "tts_engine") == before
-
-
-def test_per_stage_yaml_runtime_overrides_reach_factory(tmp_path):
+def test_per_stage_yaml_settings_reach_the_factory(tmp_path):
     config_path = tmp_path / "moss_local.yaml"
     config_path.write_text(
         """
 config_cls: MossTTSLocalPipelineConfig
 model_path: dummy
-runtime_overrides:
+stages:
   tts_engine:
-    prefill_coalesce_requests: 16
-    prefill_coalesce_wait_ms: 200.0
+    factory:
+      prefill_coalesce_requests: 16
+      prefill_coalesce_wait_ms: 200.0
 """
     )
     config = ConfigManager.from_file(str(config_path)).config
@@ -96,55 +96,36 @@ runtime_overrides:
     assert args["prefill_coalesce_wait_ms"] == 200.0
 
 
-def test_wait_only_cli_respects_per_stage_runtime_override(caplog):
+def test_a_flag_for_one_stage_leaves_the_other_settings_alone():
     config = MossTTSLocalPipelineConfig(model_path="dummy")
-    config.runtime_overrides["tts_engine"] = {"prefill_coalesce_requests": 16}
+    before = _ar_stage_args(config, "tts_engine")
 
-    with caplog.at_level("WARNING", logger="sglang_omni.cli.serve"):
-        apply_prefill_coalesce_cli_overrides(
-            config,
-            prefill_coalesce_requests=None,
-            prefill_coalesce_wait_ms=200.0,
-        )
-
-    assert not any(
-        "alone does not enable" in record.message for record in caplog.records
+    merged = ConfigManager(config).merge_config(
+        [("tts_engine.factory.prefill_coalesce_wait_ms", "200.0")]
     )
-    args = _ar_stage_args(config, "tts_engine")
-    assert args["prefill_coalesce_requests"] == 16
-    assert args["prefill_coalesce_wait_ms"] == 200.0
+
+    after = _ar_stage_args(merged, "tts_engine")
+    assert after["prefill_coalesce_wait_ms"] == 200.0
+    after.pop("prefill_coalesce_wait_ms")
+    before.pop("prefill_coalesce_wait_ms", None)
+    assert after == before
 
 
-def test_wait_only_cli_validates_existing_per_stage_value():
+def test_a_stage_without_the_knob_refuses_the_flag():
+    """Writing the knob on a stage whose factory cannot take it fails at
+    launch with the path named, instead of silently dropping the value."""
     config = MossTTSLocalPipelineConfig(model_path="dummy")
-    config.runtime_overrides["tts_engine"] = {"prefill_coalesce_requests": "bad"}
-
-    with pytest.raises(typer.BadParameter, match="must be a number"):
-        apply_prefill_coalesce_cli_overrides(
-            config,
-            prefill_coalesce_requests=None,
-            prefill_coalesce_wait_ms=200.0,
-        )
+    merged = ConfigManager(config).merge_config(
+        [("vocoder.factory.prefill_coalesce_requests", "32")]
+    )
+    with pytest.raises(ValueError, match="prefill_coalesce_requests"):
+        _ar_stage_args(merged, "vocoder")
 
 
-def test_rejects_unsupported_pipeline():
-    config = Qwen3TTSPipelineConfig(model_path="dummy")
-    with pytest.raises(typer.BadParameter):
-        apply_prefill_coalesce_cli_overrides(
-            config, prefill_coalesce_requests=32, prefill_coalesce_wait_ms=None
-        )
-
-
-def test_rejects_invalid_values():
+def test_rejects_invalid_values_eagerly():
     config = HiggsTtsPipelineConfig(model_path="dummy")
-    with pytest.raises(typer.BadParameter):
-        apply_prefill_coalesce_cli_overrides(
-            config, prefill_coalesce_requests=-1, prefill_coalesce_wait_ms=None
-        )
-    for bad_wait in (0.0, float("nan"), float("inf")):
-        with pytest.raises(typer.BadParameter):
-            apply_prefill_coalesce_cli_overrides(
-                config,
-                prefill_coalesce_requests=None,
-                prefill_coalesce_wait_ms=bad_wait,
-            )
+    manager = ConfigManager(config)
+    with pytest.raises(ValueError, match="prefill_coalesce_requests"):
+        manager.merge_config([("tts_engine.factory.prefill_coalesce_requests", "-1")])
+    with pytest.raises(ValueError, match="prefill_coalesce_wait_ms"):
+        manager.merge_config([("tts_engine.factory.prefill_coalesce_wait_ms", "0")])

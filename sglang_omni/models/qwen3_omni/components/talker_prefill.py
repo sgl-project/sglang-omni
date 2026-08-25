@@ -206,19 +206,10 @@ class TalkerPrefillBuilder:
 
         assistant_token_ids = self.extract_chunk_token_ids(thinker_chunks)
         assistant_embed = self._load_prompt_token_embeddings(assistant_token_ids)
-        assistant_hidden = torch.stack(
-            [
-                self.chunk_layer_hidden_or_embed(chunk).to(
-                    device=self._device, dtype=self._dtype
-                )
-                for chunk in thinker_chunks
-            ],
-            dim=0,
-        )
 
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
         thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
-        thinker_hidden = torch.cat([prompt_hidden, assistant_hidden], dim=0)
+        thinker_hidden = torch.cat([prompt_hidden, assistant_embed], dim=0)
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.get_tts_special_embeds()
@@ -292,13 +283,6 @@ class TalkerPrefillBuilder:
             metadata = chunk.metadata or {}
             token_ids.append(int(metadata["token_id"]))
         return torch.tensor(token_ids, dtype=torch.long)
-
-    def chunk_layer_hidden_or_embed(self, chunk: Any) -> torch.Tensor:
-        metadata = chunk.metadata or {}
-        layer_hidden = metadata.get("layer_hidden")
-        if isinstance(layer_hidden, torch.Tensor):
-            return layer_hidden
-        return chunk.data
 
     def project_assistant_chunk(self, chunk: Any) -> torch.Tensor:
         metadata = chunk.metadata or {}

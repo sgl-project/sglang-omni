@@ -8,27 +8,26 @@ from sglang_omni.config.placement import (
     resolve_gpu_stage_names,
     resolve_stage_gpu_ids,
 )
-from sglang_omni.config.process_overrides import (
-    apply_stage_process_overrides,
-    parse_stage_process_assignment,
-)
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.config.schema import (
     AudioChunkingConfig,
     CommConfig,
     EndpointsConfig,
-    ParallelismConfig,
+    EngineArgs,
+    EngineStageConfig,
+    FactoryArgs,
     PipelineConfig,
     PlacementConfig,
-    SGLangServerArgsConfig,
+    ProcessConfig,
     StageConfig,
-    StageResourceConfig,
-    StageRuntimeConfig,
 )
 from sglang_omni.config.topology import (
+    LogicalProcess,
+    LogicalProcessPlan,
     ProcessGroupPlacement,
     ProcessTopologyPlan,
     build_process_topology_plan,
+    compile_logical_processes,
 )
 
 # Runtime helpers (IpcRuntimeDir, prepare_pipeline_runtime, etc.) live in
@@ -43,19 +42,20 @@ __all__ = [
     "build_stage_placement_plan",
     "resolve_gpu_stage_names",
     "resolve_stage_gpu_ids",
-    "apply_stage_process_overrides",
-    "parse_stage_process_assignment",
     "resolve_stage_factory_args",
+    "LogicalProcess",
+    "LogicalProcessPlan",
     "ProcessGroupPlacement",
     "ProcessTopologyPlan",
     "build_process_topology_plan",
     "AudioChunkingConfig",
+    "compile_logical_processes",
     "PipelineConfig",
+    "ProcessConfig",
     "StageConfig",
-    "ParallelismConfig",
-    "StageResourceConfig",
-    "SGLangServerArgsConfig",
-    "StageRuntimeConfig",
+    "EngineStageConfig",
+    "EngineArgs",
+    "FactoryArgs",
     "PlacementConfig",
     "CommConfig",
     "EndpointsConfig",

@@ -39,6 +39,7 @@ from sglang_omni.models.moss_tts.sampler import (
 from sglang_omni.models.moss_tts.sampling_cuda_graph import (
     MossTTSDelaySamplingCudaGraphRunner,
 )
+from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
 
@@ -272,9 +273,11 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
+        omni_prefill_rids: list[str] | None = None,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
         input_embeds_are_projected: bool = False,
     ) -> LogitsProcessorOutput:
+        del omni_prefill_rids
         del input_embeds_are_projected
         if input_embeds is None:
             forward_mode = getattr(forward_batch, "forward_mode", None)
@@ -388,8 +391,8 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         return matches_graph_profile(data)
 
     def _sampling_graph_support_reason(self) -> str | None:
-        if self.device.type != "cuda" or not torch.cuda.is_available():
-            return "CUDA is unavailable"
+        if not (current_platform.is_cuda() or current_platform.is_musa()):
+            return f"{self.device.type.upper()} graph is unavailable"
         if int(self.config.channels) != int(self.config.n_vq) + 1:
             return (
                 "sampling CUDA graph requires channels == n_vq + 1 "
@@ -611,7 +614,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             for idx, head in enumerate(head_list[: len(self.lm_heads)]):
                 if head is not None and hasattr(self.lm_heads[idx], "weight"):
                     self.lm_heads[idx].weight = head
-        if torch.cuda.is_available():
+        if current_platform.is_cuda() or current_platform.is_musa():
             torch.cuda.empty_cache()
 
     def load_kv_cache_scales(self, quantization_param_path: str) -> None:

@@ -123,16 +123,16 @@ QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN = 32768
 QWEN3_OMNI_FP8_COLOCATED_CONFIG = "examples/configs/qwen3_omni_colocated_h100_fp8.yaml"
 QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS = (
     f"--config {QWEN3_OMNI_FP8_COLOCATED_CONFIG} --colocate "
-    f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
-    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
+    f"--preprocessing.factory.max_seq_len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
+    f"--thinker.factory.max_seq_len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
 QWEN3_OMNI_BF16_COLOCATED_CONFIG = (
     "examples/configs/qwen3_omni_colocated_h100_bf16.yaml"
 )
 QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS = (
     f"--config {QWEN3_OMNI_BF16_COLOCATED_CONFIG} --colocate "
-    f"--stages.0.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
-    f"--stages.4.factory-args.thinker-max-seq-len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
+    f"--preprocessing.factory.max_seq_len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN} "
+    f"--thinker.factory.max_seq_len {QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN}"
 )
 QWEN3_OMNI_BF16_THINKER_CONFIG = "examples/configs/qwen3_omni_mmmu_h100.yaml"
 QWEN3_OMNI_BF16_THINKER_ARGS = f"--config {QWEN3_OMNI_BF16_THINKER_CONFIG}"

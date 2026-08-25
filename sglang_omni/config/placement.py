@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import inspect
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
-from sglang_omni.config.runtime import reject_untyped_total_gpu_memory_fraction
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.utils.imports import import_string
 
@@ -34,6 +33,16 @@ class GpuPlacement:
 class StagePlacementPlan:
     stages: dict[str, StagePlacement]
     gpus: dict[int, GpuPlacement]
+    replica_instances: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    def instances_of(self, logical_name: str) -> list[StagePlacement]:
+        """Placements of every replica instance behind *logical_name*.
+
+        Unreplicated stages resolve to their own placement; CPU-only stages
+        (absent from the plan) resolve to an empty list.
+        """
+        names = self.replica_instances.get(logical_name, (logical_name,))
+        return [self.stages[name] for name in names if name in self.stages]
 
 
 class PlacementPolicy(Protocol):
@@ -51,22 +60,18 @@ class StagePlacementPlanner:
         *,
         stages_cfg: list[StageConfig] | None = None,
         apply_policy: bool = True,
+        replica_instances: dict[str, tuple[str, ...]] | None = None,
     ) -> StagePlacementPlan:
         stages = stages_cfg if stages_cfg is not None else self._config.stages
         placements: dict[str, StagePlacement] = {}
         gpu_entries: dict[int, list[tuple[str, float | None]]] = defaultdict(list)
 
         for stage in stages:
-            reject_untyped_total_gpu_memory_fraction(
-                stage.name,
-                stage.factory_args,
-                self._config.runtime_overrides.get(stage.name, {}),
-            )
             gpu_ids = _resolve_stage_gpu_ids(stage)
             if not gpu_ids:
                 continue
 
-            fraction = stage.runtime.resources.total_gpu_memory_fraction
+            fraction = stage.gpu_memory_fraction
             placements[stage.name] = StagePlacement(
                 stage_name=stage.name,
                 gpu_ids=gpu_ids,
@@ -83,6 +88,7 @@ class StagePlacementPlanner:
         plan = StagePlacementPlan(
             stages=placements,
             gpus=gpu_plans,
+            replica_instances=dict(replica_instances or {}),
         )
         self._validate_memory_budgets(plan)
         if apply_policy:
@@ -105,10 +111,12 @@ def build_stage_placement_plan(
     *,
     stages_cfg: list[StageConfig] | None = None,
     apply_policy: bool = True,
+    replica_instances: dict[str, tuple[str, ...]] | None = None,
 ) -> StagePlacementPlan:
     return StagePlacementPlanner(config).build(
         stages_cfg=stages_cfg,
         apply_policy=apply_policy,
+        replica_instances=replica_instances,
     )
 
 
@@ -133,6 +141,10 @@ def resolve_gpu_stage_names(plan: StagePlacementPlan) -> set[str]:
 
 
 def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
+    # Shape rules (scalar vs list, length == tp_size, unique ids) are
+    # enforced by StageConfig validation, but launcher helpers mutate
+    # tp_size and gpu after construction, so re-check the TP shape here
+    # rather than expanding a scalar into duplicate ranks.
     gpu = stage.gpu
     if gpu is None:
         return ()
@@ -142,17 +154,12 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
                 f"Stage {stage.name!r}: TP placement requires a list of "
                 f"{stage.tp_size} unique GPU ids, got scalar gpu={gpu}"
             )
-        return tuple(gpu for _ in range(stage.tp_size))
-    if len(gpu) != stage.tp_size:
-        raise ValueError(
-            f"Stage {stage.name!r}: gpu has {len(gpu)} entries "
-            f"but tp_size={stage.tp_size}"
-        )
+        return (gpu,)
     gpu_ids = tuple(int(gpu_id) for gpu_id in gpu)
-    if len(set(gpu_ids)) != len(gpu_ids):
+    if len(gpu_ids) != stage.tp_size or len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(
-            f"Stage {stage.name!r}: TP placement requires unique GPU ids, "
-            f"got {list(gpu_ids)}"
+            f"Stage {stage.name!r}: TP placement requires a list of "
+            f"{stage.tp_size} unique GPU ids, got gpu={list(gpu)}"
         )
     return gpu_ids
 

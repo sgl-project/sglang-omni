@@ -156,6 +156,7 @@ def test_xpu_tp_rank_keeps_its_card_despite_an_inherited_cuda_marker(
 
     monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.delenv("ZE_AFFINITY_MASK", raising=False)
     spec = StageLaunchConfig(
         stage_name="thinker",
@@ -287,7 +288,7 @@ def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     spec = StageLaunchConfig(
         stage_name="thinker",
         factory=fake_factory_path("runtime_factory"),
-        factory_args={
+        factory_kwargs={
             "model_path": "runtime-model",
             "thinker_max_seq_len": 128,
         },
@@ -305,6 +306,22 @@ def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     assert result["thinker_max_seq_len"] == 128
     assert result["total_gpu_memory_fraction"] == 0.25
     assert seen_gpu_ids == [3]
+
+
+def test_scheduler_rejects_replica_device_factory_without_gpu_id() -> None:
+    spec = StageLaunchConfig(
+        stage_name="legacy@r0",
+        factory=fake_factory_path("runtime_factory_with_device"),
+        factory_kwargs={"device": "cuda:0"},
+        factory_arg_defaults={"model_path": "model", "gpu_id": 1},
+        require_factory_gpu_id=True,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="legacy@r0.*replica_devices.*does not declare a gpu_id parameter",
+    ):
+        stage_workers._construct_scheduler(spec, 1, _RecordingLog())
 
 
 def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(

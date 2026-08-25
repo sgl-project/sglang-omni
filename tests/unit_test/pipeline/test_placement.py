@@ -6,8 +6,6 @@ import pytest
 from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
-    StageResourceConfig,
-    StageRuntimeConfig,
     build_stage_placement_plan,
     resolve_stage_gpu_ids,
 )
@@ -27,12 +25,10 @@ def _stage(
     return StageConfig(
         name=name,
         process="pipeline",
-        factory=_FACTORY,
+        factory_path=_FACTORY,
         gpu=gpu,
         tp_size=tp_size,
-        runtime=StageRuntimeConfig(
-            resources=StageResourceConfig(total_gpu_memory_fraction=fraction)
-        ),
+        gpu_memory_fraction=fraction,
         next=next_stage,
         terminal=terminal,
     )
@@ -68,36 +64,6 @@ def test_same_gpu_without_budget_records_placement() -> None:
         "image_encoder",
         "thinker",
     )
-
-
-def test_untyped_factory_budget_is_rejected_before_placement() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="thinker",
-                process="pipeline",
-                factory=_FACTORY,
-                factory_args={"total_gpu_memory_fraction": 0.50},
-                gpu=0,
-                terminal=True,
-            )
-        ],
-    )
-
-    with pytest.raises(ValueError, match="runtime.resources.total_gpu_memory_fraction"):
-        build_stage_placement_plan(config)
-
-
-def test_untyped_runtime_override_budget_is_rejected_before_placement() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        runtime_overrides={"thinker": {"total_gpu_memory_fraction": 0.50}},
-        stages=[_stage("thinker", gpu=0, terminal=True)],
-    )
-
-    with pytest.raises(ValueError, match="runtime.resources.total_gpu_memory_fraction"):
-        build_stage_placement_plan(config)
 
 
 def test_same_gpu_colocation_sums_budget() -> None:
@@ -162,31 +128,27 @@ def test_tp_memory_fraction_is_per_rank_per_assigned_gpu() -> None:
 
 
 def test_tp_scalar_gpu_is_rejected() -> None:
-    stage = _stage(
-        "thinker",
-        gpu=0,
-        fraction=0.45,
-        tp_size=2,
-        terminal=True,
-    )
-    config = PipelineConfig(model_path="dummy", stages=[stage])
-
     with pytest.raises(ValueError, match="requires a list"):
-        build_stage_placement_plan(config)
+        _stage(
+            "thinker",
+            gpu=0,
+            fraction=0.45,
+            tp_size=2,
+            terminal=True,
+        )
 
 
 def test_tp_duplicate_gpu_ids_are_rejected() -> None:
-    stage = _stage(
-        "thinker",
-        gpu=[0, 0],
-        fraction=0.45,
-        tp_size=2,
-        terminal=True,
-    )
-    config = PipelineConfig(model_path="dummy", stages=[stage])
-
+    # Shape rules live on StageConfig now: the duplicate ids never survive
+    # long enough to reach the placement planner.
     with pytest.raises(ValueError, match="unique GPU ids"):
-        build_stage_placement_plan(config)
+        _stage(
+            "thinker",
+            gpu=[0, 0],
+            fraction=0.45,
+            tp_size=2,
+            terminal=True,
+        )
 
 
 def test_placement_policy_hook_runs_after_generic_plan() -> None:

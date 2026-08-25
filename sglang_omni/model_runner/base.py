@@ -664,20 +664,23 @@ class ModelRunner:
         The default launch samples one step before resolve appends the previous
         token to ``req.output_ids`` / the sglang penalizer state, so any sampling
         term scored by output history (repetition / frequency / presence penalty,
-        ``min_new_tokens``) would read a one-token-stale view and diverge from
-        sync — gate those batches to sync. Over-gating only costs throughput,
-        under-gating is a silent divergence. Runners override for other fallbacks.
+        ``min_new_tokens``, custom logit processors) would read a one-token-stale
+        view and diverge from sync — gate those batches to sync. Over-gating only
+        costs throughput, under-gating is a silent divergence. Runners override
+        for other fallbacks.
         """
 
-        def _history_free(sp: Any) -> bool:
+        def _history_free(req: Any) -> bool:
+            sp = req.sampling_params
             return (
                 sp.repetition_penalty == 1.0
                 and sp.frequency_penalty == 0.0
                 and sp.presence_penalty == 0.0
                 and sp.min_new_tokens == 0
+                and req.custom_logit_processor is None
             )
 
-        return all(_history_free(req.sampling_params) for req in batch.reqs)
+        return all(_history_free(req) for req in batch.reqs)
 
     def post_process_outputs(
         self,

@@ -1023,6 +1023,7 @@ class CudaIpcRelay(Relay):
         source_pool_id: str,
         source_page_indices: tuple[int, ...],
         destination_ref: dict[str, Any],
+        transfer_id: str | None = None,
     ) -> _ReceiverAckOperation:
         pool = self._kv_pools.get(source_pool_id)
         if pool is None:
@@ -1048,6 +1049,14 @@ class CudaIpcRelay(Relay):
         }
         relay_info["cuda_ipc_kv"] = dict(relay_info["cuda_ipc_kv"])
         relay_info["cuda_ipc_kv"]["ready_event"] = ready_event.ipc_handle()
+        _comm_trace(
+            "cuda_ipc_kv_put",
+            transfer_id=transfer_id,
+            source_pool_id=source_pool_id,
+            num_pages=len(source_page_indices),
+            bytes=relay_info["transfer_info"]["size"],
+            device_id=device.index if device.index is not None else 0,
+        )
         return _ReceiverAckOperation(
             relay_info,
             held_references=(
@@ -1064,6 +1073,7 @@ class CudaIpcRelay(Relay):
         source_page_indices: tuple[int, ...],
         destination_page_indices: tuple[int, ...],
         request_id: str,
+        transfer_id: str | None = None,
     ) -> CudaIpcGetOperation:
         destination = self._kv_pools.get(destination_pool_id)
         if destination is None:
@@ -1081,6 +1091,13 @@ class CudaIpcRelay(Relay):
                     source_device_id,
                 )
             ):
+                _comm_trace(
+                    "cuda_ipc_kv_peer_access_denied",
+                    transfer_id=transfer_id,
+                    request_id=request_id,
+                    source_device_id=source_device_id,
+                    destination_device_id=destination_device_id,
+                )
                 raise RuntimeError(
                     "direct CUDA-IPC KV transfer requires GPU peer access; "
                     f"cuda:{destination_device_id} cannot access "
@@ -1091,6 +1108,7 @@ class CudaIpcRelay(Relay):
         source_registration_id = source_meta["registration_id"]
         remote_pool_key = (source_engine_id, source_registration_id)
         source_buffers = self._remote_kv_pools.get(remote_pool_key)
+        remote_pool_cached = source_buffers is not None
         if source_buffers is None:
             source_buffers = tuple(
                 _load_cuda_storage_handle(storage, device=destination_device)
@@ -1144,6 +1162,18 @@ class CudaIpcRelay(Relay):
         transfer_size = sum(
             buffer.bytes_per_page * len(source_page_indices)
             for buffer in destination.buffers
+        )
+        _comm_trace(
+            "cuda_ipc_kv_get",
+            transfer_id=transfer_id,
+            request_id=request_id,
+            destination_pool_id=destination_pool_id,
+            num_pages=len(source_page_indices),
+            bytes=transfer_size,
+            source_device_id=source_device_id,
+            destination_device_id=destination_device_id,
+            cross_device=source_device_id != destination_device_id,
+            remote_pool_cached=remote_pool_cached,
         )
         return CudaIpcGetOperation(
             done_event,

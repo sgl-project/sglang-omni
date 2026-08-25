@@ -711,7 +711,7 @@ def test_overlap_borrowed_output_copied_before_next_replay(monkeypatch) -> None:
     ]
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_overlap_gpu_real_pinned_event_bitwise() -> None:
     def _run(*, overlap: bool) -> list[tuple]:

@@ -31,33 +31,20 @@ _NONE_DEVICE_STAGES = {
 }
 
 
-def _stages_with_device(model: str):
-    """Every stage of every shipped topology, not just the default one."""
-    module = importlib.import_module(f"sglang_omni.models.{model}.config")
-    topologies = {}
-    entry = getattr(module, "EntryClass", None)
-    if entry is not None:
-        topologies["default"] = entry
-    topologies.update(getattr(module, "Variants", None) or {})
+def test_the_qualified_stages_leave_device_to_the_factory() -> None:
+    """Each qualified stage defers device to its factory's own resolution.
 
-    found = []
-    for label, config_class in topologies.items():
-        for stage in config_class(model_path="unused").stages:
-            if "device" in (stage.factory_args or {}):
-                found.append((label, stage))
-    return found
-
-
-def test_only_the_qualified_stages_pass_device_none() -> None:
-    """A new None-passing stage must come with a resolution test of its own."""
-    found = {
-        (model, stage.name)
-        for model in _MODELS
-        for _, stage in _stages_with_device(model)
-        if stage.factory_args["device"] is None
-    }
-
-    assert found == _NONE_DEVICE_STAGES
+    The factory group only passes a set value; an unset ``factory.device``
+    means the factory's signature default governs. Each stage listed above
+    must actually defer (no config-pinned device), and its factory's
+    resolution of the absent device is proven by a test below."""
+    for model, stage_name in sorted(_NONE_DEVICE_STAGES):
+        module = importlib.import_module(f"sglang_omni.models.{model}.config")
+        config = module.EntryClass(model_path="unused")
+        assert config.stage_named(stage_name).factory.device is None, (
+            model,
+            stage_name,
+        )
 
 
 @pytest.mark.parametrize("factory_name", ["image_encoder", "audio_encoder"])
@@ -70,9 +57,17 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
     built: dict[str, object] = {}
 
     class _Encoder:
-        def __init__(self, *, model_path, device, dtype):
+        def __init__(
+            self,
+            *,
+            model_path,
+            device,
+            dtype,
+            enable_layer_cuda_graph: bool | None = None,
+        ):
             del model_path, dtype
             built["device"] = device
+            built["enable_layer_cuda_graph"] = enable_layer_cuda_graph
 
         def __getattr__(self, name):
             del name
@@ -90,6 +85,9 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
     getattr(stages, f"create_{factory_name}_executor")("unused", device=None)
 
     assert built["device"] == platforms.current_platform.device_type
+    assert built["enable_layer_cuda_graph"] is (
+        False if factory_name == "audio_encoder" else None
+    )
 
 
 def test_qwen3_omni_code2wav_resolves_none_to_a_concrete_device(

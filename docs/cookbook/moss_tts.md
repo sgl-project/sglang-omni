@@ -73,7 +73,7 @@ requested `max_total_tokens: 8192`. Treat this as a concurrency-1,
 CUDA-Graph-cap-1 qualification point, not a broader 24 GB capacity claim.
 
 Both policies can be changed explicitly through the preprocessing/vocoder
-`runtime_overrides` entries when profiling another layout. Explicit `device`
+stages' `factory.*` entries when profiling another layout. Explicit `device`
 values take precedence over the GPU selected by stage placement.
 
 ## Synthesizing Speech

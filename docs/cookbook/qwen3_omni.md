@@ -13,8 +13,11 @@ docker run -it --shm-size 32g --gpus all hongccc/sglang-omni:dev /bin/zsh
 ```
 
 ```bash
+pip install --upgrade pip
+pip install uv
+
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install "sglang-omni==0.1.2"
+uv pip install --prerelease=allow "sglang-omni==0.1.3"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
@@ -105,5 +108,5 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 
 - **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
 - **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
-- **Colocated topology does not support `--thinker-tp-size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
+- **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
 - **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit.

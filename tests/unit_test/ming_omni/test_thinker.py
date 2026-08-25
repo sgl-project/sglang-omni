@@ -282,7 +282,7 @@ def test_ming_config_and_stages_do_not_import_ming_runner() -> None:
 def _load_runner_with_fake_sglang(monkeypatch):
     torch = pytest.importorskip("torch")
 
-    scheduler_module = ModuleType("sglang.srt.managers.scheduler")
+    scheduler_module = ModuleType("sglang.srt.managers.factory_path")
 
     class GenerationBatchResult:
         def __init__(self, **kwargs):
@@ -296,7 +296,7 @@ def _load_runner_with_fake_sglang(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "sglang.srt.managers.scheduler",
+        "sglang.srt.managers.factory_path",
         scheduler_module,
     )
 

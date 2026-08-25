@@ -131,9 +131,9 @@ def _qwen3_tts_server(
                 "config_cls": "Qwen3TTSPipelineConfig",
                 "model_path": MODEL_PATH,
                 "enable_deterministic_inference": True,
-                "runtime_overrides": {
+                "stages": {
                     "tts_engine": {
-                        "server_args_overrides": {
+                        "engine": {
                             "attention_backend": "triton",
                             "max_running_requests": 8,
                             "cuda_graph_max_bs": 8,

@@ -5,7 +5,14 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from pydantic import Field
+
+from sglang_omni.config import (
+    EngineStageConfig,
+    FactoryArgs,
+    PipelineConfig,
+    StageConfig,
+)
 
 _PKG = "sglang_omni.models.ming_tts"
 
@@ -157,6 +164,31 @@ def validate_ming_tts_audio_decode_cadence_config(
         )
 
 
+class MingTTSPreprocessingFactoryArgs(FactoryArgs):
+    """Preprocessing constructor knobs, typed like the shared ones."""
+
+    max_decode_steps_cap: int | None = Field(default=None, gt=0)
+
+
+class MingTTSPreprocessingStageConfig(StageConfig):
+    factory: MingTTSPreprocessingFactoryArgs = Field(
+        default_factory=MingTTSPreprocessingFactoryArgs
+    )
+
+
+class MingTTSAudioDecodeFactoryArgs(FactoryArgs):
+    """Audio-decode cadence knobs, typed like the shared ones."""
+
+    initial_chunk_patches: int | None = Field(default=None, gt=0)
+    steady_chunk_patches: int | None = Field(default=None, gt=0)
+
+
+class MingTTSAudioDecodeStageConfig(StageConfig):
+    factory: MingTTSAudioDecodeFactoryArgs = Field(
+        default_factory=MingTTSAudioDecodeFactoryArgs
+    )
+
+
 class MingTTSPipelineConfig(PipelineConfig):
     """Ming-Omni-TTS pipeline.
 
@@ -168,78 +200,62 @@ class MingTTSPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "BailingMMNativeForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
 
-    @classmethod
-    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"talker": TTS_ENGINE_STAGE}
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        PREPROCESSING_STAGE: MingTTSPreprocessingStageConfig,
+        TTS_ENGINE_STAGE: EngineStageConfig,
+        AUDIO_DECODE_STAGE: MingTTSAudioDecodeStageConfig,
+    }
 
     @classmethod
-    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
-        return {"talker": TTS_ENGINE_STAGE}
-
-    @classmethod
-    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
-        return {"generation": TTS_ENGINE_STAGE}
-
-    @classmethod
-    def isolation_role_to_stage(cls) -> dict[str, str]:
-        return {"vocoder": AUDIO_DECODE_STAGE}
-
-    @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        return frozenset({(TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE)})
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {
-            (TTS_ENGINE_STAGE, AUDIO_DECODE_STAGE): {
-                REFERENCE_ENCODE_STAGE: 0.08,
-                TTS_ENGINE_STAGE: 0.72,
-                AUDIO_DECODE_STAGE: 0.12,
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (kaige): both payloads are transport-complete, but preserve the
+        # previous process-split allowlist in this PR and relax it separately.
+        return frozenset(
+            {
+                (PREPROCESSING_STAGE, REFERENCE_ENCODE_STAGE),
+                (REFERENCE_ENCODE_STAGE, TTS_ENGINE_STAGE),
             }
-        }
+        )
 
-    model_path: str
     entry_stage: str = PREPROCESSING_STAGE
     stages: list[StageConfig] = [
-        StageConfig(
+        MingTTSPreprocessingStageConfig(
             name=PREPROCESSING_STAGE,
             process="pipeline",
-            factory=f"{_PKG}.stages.create_preprocessing_executor",
-            factory_args={
-                "max_decode_steps_cap": MING_TTS_DEFAULT_MAX_DECODE_STEPS_CAP
-            },
+            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            factory=MingTTSPreprocessingFactoryArgs(
+                max_decode_steps_cap=MING_TTS_DEFAULT_MAX_DECODE_STEPS_CAP,
+            ),
             next=REFERENCE_ENCODE_STAGE,
         ),
         StageConfig(
             name=REFERENCE_ENCODE_STAGE,
             process="pipeline",
-            factory=f"{_PKG}.stages.create_reference_encode_executor",
-            factory_args={"dtype": "bfloat16"},
+            factory_path=f"{_PKG}.stages.create_reference_encode_executor",
+            factory=FactoryArgs(dtype="bfloat16"),
             gpu=0,
             next=TTS_ENGINE_STAGE,
         ),
-        StageConfig(
+        EngineStageConfig(
             name=TTS_ENGINE_STAGE,
             process="pipeline",
-            factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory_args={"dtype": "bfloat16"},
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FactoryArgs(dtype="bfloat16"),
             gpu=0,
             next=AUDIO_DECODE_STAGE,
             stream_to=[AUDIO_DECODE_STAGE],
         ),
-        StageConfig(
+        MingTTSAudioDecodeStageConfig(
             name=AUDIO_DECODE_STAGE,
             process="pipeline",
-            factory=f"{_PKG}.stages.create_audio_decode_executor",
-            factory_args={
-                "dtype": "bfloat16",
-                "initial_chunk_patches": MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
-                "steady_chunk_patches": MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
-                "max_batch_size": MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE,
-                "max_batch_wait_ms": MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS,
-            },
+            factory_path=f"{_PKG}.stages.create_audio_decode_executor",
+            factory=MingTTSAudioDecodeFactoryArgs(
+                dtype="bfloat16",
+                initial_chunk_patches=MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
+                steady_chunk_patches=MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
+                max_batch_size=MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE,
+                max_batch_wait_ms=MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS,
+            ),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
@@ -252,64 +268,31 @@ class MingTTSPipelineConfig(PipelineConfig):
         preprocessing = stages[PREPROCESSING_STAGE]
         audio_decode = stages[AUDIO_DECODE_STAGE]
 
-        preprocessing_overrides = self.runtime_overrides.get(PREPROCESSING_STAGE, {})
-        if "max_decode_steps_cap" in preprocessing_overrides:
-            raise ValueError(
-                "Ming-Omni-TTS max_decode_steps_cap is owned by "
-                "preprocessing.factory_args, not runtime_overrides"
-            )
-        max_decode_steps_cap = preprocessing.factory_args.setdefault(
-            "max_decode_steps_cap", MING_TTS_DEFAULT_MAX_DECODE_STEPS_CAP
-        )
-        if max_decode_steps_cap is not None and (
-            isinstance(max_decode_steps_cap, bool)
-            or not isinstance(max_decode_steps_cap, int)
-            or max_decode_steps_cap <= 0
-        ):
-            raise ValueError(
-                "Ming-Omni-TTS preprocessing.factory_args.max_decode_steps_cap "
-                "must be a positive integer or null"
-            )
-
-        audio_decode_overrides = self.runtime_overrides.get(AUDIO_DECODE_STAGE, {})
-        for field_name in ("initial_chunk_patches", "steady_chunk_patches"):
-            if field_name in audio_decode_overrides:
-                raise ValueError(
-                    f"Ming-Omni-TTS {field_name} is owned by "
-                    "audio_decode.factory_args, not runtime_overrides"
-                )
-        initial_chunk_patches = audio_decode.factory_args.setdefault(
-            "initial_chunk_patches", MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES
-        )
-        steady_chunk_patches = audio_decode.factory_args.setdefault(
-            "steady_chunk_patches", MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES
-        )
-        validate_ming_tts_audio_decode_cadence_config(
-            initial_chunk_patches=initial_chunk_patches,
-            steady_chunk_patches=steady_chunk_patches,
-        )
-        if "decode_mode" in audio_decode.factory_args or (
-            "decode_mode" in audio_decode_overrides
-        ):
+        # The value rules (positive ints) are static Field declarations on
+        # the typed groups; only the model's cross-value contracts remain.
+        del preprocessing
+        decode_extra = audio_decode.factory.model_extra or {}
+        if "decode_mode" in decode_extra:
             raise ValueError(
                 "Ming-Omni-TTS audio_decode no longer supports 'decode_mode'. "
-                "Non-streaming requests always use full-sequence AudioVAE decode; "
-                "streaming requests use incremental decode. Remove 'decode_mode' "
-                "from audio_decode factory_args/runtime_overrides."
+                "Non-streaming requests always use full-sequence AudioVAE "
+                "decode; streaming requests use incremental decode. Remove "
+                "'decode_mode' from the audio_decode factory group."
             )
+        max_batch_wait_ms = audio_decode.factory.max_batch_wait_ms
+        if max_batch_wait_ms is None:
+            max_batch_wait_ms = MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS
+        elif float(max_batch_wait_ms).is_integer():
+            # The factory group declares the wait as a float; the batch
+            # contract below is written against whole milliseconds.
+            max_batch_wait_ms = int(max_batch_wait_ms)
         validate_ming_tts_audio_decode_batch_config(
-            max_batch_size=audio_decode_overrides.get(
-                "max_batch_size",
-                audio_decode.factory_args.get(
-                    "max_batch_size", MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE
-                ),
+            max_batch_size=(
+                audio_decode.factory.max_batch_size
+                if audio_decode.factory.max_batch_size is not None
+                else MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE
             ),
-            max_batch_wait_ms=audio_decode_overrides.get(
-                "max_batch_wait_ms",
-                audio_decode.factory_args.get(
-                    "max_batch_wait_ms", MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS
-                ),
-            ),
+            max_batch_wait_ms=max_batch_wait_ms,
         )
 
         for stage in self.stages:
@@ -321,24 +304,6 @@ class MingTTSPipelineConfig(PipelineConfig):
                         f"tp_size={stage.tp_size}."
                     )
                 continue
-
-            if stage.tp_size <= 0:
-                raise ValueError(
-                    "Ming-Omni-TTS tts_engine tp_size must be positive; "
-                    f"got tp_size={stage.tp_size}."
-                )
-            if stage.tp_size == 1:
-                continue
-            if not isinstance(stage.gpu, list):
-                raise ValueError(
-                    "Ming-Omni-TTS tts_engine tensor parallelism requires "
-                    "gpu=[rank0_gpu, rank1_gpu, ...]."
-                )
-            if len(stage.gpu) != stage.tp_size:
-                raise ValueError(
-                    "Ming-Omni-TTS tts_engine TP GPU list length must match "
-                    f"tp_size; got gpu={stage.gpu!r}, tp_size={stage.tp_size}."
-                )
 
 
 EntryClass = MingTTSPipelineConfig

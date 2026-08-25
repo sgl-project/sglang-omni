@@ -189,3 +189,35 @@ def test_non_streaming_batch_isolates_invalid_payload() -> None:
 def test_invalid_batch_config_is_rejected(kwargs: dict, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         DotsTTSStreamingVocoder(_codec(), optimize=False, **kwargs)
+
+
+class TestVocoderFactorySignature:
+    """The vocoder factory declares every kwarg it accepts.
+
+    With a ``**kwargs`` catch-all, a mistyped ``factory.*`` key -- or a
+    correctly spelled one the factory never reads -- would be swallowed
+    silently; without it, the typed-kwargs check refuses it."""
+
+    def test_an_unknown_factory_key_is_refused(self) -> None:
+        stages = pytest.importorskip("sglang_omni.models.dots_tts.stages")
+        from sglang_omni.config.runtime import apply_typed_stage_kwargs
+
+        with pytest.raises(ValueError, match="stream_slotz"):
+            apply_typed_stage_kwargs(
+                stages.create_vocoder_executor,
+                {},
+                {"stream_slotz": 8},
+                stage_name="vocoder",
+            )
+
+    def test_declared_kwargs_still_pass(self) -> None:
+        stages = pytest.importorskip("sglang_omni.models.dots_tts.stages")
+        from sglang_omni.config.runtime import apply_typed_stage_kwargs
+
+        out = apply_typed_stage_kwargs(
+            stages.create_vocoder_executor,
+            {},
+            {"stream_slots": 8},
+            stage_name="vocoder",
+        )
+        assert out == {"stream_slots": 8}

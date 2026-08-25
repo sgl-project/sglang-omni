@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from types import SimpleNamespace
 
 import numpy as np
@@ -24,8 +25,18 @@ from sglang_omni.models.qwen3_asr.request_builders import (
     make_qwen3_asr_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.utils import audio as audio_utils
 from sglang_omni.utils.audio import AudioDecodeError
+
+
+def _unwrap_built(
+    result: Qwen3ASRRequestData | DeferredAdmission,
+) -> Qwen3ASRRequestData:
+    if isinstance(result, DeferredAdmission):
+        result.ready.result(timeout=5)
+        return result.value
+    return result
 
 
 class _FakeTokenizer:
@@ -611,6 +622,9 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
         def encode_item(self, item) -> None:
             raise AssertionError("encoder should not be called on a cache hit")
 
+        def submit_item(self, item):
+            raise AssertionError("encoder should not be called on a cache hit")
+
     monkeypatch.setattr(
         transcription,
         "load_audio",
@@ -631,6 +645,7 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
 
     data = request_builder(payload)
 
+    assert isinstance(data, Qwen3ASRRequestData)
     item = data.req.multimodal_inputs.mm_items[0]
     assert encoder_service.lookup == (data.req.extra_key, 13)
     assert item.feature is None
@@ -667,9 +682,17 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
             raise AssertionError("no cached embedding should be attached")
 
         def encode_item(self, item) -> None:
+            raise AssertionError("cache miss should submit, not block on encode")
+
+        def submit_item(self, item):
             self.encoded_feature = item.feature
             item.precomputed_embeddings = torch.zeros((item.num_audio_tokens, 4))
             item.feature = None
+            future: concurrent.futures.Future[torch.Tensor] = (
+                concurrent.futures.Future()
+            )
+            future.set_result(item.precomputed_embeddings)
+            return future
 
     monkeypatch.setattr(
         transcription,
@@ -690,12 +713,60 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
         data={},
     )
 
-    data = request_builder(payload)
+    result = request_builder(payload)
 
+    assert isinstance(result, DeferredAdmission)
+    data = _unwrap_built(result)
     assert encoder_service.lookup == (data.req.extra_key, 13)
     assert feature_extractor.calls == 1
     assert encoder_service.encoded_feature is not None
     assert data.req.multimodal_inputs.mm_items[0].feature is None
+
+
+def test_qwen3_asr_cache_miss_waits_in_builder_when_asked(monkeypatch) -> None:
+    class _FeatureExtractor:
+        hop_length = 160
+
+        def __call__(self, *args, **kwargs):
+            return SimpleNamespace(
+                input_features=torch.zeros((1, 128, 100)),
+                attention_mask=torch.ones((1, 100), dtype=torch.long),
+            )
+
+    class _EncoderService:
+        def lookup_cached_embedding(self, audio_fingerprint, expected_tokens):
+            del audio_fingerprint, expected_tokens
+            return None
+
+        def encode_item(self, item) -> None:
+            item.precomputed_embeddings = torch.zeros((item.num_audio_tokens, 4))
+            item.feature = None
+
+        def submit_item(self, item):
+            raise AssertionError("builder should wait on encode_item, not submit_item")
+
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=_FeatureExtractor(),
+        audio_encoder_service=_EncoderService(),
+        should_wait_for_encode=lambda: True,
+    )
+    payload = StagePayload(
+        request_id="req-asr-wait",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    result = request_builder(payload)
+
+    assert isinstance(result, Qwen3ASRRequestData)
+    assert result.req.multimodal_inputs.mm_items[0].feature is None
 
 
 def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
@@ -752,12 +823,17 @@ def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
         ) -> None:
             return None
 
-        def encode_item(self, item) -> None:
+        def submit_item(self, item):
             observed["offsets"] = item.offsets
             observed["num_audio_tokens"] = item.num_audio_tokens
             observed["audio_fingerprint"] = item.audio_fingerprint
             item.precomputed_embeddings = torch.zeros(item.num_audio_tokens, 4)
             item.feature = None
+            future: concurrent.futures.Future[torch.Tensor] = (
+                concurrent.futures.Future()
+            )
+            future.set_result(item.precomputed_embeddings)
+            return future
 
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -771,7 +847,7 @@ def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
         data={},
     )
 
-    data = request_builder(payload)
+    data = _unwrap_built(request_builder(payload))
 
     item = data.req.multimodal_inputs.mm_items[0]
     assert observed["offsets"] == item.offsets

@@ -3,12 +3,12 @@
 
 The DP never mutates the registry. It polls the worker snapshot into a local
 view (persistent Worker objects, so per-process counters survive refreshes),
-relays the four model routes through the standard ProxyHandler, sheds new
-requests when the snapshot outlives the stale timeout (the CP is presumed
-gone), reports eviction-relevant upstream failures to the CP, and heartbeats
-its identity plus last_applied_seq so the CP watchdog and the weight-update
-ACK barrier can see it. A 409 heartbeat means this process was fenced out by
-a newer generation and must stop serving.
+relays the model routes (see register_data_routes) through the standard
+ProxyHandler, sheds new requests when the snapshot outlives the stale timeout
+(the CP is presumed gone), reports eviction-relevant upstream failures to the
+CP, and heartbeats its identity plus last_applied_seq so the CP watchdog and
+the weight-update ACK barrier can see it. A 409 heartbeat means this process
+was fenced out by a newer generation and must stop serving.
 """
 
 from __future__ import annotations

@@ -77,7 +77,7 @@ def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
         buffer.concatenate(0, 10)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     # A request's codes must not depend on which other requests share its
@@ -104,7 +104,7 @@ def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     assert torch.equal(batched, alone)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
     torch.manual_seed(0)
@@ -176,16 +176,16 @@ def test_minimax_music3_explicit_placements_ignore_the_machine(
         dual_stages = {stage.name: stage for stage in dual.stages}
         single_stages = {stage.name: stage for stage in single.stages}
         assert dual_stages["minimax_music3_ar"].gpu == 0
-        assert dual_stages["minimax_music3_ar"].factory_args["max_concurrency"] == 16
+        assert dual_stages["minimax_music3_ar"].factory.max_concurrency == 16
         assert dual_stages["dit_dav"].gpu == 1
-        assert dual_stages["dit_dav"].factory_args["dtype"] == "float32"
-        assert dual_stages["dit_dav"].factory_args["breakable_cuda_graph"] is False
+        assert dual_stages["dit_dav"].factory.dtype == "float32"
+        assert dual_stages["dit_dav"].factory.breakable_cuda_graph is False
         assert dual.placement.require_memory_fraction_for_colocation
         assert single_stages["minimax_music3_ar"].gpu == 0
-        assert single_stages["minimax_music3_ar"].factory_args["max_concurrency"] == 16
+        assert single_stages["minimax_music3_ar"].factory.max_concurrency == 16
         assert single_stages["dit_dav"].gpu == 0
-        assert single_stages["dit_dav"].factory_args["dtype"] == "float32"
-        assert single_stages["dit_dav"].factory_args["breakable_cuda_graph"] is False
+        assert single_stages["dit_dav"].factory.dtype == "float32"
+        assert single_stages["dit_dav"].factory.breakable_cuda_graph is False
         assert not single.placement.require_memory_fraction_for_colocation
 
 
@@ -219,12 +219,12 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     stages = {stage.name: stage for stage in config.stages}
     assert stages["minimax_music3_ar"].gpu == 0
     assert stages["dit_dav"].gpu == acoustic_gpu
-    assert stages["dit_dav"].factory_args["dtype"] == acoustic_dtype
-    assert stages["dit_dav"].factory_args["compile_acoustic"] is True
+    assert stages["dit_dav"].factory.dtype == acoustic_dtype
+    assert stages["dit_dav"].factory.compile_acoustic is True
     assert config.placement.require_memory_fraction_for_colocation is colocation_check
-    assert MiniMaxMusic3PipelineConfig.mem_fraction_role_to_stage() == {
-        "talker": "minimax_music3_ar"
-    }
+    assert MiniMaxMusic3PipelineConfig.stage_config_cls(
+        "minimax_music3_ar"
+    ).engine_stage
 
 
 def test_native_attention_preserves_checkpoint_state_dict_keys() -> None:
@@ -255,7 +255,7 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
     assert remove_weight_norm(convolution) == 0
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
     torch.manual_seed(17)
@@ -288,7 +288,7 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
     torch.testing.assert_close(actual, expected, rtol=0, atol=1e-6)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
     def depth_forward(
@@ -344,6 +344,7 @@ def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
     assert torch.equal(actual_codes, preserved_codes)
 
 
+@pytest.mark.accelerator
 def test_rvq_cuda_graph_declines_a_batch_larger_than_every_bucket() -> None:
     def depth_forward(hidden, c0, seeds, positions, forced, replay):
         del c0, seeds, positions, replay
@@ -392,7 +393,7 @@ class _TinyCacheDiffusion(torch.nn.Module):
         self.transformer = _TinyCacheTransformer()
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
     model = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)

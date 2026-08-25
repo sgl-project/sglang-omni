@@ -5,9 +5,26 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from pydantic import Field
+
+from sglang_omni.config import (
+    EngineStageConfig,
+    FactoryArgs,
+    PipelineConfig,
+    StageConfig,
+)
 
 _PKG = "sglang_omni.models.dots_tts"
+
+
+class DotsVocoderFactoryArgs(FactoryArgs):
+    """dots.tts vocoder constructor knobs, typed like the shared ones."""
+
+    stream_slots: int | None = Field(default=None, ge=1)
+
+
+class DotsVocoderStageConfig(StageConfig):
+    factory: DotsVocoderFactoryArgs = Field(default_factory=DotsVocoderFactoryArgs)
 
 
 class DotsTTSPipelineConfig(PipelineConfig):
@@ -23,36 +40,38 @@ class DotsTTSPipelineConfig(PipelineConfig):
     )
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset({"auto_detect"})
 
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "latent_engine": EngineStageConfig,
+        "vocoder": DotsVocoderStageConfig,
+    }
+
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
             process="pipeline",
-            factory=f"{_PKG}.stages.create_preprocessing_executor",
+            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             next="reference_encode",
         ),
         StageConfig(
             name="reference_encode",
             process="pipeline",
-            factory=f"{_PKG}.stages.create_reference_encode_executor",
-            factory_args={"device": "cuda"},
+            factory_path=f"{_PKG}.stages.create_reference_encode_executor",
             gpu=0,
             next="latent_engine",
         ),
-        StageConfig(
+        EngineStageConfig(
             name="latent_engine",
             process="pipeline",
-            factory=f"{_PKG}.stages.create_sglang_latent_engine_executor",
-            factory_args={"device": "cuda", "precision": "bfloat16"},
+            factory_path=f"{_PKG}.stages.create_sglang_latent_engine_executor",
             gpu=0,
             next="vocoder",
             stream_to=["vocoder"],
         ),
-        StageConfig(
+        DotsVocoderStageConfig(
             name="vocoder",
             process="pipeline",
-            factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={"device": "cuda", "precision": "bfloat16"},
+            factory_path=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
@@ -63,71 +82,70 @@ class DotsTTSPipelineConfig(PipelineConfig):
         super().model_post_init(__context)
         if any(stage.tp_size != 1 for stage in self.stages):
             raise ValueError("dots.tts currently supports tp_size=1 only")
-        stages = {stage.name: stage for stage in self.stages}
-        preprocessing = stages["preprocessing"]
-        latent_engine = stages["latent_engine"]
-        vocoder = stages["vocoder"]
-        preprocessing_overrides = self.runtime_overrides.get("preprocessing", {})
-        latent_overrides = self.runtime_overrides.get("latent_engine", {})
-        vocoder_overrides = self.runtime_overrides.get("vocoder", {})
-        for engine_key, preprocessing_key, default in (
-            ("num_steps", "default_num_steps", 4),
-            ("max_generate_length", "max_generate_length", 500),
-        ):
-            engine_value = latent_overrides.get(
-                engine_key, latent_engine.factory_args.get(engine_key, default)
-            )
-            if preprocessing_key in preprocessing_overrides:
-                raise ValueError(
-                    f"dots.tts {preprocessing_key!r} is derived from {engine_key!r}; "
-                    "configure it on the latent_engine stage"
-                )
-            preprocessing.factory_args[preprocessing_key] = engine_value
-        # note (guozhihao-224): stream_slots must match backbone concurrency so
-        # a max_running_requests override cannot outrun vocoder admission after
-        # readiness. Omit vocoder.stream_slots to derive it.
-        max_running_requests = self._latent_max_running_requests(
-            latent_engine, latent_overrides
+        # note (guozhihao-224): preprocessing bakes the generation schedule the
+        # latent engine executes, so num_steps and max_generate_length must
+        # agree between the two stages when both are set. The latent_engine
+        # group is the owner; a preprocessing value that conflicts with the
+        # latent_engine value is refused. Unset preprocessing keys are derived
+        # at launch from the latent_engine.
+        preprocessing_extra = (
+            self.stage_named("preprocessing").factory.model_extra or {}
         )
-        if "stream_slots" in vocoder_overrides:
-            stream_slots = int(vocoder_overrides["stream_slots"])
-            if stream_slots != max_running_requests:
+        latent_extra = self.stage_named("latent_engine").factory.model_extra or {}
+        for derived_key, default in (("num_steps", 4), ("max_generate_length", 500)):
+            pre_val = preprocessing_extra.get(derived_key)
+            lat_val = latent_extra.get(derived_key, default)
+            if pre_val is not None and int(pre_val) != int(lat_val):
+                raise ValueError(
+                    f"dots.tts preprocessing {derived_key!r} ({int(pre_val)}) "
+                    f"disagrees with latent_engine {derived_key!r} ({int(lat_val)}); "
+                    f"configure only latent_engine.factory.{derived_key} and let "
+                    "preprocessing derive it, or set both to the same value"
+                )
+        # note (guozhihao-224): stream_slots must match backbone concurrency
+        # so a max_running_requests override cannot outrun vocoder admission
+        # after readiness. A pinned value that disagrees is refused here, on
+        # every rebuild; an unset value stays unset and is derived at launch
+        # (writing the derivation into the config would make it look pinned
+        # on the next merge).
+        stream_slots = self.stage_named("vocoder").factory.stream_slots
+        if stream_slots is not None:
+            derived = self._latent_max_running_requests(
+                self.stage_named("latent_engine")
+            )
+            if int(stream_slots) != derived:
                 raise ValueError(
                     "dots.tts vocoder stream_slots "
-                    f"({stream_slots}) must equal latent_engine "
-                    f"max_running_requests ({max_running_requests}); "
+                    f"({int(stream_slots)}) must equal latent_engine "
+                    f"max_running_requests ({derived}); "
                     "omit stream_slots to derive it from the latent engine"
                 )
-        else:
-            vocoder.factory_args["stream_slots"] = max_running_requests
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        if stage_name == "preprocessing":
+            latent_extra = self.stage_named("latent_engine").factory.model_extra or {}
+            return {
+                "num_steps": int(latent_extra.get("num_steps", 4)),
+                "max_generate_length": int(
+                    latent_extra.get("max_generate_length", 500)
+                ),
+            }
+        if stage_name == "vocoder":
+            return {
+                "stream_slots": self._latent_max_running_requests(
+                    self.stage_named("latent_engine")
+                )
+            }
+        return {}
 
     @staticmethod
-    def _latent_max_running_requests(
-        latent_engine: StageConfig,
-        latent_overrides: dict[str, Any],
-    ) -> int:
-        for source in (
-            latent_overrides.get("server_args_overrides"),
-            latent_overrides,
-            latent_engine.factory_args.get("server_args_overrides"),
-            latent_engine.factory_args,
-        ):
-            if not isinstance(source, dict):
-                continue
-            if "max_running_requests" in source:
-                value = int(source["max_running_requests"])
-                if value < 1:
-                    raise ValueError(
-                        "dots.tts max_running_requests must be positive, "
-                        f"got {value}"
-                    )
-                return value
-        # Match DotsTTSEngineBuilder default when unset.
-        return 16
-
-    @classmethod
-    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
-        return {"generation": "latent_engine"}
+    def _latent_max_running_requests(latent_engine: StageConfig) -> int:
+        engine = latent_engine.engine
+        value = engine.max_running_requests if engine is not None else None
+        if value is None:
+            # Match DotsTTSEngineBuilder default when unset.
+            return 16
+        return int(value)
 
     def supports_uploaded_voice_references(self) -> bool:
         return True

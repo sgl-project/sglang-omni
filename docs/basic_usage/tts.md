@@ -42,6 +42,7 @@ for details.
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; streaming; the provided config uses TP1 |
+| [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | `examples/configs/fun_cosyvoice3_0_5b.yaml` | Requires one reference audio clip via `ref_audio` or `references`. Supports zero-shot cloning, cross-lingual, instruct mode, and buffered speed control |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 | [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 48 kHz stereo local-transformer MOSS-TTS; voice cloning / reference-less; streaming |
 | [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |
@@ -51,7 +52,7 @@ for details.
 ## Launch the Server
 
 See [TTS Process Topology](tts_process_topology.md) for model defaults,
-`--isolate-stage`, and same-GPU memory requirements.
+per-stage `process` overrides, and same-GPU memory requirements.
 
 The reference-audio examples below fetch clips from Hugging Face, so the
 commands include the Hugging Face host and its current download redirect host.
@@ -175,6 +176,18 @@ sgl-omni serve \
   --port 8000
 ```
 
+For Fun-CosyVoice3:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --allowed-media-domain huggingface.co \
+  --allowed-media-domain cas-bridge.xethub.hf.co \
+  --allowed-media-domain us.aws.cdn.hf.co \
+  --port 8000
+```
+
 ## Use Curl
 
 Generate speech from text without any reference audio. This is valid for
@@ -289,7 +302,7 @@ terminal sentinel. When the client does not set `initial_codec_chunk_frames`,
 the model selects a continuity-safe first vocoder chunk. Set the field explicitly
 to override that default, or set it to `0` to use the model's steady chunk size
 from the start. Ming-Omni-TTS is the only model that rejects the field: its
-initial and steady cadence are pipeline-level `audio_decode.factory_args`, so a
+initial and steady cadence are the audio_decode stage's `factory` settings, so a
 request that sets it fails.
 
 ### Batch Speech
@@ -327,8 +340,9 @@ items, fail the HTTP request.
 
 Use `/v1/audio/speech/stream` for stateful text input over a persistent
 WebSocket. The first message must be `session.config`. Then send `input.text`
-messages and finish with `input.done`. The server acknowledges the initial
-configuration with `session.configured`.
+messages. Send `input.commit` to flush the current text segment while keeping
+the WebSocket open, or finish the session with `input.done`. The server
+acknowledges the initial configuration with `session.configured`.
 
 `stream_audio` defaults to `false`. With the default, each completed text
 segment returns one binary audio frame between `audio.start` and `audio.done`.
@@ -358,13 +372,27 @@ async def main():
         }))
         print(await ws.recv())
 
+        pcm_chunks = []
         await ws.send(json.dumps({
             "type": "input.text",
             "text": "Hello from the speech WebSocket. This is the second sentence.",
         }))
+        await ws.send(json.dumps({"type": "input.commit"}))
+
+        # input.committed is emitted after all audio for the segment. More
+        # input.text/input.commit pairs can follow on the same WebSocket.
+        while True:
+            message = await ws.recv()
+            if isinstance(message, bytes):
+                pcm_chunks.append(message)
+                continue
+            event = json.loads(message)
+            print(event)
+            if event["type"] == "input.committed":
+                break
+
         await ws.send(json.dumps({"type": "input.done"}))
 
-        pcm_chunks = []
         while True:
             message = await ws.recv()
             if isinstance(message, bytes):
@@ -381,6 +409,14 @@ async def main():
 
 asyncio.run(main())
 ```
+
+Each `input.commit` forces a flush of any remaining buffered text (including text that does not end at the configured sentence
+or clause boundary). After all audio for that segment, the server emits
+`input.committed` with `segment_index`, `segment_sentences`, and cumulative
+`total_sentences`, then accepts more input on the same connection. An empty
+commit is valid: it flushes nothing and reports `segment_sentences: 0`.
+`input.done` performs the same final buffer flush, emits `session.done`, and
+closes the WebSocket.
 
 `split_granularity` can be `sentence` or `clause`. Unknown message types and
 malformed JSON return a WebSocket `error` event. Missing or invalid initial

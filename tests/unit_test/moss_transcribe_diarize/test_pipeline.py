@@ -62,39 +62,30 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     assert [stage.name for stage in config.stages] == ["asr"]
     assert config.terminal_stages == ["asr"]
     assert config.gpu_placement == {"asr": 0}
-    assert config.stages[0].factory.endswith(
+    assert config.stages[0].factory_path.endswith(
         "create_sglang_moss_transcribe_diarize_executor"
     )
-    assert config.stages[0].factory_args["device"] == "cuda:0"
-    assert config.stages[0].factory_args["max_running_requests"] == 16
-    assert config.stages[0].factory_args["enable_torch_compile"] is True
-    assert config.stages[0].factory_args["torch_compile_max_bs"] == 4
-    assert config.stages[0].factory_args["encoder_max_batch_size"] == 2
-    assert config.stages[0].factory_args["request_build_max_workers"] == 8
-    assert config.stages[0].factory_args["request_build_max_pending"] == 16
-    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 4
-    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 12
-    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
-    assert (
-        config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
-        is True
-    )
-    assert (
-        config.stages[0].factory_args["prefill_coalesce_after_builds_during_decode"]
-        is True
-    )
+    factory = config.stages[0].factory
+    engine = config.stages[0].engine
+    assert factory.device == "cuda:0"
+    assert engine.max_running_requests == 16
+    assert engine.enable_torch_compile is True
+    assert engine.torch_compile_max_bs == 4
+    assert factory.encoder_max_batch_size == 2
+    assert factory.request_build_max_workers == 8
+    assert factory.request_build_max_pending == 16
+    assert factory.prefill_coalesce_requests == 4
+    assert factory.prefill_coalesce_wait_ms == 12
+    assert factory.prefill_coalesce_when_idle is True
+    assert factory.prefill_coalesce_requires_pending_builds is True
+    assert factory.prefill_coalesce_after_builds_during_decode is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config(
             "MossTranscribeDiarizeForConditionalGeneration"
         )
         is MossTranscribeDiarizePipelineConfig
     )
-    assert MossTranscribeDiarizePipelineConfig.mem_fraction_role_to_stage() == {
-        "asr": "asr"
-    }
-    assert MossTranscribeDiarizePipelineConfig.generation_sglang_role_to_stage() == {
-        "generation": "asr"
-    }
+    assert MossTranscribeDiarizePipelineConfig.stage_config_cls("asr").engine_stage
 
 
 def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
@@ -140,15 +131,15 @@ def test_moss_transcribe_diarize_compile_cap_survives_batch_overrides() -> None:
 
 
 @pytest.mark.parametrize(
-    ("runtime_overrides", "expected_workers"),
+    ("worker_override", "expected_workers"),
     [
-        ({}, 8),
-        ({"asr": {"request_build_max_workers": 4}}, 4),
+        (None, 8),
+        (4, 4),
     ],
 )
 def test_moss_transcribe_diarize_omp_default_tracks_request_workers(
     monkeypatch: pytest.MonkeyPatch,
-    runtime_overrides: dict[str, dict[str, int]],
+    worker_override: int | None,
     expected_workers: int,
 ) -> None:
     from sglang_omni.models.moss_transcribe_diarize import config as config_module
@@ -165,13 +156,16 @@ def test_moss_transcribe_diarize_omp_default_tracks_request_workers(
         _bounded_threads,
     )
 
-    config = config_module.MossTranscribeDiarizePipelineConfig(
-        model_path="dummy",
-        runtime_overrides=runtime_overrides,
-    )
+    config = config_module.MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    if worker_override is not None:
+        from sglang_omni.config.manager import ConfigManager
 
-    assert config.env_defaults["OMP_NUM_THREADS"] == "3"
-    assert calls == [(expected_workers, 8)]
+        config = ConfigManager(config).merge_config(
+            [("asr.factory.request_build_max_workers", str(worker_override))]
+        )
+
+    assert config.resolved_env_defaults()["OMP_NUM_THREADS"] == "3"
+    assert calls[-1] == (expected_workers, 8)
 
 
 def test_moss_transcribe_diarize_preserves_explicit_omp_default(
@@ -179,13 +173,10 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
 ) -> None:
     from sglang_omni.models.moss_transcribe_diarize import config as config_module
 
-    def _unexpected_call(**_kwargs) -> int:
-        raise AssertionError("explicit OMP_NUM_THREADS must bypass auto sizing")
-
     monkeypatch.setattr(
         config_module,
         "bounded_intraop_threads",
-        _unexpected_call,
+        lambda **_kwargs: 999,
     )
 
     config = config_module.MossTranscribeDiarizePipelineConfig(
@@ -193,7 +184,8 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
         env_defaults={"OMP_NUM_THREADS": "3"},
     )
 
-    assert config.env_defaults["OMP_NUM_THREADS"] == "3"
+    # The written entry wins over whatever the derivation would produce.
+    assert config.resolved_env_defaults()["OMP_NUM_THREADS"] == "3"
 
 
 def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
@@ -296,6 +288,7 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
 
     from transformers import AutoProcessor
 
+    from sglang_omni import platforms
     from sglang_omni.models.moss_transcribe_diarize import (
         engine_builder,
         request_builders,
@@ -334,6 +327,10 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         enable_prefill_input_embeds=False,
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
 
     processor = SimpleNamespace(
         tokenizer=object(),

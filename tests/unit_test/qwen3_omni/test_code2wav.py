@@ -39,6 +39,14 @@ class _FactoryModel(FakeCode2WavModel):
         return self
 
 
+def _pin_cuda_platform(monkeypatch) -> None:
+    import sglang_omni.platforms as platforms
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+
+
 class _FakeCudaGraphRunner:
     def __init__(self, model, *, replay_error: Exception | None = None) -> None:
         self.model = model
@@ -145,15 +153,16 @@ def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
     would reach the CUDA-only runner, so every non-CUDA platform declares itself.
     """
     from sglang_omni.platforms.cpu import CPUOmniPlatform
-    from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
+    from sglang_omni.platforms.cuda import CUDAOmniPlatform
     from sglang_omni.platforms.npu import NPUOmniPlatform
+    from sglang_omni.platforms.rocm import ROCMOmniPlatform
     from sglang_omni.platforms.xpu import XPUOmniPlatform
 
     assert XPUOmniPlatform().enable_code2wav_graph() is False
     assert NPUOmniPlatform().enable_code2wav_graph() is False
     assert CPUOmniPlatform().enable_code2wav_graph() is False
     assert CUDAOmniPlatform().enable_code2wav_graph() is True
-    assert ROCMOmniPlatform().enable_code2wav_graph() is True
+    assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
 def test_the_code2wav_stage_takes_its_graph_flag_from_the_platform() -> None:
@@ -194,6 +203,7 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
 def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
+    _pin_cuda_platform(monkeypatch)
     model = _FactoryModel(num_quantizers=12)
     runner = SimpleNamespace(
         available_batch_sizes=lambda frames: (8, 4, 2, 1),
@@ -224,6 +234,7 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
 def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
+    _pin_cuda_platform(monkeypatch)
     captured_keys: list[tuple] = []
 
     class _RecordingRunner:
@@ -270,6 +281,7 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
 def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
     monkeypatch,
 ) -> None:
+    _pin_cuda_platform(monkeypatch)
     build_calls: list[tuple] = []
 
     class _DisabledRunner:
@@ -723,14 +735,14 @@ def test_qwen_code2wav_graph_output_protocol_matches_eager_exactly() -> None:
 def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
     class _BorrowedOutputRunner:
         def __init__(self) -> None:
-            self.scheduler = None
+            self.factory = None
             self.static_output = torch.zeros((1, 1, 2), dtype=torch.float32)
             self.lock_was_held: list[bool] = []
             self.replays = 0
 
         def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
             assert eligible
-            self.lock_was_held.append(self.scheduler._state_lock._is_owned())
+            self.lock_was_held.append(self.factory._state_lock._is_owned())
             self.replays += 1
             self.static_output.fill_(float(self.replays))
             return Code2WavRunResult(
@@ -750,7 +762,7 @@ def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
         enable_cuda_graph=True,
         _cuda_graph_runner=runner,
     )
-    runner.scheduler = scheduler
+    runner.factory = scheduler
     _seed_stream_state(scheduler)
 
     for chunk_id in range(2):

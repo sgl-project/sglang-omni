@@ -95,6 +95,16 @@ audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",
 ]
+fun-cosyvoice3 = [
+    "conformer==0.3.2",
+    "HyperPyYAML==1.2.3",
+    "pyworld==0.3.4",
+    "wetext==0.0.4",
+    "inflect==7.3.1",
+    "gdown==5.1.0",
+    "lightning==2.6.5",
+    "matplotlib",
+]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
@@ -109,6 +119,12 @@ Issues = "https://github.com/sgl-project/sglang-omni/issues"
 Repository = "https://github.com/sgl-project/sglang-omni"
 
 [tool.uv]
+# The dependency set pins CUDA-13-only wheels (mooncake-transfer-engine-cuda13,
+# nixl-cu13, flash-attn-4); without this, uv's universal resolution also
+# solves for platforms those wheels do not support and fails.
+environments = [
+    "sys_platform == 'linux'",
+]
 override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
 ]
@@ -118,7 +134,7 @@ pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
-    "gpu: requires a CUDA device (auto-skipped without one)",
+    "accelerator: requires accelerator hardware",
 ]
 
 [tool.setuptools.packages.find]
