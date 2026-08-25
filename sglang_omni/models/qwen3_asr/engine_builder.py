@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -117,18 +118,26 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.context_length = max_prompt_tokens + max_output_budget + 8
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        enable_cuda_graph = current_platform.enable_sglang_cuda_graph()
+        enable_torch_compile = (
+            self.enable_torch_compile and current_platform.enable_torch_compile()
+        )
         defaults: dict[str, Any] = {
             "max_running_requests": self.max_running_requests,
-            "disable_cuda_graph": False,
+            "disable_cuda_graph": not enable_cuda_graph,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": self.enable_torch_compile,
+            "enable_torch_compile": enable_torch_compile,
             "torch_compile_max_bs": self.torch_compile_max_bs,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
             "dtype": dtype,
-            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
+            "cuda_graph_backend_prefill": (
+                CudaGraphBackend.BREAKABLE
+                if enable_cuda_graph
+                else CudaGraphBackend.DISABLED
+            ),
         }
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend

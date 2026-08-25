@@ -13,11 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
-from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
 from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
+from sglang_omni.platforms import current_platform
 
 # Sentinel seed for rows with no user seed: keeps the legacy unseeded
 # torch.multinomial path, so unseeded decode is byte-identical to before.
@@ -28,6 +27,54 @@ STOP_CODE = -1
 
 # CG-baked top-k upper bound = full codec vocab, so the default value is a no-op filter.
 K_MAX = 1026
+
+
+def _top_k_renorm_prob_torch(probs: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
+    """torch fallback for ``sgl_kernel.top_k_renorm_prob`` (Ascend NPU).
+
+    Zeroes every entry below each row's k-th largest value and renormalizes.
+    Ties at the k-th boundary are kept, matching the per-row oracle in
+    :func:`_sample_independent`.
+    """
+    v = probs.shape[-1]
+    k_safe = k.long().clamp(min=1, max=v)
+    kth = probs.sort(dim=-1, descending=True).values.gather(
+        -1, (k_safe - 1).unsqueeze(-1)
+    ).squeeze(-1)
+    masked = torch.where(probs < kth.unsqueeze(-1), torch.zeros_like(probs), probs)
+    denom = masked.sum(dim=-1, keepdim=True)
+    return masked / denom.clamp_min(torch.finfo(probs.dtype).tiny)
+
+
+def _top_p_renorm_prob_torch(probs: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
+    """torch fallback for ``sgl_kernel.top_p_renorm_prob`` (Ascend NPU).
+
+    Nucleus (top-p) filtering with the same convention as the per-row oracle
+    :func:`_sample_independent`: force-keep the highest-probability token and
+    keep the token whose cumulative mass first crosses ``p``, then renormalize.
+    """
+    sorted_probs, sorted_indices = probs.sort(dim=-1, descending=True)
+    cum_probs = sorted_probs.cumsum(dim=-1)
+    remove = cum_probs > p.unsqueeze(-1)
+    # Shift right + force-keep the top token so the highest-prob token never
+    # gets cut (identical to the _sample_independent nucleus convention).
+    remove[..., 1:] = remove[..., :-1].clone()
+    remove[..., 0] = False
+    scatter = torch.zeros_like(remove)
+    scatter.scatter_(-1, sorted_indices, remove)
+    masked = torch.where(scatter, torch.zeros_like(probs), probs)
+    denom = masked.sum(dim=-1, keepdim=True)
+    return masked / denom.clamp_min(torch.finfo(probs.dtype).tiny)
+
+
+# Fused top-k/top-p renormalization kernels come from ``sgl_kernel`` on CUDA;
+# Ascend NPU has no fused renorm kernels, so the sampler falls back to the
+# equivalent torch implementations above.
+_fused_renorm = current_platform.get_fused_topk_topp_renorm()
+if _fused_renorm is not None:
+    _top_k_renorm, _top_p_renorm = _fused_renorm
+else:
+    _top_k_renorm, _top_p_renorm = _top_k_renorm_prob_torch, _top_p_renorm_prob_torch
 
 
 @dataclass
@@ -59,10 +106,12 @@ class HiggsBatchedSamplerState:
         self,
         max_batch_size: int,
         num_codebooks: int,
-        device: torch.device | str = "cuda",
+        device: torch.device | str | None = None,
     ) -> None:
         self.max_batch_size = int(max_batch_size)
         self.num_codebooks = int(num_codebooks)
+        if device is None:
+            device = current_platform.device_type
         self.device = torch.device(device)
         self.delay_count = torch.zeros(
             self.max_batch_size, dtype=torch.int32, device=self.device
@@ -265,10 +314,10 @@ def _sample_independent_batched(
             .to(torch.int32)
             .contiguous()
         )
-        probs = _fused_top_k_renorm(probs, tk)
+        probs = _top_k_renorm(probs, tk)
     if top_p is not None:
         tp = top_p.view(B, 1).expand(B, N).reshape(B * N).to(torch.float32).contiguous()
-        probs = _fused_top_p_renorm(probs, tp)
+        probs = _top_p_renorm(probs, tp)
 
     codes_flat = probs.multinomial(num_samples=1).squeeze(-1)
     if seeds_B is not None:

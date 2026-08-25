@@ -52,3 +52,30 @@ class OmniPlatform(DeviceMixin):
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
+
+    def enable_sglang_cuda_graph(self):
+        """Check if current platform supports SGLang generation CUDA graph
+        capture (e.g. CUDA). Ascend NPU ATB operators are incompatible with
+        SGLang decode graph capture, so the NPU platform disables it.
+        """
+        return True
+
+    def get_fused_topk_topp_renorm(self):
+        """Return the fused ``(top_k_renorm_prob, top_p_renorm_prob)``
+        callables from ``sgl_kernel`` when this platform provides them
+        (e.g. CUDA), else ``None``.
+
+        The Higgs TTS sampler uses these fused kernels on CUDA to replace a
+        full-vocab ``torch.sort`` in decode; Ascend NPU has no fused renorm
+        kernels, so it returns ``None`` and the sampler falls back to an
+        equivalent ``torch`` implementation.
+        """
+        return None
+
+    def enable_torch_compile(self):
+        """Check if current platform supports ``torch.compile`` (e.g. CUDA).
+
+        Ascend NPU has no native ``torch.compile`` backend, so models that
+        optionally wrap sub-modules with ``torch.compile`` must skip it there.
+        """
+        return True
