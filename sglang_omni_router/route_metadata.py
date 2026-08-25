@@ -15,6 +15,8 @@ from sglang_omni_router.config import DEFAULT_CAPABILITIES, Capability
 from sglang_omni_router.worker import ServiceClass
 
 ROUTE_METADATA_JSON_LIMIT_BYTES = 1024 * 1024
+MULTIPART_PART_HEADER_LIMIT_BYTES = 8 * 1024
+MULTIPART_FIELD_VALUE_LIMIT_BYTES = 4 * 1024
 ROUTE_MODEL_HEADER = "x-sglang-omni-route-model"
 ROUTE_STREAM_HEADER = "x-sglang-omni-route-stream"
 ROUTE_CAPABILITIES_HEADER = "x-sglang-omni-route-capabilities"
@@ -56,6 +58,7 @@ class RouteKind(str, Enum):
     SPEECH_BATCH = "speech_batch"
     VOICE_CONTROL = "voice_control"
     TRANSCRIPTION = "transcription"
+    TRANSLATION = "translation"
 
 
 def classify_route(path: str) -> RouteKind:
@@ -67,6 +70,8 @@ def classify_route(path: str) -> RouteKind:
         return RouteKind.VOICE_CONTROL
     if path == "/v1/audio/transcriptions":
         return RouteKind.TRANSCRIPTION
+    if path == "/v1/audio/translations":
+        return RouteKind.TRANSLATION
     return RouteKind.GENERATION
 
 
@@ -183,6 +188,22 @@ def extract_route_metadata(
     else:
         model = route_model
         stream = route_stream
+        if route_kind in {RouteKind.TRANSCRIPTION, RouteKind.TRANSLATION}:
+            form = _multipart_form_facts(request, body)
+            if form.model is not None:
+                if has_route_model_header and route_model != form.model:
+                    raise RouteMetadataError(
+                        f"{ROUTE_MODEL_HEADER} conflicts with the multipart "
+                        "form model"
+                    )
+                model = form.model
+            if form.stream is not None:
+                if has_route_stream_header and route_stream != form.stream:
+                    raise RouteMetadataError(
+                        f"{ROUTE_STREAM_HEADER} conflicts with the multipart "
+                        "form stream"
+                    )
+                stream = form.stream
         required_capabilities = _required_capabilities(
             route_kind,
             payload,
@@ -478,6 +499,116 @@ class _JsonTopLevelScanner:
         return index + consumed
 
 
+@dataclass(frozen=True)
+class MultipartFormFacts:
+    model: str | None = None
+    stream: bool | None = None
+
+
+_MULTIPART_FORM_FIELDS = frozenset({"model", "stream"})
+_FORM_TRUE_VALUES = {"true", "1", "yes", "on"}
+_FORM_FALSE_VALUES = {"false", "0", "no", "off"}
+
+
+def _multipart_form_facts(request: Request, body: bytes) -> MultipartFormFacts:
+    if not body:
+        return MultipartFormFacts()
+    boundary = _multipart_boundary(request)
+    if boundary is None:
+        return MultipartFormFacts()
+    values = _scan_multipart_form_fields(body, boundary)
+    return MultipartFormFacts(
+        model=values.get("model") or None,
+        stream=_form_bool(values.get("stream")),
+    )
+
+
+def _form_bool(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in _FORM_TRUE_VALUES:
+        return True
+    if normalized in _FORM_FALSE_VALUES:
+        return False
+    return None
+
+
+def _multipart_boundary(request: Request) -> bytes | None:
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" not in content_type.lower():
+        return None
+    for param in content_type.split(";"):
+        key, _, value = param.strip().partition("=")
+        if key.strip().lower() != "boundary":
+            continue
+        value = value.strip().strip('"')
+        try:
+            return value.encode("ascii") if value else None
+        except UnicodeEncodeError:
+            return None
+    return None
+
+
+def _scan_multipart_form_fields(body: bytes, boundary: bytes) -> dict[str, str]:
+    delimiter = b"--" + boundary
+    values: dict[str, str] = {}
+    position = body.find(delimiter)
+    if position < 0:
+        return values
+    position += len(delimiter)
+    while True:
+        if body.startswith(b"--", position):
+            return values  # closing delimiter: the form has no more parts
+        if not body.startswith(b"\r\n", position):
+            return values
+        position += 2
+        headers_end = body.find(
+            b"\r\n\r\n", position, position + MULTIPART_PART_HEADER_LIMIT_BYTES
+        )
+        if headers_end < 0:
+            return values
+        name, has_filename = _content_disposition_name(body[position:headers_end])
+        value_start = headers_end + 4
+        value_end = body.find(b"\r\n" + delimiter, value_start)
+        if value_end < 0:
+            return values
+        if (
+            name in _MULTIPART_FORM_FIELDS
+            and name not in values
+            and not has_filename
+            and value_end - value_start <= MULTIPART_FIELD_VALUE_LIMIT_BYTES
+        ):
+            try:
+                values[name] = body[value_start:value_end].decode("utf-8").strip()
+            except UnicodeDecodeError:
+                pass
+            if _MULTIPART_FORM_FIELDS <= values.keys():
+                return values
+        position = value_end + 2 + len(delimiter)
+
+
+def _content_disposition_name(header_block: bytes) -> tuple[str | None, bool]:
+    for raw_line in header_block.split(b"\r\n"):
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if not line.lower().startswith("content-disposition:"):
+            continue
+        name: str | None = None
+        has_filename = False
+        for param in line.split(";")[1:]:
+            key, _, value = param.strip().partition("=")
+            key = key.strip().lower()
+            if key == "name":
+                name = value.strip().strip('"')
+            elif key == "filename":
+                has_filename = True
+        return name, has_filename
+    return None, False
+
+
 def _required_capabilities(
     route_kind: RouteKind,
     payload: dict[str, Any] | None,
@@ -490,7 +621,7 @@ def _required_capabilities(
         capabilities: set[Capability] = {"speech"}
     elif route_kind is RouteKind.VOICE_CONTROL:
         capabilities = {"speech"}
-    elif route_kind is RouteKind.TRANSCRIPTION:
+    elif route_kind in {RouteKind.TRANSCRIPTION, RouteKind.TRANSLATION}:
         capabilities = {"audio_input"}
     else:
         capabilities = {"chat"}
@@ -532,7 +663,7 @@ def _service_class_for_route(route_kind: RouteKind) -> ServiceClass:
         return "speech_batch"
     if route_kind is RouteKind.VOICE_CONTROL:
         return "voice_control"
-    if route_kind is RouteKind.TRANSCRIPTION:
+    if route_kind in {RouteKind.TRANSCRIPTION, RouteKind.TRANSLATION}:
         return "transcription"
     return "generation"
 

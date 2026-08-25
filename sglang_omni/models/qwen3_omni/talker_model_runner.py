@@ -41,14 +41,15 @@ class QwenTalkerModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        input_embeds = self._compose_prefill_embeds(forward_batch, requests)
-        if input_embeds is None:
+        composed = self._compose_prefill_embeds(forward_batch, requests)
+        if composed is None:
             return
+        input_embeds, input_embeds_are_projected = composed
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(
                 input_embeds=input_embeds,
-                input_embeds_are_projected=True,
+                input_embeds_are_projected=input_embeds_are_projected,
             ),
         )
 
@@ -176,14 +177,19 @@ class QwenTalkerModelRunner(ModelRunner):
         self,
         forward_batch: Any,
         requests: list,
-    ) -> torch.Tensor | None:
-        """Assemble projected prefill rows for the Omni sidecar."""
+    ) -> tuple[torch.Tensor, bool] | None:
+        """Assemble prefill rows and preserve whether they are projected."""
         projected_flags = [
             bool(req.data.input_embeds_are_projected) for req in requests
         ]
-        if not any(projected_flags):
+        has_tensor_requests = any(
+            req.data.prefill_input_embeds is not None for req in requests
+        )
+        if not any(projected_flags) and not has_tensor_requests:
             return None
-        if not all(projected_flags):
+
+        has_projected_requests = any(projected_flags)
+        if has_projected_requests and not all(projected_flags):
             raise RuntimeError(
                 "Talker projected and unprojected prefill requests cannot be "
                 "batched together"
@@ -204,9 +210,20 @@ class QwenTalkerModelRunner(ModelRunner):
                 parts.append(part)
         if not parts:
             return None
-        return torch.cat(parts, dim=0).to(
-            device=forward_batch.input_ids.device,
-            dtype=self.model.activation_dtype,
+        input_embeds = torch.cat(parts, dim=0)
+
+        expected_rows = int(forward_batch.input_ids.shape[0])
+        if input_embeds.shape[0] != expected_rows:
+            raise RuntimeError(
+                "Talker prefill embeds must align with forward input_ids: "
+                f"got {input_embeds.shape[0]} rows for {expected_rows} input ids"
+            )
+        return (
+            input_embeds.to(
+                device=forward_batch.input_ids.device,
+                dtype=self.model.activation_dtype,
+            ),
+            has_projected_requests,
         )
 
     @staticmethod

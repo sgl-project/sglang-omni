@@ -747,8 +747,8 @@ def build_sglang_talker_request(
     request data keeps a device-backed FIFO of future text rows for decode.
 
     Stores the original tensor on SGLangARRequestData.prefill_input_embeds
-    when input_embeds_are_projected, so the model runner can skip the
-    list→tensor reconversion during prefill.
+    (projected or not), so the model runner consumes it directly and no
+    CPU list conversion happens on the request path.
 
     Args:
         thinker_hidden_states: Embed layer hidden states [seq_len, hidden_size].
@@ -794,10 +794,7 @@ def build_sglang_talker_request(
         origin_input_text="",
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
-        # Convert hidden states to list-of-lists for Req.input_embeds
-        input_embeds=(
-            None if input_embeds_are_projected else prefill_embeds_tensor.cpu().tolist()
-        ),
+        input_embeds=None,
         eos_token_ids={int(codec_eos_id)} if codec_eos_id is not None else None,
         vocab_size=codec_vocab_size,
     )
@@ -856,9 +853,7 @@ def build_sglang_talker_request(
         temperature=temperature,
         output_ids=req.output_ids,
         req=req,
-        prefill_input_embeds=(
-            prefill_embeds_tensor if input_embeds_are_projected else None
-        ),
+        prefill_input_embeds=prefill_embeds_tensor,
     )
     data.suppress_tokens = list(req._codec_suppress_tokens or [])
     data.talker_model_inputs = dict(talker_model_inputs or {})
@@ -977,25 +972,13 @@ def make_thinker_stream_output_builder():
         extra = req_output.extra
         if isinstance(extra, dict) and "hidden_states" in extra:
             embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
-            if embed is not None:
-                metadata = {"token_id": token_id}
-                if layer_hidden is not None:
-                    metadata["layer_hidden"] = layer_hidden
+            hidden = embed if embed is not None else layer_hidden
+            if hidden is not None:
                 messages.append(
                     OutgoingMessage(
                         request_id=request_id,
                         type="stream",
-                        data=embed,
-                        target="talker_ar",
-                        metadata=metadata,
-                    )
-                )
-            elif layer_hidden is not None:
-                messages.append(
-                    OutgoingMessage(
-                        request_id=request_id,
-                        type="stream",
-                        data=layer_hidden,
+                        data=hidden,
                         target="talker_ar",
                         metadata={"token_id": token_id},
                     )

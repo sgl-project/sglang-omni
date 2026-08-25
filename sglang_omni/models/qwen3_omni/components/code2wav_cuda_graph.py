@@ -170,8 +170,8 @@ class Code2WavCudaGraphRunner:
     ) -> None:
         self._model = model
         self._device = torch.device(device)
-        if self._device.type != "cuda" or self._device.index is None:
-            raise ValueError("Code2Wav CUDA graphs require a concrete CUDA device")
+        if self._device.type not in ("cuda", "musa") or self._device.index is None:
+            raise ValueError("Code2Wav CUDA graphs require a concrete CUDA/MUSA device")
         self._num_quantizers = int(num_quantizers)
         if self._num_quantizers <= 0:
             raise ValueError("Code2Wav CUDA graphs require a positive quantizer count")

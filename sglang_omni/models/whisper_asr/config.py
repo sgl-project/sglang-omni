@@ -21,6 +21,7 @@ class WhisperASRPipelineConfig(PipelineConfig):
         max_audio_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
         max_native_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
         min_tail_s=1.0,
+        condition_on_previous_text=False,
     )
 
     @classmethod

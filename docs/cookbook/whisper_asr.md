@@ -118,7 +118,7 @@ for response formats and other ASR models.
 | `model` | string | server default | Model identifier |
 | `language` | string | unset | Optional source-language hint; on translations this is a SGLang-Omni extension |
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
-| `response_format` | string | `json` | `json`, `verbose_json`, or raw `text`; translation `srt`/`vtt` require segment timestamps and return HTTP 400 |
+| `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
@@ -126,11 +126,29 @@ or `translate`); it is not a public form field. The route uses the ASR stage
 default unless the pipeline is configured another way. For smoke tests, keep
 the request minimal and use `response_format=json`.
 
+For both transcription and translation, `srt` and `vtt` request Whisper's
+model-derived segment timestamps. Non-streaming subtitle requests are
+supported; `stream=true` with either subtitle format returns HTTP 400.
+
 ## Long Audio
 
 Whisper reads at most 30 seconds of audio in one request: the feature extractor works on a fixed 30-second mel window and drops everything past it.
 In SGLang-Omni, we transcribe longer uploads in chunks by splitting the audio at the quietest point near each 30-second boundary,
-running each chunk as its own engine request, and joining the transcripts back in order. The behavior follows these values, which Whisper
+running each chunk as its own engine request, and joining the transcripts back in order. By default, chunks decode independently and the caller's
+`prompt` is sent to each chunk. Setting `condition_on_previous_text` to `true` makes chunks decode sequentially: the caller prompt conditions the
+first chunk, then each chunk uses the immediately preceding chunk's decoded text as its prompt. If an enabled chunk contains a sustained repeated
+character cycle, it is retried once without previous context; the first result is discarded, and the retry result conditions the next chunk.
+The detector checks periods of 8–128 normalized letter, number, or combining-mark characters repeated at least three times. It does not
+depend on whitespace-delimited words, so it also covers languages without reliable word boundaries. A single Latin-script word repeated three
+times is excluded to preserve literal repetition. The three-copy threshold caught the observed pathological loops while producing zero retries
+on the submitted TED-LIUM evaluation; it remains a conservative recovery heuristic rather than a transcription guarantee.
+
+This opt-in is not identical to OpenAI Whisper's `condition_on_previous_text=True`: OpenAI Whisper carries decoded token history across internal
+windows and can reset that history during fallback, while SGLang-Omni currently passes the previous server chunk's decoded text. The current
+TED-LIUM evaluation did not show an accuracy or throughput advantage from enabling this implementation, so it remains disabled by default.
+Changing the default or implementing token-level parity should be evaluated in a separate PR.
+
+The behavior follows these values, which Whisper
 declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed model defaults in this release:
 
 | Name | Value | Meaning                                                                                                                                                                     |
@@ -138,8 +156,9 @@ declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed mod
 | `max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR this is not a scheduling choice: 30s is the hard edge of the model's mel window. |
 | `max_native_clip_s` | `30` | Same as the chunk length. Streaming cannot chunk, so `stream=true` takes audio up to 30s and gets HTTP 400 above that.                                                      |
 | `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run.                            |
-| `max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests.                                    |
+| `max_concurrent_chunks` | `8` | Per-request concurrency cap used while chunks are independent. When previous-text conditioning is enabled, one request's Whisper chunks decode in order while chunks from different requests can still batch together. |
 | `min_tail_s` | `1` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it, which keeps Whisper from hallucinating on very short clips.      |
+| `condition_on_previous_text` | `false` | Whether Whisper serializes chunks and conditions each chunk on the preceding decoded text. Disabled chunks remain independent and can use the per-request concurrency cap. |
 
 ## Benchmarking
 

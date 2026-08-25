@@ -187,6 +187,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_stt_benchmark.py` | ASR concurrency scaling on the Pipecat STT benchmark set (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -221,6 +222,28 @@ inter-chunk latency while retaining the terminal transcript for WER:
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000 \
   --max-samples 20 --concurrencies 2 --repeats 1 --stream
+```
+
+`benchmark_asr_stt_benchmark.py` runs the same sweep on
+[`pipecat-ai/stt-benchmark-data`](https://huggingface.co/datasets/pipecat-ai/stt-benchmark-data):
+1000 English utterances, 1 to 16 s each (9.6 s mean), with punctuated, cased
+transcripts. Where SeedTTS measures short clean prompts, this set measures
+the longer conversational turns a voice agent sees. The script imports the
+sweep loop, table, and common arguments from `benchmark_asr_seedtts.py`, so
+both result JSONs share one `config`/`results` layout and differ only in the
+dataset fields (`repo_id`/`split` instead of `meta`).
+
+This only reuses Pipecat's dataset, not their metric definitions. The upstream
+[pipecat-ai/stt-benchmark](https://github.com/pipecat-ai/stt-benchmark)
+reports Semantic WER and TTFS (end of speech to final transcript over a
+simulated realtime stream); this sweep reports Whisper-normalized WER and
+whole-request latency/RTF, and `--stream` uploads the complete file. The
+numbers are not comparable to the Pipecat leaderboard.
+
+```bash
+python -m benchmarks.dataset.prepare --dataset stt-benchmark
+python -m benchmarks.eval.benchmark_asr_stt_benchmark \
+  --port 8000 --concurrencies 1,8,32 --repeats 3 --warmup
 ```
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
@@ -284,6 +307,7 @@ Download helpers live in `benchmarks/dataset/prepare.py`:
 python -m benchmarks.dataset.prepare --dataset seedtts       # full SeedTTS
 python -m benchmarks.dataset.prepare --dataset seedtts-mini  # smoke-test subset
 python -m benchmarks.dataset.prepare --dataset seedtts-50    # 50-sample subset
+python -m benchmarks.dataset.prepare --dataset stt-benchmark # Pipecat STT benchmark set (1000 EN clips)
 python -m benchmarks.dataset.prepare --dataset mmmu          # full MMMU (30 subjects)
 python -m benchmarks.dataset.prepare --dataset mmmu-ci-50    # MMMU CI subset
 python -m benchmarks.dataset.prepare --dataset mmsu          # full MMSU (ddwang2000/MMSU)

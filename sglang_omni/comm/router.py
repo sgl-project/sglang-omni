@@ -381,10 +381,10 @@ def _tensor_devices(obj: Any, seen: set[int] | None = None) -> set[str]:
         return set()
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
+        if obj.device.type in ("cpu", "musa"):
+            return {obj.device.type}
         if obj.is_cuda:
             return {"cuda"}
-        if obj.device.type == "cpu":
-            return {"cpu"}
         return {obj.device.type}
     if isinstance(obj, dict):
         devices: set[str] = set()

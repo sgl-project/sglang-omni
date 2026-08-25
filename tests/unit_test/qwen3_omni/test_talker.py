@@ -1800,7 +1800,7 @@ def _patch_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("_patch_sampling")
 class TestBuildTalkerRequestTensorStorage:
-    """build_sglang_talker_request stores the tensor and honours the Req list contract."""
+    """build_sglang_talker_request keeps embeds as a tensor on request data."""
 
     def test_projected_embeds_path(self) -> None:
         seq_len, hidden = 64, 128
@@ -1831,9 +1831,8 @@ class TestBuildTalkerRequestTensorStorage:
             codec_vocab_size=4096,
         )
 
-        assert data.prefill_input_embeds is None
-        assert isinstance(data.req.input_embeds, list)
-        assert len(data.req.input_embeds) == seq_len
+        assert data.prefill_input_embeds is hidden_states
+        assert data.req.input_embeds is None
         assert data.req._input_embeds_are_projected is False
 
 
