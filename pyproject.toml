@@ -103,7 +103,7 @@ fun-cosyvoice3 = [
     "inflect==7.3.1",
     "gdown==5.1.0",
     "lightning==2.6.5",
-    "matplotlib==3.11.1",
+    "matplotlib",
 ]
 
 [project.scripts]
@@ -119,6 +119,12 @@ Issues = "https://github.com/sgl-project/sglang-omni/issues"
 Repository = "https://github.com/sgl-project/sglang-omni"
 
 [tool.uv]
+# The dependency set pins CUDA-13-only wheels (mooncake-transfer-engine-cuda13,
+# nixl-cu13, flash-attn-4); without this, uv's universal resolution also
+# solves for platforms those wheels do not support and fails.
+environments = [
+    "sys_platform == 'linux'",
+]
 override-dependencies = [
     "protobuf>=6.31.1,<7.0.0",
 ]

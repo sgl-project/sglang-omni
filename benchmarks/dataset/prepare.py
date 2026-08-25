@@ -5,6 +5,7 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset seedtts
     python -m benchmarks.dataset.prepare --dataset seedtts-mini
     python -m benchmarks.dataset.prepare --dataset seedtts-50
+    python -m benchmarks.dataset.prepare --dataset stt-benchmark
     python -m benchmarks.dataset.prepare --dataset mmmu
     python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
     python -m benchmarks.dataset.prepare --dataset mmsu
@@ -25,11 +26,14 @@ logger = logging.getLogger(__name__)
 
 SEEDTTS_DATASET_ID = "zhaochenyang20/seed-tts-eval-arrow"
 SEEDTTS_DATASET_REVISION = "27f4c1adee83b5b29b7c4b375f6b976324bda308"
+STT_BENCHMARK_DATASET_ID = "pipecat-ai/stt-benchmark-data"
+STT_BENCHMARK_DATASET_REVISION = "3fe50170d520c951957b86996ef082a6ab87b394"
 
 DATASETS: dict[str, str] = {
     "seedtts": SEEDTTS_DATASET_ID,
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini-arrow",
     "seedtts-50": "zhaochenyang20/seed-tts-eval-50-arrow",
+    "stt-benchmark": STT_BENCHMARK_DATASET_ID,
     "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
@@ -56,6 +60,8 @@ def download_dataset(
 
     if revision is None and repo_id == SEEDTTS_DATASET_ID:
         revision = SEEDTTS_DATASET_REVISION
+    elif revision is None and repo_id == STT_BENCHMARK_DATASET_ID:
+        revision = STT_BENCHMARK_DATASET_REVISION
     revision_kwargs = {"revision": revision} if revision else {}
     if not quiet:
         logger.info(

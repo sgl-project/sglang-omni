@@ -52,7 +52,7 @@ for details.
 ## Launch the Server
 
 See [TTS Process Topology](tts_process_topology.md) for model defaults,
-declaring a different process topology, and same-GPU memory requirements.
+per-stage `process` overrides, and same-GPU memory requirements.
 
 The reference-audio examples below fetch clips from Hugging Face, so the
 commands include the Hugging Face host and its current download redirect host.
@@ -302,7 +302,7 @@ terminal sentinel. When the client does not set `initial_codec_chunk_frames`,
 the model selects a continuity-safe first vocoder chunk. Set the field explicitly
 to override that default, or set it to `0` to use the model's steady chunk size
 from the start. Ming-Omni-TTS is the only model that rejects the field: its
-initial and steady cadence are pipeline-level `audio_decode.factory_args`, so a
+initial and steady cadence are the audio_decode stage's `factory` settings, so a
 request that sets it fails.
 
 ### Batch Speech

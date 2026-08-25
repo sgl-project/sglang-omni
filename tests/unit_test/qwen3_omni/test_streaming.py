@@ -20,6 +20,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
 )
+from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_stream_output_builder,
     resolve_encoder_next_stages,
@@ -192,6 +193,155 @@ def test_qwen_thinker_stream_builder_keeps_talker_when_modalities_missing():
     messages = builder("req-1", req_data, req_output)
 
     assert [msg.target for msg in messages] == ["decode", "talker_ar"]
+
+
+def test_qwen_thinker_stream_builder_prefers_embed_over_layer_hidden():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    embed = torch.tensor([[1.0, 2.0]])
+    layer_hidden = torch.tensor([[3.0, 4.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {"embed": embed, 24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+
+    talker_message = next(msg for msg in messages if msg.target == "talker_ar")
+    assert torch.equal(talker_message.data, embed[0])
+    assert talker_message.metadata == {"token_id": 11}
+
+
+def test_qwen_thinker_stream_builder_falls_back_to_layer_hidden():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    layer_hidden = torch.tensor([[3.0, 4.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+
+    talker_message = next(msg for msg in messages if msg.target == "talker_ar")
+    assert torch.equal(talker_message.data, layer_hidden[0])
+    assert talker_message.metadata == {"token_id": 11}
+
+
+def test_qwen_thinker_stream_embed_preserves_talker_prefill_contract():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    embed = torch.tensor([[7.0, 8.0]])
+    layer_hidden = torch.tensor([[70.0, 80.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {"embed": embed, 24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+    talker_chunk = next(msg for msg in messages if msg.target == "talker_ar")
+
+    class _TokenMetadataOnlyChunk:
+        metadata = talker_chunk.metadata
+
+        @property
+        def data(self):
+            raise AssertionError("prompt prefill must reconstruct assistant rows")
+
+    token_metadata_only_chunk = _TokenMetadataOnlyChunk()
+    legacy_chunk = SimpleNamespace(
+        data=embed[0],
+        metadata={"token_id": 11, "layer_hidden": layer_hidden[0]},
+    )
+
+    hidden_projection_calls: list[torch.Tensor] = []
+
+    def hidden_projection(tensor: torch.Tensor) -> torch.Tensor:
+        hidden_projection_calls.append(tensor.detach().clone())
+        return tensor + 100.0
+
+    prefill_builder = object.__new__(TalkerPrefillBuilder)
+    prefill_builder._model = SimpleNamespace(
+        text_projection=lambda tensor: tensor,
+        hidden_projection=hidden_projection,
+        get_input_embeddings=lambda: (
+            lambda token_ids: torch.zeros((token_ids.numel(), 2))
+        ),
+    )
+    prefill_builder._device = torch.device("cpu")
+    prefill_builder._dtype = torch.float32
+    prefill_builder._audio_token_id = 30
+    prefill_builder._image_token_id = None
+    prefill_builder._video_token_id = None
+    prefill_builder._im_start_token_id = 10
+    prefill_builder._im_end_token_id = 99
+    prefill_builder._system_token_id = 19
+    prefill_builder._user_token_id = 20
+    prefill_builder._assistant_token_id = 40
+    prefill_builder._codec_nothink_id = 1
+    prefill_builder._codec_think_bos_id = 2
+    prefill_builder._codec_think_eos_id = 3
+    prefill_builder._codec_pad_id = 4
+    prefill_builder._codec_bos_id = 5
+    prefill_builder._tts_pad_token_id = 6
+    prefill_builder._speaker_map = {}
+
+    prompt_ids = torch.tensor([10, 20, 30, 10, 40], dtype=torch.long)
+    prompt_embed = torch.arange(10, dtype=torch.float32).reshape(5, 2)
+    prompt_hidden = prompt_embed.clone()
+    prompt_hidden[2] = torch.tensor([5.0, 6.0])
+    prefill_builder._reconstruct_prompt_states = lambda _state: (
+        prompt_ids,
+        prompt_embed,
+        prompt_hidden,
+        {},
+    )
+    prefill_builder._load_prompt_token_embeddings = lambda _token_ids: embed
+    zero_special = torch.zeros((1, 2), dtype=torch.float32)
+    prefill_builder.get_tts_special_embeds = lambda: (
+        zero_special,
+        zero_special,
+        zero_special,
+    )
+
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs=[], params={}),
+        data={},
+    )
+    current = prefill_builder.build_prompt_prefill(
+        payload,
+        [token_metadata_only_chunk],
+        thinker_done=True,
+    )
+    current_projection_calls = list(hidden_projection_calls)
+    hidden_projection_calls.clear()
+    legacy = prefill_builder.build_prompt_prefill(
+        payload,
+        [legacy_chunk],
+        thinker_done=True,
+    )
+
+    assert torch.equal(talker_chunk.data, embed[0])
+    assert talker_chunk.metadata == {"token_id": 11}
+    assert torch.equal(current["input_embeds"], legacy["input_embeds"])
+    assert torch.equal(
+        current["pending_text_queue"].rows,
+        legacy["pending_text_queue"].rows,
+    )
+    assert len(current_projection_calls) == 1
+    assert len(hidden_projection_calls) == 1
+    assert torch.equal(current_projection_calls[0], prompt_hidden[2:3])
+    assert torch.equal(hidden_projection_calls[0], prompt_hidden[2:3])
 
 
 def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
@@ -747,7 +897,7 @@ def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     s._nonlocal_stream_targets = {}
     s.relay = SimpleNamespace()
     s.input_handler = SimpleNamespace(cancel=lambda request_id: None)
-    s.scheduler = SimpleNamespace(abort=lambda request_id: None)
+    s.factory_path = SimpleNamespace(abort=lambda request_id: None)
     s.control_plane = SimpleNamespace(completions=[])
 
     async def _send_complete(msg):

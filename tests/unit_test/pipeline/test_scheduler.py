@@ -2214,35 +2214,14 @@ def test_omni_scheduler_normalizes_prefill_coalesce_args(monkeypatch) -> None:
     assert enabled.prefill_coalesce_wait_s == pytest.approx(0.3)
 
 
-@pytest.mark.parametrize(
-    "coalesce_kwargs",
-    [
-        {"prefill_coalesce_requests": None},
-        {"prefill_coalesce_wait_ms": None},
-        {"prefill_coalesce_requests": -1},
-        {"prefill_coalesce_requests": True},
-        {"prefill_coalesce_requests": -0.5},
-        {"prefill_coalesce_requests": 2.9},
-        {"prefill_coalesce_requests": float("inf")},
-        {"prefill_coalesce_wait_ms": 0.0},
-        {"prefill_coalesce_wait_ms": float("nan")},
-        {"prefill_coalesce_wait_ms": float("inf")},
-    ],
-)
-def test_omni_scheduler_rejects_invalid_prefill_coalesce_args(
-    monkeypatch, coalesce_kwargs
-) -> None:
-    """Config-file values never pass through the CLI, so __init__ is the shared
-    choke point where both entrypoints have to fail fast."""
-    with pytest.raises(ValueError):
-        _construct_omni_scheduler(monkeypatch, **coalesce_kwargs)
-
-
-def test_omni_scheduler_null_coalesce_error_points_at_zero(monkeypatch) -> None:
-    """An explicit YAML null is ambiguous, so it must name the documented off
-    switch rather than trip an assert that -O would strip."""
-    with pytest.raises(ValueError, match="use 0 to disable"):
-        _construct_omni_scheduler(monkeypatch, prefill_coalesce_requests=None)
+def test_omni_scheduler_trusts_validated_coalesce_values(monkeypatch) -> None:
+    """Range and type are configuration rules (FactoryArgs and the lossless
+    conversion in ConfigPath.coerce); the scheduler trusts its callers and
+    keeps only its own TP-interaction rule."""
+    scheduler = _construct_omni_scheduler(
+        monkeypatch, prefill_coalesce_requests=0, prefill_coalesce_wait_ms=1.0
+    )
+    assert scheduler.prefill_coalesce_requests == 0
 
 
 def test_stage_output_cache_eviction_uses_lru_order() -> None:

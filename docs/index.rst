@@ -140,6 +140,7 @@ Supported Models
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
    developer_reference/config.md
+   developer_reference/adding_parameters.md
    developer_reference/communication.md
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md

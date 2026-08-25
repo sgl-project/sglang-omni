@@ -134,6 +134,7 @@ def build_speech_to_text_generate_request(
     stream: bool = False,
     task: str = "transcribe",
     detect_language: bool = False,
+    segment_timestamps: bool = False,
 ) -> GenerateRequest:
     """Keep endpoint policy out of model-neutral request construction."""
     params: dict[str, Any] = {"task": task}
@@ -149,6 +150,8 @@ def build_speech_to_text_generate_request(
         explicit_fields.append("temperature")
     if max_new_tokens is not None:
         explicit_fields.append("max_new_tokens")
+    if segment_timestamps:
+        params["segment_timestamps"] = True
     record_explicit_generation_params(metadata, sorted(explicit_fields))
     sampling = SamplingParams(
         temperature=temperature if temperature is not None else 0.0,
@@ -342,7 +345,8 @@ def assemble_speech_to_text_response(
                 "segment-timestamp capability"
             ),
         )
-    text = adapter.postprocess_text(text)
+    raw_text = text
+    text = adapter.postprocess_text(raw_text)
     if duration_s is None:
         duration_s = probe_audio_duration(audio_bytes)
     usage = (
@@ -352,7 +356,7 @@ def assemble_speech_to_text_response(
         if normalized_response_format in SEGMENT_RESPONSE_FORMATS:
             try:
                 response = adapter.build_timestamped_response(
-                    text=text,
+                    text=raw_text,
                     language=language,
                     audio_duration_s=duration_s,
                 )

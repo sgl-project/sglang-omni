@@ -1912,9 +1912,22 @@ def _tiny_plan(num_chunks: int):
     )
 
 
-def _run_chunks(client: Any, plan: Any, *, max_concurrent: int):
+def _run_chunks(
+    client: Any,
+    plan: Any,
+    *,
+    max_concurrent: int,
+    prompt: str | None = None,
+    condition_on_previous_text: bool = False,
+    adapter: Any = None,
+):
+    from sglang_omni.serve.transcription_adapters.base import (
+        DefaultTranscriptionAdapter,
+    )
     from sglang_omni.serve.transcriptions import _transcribe_audio_chunks
 
+    if adapter is None:
+        adapter = DefaultTranscriptionAdapter()
     return asyncio.wait_for(
         _transcribe_audio_chunks(
             client,
@@ -1923,13 +1936,28 @@ def _run_chunks(client: Any, plan: Any, *, max_concurrent: int):
             model="asr",
             filename=None,
             language=None,
-            prompt=None,
+            prompt=prompt,
             temperature=None,
             max_new_tokens=None,
             max_concurrent=max_concurrent,
+            condition_on_previous_text=condition_on_previous_text,
+            adapter=adapter,
         ),
         timeout=10.0,
     )
+
+
+class _ScriptedChunkClient:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+        self.requests: list[tuple[str, str | None]] = []
+
+    async def completion(self, request, *, request_id, **kwargs):
+        from sglang_omni.client.types import CompletionResult
+
+        response = self.responses[len(self.requests)]
+        self.requests.append((request_id, request.extra_params.get("prompt")))
+        return CompletionResult(request_id=request_id, text=response)
 
 
 def test_chunks_run_concurrently() -> None:
@@ -1963,6 +1991,204 @@ def test_chunks_run_concurrently() -> None:
         texts = await _run_chunks(barrier_client, _tiny_plan(3), max_concurrent=3)
         assert texts == ["part0", "part1", "part2"]
         assert barrier_client.max_active == 3
+
+    asyncio.run(scenario())
+
+
+def test_whisper_chunks_do_not_condition_on_previous_text_by_default() -> None:
+    class IndependentWhisperClient:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.prompts: list[str | None] = []
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.prompts.append(request.extra_params.get("prompt"))
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        independent_client = IndependentWhisperClient()
+        texts = await _run_chunks(
+            independent_client,
+            _tiny_plan(3),
+            max_concurrent=3,
+            prompt="SGLang vocabulary",
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+        assert texts == ["part0", "part1", "part2"]
+        assert independent_client.prompts == ["SGLang vocabulary"] * 3
+        assert independent_client.max_active == 3
+
+    asyncio.run(scenario())
+
+
+def test_whisper_chunks_chain_previous_text_in_decode_order() -> None:
+    class OrderedClient:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.prompts: list[str | None] = []
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.prompts.append(request.extra_params.get("prompt"))
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        ordered_client = OrderedClient()
+        texts = await _run_chunks(
+            ordered_client,
+            _tiny_plan(3),
+            max_concurrent=3,
+            prompt="SGLang vocabulary",
+            condition_on_previous_text=True,
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+        assert texts == ["part0", "part1", "part2"]
+        assert ordered_client.prompts == [
+            "SGLang vocabulary",
+            "part0",
+            "part1",
+        ]
+        assert ordered_client.max_active == 1
+
+    asyncio.run(scenario())
+
+
+def test_whisper_retries_degenerate_chunk_once_without_context() -> None:
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        loop = "the decoder keeps repeating this terminal phrase " * 3
+        scripted_client = _ScriptedChunkClient(
+            ["part0", "part1", "part2", loop, "clean3", "part4"]
+        )
+        texts = await _run_chunks(
+            scripted_client,
+            _tiny_plan(5),
+            max_concurrent=5,
+            prompt="caller prompt",
+            condition_on_previous_text=True,
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+
+        assert texts == ["part0", "part1", "part2", "clean3", "part4"]
+        assert scripted_client.requests == [
+            ("req-chunk-0", "caller prompt"),
+            ("req-chunk-1", "part0"),
+            ("req-chunk-2", "part1"),
+            ("req-chunk-3", "part2"),
+            ("req-chunk-3-retry", None),
+            ("req-chunk-4", "clean3"),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_whisper_degenerate_retry_is_bounded() -> None:
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        first_loop = "the first attempt repeats this terminal phrase " * 3
+        retry_loop = "the retry also repeats this terminal phrase " * 3
+        scripted_client = _ScriptedChunkClient([first_loop, retry_loop])
+        texts = await _run_chunks(
+            scripted_client,
+            _tiny_plan(1),
+            max_concurrent=1,
+            condition_on_previous_text=True,
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+
+        assert texts == [retry_loop]
+        assert scripted_client.requests == [
+            ("req-chunk-0", None),
+            ("req-chunk-0-retry", None),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_whisper_retries_degenerate_caller_prompt_chunk() -> None:
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        loop = "the caller context caused this terminal phrase " * 3
+        scripted_client = _ScriptedChunkClient([loop, "clean0", "part1"])
+        texts = await _run_chunks(
+            scripted_client,
+            _tiny_plan(2),
+            max_concurrent=2,
+            prompt="caller prompt",
+            condition_on_previous_text=True,
+            adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+        )
+
+        assert texts == ["clean0", "part1"]
+        assert scripted_client.requests == [
+            ("req-chunk-0", "caller prompt"),
+            ("req-chunk-0-retry", None),
+            ("req-chunk-1", "clean0"),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_whisper_retry_aborts_the_retry_request() -> None:
+    class HangingRetryClient:
+        def __init__(self) -> None:
+            self.retry_started = asyncio.Event()
+            self.aborted: list[str] = []
+            self.attempts = 0
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            self.attempts += 1
+            if self.attempts == 1:
+                loop = "the first attempt repeats this terminal phrase " * 3
+                return CompletionResult(request_id=request_id, text=loop)
+            self.retry_started.set()
+            await asyncio.Future()
+
+        async def abort(self, request_id: str) -> None:
+            self.aborted.append(request_id)
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters import resolve_adapter
+
+        hanging_client = HangingRetryClient()
+        work = asyncio.create_task(
+            _run_chunks(
+                hanging_client,
+                _tiny_plan(1),
+                max_concurrent=1,
+                condition_on_previous_text=True,
+                adapter=resolve_adapter(["WhisperForConditionalGeneration"]),
+            )
+        )
+        await asyncio.wait_for(hanging_client.retry_started.wait(), timeout=10.0)
+        work.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await work
+        assert hanging_client.aborted == ["req-chunk-0-retry"]
 
     asyncio.run(scenario())
 
@@ -2044,6 +2270,9 @@ def test_chunk_failure_aborts_the_chunks_still_running() -> None:
 
 
 def test_client_disconnect_aborts_all_running_chunks() -> None:
+    from sglang_omni.serve.transcription_adapters.base import (
+        DefaultTranscriptionAdapter,
+    )
     from sglang_omni.serve.transcriptions import (
         _await_transcription_with_disconnect_abort,
         _transcribe_audio_chunks,
@@ -2087,6 +2316,8 @@ def test_client_disconnect_aborts_all_running_chunks() -> None:
             temperature=None,
             max_new_tokens=None,
             max_concurrent=2,
+            condition_on_previous_text=False,
+            adapter=DefaultTranscriptionAdapter(),
         )
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(
@@ -2105,6 +2336,9 @@ def test_cancelling_the_wrapper_itself_aborts_running_chunks() -> None:
     # shutdown, ASGI teardown) rather than via is_disconnected(). The
     # finally block must stop the work task too, or its engine requests
     # keep running with nobody left to abort them.
+    from sglang_omni.serve.transcription_adapters.base import (
+        DefaultTranscriptionAdapter,
+    )
     from sglang_omni.serve.transcriptions import (
         _await_transcription_with_disconnect_abort,
         _transcribe_audio_chunks,
@@ -2143,6 +2377,8 @@ def test_cancelling_the_wrapper_itself_aborts_running_chunks() -> None:
             temperature=None,
             max_new_tokens=None,
             max_concurrent=2,
+            condition_on_previous_text=False,
+            adapter=DefaultTranscriptionAdapter(),
         )
         wrapper_task = asyncio.create_task(
             _await_transcription_with_disconnect_abort(NeverDisconnects(), work)
@@ -2677,6 +2913,39 @@ class DiarizationTranscriptionClient:
             request_id="transcription-1",
             text="[0.00][S01] hello there.[1.20][1.30][S02] bye.[3.00]",
         )
+
+
+class WhisperTimestampTranscriptionClient(SuccessfulTranscriptionClient):
+    async def completion(self, request, *, request_id, audio_format="wav"):
+        from sglang_omni.client.types import CompletionResult
+
+        del request_id, audio_format
+        self.requests.append(request)
+        return CompletionResult(
+            request_id="transcription-1",
+            text="<|0.00|>hello there.<|1.20|>",
+        )
+
+
+def test_transcription_srt_returns_whisper_timestamp_segments() -> None:
+    transcription_client = WhisperTimestampTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="openai/whisper-large-v3",
+            architectures=["WhisperForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "openai/whisper-large-v3", "response_format": "srt"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "1\n00:00:00,000 --> 00:00:01,200\nhello there.\n\n"
+    assert transcription_client.requests[0].extra_params["segment_timestamps"] is True
 
 
 def test_transcription_verbose_json_returns_diarized_segments() -> None:

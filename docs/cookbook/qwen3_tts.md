@@ -100,24 +100,24 @@ Two SGLang generation-stage knobs bound how the server behaves past saturation:
 
 | Knob | Meaning | Qwen3-TTS default |
 |---|---|---|
-| `--max-running-requests` | Concurrent running slots | `16` |
-| `--max-queued-requests` | Waiting-queue depth before fast-reject | `16` |
+| `--tts_engine.engine.max_running_requests` | Concurrent running slots | `16` |
+| `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `16` |
 
-Every request enters the waiting queue first, so `--max-queued-requests`
+Every request enters the waiting queue first, so `max_queued_requests`
 must be **≥ 1**. Capacity is about `running + queued`. Extra arrivals get
 HTTP **503** (`The request queue is full.`) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.
 
-Raising `--max-running-requests` does **not** automatically raise the waiting
+Raising `max_running_requests` does **not** automatically raise the waiting
 bound. For a ceiling-32 experiment:
 
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --config examples/configs/qwen3_tts_0_6b.yaml \
-  --max-running-requests 32 \
-  --max-queued-requests 16 \
+  --tts_engine.engine.max_running_requests 32 \
+  --tts_engine.engine.max_queued_requests 16 \
   --port 8000
 ```
 

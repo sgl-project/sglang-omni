@@ -234,7 +234,7 @@ def test_config_dispatch_injects_model_path_and_gpu(tmp_path: Any) -> None:
     for spec in (spec for group in groups for spec in group.specs):
         resolved[spec.stage_name] = resolve_factory_signature_args(
             import_string(spec.factory),
-            spec.factory_args,
+            spec.factory_kwargs,
             defaults=spec.factory_arg_defaults,
         )
 

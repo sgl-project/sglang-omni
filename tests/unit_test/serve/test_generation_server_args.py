@@ -1,5 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SGLang generation-stage server args role mapping."""
+"""SGLang generation-stage server args through the dotted CLI surface.
+
+The typed per-role flags are gone; a generation engine's ServerArgs are set
+with the same dotted spelling as everything else
+(``--<stage>.engine.max_running_requests 64``). These tests pin that the
+values reach each pipeline's generation stage -- and only that stage --
+through the same merge ``sgl-omni serve`` runs.
+"""
 
 from __future__ import annotations
 
@@ -7,29 +14,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import typer
 
-from sglang_omni.cli.serve import (
-    _apply_stage_server_args_override,
-    apply_backbone_server_args_cli_overrides,
-    serve,
-)
-from sglang_omni.config import (
-    PipelineConfig,
-    ProcessConfig,
-    StageConfig,
-    compile_logical_processes,
-)
+from sglang_omni.cli.serve import serve
+from sglang_omni.config import PipelineConfig
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
-from sglang_omni.models.moss_transcribe_diarize.config import (
-    MossTranscribeDiarizePipelineConfig,
-)
 from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
-from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.voxtral_tts.config import VoxtralTTSPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
@@ -43,17 +37,6 @@ GENERATION_SERVER_ARGS = {
 }
 
 
-class _DummyManager:
-    def __init__(self, config: PipelineConfig) -> None:
-        self.config = config
-
-    def parse_extra_args(self, _args) -> dict[str, object]:
-        return {}
-
-    def merge_config(self, _extra_args: dict[str, object]) -> PipelineConfig:
-        return self.config
-
-
 def _serve_kwargs(**overrides) -> dict[str, object]:
     data: dict[str, object] = {
         "ctx": SimpleNamespace(args=[]),
@@ -63,457 +46,98 @@ def _serve_kwargs(**overrides) -> dict[str, object]:
     return data
 
 
-def _stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]:
-    stage = next(s for s in config.stages if s.name == stage_name)
-    return dict(stage.factory_args or {})
+def _engine_overrides(config: PipelineConfig, stage_name: str) -> dict[str, object]:
+    engine = config.stage_named(stage_name).engine
+    return engine.overrides() if engine is not None else {}
 
 
-def _apply_generation_server_args(config: PipelineConfig) -> None:
-    stage_name = type(config).generation_sglang_role_to_stage()["generation"]
-    _apply_stage_server_args_override(
-        config,
-        stage_name=stage_name,
-        updates=GENERATION_SERVER_ARGS,
-        reason="SGLang generation server args override",
+def _set_generation_server_args(
+    config: PipelineConfig, stage_name: str
+) -> PipelineConfig:
+    return ConfigManager(config).merge_config(
+        [
+            (f"{stage_name}.engine.{key}", str(value))
+            for key, value in GENERATION_SERVER_ARGS.items()
+        ]
     )
 
 
-def _coordinator_max_in_flight(config: PipelineConfig) -> int | None:
-    from sglang_omni.pipeline.mp_runner import resolve_coordinator_max_in_flight
+@pytest.mark.parametrize(
+    ("config_cls", "stage_name"),
+    [
+        (HiggsTtsPipelineConfig, "tts_engine"),
+        (Qwen3TTSPipelineConfig, "tts_engine"),
+        (MossTTSPipelineConfig, "tts_engine"),
+        (MossTTSLocalPipelineConfig, "tts_engine"),
+        (S2ProPipelineConfig, "tts_engine"),
+        (VoxtralTTSPipelineConfig, "tts_generation"),
+        (Qwen3ASRPipelineConfig, "asr"),
+        (WhisperASRPipelineConfig, "asr"),
+        (FunASRPipelineConfig, "asr"),
+    ],
+)
+def test_dotted_engine_flags_reach_each_generation_stage(
+    config_cls: type[PipelineConfig], stage_name: str
+) -> None:
+    config = config_cls(model_path="dummy")
+    merged = _set_generation_server_args(config, stage_name)
 
-    logical_process_plan, _ = compile_logical_processes(config)
-    return resolve_coordinator_max_in_flight(
-        config,
-        logical_process_plan=logical_process_plan,
-    )
+    overrides = _engine_overrides(merged, stage_name)
+    for key, value in GENERATION_SERVER_ARGS.items():
+        assert overrides[key] == value
+    # The write is per stage: no other stage picked the values up.
+    for stage in merged.stages:
+        if stage.name == stage_name:
+            continue
+        assert "max_total_tokens" not in _engine_overrides(merged, stage.name)
 
 
-class ExplicitGenerationPipelineConfig(PipelineConfig):
-    @classmethod
-    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
-        return {"generation": "custom_generation"}
-
-
-class MissingGenerationStagePipelineConfig(PipelineConfig):
-    @classmethod
-    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
-        return {"generation": "missing_generation"}
-
-
-def test_generation_server_args_use_explicit_role_map() -> None:
-    config = ExplicitGenerationPipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="tts_engine",
-                process="pipeline",
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                next="custom_generation",
-            ),
-            StageConfig(
-                name="custom_generation",
-                process="pipeline",
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                terminal=True,
-            ),
-        ],
-    )
-    _apply_generation_server_args(config)
-
-    assert "server_args_overrides" not in _stage_args(config, "tts_engine")
-    overrides = _stage_args(config, "custom_generation")["server_args_overrides"]
-    assert overrides == GENERATION_SERVER_ARGS
+def test_engine_flags_on_a_non_engine_stage_are_refused() -> None:
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+    with pytest.raises(ValueError, match="not an engine stage"):
+        ConfigManager(config).merge_config(
+            [("vocoder.engine.max_running_requests", "64")]
+        )
 
 
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_generation_server_args_absent_preserves_pipeline_default(
+def test_serve_routes_dotted_engine_flags_to_the_stage(
     from_model_path,
     launch_server,
 ) -> None:
     config = HiggsTtsPipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
+    from_model_path.return_value = ConfigManager(config)
+
+    serve(
+        **_serve_kwargs(
+            ctx=SimpleNamespace(
+                args=[
+                    "--tts_engine.engine.max_running_requests",
+                    "32",
+                    "--tts_engine.engine.max_total_tokens",
+                    str(TEST_MAX_TOTAL_TOKENS),
+                ]
+            )
+        )
+    )
+
+    launched_config = launch_server.call_args.args[0]
+    overrides = _engine_overrides(launched_config, "tts_engine")
+    assert overrides["max_running_requests"] == 32
+    assert overrides["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
+
+
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_serve_without_engine_flags_preserves_pipeline_default(
+    from_model_path,
+    launch_server,
+) -> None:
+    config = HiggsTtsPipelineConfig(model_path="dummy")
+    from_model_path.return_value = ConfigManager(config)
 
     serve(**_serve_kwargs())
 
     launched_config = launch_server.call_args.args[0]
-    assert "server_args_overrides" not in _stage_args(launched_config, "tts_engine")
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_generation_server_args_explicit_override_reaches_generation_stage(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
-
-    serve(
-        **_serve_kwargs(
-            max_running_requests=32,
-            max_total_tokens=TEST_MAX_TOTAL_TOKENS,
-        )
-    )
-
-    launched_config = launch_server.call_args.args[0]
-    overrides = _stage_args(launched_config, "tts_engine")["server_args_overrides"]
-    assert overrides == {
-        "max_running_requests": 32,
-        "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
-    }
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_generation_server_args_explicit_override_rejects_unsupported_config(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="stage",
-                process="pipeline",
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                terminal=True,
-            )
-        ],
-    )
-    from_model_path.return_value = _DummyManager(config)
-
-    with pytest.raises(typer.BadParameter, match="not supported"):
-        serve(**_serve_kwargs(cuda_graph_max_bs=128))
-
-    launch_server.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "config_cls",
-    [
-        HiggsTtsPipelineConfig,
-        Qwen3TTSPipelineConfig,
-        MossTTSPipelineConfig,
-        MossTTSLocalPipelineConfig,
-        S2ProPipelineConfig,
-    ],
-)
-def test_generation_server_args_support_migrated_tts_configs(
-    config_cls: type[PipelineConfig],
-) -> None:
-    config = config_cls(model_path="dummy")
-    _apply_generation_server_args(config)
-
-    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
-    assert overrides == GENERATION_SERVER_ARGS
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_qwen3_tts_cli_routes_64_batch_policy_to_tts_engine(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = Qwen3TTSPipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
-
-    serve(
-        **_serve_kwargs(
-            max_running_requests=64,
-            cuda_graph_max_bs=64,
-            talker_torch_compile_max_bs=64,
-        )
-    )
-
-    launched_config = launch_server.call_args.args[0]
-    overrides = _stage_args(launched_config, "tts_engine")["server_args_overrides"]
-    assert overrides["max_running_requests"] == 64
-    assert overrides["cuda_graph_max_bs"] == 64
-    assert overrides["torch_compile_max_bs"] == 64
-    assert "server_args_overrides" not in _stage_args(launched_config, "vocoder")
-
-
-def test_qwen3_tts_coordinator_cap_uses_engine_defaults_and_cli_overlay() -> None:
-    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
-
-    defaults = Qwen3TTSPipelineConfig.generation_admission_defaults()
-    kwargs = Qwen3TtsEngineBuilder().extra_scheduler_kwargs()
-    config = Qwen3TTSPipelineConfig(model_path="dummy")
-    assert _coordinator_max_in_flight(config) == (
-        int(defaults["max_running_requests"]) + int(defaults["max_queued_requests"])
-    )
-    assert kwargs["request_build_max_workers"] == 4
-    assert kwargs["request_build_max_pending"] == 16
-
-    _apply_stage_server_args_override(
-        config,
-        stage_name="tts_engine",
-        updates={"max_running_requests": 32, "max_queued_requests": 16},
-        reason="SGLang generation server args override",
-    )
-    assert _coordinator_max_in_flight(config) == 48
-
-
-def test_coordinator_cap_follows_queued_bound_for_any_generation_pipeline() -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-    assert _coordinator_max_in_flight(config) is None
-    assert _coordinator_max_in_flight(FunASRPipelineConfig(model_path="dummy")) is None
-
-    _apply_stage_server_args_override(
-        config,
-        stage_name="tts_engine",
-        updates={"max_running_requests": 8, "max_queued_requests": 4},
-        reason="SGLang generation server args override",
-    )
-    assert _coordinator_max_in_flight(config) == 12
-
-    replicated = HiggsTtsPipelineConfig(
-        model_path="dummy",
-        processes={"pipeline": ProcessConfig(num_replicas=2, replica_devices=[0, 1])},
-    )
-    _apply_stage_server_args_override(
-        replicated,
-        stage_name="tts_engine",
-        updates={"max_running_requests": 8, "max_queued_requests": 4},
-        reason="SGLang generation server args override",
-    )
-    assert _coordinator_max_in_flight(replicated) == 24
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_higgs_talker_compile_override_targets_tts_engine(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
-
-    serve(**_serve_kwargs(talker_torch_compile_max_bs=64))
-
-    launched_config = launch_server.call_args.args[0]
-    overrides = _stage_args(launched_config, "tts_engine")["server_args_overrides"]
-    assert overrides["torch_compile_max_bs"] == 64
-    for stage_name in ("audio_encoder", "vocoder"):
-        assert "server_args_overrides" not in _stage_args(launched_config, stage_name)
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_talker_torch_compile_max_bs_rejects_unsupported_pipeline(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="stage",
-                process="pipeline",
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                terminal=True,
-            )
-        ],
-    )
-    from_model_path.return_value = _DummyManager(config)
-
-    with pytest.raises(
-        typer.BadParameter,
-        match=(r"--talker-torch-compile-max-bs is not supported by " r"PipelineConfig"),
-    ):
-        serve(**_serve_kwargs(talker_torch_compile_max_bs=64))
-
-    launch_server.assert_not_called()
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_torch_compile_flags_reach_single_stage_generation(
-    from_model_path,
-    launch_server,
-) -> None:
-    """MOSS-TD exposes no talker role, so the neutral flags are its only CLI
-    control over the default-on decoder compile."""
-    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
-
-    serve(**_serve_kwargs(torch_compile="off", torch_compile_max_bs=8))
-
-    launched_config = launch_server.call_args.args[0]
-    overrides = _stage_args(launched_config, "asr")["server_args_overrides"]
-    assert overrides["enable_torch_compile"] is False
-    assert overrides["torch_compile_max_bs"] == 8
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_torch_compile_default_leaves_generation_stage_untouched(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
-    from_model_path.return_value = _DummyManager(config)
-
-    serve(**_serve_kwargs())
-
-    launched_config = launch_server.call_args.args[0]
-    assert "server_args_overrides" not in _stage_args(launched_config, "asr")
-
-
-@patch("sglang_omni.cli.serve.launch_server")
-@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
-def test_torch_compile_rejects_unsupported_pipeline(
-    from_model_path,
-    launch_server,
-) -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="stage",
-                process="pipeline",
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                terminal=True,
-            )
-        ],
-    )
-    from_model_path.return_value = _DummyManager(config)
-
-    with pytest.raises(
-        typer.BadParameter,
-        match=r"--torch-compile is not supported by PipelineConfig",
-    ):
-        serve(**_serve_kwargs(torch_compile="off"))
-
-    launch_server.assert_not_called()
-
-
-def test_generation_server_args_support_qwen3_omni_speech() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    _apply_generation_server_args(config)
-
-    overrides = _stage_args(config, "talker_ar")["server_args_overrides"]
-    assert overrides == GENERATION_SERVER_ARGS
-
-
-@pytest.mark.parametrize(
-    "config_cls",
-    [
-        Qwen3ASRPipelineConfig,
-        WhisperASRPipelineConfig,
-        FunASRPipelineConfig,
-    ],
-)
-def test_generation_server_args_support_asr_configs(
-    config_cls: type[PipelineConfig],
-) -> None:
-    # Note (Jiaxin Deng): the ASR role maps exist so the same-GPU DP launcher
-    # can pin caps and mem fraction; losing either silently breaks that path.
-    assert config_cls.mem_fraction_role_to_stage() == {"asr": "asr"}
-    config = config_cls(model_path="dummy")
-    _apply_generation_server_args(config)
-
-    overrides = _stage_args(config, "asr")["server_args_overrides"]
-    assert overrides == GENERATION_SERVER_ARGS
-
-
-def test_generation_server_args_support_voxtral_tts() -> None:
-    config = VoxtralTTSPipelineConfig(model_path="dummy")
-    _apply_generation_server_args(config)
-
-    overrides = _stage_args(config, "tts_generation")["server_args_overrides"]
-    assert overrides == GENERATION_SERVER_ARGS
-
-
-def test_generation_server_args_declared_stage_must_exist() -> None:
-    config = MissingGenerationStagePipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="tts_engine",
-                process="pipeline",
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                terminal=True,
-            )
-        ],
-    )
-
-    with pytest.raises(typer.BadParameter, match="missing_generation"):
-        _apply_generation_server_args(config)
-
-
-def test_quantization_routes_to_generation_stage_without_thinker() -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-
-    apply_backbone_server_args_cli_overrides(
-        config,
-        cpu_offload_gb=None,
-        quantization="fp8",
-    )
-
-    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
-    assert overrides == {"quantization": "fp8"}
-
-
-def test_cpu_offload_routes_to_generation_stage_without_thinker() -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-
-    apply_backbone_server_args_cli_overrides(
-        config,
-        cpu_offload_gb=20,
-        quantization=None,
-    )
-
-    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
-    assert overrides == {"cpu_offload_gb": 20}
-
-
-def test_quantization_prefers_thinker_stage_when_present() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_backbone_server_args_cli_overrides(
-        config,
-        cpu_offload_gb=None,
-        quantization="fp8",
-    )
-
-    assert _stage_args(config, "thinker")["server_args_overrides"] == {
-        "quantization": "fp8"
-    }
-    assert "server_args_overrides" not in _stage_args(config, "talker_ar")
-
-
-def test_quantization_merges_with_generation_server_args() -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-
-    apply_backbone_server_args_cli_overrides(
-        config,
-        cpu_offload_gb=None,
-        quantization="fp8",
-    )
-    _apply_generation_server_args(config)
-
-    overrides = _stage_args(config, "tts_engine")["server_args_overrides"]
-    assert overrides == {"quantization": "fp8", **GENERATION_SERVER_ARGS}
-
-
-def test_quantization_rejects_pipeline_without_thinker_or_generation() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="stage",
-                process="pipeline",
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                terminal=True,
-            )
-        ],
-    )
-
-    with pytest.raises(typer.BadParameter, match="not supported"):
-        apply_backbone_server_args_cli_overrides(
-            config,
-            cpu_offload_gb=None,
-            quantization="fp8",
-        )
+    assert _engine_overrides(launched_config, "tts_engine") == {}

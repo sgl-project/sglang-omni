@@ -158,6 +158,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
     overrides = {"chunked_prefill_size": 0}
     builder.adjust_overrides(overrides)
     assert overrides["chunked_prefill_size"] == 0
+    assert overrides["enable_custom_logit_processor"] is True
 
     with pytest.raises(ValueError, match="encoder prefix must be admitted atomically"):
         builder.adjust_overrides({"chunked_prefill_size": 4096})
@@ -211,57 +212,52 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert [stage.name for stage in config.stages] == ["asr"]
     assert config.terminal_stages == ["asr"]
     assert config.gpu_placement == {"asr": 0}
-    assert config.stages[0].factory.endswith("create_sglang_whisper_asr_executor")
-    assert config.stages[0].factory_args["device"] == "cuda:0"
-    assert config.stages[0].factory_args["max_running_requests"] == 64
-    assert config.stages[0].factory_args["enable_encoder_cuda_graph"] is True
-    assert config.stages[0].factory_args["request_build_max_workers"] == 8
-    assert config.stages[0].factory_args["enable_async_decode"] is True
-    assert config.stages[0].factory_args["async_decode_min_batch_size"] == 2
-    assert config.stages[0].factory_args["request_build_max_pending"] == 16
-    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 2
-    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 6.0
-    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
-    assert (
-        config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
-        is True
-    )
-    assert (
-        config.stages[0].factory_args["prefill_coalesce_after_builds_during_decode"]
-        is False
-    )
-    assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
-    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 1024
+    stage = config.stages[0]
+    assert stage.factory_path.endswith("create_sglang_whisper_asr_executor")
+    assert stage.engine.max_running_requests == 64
+    factory = stage.factory
+    assert factory.device == "cuda:0"
+    assert factory.enable_encoder_cuda_graph is True
+    assert factory.request_build_max_workers == 8
+    assert factory.enable_async_decode is True
+    assert factory.async_decode_min_batch_size == 2
+    assert factory.request_build_max_pending == 16
+    assert factory.prefill_coalesce_requests == 2
+    assert factory.prefill_coalesce_wait_ms == 6.0
+    assert factory.prefill_coalesce_when_idle is True
+    assert factory.prefill_coalesce_requires_pending_builds is True
+    assert factory.prefill_coalesce_after_builds_during_decode is False
+    assert factory.enable_pre_lm_encoder is True
+    assert factory.pre_lm_cache_max_entries == 1024
     # None: the byte budget is derived from the entry count.
-    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] is None
-    assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
-    assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 0
-    assert "max_prefill_tokens" not in config.stages[0].factory_args
+    assert factory.pre_lm_cache_size_bytes is None
+    assert factory.pre_lm_max_batch_size == 8
+    assert factory.pre_lm_max_batch_wait_ms == 0
+    assert (factory.model_extra or {}).get("max_prefill_tokens") is None
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("WhisperForConditionalGeneration")
         is WhisperASRPipelineConfig
     )
 
 
-def test_whisper_async_decode_cli_overrides() -> None:
-    from sglang_omni.cli.serve import apply_decode_mode_cli_overrides
+def test_whisper_async_decode_dotted_overrides() -> None:
+    from sglang_omni.config.manager import ConfigManager
 
     config = WhisperASRPipelineConfig(model_path="openai/whisper-base")
 
-    apply_decode_mode_cli_overrides(
-        config,
-        decode_mode="sync",
-        async_lookahead_min_batch_size=None,
+    forced_sync = ConfigManager(config).merge_config(
+        [("asr.factory.enable_async_decode", "false")]
     )
-    assert config.stages[0].factory_args["enable_async_decode"] is False
+    assert forced_sync.stages[0].factory.enable_async_decode is False
 
-    apply_decode_mode_cli_overrides(
-        config,
-        decode_mode="async",
-        async_lookahead_min_batch_size=4,
+    forced_async = ConfigManager(config).merge_config(
+        [
+            ("asr.factory.enable_async_decode", "true"),
+            ("asr.factory.async_decode_min_batch_size", "4"),
+        ]
     )
-    assert config.stages[0].factory_args["enable_async_decode"] is True
-    assert config.stages[0].factory_args["async_decode_min_batch_size"] == 4
+    assert forced_async.stages[0].factory.enable_async_decode is True
+    assert forced_async.stages[0].factory.async_decode_min_batch_size == 4
 
 
 def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
@@ -358,6 +354,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     # note (jiannan-17): context_length = encoder_token_count + max_prev_tokens + max_new_tokens + 8
     assert build_kwargs["context_length"] == 1500 + 224 + 256 + 8
     assert build_kwargs["chunked_prefill_size"] == 0
+    assert build_kwargs["enable_custom_logit_processor"] is True
     assert build_kwargs["max_prefill_tokens"] == 6144
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4

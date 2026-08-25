@@ -288,7 +288,7 @@ def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     spec = StageLaunchConfig(
         stage_name="thinker",
         factory=fake_factory_path("runtime_factory"),
-        factory_args={
+        factory_kwargs={
             "model_path": "runtime-model",
             "thinker_max_seq_len": 128,
         },
@@ -312,7 +312,7 @@ def test_scheduler_rejects_replica_device_factory_without_gpu_id() -> None:
     spec = StageLaunchConfig(
         stage_name="legacy@r0",
         factory=fake_factory_path("runtime_factory_with_device"),
-        factory_args={"device": "cuda:0"},
+        factory_kwargs={"device": "cuda:0"},
         factory_arg_defaults={"model_path": "model", "gpu_id": 1},
         require_factory_gpu_id=True,
     )

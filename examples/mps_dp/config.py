@@ -9,7 +9,10 @@ from pathlib import Path
 import yaml
 
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.runtime import resolve_stage_static_factory_args
+from sglang_omni.config.runtime import (
+    resolve_stage_factory_kwargs,
+    resolve_stage_typed_kwargs,
+)
 
 # Note (Jiaxin Deng): the machine-readable weight-share support registry:
 # pipeline configs whose documented launch.sh command passed shared-DP
@@ -38,8 +41,8 @@ def resolve_max_total_tokens(
     *,
     require_single_sglang_engine: bool = False,
     weight_share: bool = False,
-) -> int | None:
-    """Return the effective generation-stage KV cap, or None when unpinned."""
+) -> tuple[str, int | None]:
+    """Return the generation stage name and its KV cap (None when unpinned)."""
 
     pipeline_config = ConfigManager.from_file(str(config_path)).config
     config_type = type(pipeline_config)
@@ -50,24 +53,25 @@ def resolve_max_total_tokens(
             "audit alone does not enable sharing). Validated configs: "
             f"{', '.join(sorted(WEIGHT_SHARE_VALIDATED_CONFIGS))}"
         )
-    stage_name = config_type.generation_sglang_role_to_stage().get("generation")
-    if stage_name is None:
+    engine_stage_names = [
+        stage.name
+        for stage in pipeline_config.stages
+        if config_type.stage_config_cls(stage.name).engine_stage
+    ]
+    if not engine_stage_names:
         raise ValueError(
-            f"{config_type.__name__} does not declare a generation stage; the "
-            "mps_dp launcher only drives pipelines with exactly one SGLang "
+            f"{config_type.__name__} does not declare an SGLang engine stage; "
+            "the mps_dp launcher only drives pipelines with exactly one SGLang "
             "generation engine"
         )
-
-    sglang_stage_names = {
-        *config_type.mem_fraction_role_to_stage().values(),
-        *config_type.talker_sglang_role_to_stage().values(),
-        *config_type.generation_sglang_role_to_stage().values(),
-    }
-    if require_single_sglang_engine and sglang_stage_names != {stage_name}:
+    if require_single_sglang_engine and len(engine_stage_names) != 1:
         raise ValueError(
             "KV verification requires CONFIG with one SGLang engine stage; "
-            f"found {sorted(sglang_stage_names)}"
+            f"found {sorted(engine_stage_names)}"
         )
+    # In pipeline order, the generation engine comes first; every launcher-
+    # validated config has exactly one engine stage anyway.
+    stage_name = engine_stage_names[0]
 
     stage = next(
         (stage for stage in pipeline_config.stages if stage.name == stage_name),
@@ -80,15 +84,26 @@ def resolve_max_total_tokens(
 
     value = max_total_tokens_override
     if value is None:
-        factory_args = resolve_stage_static_factory_args(stage, pipeline_config)
-        value = factory_args.get("server_args_overrides", {}).get("max_total_tokens")
+        # Both kwarg channels can carry server args; per-key, the stage's own
+        # engine block outranks the author's stage_factory_kwargs, matching
+        # how the stage worker overlays them at construction.
+        overrides = dict(
+            resolve_stage_factory_kwargs(stage, pipeline_config).get(
+                "server_args_overrides"
+            )
+            or {}
+        )
+        overrides.update(
+            resolve_stage_typed_kwargs(stage).get("server_args_overrides") or {}
+        )
+        value = overrides.get("max_total_tokens")
     if value is None:
-        return None
+        return stage_name, None
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(
             "the generation stage must define a positive integer max_total_tokens"
         )
-    return value
+    return stage_name, value
 
 
 def main() -> None:
@@ -97,16 +112,24 @@ def main() -> None:
     parser.add_argument("--max-total-tokens", type=int)
     parser.add_argument("--require-single-sglang-engine", action="store_true")
     parser.add_argument("--weight-share", action="store_true")
+    parser.add_argument(
+        "--print-stage",
+        action="store_true",
+        help=(
+            "Print 'STAGE VALUE' instead of VALUE, so the launcher can build "
+            "the dotted serve flag (--STAGE.engine.max_total_tokens)."
+        ),
+    )
     args = parser.parse_args()
     try:
-        value = resolve_max_total_tokens(
+        stage_name, value = resolve_max_total_tokens(
             args.config,
             args.max_total_tokens,
             require_single_sglang_engine=args.require_single_sglang_engine,
             weight_share=args.weight_share,
         )
         if value is not None:
-            print(value)
+            print(f"{stage_name} {value}" if args.print_stage else value)
     except (OSError, KeyError, ValueError, yaml.YAMLError) as exc:
         parser.error(str(exc))
 

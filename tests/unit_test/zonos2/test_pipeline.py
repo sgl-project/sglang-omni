@@ -69,11 +69,10 @@ def test_zonos2_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 
     assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
-    assert (
-        stages_by_name["tts_engine"].factory_args["stream_emit_first_chunk_frames"]
-        == DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
-        == 58
-    )
+    # The first-flush row count is the factory signature's default now; the
+    # config leaves it unset.
+    assert stages_by_name["tts_engine"].factory.model_extra in (None, {})
+    assert DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS == 58
 
 
 @pytest.mark.parametrize(

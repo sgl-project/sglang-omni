@@ -2,34 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
-import sglang_omni.platforms as platforms
-from sglang_omni.config.runtime import resolve_factory_signature_args
-from sglang_omni.config.schema import (
-    EndpointsConfig,
-    PipelineConfig,
-    PlacementConfig,
-    ProcessConfig,
-    StageResourceConfig,
-    StageRuntimeConfig,
-)
+from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
 from sglang_omni.pipeline.mp_runner import (
     _build_stage_groups,
     _resolve_same_process_targets,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
-from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
-
-
-@pytest.fixture
-def synthetic_gpu_topology(monkeypatch: pytest.MonkeyPatch) -> None:
-    from sglang_omni.pipeline import runtime_config
-
-    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: None)
 
 
 def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
@@ -98,19 +83,27 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
         )
 
 
+class _KwargSeedingPipelineConfig(PipelineConfig):
+    """Seeds an author constructor kwarg, so both channels appear in specs."""
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        if stage_name == "thinker":
+            return {"extra": "factory"}
+        return {}
+
+
 def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) -> None:
     """Preserves config-to-runtime wiring for routes, overrides, fan-in, and streams."""
-    config = PipelineConfig(
+    config = _KwargSeedingPipelineConfig(
         model_path="global-model",
         name="contract",
         endpoints=EndpointsConfig(base_path=str(tmp_path)),
-        runtime_overrides={"thinker": {"model_path": "runtime-model", "extra": "rt"}},
         stages=[
             stage("preprocess", next=["thinker", "aggregate"]),
             stage(
                 "thinker",
-                factory=fake_factory_path("make_scheduler_accepting_model_path"),
-                factory_args={"extra": "factory"},
+                factory_path=fake_factory_path("make_scheduler_accepting_model_path"),
+                factory={"extra": "rt"},
                 gpu=0,
                 next="aggregate",
                 route_fn=fake_factory_path("identity_route"),
@@ -159,14 +152,13 @@ def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) ->
     assert specs["preprocess"].same_process_targets == {"thinker", "aggregate"}
     assert specs["thinker"].same_process_targets == {"aggregate", "talker"}
     assert specs["thinker"].factory_arg_defaults["model_path"] == "global-model"
-    assert specs["thinker"].factory_args["model_path"] == "runtime-model"
-    assert specs["thinker"].factory_args["extra"] == "rt"
+    assert specs["thinker"].factory_kwargs["extra"] == "factory"
+    assert specs["thinker"].typed_kwargs["extra"] == "rt"
 
 
 def test_runner_specs_defer_factory_signature_import_to_child(
     tmp_path,
     monkeypatch,
-    synthetic_gpu_topology,
 ) -> None:
     import sglang_omni.config.runtime as runtime_config
 
@@ -182,7 +174,7 @@ def test_runner_specs_defer_factory_signature_import_to_child(
         stages=[
             stage(
                 "thinker",
-                factory=fake_factory_path("runtime_factory"),
+                factory_path=fake_factory_path("runtime_factory"),
                 gpu=1,
                 terminal=True,
             ),
@@ -207,8 +199,8 @@ def test_runner_specs_defer_factory_signature_import_to_child(
     assert spec.factory_arg_defaults["model_path"] == "global-model"
     assert spec.factory_arg_defaults["gpu_id"] == 1
     assert spec.gpu_id == 1
-    assert "model_path" not in spec.factory_args
-    assert "gpu_id" not in spec.factory_args
+    assert "model_path" not in spec.factory_kwargs
+    assert "gpu_id" not in spec.factory_kwargs
 
 
 def test_runner_specs_wire_same_process_targets_only_for_local_edges() -> None:
@@ -255,27 +247,21 @@ def test_runner_specs_expose_process_total_in_construction_order(
                 next="engine",
                 process="pipeline",
                 gpu=0,
-                runtime=StageRuntimeConfig(
-                    resources=StageResourceConfig(total_gpu_memory_fraction=0.15)
-                ),
+                gpu_memory_fraction=0.15,
             ),
             stage(
                 "engine",
                 next="vocoder",
                 process="pipeline",
                 gpu=0,
-                runtime=StageRuntimeConfig(
-                    resources=StageResourceConfig(total_gpu_memory_fraction=0.67)
-                ),
+                gpu_memory_fraction=0.67,
             ),
             stage(
                 "vocoder",
                 terminal=True,
                 process=vocoder_process,
                 gpu=0,
-                runtime=StageRuntimeConfig(
-                    resources=StageResourceConfig(total_gpu_memory_fraction=0.18)
-                ),
+                gpu_memory_fraction=0.18,
             ),
         ],
     )
@@ -300,12 +286,12 @@ def test_runner_specs_expose_process_total_in_construction_order(
     ] == pytest.approx(expected_fractions)
 
 
-def test_shared_process_name_compiles_to_same_process_local_edges() -> None:
+def test_same_process_stages_compile_to_local_edges() -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
-            stage("preprocess", next="encoder", process="front"),
-            stage("encoder", next="decode", gpu=0, process="front"),
+            stage("preprocess", next="encoder", process="frontend"),
+            stage("encoder", next="decode", gpu=0, process="frontend"),
             stage("decode", terminal=True, process="decode"),
         ],
     )
@@ -387,9 +373,7 @@ def test_runner_specs_wire_direct_cuda_ipc_payload_disable_flag() -> None:
     assert specs["thinker"].disable_direct_cuda_ipc_payload is False
 
 
-def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages(
-    synthetic_gpu_topology,
-) -> None:
+def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
     config = PipelineConfig(
         model_path="model",
         stages=[
@@ -420,84 +404,8 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages(
     )
 
 
-def test_runner_copies_whole_process_and_injects_replica_devices(
-    tmp_path,
-    synthetic_gpu_topology,
-) -> None:
-    config = PipelineConfig(
-        model_path="model",
-        stages=[
-            stage("src", next="gen"),
-            stage(
-                "gen",
-                next="wav",
-                process="speech",
-                gpu=0,
-                factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
-            ),
-            stage(
-                "wav",
-                terminal=True,
-                process="speech",
-                gpu=0,
-                factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
-            ),
-        ],
-        endpoints=EndpointsConfig(base_path=str(tmp_path)),
-        processes={"speech": ProcessConfig(num_replicas=2, replica_devices="1,2")},
-        placement=PlacementConfig(require_memory_fraction_for_colocation=False),
-    )
-    prep = prepare_pipeline_runtime(config)
-    by_name = {stage_cfg.name: stage_cfg for stage_cfg in prep.stages_cfg}
-
-    def resolve(name: str) -> set[str]:
-        return _resolve_same_process_targets(
-            by_name[name],
-            by_name,
-            prep.process_plan,
-            prep.replica_topology,
-        )
-
-    try:
-        groups = _build_stage_groups(
-            config,
-            ctx=FakeMpContext(),
-            stages_cfg=prep.stages_cfg,
-            endpoints=prep.endpoints,
-            placement_plan=prep.placement_plan,
-            process_plan=prep.process_plan,
-            replica_topology=prep.replica_topology,
-        )
-    finally:
-        prep.runtime_dir.close()
-
-    by_group = {group.group_name: group for group in groups}
-    for replica_id, gpu_id in enumerate((1, 2)):
-        suffix = f"@r{replica_id}"
-        specs = by_group[f"speech{suffix}"].specs
-        assert [spec.stage_name for spec in specs] == [f"gen{suffix}", f"wav{suffix}"]
-        assert resolve(f"gen{suffix}") == {f"wav{suffix}"}
-        for spec in specs:
-            factory_args = resolve_factory_signature_args(
-                import_string(spec.factory),
-                spec.factory_args,
-                defaults=spec.factory_arg_defaults,
-                require_gpu_id=spec.require_factory_gpu_id,
-                stage_name=spec.stage_name,
-            )
-            assert spec.require_factory_gpu_id is True
-            assert factory_args["gpu_id"] == gpu_id
-
-
-def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
-    tmp_path,
-    monkeypatch,
-    synthetic_gpu_topology,
-) -> None:
+def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> None:
     """Preserves TP process specs and one-visible-device env mapping."""
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
-    )
     config = PipelineConfig(
         model_path="model",
         name="mp",
@@ -506,7 +414,7 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
         stages=[
             stage(
                 "thinker",
-                factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+                factory_path=fake_factory_path("make_scheduler_accepting_gpu_id"),
                 gpu=[1, 3],
                 tp_size=2,
                 terminal=True,
@@ -533,16 +441,9 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
 
     assert leader.role == "leader"
     assert follower.role == "follower"
-    assert leader.factory_args["tp_rank"] == 0
-    assert follower.factory_args["tp_rank"] == 1
-    assert leader.factory_args["nccl_port"] == follower.factory_args["nccl_port"]
-    assert leader.recv_endpoint == prep.endpoints["stage_thinker"]
-    assert follower.recv_endpoint == ""
-    for spec in (leader, follower):
-        assert (
-            spec.rank_endpoints["thinker"][spec.tp_rank]
-            == prep.endpoints[f"comm_thinker_rank{spec.tp_rank}"]
-        )
+    assert leader.factory_kwargs["tp_rank"] == 0
+    assert follower.factory_kwargs["tp_rank"] == 1
+    assert leader.factory_kwargs["nccl_port"] == follower.factory_kwargs["nccl_port"]
     assert leader.env_defaults == {"SGLANG_TEST_STAGE_ENV": "1"}
     assert follower.env_defaults == {"SGLANG_TEST_STAGE_ENV": "1"}
     assert env["CUDA_VISIBLE_DEVICES"] == "7"

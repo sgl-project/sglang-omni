@@ -31,17 +31,15 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     ]
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
-    assert "device" not in config.stages[1].factory_args
-    assert "device" not in config.stages[2].factory_args
+    assert config.stages[1].factory.device is None
+    assert config.stages[2].factory.device is None
     assert [stage.process for stage in config.stages] == [
         "pipeline",
         "pipeline",
         "pipeline",
     ]
     assert [
-        stage.runtime.resources.total_gpu_memory_fraction
-        for stage in config.stages
-        if stage.gpu is not None
+        stage.gpu_memory_fraction for stage in config.stages if stage.gpu is not None
     ] == [None, None]
     build_compiled_process_topology(config)
     assert (

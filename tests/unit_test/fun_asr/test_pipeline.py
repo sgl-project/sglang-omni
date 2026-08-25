@@ -20,43 +20,56 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from tests.unit_test.fakes import FakeServerArgs
 
 
-def test_fun_asr_config_uses_batched_stage_with_32_running_requests() -> None:
+def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     config = FunASRPipelineConfig(model_path="FunAudioLLM/Fun-ASR-Nano-2512-hf")
 
     assert config.entry_stage == "asr"
     assert [stage.name for stage in config.stages] == ["asr"]
     assert config.terminal_stages == ["asr"]
     assert config.gpu_placement == {"asr": 0}
-    assert config.stages[0].factory.endswith("create_sglang_fun_asr_executor")
-    assert config.stages[0].factory_args["device"] == "cuda:0"
-    assert config.stages[0].factory_args["max_running_requests"] == 32
-    assert config.stages[0].factory_args["max_new_tokens"] == 200
-    assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
-    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
-    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
-    assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
-    assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 4
-    assert config.stages[0].factory_args["request_build_max_workers"] == 8
-    assert config.stages[0].factory_args["request_build_max_pending"] == 16
+    assert config.stages[0].factory_path.endswith("create_sglang_fun_asr_executor")
+    # Constructor defaults live on the factory signature (pinned below); the
+    # config declares no overrides of its own.
+    assert config.stages[0].factory.model_dump(exclude_none=True) == {}
+    assert not config.stages[0].factory.model_extra
+    assert type(config).stage_config_cls("asr").engine_stage
+    assert config.stage_factory_kwargs("asr") == {"enable_encoder_cuda_graph": True}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("FunAsrNanoForConditionalGeneration")
         is FunASRPipelineConfig
     )
 
 
-def test_fun_asr_stage_default_allows_32_running_requests() -> None:
+def test_fun_asr_stage_default_allows_64_running_requests() -> None:
     signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
-    assert signature.parameters["max_running_requests"].default == 32
+    assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["max_new_tokens"].default == 200
     assert signature.parameters["enable_pre_lm_encoder"].default is True
     assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
     assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
-    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 4
+    assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 10
     assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["request_build_max_pending"].default == 16
+    assert signature.parameters["request_build_max_pending"].default == 32
     assert signature.parameters["stream_emit_interval_s"].default == 0.05
+
+
+def test_fun_asr_stage_defaults_enable_pending_build_aware_coalescing() -> None:
+    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
+
+    assert signature.parameters["prefill_coalesce_requests"].default == 16
+    assert signature.parameters["prefill_coalesce_wait_ms"].default == 24.0
+    assert signature.parameters["prefill_coalesce_when_idle"].default is True
+    assert (
+        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
+    )
+    assert (
+        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
+        is True
+    )
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
 @pytest.mark.parametrize(
@@ -240,8 +253,21 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
 
     scheduler = fun_asr_stages.create_sglang_fun_asr_executor("dummy")
 
-    assert build_kwargs["cuda_graph_max_bs"] == 32
-    assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+    assert build_kwargs["cuda_graph_max_bs"] == 64
+    assert build_kwargs["cuda_graph_bs"] == [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+        24,
+        32,
+        40,
+        48,
+        56,
+        64,
+    ]
     assert build_kwargs["cuda_graph_backend_prefill"] == "breakable"
     assert build_kwargs["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
         256
@@ -253,13 +279,18 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     ]
     assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
     assert scheduler.request_build_max_workers == 8
-    assert scheduler.request_build_max_pending == 16
+    assert scheduler.request_build_max_pending == 32
     assert stream_builder_calls == [
         {"tokenizer": tokenizer, "min_emit_interval_s": 0.05}
     ]
     assert scheduler.stream_output_builder is stream_output_builder
     assert scheduler.enable_async_decode is True
     assert scheduler.async_decode_min_batch_size == 2
+    assert scheduler.prefill_coalesce_requests == 16
+    assert scheduler.prefill_coalesce_wait_ms == 24.0
+    assert scheduler.prefill_coalesce_when_idle is True
+    assert scheduler.prefill_coalesce_requires_pending_builds is True
+    assert scheduler.prefill_coalesce_after_builds_during_decode is True
     scheduler.shutdown_callback()
     assert encoder_services[0].close_calls == 1
 

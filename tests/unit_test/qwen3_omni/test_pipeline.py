@@ -13,12 +13,17 @@ import typer
 
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.cli.serve import (
-    apply_encoder_mem_reserve_cli_override,
-    apply_mem_fraction_cli_overrides,
-    apply_parallelism_cli_overrides,
+    apply_tensor_parallel_engine_overrides,
+    patches_from_broadcast_flags,
 )
-from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.config import (
+    PipelineConfig,
+    StageConfig,
+    build_stage_placement_plan,
+    resolve_stage_factory_args,
+)
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.models.ming_omni.config import (
     MingOmniPipelineConfig,
     MingOmniSpeechPipelineConfig,
@@ -63,11 +68,13 @@ def _stage(config: PipelineConfig, name: str):
 
 
 def _server_args_overrides(config: PipelineConfig, name: str) -> dict[str, object]:
-    return _stage(config, name).factory_args.get("server_args_overrides", {})
+    engine = _stage(config, name).engine
+    return engine.overrides() if engine is not None else {}
 
 
-def _runtime_mem_fraction_static(config, name: str) -> float | None:
-    return _stage(config, name).runtime.sglang_server_args.mem_fraction_static
+def _engine_mem_fraction_static(config, name: str) -> float | None:
+    engine = _stage(config, name).engine
+    return None if engine is None else engine.mem_fraction_static
 
 
 def test_qwen_pipeline_config_and_state_contracts() -> None:
@@ -716,98 +723,126 @@ def test_qwen_encoder_mem_reserve_applies_only_to_valid_auto_values() -> None:
             )
 
 
-def test_qwen_cli_global_and_specific_mem_fraction_target_only_ar_stages() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_mem_fraction_cli_overrides(
-        config,
-        mem_fraction_static=0.80,
-        thinker_mem_fraction_static=0.70,
-        talker_mem_fraction_static=0.65,
+def _resolve_broadcast_mem_fraction(config, value):
+    """Apply the broadcast --mem-fraction-static the way `sgl-omni serve` does."""
+    return (
+        ConfigResolver(config)
+        .resolve(
+            patches_from_broadcast_flags(
+                config,
+                mem_fraction_static=value,
+            )
+        )
+        .config
     )
 
-    assert _runtime_mem_fraction_static(config, "thinker") == 0.70
-    assert _runtime_mem_fraction_static(config, "talker_ar") == 0.65
+
+def test_qwen_broadcast_mem_fraction_targets_only_engine_stages() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    resolved = _resolve_broadcast_mem_fraction(config, 0.80)
+
+    assert _engine_mem_fraction_static(resolved, "thinker") == 0.80
+    assert _engine_mem_fraction_static(resolved, "talker_ar") == 0.80
     for non_ar_stage in ("image_encoder", "audio_encoder", "code2wav"):
-        assert "server_args_overrides" not in _stage(config, non_ar_stage).factory_args
+        assert _server_args_overrides(resolved, non_ar_stage) == {}
 
 
-def test_qwen_cli_per_role_mem_fraction_overrides_global_when_all_three_passed() -> (
-    None
-):
+def test_qwen_dotted_per_stage_mem_fraction_overrides_the_broadcast() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_mem_fraction_cli_overrides(
+    patches = patches_from_broadcast_flags(
         config,
         mem_fraction_static=0.80,
-        thinker_mem_fraction_static=0.70,
-        talker_mem_fraction_static=0.65,
+    )
+    merged = ConfigManager(config).merge_config(
+        [
+            ("thinker.engine.mem_fraction_static", "0.70"),
+            ("talker_ar.engine.mem_fraction_static", "0.65"),
+        ],
+        extra_patches=patches,
     )
 
-    assert _runtime_mem_fraction_static(config, "thinker") == 0.70
-    assert _runtime_mem_fraction_static(config, "talker_ar") == 0.65
+    assert _engine_mem_fraction_static(merged, "thinker") == 0.70
+    assert _engine_mem_fraction_static(merged, "talker_ar") == 0.65
 
 
-def test_qwen_cli_global_mem_fraction_applies_when_no_per_role_override() -> None:
+def test_qwen_partial_dotted_override_falls_back_to_the_broadcast() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_mem_fraction_cli_overrides(
+    patches = patches_from_broadcast_flags(
         config,
         mem_fraction_static=0.80,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=None,
+    )
+    merged = ConfigManager(config).merge_config(
+        [("thinker.engine.mem_fraction_static", "0.70")],
+        extra_patches=patches,
     )
 
-    assert _runtime_mem_fraction_static(config, "thinker") == 0.80
-    assert _runtime_mem_fraction_static(config, "talker_ar") == 0.80
+    assert _engine_mem_fraction_static(merged, "thinker") == 0.70
+    assert _engine_mem_fraction_static(merged, "talker_ar") == 0.80
 
 
-def test_qwen_cli_partial_per_role_falls_back_to_global_for_unspecified_role() -> None:
+def test_qwen_broadcast_mem_fraction_keeps_other_engine_settings() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_mem_fraction_cli_overrides(
-        config,
-        mem_fraction_static=0.80,
-        thinker_mem_fraction_static=0.70,
-        talker_mem_fraction_static=None,
+    merged = ConfigManager(config).merge_config(
+        [("thinker.engine.disable_cuda_graph", "true")],
+        extra_patches=patches_from_broadcast_flags(
+            config,
+            mem_fraction_static=0.80,
+        ),
     )
 
-    assert _runtime_mem_fraction_static(config, "thinker") == 0.70
-    assert _runtime_mem_fraction_static(config, "talker_ar") == 0.80
-
-
-def test_qwen_cli_talker_per_role_overrides_global_thinker_falls_back() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_mem_fraction_cli_overrides(
-        config,
-        mem_fraction_static=0.80,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=0.65,
-    )
-
-    assert _runtime_mem_fraction_static(config, "thinker") == 0.80
-    assert _runtime_mem_fraction_static(config, "talker_ar") == 0.65
-
-
-def test_qwen_cli_mem_fraction_static_survives_runtime_overrides_overlay() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(
-        model_path="dummy",
-        runtime_overrides={
-            "thinker": {"server_args_overrides": {"disable_cuda_graph": True}}
-        },
-    )
-
-    apply_mem_fraction_cli_overrides(
-        config,
-        mem_fraction_static=0.80,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=None,
-    )
-
-    resolved = resolve_stage_factory_args(_stage(config, "thinker"), config)
+    resolved = resolve_stage_factory_args(_stage(merged, "thinker"), merged)
     assert resolved["server_args_overrides"]["mem_fraction_static"] == 0.80
     assert resolved["server_args_overrides"]["disable_cuda_graph"] is True
+
+
+def test_qwen_broadcast_rejects_invalid_mem_fraction_without_partial_write() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    original = config.model_dump()
+
+    # Range is the schema's rule: the flag builds patches, and resolution
+    # refuses the out-of-range value without touching the source config.
+    patches = patches_from_broadcast_flags(config, mem_fraction_static=1.0)
+    with pytest.raises(ValueError, match="mem_fraction_static"):
+        ConfigManager(config).merge_config([], extra_patches=patches)
+
+    assert config.model_dump() == original
+
+
+def test_qwen_broadcast_rejects_pipelines_without_an_engine_stage() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="preprocessing",
+                process="pipeline",
+                factory_path=(
+                    "sglang_omni.models.qwen3_omni.stages."
+                    "create_preprocessing_executor"
+                ),
+                terminal=True,
+            )
+        ],
+    )
+
+    with pytest.raises(typer.BadParameter, match="engine stage"):
+        patches_from_broadcast_flags(
+            config,
+            mem_fraction_static=0.80,
+        )
+
+
+def test_qwen_encoder_mem_reserve_routes_as_scheduler_group_value() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    merged = ConfigManager(config).merge_config(
+        [("thinker.factory.encoder_mem_reserve", "0.15")]
+    )
+
+    thinker_args = resolve_stage_factory_args(_stage(merged, "thinker"), merged)
+    assert thinker_args["encoder_mem_reserve"] == 0.15
+    assert "encoder_mem_reserve" not in thinker_args.get("server_args_overrides", {})
+    assert _stage(merged, "talker_ar").factory.encoder_mem_reserve is None
 
 
 @pytest.mark.parametrize(
@@ -1124,236 +1159,65 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     assert scheduler.server_args is server_args
 
 
-def test_qwen_cli_mem_fraction_static_rejects_runtime_override_duplicate() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(
-        model_path="dummy",
-        runtime_overrides={
-            "thinker": {"server_args_overrides": {"mem_fraction_static": 0.70}}
-        },
-    )
-
-    apply_mem_fraction_cli_overrides(
-        config,
-        mem_fraction_static=0.80,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=None,
-    )
-
-    with pytest.raises(ValueError, match="mem_fraction_static"):
-        resolve_stage_factory_args(_stage(config, "thinker"), config)
-
-
-def test_qwen_cli_rejects_talker_override_on_text_only_qwen_without_partial_write() -> (
-    None
-):
-    config = Qwen3OmniPipelineConfig(model_path="dummy")
-    original = config.model_dump()
-
-    with pytest.raises(typer.BadParameter, match="talker"):
-        apply_mem_fraction_cli_overrides(
-            config,
-            mem_fraction_static=None,
-            thinker_mem_fraction_static=None,
-            talker_mem_fraction_static=0.65,
-        )
-
-    assert config.model_dump() == original
-
-
-def test_qwen_cli_rejects_invalid_mem_fraction_without_partial_write() -> None:
+def test_qwen_broadcast_and_dotted_conflict_is_never_silent() -> None:
+    """Two spellings of one leaf at one precedence stay an error."""
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    original = config.model_dump()
-
-    with pytest.raises(typer.BadParameter, match="must be > 0 and < 1"):
-        apply_mem_fraction_cli_overrides(
-            config,
-            mem_fraction_static=1.0,
-            thinker_mem_fraction_static=None,
-            talker_mem_fraction_static=None,
-        )
-
-    assert config.model_dump() == original
-
-
-def test_qwen_cli_rejects_global_mem_fraction_when_pipeline_has_no_supported_roles() -> (
-    None
-):
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="preprocessing",
-                process="pipeline",
-                factory=(
-                    "sglang_omni.models.qwen3_omni.stages."
-                    "create_preprocessing_executor"
-                ),
-                terminal=True,
-            )
-        ],
-    )
-
-    with pytest.raises(typer.BadParameter, match="supported"):
-        apply_mem_fraction_cli_overrides(
-            config,
-            mem_fraction_static=0.80,
-            thinker_mem_fraction_static=None,
-            talker_mem_fraction_static=None,
+    with pytest.raises(Exception, match="same precedence"):
+        ConfigManager(config).merge_config(
+            [
+                ("thinker.engine.mem_fraction_static", "0.70"),
+                ("thinker.engine.mem_fraction_static", "0.80"),
+            ]
         )
 
 
-def test_qwen_cli_encoder_mem_reserve_routes_as_thinker_factory_arg() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+def test_qwen_encoder_reserve_and_explicit_pin_conflict_consumer_side() -> None:
+    """encoder_mem_reserve only applies to the auto mem-fraction path; the
+    stage factory refuses the combination with an explicit pin."""
+    server_args = SimpleNamespace(mem_fraction_static=0.70)
 
-    apply_encoder_mem_reserve_cli_override(
-        config,
+    applied = qwen_stages._apply_qwen_thinker_encoder_reserve(
+        server_args,
+        has_explicit_mem_fraction_static=True,
         encoder_mem_reserve=0.15,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
     )
 
-    thinker_args = _stage(config, "thinker").factory_args
-    assert thinker_args["encoder_mem_reserve"] == 0.15
-    assert "encoder_mem_reserve" not in thinker_args.get("server_args_overrides", {})
-    assert "encoder_mem_reserve" not in _stage(config, "talker_ar").factory_args
+    assert applied is False
+    assert server_args.mem_fraction_static == 0.70
 
 
-def test_qwen_cli_encoder_mem_reserve_is_exclusive_with_thinker_auto_path_pins() -> (
-    None
-):
+def test_qwen_cli_thinker_tp_override_applies_tp_size_and_gpus() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    with pytest.raises(typer.BadParameter, match="mutually exclusive"):
-        apply_encoder_mem_reserve_cli_override(
-            config,
-            encoder_mem_reserve=0.15,
-            mem_fraction_static=0.80,
-            thinker_mem_fraction_static=None,
-        )
-
-    with pytest.raises(typer.BadParameter, match="mutually exclusive"):
-        apply_encoder_mem_reserve_cli_override(
-            config,
-            encoder_mem_reserve=0.15,
-            mem_fraction_static=None,
-            thinker_mem_fraction_static=0.70,
-        )
-
-
-def test_qwen_cli_encoder_mem_reserve_rejects_config_pinned_thinker_mem_fraction() -> (
-    None
-):
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    thinker_args = _stage(config, "thinker").factory_args
-    thinker_args["server_args_overrides"] = {"mem_fraction_static": 0.70}
-
-    with pytest.raises(typer.BadParameter, match="not explicitly pinned"):
-        apply_encoder_mem_reserve_cli_override(
-            config,
-            encoder_mem_reserve=0.15,
-            mem_fraction_static=None,
-            thinker_mem_fraction_static=None,
-        )
-
-
-def test_qwen_cli_encoder_mem_reserve_rejects_runtime_pinned_thinker_mem_fraction() -> (
-    None
-):
-    config = Qwen3OmniSpeechPipelineConfig(
-        model_path="dummy",
-        runtime_overrides={
-            "thinker": {"server_args_overrides": {"mem_fraction_static": 0.70}}
-        },
+    merged = ConfigManager(config).merge_config(
+        [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")]
     )
 
-    with pytest.raises(typer.BadParameter, match="not explicitly pinned"):
-        apply_encoder_mem_reserve_cli_override(
-            config,
-            encoder_mem_reserve=0.15,
-            mem_fraction_static=None,
-            thinker_mem_fraction_static=None,
-        )
-
-
-def test_qwen_cli_encoder_mem_reserve_rejects_typed_pinned_thinker_mem_fraction() -> (
-    None
-):
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = 0.70
-
-    with pytest.raises(typer.BadParameter, match="not explicitly pinned"):
-        apply_encoder_mem_reserve_cli_override(
-            config,
-            encoder_mem_reserve=0.15,
-            mem_fraction_static=None,
-            thinker_mem_fraction_static=None,
-        )
-
-
-def test_qwen_cli_encoder_mem_reserve_survives_runtime_overrides_overlay() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(
-        model_path="dummy",
-        runtime_overrides={"thinker": {"encoder_mem_reserve": 0.10}},
-    )
-
-    apply_encoder_mem_reserve_cli_override(
-        config,
-        encoder_mem_reserve=0.15,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-    )
-
-    resolved = resolve_stage_factory_args(_stage(config, "thinker"), config)
-
-    assert resolved["encoder_mem_reserve"] == 0.15
-
-
-def test_qwen_cli_thinker_tp_override_keeps_parallelism_alias_in_sync() -> None:
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    config = apply_parallelism_cli_overrides(
-        config,
-        thinker_tp_size=2,
-        thinker_gpus="0,1",
-        talker_gpu=None,
-        code2wav_gpu=None,
-    )
-
-    thinker = _stage(config, "thinker")
+    thinker = _stage(merged, "thinker")
     assert thinker.tp_size == 2
-    assert thinker.parallelism.tp == 2
     assert thinker.gpu == [0, 1]
 
 
-def test_qwen_text_thinker_tp_documented_cli_override_builds_topology() -> None:
-    manager = ConfigManager(Qwen3OmniPipelineConfig(model_path="dummy"))
-    extra_args = manager.parse_extra_args(["--stages.thinker.process", "thinker"])
-    config = manager.merge_config(extra_args)
+def test_qwen_text_thinker_tp_builds_topology_without_memory_fractions() -> None:
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
 
-    apply_mem_fraction_cli_overrides(
-        config,
-        mem_fraction_static=0.82,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=None,
-    )
-    config = apply_parallelism_cli_overrides(
-        config,
-        thinker_tp_size=8,
-        thinker_gpus="0,1,2,3,4,5,6,7",
-        talker_gpu=None,
-        code2wav_gpu=None,
+    resolved = _resolve_broadcast_mem_fraction(config, 0.82)
+    merged = ConfigManager(resolved).merge_config(
+        [
+            ("thinker.process", "thinker"),
+            ("thinker.tp_size", "2"),
+            ("thinker.gpu", "[0, 1]"),
+        ]
     )
 
-    topology = build_compiled_process_topology(config)
+    build_stage_placement_plan(merged)
+    topology = build_compiled_process_topology(merged)
 
-    thinker = _stage(config, "thinker")
-    assert thinker.tp_size == 8
-    assert thinker.gpu == list(range(8))
-    assert thinker.process == "thinker"
-    assert thinker.runtime.resources.total_gpu_memory_fraction is None
-    assert topology.tp_stage_to_processes["thinker"] == tuple(
-        f"thinker_tp{rank}" for rank in range(8)
-    )
+    thinker = _stage(merged, "thinker")
+    assert thinker.tp_size == 2
+    assert thinker.gpu == [0, 1]
+    assert thinker.gpu_memory_fraction is None
+    assert topology.tp_stage_to_processes["thinker"] == ("thinker_tp0", "thinker_tp1")
 
 
 def test_qwen_thinker_tp_disables_custom_all_reduce_across_configs() -> None:
@@ -1403,26 +1267,23 @@ def test_thinker_tp_disable_custom_all_reduce_uses_shared_config_hook() -> None:
 
 
 def test_qwen_cli_serve_applies_thinker_tp_override_to_server_args(monkeypatch) -> None:
-    """End-to-end: the CLI TP pass writes disable_custom_all_reduce into the
-    thinker stage server args when TP>1 is configured (issue #760)."""
+    """End-to-end: the TP pass writes disable_custom_all_reduce into the
+    thinker stage engine args when TP>1 is configured (issue #760)."""
     monkeypatch.setattr(
         "sglang_omni.cli.serve.should_disable_custom_all_reduce_for_gpus",
         lambda *args, **kwargs: True,
     )
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    config = apply_parallelism_cli_overrides(
-        config,
-        thinker_tp_size=2,
-        thinker_gpus="0,1",
-        talker_gpu=None,
-        code2wav_gpu=None,
+    merged = ConfigManager(config).merge_config(
+        [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")]
     )
+    resolved = apply_tensor_parallel_engine_overrides(merged)
 
     assert (
-        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is True
+        _server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"] is True
     )
     assert "disable_custom_all_reduce" not in _server_args_overrides(
-        config, "audio_encoder"
+        resolved, "audio_encoder"
     )
 
 
@@ -1432,16 +1293,14 @@ def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> No
         lambda *args, **kwargs: False,
     )
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    config = apply_parallelism_cli_overrides(
-        config,
-        thinker_tp_size=2,
-        thinker_gpus="0,1",
-        talker_gpu=None,
-        code2wav_gpu=None,
+    merged = ConfigManager(config).merge_config(
+        [("thinker.tp_size", "2"), ("thinker.gpu", "[0, 1]")]
     )
+    resolved = apply_tensor_parallel_engine_overrides(merged)
 
     assert (
-        _server_args_overrides(config, "thinker")["disable_custom_all_reduce"] is False
+        _server_args_overrides(resolved, "thinker")["disable_custom_all_reduce"]
+        is False
     )
 
 

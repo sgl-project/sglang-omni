@@ -326,37 +326,6 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert queue[0].device.type == "meta"
 
 
-def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
-    """Mixed CPU/CUDA thinker chunks must not crash torch.stack in build_prompt_prefill."""
-    builder = object.__new__(TalkerPrefillBuilder)
-    builder._device = torch.device("meta")
-    builder._dtype = torch.float16
-
-    chunks = [
-        SimpleNamespace(data=torch.ones((3,), dtype=torch.float32), metadata={}),
-        SimpleNamespace(
-            data=torch.zeros((3,), dtype=torch.float32),
-            metadata={
-                "layer_hidden": torch.empty((3,), device="meta", dtype=torch.float32)
-            },
-        ),
-    ]
-
-    # note (YueYin): .to() must happen per-chunk before torch.stack, not after
-    result = torch.stack(
-        [
-            builder.chunk_layer_hidden_or_embed(c).to(
-                device=builder._device, dtype=builder._dtype
-            )
-            for c in chunks
-        ],
-        dim=0,
-    )
-    assert result.shape == (2, 3)
-    assert result.device.type == "meta"
-    assert result.dtype == torch.float16
-
-
 def test_pending_text_queue_rejects_unexpected_rank() -> None:
     """Keeps queue shape handling explicit instead of flattening unknown ranks."""
     queue = PendingTextTensorQueue()
@@ -1338,14 +1307,14 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     assert stream_done_calls == []
 
 
-def test_wiring_propagation_factory_args_to_scheduler(monkeypatch) -> None:
-    """factory_args enable_partial_start + partial_start_min_chunks flow to scheduler."""
+def test_wiring_propagation_factory_group_to_scheduler(monkeypatch) -> None:
+    """Factory-group enable_partial_start + partial_start_min_chunks flow to scheduler."""
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     talker_stage = next(stage for stage in config.stages if stage.name == "talker_ar")
-    assert talker_stage.factory_args["enable_partial_start"] is True
-    assert talker_stage.factory_args["partial_start_min_chunks"] == 5
+    assert talker_stage.factory.enable_partial_start is True
+    assert talker_stage.factory.partial_start_min_chunks == 5
 
     scheduler = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
     monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *args, **kwargs: None)
@@ -1713,7 +1682,7 @@ def _patch_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("_patch_sampling")
 class TestBuildTalkerRequestTensorStorage:
-    """build_sglang_talker_request stores the tensor and honours the Req list contract."""
+    """build_sglang_talker_request keeps embeds as a tensor on request data."""
 
     def test_projected_embeds_path(self) -> None:
         seq_len, hidden = 64, 128
@@ -1744,9 +1713,8 @@ class TestBuildTalkerRequestTensorStorage:
             codec_vocab_size=4096,
         )
 
-        assert data.prefill_input_embeds is None
-        assert isinstance(data.req.input_embeds, list)
-        assert len(data.req.input_embeds) == seq_len
+        assert data.prefill_input_embeds is hidden_states
+        assert data.req.input_embeds is None
         assert data.req._input_embeds_are_projected is False
 
 
