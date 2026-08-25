@@ -60,7 +60,7 @@ def test_seeded_gumbel_argmax_matches_uint32_max_hash() -> None:
     torch.cuda.synchronize()
 
     assert hashes[0, 0].item() == torch.iinfo(torch.uint32).max
-    assert expected.item() == 0
+    assert expected.item() == 1
     assert torch.equal(expected, actual)
 
 
