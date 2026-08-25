@@ -752,10 +752,15 @@ def _apply_stage_cuda_graph_override(
     if mode == "default":
         return
 
+    # NPU decode graph setup may inspect the phase-specific switch independently
+    # of the legacy all-phase switch.
     _apply_stage_server_args_override(
         pipeline_config,
         stage_name=stage_name,
-        updates={"disable_cuda_graph": mode != "on"},
+        updates={
+            "disable_cuda_graph": mode != "on",
+            "disable_decode_cuda_graph": mode != "on",
+        },
         reason=f"CUDA graph mode to {mode!r}",
     )
 

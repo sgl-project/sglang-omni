@@ -478,7 +478,9 @@ def test_cuda_graph_cli_override_reaches_resolved_sglang_args():
     talker_args = resolve_stage_factory_args(talker, config)
 
     assert thinker_args["server_args_overrides"]["disable_cuda_graph"] is True
+    assert thinker_args["server_args_overrides"]["disable_decode_cuda_graph"] is True
     assert talker_args["server_args_overrides"]["disable_cuda_graph"] is False
+    assert talker_args["server_args_overrides"]["disable_decode_cuda_graph"] is False
 
 
 def test_torch_compile_cli_override_reaches_resolved_sglang_args():
