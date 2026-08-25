@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import importlib
-import os
 from typing import Any
 
 from sglang_omni.models.qwen3_tts import request_builders
@@ -24,16 +23,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None
 
-    @staticmethod
-    def _apply_rocm_runtime_policy() -> None:
-        if current_platform.is_rocm():
-            # AITER's fused RoPE is lower precision on ROCm and causes the
-            # Qwen3-TTS semantic decoder to miss EOS on gfx950.  Keep AITER
-            # attention enabled, but use the native Apex RoPE implementation.
-            os.environ["USE_ROCM_AITER_ROPE_BACKEND"] = "0"
-
     def resolve_checkpoint(self, model_path: str) -> str:
-        self._apply_rocm_runtime_policy()
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
         qwen_tts = importlib.import_module("qwen_tts")
         if not hasattr(qwen_tts, "Qwen3TTSModel"):
@@ -43,7 +33,6 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
-        self._apply_rocm_runtime_policy()
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
         qwen3_stages._register_qwen3_tts_hf_config()
 
@@ -106,9 +95,6 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
 
     def compile_model(self, model: Any, server_args: Any) -> None:
         if current_platform.is_rocm():
-            # PyTorch 2.9.1 + ROCm 7.2 miscompiles the Qwen3-TTS decoder
-            # layers and changes semantic tokens.  CUDA graphs remain valid
-            # when they capture the eager layers, so only gate torch.compile.
             override_server_args(
                 server_args,
                 "sglang_omni.qwen3_tts.rocm",

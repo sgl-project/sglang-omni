@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import threading
 import time
@@ -3530,7 +3529,7 @@ def test_qwen3_tts_deterministic_inference_skips_private_compile(
     assert server_args.enable_torch_compile is False
 
 
-def test_qwen3_tts_rocm_runtime_policy_disables_aiter_rope_and_compile(
+def test_qwen3_tts_rocm_disables_private_compile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
@@ -3540,19 +3539,7 @@ def test_qwen3_tts_rocm_runtime_policy_disables_aiter_rope_and_compile(
         "current_platform",
         SimpleNamespace(is_rocm=lambda: True),
     )
-    monkeypatch.setenv("USE_ROCM_AITER_ROPE_BACKEND", "1")
-    monkeypatch.setattr(
-        qwen3_stages,
-        "apply_qwen_tts_transformers_compatibility_patches",
-        lambda: None,
-    )
-    monkeypatch.setattr(qwen3_stages, "_register_qwen3_tts_hf_config", lambda: None)
-
     builder = engine_builder_mod.Qwen3TtsEngineBuilder()
-    builder.pre_infra_setup("unused-checkpoint")
-
-    assert os.environ["USE_ROCM_AITER_ROPE_BACKEND"] == "0"
-
     compiled = []
     monkeypatch.setattr(
         qwen3_stages,
