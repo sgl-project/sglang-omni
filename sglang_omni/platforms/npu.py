@@ -17,5 +17,5 @@ class NPUOmniPlatform(OmniPlatform):
     def set_device(self, device: "torch.device") -> None:
         torch.npu.set_device(device)
 
-    def enable_code2wav_graph(self):
-        return False
+    def enable_code2wav_graph(self) -> bool:
+        return True
