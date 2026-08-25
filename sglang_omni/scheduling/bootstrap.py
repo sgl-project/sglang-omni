@@ -41,6 +41,12 @@ def _describe_sglang_runtime_configuration(
 
 def init_sglang_cuda_graphs(model_worker: Any) -> None:
     """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
+    from sglang.srt.utils.tensor_bridge import use_mlx
+
+    if use_mlx():
+        # note (yexiaodong): The MLX stub has no Torch graph lifecycle because
+        # native MLX lazy evaluation owns graph execution.
+        return
     if not model_worker.enable_prefill_input_embeds:
         # Required even when graphs are disabled: SGLang installs its eager
         # phase runner from init_cuda_graphs().
@@ -121,18 +127,31 @@ def create_sglang_infrastructure(
 
     logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
 
-    model_worker = ModelWorker(
-        config=ModelWorkerConfig(
-            model_arch_override=model_arch_override,
-            weight_prefix=weight_prefix,
-            nccl_port=nccl_port,
-            total_gpu_memory_fraction=total_gpu_memory_fraction,
-            enable_prefill_input_embeds=enable_prefill_input_embeds,
-        ),
-        server_args=server_args,
-        gpu_id=gpu_id,
-        tp_rank=tp_rank,
+    worker_config = ModelWorkerConfig(
+        model_arch_override=model_arch_override,
+        weight_prefix=weight_prefix,
+        nccl_port=nccl_port,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        enable_prefill_input_embeds=enable_prefill_input_embeds,
     )
+    from sglang.srt.utils.tensor_bridge import use_mlx
+
+    if use_mlx():
+        from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
+
+        model_worker = create_mlx_model_worker(
+            config=worker_config,
+            server_args=server_args,
+            gpu_id=gpu_id,
+            tp_rank=tp_rank,
+        )
+    else:
+        model_worker = ModelWorker(
+            config=worker_config,
+            server_args=server_args,
+            gpu_id=gpu_id,
+            tp_rank=tp_rank,
+        )
 
     if capture_hidden_layers:
         from sglang_omni.model_runner._hidden_capture import (

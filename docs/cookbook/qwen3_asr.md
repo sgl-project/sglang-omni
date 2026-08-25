@@ -13,6 +13,87 @@ MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
 MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B --revision "${MODEL_REVISION}")
 ```
 
+### Apple Silicon (MLX)
+
+The Apple Silicon path requires macOS, Python 3.12, Homebrew, and SGLang's MLX
+runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+
+```bash
+brew install ffmpeg@7
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
+currently installs FFmpeg 9, while the pinned `torchcodec==0.11.1` supports
+FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library directory must
+also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
+
+Create one virtual environment for both repositories, then install the pinned
+SGLang tag from source with its `all_mps` dependencies before installing
+SGLang-Omni:
+
+```bash
+git clone --branch v0.5.16 https://github.com/sgl-project/sglang.git
+git clone https://github.com/sgl-project/sglang-omni.git
+
+uv venv -p 3.12 sglang-omni/.venv-apple
+source sglang-omni/.venv-apple/bin/activate
+
+cd sglang
+cp python/pyproject_other.toml python/pyproject.toml
+uv pip install -e "python[all_mps]"
+
+cd ../sglang-omni
+uv pip install -e .
+```
+
+This installs MLX through SGLang. It does not install or use the `mlx-audio`
+package. Before downloading a model, verify both Metal and FFmpeg loading:
+
+```bash
+SGLANG_USE_MLX=1 python - <<'PY'
+import mlx.core as mx
+from torchcodec.decoders import AudioDecoder
+
+assert mx.metal.is_available()
+print("MLX Metal and TorchCodec FFmpeg loading are available")
+PY
+```
+
+Use an MLX-converted Qwen3-ASR checkpoint and opt into the MLX runner:
+
+```bash
+export SGLANG_USE_MLX=1
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+sgl-omni serve \
+  --model-path mlx-community/Qwen3-ASR-0.6B-4bit \
+  --model-name Qwen/Qwen3-ASR-0.6B \
+  --max-running-requests 1 \
+  --port 8000
+```
+
+The MLX path currently supports one device (`tp_size=1`) and greedy decoding.
+Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
+HTTP and SSE transcription interfaces below are the same as on CUDA;
+`stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
+
+To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
+and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
+greedy decoding, and the eager `torch_native`/`sdpa` profile:
+
+```bash
+unset SGLANG_USE_MLX
+sgl-omni serve \
+  --model-path Qwen/Qwen3-ASR-0.6B \
+  --model-name Qwen/Qwen3-ASR-0.6B \
+  --max-running-requests 1 \
+  --port 8000
+```
+
+The initial Torch MPS profile is bounded to a 2,048-token KV budget and is
+intended for short clips; use the MLX path for the larger native context limit.
+
 ## Server Configuration
 
 Qwen3-ASR runs a single ASR stage on one GPU. Its default `auto` dtype follows

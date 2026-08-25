@@ -1,10 +1,12 @@
 import os
 import pkgutil
+import platform
 
 import torch
 from sglang.srt import platforms as srt_platforms
 from sglang.srt.platforms.interface import SRTPlatform
 
+from sglang_omni.platforms.apple import AppleOmniPlatform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
@@ -30,6 +32,13 @@ def _is_npu_available() -> bool:
     return bool(npu.is_available())
 
 
+def _is_apple_silicon_mps_available() -> bool:
+    return (
+        platform.system() == "Darwin"
+        and platform.machine() == "arm64"
+        and bool(torch.backends.mps.is_available())
+    )
+
 def _load_platform_class(qualname: str) -> type[OmniPlatform]:
     cls = pkgutil.resolve_name(qualname)
     if not isinstance(cls, type):
@@ -54,6 +63,10 @@ def _as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
         return CPUOmniPlatform()
     if platform.is_xpu():
         return XPUOmniPlatform()
+    # note (yexiaodong): SGLang 0.5.18 leaves the MLX opt-in on its generic
+    # platform, so Apple detection must precede the generic plugin fallback.
+    if _is_apple_silicon_mps_available():
+        return AppleOmniPlatform()
     if type(platform) is SRTPlatform and _is_musa_available():
         return MUSAOmniPlatform()
     if type(platform) is SRTPlatform and _is_npu_available():
