@@ -14,6 +14,7 @@
 #   scripts/npu/install_npu.sh                    # lean core, editable
 #   scripts/npu/install_npu.sh --extras eval      # core + eval/tests
 #   scripts/npu/install_npu.sh --no-editable      # non-editable
+#   scripts/npu/install_npu.sh --skip-device-check # build host has no visible NPU
 #   scripts/npu/install_npu.sh --check            # dry-run: show what would run
 #
 # Never deletes your pyproject.toml: it is backed up and restored on exit.
@@ -23,13 +24,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 EDITABLE="-e"
 CHECK_ONLY=0
+SKIP_DEVICE_CHECK=0
 EXTRAS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-editable) EDITABLE=""; shift ;;
     --check)       CHECK_ONLY=1; shift ;;
-    --extras)      EXTRAS="${2:-}"; shift 2 ;;
+    --skip-device-check) SKIP_DEVICE_CHECK=1; shift ;;
+    --extras)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "ERROR: --extras requires a value" >&2; exit 2; }
+      EXTRAS="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -50,12 +55,22 @@ PYBIN="${PYTHON:-python}"
 # Build the install target, e.g. ".[eval]" or "."
 TARGET="."
 if [[ -n "${EXTRAS}" ]]; then
+  IFS=',' read -r -a EXTRA_NAMES <<< "${EXTRAS}"
+  for extra in "${EXTRA_NAMES[@]}"; do
+    case "${extra}" in
+      eval|all|fun-cosyvoice3) ;;
+      *)
+        echo "ERROR: unsupported extra '${extra}'; choose eval, all, or fun-cosyvoice3" >&2
+        exit 2
+        ;;
+    esac
+  done
   TARGET=".[${EXTRAS}]"
 fi
 
 echo "=== sglang-omni Huawei Ascend NPU install ==="
 echo "  repo:        ${REPO_ROOT}"
-echo "  python:      $(${PYBIN} -c 'import sys; print(sys.executable)')"
+echo "  python:      $("${PYBIN}" -c 'import sys; print(sys.executable)')"
 echo "  target:      ${TARGET}"
 echo "  editable:    $([[ -n "${EDITABLE}" ]] && echo yes || echo no)"
 
@@ -63,10 +78,15 @@ echo "  editable:    $([[ -n "${EDITABLE}" ]] && echo yes || echo no)"
 # torch, torch_npu, triton-ascend, and memfabric are intentionally NOT pinned
 # in pyproject_npu.toml (matching upstream SGLang's pyproject_npu.toml where
 # srt_npu = []).  They must be installed BEFORE running this script.
-${PYBIN} - <<'PY' || exit 1
+SGLANG_OMNI_SKIP_NPU_DEVICE_CHECK="${SKIP_DEVICE_CHECK}" "${PYBIN}" - <<'PY' || exit 1
+import os
 import sys
+from importlib.metadata import PackageNotFoundError, version
+from re import match
 
 errors = []
+torch = None
+torch_npu = None
 
 try:
     import torch
@@ -84,8 +104,9 @@ except ImportError:
 
 try:
     import triton
-    print(f"  triton:      {triton.__version__}")
-except ImportError:
+    triton_ascend_version = version("triton-ascend")
+    print(f"  triton:      {triton.__version__} (triton-ascend {triton_ascend_version})")
+except (ImportError, PackageNotFoundError):
     errors.append("triton-ascend is not installed. Install from Huawei cloud mirror:\n"
                   "  pip install triton-ascend==3.2.1.dev20260530 \\\n"
                   "    --extra-index-url=https://mirrors.huaweicloud.com/ascend/repos/pypi/nightly \\\n"
@@ -97,6 +118,42 @@ try:
 except ImportError:
     # memfabric is only needed for PD disaggregation; warn, don't error
     print("  memfabric:   not installed (only needed for PD disaggregation)")
+
+try:
+    import sgl_kernel_npu
+    print(f"  sgl-kernel:  {getattr(sgl_kernel_npu, '__version__', 'installed')}")
+except ImportError:
+    errors.append("sgl-kernel-npu is not installed. Install a release from:\n"
+                  "  https://github.com/sgl-project/sgl-kernel-npu/releases")
+
+if torch is not None and torch_npu is not None:
+    def major_minor(value):
+        parsed = match(r"^(\d+)\.(\d+)", value)
+        return parsed.groups() if parsed else None
+
+    if major_minor(torch.__version__) != major_minor(torch_npu.__version__):
+        errors.append(
+            f"torch {torch.__version__} and torch_npu {torch_npu.__version__} "
+            "must have matching major.minor versions"
+        )
+
+    if os.environ["SGLANG_OMNI_SKIP_NPU_DEVICE_CHECK"] == "1":
+        print("  NPU health:  skipped (--skip-device-check)")
+    else:
+        try:
+            if not torch.npu.is_available():
+                raise RuntimeError("torch.npu.is_available() returned False")
+            count = torch.npu.device_count()
+            if count < 1:
+                raise RuntimeError(f"torch.npu.device_count() returned {count}")
+            lhs = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="npu")
+            actual = (lhs @ lhs).cpu()
+            expected = torch.tensor([[7.0, 10.0], [15.0, 22.0]])
+            if not torch.equal(actual, expected):
+                raise RuntimeError(f"MatMul result mismatch: {actual}")
+            print(f"  NPU devices: {count}; MatMul: ok")
+        except Exception as exc:
+            errors.append(f"NPU health check failed: {exc}")
 
 if errors:
     print()
@@ -140,7 +197,14 @@ if not hasattr(setuptools.build_meta, "build_editable"):
     )
 PY
 NOISO="--no-build-isolation"
-INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO}"
+INSTALL_CMD=("${PYBIN}" -m pip install)
+[[ -n "${EDITABLE}" ]] && INSTALL_CMD+=("${EDITABLE}")
+INSTALL_CMD+=("${TARGET}" "${NOISO}")
+
+print_install_command() {
+  printf '%q ' "${INSTALL_CMD[@]}"
+  printf '\n'
+}
 
 # --- Serialize the swap (same flock pattern as XPU) ----------------------
 LOCK="${REPO_ROOT}/.pyproject.npu.lock"
@@ -178,7 +242,8 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo "[--check] would run:"
   echo "  cp pyproject.toml .pyproject.cuda.bak"
   echo "  cp pyproject_npu.toml pyproject.toml"
-  echo "  ${INSTALL_CMD}"
+  printf '  '
+  print_install_command
   echo "  # then restore pyproject.toml from backup"
   exit 0
 fi
@@ -200,8 +265,9 @@ cp -f "${PYPROJECT}" "${BACKUP}"
 cp -f "${PYPROJECT_NPU}" "${PYPROJECT}"
 echo "swapped in pyproject_npu.toml"
 
-echo ">>> ${INSTALL_CMD}"
-${INSTALL_CMD}
+printf '>>> '
+print_install_command
+"${INSTALL_CMD[@]}"
 
 # Restore immediately (don't wait for EXIT) so verification below runs against a
 # clean tree and a setuptools editable .pth (not the swapped file).

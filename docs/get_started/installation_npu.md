@@ -67,6 +67,7 @@ restores the CUDA one:
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git
 cd sglang-omni
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 # dry-run first — shows the commands, installs nothing
 PYTHON=$(which python) scripts/npu/install_npu.sh --check
@@ -74,6 +75,11 @@ PYTHON=$(which python) scripts/npu/install_npu.sh --check
 # editable install
 PYTHON=$(which python) scripts/npu/install_npu.sh
 ```
+
+The preflight verifies matching torch/torch_npu major-minor versions, at least one
+available NPU, and a small NPU MatMul. On a container build host where devices are
+intentionally not exposed, pass `--skip-device-check`; dependency imports and version
+checks still run.
 
 Pick extras with `--extras` (comma-separated):
 
