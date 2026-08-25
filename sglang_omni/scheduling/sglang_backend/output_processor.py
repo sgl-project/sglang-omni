@@ -156,7 +156,7 @@ class SGLangOutputProcessor:
             aux_hidden_states,
         ):
             key = "embed" if layer_id == 0 else layer_id
-            per_request_hidden[key] = self._slice_per_request_tensor(
+            per_request_hidden[key] = self._slice_static_aux_hidden_tensor(
                 tensor,
                 request_index=request_index,
                 scheduler_output=scheduler_output,
@@ -204,6 +204,40 @@ class SGLangOutputProcessor:
         return len(batch_data.reqs)
 
     @staticmethod
+    def _slice_static_aux_hidden_tensor(
+        tensor: torch.Tensor,
+        *,
+        request_index: int,
+        scheduler_output: SchedulerOutput,
+    ) -> torch.Tensor:
+        batch_data = scheduler_output.batch_data
+        reqs = batch_data.reqs
+        is_extend = bool(batch_data.forward_mode.is_extend())
+
+        if is_extend:
+            layout = "token-major prefill"
+            lengths = [req.extend_range.length for req in reqs]
+            expected_rows = sum(lengths)
+        else:
+            layout = "request-major decode"
+            lengths = None
+            expected_rows = len(reqs)
+
+        actual_rows = int(tensor.shape[0]) if tensor.ndim else None
+        if actual_rows != expected_rows:
+            actual = "a scalar" if actual_rows is None else f"{actual_rows} rows"
+            raise RuntimeError(
+                f"Static aux hidden tensor violates {layout} layout: "
+                f"expected {expected_rows} rows, got {actual}"
+            )
+
+        if lengths is None:
+            return tensor[request_index]
+        start = sum(lengths[:request_index])
+        end = start + lengths[request_index]
+        return tensor[start:end]
+
+    @staticmethod
     def _slice_per_request_tensor(
         tensor: torch.Tensor,
         *,
@@ -214,18 +248,18 @@ class SGLangOutputProcessor:
             return tensor
 
         requests = scheduler_output.requests
-        if len(requests) == 1:
-            return tensor[0] if tensor.ndim >= 2 else tensor
-
         batch_data = scheduler_output.batch_data
         reqs = batch_data.reqs
         num_requests = len(reqs)
+
+        if len(requests) == 1:
+            return tensor[0] if tensor.ndim >= 2 else tensor
         if tensor.shape[0] == num_requests:
             return tensor[request_index]
 
-        lengths = [req.extend_range.length for req in reqs]
-        total_tokens = sum(lengths)
-        if tensor.shape[0] == total_tokens:
+        is_extend = bool(batch_data.forward_mode.is_extend())
+        lengths = [req.extend_range.length for req in reqs] if is_extend else None
+        if lengths is not None and tensor.shape[0] == sum(lengths):
             start = sum(lengths[:request_index])
             end = start + lengths[request_index]
             return tensor[start:end]

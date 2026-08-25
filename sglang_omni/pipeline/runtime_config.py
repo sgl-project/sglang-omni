@@ -14,9 +14,31 @@ import zmq
 
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
-from sglang_omni.config.topology import ProcessTopologyPlan, build_process_topology_plan
+from sglang_omni.config.topology import (
+    LogicalProcessPlan,
+    ProcessTopologyPlan,
+    build_process_topology_plan,
+    compile_logical_processes,
+)
+from sglang_omni.pipeline.replicas import (
+    ReplicaTopology,
+    expand_replica_stages,
+    validate_device_assignment,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _visible_device_count() -> int | None:
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        return torch.cuda.device_count()
+    except Exception:
+        return None
+
 
 # PyZMQ checks the filesystem path after ``ipc://`` against this budget.
 _IPC_SUN_PATH_BUDGET = getattr(zmq, "IPC_PATH_MAX_LEN", 100)
@@ -56,13 +78,14 @@ class PipelineRuntimePrep:
     """Prepared stage, endpoint, placement, and topology state."""
 
     stages_cfg: list[StageConfig]
-    name_map: dict[str, str]
     entry_stage: str
     endpoints: dict[str, str]
     placement_plan: StagePlacementPlan
     process_plan: ProcessTopologyPlan
     runtime_dir: IpcRuntimeDir
     runtime_dir_created_here: bool
+    replica_topology: ReplicaTopology
+    logical_process_plan: LogicalProcessPlan
 
 
 def create_ipc_runtime_dir(
@@ -74,7 +97,7 @@ def create_ipc_runtime_dir(
     base_root = Path(config.endpoints.base_path)
     base_root.mkdir(parents=True, exist_ok=True)
     if stages is None:
-        stages, _, _ = config.apply_fusion()
+        stages = list(config.stages)
 
     namespace_prefix = re.sub(r"[^0-9a-z]+", "-", config.name.lower()).strip("-")
     if not namespace_prefix:
@@ -94,8 +117,11 @@ def prepare_pipeline_runtime(
     *,
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> PipelineRuntimePrep:
-    """Prepare fused stages, endpoint allocation, and process topology."""
-    stages_cfg, name_map, entry_stage = config.apply_fusion()
+    """Compile the process topology, expand replicas, and allocate endpoints."""
+    logical_plan, stages_cfg = compile_logical_processes(config)
+    entry_stage = config.resolved_entry_stage
+    stages_cfg, replica_topology = expand_replica_stages(stages_cfg, logical_plan)
+    validate_device_assignment(stages_cfg, device_count=_visible_device_count())
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config, stages=stages_cfg)
@@ -104,7 +130,11 @@ def prepare_pipeline_runtime(
         runtime_dir_created_here = False
 
     try:
-        placement_plan = build_stage_placement_plan(config, stages_cfg=stages_cfg)
+        placement_plan = build_stage_placement_plan(
+            config,
+            stages_cfg=stages_cfg,
+            replica_instances=replica_topology.replicas,
+        )
         process_plan = build_process_topology_plan(
             config,
             placement_plan,
@@ -121,13 +151,14 @@ def prepare_pipeline_runtime(
 
     return PipelineRuntimePrep(
         stages_cfg=stages_cfg,
-        name_map=name_map,
         entry_stage=entry_stage,
         endpoints=endpoints,
         placement_plan=placement_plan,
         process_plan=process_plan,
         runtime_dir=runtime_dir,
         runtime_dir_created_here=runtime_dir_created_here,
+        replica_topology=replica_topology,
+        logical_process_plan=logical_plan,
     )
 
 

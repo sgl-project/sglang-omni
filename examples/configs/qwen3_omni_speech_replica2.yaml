@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Qwen3-Omni speech pipeline with 2 replicas of the talker_ar and code2wav
+# processes.
+#
+# Layout (3 GPUs):
+#   GPU 0: thinker (single instance)
+#   GPU 1: talker_ar@r0 + code2wav@r0
+#   GPU 2: talker_ar@r1 + code2wav@r1
+#
+# talker_ar and code2wav are two separate processes, so each picks its replica
+# independently at admission. Because both sets have the same size, the default
+# round-robin policy advances them together and pairs talker_ar@r0 with
+# code2wav@r0 (and likewise for r1), keeping each request's codec stream on one
+# GPU. That pairing is a property of the default policy, not a guarantee of the
+# binding contract: a custom policy need not preserve it.
+#
+# Serve:
+#   sgl-omni serve --config examples/configs/qwen3_omni_speech_replica2.yaml --port 8091
+#
+# Baseline A/B counterpart: the default speech pipeline (no --config needed),
+# which runs one talker_ar + code2wav pair on GPU 1.
+
+config_cls: Qwen3OmniSpeechPipelineConfig
+name: qwen3-omni-speech-replica2
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+
+stage_overrides:
+  talker_ar:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.123
+
+  code2wav:
+    runtime:
+      resources:
+        total_gpu_memory_fraction: 0.014
+
+processes:
+  talker_ar:
+    num_replicas: 2
+    replica_devices: [1, 2]
+
+  code2wav:
+    num_replicas: 2
+    replica_devices: [1, 2]

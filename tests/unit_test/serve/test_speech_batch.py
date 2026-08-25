@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from typing import Any
 
@@ -199,6 +200,37 @@ def test_batch_speech_applies_pipeline_reference_requirements() -> None:
 
     assert response.status_code == 200
     assert response.json()["results"][0]["error"]["param"] == "items.0.ref_audio"
+    assert client_impl.requests == []
+
+
+def test_batch_speech_applies_reference_text_instruction_exclusion() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="cosyvoice",
+            required_speech_reference_count=1,
+            speech_reference_text_excludes_instructions=True,
+        )
+    )
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "items": [
+                {
+                    "input": "hello",
+                    "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+                    "ref_text": "reference transcript",
+                    "instructions": "speak warmly",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["error"]["param"] == ("items.0.instructions")
     assert client_impl.requests == []
 
 

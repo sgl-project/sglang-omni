@@ -68,6 +68,7 @@ from sglang_omni.scheduling.speaker_cache import (
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -379,9 +380,9 @@ def create_audio_encoder_executor(
     model_path: str,
     *,
     device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
-    gpu_id: int | None = None,
 ):
     """GPU stage: codec-encode raw ref audio → delayed codes + prompt assembly.
 
@@ -467,6 +468,7 @@ def create_sglang_tts_engine_executor(
     model_path: str,
     *,
     device: str | None = None,
+    gpu_id: int | None = None,
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
     cuda_graph_max_bs: int = 64,
@@ -479,7 +481,6 @@ def create_sglang_tts_engine_executor(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     total_gpu_memory_fraction: float | None = None,
-    gpu_id: int | None = None,
 ):
     """sglang-backed AR engine for Higgs TTS."""
     from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
@@ -508,6 +509,7 @@ def create_vocoder_executor(
     model_path: str,
     *,
     device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     vocoder_decode_batch_size: int = 16,
     max_batch_wait_ms: int = 2,
@@ -518,7 +520,6 @@ def create_vocoder_executor(
     stream_holdback_tokens: int = 4,
     compile_decode: bool = False,
     decode_cuda_graph_frame_counts: tuple[int, ...] = (),
-    gpu_id: int | None = None,
 ):
     """Decode Higgs delayed codes to a mono 24 kHz waveform.
 

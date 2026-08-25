@@ -3,17 +3,14 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni.config import (
-    build_process_topology_plan,
-    build_stage_placement_plan,
-    resolve_stage_factory_args,
-)
+from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
     Variants,
 )
 from sglang_omni.platforms import current_platform
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def _stage(config, name: str):
@@ -51,7 +48,7 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     code2wav = _stage(config, "code2wav")
     code2wav_args = resolve_stage_factory_args(code2wav, config)
 
-    assert len(config.stages) == 8
+    assert len(config.stages) == 7
     assert _stage(config, "thinker").gpu == 0
     assert _stage(config, "talker_ar").gpu == 1
     assert code2wav.gpu == 0
@@ -71,7 +68,6 @@ def test_default_speech_topology_stays_disaggregated() -> None:
         "preprocessing": "preprocessing",
         "image_encoder": "image_encoder",
         "audio_encoder": "audio_encoder",
-        "mm_aggregate": "mm_aggregate",
         "thinker": "thinker",
         "decode": "decode",
         "talker_ar": "talker_ar",
@@ -79,14 +75,12 @@ def test_default_speech_topology_stays_disaggregated() -> None:
     }
     assert "code_predictor" not in {stage.name for stage in config.stages}
 
-    plan = build_stage_placement_plan(config)
-    topology = build_process_topology_plan(config, plan)
+    topology = build_compiled_process_topology(config)
 
     assert [group.name for group in topology.groups] == [
         "preprocessing",
         "image_encoder",
         "audio_encoder",
-        "mm_aggregate",
         "thinker",
         "decode",
         "talker_ar",
@@ -110,6 +104,20 @@ def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
         assert _stage(config, stage_name).process == stage_name
 
 
+@pytest.mark.parametrize(
+    "config_cls",
+    [Qwen3OmniSpeechPipelineConfig, Qwen3OmniSpeechColocatedPipelineConfig],
+)
+def test_audio_encoder_scopes_pooled_payload_transport(config_cls) -> None:
+    config = config_cls(model_path="dummy")
+    assert _stage(config, "audio_encoder").disable_direct_cuda_ipc_payload is True
+    assert _stage(config, "image_encoder").disable_direct_cuda_ipc_payload is False
+    assert (
+        _stage(config, "audio_encoder").factory_args["enable_layer_cuda_graph"] is True
+    )
+    assert "enable_layer_cuda_graph" not in _stage(config, "image_encoder").factory_args
+
+
 def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction() -> (
     None
 ):
@@ -117,14 +125,13 @@ def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction()
     _set_colocated_runtime(config, include_mem_fraction=False)
 
     plan = build_stage_placement_plan(config)
-    topology = build_process_topology_plan(config, plan)
+    topology = build_compiled_process_topology(config)
 
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
     assert [group.name for group in topology.groups] == [
         "preprocessing",
         "image_encoder",
         "audio_encoder",
-        "mm_aggregate",
         "thinker",
         "decode",
         "talker_ar",

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import re
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from sglang_omni.config import PipelineConfig, StageConfig
 
@@ -28,6 +28,13 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return {"generation": "tts_engine"}
 
     @classmethod
+    def generation_admission_defaults(cls) -> dict[str, Any]:
+        from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+        defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
+        return {k: defaults[k] for k in ("max_running_requests", "max_queued_requests")}
+
+    @classmethod
     def mem_fraction_role_to_stage(cls) -> dict[str, str]:
         return {"talker": "tts_engine"}
 
@@ -36,26 +43,17 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return {"talker": "tts_engine"}
 
     @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): preprocessing -> tts_engine is excluded because
-        # preprocessing stores prepared requests in the module-level
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): preprocessing stores prepared requests in the module-level
         # _PREPROCESSING_CONTEXT/_PREPARED_REQUESTS registries that the AR engine
-        # builder reads in-process. The vocoder loads its own speech tokenizer and
-        # reads audio_codes from the payload.
-        return frozenset({("tts_engine", "vocoder")})
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {
-            ("tts_engine", "vocoder"): {
-                "tts_engine": 0.85,
-                "vocoder": 0.10,
-            }
-        }
+        # builder reads in-process.
+        return frozenset({("preprocessing", "tts_engine")})
 
     model_path: str
+    # note (0xtoward): Keep deterministic inference opt-in because it serializes
+    # preprocessing and vocoder decoding and disables Talker compilation and the
+    # initial vocoder CUDA Graph, reducing throughput.
+    enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
@@ -82,6 +80,19 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             can_accept_stream_before_payload=True,
         ),
     ]
+
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+        if not self.enable_deterministic_inference:
+            return
+
+        self.runtime_overrides.setdefault("preprocessing", {})["max_concurrency"] = 1
+        tts_engine = self.runtime_overrides.setdefault("tts_engine", {})
+        server_args = tts_engine.setdefault("server_args_overrides", {})
+        server_args["enable_deterministic_inference"] = True
+        vocoder = self.runtime_overrides.setdefault("vocoder", {})
+        vocoder["enable_deterministic_inference"] = True
+        vocoder["initial_cuda_graph"] = False
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         return _is_qwen3_tts_base_model(self.model_path)

@@ -16,7 +16,7 @@ from typing import Any, Mapping
 
 import torch
 
-from sglang_omni.models.moss_tts.vocoder_decoder import MossAudioTokenizerVocoderDecoder
+from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoderDecoder
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage

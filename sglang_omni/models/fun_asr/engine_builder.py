@@ -18,6 +18,10 @@ from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 logger = logging.getLogger(__name__)
@@ -26,6 +30,7 @@ logger = logging.getLogger(__name__)
 class FunASREngineBuilder(AsrEngineBuilder):
     model_name = "Fun-ASR"
     model_arch_override = "FunAsrNanoForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -41,6 +46,9 @@ class FunASREngineBuilder(AsrEngineBuilder):
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
+        prefill_coalesce_when_idle: bool,
+        prefill_coalesce_requires_pending_builds: bool,
+        prefill_coalesce_after_builds_during_decode: bool,
         mm_attention_backend: str | None,
         enable_pre_lm_encoder: bool,
         pre_lm_cache_max_entries: int,
@@ -62,6 +70,13 @@ class FunASREngineBuilder(AsrEngineBuilder):
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
+        self.prefill_coalesce_requires_pending_builds = (
+            prefill_coalesce_requires_pending_builds
+        )
+        self.prefill_coalesce_after_builds_during_decode = (
+            prefill_coalesce_after_builds_during_decode
+        )
         self.mm_attention_backend = mm_attention_backend
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
         self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
@@ -102,6 +117,9 @@ class FunASREngineBuilder(AsrEngineBuilder):
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
+            # Qualified capture budget; longer prefills run eager.
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
+            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(256),
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }
@@ -204,6 +222,13 @@ class FunASREngineBuilder(AsrEngineBuilder):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
+            "prefill_coalesce_requires_pending_builds": (
+                self.prefill_coalesce_requires_pending_builds
+            ),
+            "prefill_coalesce_after_builds_during_decode": (
+                self.prefill_coalesce_after_builds_during_decode
+            ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }

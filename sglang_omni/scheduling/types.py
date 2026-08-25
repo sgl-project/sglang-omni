@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,12 @@ class SchedulerRequest:
     error: Exception | None = None
     arrival_time: float = 0.0
     finish_time: float | None = None
+
+
+@dataclass(slots=True)
+class DeferredAdmission:
+    value: Any
+    ready: Future[Any]
 
 
 @dataclass

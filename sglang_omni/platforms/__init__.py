@@ -6,10 +6,20 @@ from sglang.srt import platforms as srt_platforms
 from sglang.srt.platforms.interface import SRTPlatform
 
 from sglang_omni.platforms.cpu import CPUOmniPlatform
-from sglang_omni.platforms.cuda import CUDAOmniPlatform, ROCMOmniPlatform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
+from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+
+def _is_musa_available() -> bool:
+    try:
+        musa = torch.musa
+    except AttributeError:
+        return False
+    return bool(musa.is_available())
 
 
 def _is_npu_available() -> bool:
@@ -50,6 +60,8 @@ def _as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
         return ROCMOmniPlatform()
     if platform.is_cpu():
         return CPUOmniPlatform()
+    if type(platform) is SRTPlatform and _is_musa_available():
+        return MUSAOmniPlatform()
     if type(platform) is SRTPlatform and _is_npu_available():
         return NPUOmniPlatform()
     if type(platform) is SRTPlatform and _is_xpu_available():

@@ -6,7 +6,6 @@ from typing import Any, Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-from sgl_kernel import fused_qk_norm_rope
 from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.mm_utils import (
@@ -24,9 +23,18 @@ from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.platforms import current_platform
+
 from .configuration_qwen3_asr import Qwen3ASRConfig
+from .encoder_cuda_graph import (
+    Qwen3ASREncoderLayerStackGraphRunner,
+    build_buckets,
+    eager_preamble,
+    window_lens_from_token_counts,
+)
 
 logger = logging.getLogger(__name__)
+fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 
 _MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
@@ -64,6 +72,11 @@ def _fused_asr_forward_prepare_native(
         # note(ratish): the prefill CUDA graph bypasses forward()'s int32
         # cast; the kernel rejects int64 positions.
         positions = positions.to(torch.int32)
+    if fused_qk_norm_rope is None:
+        return attention._asr_unfused_forward_prepare_native(
+            positions,
+            hidden_states,
+        )
     qkv, _ = attention.qkv_proj(hidden_states)
     fused_qk_norm_rope(
         qkv,
@@ -144,6 +157,18 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         )
         _enable_fused_asr_qk_norm_rope(self.language_model)
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
+        self._encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
+
+    def init_encoder_graphs(
+        self, *, max_batch_size: int, max_tokens_per_clip: int
+    ) -> None:
+        runner = Qwen3ASREncoderLayerStackGraphRunner(
+            self.audio_tower,
+            buckets=build_buckets(max_batch_size, max_tokens_per_clip),
+            max_batch_size=max_batch_size,
+        )
+        runner.capture_all()
+        self._encoder_graph_runner = runner
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
@@ -209,6 +234,23 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             input_features = input_features.permute(0, 2, 1).reshape(
                 -1, input_features.shape[1]
             )
+
+        runner = self._encoder_graph_runner
+        if runner is not None:
+            token_counts = [
+                (item.model_specific_data or {}).get("num_audio_tokens")
+                for item in items
+            ]
+            if all(count is not None for count in token_counts):
+                window_lens = window_lens_from_token_counts(
+                    token_counts, tokens_per_window=runner.tokens_per_window
+                )
+                hidden = eager_preamble(
+                    self.audio_tower, input_features, audio_feature_lengths
+                )
+                graphed = runner.run(hidden, window_lens)
+                if graphed is not None:
+                    return graphed.unsqueeze(0)
 
         audio_outputs = self.audio_tower(
             input_features,

@@ -9,7 +9,10 @@ CUDA Graph, and torch.compile paths apply to decode.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Tuple
+import logging
+import os
+from collections.abc import Iterable
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -26,6 +29,45 @@ from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
 
+try:
+    from flashinfer.norm import layernorm as flashinfer_layer_norm
+except (ImportError, AttributeError):
+    flashinfer_layer_norm = None
+
+logger = logging.getLogger(__name__)
+
+_QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
+_KV_SHARDS = {"k_proj": 0, "v_proj": 1}
+
+
+class WhisperDecoderLayerNorm(nn.LayerNorm):
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if (
+            flashinfer_layer_norm is not None
+            and os.environ.get("FLASHINFER_USE_CUDA_NORM") != "1"
+            and hidden_states.is_cuda
+            and hidden_states.dtype == torch.float16
+            and self.weight is not None
+            and self.bias is not None
+            and self.weight.dtype == hidden_states.dtype
+            and self.bias.dtype == hidden_states.dtype
+        ):
+            return flashinfer_layer_norm(
+                hidden_states, self.weight, self.bias, self.eps
+            )
+        return super().forward(hidden_states)
+
+
+def _load_projection_shard(
+    param: torch.Tensor,
+    loaded_weight: torch.Tensor,
+    *,
+    shard: int,
+    shard_size: int,
+) -> None:
+    target = param.data.narrow(0, shard * shard_size, shard_size)
+    default_weight_loader(target, loaded_weight)
+
 
 class WhisperEncoderAttention(nn.Module):
     def __init__(self, config: WhisperConfig) -> None:
@@ -33,9 +75,11 @@ class WhisperEncoderAttention(nn.Module):
         self.embed_dim = config.d_model
         self.num_heads = config.encoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
+        # Whisper K projections have no bias. The zero K shard preserves that
+        # checkpoint structure while issuing one GEMM for all three projections.
+        with torch.no_grad():
+            self.qkv_proj.bias[self.embed_dim : 2 * self.embed_dim].zero_()
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
 
     def _shape(self, states: torch.Tensor) -> torch.Tensor:
@@ -45,9 +89,10 @@ class WhisperEncoderAttention(nn.Module):
         ).transpose(1, 2)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        query = self._shape(self.q_proj(hidden_states))
-        key = self._shape(self.k_proj(hidden_states))
-        value = self._shape(self.v_proj(hidden_states))
+        query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
+        query = self._shape(query)
+        key = self._shape(key)
+        value = self._shape(value)
         attn_output = F.scaled_dot_product_attention(
             query,
             key,
@@ -140,9 +185,9 @@ class WhisperSGLangSelfAttention(nn.Module):
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
+        with torch.no_grad():
+            self.qkv_proj.bias[self.embed_dim : 2 * self.embed_dim].zero_()
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.attn = RadixAttention(
             self.num_heads,
@@ -157,9 +202,10 @@ class WhisperSGLangSelfAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        query = self.q_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        key = self.k_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
-        value = self.v_proj(hidden_states).view(-1, self.num_heads, self.head_dim)
+        query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
+        query = query.view(-1, self.num_heads, self.head_dim)
+        key = key.view(-1, self.num_heads, self.head_dim)
+        value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
         return self.out_proj(attn_output)
 
@@ -178,8 +224,9 @@ class WhisperSGLangCrossAttention(nn.Module):
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.kv_proj = nn.Linear(self.embed_dim, 2 * self.embed_dim)
+        with torch.no_grad():
+            self.kv_proj.bias[: self.embed_dim].zero_()
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
         self.attn = RadixAttention(
@@ -201,12 +248,9 @@ class WhisperSGLangCrossAttention(nn.Module):
         if cross_attention_states is None:
             key = value = None
         else:
-            key = self.k_proj(cross_attention_states).view(
-                -1, self.num_heads, self.head_dim
-            )
-            value = self.v_proj(cross_attention_states).view(
-                -1, self.num_heads, self.head_dim
-            )
+            key, value = self.kv_proj(cross_attention_states).chunk(2, dim=-1)
+            key = key.view(-1, self.num_heads, self.head_dim)
+            value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
         return self.out_proj(attn_output)
 
@@ -225,16 +269,16 @@ class WhisperDecoderLayer(nn.Module):
             layer_id=layer_idx,
             quant_config=quant_config,
         )
-        self.self_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.self_attn_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.encoder_attn = WhisperSGLangCrossAttention(
             config,
             layer_id=num_decoder_layers + layer_idx,
             quant_config=quant_config,
         )
-        self.encoder_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.encoder_attn_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.fc1 = nn.Linear(config.d_model, config.decoder_ffn_dim)
         self.fc2 = nn.Linear(config.decoder_ffn_dim, config.d_model)
-        self.final_layer_norm = nn.LayerNorm(config.d_model)
+        self.final_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.activation_fn = ACT2FN[config.activation_function]
 
     def forward(
@@ -283,7 +327,7 @@ class WhisperDecoder(nn.Module):
                 for i in range(config.decoder_layers)
             ]
         )
-        self.layer_norm = nn.LayerNorm(config.d_model)
+        self.layer_norm = WhisperDecoderLayerNorm(config.d_model)
 
     def forward(
         self,
@@ -351,6 +395,36 @@ class WhisperForConditionalGeneration(nn.Module):
         )
         self._encoder_graph_runner.capture(batch_buckets)
 
+    def _run_encoder(self, audio_features: torch.Tensor) -> torch.Tensor:
+        """Run the Whisper encoder with CUDA-graph replay when available."""
+        if self._encoder_graph_runner is not None:
+            try:
+                return self._encoder_graph_runner.run(audio_features)
+            except Exception:
+                logger.exception(
+                    "Whisper encoder CUDA graph replay failed; falling back to eager"
+                )
+        return self.model.encoder(audio_features)
+
+    def encode_audio_features(self, items: list[Any]) -> torch.Tensor:
+        """Batch-encode mel features into encoder states [B, T, H]."""
+        if not items:
+            raise ValueError(
+                "Whisper encode_audio_features requires at least one audio item"
+            )
+        features: list[torch.Tensor] = []
+        reference = next(self.model.encoder.parameters())
+        for item in items:
+            feature = item.feature
+            if feature is None:
+                raise RuntimeError(
+                    "Whisper audio item is missing mel features; cannot encode"
+                )
+            if not isinstance(feature, torch.Tensor):
+                feature = torch.as_tensor(feature)
+            features.append(feature.to(device=reference.device, dtype=reference.dtype))
+        return self._run_encoder(torch.cat(features, dim=0))
+
     def _batch_audio_inputs(
         self,
         forward_batch: ForwardBatch,
@@ -374,6 +448,36 @@ class WhisperForConditionalGeneration(nn.Module):
         if not features:
             return None, None
         return torch.cat(features, dim=0), encoder_lens
+
+    def _batch_precomputed_encoder_states(
+        self,
+        forward_batch: ForwardBatch,
+    ) -> torch.Tensor | None:
+        """Collect pre-LM encoder hiddens into a flat cross-attn tensor."""
+        if forward_batch.forward_mode.is_decode() or all(forward_batch.encoder_cached):
+            return None
+
+        parts: list[torch.Tensor] = []
+        for index, mm_input in enumerate(forward_batch.mm_inputs):
+            if forward_batch.encoder_cached[index] or mm_input is None:
+                continue
+            encoder_len = int(forward_batch.encoder_lens[index].item())
+            for item in mm_input.mm_items:
+                embedding = item.precomputed_embeddings
+                if embedding is None:
+                    continue
+                if not isinstance(embedding, torch.Tensor):
+                    embedding = torch.as_tensor(embedding)
+                if embedding.dim() != 2 or embedding.shape[0] < encoder_len:
+                    raise RuntimeError(
+                        "Whisper precomputed encoder states "
+                        f"{tuple(embedding.shape)} incompatible with "
+                        f"encoder_len={encoder_len}"
+                    )
+                parts.append(embedding[:encoder_len])
+        if not parts:
+            return None
+        return torch.cat(parts, dim=0)
 
     @staticmethod
     def _flat_encoder_result(
@@ -407,23 +511,20 @@ class WhisperForConditionalGeneration(nn.Module):
             get_is_capture_mode,
         )
 
-        audio_features, encoder_lens = self._batch_audio_inputs(forward_batch)
-        cross_attention_states = None
+        cross_attention_states = self._batch_precomputed_encoder_states(forward_batch)
+        if cross_attention_states is None:
+            audio_features, encoder_lens = self._batch_audio_inputs(forward_batch)
+            if audio_features is not None and encoder_lens is not None:
+                encoder_states = self._run_encoder(audio_features)
+                cross_attention_states = self._flat_encoder_result(
+                    encoder_states,
+                    encoder_lens,
+                )
 
         if get_is_capture_mode():
             skip_cross_attention = False
         else:
             skip_cross_attention = forward_batch.encoder_lens.max() == 0
-
-        if audio_features is not None and encoder_lens is not None:
-            if self._encoder_graph_runner is not None:
-                encoder_states = self._encoder_graph_runner.run(audio_features)
-            else:
-                encoder_states = self.model.encoder(audio_features)
-            cross_attention_states = self._flat_encoder_result(
-                encoder_states,
-                encoder_lens,
-            )
 
         hidden_states = self.model.decoder(
             input_ids=input_ids,
@@ -441,6 +542,27 @@ class WhisperForConditionalGeneration(nn.Module):
         for name, loaded_weight in weights:
             if name == "proj_out.weight":
                 name = "model.decoder.embed_tokens.weight"
+            projection = name.rsplit(".", 2)[-2]
+            if ".self_attn." in name and projection in _QKV_SHARDS:
+                target_name = name.replace(f".{projection}.", ".qkv_proj.", 1)
+                param = params_dict[target_name]
+                _load_projection_shard(
+                    param,
+                    loaded_weight,
+                    shard=_QKV_SHARDS[projection],
+                    shard_size=self.config.d_model,
+                )
+                continue
+            if ".encoder_attn." in name and projection in _KV_SHARDS:
+                target_name = name.replace(f".{projection}.", ".kv_proj.", 1)
+                param = params_dict[target_name]
+                _load_projection_shard(
+                    param,
+                    loaded_weight,
+                    shard=_KV_SHARDS[projection],
+                    shard_size=self.config.d_model,
+                )
+                continue
             if name not in params_dict:
                 continue
             param = params_dict[name]

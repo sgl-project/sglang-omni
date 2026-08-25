@@ -31,8 +31,10 @@ class QueueEntry(Generic[ItemT]):
 class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     """Run model-owned encoder hooks on a queue-backed worker thread."""
 
-    def __init__(self, *, worker_name: str) -> None:
-        self._queue: queue.Queue[Any] = queue.Queue()
+    def __init__(self, *, worker_name: str, max_queue_size: int = 0) -> None:
+        if max_queue_size < 0:
+            raise ValueError(f"max_queue_size must be >= 0, got {max_queue_size}")
+        self._queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
         self._worker_state_lock = threading.Lock()
         self._worker_error: Exception | None = None
         self._thread = threading.Thread(
@@ -47,7 +49,17 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         item: ItemT,
         future: concurrent.futures.Future[Any],
     ) -> None:
-        self._queue.put(QueueEntry(item=item, future=future))
+        entry = QueueEntry(item=item, future=future)
+        while True:
+            try:
+                self._queue.put(entry, timeout=0.1)
+                return
+            except queue.Full:
+                with self._worker_state_lock:
+                    if self._worker_error is not None:
+                        raise RuntimeError(
+                            "pre-LM encoder worker has failed"
+                        ) from self._worker_error
 
     def _submit(
         self,
@@ -61,7 +73,11 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                 raise RuntimeError(
                     "pre-LM encoder worker has failed"
                 ) from self._worker_error
-            self._enqueue(item, future)
+        self._enqueue(item, future)
+        with self._worker_state_lock:
+            worker_error = self._worker_error
+        if worker_error is not None and not future.done():
+            future.set_exception(worker_error)
         return future
 
     @abstractmethod
@@ -93,7 +109,29 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def synchronize_batch(self) -> None:
         pass
 
-    def cache_embedding(self, item: ItemT, embedding: EmbeddingT) -> None:
+    def stage_host_copy(self, item: ItemT, embedding: EmbeddingT) -> Any | None:
+        """Optionally copy embedding from GPU to CPU for the cache.
+
+        Called for each item right after split_embeddings, while the encoder
+        stream is still the current stream and before synchronize_batch. A
+        subclass can therefore do a non-blocking GPU->CPU copy here; the copy
+        queues behind the encoder kernels and synchronize_batch waits for it,
+        so no extra synchronization is needed. The returned object is passed
+        unchanged to cache_embedding as host_copy. The default returns None,
+        which means cache_embedding receives host_copy=None and copies on its
+        own (synchronously) if it wants to cache.
+        """
+        del item, embedding
+        return None
+
+    def cache_embedding(
+        self,
+        item: ItemT,
+        # TODO(Jeffro): once every service stages its own host copy via
+        # stage_host_copy, drop this device-side embedding and cache host_copy only.
+        embedding: EmbeddingT,
+        host_copy: Any | None = None,
+    ) -> None:
         pass
 
     def _execute_batch(self, items: list[ItemT]) -> list[EmbeddingT]:
@@ -106,6 +144,10 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                     f"split_embeddings returned {len(embeddings)} embeddings "
                     f"for {len(items)} items"
                 )
+            host_copies = [
+                self.stage_host_copy(item, embedding)
+                for item, embedding in zip(items, embeddings)
+            ]
             if attach_before_synchronize:
                 for item, embedding in zip(items, embeddings):
                     self.attach_embedding(item, embedding)
@@ -113,8 +155,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         if not attach_before_synchronize:
             for item, embedding in zip(items, embeddings):
                 self.attach_embedding(item, embedding)
-        for item, embedding in zip(items, embeddings):
-            self.cache_embedding(item, embedding)
+        for item, embedding, host_copy in zip(items, embeddings, host_copies):
+            self.cache_embedding(item, embedding, host_copy)
         return embeddings
 
     def _handle_batch_failure(

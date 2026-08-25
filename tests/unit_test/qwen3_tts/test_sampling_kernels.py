@@ -11,9 +11,12 @@ from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_sorted_logprobs_with_seed_small_k,
 )
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="Qwen3-TTS sampling kernel needs CUDA"
-)
+pytestmark = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="Qwen3-TTS sampling kernel needs CUDA"
+    ),
+]
 
 
 @pytest.mark.parametrize("batch_size,num_cols", [(1, 1), (3, 2), (7, 30), (16, 64)])

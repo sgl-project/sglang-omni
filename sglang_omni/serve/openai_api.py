@@ -105,6 +105,7 @@ from sglang_omni.serve.speech_errors import (
     internal_error,
     openai_error_payload,
     speech_error_response,
+    speech_generation_error,
 )
 from sglang_omni.serve.speech_limits import (
     MAX_VOICE_UPLOAD_BODY_BYTES,
@@ -180,6 +181,7 @@ def create_app(
     supports_audio_translation: bool = False,
     required_speech_reference_count: int | None = None,
     speech_reference_text_required: bool = False,
+    speech_reference_text_excludes_instructions: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
     enable_realtime: bool = False,
     supports_realtime_audio_output: bool = False,
@@ -205,6 +207,8 @@ def create_app(
             dispatching a speech request to the backend.
         speech_reference_text_required: Whether each speech reference requires
             a transcript.
+        speech_reference_text_excludes_instructions: Whether a reference
+            transcript and style instructions are mutually exclusive.
         additional_speech_languages: Pipeline-specific accepted languages.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
@@ -255,6 +259,9 @@ def create_app(
         supports_uploaded_voice_references=supports_uploaded_voice_references,
         required_speech_reference_count=required_speech_reference_count,
         speech_reference_text_required=speech_reference_text_required,
+        speech_reference_text_excludes_instructions=(
+            speech_reference_text_excludes_instructions
+        ),
         additional_speech_languages=additional_speech_languages,
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,
@@ -1199,6 +1206,27 @@ def _register_realtime(app: FastAPI) -> None:
             await manager.close(session.session_id)
 
 
+def _speech_generation_failure_response(
+    request_id: str,
+    exc: BaseException,
+    *,
+    unexpected_message: str | None = None,
+) -> JSONResponse:
+    mapped = speech_generation_error(exc)
+    if mapped.status_code == 503:
+        logger.warning(
+            "Rejecting speech request %s: %s",
+            request_id,
+            mapped.message,
+        )
+    else:
+        logger.exception(
+            unexpected_message or "Error generating speech for request %s",
+            request_id,
+        )
+    return speech_error_response(mapped)
+
+
 def _register_speech(app: FastAPI) -> None:
     @app.post("/v1/audio/speech")
     async def create_speech(request: Request) -> Response:
@@ -1235,13 +1263,15 @@ def _register_speech(app: FastAPI) -> None:
                     speed=req.speed,
                 )
             except ClientError as exc:
-                return speech_error_response(internal_error(str(exc)))
+                return _speech_generation_failure_response(request_id, exc)
             except Exception as exc:
-                logger.exception(
-                    "Error preparing raw PCM speech stream for request %s",
+                return _speech_generation_failure_response(
                     request_id,
+                    exc,
+                    unexpected_message=(
+                        "Error preparing raw PCM speech stream for request %s"
+                    ),
                 )
-                return speech_error_response(internal_error(str(exc)))
 
         try:
             result = await _await_speech_response(
@@ -1253,10 +1283,13 @@ def _register_speech(app: FastAPI) -> None:
                 speed=req.speed,
             )
         except ClientError as exc:
-            return speech_error_response(internal_error(str(exc)))
+            return _speech_generation_failure_response(request_id, exc)
         except Exception as exc:
-            logger.exception("Error generating speech for request %s", request_id)
-            return speech_error_response(internal_error(str(exc)))
+            return _speech_generation_failure_response(
+                request_id,
+                exc,
+                unexpected_message="Error generating speech for request %s",
+            )
 
         headers = {
             "Content-Disposition": f'attachment; filename="speech.{result.format}"',

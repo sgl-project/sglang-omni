@@ -158,7 +158,13 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def synchronize_batch(self) -> None:
         self._stream.synchronize()
 
-    def cache_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+    def cache_embedding(
+        self,
+        item: Any,
+        embedding: torch.Tensor,
+        host_copy: torch.Tensor | None = None,
+    ) -> None:
+        del host_copy
         self._cache.put(self._cache_key(item), embedding)
 
     def _handle_batch_failure(

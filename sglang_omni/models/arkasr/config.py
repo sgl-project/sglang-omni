@@ -15,6 +15,14 @@ class ArkasrPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "ArkasrForConditionalGeneration"
 
+    @classmethod
+    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
+        return {"asr": "asr"}
+
+    @classmethod
+    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
+        return {"generation": "asr"}
+
     model_path: str
     entry_stage: str = "asr"
     stages: list[StageConfig] = [
@@ -29,6 +37,18 @@ class ArkasrPipelineConfig(PipelineConfig):
                 "max_new_tokens": 256,
                 "request_build_max_workers": 2,
                 "request_build_max_pending": 16,
+                "prefill_coalesce_requests": 16,
+                "prefill_coalesce_wait_ms": 32,
+                "prefill_coalesce_when_idle": True,
+                "prefill_coalesce_requires_pending_builds": True,
+                "enable_pre_lm_encoder": True,
+                "pre_lm_cache_max_entries": 4096,
+                "pre_lm_cache_size_bytes": 2 * 1024**3,
+                # Note (Akazaakane): One drained group maps to exactly one
+                # encoder microbatch at the matching encoder_max_batch_size.
+                "pre_lm_max_batch_size": 8,
+                "pre_lm_max_batch_wait_ms": 0,
+                "pre_lm_max_pending": 32,
             },
             gpu=0,
             terminal=True,

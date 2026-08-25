@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -45,8 +46,10 @@ def create_ar_executor(
     **_: Any,
 ):
     if device is None:
-        if gpu_id is None or not torch.cuda.is_available():
-            raise RuntimeError("MiniMax Music 3 supports CUDA only right now")
+        if gpu_id is None or not (
+            current_platform.is_cuda() or current_platform.is_musa()
+        ):
+            raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA backend")
         device = f"cuda:{gpu_id}"
     torch.backends.cudnn.enabled = False
     torch.backends.cuda.enable_cudnn_sdp(False)
@@ -94,8 +97,12 @@ def create_dit_dav_executor(
     **_: Any,
 ) -> MiniMaxMusic3AcousticScheduler:
     if device is None:
-        if gpu_id is None or not torch.cuda.is_available():
-            raise RuntimeError("MiniMax Music 3 acoustic inference requires CUDA")
+        if gpu_id is None or not (
+            current_platform.is_cuda() or current_platform.is_musa()
+        ):
+            raise RuntimeError(
+                "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
+            )
         device = f"cuda:{gpu_id}"
     decoder = MiniMaxMusic3AcousticDecoder(
         model_path,

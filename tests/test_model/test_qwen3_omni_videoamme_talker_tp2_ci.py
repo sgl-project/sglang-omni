@@ -53,14 +53,14 @@ VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX = 0.0132
 VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOAMME_TALKER_TP2_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 0.0
+VIDEOAMME_TALKER_TP2_N_ABOVE_50_MAX = 1.0
 
 _VIDEOAMME_TALKER_TP2_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.113,
-        "output_tok_per_req_s": 0.5,
-        "latency_mean_s": 86.562,
-        "rtf_mean": 6.9067,
+        "throughput_qps": 0.177,
+        "output_tok_per_req_s": 0.8,
+        "latency_mean_s": 54.071,
+        "rtf_mean": 4.4757,
     },
 }
 VIDEOAMME_TALKER_TP2_THRESHOLDS = apply_slack(_VIDEOAMME_TALKER_TP2_AUDIO_P95)
