@@ -6,6 +6,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+# Imported for their monkeypatch side effects: Whisper's encoder-decoder decode
+# loop hits both an unnecessary GPU sync in cuda-graph admission checks and a
+# per-element logit_bias write loop (from suppress_tokens) on every
+# extend/prefill step. See the module docstrings for details.
+import sglang_omni.vendor.sglang.model_executor  # noqa: F401
+import sglang_omni.vendor.sglang.sampling  # noqa: F401
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
@@ -15,6 +21,12 @@ from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+
+# attention backends whose decode CUDA graph path indexes the KV page table by
+# encoder_lens in a way that does not hold for Whisper's fixed-length,
+# non-causal cross-attention: real requests trigger a CUDA device-side assert
+# ("index out of bounds" in IndexKernel.cu) as soon as the graph replays.
+_CUDA_GRAPH_UNSAFE_ATTENTION_BACKENDS = frozenset({"fa3"})
 
 
 def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
@@ -83,7 +95,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 1024,
         pre_lm_cache_size_bytes: int | None = None,
-        pre_lm_max_batch_size: int = 8,
+        pre_lm_max_batch_size: int = 16,
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_cache_pin_host_memory: bool = True,
     ) -> None:
@@ -236,6 +248,22 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
         overrides["enable_custom_logit_processor"] = True
+
+        attention_backend = overrides.get("attention_backend")
+        if (
+            attention_backend in _CUDA_GRAPH_UNSAFE_ATTENTION_BACKENDS
+            and not overrides.get("disable_cuda_graph")
+        ):
+            logger.warning(
+                "attention_backend=%r is known to crash Whisper ASR under decode "
+                "CUDA graphs (CUDA device-side assert / out-of-bounds KV index in "
+                "encoder-decoder cross-attention once real requests replay a "
+                "captured graph); forcing disable_cuda_graph=True. Set "
+                "disable_cuda_graph explicitly in server_args_overrides to "
+                "override this.",
+                attention_backend,
+            )
+            overrides["disable_cuda_graph"] = True
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {

@@ -22,7 +22,7 @@ sgl-omni serve \
 
 ## Encoder CUDA Graph
 
-The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (8), so batches **1/2/4/8** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`6144 // 1500 = 4`). To use eager encoder execution, override the pipeline configuration:
+The encoder CUDA Graph is enabled by default. With pre-LM encoding (the default), capture buckets follow `pre_lm_max_batch_size` (16), so batches **1/2/4/8/12/16** are captured. `request_build_max_workers` defaults to 8, matching Qwen3-ASR and Fun-ASR. When `enable_pre_lm_encoder` is false, buckets follow the atomic prefill budget (`6144 // 1500 = 4`). To use eager encoder execution, override the pipeline configuration:
 
 ```yaml
 config_cls: WhisperASRPipelineConfig
@@ -259,7 +259,7 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 - Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA
   Graph. Validate the selected buckets before production use.
 - Audio encoding runs before LM admission by default
-  (`pre_lm_max_batch_size=8`, `request_build_max_workers=8`). Set
+  (`pre_lm_max_batch_size=16`, `request_build_max_workers=8`). Set
   `enable_pre_lm_encoder: false` under `stages.asr.factory` to run the
   encoder inside prefill again.
 - The pre-LM encoder cache (`pre_lm_cache_max_entries=1024`) keeps its

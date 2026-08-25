@@ -87,7 +87,7 @@ class WhisperASRPipelineConfig(PipelineConfig):
                 # None here.
                 pre_lm_cache_max_entries=1024,
                 pre_lm_cache_size_bytes=None,
-                pre_lm_max_batch_size=8,
+                pre_lm_max_batch_size=16,
                 pre_lm_max_batch_wait_ms=0,
             ),
             gpu=0,

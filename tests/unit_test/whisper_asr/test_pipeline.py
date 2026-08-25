@@ -58,7 +58,7 @@ def test_whisper_stage_defaults() -> None:
         is False
     )
     assert signature.parameters["enable_pre_lm_encoder"].default is True
-    assert signature.parameters["pre_lm_max_batch_size"].default == 8
+    assert signature.parameters["pre_lm_max_batch_size"].default == 16
 
 
 def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -> None:
@@ -231,7 +231,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert factory.pre_lm_cache_max_entries == 1024
     # None: the byte budget is derived from the entry count.
     assert factory.pre_lm_cache_size_bytes is None
-    assert factory.pre_lm_max_batch_size == 8
+    assert factory.pre_lm_max_batch_size == 16
     assert factory.pre_lm_max_batch_wait_ms == 0
     assert (factory.model_extra or {}).get("max_prefill_tokens") is None
     assert (

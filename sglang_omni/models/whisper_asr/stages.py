@@ -28,7 +28,7 @@ def create_sglang_whisper_asr_executor(
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 1024,
     pre_lm_cache_size_bytes: int | None = None,
-    pre_lm_max_batch_size: int = 8,
+    pre_lm_max_batch_size: int = 16,
     pre_lm_max_batch_wait_ms: int = 0,
     pre_lm_cache_pin_host_memory: bool = True,
     server_args_overrides: dict[str, Any] | None = None,
