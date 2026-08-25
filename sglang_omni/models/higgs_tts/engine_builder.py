@@ -83,11 +83,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
                 if self.total_gpu_memory_fraction is not None
                 else 0.85
             ),
-            # Pure-torch sampling kernels work on every backend (CUDA and
-            # Ascend NPU alike), mirroring the Qwen3-Omni thinker/talker
-            # adaptation. Higgs zeroes the text-vocab logits and overwrites
-            # next_token_ids with codebook-0 anyway, so this only matters for
-            # kernel availability under the engine sampler.
             "sampling_backend": "pytorch",
             "chunked_prefill_size": 8192,
             # Qualified capture budget; longer prefills run eager.

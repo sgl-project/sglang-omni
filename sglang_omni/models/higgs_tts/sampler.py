@@ -56,8 +56,6 @@ def _top_p_renorm_prob_torch(probs: torch.Tensor, p: torch.Tensor) -> torch.Tens
     sorted_probs, sorted_indices = probs.sort(dim=-1, descending=True)
     cum_probs = sorted_probs.cumsum(dim=-1)
     remove = cum_probs > p.unsqueeze(-1)
-    # Shift right + force-keep the top token so the highest-prob token never
-    # gets cut (identical to the _sample_independent nucleus convention).
     remove[..., 1:] = remove[..., :-1].clone()
     remove[..., 0] = False
     scatter = torch.zeros_like(remove)
@@ -67,14 +65,24 @@ def _top_p_renorm_prob_torch(probs: torch.Tensor, p: torch.Tensor) -> torch.Tens
     return masked / denom.clamp_min(torch.finfo(probs.dtype).tiny)
 
 
-# Fused top-k/top-p renormalization kernels come from ``sgl_kernel`` on CUDA;
-# Ascend NPU has no fused renorm kernels, so the sampler falls back to the
-# equivalent torch implementations above.
-_fused_renorm = current_platform.get_fused_topk_topp_renorm()
-if _fused_renorm is not None:
-    _top_k_renorm, _top_p_renorm = _fused_renorm
-else:
-    _top_k_renorm, _top_p_renorm = _top_k_renorm_prob_torch, _top_p_renorm_prob_torch
+def _resolve_renorm_kernels():
+    """Return ``(top_k_renorm, top_p_renorm)`` callables for this platform.
+
+    CUDA uses the fused ``sgl_kernel`` kernels to avoid a full-vocab
+    ``torch.sort`` in decode. Ascend NPU has no fused renorm kernels so
+    it falls back to the equivalent torch implementations above.
+    """
+    if current_platform.device_type == "cuda":
+        try:
+            from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob
+
+            return top_k_renorm_prob, top_p_renorm_prob
+        except ImportError:
+            pass
+    return _top_k_renorm_prob_torch, _top_p_renorm_prob_torch
+
+
+_top_k_renorm, _top_p_renorm = _resolve_renorm_kernels()
 
 
 @dataclass

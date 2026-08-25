@@ -13,18 +13,23 @@ from __future__ import annotations
 from transformers import AutoConfig
 
 from sglang_omni.models.model_capabilities import ModelCapabilities
+from sglang_omni.platforms import current_platform
 
 from . import config
 from .hf_config import HiggsMultimodalQwen3Config
 
 AutoConfig.register("higgs_multimodal_qwen3", HiggsMultimodalQwen3Config)
 
+# The owned torch.compile paths (codec acoustic encoder + vocoder decode) are
+# gated off on Ascend NPU (no torch.compile backend), so the capability is CUDA-only.
+_supports_torch_compile = not current_platform.is_npu()
+
 CAPABILITIES = ModelCapabilities(
     supports_reference_audio=True,
     supports_batch_vocoder=True,
     supports_streaming_vocoder=True,
     supports_cuda_graph=True,
-    supports_torch_compile=True,
+    supports_torch_compile=_supports_torch_compile,
     supports_breakable_prefill_cuda_graph=True,
 )
 

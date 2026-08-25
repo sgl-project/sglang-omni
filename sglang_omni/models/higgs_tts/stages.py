@@ -400,7 +400,9 @@ def create_audio_encoder_executor(
     adapter = HiggsTokenizerAdapter(tokenizer)
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
-    if current_platform.enable_torch_compile():
+    if not current_platform.is_npu():
+        # Ascend NPU has no torch.compile backend; keep the codec acoustic
+        # encoder eager there.
         codec.model.acoustic_encoder = torch.compile(
             codec.model.acoustic_encoder, mode="default", dynamic=True
         )
@@ -547,7 +549,7 @@ def create_vocoder_executor(
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
     if compile_decode:
-        if not current_platform.enable_torch_compile():
+        if current_platform.is_npu():
             logger.warning(
                 "compile_decode=True was requested but the current platform (%s) "
                 "has no torch.compile backend; falling back to the eager "

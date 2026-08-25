@@ -7,6 +7,7 @@ import logging
 from typing import Any, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.utils import get_hip_version, is_gfx95_supported
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
@@ -124,27 +125,28 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.context_length = max_prompt_tokens + max_output_budget + 8
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        enable_cuda_graph = current_platform.enable_sglang_cuda_graph()
-        enable_torch_compile = (
-            self.enable_torch_compile and current_platform.enable_torch_compile()
-        )
         defaults: dict[str, Any] = {
             "max_running_requests": self.max_running_requests,
-            "disable_cuda_graph": not enable_cuda_graph,
+            "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": enable_torch_compile,
+            "enable_torch_compile": self.enable_torch_compile,
             "torch_compile_max_bs": self.torch_compile_max_bs,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
             "dtype": dtype,
-            "cuda_graph_backend_prefill": (
-                CudaGraphBackend.BREAKABLE
-                if enable_cuda_graph
-                else CudaGraphBackend.DISABLED
-            ),
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        # ROCm 7.2's AITER batch-prefill specialization is inaccurate for the
+        # Qwen3-ASR attention shape on gfx950. Keep decode on the selected
+        # backend, but use Triton for prefill until the affected stack is fixed.
+        if (
+            current_platform.is_rocm()
+            and is_gfx95_supported()
+            and get_hip_version()[:2] == (7, 2)
+        ):
+            defaults["prefill_attention_backend"] = "triton"
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
         else:

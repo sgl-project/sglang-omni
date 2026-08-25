@@ -87,13 +87,6 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
 
         return fused_qk_norm_rope
 
-    def get_fused_topk_topp_renorm(self):
-        try:
-            from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob
-        except ImportError:
-            return None
-        return top_k_renorm_prob, top_p_renorm_prob
-
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,
