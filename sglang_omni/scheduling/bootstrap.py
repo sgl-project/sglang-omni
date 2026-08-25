@@ -105,6 +105,7 @@ def create_sglang_infrastructure(
     weight_prefix: str | None = None,
     capture_hidden_layers: list[int] | None = None,
     total_gpu_memory_fraction: float | None = None,
+    device_total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
 ):
@@ -124,6 +125,7 @@ def create_sglang_infrastructure(
             weight_prefix=weight_prefix,
             nccl_port=nccl_port,
             total_gpu_memory_fraction=total_gpu_memory_fraction,
+            device_total_gpu_memory_fraction=device_total_gpu_memory_fraction,
             enable_prefill_input_embeds=enable_prefill_input_embeds,
         ),
         server_args=server_args,

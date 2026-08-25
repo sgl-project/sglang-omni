@@ -15,7 +15,6 @@ from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.utils.gpu_memory import (
-    calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
     format_bytes_gib,
     get_gpu_device_info,
@@ -50,6 +49,7 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
     """
 
     total_gpu_memory_fraction: float | None = None
+    device_total_gpu_memory_fraction: float | None = None
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
@@ -62,11 +62,10 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
 
         When a stage total-memory budget is provided, compute cache headroom as
         total GPU memory times that budget minus this stage's measured memory.
-        NVML process accounting is preferred. If NVML cannot identify the
-        current process, use the stage-local load delta measured inside
-        SGLang's serialized initialization window. Without a stage budget, keep
-        upstream SGLang profiling semantics for ordinary non-colocated AR
-        serving.
+        The stage-local result is capped by live device-wide headroom so memory
+        held by co-tenants is charged against the aggregate placement budget.
+        Without a stage budget, keep upstream SGLang profiling semantics for
+        ordinary non-colocated AR serving.
         """
         if self.total_gpu_memory_fraction is None:
             return KVCacheConfigurator._profile_available_bytes(
@@ -84,75 +83,82 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
                 "device visibility."
             )
 
-        if process_memory is None or process_memory <= 0:
-            return self._profile_available_bytes_from_stage_load_delta(
-                pre_model_load_memory,
-                total_memory,
-            )
-
-        return self._profile_available_bytes_from_process_memory(
-            total_memory,
-            process_memory,
+        device_memory_fraction = (
+            self.device_total_gpu_memory_fraction
+            if self.device_total_gpu_memory_fraction is not None
+            else self.total_gpu_memory_fraction
         )
+        device_memory_fraction = min(device_memory_fraction, 1.0)
 
-    def _profile_available_bytes_from_stage_load_delta(
-        self,
-        pre_model_load_memory: float,
-        total_memory: int,
-    ) -> int:
-        """Profile colocated KV headroom from this stage's load-time delta."""
-        from sglang.srt.distributed.parallel_state import get_world_group
         from sglang.srt.utils.common import get_available_gpu_memory
 
-        world_group = get_world_group()
-        post_model_load_memory = get_available_gpu_memory(
+        free_memory_gib = get_available_gpu_memory(
             self.device,
             self.gpu_id,
-            distributed=world_group.world_size > 1,
-            cpu_group=world_group.cpu_group,
+            distributed=False,
         )
-        stage_load_bytes = calculate_stage_load_delta_bytes(
-            pre_model_load_memory_gib=pre_model_load_memory,
-            post_model_load_memory_gib=post_model_load_memory,
+        free_memory = min(int(free_memory_gib * (1 << 30)), total_memory)
+
+        if process_memory is None or process_memory <= 0:
+            accounted_memory = calculate_stage_load_delta_bytes(
+                pre_model_load_memory_gib=pre_model_load_memory,
+                post_model_load_memory_gib=free_memory_gib,
+            )
+            accounting_source = "stage_load_fallback"
+            accounted_memory_label = "stage_load_used"
+        else:
+            accounted_memory = process_memory
+            accounting_source = "nvml_process"
+            accounted_memory_label = "process_used"
+
+        stage_available_bytes = (
+            int(total_memory * self.total_gpu_memory_fraction) - accounted_memory
         )
-        available_bytes = calculate_stage_budget_available_bytes(
-            total_memory_bytes=total_memory,
-            accounted_memory_bytes=stage_load_bytes,
-            memory_fraction=self.total_gpu_memory_fraction,
-            accounted_memory_label="stage_load_used",
+        device_available_bytes = int(total_memory * device_memory_fraction) - (
+            total_memory - free_memory
         )
+        local_available_bytes = max(
+            0, min(stage_available_bytes, device_available_bytes)
+        )
+        available_bytes = self._distributed_minimum_bytes(local_available_bytes)
+        if available_bytes <= 0:
+            raise RuntimeError(
+                "Colocated SGLang AR stage has no KV-cache headroom after applying stage and device budgets"
+            )
         logger.info(
-            f"SGLang AR memory profile: gpu_mem_accounting=stage_load_fallback "
+            f"SGLang AR memory profile: gpu_mem_accounting={accounting_source} "
             f"gpu_id={self.gpu_id} "
             f"total_gpu_memory_fraction={self.total_gpu_memory_fraction:.3f} "
+            f"device_total_gpu_memory_fraction={device_memory_fraction:.3f} "
             f"mem_fraction_static={self.server_args.mem_fraction_static:.3f} "
             f"total={format_bytes_gib(total_memory)} "
-            f"stage_load_used={format_bytes_gib(stage_load_bytes)} "
+            f"device_free={format_bytes_gib(free_memory)} "
+            f"{accounted_memory_label}={format_bytes_gib(accounted_memory)} "
+            f"stage_available_for_kv={format_bytes_gib(stage_available_bytes)} "
+            f"device_available_for_kv={format_bytes_gib(device_available_bytes)} "
             f"available_for_kv={format_bytes_gib(available_bytes)}"
         )
         return available_bytes
 
-    def _profile_available_bytes_from_process_memory(
-        self,
-        total_memory: int,
-        process_memory: int,
-    ) -> int:
-        available_bytes = calculate_stage_budget_available_bytes(
-            total_memory_bytes=total_memory,
-            accounted_memory_bytes=process_memory,
-            memory_fraction=self.total_gpu_memory_fraction,
-            accounted_memory_label="process_used",
+    @staticmethod
+    def _distributed_minimum_bytes(local_bytes: int) -> int:
+        """Return one conservative KV budget across all distributed ranks."""
+        import torch
+        from sglang.srt.distributed.parallel_state import get_world_group
+
+        if not torch.distributed.is_initialized():
+            return local_bytes
+        world_group = get_world_group()
+        if world_group.world_size <= 1:
+            return local_bytes
+
+        value = torch.tensor(local_bytes, dtype=torch.int64)
+        torch.distributed.all_reduce(
+            value,
+            op=torch.distributed.ReduceOp.MIN,
+            group=world_group.cpu_group,
         )
-        logger.info(
-            f"SGLang AR memory profile: gpu_mem_accounting=nvml_process "
-            f"gpu_id={self.gpu_id} "
-            f"total_gpu_memory_fraction={self.total_gpu_memory_fraction:.3f} "
-            f"mem_fraction_static={self.server_args.mem_fraction_static:.3f} "
-            f"total={format_bytes_gib(total_memory)} "
-            f"process_used={format_bytes_gib(process_memory)} "
-            f"available_for_kv={format_bytes_gib(available_bytes)}"
-        )
-        return available_bytes
+        return int(value.item())
 
 
 class SGLModelRunner(ModelRunner):
@@ -172,9 +178,11 @@ class SGLModelRunner(ModelRunner):
         model_arch_override: str | None = None,
         weight_prefix: str | None = None,
         total_gpu_memory_fraction: float | None = None,
+        device_total_gpu_memory_fraction: float | None = None,
     ) -> None:
         self._weight_prefix = weight_prefix
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
+        self._device_total_gpu_memory_fraction = device_total_gpu_memory_fraction
         self._model_arch_override = model_arch_override
         self._weight_share_config = None
         self._weight_share_record = None
@@ -489,4 +497,5 @@ class SGLModelRunner(ModelRunner):
                 if field.init
             },
             total_gpu_memory_fraction=self._total_gpu_memory_fraction,
+            device_total_gpu_memory_fraction=self._device_total_gpu_memory_fraction,
         )

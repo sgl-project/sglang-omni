@@ -181,6 +181,19 @@ def reject_process_total_gpu_memory_fraction(
     )
 
 
+def reject_device_total_gpu_memory_fraction(
+    stage_name: str,
+    factory_args: dict[str, Any],
+    runtime_overrides: dict[str, Any],
+) -> None:
+    field_name = "device_total_gpu_memory_fraction"
+    if field_name not in factory_args and field_name not in runtime_overrides:
+        return
+    raise ValueError(
+        f"Stage {stage_name!r} sets {field_name} through factory_args/runtime_overrides. This value is derived from the per-GPU placement plan"
+    )
+
+
 def _validate_runtime_sources(
     stage_cfg: StageConfig,
     factory_args: dict[str, Any],
@@ -211,6 +224,11 @@ def _validate_runtime_sources(
         runtime_overrides,
     )
     reject_process_total_gpu_memory_fraction(
+        stage_cfg.name,
+        factory_args,
+        runtime_overrides,
+    )
+    reject_device_total_gpu_memory_fraction(
         stage_cfg.name,
         factory_args,
         runtime_overrides,

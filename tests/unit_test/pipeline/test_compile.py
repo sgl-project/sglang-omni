@@ -298,6 +298,10 @@ def test_runner_specs_expose_process_total_in_construction_order(
         specs[stage_name].factory_arg_defaults["process_total_gpu_memory_fraction"]
         for stage_name in ("preprocess", "engine", "vocoder")
     ] == pytest.approx(expected_fractions)
+    assert [
+        specs[stage_name].factory_arg_defaults["device_total_gpu_memory_fraction"]
+        for stage_name in ("preprocess", "engine", "vocoder")
+    ] == pytest.approx([1.0, 1.0, 1.0])
 
 
 def test_shared_process_name_compiles_to_same_process_local_edges() -> None:
