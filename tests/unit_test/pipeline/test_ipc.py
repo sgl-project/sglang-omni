@@ -66,7 +66,7 @@ def _make_config(base_path: Path) -> PipelineConfig:
             StageConfig(
                 name="preprocessing",
                 process="pipeline",
-                factory=f"{__name__}.noop_factory",
+                factory_path=f"{__name__}.noop_factory",
                 terminal=True,
             )
         ],
@@ -289,7 +289,7 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
             StageConfig(
                 name="preprocessing",
                 process="pipeline",
-                factory=f"{__name__}.failing_factory",
+                factory_path=f"{__name__}.failing_factory",
                 terminal=True,
             )
         ],
@@ -297,6 +297,9 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     )
     runner = mp_runner.MultiProcessPipelineRunner(config)
 
+    # A cold child can spend close to 10s importing torch before the factory
+    # even runs; the dead-process fail-fast branch needs the child to have
+    # exited, so give slow hosts room instead of racing the teardown.
     with pytest.raises(RuntimeError, match="factory boom"):
         await runner.start(timeout=30.0)
 

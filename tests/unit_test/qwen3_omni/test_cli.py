@@ -7,20 +7,9 @@ from unittest.mock import patch
 import pytest
 import typer
 
-from sglang_omni.cli.serve import (
-    apply_cuda_graph_cli_overrides,
-    apply_encoder_mem_reserve_cli_override,
-    apply_parallelism_cli_overrides,
-    apply_partial_start_cli_overrides,
-    apply_torch_compile_cli_overrides,
-    serve,
-)
-from sglang_omni.config import (
-    PipelineConfig,
-    ProcessConfig,
-    StageConfig,
-    resolve_stage_factory_args,
-)
+from sglang_omni.cli.serve import serve
+from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -37,17 +26,19 @@ class _DummyManager:
                 StageConfig(
                     name="stage",
                     process="pipeline",
-                    factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                    factory_path="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
                     terminal=True,
                 )
             ],
         )
 
     def parse_extra_args(self, args):
-        return {}
+        return ConfigManager(self.config).parse_extra_args(args)
 
-    def merge_config(self, extra_args):
-        return self.config
+    def merge_config(self, extra_args, *, extra_patches=None):
+        return ConfigManager(self.config).merge_config(
+            extra_args, extra_patches=extra_patches
+        )
 
 
 def _serve_kwargs(**overrides):
@@ -61,21 +52,7 @@ def _serve_kwargs(**overrides):
         port=8000,
         model_name=None,
         mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=None,
-        encoder_mem_reserve=None,
         log_level="info",
-        thinker_tp_size=None,
-        thinker_gpus=None,
-        talker_gpu=None,
-        code2wav_gpu=None,
-        thinker_cuda_graph="default",
-        talker_cuda_graph="default",
-        talker_partial_start="default",
-        thinker_torch_compile="default",
-        talker_torch_compile="default",
-        thinker_torch_compile_max_bs=None,
-        talker_torch_compile_max_bs=None,
     )
     data.update(overrides)
     return data
@@ -85,7 +62,7 @@ def _stage(config, name: str):
     return next(stage for stage in config.stages if stage.name == name)
 
 
-def _set_colocated_runtime(config: Qwen3OmniSpeechColocatedPipelineConfig) -> None:
+def _set_colocated_budgets(config: Qwen3OmniSpeechColocatedPipelineConfig) -> None:
     for stage_name, fraction in {
         "image_encoder": 0.05,
         "audio_encoder": 0.05,
@@ -93,9 +70,7 @@ def _set_colocated_runtime(config: Qwen3OmniSpeechColocatedPipelineConfig) -> No
         "talker_ar": 0.35,
         "code2wav": 0.05,
     }.items():
-        _stage(config, stage_name).runtime.resources.total_gpu_memory_fraction = (
-            fraction
-        )
+        _stage(config, stage_name).gpu_memory_fraction = fraction
 
 
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
@@ -114,7 +89,7 @@ def test_cli_colocate_accepts_budgeted_colocated_config(
     capsys,
 ):
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
-    _set_colocated_runtime(config)
+    _set_colocated_budgets(config)
     from_file.return_value = _DummyManager(config)
 
     serve(**_serve_kwargs(config="colocated.yaml", colocate=True))
@@ -128,7 +103,7 @@ def test_cli_colocate_accepts_budgeted_colocated_config(
 @patch("sglang_omni.cli.serve.ConfigManager.from_file")
 def test_cli_config_can_own_model_path(from_file, launch_server):
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="config-model")
-    _set_colocated_runtime(config)
+    _set_colocated_budgets(config)
     from_file.return_value = _DummyManager(config)
 
     serve(**_serve_kwargs(config="colocated.yaml", colocate=True, model_path=None))
@@ -141,7 +116,7 @@ def test_cli_config_can_own_model_path(from_file, launch_server):
 @patch("sglang_omni.cli.serve.ConfigManager.from_file")
 def test_cli_model_path_overrides_config_model_path(from_file, launch_server):
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="config-model")
-    _set_colocated_runtime(config)
+    _set_colocated_budgets(config)
     from_file.return_value = _DummyManager(config)
 
     serve(
@@ -224,21 +199,20 @@ def test_cli_thinker_max_running_requests_targets_thinker_in_both_variants(
     serve(
         **_serve_kwargs(
             text_only=text_only,
-            thinker_max_running_requests=16,
+            ctx=SimpleNamespace(args=["--thinker.engine.max_running_requests", "16"]),
         )
     )
 
     launched_config = launch_server.call_args.args[0]
-    thinker_overrides = _stage(launched_config, "thinker").factory_args[
-        "server_args_overrides"
-    ]
-    assert thinker_overrides["max_running_requests"] == 16
+    assert (
+        _stage(launched_config, "thinker").engine.overrides()["max_running_requests"]
+        == 16
+    )
     if isinstance(launched_config, Qwen3OmniSpeechPipelineConfig):
-        talker_overrides = _stage(launched_config, "talker_ar").factory_args.get(
-            "server_args_overrides",
-            {},
+        talker_engine = _stage(launched_config, "talker_ar").engine
+        assert "max_running_requests" not in (
+            talker_engine.overrides() if talker_engine is not None else {}
         )
-        assert "max_running_requests" not in talker_overrides
 
 
 @patch("sglang_omni.cli.serve.launch_server")
@@ -285,217 +259,64 @@ def test_registry_resolves_qwen_colocated_config_by_class_name():
     )
 
 
-def test_qwen_text_encoder_mem_reserve_still_targets_thinker():
-    config = Qwen3OmniPipelineConfig(model_path="dummy")
-
-    apply_encoder_mem_reserve_cli_override(
-        config,
-        encoder_mem_reserve=0.05,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-    )
-
-    assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
-
-
-def test_qwen_text_tp_override_rejects_shared_process():
-    original = Qwen3OmniPipelineConfig(model_path="dummy")
-
-    with pytest.raises(typer.BadParameter, match="cannot be shared"):
-        apply_parallelism_cli_overrides(
-            original,
-            thinker_tp_size=2,
-            thinker_gpus="0,1",
-            talker_gpu=None,
-            code2wav_gpu=None,
-        )
-
-    assert _stage(original, "thinker").tp_size == 1
-
-
-@pytest.mark.parametrize("stage_name", ["thinker", "image_encoder"])
-def test_tp_override_to_one_materializes_implicit_process(stage_name):
-    original = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name=stage_name,
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                gpu=[0, 1],
-                tp_size=2,
-                terminal=True,
-            )
-        ],
-    )
-    overrides = {
-        "thinker_tp_size": None,
-        "thinker_gpus": None,
-        "image_encoder_tp_size": None,
-        "image_encoder_gpus": None,
-        "talker_gpu": None,
-        "code2wav_gpu": None,
-    }
-    overrides[f"{stage_name}_tp_size"] = 1
-    overrides[f"{stage_name}_gpus"] = "0"
-
-    config = apply_parallelism_cli_overrides(original, **overrides)
-
-    stage = _stage(config, stage_name)
-    assert stage.tp_size == 1
-    assert stage.gpu == 0
-    assert stage.process == stage_name
-
-
-def test_qwen_speech_encoder_mem_reserve_still_targets_thinker():
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-
-    apply_encoder_mem_reserve_cli_override(
-        config,
-        encoder_mem_reserve=0.05,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-    )
-
-    assert _stage(config, "thinker").factory_args["encoder_mem_reserve"] == 0.05
-    assert "encoder_mem_reserve" not in _stage(config, "talker_ar").factory_args
-
-
-def test_qwen_text_cli_rejects_talker_gpu_with_stable_message():
-    config = Qwen3OmniPipelineConfig(model_path="dummy")
-
-    with pytest.raises(
-        typer.BadParameter,
-        match="--talker-gpu is not supported by Qwen3OmniPipelineConfig",
-    ):
-        apply_parallelism_cli_overrides(
-            config,
-            thinker_tp_size=None,
-            thinker_gpus=None,
-            talker_gpu=1,
-            code2wav_gpu=None,
-        )
-
-
-def test_speech_colocated_rejects_talker_gpu_override_to_other_gpu():
-    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
-
-    with pytest.raises(typer.BadParameter, match="--talker-gpu"):
-        apply_parallelism_cli_overrides(
-            config,
-            thinker_tp_size=None,
-            thinker_gpus=None,
-            talker_gpu=1,
-            code2wav_gpu=None,
-        )
-
-
-def test_speech_colocated_rejects_code2wav_gpu_override_to_other_gpu():
-    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
-
-    with pytest.raises(typer.BadParameter, match="--code2wav-gpu"):
-        apply_parallelism_cli_overrides(
-            config,
-            thinker_tp_size=None,
-            thinker_gpus=None,
-            talker_gpu=None,
-            code2wav_gpu=1,
-        )
-
-
-def test_speech_colocated_allows_gpu_override_to_same_gpu():
-    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
-
-    config = apply_parallelism_cli_overrides(
-        config,
-        thinker_tp_size=None,
-        thinker_gpus=None,
-        talker_gpu=0,
-        code2wav_gpu=0,
-    )
-
-    assert next(stage for stage in config.stages if stage.name == "talker_ar").gpu == 0
-    assert next(stage for stage in config.stages if stage.name == "code2wav").gpu == 0
-
-
 @pytest.mark.parametrize(
-    ("stage_name", "flag_name", "override_name", "override_value"),
-    [
-        ("thinker", "--thinker-gpus", "thinker_gpus", "3"),
-        (
-            "image_encoder",
-            "--image-encoder-gpus",
-            "image_encoder_gpus",
-            "3",
-        ),
-        ("talker_ar", "--talker-gpu", "talker_gpu", 3),
-        ("code2wav", "--code2wav-gpu", "code2wav_gpu", 3),
-    ],
+    "config_cls",
+    [Qwen3OmniPipelineConfig, Qwen3OmniSpeechPipelineConfig],
 )
-def test_gpu_cli_override_rejects_process_replica_devices(
-    stage_name: str,
-    flag_name: str,
-    override_name: str,
-    override_value: str | int,
-) -> None:
-    config = Qwen3OmniSpeechPipelineConfig(
-        model_path="dummy",
-        processes={
-            stage_name: ProcessConfig(
-                num_replicas=2,
-                replica_devices=[1, 2],
-            )
-        },
+def test_qwen_encoder_mem_reserve_dotted_flag_targets_thinker(config_cls):
+    config = config_cls(model_path="dummy")
+
+    merged = ConfigManager(config).merge_config(
+        [("thinker.factory.encoder_mem_reserve", "0.05")]
     )
-    overrides = {
-        "thinker_tp_size": None,
-        "thinker_gpus": None,
-        "image_encoder_tp_size": None,
-        "image_encoder_gpus": None,
-        "talker_gpu": None,
-        "code2wav_gpu": None,
-    }
-    overrides[override_name] = override_value
 
-    with pytest.raises(
-        typer.BadParameter,
-        match=rf"{flag_name}.*process {stage_name!r} declares replica_devices",
-    ):
-        apply_parallelism_cli_overrides(config, **overrides)
+    assert _stage(merged, "thinker").factory.encoder_mem_reserve == 0.05
+    if isinstance(merged, Qwen3OmniSpeechPipelineConfig):
+        assert _stage(merged, "talker_ar").factory.encoder_mem_reserve is None
 
 
-def test_cuda_graph_cli_override_reaches_resolved_sglang_args():
+def test_dotted_gpu_flags_move_stages(monkeypatch):
+    config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
+
+    merged = ConfigManager(config).merge_config(
+        [("talker_ar.gpu", "0"), ("code2wav.gpu", "0")]
+    )
+
+    assert _stage(merged, "talker_ar").gpu == 0
+    assert _stage(merged, "code2wav").gpu == 0
+
+
+def test_cuda_graph_dotted_flags_reach_resolved_sglang_args():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    apply_cuda_graph_cli_overrides(
-        config,
-        thinker_cuda_graph="off",
-        talker_cuda_graph="on",
+    merged = ConfigManager(config).merge_config(
+        [
+            ("thinker.engine.disable_cuda_graph", "true"),
+            ("talker_ar.engine.disable_cuda_graph", "false"),
+        ]
     )
 
-    thinker = next(stage for stage in config.stages if stage.name == "thinker")
-    talker = next(stage for stage in config.stages if stage.name == "talker_ar")
-    thinker_args = resolve_stage_factory_args(thinker, config)
-    talker_args = resolve_stage_factory_args(talker, config)
+    thinker_args = resolve_stage_factory_args(_stage(merged, "thinker"), merged)
+    talker_args = resolve_stage_factory_args(_stage(merged, "talker_ar"), merged)
 
     assert thinker_args["server_args_overrides"]["disable_cuda_graph"] is True
     assert talker_args["server_args_overrides"]["disable_cuda_graph"] is False
 
 
-def test_torch_compile_cli_override_reaches_resolved_sglang_args():
+def test_torch_compile_dotted_flags_reach_resolved_sglang_args():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    apply_torch_compile_cli_overrides(
-        config,
-        thinker_torch_compile="on",
-        talker_torch_compile="off",
-        thinker_torch_compile_max_bs=4,
-        talker_torch_compile_max_bs=2,
+    merged = ConfigManager(config).merge_config(
+        [
+            ("thinker.engine.enable_torch_compile", "true"),
+            ("thinker.engine.torch_compile_max_bs", "4"),
+            ("talker_ar.engine.enable_torch_compile", "false"),
+            ("talker_ar.engine.torch_compile_max_bs", "2"),
+        ]
     )
 
-    thinker = next(stage for stage in config.stages if stage.name == "thinker")
-    talker = next(stage for stage in config.stages if stage.name == "talker_ar")
-    thinker_args = resolve_stage_factory_args(thinker, config)
-    talker_args = resolve_stage_factory_args(talker, config)
+    thinker_args = resolve_stage_factory_args(_stage(merged, "thinker"), merged)
+    talker_args = resolve_stage_factory_args(_stage(merged, "talker_ar"), merged)
 
     assert thinker_args["server_args_overrides"]["enable_torch_compile"] is True
     assert thinker_args["server_args_overrides"]["torch_compile_max_bs"] == 4
@@ -505,39 +326,38 @@ def test_torch_compile_cli_override_reaches_resolved_sglang_args():
 
 def test_partial_start_default_is_on():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    talker = next(stage for stage in config.stages if stage.name == "talker_ar")
+    talker = _stage(config, "talker_ar")
     talker_args = resolve_stage_factory_args(talker, config)
     assert talker_args["enable_partial_start"] is True
 
 
-def test_partial_start_cli_override_can_disable_and_enable():
+def test_partial_start_dotted_flag_can_disable_and_enable():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
 
-    apply_partial_start_cli_overrides(config, talker_partial_start="off")
-    talker = next(stage for stage in config.stages if stage.name == "talker_ar")
-    assert resolve_stage_factory_args(talker, config)["enable_partial_start"] is False
+    disabled = ConfigManager(config).merge_config(
+        [("talker_ar.factory.enable_partial_start", "false")]
+    )
+    talker = _stage(disabled, "talker_ar")
+    assert resolve_stage_factory_args(talker, disabled)["enable_partial_start"] is False
 
-    apply_partial_start_cli_overrides(config, talker_partial_start="on")
-    assert resolve_stage_factory_args(talker, config)["enable_partial_start"] is True
+    enabled = ConfigManager(config).merge_config(
+        [("talker_ar.factory.enable_partial_start", "true")]
+    )
+    talker = _stage(enabled, "talker_ar")
+    assert resolve_stage_factory_args(talker, enabled)["enable_partial_start"] is True
 
 
-def test_partial_start_cli_default_preserves_config_default():
+def test_partial_start_dotted_flag_rejects_a_non_boolean():
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    apply_partial_start_cli_overrides(config, talker_partial_start="default")
-    talker = next(stage for stage in config.stages if stage.name == "talker_ar")
-    assert resolve_stage_factory_args(talker, config)["enable_partial_start"] is True
+    with pytest.raises(Exception, match="bool"):
+        ConfigManager(config).merge_config(
+            [("talker_ar.factory.enable_partial_start", "bogus")]
+        )
 
 
-def test_partial_start_cli_invalid_mode_rejected():
-    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
-    with pytest.raises(typer.BadParameter):
-        apply_partial_start_cli_overrides(config, talker_partial_start="bogus")
-
-
-def test_partial_start_cli_rejects_unsupported_config_with_stable_message():
+def test_partial_start_flag_on_a_missing_stage_names_the_real_ones():
     config = Qwen3OmniPipelineConfig(model_path="dummy")
-    with pytest.raises(
-        typer.BadParameter,
-        match="--talker-partial-start is not supported by Qwen3OmniPipelineConfig",
-    ):
-        apply_partial_start_cli_overrides(config, talker_partial_start="on")
+    with pytest.raises(Exception, match="thinker"):
+        ConfigManager(config).merge_config(
+            [("talker_ar.factory.enable_partial_start", "true")]
+        )

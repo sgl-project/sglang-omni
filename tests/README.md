@@ -489,7 +489,7 @@ that happened to contain an older version of the test.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory `max_running_requests=64` default,
     async-decode default,
-    and `--decode-mode async|sync` CLI overrides
+    and the dotted `factory.enable_async_decode` CLI override
   - RTX 4090 profile config resolution, SM-specific multimodal-attention
     defaults, and resolved decode CUDA Graph bucket diagnostics
   - single-source audio token length formula used by both processor and
@@ -508,7 +508,7 @@ that happened to contain an older version of the test.
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
   - pipeline config, stage factory concurrency defaults, deferred CUDA-graph
-    capture, async-decode default, and `--decode-mode async|sync` CLI overrides
+    capture, async-decode default, and the dotted `factory.enable_async_decode` CLI override
   - audio-token count formula, audio-tower forward shape, marker-token
     suppression, and the fp16 encoder residual clamp.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
@@ -658,7 +658,7 @@ that happened to contain an older version of the test.
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
-  - async-decode default-on config + `--decode-mode async|sync` CLI override.
+  - async-decode default-on config + the dotted `factory.enable_async_decode` CLI override.
 
 - `unit_test/moss_tts/`: MOSS-TTS unit tests:
   - pipeline config and registry contracts

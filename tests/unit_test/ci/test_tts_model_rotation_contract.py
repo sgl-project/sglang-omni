@@ -75,17 +75,11 @@ def test_qwen3_tts_gates_on_calibrated_thresholds() -> None:
     assert preset.thresholds.stream_speed[16]["throughput_qps_min"] > 11.309
     # The tuned operating point, not the shipped defaults, is what CI measures.
     worker_args = preset.model.worker_extra_args
-    assert "--max-running-requests 64" in worker_args
+    assert "--tts_engine.engine.max_running_requests 64" in worker_args
     assert "--isolate-stage" not in worker_args
-    assert "--stages.vocoder.process vocoder" in worker_args
-    assert (
-        "--stages.tts_engine.runtime.resources.total-gpu-memory-fraction 0.85"
-        in worker_args
-    )
-    assert (
-        "--stages.vocoder.runtime.resources.total-gpu-memory-fraction 0.10"
-        in worker_args
-    )
+    assert "--vocoder.process vocoder" in worker_args
+    assert "--tts_engine.gpu_memory_fraction 0.85" in worker_args
+    assert "--vocoder.gpu_memory_fraction 0.10" in worker_args
 
 
 def test_every_registered_model_is_reachable_from_every_entry_point() -> None:

@@ -735,14 +735,14 @@ def test_qwen_code2wav_graph_output_protocol_matches_eager_exactly() -> None:
 def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
     class _BorrowedOutputRunner:
         def __init__(self) -> None:
-            self.scheduler = None
+            self.factory = None
             self.static_output = torch.zeros((1, 1, 2), dtype=torch.float32)
             self.lock_was_held: list[bool] = []
             self.replays = 0
 
         def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
             assert eligible
-            self.lock_was_held.append(self.scheduler._state_lock._is_owned())
+            self.lock_was_held.append(self.factory._state_lock._is_owned())
             self.replays += 1
             self.static_output.fill_(float(self.replays))
             return Code2WavRunResult(
@@ -762,7 +762,7 @@ def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
         enable_cuda_graph=True,
         _cuda_graph_runner=runner,
     )
-    runner.scheduler = scheduler
+    runner.factory = scheduler
     _seed_stream_state(scheduler)
 
     for chunk_id in range(2):

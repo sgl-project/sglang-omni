@@ -15,7 +15,10 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
-from sglang_omni.config.runtime import resolve_factory_signature_args
+from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
+    resolve_factory_signature_args,
+)
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
@@ -57,7 +60,11 @@ class StageLaunchConfig:
 
     # Factory
     factory: str = ""
-    factory_args: dict[str, Any] = field(default_factory=dict)
+    # Constructor kwargs from PipelineConfig.stage_factory_kwargs (plus TP
+    # wiring). Typed group kwargs are overlaid against the factory's
+    # signature in the child, which imports the factory anyway.
+    factory_kwargs: dict[str, Any] = field(default_factory=dict)
+    typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
@@ -773,9 +780,15 @@ def _construct_scheduler(
     """Build a scheduler, serializing GPU factory work per visible device."""
 
     factory = import_string(spec.factory)
+    factory_args = apply_typed_stage_kwargs(
+        factory,
+        spec.factory_kwargs,
+        spec.typed_kwargs,
+        stage_name=spec.stage_name,
+    )
     factory_args = resolve_factory_signature_args(
         factory,
-        spec.factory_args,
+        factory_args,
         defaults=spec.factory_arg_defaults,
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,

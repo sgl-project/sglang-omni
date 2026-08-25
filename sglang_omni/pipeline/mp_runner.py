@@ -21,7 +21,8 @@ from sglang_omni.config.placement import (
 from sglang_omni.config.runtime import (
     requires_factory_gpu_id,
     resolve_stage_factory_arg_defaults,
-    resolve_stage_static_factory_args,
+    resolve_stage_factory_kwargs,
+    resolve_stage_typed_kwargs,
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
@@ -49,19 +50,20 @@ def resolve_coordinator_max_in_flight(
     logical_process_plan: LogicalProcessPlan,
 ) -> int | None:
     """Return total generation running+queued capacity across replicas."""
-    stage_name = type(config).generation_sglang_role_to_stage().get("generation")
-    stage = next((item for item in config.stages if item.name == stage_name), None)
+    config_cls = type(config)
+    stage = next(
+        (
+            item
+            for item in config.stages
+            if config_cls.stage_config_cls(item.name).engine_stage
+        ),
+        None,
+    )
     if stage is None:
         return None
     values = {
-        **type(config).generation_admission_defaults(),
-        **dict((stage.factory_args or {}).get("server_args_overrides") or {}),
-        **dict(
-            (config.runtime_overrides.get(stage.name) or {}).get(
-                "server_args_overrides"
-            )
-            or {}
-        ),
+        **config_cls.generation_admission_defaults(),
+        **(stage.engine.overrides() if stage.engine is not None else {}),
     }
     try:
         running = int(values["max_running_requests"])
@@ -132,17 +134,19 @@ def _build_stage_groups(
         )
 
         # Avoid importing stage factories in the parent process. The child
-        # injects signature-dependent args after importing the factory it must
-        # construct anyway.
-        base_factory_args = resolve_stage_static_factory_args(stage_cfg, config)
+        # overlays the typed group kwargs against the factory signature and
+        # injects signature-dependent args after importing the factory it
+        # must construct anyway.
+        base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
+        typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
-            factory=stage_cfg.factory,
+            factory=stage_cfg.factory_path,
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
-            env_defaults={**dict(config.env_defaults), **stage_cfg.env},
+            env_defaults={**config.resolved_env_defaults(), **stage_cfg.env},
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -172,7 +176,8 @@ def _build_stage_groups(
                 config=config,
                 gpu_id=gpu_ids[0],
                 recv_endpoint=stage_endpoints[stage_cfg.name],
-                base_factory_args=base_factory_args,
+                base_factory_kwargs=base_factory_kwargs,
+                typed_kwargs=typed_kwargs,
                 stage_kwargs=stage_kwargs,
             )
         else:
@@ -183,7 +188,8 @@ def _build_stage_groups(
                 gpu_ids=gpu_ids,
                 nccl_port=nccl_port,
                 recv_endpoint=stage_endpoints[stage_cfg.name],
-                base_factory_args=base_factory_args,
+                base_factory_kwargs=base_factory_kwargs,
+                typed_kwargs=typed_kwargs,
                 stage_kwargs=stage_kwargs,
             )
             process_specs = [
@@ -288,10 +294,10 @@ def _build_single_stage_spec(
     config: PipelineConfig,
     gpu_id: int | None,
     recv_endpoint: str,
-    base_factory_args: dict[str, Any],
+    base_factory_kwargs: dict[str, Any],
+    typed_kwargs: dict[str, Any],
     stage_kwargs: dict[str, Any],
 ) -> StageLaunchConfig:
-    factory_args = dict(base_factory_args)
     comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
     return StageLaunchConfig(
         role="single",
@@ -300,7 +306,8 @@ def _build_single_stage_spec(
         placement_gpu_id=gpu_id,
         gpu_id=gpu_id,
         nccl_port=None,
-        factory_args=factory_args,
+        factory_kwargs=dict(base_factory_kwargs),
+        typed_kwargs=dict(typed_kwargs),
         factory_arg_defaults=resolve_stage_factory_arg_defaults(
             stage_cfg, config, gpu_id=gpu_id
         ),
@@ -318,7 +325,8 @@ def _build_tp_stage_specs(
     gpu_ids: list[int | None],
     nccl_port: int | None,
     recv_endpoint: str,
-    base_factory_args: dict[str, Any],
+    base_factory_kwargs: dict[str, Any],
+    typed_kwargs: dict[str, Any],
     stage_kwargs: dict[str, Any],
 ) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
@@ -330,10 +338,10 @@ def _build_tp_stage_specs(
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
         if gpu_id is None:
             raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
-        factory_args = dict(base_factory_args)
-        factory_args["tp_rank"] = tp_rank
-        factory_args["tp_size"] = stage_cfg.tp_size
-        factory_args["nccl_port"] = nccl_port
+        factory_kwargs = dict(base_factory_kwargs)
+        factory_kwargs["tp_rank"] = tp_rank
+        factory_kwargs["tp_size"] = stage_cfg.tp_size
+        factory_kwargs["nccl_port"] = nccl_port
 
         comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
 
@@ -346,7 +354,8 @@ def _build_tp_stage_specs(
                     placement_gpu_id=gpu_id,
                     gpu_id=gpu_id,
                     nccl_port=nccl_port,
-                    factory_args=factory_args,
+                    factory_kwargs=factory_kwargs,
+                    typed_kwargs=dict(typed_kwargs),
                     factory_arg_defaults=resolve_stage_factory_arg_defaults(
                         stage_cfg, config, gpu_id=gpu_id
                     ),
@@ -369,7 +378,8 @@ def _build_tp_stage_specs(
                 placement_gpu_id=gpu_id,
                 gpu_id=gpu_id,
                 nccl_port=nccl_port,
-                factory_args=factory_args,
+                factory_kwargs=factory_kwargs,
+                typed_kwargs=dict(typed_kwargs),
                 factory_arg_defaults=resolve_stage_factory_arg_defaults(
                     stage_cfg, config, gpu_id=gpu_id
                 ),

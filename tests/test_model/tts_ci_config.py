@@ -186,14 +186,12 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             # running requests and colocate every stage in one process; both are
             # what kept this variant behind, so CI measures the tuned point.
             worker_extra_args=(
-                "--max-running-requests 64 "
-                "--cuda-graph-max-bs 64 "
-                "--talker-torch-compile-max-bs 64 "
-                "--stages.vocoder.process vocoder "
-                "--stages.tts_engine.runtime.resources."
-                "total-gpu-memory-fraction 0.85 "
-                "--stages.vocoder.runtime.resources."
-                "total-gpu-memory-fraction 0.10"
+                "--tts_engine.engine.max_running_requests 64 "
+                "--tts_engine.engine.cuda_graph_max_bs 64 "
+                "--tts_engine.engine.torch_compile_max_bs 64 "
+                "--vocoder.process vocoder "
+                "--tts_engine.gpu_memory_fraction 0.85 "
+                "--vocoder.gpu_memory_fraction 0.10"
             ),
             startup_timeout=300,
             gate_thresholds=True,

@@ -172,8 +172,8 @@ The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tens
 # startup more headroom than the default 600 s.
 export SGLANG_OMNI_STARTUP_TIMEOUT=1800
 sgl-omni serve --model-path /path/to/Qwen3-Omni-30B-A3B-Instruct \
-  --text-only --stages.thinker.process thinker \
-  --thinker-tp-size 8 --thinker-gpus 0,1,2,3,4,5,6,7 \
+  --text-only --thinker.process thinker \
+  --thinker.tp_size 8 --thinker.gpu "[0, 1, 2, 3, 4, 5, 6, 7]" \
   --host 0.0.0.0 --port 8000
 # chat:
 curl -s -X POST http://localhost:8000/v1/chat/completions \

@@ -83,7 +83,7 @@ Set `worker_gpu_ids` only when you need explicit placement. Each entry maps one
 workers instead of speech-output workers.
 
 Use `worker_extra_args` for public Omni V1 serve options that are specific to
-the worker process, such as `--mem-fraction-static`, `--thinker-tp-size`, or
+the worker process, such as `--mem-fraction-static`, `--thinker.tp_size`, or
 `--text-only`. These arguments are passed to `sgl-omni serve`
 after the launcher-owned flags. When no memory flags are provided, Omni V1 uses
 its normal auto-sizing path.

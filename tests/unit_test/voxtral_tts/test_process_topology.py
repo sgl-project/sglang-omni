@@ -21,8 +21,8 @@ def test_generation_to_vocoder_remains_cross_process_safe() -> None:
     config_data = VoxtralTTSPipelineConfig(model_path="model").model_dump()
     generation, vocoder = config_data["stages"][1:]
     vocoder["process"] = "voxtral_vocoder"
-    generation["runtime"]["resources"]["total_gpu_memory_fraction"] = 0.85
-    vocoder["runtime"]["resources"]["total_gpu_memory_fraction"] = 0.10
+    generation["gpu_memory_fraction"] = 0.85
+    vocoder["gpu_memory_fraction"] = 0.10
     config = VoxtralTTSPipelineConfig(**config_data)
 
     plan = build_compiled_process_topology(config)

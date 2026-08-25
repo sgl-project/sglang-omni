@@ -6,8 +6,8 @@ config_cls: Qwen3ASRPipelineConfig
 name: qwen3asr
 model_path: Qwen/Qwen3-ASR-1.7B
 
-runtime_overrides:
+stages:
   asr:
-    mem_fraction_static: 0.20
-    server_args_overrides:
+    engine:
+      mem_fraction_static: 0.20
       max_total_tokens: 40000

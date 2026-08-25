@@ -393,9 +393,9 @@ def moss_td_router_server(
 ) -> ManagedRouterHandle:
     worker_extra_args = " ".join(
         [
-            "--max-running-requests",
+            "--asr.engine.max_running_requests",
             str(MOSS_TD_CONCURRENCY),
-            "--cuda-graph-max-bs",
+            "--asr.engine.cuda_graph_max_bs",
             str(MOSS_TD_CONCURRENCY),
             "--mem-fraction-static",
             str(MOSS_TD_MEM_FRACTION_STATIC),

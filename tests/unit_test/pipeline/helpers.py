@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 def stage(name: str, **kwargs: Any) -> StageConfig:
-    kwargs.setdefault("factory", FACTORY)
+    kwargs.setdefault("factory_path", FACTORY)
     if kwargs.get("tp_size", 1) == 1:
         kwargs.setdefault("process", "pipeline")
     return StageConfig(name=name, **kwargs)

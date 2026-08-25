@@ -1394,14 +1394,14 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     assert stream_done_calls == []
 
 
-def test_wiring_propagation_factory_args_to_scheduler(monkeypatch) -> None:
-    """factory_args enable_partial_start + partial_start_min_chunks flow to scheduler."""
+def test_wiring_propagation_factory_group_to_scheduler(monkeypatch) -> None:
+    """Factory-group enable_partial_start + partial_start_min_chunks flow to scheduler."""
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     talker_stage = next(stage for stage in config.stages if stage.name == "talker_ar")
-    assert talker_stage.factory_args["enable_partial_start"] is True
-    assert talker_stage.factory_args["partial_start_min_chunks"] == 5
+    assert talker_stage.factory.enable_partial_start is True
+    assert talker_stage.factory.partial_start_min_chunks == 5
 
     scheduler = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
     monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *args, **kwargs: None)

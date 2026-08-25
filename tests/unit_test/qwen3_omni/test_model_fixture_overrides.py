@@ -30,12 +30,7 @@ def _speech_config() -> PipelineConfig:
             StageConfig(
                 name=name,
                 process=name,
-                factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
-                factory_args=(
-                    {"thinker_max_seq_len": 8192}
-                    if name in {"preprocessing", "thinker"}
-                    else {}
-                ),
+                factory_path="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
                 next=names[index + 1] if index + 1 < len(names) else None,
                 terminal=index + 1 == len(names),
             )
@@ -56,7 +51,7 @@ def test_full_model_fixture_context_override_targets_thinker_not_decode(
     tokens = shlex.split(fixture_args)
     stage_tokens = []
     for index, token in enumerate(tokens):
-        if token.startswith("--stages."):
+        if token.startswith("--preprocessing.") or token.startswith("--thinker."):
             stage_tokens.extend((token, tokens[index + 1]))
 
     manager = ConfigManager(_speech_config())
@@ -64,11 +59,8 @@ def test_full_model_fixture_context_override_targets_thinker_not_decode(
     stages = {stage.name: stage for stage in merged.stages}
 
     assert (
-        stages["preprocessing"].factory_args["thinker_max_seq_len"]
+        stages["preprocessing"].factory.max_seq_len
         == QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN
     )
-    assert (
-        stages["thinker"].factory_args["thinker_max_seq_len"]
-        == QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN
-    )
-    assert "thinker_max_seq_len" not in stages["decode"].factory_args
+    assert stages["thinker"].factory.max_seq_len == QWEN3_OMNI_TP2_THINKER_MAX_SEQ_LEN
+    assert stages["decode"].factory.max_seq_len is None

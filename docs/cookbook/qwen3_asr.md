@@ -20,8 +20,8 @@ the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass
 `--stages.asr.factory-args.dtype float16` to force FP16.
 Async decode is enabled by default for all decode batch sizes, allowing the
 shared one-step-lookahead path to overlap host-side result processing with the
-next GPU decode forward even for a single request. Use `--decode-mode sync` to
-disable it, or tune the crossover with `--async-lookahead-min-batch-size`.
+next GPU decode forward even for a single request. Use `--asr.factory.enable_async_decode false` to
+disable it, or tune the crossover with `--asr.factory.async_decode_min_batch_size`.
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 40 ms. Once request-build work drains, a ready prefill is released immediately
@@ -53,7 +53,7 @@ For example, force synchronous decode when comparing modes:
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-ASR-1.7B \
-  --decode-mode sync \
+  --asr.factory.enable_async_decode false \
   --port 8000
 ```
 
@@ -268,7 +268,7 @@ Reading, and the resulting defaults:
 
 ```bash
 sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
-  --max-running-requests 32
+  --asr.engine.max_running_requests 32
 ```
 
 - Corpus WER stayed 0.0122 for every configuration at every level.

@@ -7,6 +7,7 @@ import logging
 from typing import Any, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.utils import get_hip_version, is_gfx95_supported
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
@@ -18,6 +19,7 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -136,6 +138,15 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        # ROCm 7.2's AITER batch-prefill specialization is inaccurate for the
+        # Qwen3-ASR attention shape on gfx950. Keep decode on the selected
+        # backend, but use Triton for prefill until the affected stack is fixed.
+        if (
+            current_platform.is_rocm()
+            and is_gfx95_supported()
+            and get_hip_version()[:2] == (7, 2)
+        ):
+            defaults["prefill_attention_backend"] = "triton"
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
         else:

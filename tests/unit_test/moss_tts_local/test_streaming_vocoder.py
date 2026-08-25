@@ -1487,10 +1487,10 @@ def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
     )
 
     cfg = MossTTSLocalPipelineConfig(model_path="x")
-    voc = next(s for s in cfg.stages if s.factory.endswith("create_vocoder_executor"))
-    assert voc.factory_args["cuda_graph"] is True
-    assert voc.factory_args["cuda_graph_frames"] is None
-    assert voc.factory_args["cuda_graph_min_free_gb"] == 3.0
+    kwargs = cfg.stage_factory_kwargs("vocoder")
+    assert kwargs["cuda_graph"] is True
+    assert kwargs["cuda_graph_frames"] is None
+    assert kwargs["cuda_graph_min_free_gb"] == 3.0
 
     cfg2 = MossTTSLocalPipelineConfig(
         model_path="x",
@@ -1498,17 +1498,14 @@ def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
         cuda_graph_frames=[5, 25],
         cuda_graph_min_free_gb=4.5,
     )
-    voc2 = next(s for s in cfg2.stages if s.factory.endswith("create_vocoder_executor"))
-    assert voc2.factory_args["cuda_graph"] is False
-    assert voc2.factory_args["cuda_graph_frames"] == [5, 25]
-    assert voc2.factory_args["cuda_graph_min_free_gb"] == 4.5
+    kwargs2 = cfg2.stage_factory_kwargs("vocoder")
+    assert kwargs2["cuda_graph"] is False
+    assert kwargs2["cuda_graph_frames"] == [5, 25]
+    assert kwargs2["cuda_graph_min_free_gb"] == 4.5
 
     # The split variant overrides `stages`; the injection must still reach its vocoder.
     split = MossTTSLocalSplitPipelineConfig(model_path="x", cuda_graph=False)
-    voc3 = next(
-        s for s in split.stages if s.factory.endswith("create_vocoder_executor")
-    )
-    assert voc3.factory_args["cuda_graph"] is False
+    assert split.stage_factory_kwargs("vocoder")["cuda_graph"] is False
 
 
 def test_pipeline_config_rejects_invalid_cuda_graph_settings() -> None:
