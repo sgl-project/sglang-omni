@@ -65,7 +65,7 @@ dependencies = [
     "transformers==5.12.1",        # Match SGLang 0.5.16, as the CUDA pyproject does
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
-    "huggingface-hub>=0.36.0",
+    "huggingface-hub[hf_xet]>=0.36.0",
     "datasets>=2.14.0",
 
     # NOTE: sglang is intentionally NOT pinned here (see the header).
@@ -82,6 +82,7 @@ dependencies = [
 
     # --- Multimodal preprocessing (needed by Qwen3-Omni/ASR/TTS) ------------
     "qwen-vl-utils==0.0.11",
+    "sox>=1.4.1",
     "librosa>=0.11.0",
     "av>=16.1.0",
     "soundfile>=0.12.0",
@@ -102,10 +103,33 @@ all = [
     "s3prl>=0.4.18", "jiwer", "openai-whisper==20250625",
     "pytest>=7.0.0", "pytest-asyncio>=0.21.0",
 ]
+fun-cosyvoice3 = [
+    "conformer==0.3.2",
+    "HyperPyYAML==1.2.3",
+    "pyworld==0.3.4",
+    "wetext==0.0.4",
+    "inflect==7.3.1",
+    "gdown==5.1.0",
+    "lightning==2.6.5",
+    "matplotlib==3.11.1",
+]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router = "sglang_omni_router.serve:main"
+
+[project.entry-points."sglang.serve_backends"]
+omni = "sglang_omni.cli.sglang_backend:create_backend"
+
+[project.urls]
+Documentation = "https://sgl-project.github.io/sglang-omni/"
+Issues = "https://github.com/sgl-project/sglang-omni/issues"
+Repository = "https://github.com/sgl-project/sglang-omni"
+
+[tool.uv]
+override-dependencies = [
+    "protobuf>=6.31.1,<7.0.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -125,3 +149,4 @@ version = {attr = "sglang_omni.__version__"}
 [tool.setuptools.package-data]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

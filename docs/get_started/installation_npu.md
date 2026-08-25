@@ -13,7 +13,8 @@ family and CUDA-only wheels would replace the `torch+npu` stack.
 [`pyproject_npu.toml`](../../pyproject_npu.toml) encodes the NPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
+`[eval]` adds SeedTTS/WER tooling, `[all]` aliases it, and `[fun-cosyvoice3]`
+adds the Fun-CosyVoice3 dependencies. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
@@ -40,8 +41,10 @@ You must set up the following components first, following the
 | memfabric-hybrid | 1.0.8 | `pip install memfabric-hybrid==1.0.8` (PD disaggregation only) |
 | sgl-kernel-npu | latest | [sgl-project/sgl-kernel-npu](https://github.com/sgl-project/sgl-kernel-npu) releases |
 
-> **Python 3.11 only** — upstream SGLang's NPU build currently supports `python==3.11`.
-> Use conda if your system Python differs: `conda create -n sglang-omni-npu python=3.11`.
+> **Python 3.11 is the verified configuration.** The wheel examples below are
+> CPython 3.11 builds; select matching `torch_npu` wheels if you use another
+> supported Python version. To reproduce the verified environment, use
+> `conda create -n sglang-omni-npu python=3.11`.
 
 ### torch_npu installation
 
@@ -77,6 +80,7 @@ Pick extras with `--extras` (comma-separated):
 ```bash
 scripts/npu/install_npu.sh --extras eval           # core + SeedTTS/WER eval + tests
 scripts/npu/install_npu.sh --extras all            # alias for eval
+scripts/npu/install_npu.sh --extras fun-cosyvoice3 # Fun-CosyVoice3 runtime
 ```
 
 Or do it manually (the same steps the script automates):
@@ -153,14 +157,17 @@ curl -s -X POST http://localhost:8000/v1/audio/speech \
 ### Qwen3-Omni (30B-A3B MoE, multi-NPU tensor parallel)
 
 The 30B MoE does not fit one card; shard the thinker across NPUs with tensor parallelism.
-`--text-only` serves the thinker (chat) without the talker/speech stages:
+`--text-only` serves the thinker (chat) without the talker/speech stages. The text-only
+config normally puts every stage in the `pipeline` process, so give the TP thinker an
+otherwise-unused process name before enabling TP:
 
 ```bash
 # thinker across 8 cards (TP=8). Large shards over shared storage load slowly, so give
 # startup more headroom than the default 600 s.
 export SGLANG_OMNI_STARTUP_TIMEOUT=1800
 sgl-omni serve --model-path /path/to/Qwen3-Omni-30B-A3B-Instruct \
-  --text-only --thinker-tp-size 8 --thinker-gpus 0,1,2,3,4,5,6,7 \
+  --text-only --stages.thinker.process thinker \
+  --thinker-tp-size 8 --thinker-gpus 0,1,2,3,4,5,6,7 \
   --host 0.0.0.0 --port 8000
 # chat:
 curl -s -X POST http://localhost:8000/v1/chat/completions \
