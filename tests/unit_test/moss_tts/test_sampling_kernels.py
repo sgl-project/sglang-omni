@@ -75,9 +75,9 @@ def test_token_id_sampler_matches_sglang_at_the_uint32_max_hash() -> None:
     positions = torch.tensor(
         [_UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
     )
-    token_ids = torch.arange(scores.shape[1], device=device).unsqueeze(0)
+    token_ids = torch.arange(scores.shape[1], device=device)
 
-    hashes = murmur_hash32(seeds.to(torch.uint64), positions, token_ids[0])
+    hashes = murmur_hash32(seeds.to(torch.uint64), positions, token_ids)
     expected = multinomial_with_seed(scores, seeds, positions).view(-1)
     actual = multinomial_with_seed_and_token_ids(scores, seeds, positions, token_ids)
 
