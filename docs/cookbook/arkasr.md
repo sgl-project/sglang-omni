@@ -109,8 +109,9 @@ free-memory safety margin are model-internal settings.
 
 A request runs through the existing eager encoder path when its shape is not
 covered by an internal bucket, available GPU memory is below the capture safety
-margin, or graph capture/replay fails. A bucket that fails capture or replay
-remains unavailable so later requests do not repeatedly retry it.
+margin, or graph capture/replay fails. All capture happens during startup;
+requests never trigger lazy capture. A bucket that fails startup capture stays
+on the eager path, and a bucket that fails replay is removed.
 
 CUDA Graph replay is serialized because each bucket reuses static input and
 output buffers. The returned rows are cloned before the bucket can be reused.

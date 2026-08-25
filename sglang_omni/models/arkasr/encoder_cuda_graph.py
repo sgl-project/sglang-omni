@@ -5,7 +5,7 @@ ARK-ASR's encoder path is the Whisper/RoPE tower plus the MLP frame-merge
 adapter exposed as ``model.audio_encoder``.  Request-build pre-encoding can
 batch mixed mel lengths after #1411, which makes the encoder a good CUDA graph
 candidate: capture a padded, mask-aware bucket once, then replay the same full
-encoder for later batches with the static input and mask buffers updated.
+encoder for later batches with the static input and length buffers updated.
 """
 
 from __future__ import annotations
@@ -22,15 +22,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BATCH_BUCKETS = (1, 2, 4, 8)
 _DEFAULT_FRAME_BUCKETS = (512, 768, 1024)
 _DEFAULT_MIN_FREE_GB = 3.0
-_DEFAULT_WARMUP_ITERS = 3
 
 
 @dataclass
 class _CapturedGraph:
     graph: torch.cuda.CUDAGraph
     features: torch.Tensor
-    mask: torch.Tensor
-    frame_index: torch.Tensor
+    lengths: torch.Tensor
     output: torch.Tensor
 
 
@@ -64,7 +62,6 @@ class ArkasrEncoderCudaGraphRunner:
         audio_encoder: torch.nn.Module,
         *,
         min_free_gb: float = _DEFAULT_MIN_FREE_GB,
-        warmup_iters: int = _DEFAULT_WARMUP_ITERS,
     ) -> None:
         self._audio_encoder = audio_encoder
         reference = next(audio_encoder.parameters())
@@ -72,11 +69,10 @@ class ArkasrEncoderCudaGraphRunner:
         self._dtype = reference.dtype
         self._mel_bins = int(audio_encoder.whisper.conv1.in_channels)
         self._min_free_bytes = int(float(min_free_gb) * (1024**3))
-        self._warmup_iters = int(warmup_iters)
         self._graphs: dict[tuple[int, int], _CapturedGraph] = {}
         self._pool = None
         self._lock = threading.Lock()
-        self._done_event = torch.cuda.Event()
+        self._done_event = torch.cuda.Event() if self._device.type == "cuda" else None
         self._event_recorded = False
 
     def _enough_free_vram(self) -> tuple[bool, int]:
@@ -97,21 +93,22 @@ class ArkasrEncoderCudaGraphRunner:
             device=self._device,
             dtype=self._dtype,
         )
-        static_mask = torch.zeros(
+        static_lengths = torch.ones(
             batch_bucket,
-            frame_bucket,
             device=self._device,
-            dtype=torch.bool,
+            dtype=torch.long,
         )
-        # Padded rows keep one valid silent frame so every row stays finite
-        # through attention. Real rows overwrite their masks before replay.
-        static_mask[:, 0] = True
+
+        def _masked_forward() -> torch.Tensor:
+            frame_index = torch.arange(frame_bucket, device=self._device).unsqueeze(0)
+            mask = frame_index < static_lengths.unsqueeze(1)
+            return self._audio_encoder(static_features, attention_mask=mask)
 
         stream = torch.cuda.Stream(device=self._device)
         stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(stream):
-            for _ in range(self._warmup_iters):
-                self._audio_encoder(static_features, attention_mask=static_mask)
+            for _ in range(3):
+                _masked_forward()
         torch.cuda.current_stream(self._device).wait_stream(stream)
         torch.cuda.synchronize(self._device)
 
@@ -119,11 +116,7 @@ class ArkasrEncoderCudaGraphRunner:
             self._pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=self._pool):
-            static_out = self._audio_encoder(
-                static_features,
-                attention_mask=static_mask,
-            )
-        frame_index = torch.arange(frame_bucket, device=self._device).unsqueeze(0)
+            static_out = _masked_forward()
 
         logger.info(
             "Captured ARK-ASR encoder CUDA graph batch=%d frames=%d -> out %s "
@@ -136,26 +129,29 @@ class ArkasrEncoderCudaGraphRunner:
         return _CapturedGraph(
             graph=graph,
             features=static_features,
-            mask=static_mask,
-            frame_index=frame_index,
+            lengths=static_lengths,
             output=static_out,
         )
 
     @torch.no_grad()
     def capture_startup_buckets(self) -> None:
         """Capture the supported serving shapes before the server becomes ready."""
+        if self._device.type != "cuda":
+            return
         with self._lock:
-            for batch_bucket in _DEFAULT_BATCH_BUCKETS:
-                for frame_bucket in _DEFAULT_FRAME_BUCKETS:
+            for batch_bucket in reversed(_DEFAULT_BATCH_BUCKETS):
+                for frame_bucket in reversed(_DEFAULT_FRAME_BUCKETS):
                     enough, free = self._enough_free_vram()
                     if not enough:
                         logger.warning(
                             "ARK-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
-                            "headroom; remaining shapes use eager",
+                            "headroom; skipping batch=%d frames=%d",
                             free / 1024**3,
                             self._min_free_bytes / 1024**3,
+                            batch_bucket,
+                            frame_bucket,
                         )
-                        return
+                        continue
                     try:
                         with torch.cuda.device(self._device):
                             self._graphs[(batch_bucket, frame_bucket)] = self._capture(
@@ -180,12 +176,11 @@ class ArkasrEncoderCudaGraphRunner:
         batch_size, _, mel_frames = features.shape
         entry.features.zero_()
         entry.features[:batch_size, :, :mel_frames].copy_(features)
-        entry.mask.zero_()
-        # Padded batch rows use one valid zero frame and are discarded.
-        entry.mask[:, 0] = True
-        real_lengths = torch.as_tensor(lengths, device=self._device, dtype=torch.long)
-        entry.mask[:batch_size].copy_(
-            entry.frame_index < real_lengths.unsqueeze(1),
+        # Padded rows keep one valid zero frame and are discarded.
+        entry.lengths.fill_(1)
+        entry.lengths[:batch_size].copy_(
+            torch.as_tensor(lengths, dtype=torch.long),
+            non_blocking=True,
         )
 
     @torch.no_grad()
@@ -219,16 +214,13 @@ class ArkasrEncoderCudaGraphRunner:
             if entry is None:
                 return None
 
+            stream = torch.cuda.current_stream(self._device)
+            if self._event_recorded:
+                assert self._done_event is not None
+                self._done_event.wait(stream)
+            self._copy_inputs(entry, features, mel_lengths)
             try:
-                stream = torch.cuda.current_stream(self._device)
-                if self._event_recorded:
-                    self._done_event.wait(stream)
-                self._copy_inputs(entry, features, mel_lengths)
                 entry.graph.replay()
-                out = entry.output[:batch_size].clone()
-                self._done_event.record(stream)
-                self._event_recorded = True
-                return out
             except Exception as exc:
                 logger.warning(
                     "ARK-ASR encoder CUDA graph replay failed for "
@@ -239,10 +231,13 @@ class ArkasrEncoderCudaGraphRunner:
                 )
                 self._graphs.pop(key, None)
                 return None
+            out = entry.output[:batch_size].clone()
+            assert self._done_event is not None
+            self._done_event.record(stream)
+            self._event_recorded = True
+            return out
 
 
 __all__ = [
     "ArkasrEncoderCudaGraphRunner",
-    "_bucket_batch",
-    "_bucket_frames",
 ]

@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from transformers import WhisperConfig
 
+from sglang_omni.models.arkasr import encoder_cuda_graph
 from sglang_omni.models.arkasr.audio_lengths import arkasr_num_audio_tokens
 from sglang_omni.models.arkasr.audio_tower import ArkAudioMLPAdapter
 from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
@@ -76,10 +77,11 @@ def test_run_falls_back_for_non_precaptured_bucket_without_capture() -> None:
 def _precapture_runner(
     *,
     enough_free_vram: bool = True,
+    device: str = "cuda",
 ) -> ArkasrEncoderCudaGraphRunner:
     runner = object.__new__(ArkasrEncoderCudaGraphRunner)
     runner._mel_bins = _MEL_BINS
-    runner._device = torch.device("cpu")
+    runner._device = torch.device(device)
     runner._min_free_bytes = 3 * 1024**3
     runner._graphs = {}
     runner._lock = threading.Lock()
@@ -102,16 +104,44 @@ def test_capture_startup_buckets_captures_fixed_set(
     assert {
         (call.args[0], call.args[1]) for call in runner._capture.call_args_list
     } == _STARTUP_GRAPH_KEYS
+    assert runner._capture.call_args_list[0].args == (8, 1024)
+    assert runner._capture.call_args_list[-1].args == (1, 512)
 
 
-def test_capture_startup_buckets_stops_on_low_vram() -> None:
+def test_capture_startup_buckets_skips_all_buckets_on_low_vram() -> None:
     runner = _precapture_runner(enough_free_vram=False)
 
     runner.capture_startup_buckets()
 
     assert runner._graphs == {}
     runner._capture.assert_not_called()
-    runner._enough_free_vram.assert_called_once()
+    assert runner._enough_free_vram.call_count == len(_STARTUP_GRAPH_KEYS)
+
+
+def test_capture_startup_buckets_continues_after_low_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _precapture_runner()
+    runner._enough_free_vram.side_effect = [
+        (False, 0),
+        *[(True, 4 * 1024**3)] * (len(_STARTUP_GRAPH_KEYS) - 1),
+    ]
+    monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
+
+    runner.capture_startup_buckets()
+
+    assert (8, 1024) not in runner._graphs
+    assert set(runner._graphs) == _STARTUP_GRAPH_KEYS - {(8, 1024)}
+
+
+def test_capture_startup_buckets_skips_non_cuda_device() -> None:
+    runner = _precapture_runner(device="cpu")
+
+    runner.capture_startup_buckets()
+
+    assert runner._graphs == {}
+    runner._capture.assert_not_called()
+    runner._enough_free_vram.assert_not_called()
 
 
 def test_replay_failure_removes_graph_bucket(
@@ -128,8 +158,7 @@ def test_replay_failure_removes_graph_bucket(
         (1, 512): SimpleNamespace(
             graph=graph,
             features=torch.zeros(1, _MEL_BINS, 512),
-            mask=torch.zeros(1, 512, dtype=torch.bool),
-            frame_index=torch.arange(512).unsqueeze(0),
+            lengths=torch.ones(1, dtype=torch.long),
             output=torch.zeros(1, 128, _HIDDEN_SIZE),
         )
     }
@@ -140,6 +169,47 @@ def test_replay_failure_removes_graph_bucket(
     assert runner.run(features, [17]) is None
     assert runner._graphs == {}
     graph.replay.assert_called_once()
+
+
+def test_copy_failure_is_not_treated_as_replay_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = MagicMock()
+    runner = object.__new__(ArkasrEncoderCudaGraphRunner)
+    runner._device = torch.device("cpu")
+    runner._lock = threading.Lock()
+    runner._done_event = MagicMock()
+    runner._event_recorded = False
+    runner._graphs = {
+        (1, 512): SimpleNamespace(
+            graph=graph,
+            output=torch.zeros(1, 128, _HIDDEN_SIZE),
+        )
+    }
+    runner._copy_inputs = MagicMock(side_effect=RuntimeError("copy failed"))
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: object())
+
+    with pytest.raises(RuntimeError, match="copy failed"):
+        runner.run(torch.zeros(1, _MEL_BINS, 17), [17])
+
+    assert (1, 512) in runner._graphs
+    graph.replay.assert_not_called()
+
+
+def test_copy_inputs_updates_static_features_and_lengths() -> None:
+    runner = object.__new__(ArkasrEncoderCudaGraphRunner)
+    entry = SimpleNamespace(
+        features=torch.full((4, _MEL_BINS, 8), -1.0),
+        lengths=torch.zeros(4, dtype=torch.long),
+    )
+    features = torch.randn(2, _MEL_BINS, 5)
+
+    runner._copy_inputs(entry, features, [5, 3])
+
+    assert torch.equal(entry.features[:2, :, :5], features)
+    assert torch.count_nonzero(entry.features[:2, :, 5:]) == 0
+    assert torch.count_nonzero(entry.features[2:]) == 0
+    assert entry.lengths.tolist() == [5, 3, 1, 1]
 
 
 class _RecordingAudioEncoder(nn.Module):
@@ -334,20 +404,24 @@ def _tiny_config() -> ArkasrConfig:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_cuda_graph_matches_eager_embeddings_on_mixed_mel_lengths() -> None:
+def test_cuda_graph_matches_eager_embeddings_on_mixed_mel_lengths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     torch.manual_seed(123)
     model = _model_with(ArkAudioMLPAdapter(_tiny_config()).eval().cuda())
     lengths = [9, 18, 25]
     items = [_item(length, hash_id=index + 1) for index, length in enumerate(lengths)]
+    monkeypatch.setattr(encoder_cuda_graph, "_DEFAULT_BATCH_BUCKETS", (4,))
+    monkeypatch.setattr(encoder_cuda_graph, "_DEFAULT_FRAME_BUCKETS", (512,))
 
     with torch.inference_mode():
         eager = model.get_audio_feature(items)
         model.encoder_cuda_graph_runner = ArkasrEncoderCudaGraphRunner(
             model.audio_encoder,
             min_free_gb=0.0,
-            warmup_iters=1,
         )
         model.encoder_cuda_graph_runner.capture_startup_buckets()
+        assert set(model.encoder_cuda_graph_runner._graphs) == {(4, 512)}
         graph = model.get_audio_feature(items)
         torch.cuda.synchronize()
 

@@ -169,7 +169,7 @@ class ArkasrForConditionalGeneration(nn.Module):
         graph_runner = getattr(self, "encoder_cuda_graph_runner", None)
         if graph_runner is not None:
             # Bucketed graph replay always uses an explicit mask, including
-            # B=1.  ``None`` means the shape/bucket failed and the eager path
+            # B=1. None means the shape/bucket failed and the eager path
             # below keeps existing semantics.
             encoded = graph_runner.run(batched, mel_lengths)
 
