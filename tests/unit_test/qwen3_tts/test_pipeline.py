@@ -54,8 +54,8 @@ from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
-        import sglang.srt.managers.factory_path  # noqa: F401
         import sglang.srt.managers.schedule_batch  # noqa: F401
+        import sglang.srt.managers.scheduler  # noqa: F401
         import sglang.srt.sampling.sampling_params  # noqa: F401
 
         return
@@ -141,8 +141,8 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
         "sglang.srt.managers.schedule_batch": types.ModuleType(
             "sglang.srt.managers.schedule_batch"
         ),
-        "sglang.srt.managers.factory_path": types.ModuleType(
-            "sglang.srt.managers.factory_path"
+        "sglang.srt.managers.scheduler": types.ModuleType(
+            "sglang.srt.managers.scheduler"
         ),
         "sglang.srt.layers": types.ModuleType("sglang.srt.layers"),
         "sglang.srt.layers.logits_processor": types.ModuleType(
@@ -181,7 +181,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     modules["sglang.srt.managers"].schedule_batch = modules[
         "sglang.srt.managers.schedule_batch"
     ]
-    modules["sglang.srt.managers"].factory = modules["sglang.srt.managers.factory_path"]
+    modules["sglang.srt.managers"].scheduler = modules["sglang.srt.managers.scheduler"]
     modules["sglang.srt.layers"].logits_processor = modules[
         "sglang.srt.layers.logits_processor"
     ]
@@ -197,7 +197,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     modules["sgl_kernel"].fused_qk_norm_rope = lambda *args, **kwargs: None
     modules["sglang.srt.managers.schedule_batch"].Req = FakeReq
-    modules["sglang.srt.managers.factory_path"].GenerationBatchResult = (
+    modules["sglang.srt.managers.scheduler"].GenerationBatchResult = (
         FakeGenerationBatchResult
     )
     modules["sglang.srt.layers.logits_processor"].LogitsProcessorOutput = (
