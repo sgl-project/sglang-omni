@@ -103,8 +103,24 @@ def create_sglang_infrastructure(
     enable_prefill_input_embeds: bool = False,
 ):
     """Create SGLang worker, memory pools, and tree cache."""
+    # ModelRunner.__init__ publishes server_args as the process-wide runtime
+    # context and every later config read (forward kwargs, capture flags,
+    # weight version, schedule policy) resolves against that one context.
+    # Publishing again would silently reconfigure whatever already runs here,
+    # so an engine is only built into a process whose context is unpublished.
+    # A construction that failed after publishing leaves the context published
+    # and is therefore not retried in this process.
+    from sglang.srt.runtime_context import get_context
+
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
     from sglang_omni.scheduling.sglang_backend import create_tree_cache
+
+    if get_context().is_config_namespace_published("model"):
+        raise RuntimeError(
+            "this process already holds a published SGLang runtime context; "
+            "an SGLang AR engine must own its OS process. Place SGLang AR "
+            "stages in separate processes."
+        )
 
     logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
 

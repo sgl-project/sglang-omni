@@ -136,6 +136,68 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     assert infrastructure[0].model_runner.model is FakeRunner.model
 
 
+def test_an_engine_is_refused_in_a_process_with_a_published_context(
+    monkeypatch,
+) -> None:
+    """ModelRunner publishes the process-wide runtime context, so a process
+    that already holds one cannot host a second engine.
+    """
+    from sglang.srt.runtime_context import get_context
+
+    def constructed(**kwargs):
+        raise AssertionError("engine constructed in a published process")
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_describe_sglang_runtime_configuration",
+        lambda _server_args, _gpu_id: "runtime configuration",
+    )
+    monkeypatch.setattr(model_worker_module, "ModelWorker", constructed)
+    server_args = SimpleNamespace(
+        attention_backend=None,
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend=None,
+    )
+
+    with get_context().override_server_args():
+        with pytest.raises(RuntimeError, match="published SGLang runtime context"):
+            bootstrap.create_sglang_infrastructure(server_args, 0)
+
+
+def test_a_construction_that_failed_after_publishing_is_not_retried(
+    monkeypatch,
+) -> None:
+    from sglang.srt.runtime_context import get_context
+
+    published = get_context().override_server_args()
+
+    def publish_then_fail(**kwargs):
+        published.install()
+        raise RuntimeError("weights missing")
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_describe_sglang_runtime_configuration",
+        lambda _server_args, _gpu_id: "runtime configuration",
+    )
+    monkeypatch.setattr(model_worker_module, "ModelWorker", publish_then_fail)
+    server_args = SimpleNamespace(
+        attention_backend=None,
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend=None,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="weights missing"):
+            bootstrap.create_sglang_infrastructure(server_args, 0)
+        with pytest.raises(RuntimeError, match="published SGLang runtime context"):
+            bootstrap.create_sglang_infrastructure(server_args, 0)
+    finally:
+        published.restore()
+
+
 def test_cuda_graph_init_scopes_prefill_embedding_capture_flag() -> None:
     model_config = SimpleNamespace(is_multimodal=False)
     capture_values: list[bool] = []
