@@ -5,6 +5,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+import torch
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
@@ -26,7 +27,34 @@ def _configurator(*, total_gpu_memory_fraction: float | None):
     configurator.device = "cuda"
     configurator.server_args = SimpleNamespace(mem_fraction_static=0.9)
     configurator.total_gpu_memory_fraction = total_gpu_memory_fraction
+    configurator.device_total_gpu_memory_fraction = 0.9
     return configurator
+
+
+def _patch_memory_profile(
+    monkeypatch,
+    *,
+    process_memory: int | None = 30 * 1024**3,
+    total_memory: int | None = 100 * 1024**3,
+    free_memory_gib: float = 80.0,
+) -> None:
+    monkeypatch.setattr(
+        runner_mod,
+        "get_process_gpu_memory_bytes",
+        lambda gpu_id: process_memory,
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "get_gpu_device_info",
+        lambda gpu_id: SimpleNamespace(total_memory_bytes=total_memory),
+    )
+    import sglang.srt.utils.common as sglang_utils
+
+    monkeypatch.setattr(
+        sglang_utils,
+        "get_available_gpu_memory",
+        lambda *args, **kwargs: free_memory_gib,
+    )
 
 
 def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
@@ -61,6 +89,9 @@ def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
                 "sampling_backend": server_args.sampling_backend,
                 "gpu_id": gpu_id,
                 "total_gpu_memory_fraction": kwargs["total_gpu_memory_fraction"],
+                "device_total_gpu_memory_fraction": kwargs.get(
+                    "device_total_gpu_memory_fraction"
+                ),
             }
         )
         return object()
@@ -86,16 +117,7 @@ def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
 
 def test_colocated_ar_budget_uses_stage_total_fraction(monkeypatch) -> None:
     configurator = _configurator(total_gpu_memory_fraction=0.4)
-    monkeypatch.setattr(
-        runner_mod,
-        "get_process_gpu_memory_bytes",
-        lambda gpu_id: 30 * 1024**3,
-    )
-    monkeypatch.setattr(
-        runner_mod,
-        "get_gpu_device_info",
-        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
-    )
+    _patch_memory_profile(monkeypatch)
 
     available = configurator._profile_available_bytes(0)
 
@@ -108,29 +130,43 @@ def test_colocated_ar_budget_uses_stage_load_delta_when_process_memory_unavailab
     process_memory,
 ) -> None:
     configurator = _configurator(total_gpu_memory_fraction=0.4)
-    monkeypatch.setattr(
-        runner_mod,
-        "get_process_gpu_memory_bytes",
-        lambda gpu_id: process_memory,
-    )
-    monkeypatch.setattr(
-        runner_mod,
-        "get_gpu_device_info",
-        lambda gpu_id: SimpleNamespace(total_memory_bytes=100 * 1024**3),
+    _patch_memory_profile(
+        monkeypatch, process_memory=process_memory, free_memory_gib=25.0
     )
 
-    def _fake_stage_load_delta(self, pre_model_load_memory, total_memory):
-        assert pre_model_load_memory == 95.0
-        assert total_memory == 100 * 1024**3
-        return 7 * 1024**3
+    assert configurator._profile_available_bytes(35.0) == 15 * 1024**3
+
+
+def test_colocated_ar_budget_requires_total_memory(monkeypatch) -> None:
+    configurator = _configurator(total_gpu_memory_fraction=0.4)
+    _patch_memory_profile(monkeypatch, total_memory=None)
+
+    with pytest.raises(RuntimeError, match="requires total GPU memory"):
+        configurator._profile_available_bytes(0)
+
+
+def test_colocated_ar_budget_is_clamped_by_device_headroom(monkeypatch) -> None:
+    configurator = _configurator(total_gpu_memory_fraction=0.8)
+    configurator.device_total_gpu_memory_fraction = 0.9
+    distributed_inputs: list[int] = []
+
+    def _distributed_minimum(local_bytes: int) -> int:
+        distributed_inputs.append(local_bytes)
+        return local_bytes
 
     monkeypatch.setattr(
         runner_mod._OmniKVCacheConfigurator,
-        "_profile_available_bytes_from_stage_load_delta",
-        _fake_stage_load_delta,
+        "_distributed_minimum_bytes",
+        staticmethod(_distributed_minimum),
+    )
+    _patch_memory_profile(
+        monkeypatch,
+        process_memory=30 * 1024**3,
+        free_memory_gib=45.0,
     )
 
-    assert configurator._profile_available_bytes(95.0) == 7 * 1024**3
+    assert configurator._profile_available_bytes(0) == 35 * 1024**3
+    assert distributed_inputs == [35 * 1024**3]
 
 
 def test_non_colocated_ar_delegates_to_upstream_available_bytes(
@@ -149,6 +185,45 @@ def test_non_colocated_ar_delegates_to_upstream_available_bytes(
     )
 
     assert configurator._profile_available_bytes(123) == 456
+
+
+def test_distributed_minimum_bytes_reduces_on_cpu_group(monkeypatch) -> None:
+    cpu_group = object()
+    world_group = SimpleNamespace(world_size=2, cpu_group=cpu_group)
+    import sglang.srt.distributed.parallel_state as parallel_state
+
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(parallel_state, "get_world_group", lambda: world_group)
+
+    def _all_reduce(value, *, op, group):
+        assert op == torch.distributed.ReduceOp.MIN
+        assert group is cpu_group
+        assert value.item() == 23
+        value.fill_(11)
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", _all_reduce)
+
+    assert runner_mod._OmniKVCacheConfigurator._distributed_minimum_bytes(23) == 11
+
+
+def test_exhausted_local_rank_reaches_collective_before_failing(monkeypatch) -> None:
+    configurator = _configurator(total_gpu_memory_fraction=0.7)
+    _patch_memory_profile(monkeypatch, free_memory_gib=10.0)
+    collective_inputs: list[int] = []
+
+    def _distributed_minimum(local_bytes: int) -> int:
+        collective_inputs.append(local_bytes)
+        return local_bytes
+
+    monkeypatch.setattr(
+        runner_mod._OmniKVCacheConfigurator,
+        "_distributed_minimum_bytes",
+        staticmethod(_distributed_minimum),
+    )
+
+    with pytest.raises(RuntimeError, match="no KV-cache headroom"):
+        configurator._profile_available_bytes(0)
+    assert collective_inputs == [0]
 
 
 def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
@@ -213,6 +288,7 @@ def test_qwen_colocated_thinker_startup_threads_effective_budget(
         qwen_stages.create_sglang_thinker_executor_from_config(
             "dummy",
             total_gpu_memory_fraction=0.75,
+            device_total_gpu_memory_fraction=0.94,
             encoder_mem_reserve=0.05,
         )
 
@@ -222,6 +298,7 @@ def test_qwen_colocated_thinker_startup_threads_effective_budget(
             "sampling_backend": "pytorch",
             "gpu_id": 0,
             "total_gpu_memory_fraction": 0.70,
+            "device_total_gpu_memory_fraction": 0.94,
         }
     ]
     assert "total_gpu_memory_fraction=0.75" in caplog.text
@@ -248,6 +325,7 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
             "sampling_backend": "pytorch",
             "gpu_id": 0,
             "total_gpu_memory_fraction": 0.75,
+            "device_total_gpu_memory_fraction": None,
         }
     ]
     assert "effective_total_gpu_memory_fraction=0.75" in caplog.text

@@ -5,6 +5,7 @@ The runner owns the single serving path. It can start one OS process containing
 multiple non-TP stages, multiple OS processes on the same GPU, and the existing
 one-process-per-rank TP topology.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -214,13 +215,16 @@ def _build_stage_groups(
             )
         )
     groups.extend(tp_groups)
-    _attach_process_memory_fraction_defaults(groups)
+    _attach_memory_fraction_defaults(groups, placement_plan)
 
     return groups
 
 
-def _attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
-    """Expose the per-GPU process budget loaded through each stage.
+def _attach_memory_fraction_defaults(
+    groups: list[StageGroup],
+    placement_plan: StagePlacementPlan,
+) -> None:
+    """Expose derived process and device memory budgets to stage factories.
 
     Stage resource fractions remain component budgets for placement. A process
     constructs its stages in ``stage_specs`` order, so a stage that profiles
@@ -232,6 +236,13 @@ def _attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
         for process_spec in group.process_specs:
             by_gpu: dict[int, list[StageLaunchConfig]] = {}
             for stage_spec in process_spec.stage_specs:
+                placement_gpu_id = stage_spec.placement_gpu_id
+                if placement_gpu_id is not None:
+                    gpu_placement = placement_plan.gpus.get(int(placement_gpu_id))
+                    if gpu_placement is not None and gpu_placement.has_memory_fraction:
+                        stage_spec.factory_arg_defaults[
+                            "device_total_gpu_memory_fraction"
+                        ] = gpu_placement.total_gpu_memory_fraction
                 if stage_spec.gpu_id is not None:
                     by_gpu.setdefault(int(stage_spec.gpu_id), []).append(stage_spec)
 

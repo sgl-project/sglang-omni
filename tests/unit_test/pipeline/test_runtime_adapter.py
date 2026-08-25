@@ -208,6 +208,20 @@ def test_process_total_memory_fraction_runtime_override_is_rejected() -> None:
         resolve_stage_static_factory_args(stage, config)
 
 
+@pytest.mark.parametrize("source", ["factory_args", "runtime_overrides"])
+def test_device_total_memory_fraction_override_is_rejected(source) -> None:
+    value = {"device_total_gpu_memory_fraction": 0.95}
+    stage = _stage(factory_args=value) if source == "factory_args" else _stage()
+    config = PipelineConfig(
+        model_path="dummy-model",
+        stages=[stage],
+        runtime_overrides={"thinker": value} if source == "runtime_overrides" else {},
+    )
+
+    with pytest.raises(ValueError, match="derived from the per-GPU placement plan"):
+        resolve_stage_static_factory_args(stage, config)
+
+
 def test_mapped_runtime_field_requires_stage_arg_mapping() -> None:
     stage = _stage(runtime=StageRuntimeConfig(max_seq_len=8192))
     config = PipelineConfig(model_path="dummy-model", stages=[stage])

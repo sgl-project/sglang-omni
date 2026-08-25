@@ -1007,6 +1007,7 @@ def create_sglang_thinker_executor_from_config(
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
+    device_total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
     prefill_coalesce_requests: int = 0,
@@ -1098,6 +1099,7 @@ def create_sglang_thinker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
+        device_total_gpu_memory_fraction=device_total_gpu_memory_fraction,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
@@ -1133,6 +1135,7 @@ def create_talker_ar_executor_from_config(
     feedback_enabled: bool = True,
     weight_prefix: str = "talker.",
     total_gpu_memory_fraction: float | None = None,
+    device_total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
 ):
@@ -1188,6 +1191,7 @@ def create_talker_ar_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        device_total_gpu_memory_fraction=device_total_gpu_memory_fraction,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
     )
