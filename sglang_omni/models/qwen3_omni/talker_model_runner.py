@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import torch
@@ -14,9 +15,10 @@ from sglang_omni.model_runner.prefill_inputs import (
 )
 from sglang_omni.scheduling.messages import OutgoingMessage
 
+logger = logging.getLogger(__name__)
+
 
 class QwenTalkerModelRunner(ModelRunner):
-
     def __init__(
         self,
         tp_worker: Any,
@@ -30,6 +32,7 @@ class QwenTalkerModelRunner(ModelRunner):
         self._outbox = outbox
         self._code2wav_target = code2wav_target
         self._feedback_enabled = bool(feedback_enabled)
+        self._decode_execution_modes_logged: set[str] = set()
 
     def execute(self, scheduler_output: Any):
         return super().execute(scheduler_output)
@@ -113,11 +116,36 @@ class QwenTalkerModelRunner(ModelRunner):
             return
 
         batch_size = len(requests)
+        self._log_decode_execution_mode(result, batch_size=batch_size)
         result.next_token_ids = self.model._sampled_token_ids[:batch_size].clone()
         self._stage_token_ids(result, result.next_token_ids)
         self._emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
             requests=requests,
+        )
+
+    def _log_decode_execution_mode(self, result: Any, *, batch_size: int) -> None:
+        """Log the first observed eager and graph decode modes.
+
+        SGLang reports whether the current forward actually used its graph
+        runner through ``can_run_cuda_graph``.  Logging that runtime signal is
+        stronger than treating a successful startup capture as proof of replay.
+        The set keeps the serving hot path to one membership check after both
+        modes, if present, have been observed.
+        """
+        device_type = getattr(self.device, "type", None)
+        if device_type is None:
+            device_type = str(self.device).split(":", 1)[0]
+        used_graph = bool(getattr(result, "can_run_cuda_graph", False))
+        execution_mode = f"{device_type}_graph" if used_graph else "eager"
+        if execution_mode in self._decode_execution_modes_logged:
+            return
+        self._decode_execution_modes_logged.add(execution_mode)
+        logger.info(
+            "Qwen3-Omni talker decode execution active: "
+            "execution_mode=%s batch_size=%d",
+            execution_mode,
+            batch_size,
         )
 
     def _emit_code_chunks_and_feedback(

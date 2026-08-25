@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 
 
 class _CountingIds:
@@ -82,6 +84,52 @@ def test_resolve_host_token_ids_absent_returns_none():
     result = SimpleNamespace()
 
     assert runner._resolve_host_token_ids(result) is None
+
+
+def test_talker_logs_first_npu_graph_replay_once(caplog):
+    runner = QwenTalkerModelRunner.__new__(QwenTalkerModelRunner)
+    runner.device = "npu:0"
+    runner._decode_execution_modes_logged = set()
+    result = SimpleNamespace(can_run_cuda_graph=True)
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="sglang_omni.models.qwen3_omni.talker_model_runner",
+    ):
+        runner._log_decode_execution_mode(result, batch_size=4)
+        runner._log_decode_execution_mode(result, batch_size=4)
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "talker decode execution active" in record.getMessage()
+    ]
+    assert messages == [
+        (
+            "Qwen3-Omni talker decode execution active: "
+            "execution_mode=npu_graph batch_size=4"
+        )
+    ]
+
+
+def test_talker_logs_eager_fallback_separately(caplog):
+    runner = QwenTalkerModelRunner.__new__(QwenTalkerModelRunner)
+    runner.device = SimpleNamespace(type="npu")
+    runner._decode_execution_modes_logged = {"npu_graph"}
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="sglang_omni.models.qwen3_omni.talker_model_runner",
+    ):
+        runner._log_decode_execution_mode(
+            SimpleNamespace(can_run_cuda_graph=False),
+            batch_size=1,
+        )
+
+    assert any(
+        "execution_mode=eager batch_size=1" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def _finalize_scheduler_output(n: int) -> SimpleNamespace:
