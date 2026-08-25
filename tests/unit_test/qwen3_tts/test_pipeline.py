@@ -1516,7 +1516,211 @@ def test_qwen3_tts_initial_decode_graphs_noop_on_cpu() -> None:
     graphs.capture()
 
     assert graphs.decode(torch.zeros((1, 2, 17), dtype=torch.long)) is None
+    assert graphs._batch_sizes == (1, 2, 4, 8)
     assert decoder.decode_inputs == []
+
+
+def test_qwen3_tts_startup_graph_preparation_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    captures: list[str] = []
+    monkeypatch.setattr(
+        scheduler._initial_decode_graphs,
+        "capture",
+        lambda: captures.append("capture"),
+    )
+
+    scheduler.prepare_startup_graphs()
+    scheduler.prepare_startup_graphs()
+    scheduler.on_serving_start()
+    scheduler.on_serving_stop()
+    scheduler._join_async_workers()
+
+    assert captures == ["capture"]
+    assert scheduler._startup_graphs_prepared is True
+
+
+def test_qwen3_tts_startup_graph_capture_failure_keeps_eager_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingDecoder(_FakeQwen3TTSDecoder):
+        def __call__(self, codes: torch.Tensor) -> torch.Tensor:
+            raise RuntimeError("capture failed")
+
+    class FakeCaptureStream:
+        def synchronize(self) -> None:
+            return None
+
+    class StreamContext:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(
+        torch.cuda, "Stream", lambda *args, **kwargs: FakeCaptureStream()
+    )
+    monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: object())
+    monkeypatch.setattr(torch.cuda, "stream", lambda stream: StreamContext())
+    graphs = _Qwen3TTSInitialDecodeGraphs(
+        FailingDecoder(),
+        device=torch.device("cuda"),
+        num_quantizers=2,
+        input_frames=17,
+    )
+
+    graphs.capture()
+
+    assert graphs._graphs == {}
+    assert graphs.decode(torch.zeros((1, 2, 17), dtype=torch.long)) is None
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qwen3_tts_factory_captures_graphs_before_ref_code_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Factory return must not expose live work to global CUDA capture."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    capture_active = threading.Event()
+    release_capture = threading.Event()
+    factory_returned = threading.Event()
+    serving_start_finished = threading.Event()
+    ref_sync_started = threading.Event()
+    ref_sync_finished = threading.Event()
+    schedulers: list[Qwen3TTSStreamingVocoderScheduler] = []
+    construction_errors: list[BaseException] = []
+    ref_sync_errors: list[BaseException] = []
+
+    class BlockingGraphDecoder:
+        total_upsample = 1
+
+        def __init__(self) -> None:
+            self._calls = 0
+            self._lock = threading.Lock()
+
+        def __call__(self, codes: torch.Tensor) -> torch.Tensor:
+            with self._lock:
+                self._calls += 1
+                call = self._calls
+            # The first graph bucket performs two warmups, then enters capture.
+            if call == 3:
+                capture_active.set()
+                if not release_capture.wait(timeout=10.0):
+                    raise TimeoutError("test did not release CUDA graph capture")
+            return codes[:, :1].to(torch.float32)
+
+        def chunked_decode(self, codes: torch.Tensor) -> torch.Tensor:
+            return self(codes)
+
+    tokenizer = _FakeQwen3TTSTokenizer()
+    tokenizer.model = SimpleNamespace(
+        decoder=BlockingGraphDecoder(),
+        config=SimpleNamespace(decoder_config=SimpleNamespace(num_quantizers=2)),
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "_load_qwen3_tts_tokenizer",
+        lambda *args, **kwargs: tokenizer,
+    )
+
+    ref_batcher = object.__new__(qwen3_request_builders._Qwen3TTSRefCodeBatcher)
+    ref_batcher._encode_stream = torch.cuda.Stream(device=device)
+
+    def construct_and_start_serving() -> None:
+        try:
+            scheduler = qwen3_stages.create_vocoder_executor(
+                "model",
+                device=str(device),
+            )
+            schedulers.append(scheduler)
+            factory_returned.set()
+            scheduler.on_serving_start()
+        except BaseException as exc:
+            construction_errors.append(exc)
+        finally:
+            serving_start_finished.set()
+
+    def synchronize_ref_codes_after_factory_return() -> None:
+        if not factory_returned.wait(timeout=10.0):
+            ref_sync_errors.append(TimeoutError("vocoder factory did not return"))
+            ref_sync_finished.set()
+            return
+        ref_sync_started.set()
+        try:
+            ref_batcher._synchronize_outcomes({})
+        except BaseException as exc:
+            ref_sync_errors.append(exc)
+        finally:
+            ref_sync_finished.set()
+
+    serving_thread = threading.Thread(target=construct_and_start_serving)
+    ref_sync_thread = threading.Thread(
+        target=synchronize_ref_codes_after_factory_return
+    )
+    serving_thread.start()
+    assert capture_active.wait(timeout=10.0), "initial graph capture did not begin"
+    ref_sync_thread.start()
+    factory_returned_during_capture = factory_returned.is_set()
+    try:
+        if factory_returned_during_capture:
+            assert ref_sync_started.wait(timeout=10.0)
+            # A host event synchronize must be rejected while global capture
+            # is active; bound the wait so cleanup cannot deadlock if a CUDA
+            # runtime instead blocks it.
+            ref_sync_finished.wait(timeout=5.0)
+    finally:
+        release_capture.set()
+        serving_thread.join(timeout=15.0)
+        ref_sync_thread.join(timeout=15.0)
+        for scheduler in schedulers:
+            scheduler.on_serving_stop()
+            scheduler._join_async_workers()
+
+    assert not serving_thread.is_alive(), "scheduler startup deadlocked"
+    assert not ref_sync_thread.is_alive(), "reference-code synchronization deadlocked"
+    assert serving_start_finished.is_set()
+    assert not factory_returned_during_capture, (
+        "vocoder factory returned during CUDA graph capture, exposing the "
+        f"ref-code synchronization path; sync errors={ref_sync_errors!r}"
+    )
+    assert construction_errors == []
+    assert ref_sync_errors == []
+    assert len(schedulers) == 1
+    graphs = schedulers[0]._initial_decode_graphs
+    assert set(graphs._graphs) == {1, 2, 4, 8}
+
+    replay_outputs: list[torch.Tensor] = []
+    replay_errors: list[BaseException] = []
+    codes = torch.arange(48, dtype=torch.long, device=device).reshape(1, 2, 24)
+
+    def replay_from_worker_thread() -> None:
+        try:
+            torch.cuda.set_device(device)
+            output = graphs.decode(codes)
+            assert output is not None
+            torch.cuda.synchronize(device)
+            replay_outputs.append(output.cpu())
+        except BaseException as exc:
+            replay_errors.append(exc)
+
+    replay_thread = threading.Thread(
+        target=replay_from_worker_thread,
+        name="qwen3-tts-vocoder-initial-replay-test",
+    )
+    replay_thread.start()
+    replay_thread.join(timeout=10.0)
+
+    assert not replay_thread.is_alive(), "cross-thread graph replay deadlocked"
+    assert replay_errors == []
+    assert len(replay_outputs) == 1
+    assert torch.equal(replay_outputs[0], codes[:, :1].to(torch.float32).cpu())
 
 
 def test_qwen3_tts_deterministic_streaming_vocoder_decodes_each_plan_at_b1() -> None:

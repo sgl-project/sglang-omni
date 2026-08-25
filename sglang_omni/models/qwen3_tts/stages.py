@@ -192,7 +192,7 @@ def create_vocoder_executor(
         attn_implementation=attn_implementation,
     )
 
-    return Qwen3TTSStreamingVocoderScheduler(
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
         tokenizer,
         device=device,
         stream_stride=stream_stride,
@@ -209,3 +209,5 @@ def create_vocoder_executor(
         initial_cuda_graph=initial_cuda_graph,
         enable_deterministic_inference=enable_deterministic_inference,
     )
+    scheduler.prepare_startup_graphs()
+    return scheduler

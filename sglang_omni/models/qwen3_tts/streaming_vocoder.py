@@ -400,6 +400,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._async_decode = (
             self._device.type == "cuda" if async_decode is None else bool(async_decode)
         )
+        self._startup_graphs_prepared = False
         self._decode_staging = threading.local()
         self._pinned_staging_disabled = self._device.type != "cuda"
         self._cuda_decode_failed = False
@@ -453,10 +454,24 @@ class Qwen3TTSStreamingVocoderScheduler(
         super().stop()
         self._join_async_workers()
 
+    def prepare_startup_graphs(self) -> None:
+        """Capture startup-known graphs before serving can accept CUDA work."""
+        if self._startup_graphs_prepared:
+            return
+        if self._async_decode:
+            self._initial_decode_graphs.capture()
+            if self._initial_decode_graphs._graphs:
+                logger.info(
+                    "Qwen3-TTS initial decoder CUDA graphs prepared before serving "
+                    "for batch sizes %s",
+                    sorted(self._initial_decode_graphs._graphs),
+                )
+        self._startup_graphs_prepared = True
+
     def on_serving_start(self) -> None:
         if not self._async_decode:
             return
-        self._initial_decode_graphs.capture()
+        self.prepare_startup_graphs()
         self._initial_queue = queue.Queue()
         self._followup_queue = queue.PriorityQueue()
         self._followup_sequence = count()
