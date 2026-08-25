@@ -43,6 +43,16 @@ class OmniPlatform(DeviceMixin):
         """
         return None
 
+    def enable_codec_decode_graph(self):
+        """Check if capturing an audio codec's decode window pays for itself.
+
+        Capture cost scales with the size of the shape domain, so a platform
+        should decline when replay does not measurably beat its own eager decode:
+        the graphs then buy nothing and their capture still has to finish inside
+        the pipeline's startup budget.
+        """
+        return True
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,

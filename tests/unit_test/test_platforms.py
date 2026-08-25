@@ -154,3 +154,10 @@ def test_xpu_probe_surfaces_a_driver_initialization_failure(monkeypatch) -> None
 
     with pytest.raises(RuntimeError, match="Level Zero init failed"):
         platforms._is_xpu_available()
+
+
+def test_xpu_and_cpu_decline_the_codec_decode_graph() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_codec_decode_graph() is False
+    assert CPUOmniPlatform().enable_codec_decode_graph() is False
+    assert OmniPlatform().enable_codec_decode_graph() is True
+    assert CUDAOmniPlatform().enable_codec_decode_graph() is True

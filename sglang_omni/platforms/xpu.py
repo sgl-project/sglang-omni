@@ -45,6 +45,19 @@ class XPUOmniPlatform(OmniPlatform):
             return None
         return fused_inplace_qknorm_rope
 
+    def enable_codec_decode_graph(self):
+        """Decline it: replay does not beat XPU's own eager codec decode.
+
+        The codec decode is dominated by the DAC convolution stack, not by launch
+        overhead, so a replay saves almost nothing at the window sizes streaming
+        actually submits: measured on a B60 at fp32, 24.4 ms vs 25.6 ms eager for
+        a 150-frame window and 10.5 ms vs 11.4 ms for 75 frames. What the capture
+        does cost is a first eager pass per shape to build that shape's oneDNN
+        primitives (~0.9 s each), which no replay can recover, so a 150-shape
+        domain spends minutes of startup for a few percent.
+        """
+        return False
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,
