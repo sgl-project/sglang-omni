@@ -50,8 +50,7 @@ RUN uv pip install \
     --default-index https://download.pytorch.org/whl/cpu \
     "torch==2.12.0" \
     "torchvision==0.27.0" \
-    "torchaudio==2.11.0" \
-    "triton==3.7.0"
+    "torchaudio==2.11.0"
 
 WORKDIR /sgl-workspace
 RUN source /opt/.venv/bin/activate && \
@@ -72,7 +71,7 @@ RUN cd /sgl-workspace/sglang-omni && \
     uv pip install -e . --no-build-isolation
 
 
-RUN uv pip install sox einops onnxruntime && \
+RUN uv pip install --no-deps sox && \
     uv pip install --no-deps qwen-tts==0.1.1
 
 ENV SGLANG_USE_CPU_ENGINE=1
