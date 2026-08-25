@@ -242,6 +242,7 @@ class Code2WavGraphRunner:
     _DEVICE_TYPES = ("cuda", "musa")
     _EXECUTION_MODE = "cuda_graph"
     _BACKEND_LABEL = "CUDA"
+    _RUNTIME_STATS_LOG_INTERVAL = 100
 
     def __init__(
         self,
@@ -291,6 +292,7 @@ class Code2WavGraphRunner:
         self._graph_replays = 0
         self._replay_failures = 0
         self._logged_replay_keys: set[GraphKey] = set()
+        self._logged_fallback_reasons: set[str] = set()
 
     @classmethod
     def build(
@@ -739,6 +741,15 @@ class Code2WavGraphRunner:
                 key,
             )
             self._logged_replay_keys.add(key)
+        if self._graph_replays % self._RUNTIME_STATS_LOG_INTERVAL == 0:
+            logger.info(
+                "Code2Wav %s graph runtime stats: graph_replays=%d "
+                "replay_failures=%d fallback_counts=%s",
+                self._BACKEND_LABEL,
+                self._graph_replays,
+                self._replay_failures,
+                dict(sorted(self._fallback_counts.items())),
+            )
         return Code2WavRunResult(
             output=captured.static_output,
             execution_mode=self._EXECUTION_MODE,
@@ -770,6 +781,14 @@ class Code2WavGraphRunner:
         reason: str,
     ) -> Code2WavRunResult:
         self._fallback_counts[reason] += 1
+        if reason not in self._logged_fallback_reasons:
+            logger.warning(
+                "Code2Wav %s graph eager fallback: reason=%s key=%s",
+                self._BACKEND_LABEL,
+                reason,
+                key,
+            )
+            self._logged_fallback_reasons.add(reason)
         with torch.inference_mode():
             output = self._model(codes)
         return Code2WavRunResult(

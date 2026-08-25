@@ -278,6 +278,44 @@ def test_graph_runner_logs_first_successful_replay_per_key(caplog) -> None:
     assert "execution_mode=cuda_graph" in replay_records[0].getMessage()
 
 
+def test_graph_runner_logs_periodic_runtime_stats(caplog) -> None:
+    runner, backend, _model = _build_runner()
+    runner._RUNTIME_STATS_LOG_INTERVAL = 2
+    codes = _codes(backend, 1, 10)
+
+    with caplog.at_level(logging.INFO, logger=code2wav_cuda_graph.__name__):
+        runner.run(codes)
+        runner.run(codes)
+
+    runtime_records = [
+        record
+        for record in caplog.records
+        if "graph runtime stats" in record.getMessage()
+    ]
+    assert len(runtime_records) == 1
+    assert "graph_replays=2" in runtime_records[0].getMessage()
+    assert "replay_failures=0" in runtime_records[0].getMessage()
+    assert "fallback_counts={}" in runtime_records[0].getMessage()
+
+
+def test_graph_runner_logs_only_first_eager_fallback_per_reason(caplog) -> None:
+    runner, backend, _model = _build_runner()
+    codes = _codes(backend, 1, 10)
+
+    with caplog.at_level(logging.WARNING, logger=code2wav_cuda_graph.__name__):
+        runner.run(codes, eligible=False)
+        runner.run(codes, eligible=False)
+
+    fallback_records = [
+        record
+        for record in caplog.records
+        if "graph eager fallback" in record.getMessage()
+    ]
+    assert len(fallback_records) == 1
+    assert "reason=ineligible" in fallback_records[0].getMessage()
+    assert runner.stats()["runtime"]["fallback_counts"] == {"ineligible": 2}
+
+
 def test_npu_api_enables_auto_dispatch_during_capture(monkeypatch) -> None:
     calls: dict[str, Any] = {}
 
