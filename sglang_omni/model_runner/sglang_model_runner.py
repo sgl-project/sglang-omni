@@ -248,6 +248,12 @@ class SGLModelRunner(ModelRunner):
                 "forward kwarg"
             )
 
+        if prefill_inputs.input_embeds.dtype != self.dtype:
+            raise RuntimeError(
+                "Omni prefill sidecar must be in model dtype "
+                f"{self.dtype}, got {prefill_inputs.input_embeds.dtype}; the "
+                "prefill graph slot copy would silently cast it"
+            )
         kwargs["input_embeds"] = prefill_inputs.input_embeds
         kwargs["omni_prefill_rids"] = forward_batch.rids
         if prefill_inputs.input_embeds_are_projected is not None:
