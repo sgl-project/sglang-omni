@@ -186,9 +186,6 @@ class SGLModelRunner(ModelRunner):
         # model_config is already fully configured by ModelWorker._init_model_config()
         # (architecture override, text_config swap, etc. are all done there)
 
-        # Mirror upstream's ParallelState construction (Scheduler.__init__), but
-        # keep the moe_ep_size / pp_size this wrapper is called with rather than
-        # reading them back off server_args.
         attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
             compute_dp_attention_world_info(
                 server_args.enable_dp_attention,
@@ -375,9 +372,8 @@ class SGLModelRunner(ModelRunner):
             from sglang_omni.utils import ipc_weights
 
             ipc_weights.verify_attachment(self.model, record)
-        # The capture flags are seeded from the record once at publish, before
-        # engine builders turn enable_torch_compile off on the exec bag after
-        # compiling omni layers. Re-seed from the bag so capture honors that.
+        # Engine builders turn enable_torch_compile off on the exec bag after the
+        # capture flags were seeded at publish; re-seed so capture honors that.
         from sglang.srt.runtime_context import get_exec, get_flags
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
@@ -397,9 +393,8 @@ class SGLModelRunner(ModelRunner):
             "whole replica group with new weights instead"
         )
 
-    # The weight-update entry points live on the composed WeightUpdater
-    # upstream. Keep them on the runner so ModelWorker has one call target and
-    # the weight-share guard applies to every update path.
+    # Kept on the runner so ModelWorker has one call target and the weight-share
+    # guard applies to every update path.
     def update_weights_from_disk(self, *args, **kwargs):
         reason = self._weight_update_blocked_reason()
         if reason is not None:
@@ -418,8 +413,7 @@ class SGLModelRunner(ModelRunner):
             return False, reason
         return self.weight_updater.update_weights_from_distributed(*args, **kwargs)
 
-    # Process-group lifecycle does not mutate weights, so it stays unguarded by
-    # the weight-share check, as the inherited upstream methods behave.
+    # Process-group lifecycle does not mutate weights, so it stays unguarded.
     def init_weights_update_group(self, *args, **kwargs):
         return self.weight_updater.init_weights_update_group(*args, **kwargs)
 

@@ -104,12 +104,9 @@ def create_sglang_infrastructure(
 ):
     """Create SGLang worker, memory pools, and tree cache."""
     # ModelRunner.__init__ publishes server_args as the process-wide runtime
-    # context and every later config read (forward kwargs, capture flags,
-    # weight version, schedule policy) resolves against that one context.
-    # Publishing again would silently reconfigure whatever already runs here,
-    # so an engine is only built into a process whose context is unpublished.
-    # A construction that failed after publishing leaves the context published
-    # and is therefore not retried in this process.
+    # context; publishing again would silently reconfigure whatever already runs
+    # here, so an engine is only built where the context is unpublished. A
+    # construction that failed after publishing is therefore not retried here.
     from sglang.srt.runtime_context import get_context
 
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
@@ -149,10 +146,7 @@ def create_sglang_infrastructure(
             max_tokens=_hidden_capture_max_tokens(server_args),
         )
 
-    # Upstream runs model loading, KV-pool allocation, attention-backend
-    # initialization, and CUDA-graph initialization as explicit phases. Keep
-    # the same order as Scheduler.init_model_worker(), while preserving Omni's
-    # pre-backend hidden-capture hook installation above.
+    # Phase order follows upstream Scheduler.init_model_worker().
     model_runner = model_worker.model_runner
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()
@@ -192,10 +186,7 @@ def create_sglang_infrastructure(
 # and request-token slots, with all per-request model buffers already allocated.
 # One-time bootstrap work such as processor loading, cache construction, audio
 # decoder/vocoder setup, and other host-side staging should stay outside CUDA
-# graph coverage because graph replay will not amortize it. Capture is a phase
-# omni triggers itself through init_sglang_cuda_graphs(), so deferring it is
-# just skipping that call inside create_sglang_infrastructure() and telling the
-# caller whether to run it after its stage-specific setup.
+# graph coverage because graph replay will not amortize it.
 def create_sglang_infrastructure_defer_cuda_graph(
     server_args: Any,
     gpu_id: int,

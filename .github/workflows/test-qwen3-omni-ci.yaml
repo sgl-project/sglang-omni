@@ -20,9 +20,8 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
   PYTORCH_ALLOC_CONF: expandable_segments:True
-  # NCCL 2.29.7 (the torch 2.13 pin) makes a failed NVLink SHARP multicast bind
-  # fatal at communicator init instead of falling back (NVIDIA/nccl#2077); the
-  # TP=2 stages hit it on the NVSwitch runners. Two-GPU TP gains nothing from NVLS.
+  # NCCL 2.29.7 (torch 2.13 pin) makes a failed NVLS multicast bind fatal at init
+  # (NVIDIA/nccl#2077); the TP=2 stages hit it, and two-GPU TP gains nothing from NVLS.
   NCCL_NVLS_ENABLE: "0"
 
 # Invoked by omni-ci.yaml after TTS CI. Restores omni only.

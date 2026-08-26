@@ -73,11 +73,9 @@ def build_sglang_server_args(
     # chunked prefill stays allowed (the bridge handles it natively).
     if server_args.enable_dp_attention:
         raise ValueError("sglang-omni does not support enable_dp_attention")
-    # Overlapped startup weight load returns from load_model with staged
-    # sentinel weights and expects the scheduler to call
-    # finalize_startup_weight_load after graph capture. Omni's bootstrap owns
-    # that sequence and never commits the weights, so profiling, weight
-    # sharing and capture would all run on the sentinels.
+    # Overlapped startup weight load leaves sentinel weights until the scheduler
+    # calls finalize_startup_weight_load after capture; omni's bootstrap never
+    # does, so profiling, weight sharing and capture would run on the sentinels.
     if server_args.startup_weight_load_mode == "overlap":
         raise ValueError(
             "sglang-omni does not support startup_weight_load_mode='overlap'"

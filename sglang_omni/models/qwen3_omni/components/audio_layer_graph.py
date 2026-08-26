@@ -25,7 +25,6 @@ class _Captured:
     segment_slots: int
 
 
-# CUDA compute capability major (torch.cuda.get_device_capability): H100, H200.
 _HOPPER = 9
 
 
@@ -40,8 +39,7 @@ def _packed_attention_backend(capability: tuple[int, int]) -> str:
 
 
 def _resolve_packed_attention(device: torch.device) -> tuple[nn.Module, str]:
-    # Imported here so only a process that requests the graphs loads sglang's
-    # CUDA kernel stack.
+    # Local import: only a process that requests the graphs loads sglang's kernels.
     from sglang.srt.layers.attention import vision
 
     backend = _packed_attention_backend(torch.cuda.get_device_capability(device))
@@ -65,8 +63,7 @@ def _packed_attention_forward(
     query_states = attention.q_proj(hidden_states).reshape(seq_length, heads, -1)
     key_states = attention.k_proj(hidden_states).reshape(seq_length, heads, -1)
     value_states = attention.v_proj(hidden_states).reshape(seq_length, heads, -1)
-    # An int max_seqlen keeps the impl off a device-to-host max(), which is
-    # what keeps the stack capturable.
+    # An int max_seqlen avoids the device-to-host max() that would break capture.
     attn_output = packed_attention(
         query_states,
         key_states,

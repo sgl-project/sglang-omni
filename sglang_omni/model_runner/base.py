@@ -412,9 +412,8 @@ class ModelRunner:
         if capture_hidden_mode is None and self.output_processor._capture_hidden:
             capture_hidden_mode = CaptureHiddenMode.LAST
 
-        # ScheduleBatch has no capture_hidden_mode: init_new does not read it
-        # off the batch, so setting it there would be a dead write.
-        # Pass the per-forward override explicitly (None lets upstream derive it).
+        # init_new does not read capture_hidden_mode off the batch, so pass the
+        # override explicitly; None lets upstream derive it.
         forward_batch = ForwardBatch.init_new(
             schedule_batch,
             self.tp_worker.model_runner,

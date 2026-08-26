@@ -329,7 +329,6 @@ class OmniScheduler:
         self.min_free_slots_delayer = None
         self.enable_fpm = False
 
-        # Global config leaf upstream sets in its __init__
         from sglang.srt.runtime_context import get_context, get_parallel
 
         if not get_parallel().pp_max_micro_batch_size:
@@ -2167,9 +2166,8 @@ class OmniScheduler:
         batch.filter_batch()
         if len(batch.reqs) == 0:
             return 0
-        # ScheduleBatch has no retract_all method; the module-level
-        # function returns None and leaves batch.reqs in place, so snapshot the
-        # requests and clear the batch here (what the old method did for us).
+        # ScheduleBatch has no retract_all; the module-level function leaves
+        # batch.reqs in place, so snapshot the requests and clear the batch here.
         retracted_reqs = list(batch.reqs)
         retract_all(
             reqs=batch.reqs,

@@ -116,9 +116,9 @@ class SGLangExecutionBridge:
         # spec_v2-gated and this bridge refuses speculative decoding. Upstream's
         # non-overlap non-spec run_batch likewise stashes without publishing.
 
-        # SGLang resolves the next decode input from FutureMap at forward
-        # entry. Keeping a direct tensor here bypasses that contract and is
-        # unsafe when the live batch is filtered on another stream.
+        # The next decode input is resolved from FutureMap at forward entry; a
+        # direct tensor here bypasses that and is unsafe once the live batch is
+        # filtered on another stream.
         batch.input_ids = None
 
     def record_completion(self):

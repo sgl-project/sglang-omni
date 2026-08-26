@@ -1382,8 +1382,6 @@ class Qwen3OmniTalker(nn.Module):
             vocab_size=self.config.text_config.vocab_size,
             grammars=[],
             penalizer_orchestrator=None,
-            # Note:(Chenchen Hong) acc_additive_penalties and
-            # acc_scaling_penalties default to None; leave them unset.
             has_custom_logit_processor=False,
             custom_params=None,
             custom_logit_processor=None,

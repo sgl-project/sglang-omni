@@ -108,8 +108,6 @@ class QwenTalkerScheduler(OmniScheduler):
         return True
 
     def get_next_batch_to_run(self) -> Any | None:
-        # Via OmniScheduler, which supplies running_batch/last_batch and unpacks
-        # the upstream NextBatchPlan.
         batch = super().get_next_batch_to_run()
         if batch is not None and not self._is_batch_ready_to_run(batch):
             self._rollback_decode_prep_after_skip(batch)
