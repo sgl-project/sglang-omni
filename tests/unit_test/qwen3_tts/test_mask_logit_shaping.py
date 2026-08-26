@@ -19,11 +19,9 @@ def _runner() -> Qwen3TTSModelRunner:
     return runner
 
 
-def _request(rid: str, epoch: int, penalty: float, output_ids, suppress, codec=None):
+def _request(rid: str, epoch: int, penalty: float, output_ids, suppress):
     sp = types.SimpleNamespace(repetition_penalty=penalty)
     req = types.SimpleNamespace(sampling_params=sp, output_ids=output_ids)
-    if codec is not None:
-        req._codec_suppress_tokens = tuple(codec)
     data = types.SimpleNamespace(
         req=req,
         suppress_tokens=suppress,
@@ -46,10 +44,7 @@ def _reference(logits, requests):
             scores = out[row, idx].to(torch.float32)
             scores = torch.where(scores > 0, scores / penalty, scores * penalty)
             out[row, idx] = scores.to(out.dtype)
-        suppress = sched_req.data.suppress_tokens
-        if not suppress:
-            suppress = getattr(req, "_codec_suppress_tokens", None) or []
-        for tok in suppress:
+        for tok in sched_req.data.suppress_tokens or []:
             tok = int(tok)
             if 0 <= tok < vocab:
                 out[row, tok] = float("-inf")
@@ -164,13 +159,12 @@ def test_mask_shaping_mixed_suppress_rows_match_reference():
         _request("b", 2, 1.0, [4], []),
         _request("c", 3, 1.2, [5], [7, 9]),
         _request("d", 4, 1.0, [6], [20, 500]),
-        _request("e", 5, 1.3, [8], None, codec=[11, 12]),
     ]
-    logits = torch.randn(5, vocab)
+    logits = torch.randn(4, vocab)
     assert torch.equal(_apply(runner, logits.clone(), reqs), _reference(logits, reqs))
 
-    survivors = [reqs[4], reqs[3], reqs[1], reqs[0]]
-    logits2 = torch.randn(4, vocab)
+    survivors = [reqs[3], reqs[1], reqs[0]]
+    logits2 = torch.randn(3, vocab)
     assert torch.equal(
         _apply(runner, logits2.clone(), survivors), _reference(logits2, survivors)
     )

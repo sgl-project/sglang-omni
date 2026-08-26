@@ -166,9 +166,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         self._suppress_zero = torch.zeros(vocab, dtype=torch.bool, device=device)
         self._suppress_rows = {}
 
-    def _suppress_row(
-        self, data: Any, req: Any, vocab: int, device: Any
-    ) -> torch.Tensor:
+    def _suppress_row(self, data: Any, vocab: int, device: Any) -> torch.Tensor:
         """The request's suppress row: the shared zero row when it suppresses
         nothing, otherwise one row per distinct suppress set, built once and
         memoized on the request data.
@@ -178,8 +176,6 @@ class Qwen3TTSModelRunner(ModelRunner):
         is outside the contract, as it is for the base runner's suppress cache.
         """
         tokens = data.suppress_tokens
-        if not tokens:
-            tokens = getattr(req, "_codec_suppress_tokens", None)
         zero = self._suppress_zero
         memo = data.suppress_row_memo
         if memo is not None and memo[0] is tokens and memo[1] is zero:
@@ -218,7 +214,7 @@ class Qwen3TTSModelRunner(ModelRunner):
                 seen = ModelRunner._rep_penalty_unique_tokens(data, output_ids, vocab)
                 rep_rows.extend([row_idx] * len(seen))
                 rep_toks.extend(seen)
-            row = self._suppress_row(data, req, vocab, device)
+            row = self._suppress_row(data, vocab, device)
             sup_rows.append(row)
             sup_active = sup_active or row is not zero
         if rep_rows:

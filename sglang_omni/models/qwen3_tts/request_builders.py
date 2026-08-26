@@ -121,7 +121,6 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     subtalker_top_k: int = 50
     subtalker_sampling_seed: int = field(default_factory=_new_qwen3_tts_sampling_seed)
     engine_start_s: float = 0.0
-    # Runner-owned memo of the suppress mask row, see Qwen3TTSModelRunner._suppress_row.
     suppress_row_memo: tuple | None = None
 
 
