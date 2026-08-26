@@ -51,6 +51,7 @@ def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
 class FishS2ProEngineBuilder(TtsEngineBuilder):
     model_name = "FishAudio S2-Pro"
     context_length = 4096
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,

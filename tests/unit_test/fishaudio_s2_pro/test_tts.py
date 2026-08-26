@@ -8,7 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.fishaudio_s2_pro.model_runner import (
     FishS2ProModelRunner,
     collect_s2pro_step_outputs,
@@ -18,7 +20,10 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     make_tts_scheduler_adapters,
     validate_s2pro_top_k,
 )
-from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
+from sglang_omni.models.fishaudio_s2_pro.sglang_model import (
+    S2ProSGLangTextModel,
+    _S2ProTransformerBody,
+)
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.fish_fakes import (
@@ -31,6 +36,8 @@ from tests.unit_test.fixtures.fish_fakes import (
 
 IM_END_TOKEN_ID = 151645
 SEMANTIC_TOKEN_ID = 151678
+HIDDEN_SIZE = 3
+VOCAB_SIZE = 8
 
 
 def test_fish_model_runner_vq_injection_and_code_collection_contracts() -> None:
@@ -257,7 +264,11 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
         _prev_tokens=torch.full((2, 4), 999, dtype=torch.long),
         _prev_token_count=torch.full((2,), 99, dtype=torch.long),
     )
-    forward_batch = SimpleNamespace(input_ids=torch.tensor([10, 11]))
+    forward_batch = SimpleNamespace(
+        input_ids=torch.tensor([10, 11]),
+        input_embeds=None,
+        replace_embeds=None,
+    )
 
     runner.before_prefill(
         forward_batch,
@@ -268,7 +279,13 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
         ],
     )
 
-    assert hasattr(forward_batch, "input_embeds")
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None
+    assert forward_batch.input_embeds is None
+    assert torch.equal(
+        prefill_inputs.input_embeds,
+        torch.tensor([[10.0, 10.0], [11.0, 11.0]]),
+    )
     assert torch.equal(runner.model._prev_tokens[0], torch.zeros(4, dtype=torch.long))
     assert int(runner.model._prev_token_count[0].item()) == 0
     assert torch.equal(
@@ -328,6 +345,58 @@ def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
     assert model._rep_positions.tolist() == [0, 1, 2, 3, 4]
     assert model._top_k_positions.shape == (30,)
     assert model._vq_ready
+
+
+def test_fish_s2pro_forward_selects_logical_rows_before_codebook_tail() -> None:
+    model = S2ProSGLangTextModel.__new__(S2ProSGLangTextModel)
+    nn.Module.__init__(model)
+    model.tie_word_embeddings = True
+    model._vq_ready = True
+    model.embed_tokens = nn.Embedding(VOCAB_SIZE, HIDDEN_SIZE)
+    model.layers = nn.ModuleList()
+    model.model = _S2ProTransformerBody(model)
+
+    replay_hidden = torch.arange(8 * HIDDEN_SIZE, dtype=torch.float32).reshape(
+        8, HIDDEN_SIZE
+    )
+    body = model.model
+    assert body.layers is model.layers
+    original_forward = body.forward
+
+    seen: dict[str, torch.Tensor] = {}
+
+    def decode_codebooks(logits: torch.Tensor, hidden_states: torch.Tensor) -> None:
+        seen["logits"] = logits.clone()
+        seen["hidden_states"] = hidden_states.clone()
+
+    model._decode_codebooks = decode_codebooks
+    batch = SimpleNamespace(
+        input_ids=torch.arange(8, dtype=torch.long),
+        extend_seq_lens=torch.tensor([2, 3], dtype=torch.long),
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+    )
+
+    body.forward = lambda *args, **kwargs: replay_hidden
+    try:
+        output = model.forward(
+            batch.input_ids,
+            torch.arange(8),
+            batch,
+            input_embeds=torch.zeros(5, HIDDEN_SIZE),
+            omni_prefill_rids=["request-a", "request-b"],
+        )
+    finally:
+        body.forward = original_forward
+
+    expected_hidden = replay_hidden[torch.tensor([1, 4])]
+    expected_logits = torch.nn.functional.linear(
+        expected_hidden, model.embed_tokens.weight
+    )
+    assert torch.equal(output.hidden_states, expected_hidden)
+    assert torch.equal(output.next_token_logits, expected_logits)
+    assert set(seen) == {"hidden_states", "logits"}
+    assert torch.equal(seen["hidden_states"], expected_hidden)
+    assert torch.equal(seen["logits"], expected_logits)
 
 
 def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(

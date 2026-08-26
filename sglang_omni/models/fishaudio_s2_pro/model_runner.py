@@ -8,6 +8,10 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
 from sglang_omni.sampling.seed import resolve_row_seed
 
@@ -80,9 +84,12 @@ class FishS2ProModelRunner(ModelRunner):
     def before_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
         self._sync_decode_state(requests)
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
-        if input_embeds is not None:
-            forward_batch.input_embeds = input_embeds
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(forward_batch, requests)
+            ),
+        )
 
     def before_decode(
         self,
