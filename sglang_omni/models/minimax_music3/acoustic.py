@@ -224,8 +224,8 @@ class MiniMaxMusic3AcousticDecoder:
         self._residency: tuple[ModuleResidency, ...] = ()
         if self._serial_offload:
             self._residency = (
-                ModuleResidency(self.dit, self.device, resident=False),
-                ModuleResidency(self.dav, self.device, resident=False),
+                ModuleResidency(self.dit, self.device, resident=False, label="dit"),
+                ModuleResidency(self.dav, self.device, resident=False, label="dav"),
             )
 
     @property

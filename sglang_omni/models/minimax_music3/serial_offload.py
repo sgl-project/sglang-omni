@@ -30,6 +30,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 STALL_REPORT_SECONDS = 900.0
+_GIB = 1024.0**3
 
 
 def _owned_tensors(module: Any) -> list[tuple[str, torch.Tensor]]:
@@ -44,6 +45,26 @@ def _owned_tensors(module: Any) -> list[tuple[str, torch.Tensor]]:
         *module.named_parameters(),
         *module.named_buffers(),
     ]
+
+
+def _gpu_memory_note(device: torch.device) -> str:
+    """Device occupancy, for attributing what a handoff actually frees.
+
+    ``torch_*`` covers only this process's caching allocator, while ``free``
+    is the whole device, so a gap between them is memory held outside torch's
+    allocator. Reporting both is what distinguishes weights coming off the GPU
+    from the pools that stay put -- notably the SGLang KV cache, which
+    ``mem_fraction_static`` reserves for the life of the process and which no
+    weight offload releases.
+    """
+    if device.type != "cuda":
+        return "cpu"
+    free, total = torch.cuda.mem_get_info(device)
+    return (
+        f"free={free / _GIB:.2f}/{total / _GIB:.2f}GiB "
+        f"torch_allocated={torch.cuda.memory_allocated(device) / _GIB:.2f}GiB "
+        f"torch_reserved={torch.cuda.memory_reserved(device) / _GIB:.2f}GiB"
+    )
 
 
 class ModuleResidency:
@@ -61,14 +82,31 @@ class ModuleResidency:
     rather than failing on the first one.
     """
 
-    def __init__(self, module: Any, device: torch.device, *, resident: bool = True):
+    def __init__(
+        self,
+        module: Any,
+        device: torch.device,
+        *,
+        resident: bool = True,
+        label: str = "module",
+    ):
         self._module = module
         self._device = torch.device(device)
         self._resident = bool(resident)
+        self._label = label
         self._host: dict[str, torch.Tensor] = {}
         if not self._resident:
             # Built on the host: its own tensors are already the canonical copy.
             self._host = {name: tensor for name, tensor in _owned_tensors(module)}
+        weight_bytes = sum(
+            tensor.numel() * tensor.element_size()
+            for _, tensor in _owned_tensors(module)
+        )
+        logger.info(
+            f"MiniMax Music 3 residency {label}: {weight_bytes / _GIB:.2f}GiB of "
+            f"weights, starts {'resident' if self._resident else 'offloaded'} "
+            f"({_gpu_memory_note(self._device)})"
+        )
 
     @property
     def resident(self) -> bool:
@@ -87,6 +125,10 @@ class ModuleResidency:
             tensor.data = self._host[name]
         self._resident = False
         torch.cuda.empty_cache()
+        logger.info(
+            f"MiniMax Music 3 residency {self._label} -> host "
+            f"({_gpu_memory_note(self._device)})"
+        )
 
     def wake(self) -> None:
         """Refill the GPU replica from the host copy; no-op once resident."""
@@ -97,6 +139,10 @@ class ModuleResidency:
         if self._device.type == "cuda":
             torch.cuda.synchronize(self._device)
         self._resident = True
+        logger.info(
+            f"MiniMax Music 3 residency {self._label} -> gpu "
+            f"({_gpu_memory_note(self._device)})"
+        )
 
 
 class SerialOffloadCoordinator:
@@ -117,7 +163,7 @@ class SerialOffloadCoordinator:
 
     def register_ar(self, model: Any, device: torch.device) -> None:
         with self._lock:
-            self._ar = ModuleResidency(model, device)
+            self._ar = ModuleResidency(model, device, label="ar")
             self._enabled = True
             self._ar_active = True
         logger.info(
