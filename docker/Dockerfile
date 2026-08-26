@@ -8,6 +8,10 @@ FROM ${SGLANG_IMAGE} AS runtime
 
 ARG UCX_COMMIT=d8e50df6651b9ea5b76f23aee0aefbf053a4137a
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends sox \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN git clone --filter=blob:none https://github.com/openucx/ucx.git /tmp/ucx \
     && git -C /tmp/ucx checkout "${UCX_COMMIT}" \
     && cd /tmp/ucx \
@@ -33,6 +37,7 @@ RUN git clone --filter=blob:none https://github.com/openucx/ucx.git /tmp/ucx \
 COPY pyproject.toml /tmp/pyproject.toml
 RUN uv pip install --system --break-system-packages --no-build-isolation \
         -r /tmp/pyproject.toml \
+    && uv pip install --system --break-system-packages --no-deps qwen-tts==0.1.1 \
     && uv pip install --system --break-system-packages --no-deps --reinstall flashinfer-python==0.6.17 \
     && python3 -m pip uninstall -y flashinfer-cubin flashinfer-jit-cache \
     && rm /tmp/pyproject.toml
