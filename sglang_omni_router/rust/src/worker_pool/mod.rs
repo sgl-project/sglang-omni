@@ -94,6 +94,7 @@ impl WorkerRecord {
 /// state, and independently owned health and weighted load.
 pub(crate) struct WorkerPool {
     records: Vec<Arc<WorkerRecord>>,
+    voice_owner: Option<Arc<WorkerRecord>>,
     admission: AdmissionController,
     selector: Selector,
     homogeneous_generation_http: Vec<HomogeneousGenerationCohort>,
@@ -172,11 +173,25 @@ impl WorkerPool {
                 immediate_probe: Notify::new(),
             }));
         }
+        let voice_owner = config
+            .router
+            .voice_owner_worker_id
+            .as_ref()
+            .map(|owner_id| {
+                records
+                    .iter()
+                    .find(|record| record.worker_id.as_str() == owner_id)
+                    .cloned()
+                    .ok_or(crate::error::RouterError::WorkerPoolInvariant)
+            })
+            .transpose()?;
         let homogeneous_generation_http = build_content_blind_generation_cohorts(&records);
-        let homogeneous_media_http = build_content_blind_media_cohorts(&records);
+        let homogeneous_media_http =
+            build_content_blind_media_cohorts(&records, voice_owner.as_ref());
         let selector = Selector::new(config.router.strategy, records.len());
         Ok(Self {
             records,
+            voice_owner,
             admission,
             selector,
             homogeneous_generation_http,
@@ -229,6 +244,20 @@ impl WorkerPool {
         if admission.class() != requirement.capacity_class() {
             return Err(DispatchError::Internal);
         }
+        if requirement.profile.requires_voice_owner() {
+            let owner = self
+                .voice_owner
+                .as_ref()
+                .ok_or(DispatchError::NoEligibleProfile)?;
+            if &owner.trust_domain != requirement.trust_domain() || !owner.has_profile(requirement)
+            {
+                return Err(DispatchError::NoEligibleProfile);
+            }
+            if !owner.is_routable() {
+                return Err(DispatchError::Unavailable);
+            }
+            return Ok(RequestLease::new(admission, Arc::clone(owner)));
+        }
         let mut matching = [false; MAX_WORKERS];
         let mut voice_policies = 0;
         for (index, record) in self.records.iter().enumerate() {
@@ -272,6 +301,30 @@ impl WorkerPool {
         let class = admission.class();
         if class != requirement.capacity_class() || session_capacity_index(class).is_none() {
             return Err(DispatchError::Internal);
+        }
+
+        if requirement.profile.requires_voice_owner() {
+            let owner = self
+                .voice_owner
+                .as_ref()
+                .ok_or(DispatchError::NoEligibleProfile)?;
+            if &owner.trust_domain != requirement.trust_domain() || !owner.has_profile(requirement)
+            {
+                return Err(DispatchError::NoEligibleProfile);
+            }
+            if !owner.is_routable() {
+                return Err(DispatchError::Unavailable);
+            }
+            let selector = self.selector.lock();
+            let capacity = owner
+                .session_capacity(class)
+                .ok_or(DispatchError::Internal)?;
+            let permit = Arc::clone(&capacity.semaphore)
+                .try_acquire_owned()
+                .map_err(|_| DispatchError::Overloaded)?;
+            let lease = RequestLease::new_session(admission, permit, Arc::clone(owner));
+            drop(selector);
+            return Ok(lease);
         }
 
         let mut profile_found = false;
@@ -348,6 +401,25 @@ impl WorkerPool {
         let lease = RequestLease::new_session(admission, permit, selected);
         drop(selector);
         Ok(lease)
+    }
+
+    pub(crate) fn voice_state_enabled(&self) -> bool {
+        self.voice_owner.is_some()
+    }
+
+    pub(crate) fn voice_owner_ready(&self) -> bool {
+        self.voice_owner.as_ref().is_none_or(|owner| owner.is_routable())
+    }
+
+    pub(crate) fn dispatch_voice_control(
+        &self,
+        envelope: EnvelopeLease,
+    ) -> Result<RequestLease, DispatchError> {
+        let owner = self.voice_owner.as_ref().ok_or(DispatchError::Internal)?;
+        if !owner.is_routable() {
+            return Err(DispatchError::Unavailable);
+        }
+        Ok(RequestLease::new_owner(envelope, Arc::clone(owner)))
     }
 
     fn dispatch_matching(
@@ -572,7 +644,10 @@ fn build_content_blind_generation_cohorts(
     result
 }
 
-fn build_content_blind_media_cohorts(records: &[Arc<WorkerRecord>]) -> Vec<HomogeneousMediaCohort> {
+fn build_content_blind_media_cohorts(
+    records: &[Arc<WorkerRecord>],
+    voice_owner: Option<&Arc<WorkerRecord>>,
+) -> Vec<HomogeneousMediaCohort> {
     let mut result = Vec::new();
     for record in records {
         for profile in &record.profiles {
@@ -614,6 +689,12 @@ fn build_content_blind_media_cohorts(records: &[Arc<WorkerRecord>]) -> Vec<Homog
             let Some(first) = members.first() else {
                 continue;
             };
+            if service == ServiceClass::SpeechHttp
+                && let Some(owner) = voice_owner
+                && !members.iter().all(|member| Arc::ptr_eq(member, owner))
+            {
+                continue;
+            }
             if first.default_model_id.is_some()
                 && members.iter().all(|candidate| {
                     candidate.default_model_id == first.default_model_id
@@ -818,7 +899,8 @@ mod tests {
         let selector = Selector::new(strategy, records.len());
         WorkerPool {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
-            homogeneous_media_http: build_content_blind_media_cohorts(&records),
+            homogeneous_media_http: build_content_blind_media_cohorts(&records, None),
+            voice_owner: None,
             records,
             admission: AdmissionController::new(
                 admission,
@@ -1596,7 +1678,8 @@ mod tests {
         let selector = Selector::new(RoutingStrategy::RoundRobin, records.len());
         WorkerPool {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
-            homogeneous_media_http: build_content_blind_media_cohorts(&records),
+            homogeneous_media_http: build_content_blind_media_cohorts(&records, None),
+            voice_owner: None,
             records,
             admission: AdmissionController::new(
                 8,

@@ -17,6 +17,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 8;
+pub(crate) const VOICE_UPLOAD_BODY_MAX_BYTES: u64 = 10_551_296;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 30_000;
 const SCHEMA_VERSION: u32 = 1;
@@ -262,6 +263,7 @@ impl HttpGenerationConfig {
 pub(crate) struct RouterConfig {
     #[serde(default)]
     pub(crate) strategy: RoutingStrategy,
+    pub(crate) voice_owner_worker_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -282,6 +284,7 @@ pub(crate) struct AdmissionConfig {
     pub(crate) transcription_http: Option<u32>,
     pub(crate) speech_websocket: Option<u32>,
     pub(crate) realtime_websocket: Option<u32>,
+    pub(crate) control: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -459,7 +462,11 @@ impl Config {
         self.validate_admission()?;
         self.validate_health()?;
         validate_workers(&self.workers)?;
-        if self.http_generation.is_none() && self.http_media.is_none() && self.websocket.is_none() {
+        if self.http_generation.is_none()
+            && self.http_media.is_none()
+            && self.websocket.is_none()
+            && self.router.voice_owner_worker_id.is_none()
+        {
             return Err(ConfigError::invalid(
                 "routes",
                 "must configure at least one HTTP or WebSocket route",
@@ -469,6 +476,7 @@ impl Config {
         self.validate_http_generation()?;
         self.validate_http_media()?;
         self.validate_websocket()?;
+        self.validate_voice_state()?;
         Ok(())
     }
 
@@ -751,6 +759,7 @@ impl Config {
             self.admission.transcription_http,
             self.admission.speech_websocket,
             self.admission.realtime_websocket,
+            self.admission.control,
         ]
         .into_iter()
         .flatten()
@@ -761,6 +770,101 @@ impl Config {
                     "configured class limits must be between 1 and 65535",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_voice_state(&self) -> Result<(), ConfigError> {
+        use crate::worker_pool::profile::{ServiceClass, ServiceProfile};
+
+        let Some(owner_id) = self.router.voice_owner_worker_id.as_deref() else {
+            return Ok(());
+        };
+        if !self.server.listen.ip().is_loopback() {
+            return Err(ConfigError::invalid(
+                "server.listen",
+                "voice state requires a loopback listener",
+            ));
+        }
+        if self.admission.control.is_none() {
+            return Err(ConfigError::invalid(
+                "admission.control",
+                "is required while voice state is enabled",
+            ));
+        }
+        if self.http.buffered_request_total_bytes < VOICE_UPLOAD_BODY_MAX_BYTES {
+            return Err(ConfigError::invalid(
+                "http.buffered_request_total_bytes",
+                "must contain the complete voice upload bound while voice state is enabled",
+            ));
+        }
+        let owner = self
+            .workers
+            .iter()
+            .find(|worker| worker.worker_id == owner_id)
+            .ok_or_else(|| {
+                ConfigError::invalid(
+                    "router.voice_owner_worker_id",
+                    "must name a configured worker",
+                )
+            })?;
+        if owner.capacity.control.is_none()
+            || !owner
+                .service_profiles
+                .iter()
+                .any(|profile| matches!(profile, ServiceProfile::VoiceControl))
+        {
+            return Err(ConfigError::invalid(
+                "router.voice_owner_worker_id",
+                "owner must advertise voice_control with control capacity",
+            ));
+        }
+
+        let owner_has_managed = |service, trust: &str| {
+            owner.trust_domain == trust
+                && owner.service_profiles.iter().any(|profile| match profile {
+                    ServiceProfile::SpeechHttp { managed_voice, .. }
+                        if service == ServiceClass::SpeechHttp =>
+                    {
+                        *managed_voice
+                    }
+                    ServiceProfile::SpeechBatch { managed_voice, .. }
+                        if service == ServiceClass::SpeechBatch =>
+                    {
+                        *managed_voice
+                    }
+                    ServiceProfile::SpeechWebsocket { managed_voice, .. }
+                        if service == ServiceClass::SpeechWebsocket =>
+                    {
+                        *managed_voice
+                    }
+                    _ => false,
+                })
+        };
+        if let Some(media) = self.http_media.as_ref() {
+            for service in media.routes.iter().filter_map(|route| match route {
+                HttpMediaRoute::Speech => Some(ServiceClass::SpeechHttp),
+                HttpMediaRoute::SpeechBatch => Some(ServiceClass::SpeechBatch),
+                HttpMediaRoute::Transcription | HttpMediaRoute::Translation => None,
+            }) {
+                if !owner_has_managed(service, &media.trust_domain) {
+                    return Err(ConfigError::invalid(
+                        "router.voice_owner_worker_id",
+                        "enabled speech HTTP routes require an owner-side managed_voice row in the same trust domain",
+                    ));
+                }
+            }
+        }
+        if let Some(speech) = self
+            .websocket
+            .as_ref()
+            .and_then(|websocket| websocket.speech.as_ref())
+            && !owner_has_managed(ServiceClass::SpeechWebsocket, &speech.trust_domain)
+        {
+            return Err(ConfigError::invalid(
+                "router.voice_owner_worker_id",
+                "enabled speech WebSocket requires an owner-side managed_voice row in the same trust domain",
+            ));
         }
         Ok(())
     }

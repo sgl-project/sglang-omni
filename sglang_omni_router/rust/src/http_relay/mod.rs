@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use bytes::{Bytes, BytesMut};
 use http_body::Body as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -22,8 +22,8 @@ pub(crate) use request_body::{SharedUploadState, UploadState};
 use response_body::DirectResponseBody;
 
 pub(crate) use headers::{
-    RequestEnvelope, is_request_media_type, request_content_type, sanitize_response_headers,
-    validate_request_envelope,
+    RequestEnvelope, is_request_media_type, parse_content_length, request_content_type,
+    sanitize_response_headers, validate_request_envelope,
 };
 
 pub(crate) struct HttpRelay {
@@ -38,11 +38,18 @@ pub(crate) struct BufferedUpload {
 }
 
 pub(crate) struct OutgoingRequest {
-    path: &'static str,
-    content_type: HeaderValue,
-    body: reqwest::Body,
+    method: Method,
+    path: OutgoingPath,
+    query: Option<String>,
+    content_type: Option<HeaderValue>,
+    body: Option<reqwest::Body>,
     content_length: Option<u64>,
     upload: Option<SharedUploadState>,
+}
+
+enum OutgoingPath {
+    Static(&'static str),
+    Segments(Vec<String>),
 }
 
 impl HttpRelay {
@@ -141,17 +148,29 @@ impl HttpRelay {
             tokio::time::Instant::now(),
         )?;
         let mut url = lease.target().base_url().clone();
-        url.set_path(outgoing.path);
-        url.set_query(None);
+        match outgoing.path {
+            OutgoingPath::Static(path) => url.set_path(path),
+            OutgoingPath::Segments(segments) => {
+                url.path_segments_mut()
+                    .map_err(|_| HttpFault::InternalError)?
+                    .clear()
+                    .extend(segments);
+            }
+        }
+        url.set_query(outgoing.query.as_deref());
         let mut request = self
             .client
-            .post(url)
-            .header(CONTENT_TYPE, outgoing.content_type)
+            .request(outgoing.method, url)
             .header(REQUEST_ID_HEADER, request_id);
+        if let Some(content_type) = outgoing.content_type {
+            request = request.header(CONTENT_TYPE, content_type);
+        }
         if let Some(length) = outgoing.content_length {
             request = request.header(CONTENT_LENGTH, length);
         }
-        let request = request.body(outgoing.body);
+        if let Some(body) = outgoing.body {
+            request = request.body(body);
+        }
         let sent = tokio::select! {
             biased;
             result = request.send() => result,
@@ -210,9 +229,14 @@ impl OutgoingRequest {
         let content_length =
             u64::try_from(upload.bytes.len()).map_err(|_| HttpFault::InternalError)?;
         Ok(Self {
-            path,
-            content_type,
-            body: reqwest::Body::wrap(BufferedBody::new(upload.bytes, upload.budget)),
+            method: Method::POST,
+            path: OutgoingPath::Static(path),
+            query: None,
+            content_type: Some(content_type),
+            body: Some(reqwest::Body::wrap(BufferedBody::new(
+                upload.bytes,
+                upload.budget,
+            ))),
             content_length: Some(content_length),
             upload: None,
         })
@@ -228,12 +252,41 @@ impl OutgoingRequest {
         let state = SharedUploadState::new(UploadState::Incomplete);
         let direct = DirectRequestBody::new(body, expected, maximum, state.clone());
         Self {
-            path,
-            content_type,
-            body: reqwest::Body::wrap(direct),
+            method: Method::POST,
+            path: OutgoingPath::Static(path),
+            query: None,
+            content_type: Some(content_type),
+            body: Some(reqwest::Body::wrap(direct)),
             content_length: expected,
             upload: Some(state),
         }
+    }
+
+    pub(crate) fn control(
+        method: Method,
+        path: Vec<String>,
+        query: Option<String>,
+        content_type: Option<HeaderValue>,
+        upload: Option<BufferedUpload>,
+    ) -> Result<Self, HttpFault> {
+        let (body, content_length) = match upload {
+            Some(upload) => {
+                let length =
+                    u64::try_from(upload.bytes.len()).map_err(|_| HttpFault::InternalError)?;
+                let body = reqwest::Body::wrap(BufferedBody::new(upload.bytes, upload.budget));
+                (Some(body), Some(length))
+            }
+            None => (None, None),
+        };
+        Ok(Self {
+            method,
+            path: OutgoingPath::Segments(path),
+            query,
+            content_type,
+            body,
+            content_length,
+            upload: None,
+        })
     }
 }
 
