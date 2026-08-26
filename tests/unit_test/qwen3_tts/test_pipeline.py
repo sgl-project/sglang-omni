@@ -3695,6 +3695,7 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
                     output_ids=[],
                 ),
                 suppress_tokens=[],
+                suppress_row_memo=None,
                 return_logprob=False,
             )
         ),
@@ -3705,6 +3706,7 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
                     output_ids=[],
                 ),
                 suppress_tokens=[],
+                suppress_row_memo=None,
                 return_logprob=False,
             )
         ),
