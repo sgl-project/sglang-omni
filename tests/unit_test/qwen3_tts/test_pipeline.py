@@ -3215,7 +3215,12 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
         ref_code=torch.tensor([[9, 9]], dtype=torch.long),
         prompt_input_embeds=torch.randn(3, 4, dtype=dtype),
         tts_pad_embed=torch.randn(4, dtype=dtype),
-        gen_kwargs={"max_new_tokens": 16, "temperature": 0.8, "top_k": 30},
+        gen_kwargs={
+            "max_new_tokens": 16,
+            "temperature": 0.8,
+            "top_k": 30,
+            "repetition_penalty": 1.1,
+        },
     )
     with qwen3_request_builders._PREPARED_REQUESTS_LOCK:
         qwen3_request_builders._PREPARED_REQUESTS[payload.request_id] = prepared
@@ -3240,6 +3245,7 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     assert isinstance(data.semantic_sampling_seed, int)
     assert 0 <= data.semantic_sampling_seed <= 0x7FFFFFFF
     assert data.req.sampling_params.sampling_seed == data.semantic_sampling_seed
+    assert data.req.sampling_params.repetition_penalty == 1.1
     assert isinstance(data.subtalker_sampling_seed, int)
     assert 0 <= data.subtalker_sampling_seed <= 0x7FFFFFFF
 
@@ -3675,7 +3681,8 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
-        _semantic_sampling_seed_tensor=torch.tensor([101, 202], dtype=torch.long)
+        _semantic_sampling_seed_tensor=torch.tensor([101, 202], dtype=torch.long),
+        config=SimpleNamespace(vocab_size=1200, codec_eos_token_id=1100),
     )
     runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
     forward_batch = SimpleNamespace(
@@ -3694,7 +3701,6 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
                     sampling_params=SimpleNamespace(repetition_penalty=1.0),
                     output_ids=[],
                 ),
-                suppress_tokens=[],
                 return_logprob=False,
             )
         ),
@@ -3704,7 +3710,6 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
                     sampling_params=SimpleNamespace(repetition_penalty=1.0),
                     output_ids=[],
                 ),
-                suppress_tokens=[],
                 return_logprob=False,
             )
         ),
