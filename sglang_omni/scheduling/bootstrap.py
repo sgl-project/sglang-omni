@@ -233,7 +233,7 @@ def create_sglang_infrastructure_defer_cuda_graph(
         infrastructure = create_sglang_infrastructure(
             server_args,
             gpu_id,
-            defer_cuda_graph_capture=want_cuda_graph,
+            defer_cuda_graph_capture=True,
             **kwargs,
         )
     finally:
