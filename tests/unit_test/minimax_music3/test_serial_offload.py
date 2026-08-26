@@ -8,9 +8,9 @@ import torch
 
 from sglang_omni.models.minimax_music3.serial_offload import (
     STALL_REPORT_SECONDS,
+    ModuleResidency,
     SerialOffloadCoordinator,
     get_coordinator,
-    move_module_to_device,
 )
 
 
@@ -120,12 +120,55 @@ def test_handoff_without_registration_raises_if_force_enabled() -> None:
         coordinator.end_dit_handoff("req-1")
 
 
-def test_move_module_to_device_relocates_every_parameter() -> None:
+def test_residency_sleep_and_wake_preserve_weights_and_state() -> None:
     module = torch.nn.Linear(2, 2)
+    expected = module.weight.detach().clone()
+    residency = ModuleResidency(module, torch.device("cpu"))
 
-    move_module_to_device(module, torch.device("cpu"))
+    residency.sleep()
+    assert residency.resident is False
+    residency.wake()
 
-    assert next(module.parameters()).device.type == "cpu"
+    assert residency.resident is True
+    assert torch.equal(module.weight, expected)
+
+
+def test_residency_reuses_one_host_copy_instead_of_recopying_each_sleep() -> None:
+    """The weights are immutable, so only the first sleep may snapshot them."""
+    module = torch.nn.Linear(2, 2)
+    residency = ModuleResidency(module, torch.device("cpu"))
+
+    residency.sleep()
+    snapshot = residency._host["weight"]
+    residency.wake()
+    residency.sleep()
+
+    assert residency._host["weight"] is snapshot
+
+
+def test_a_host_built_module_is_asleep_and_never_snapshots_from_the_gpu() -> None:
+    module = torch.nn.Linear(2, 2)
+    residency = ModuleResidency(module, torch.device("cpu"), resident=False)
+
+    assert residency.resident is False
+    assert residency._host["weight"] is module.weight
+
+    residency.wake()
+    assert residency.resident is True
+
+
+def test_residency_keeps_tied_weights_tied_across_a_round_trip() -> None:
+    module = torch.nn.Linear(4, 4)
+    tied = torch.nn.Linear(4, 4)
+    tied.weight = module.weight
+    parent = torch.nn.Sequential(module, tied)
+    residency = ModuleResidency(parent, torch.device("cpu"))
+
+    residency.sleep()
+    residency.wake()
+
+    assert module.weight is tied.weight
+    assert module.weight.data_ptr() == tied.weight.data_ptr()
 
 
 @pytest.mark.gpu

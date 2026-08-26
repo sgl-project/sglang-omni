@@ -32,19 +32,71 @@ logger = logging.getLogger(__name__)
 STALL_REPORT_SECONDS = 900.0
 
 
-def move_module_to_device(module: Any, device: torch.device) -> None:
-    source_device = None
-    try:
-        source_device = next(module.parameters()).device
-    except StopIteration:
-        pass
-    module.to(device)
-    if source_device is not None and source_device.type == "cuda":
-        torch.cuda.synchronize(source_device)
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    else:
+def _owned_tensors(module: Any) -> list[tuple[str, torch.Tensor]]:
+    """Every parameter and buffer the module owns, tied tensors listed once.
+
+    ``named_parameters``/``named_buffers`` de-duplicate by default, so a tied
+    weight appears under one name only. Residency mutates the tensor object in
+    place, so every name that shares it follows along and the tying survives
+    the round trip.
+    """
+    return [
+        *module.named_parameters(),
+        *module.named_buffers(),
+    ]
+
+
+class ModuleResidency:
+    """GPU residency for one module whose weights never change.
+
+    Inference never writes these weights, so the host copy is canonical: it is
+    filled once and every wake refills the GPU from it. Sleeping then only
+    drops the GPU replica -- no device-to-host copy and no fresh host
+    allocation per request, which is what ``module.to()`` in both directions
+    was paying for on every single handoff.
+
+    Reusing one host copy also stops the sleep path handing the caching
+    allocator a differently sized block each round trip. That is what lets a
+    long-running server fragment its way into an OOM after tens of requests
+    rather than failing on the first one.
+    """
+
+    def __init__(self, module: Any, device: torch.device, *, resident: bool = True):
+        self._module = module
+        self._device = torch.device(device)
+        self._resident = bool(resident)
+        self._host: dict[str, torch.Tensor] = {}
+        if not self._resident:
+            # Built on the host: its own tensors are already the canonical copy.
+            self._host = {name: tensor for name, tensor in _owned_tensors(module)}
+
+    @property
+    def resident(self) -> bool:
+        return self._resident
+
+    def sleep(self) -> None:
+        """Drop the GPU replica; a cheap no-op once already asleep."""
+        if not self._resident:
+            return
+        owned = _owned_tensors(self._module)
+        if not self._host:
+            self._host = {
+                name: tensor.detach().to("cpu", copy=True) for name, tensor in owned
+            }
+        for name, tensor in owned:
+            tensor.data = self._host[name]
+        self._resident = False
         torch.cuda.empty_cache()
+
+    def wake(self) -> None:
+        """Refill the GPU replica from the host copy; no-op once resident."""
+        if self._resident:
+            return
+        for name, tensor in _owned_tensors(self._module):
+            tensor.data = self._host[name].to(self._device, copy=True)
+        if self._device.type == "cuda":
+            torch.cuda.synchronize(self._device)
+        self._resident = True
 
 
 class SerialOffloadCoordinator:
@@ -54,8 +106,7 @@ class SerialOffloadCoordinator:
         self._lock = threading.Lock()
         self._enabled = False
         self._ar_active = True
-        self._ar_model: Any | None = None
-        self._ar_device: torch.device | None = None
+        self._ar: ModuleResidency | None = None
         self._outstanding: set[str] = set()
         self._paused_at: float | None = None
         self._stall_reported = False
@@ -66,8 +117,7 @@ class SerialOffloadCoordinator:
 
     def register_ar(self, model: Any, device: torch.device) -> None:
         with self._lock:
-            self._ar_model = model
-            self._ar_device = device
+            self._ar = ModuleResidency(model, device)
             self._enabled = True
             self._ar_active = True
         logger.info(
@@ -94,7 +144,7 @@ class SerialOffloadCoordinator:
             self._outstanding.add(request_id)
             if not self._ar_active:
                 return
-            move_module_to_device(self._ar_model, torch.device("cpu"))
+            self._ar.sleep()
             self._ar_active = False
             self._paused_at = time.monotonic()
             self._stall_reported = False
@@ -116,7 +166,7 @@ class SerialOffloadCoordinator:
             self._outstanding.discard(request_id)
             if self._ar_active or self._outstanding:
                 return
-            move_module_to_device(self._ar_model, self._ar_device)
+            self._ar.wake()
             self._ar_active = True
             self._paused_at = None
             self._stall_reported = False
@@ -126,7 +176,7 @@ class SerialOffloadCoordinator:
         )
 
     def _require_ar_locked(self) -> None:
-        if self._ar_model is None:
+        if self._ar is None:
             raise RuntimeError(
                 "MiniMax Music 3 serial offload is enabled but the AR "
                 "backbone was never registered"
@@ -158,7 +208,7 @@ def get_coordinator() -> SerialOffloadCoordinator:
 
 __all__ = [
     "STALL_REPORT_SECONDS",
+    "ModuleResidency",
     "SerialOffloadCoordinator",
     "get_coordinator",
-    "move_module_to_device",
 ]
