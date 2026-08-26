@@ -34,7 +34,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -76,7 +76,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -135,7 +135,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -181,7 +181,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -227,7 +227,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -274,7 +274,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -320,7 +320,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -366,7 +366,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -412,7 +412,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -458,7 +458,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
-      image: hongccc/sglang-omni@sha256:08f256c69e49a6dae7092c246ca5883c7d137a3fc1c0c0cfa4854325029ab369
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
