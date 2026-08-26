@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     clear_cosyvoice3_preprocessing_context,
     pop_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
+    preprocess_cosyvoice3_payloads,
     set_cosyvoice3_preprocessing_context,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -108,6 +110,14 @@ def test_build_cosyvoice3_state_accepts_structured_reference() -> None:
 
     assert state.ref_audio == "reference.wav"
     assert state.ref_text == "reference"
+
+
+def test_build_cosyvoice3_state_accepts_array_reference_audio() -> None:
+    ref_audio = np.ones(4, dtype=np.float32)
+
+    state = build_cosyvoice3_state(_payload({"text": "hello", "ref_audio": ref_audio}))
+
+    assert state.ref_audio is ref_audio
 
 
 def test_build_cosyvoice3_state_rejects_multiple_references() -> None:
@@ -355,12 +365,475 @@ class _FakeModel(torch.nn.Module):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
         self.config = SimpleNamespace(hidden_size=4)
-        self.text_embed_tokens = (
-            lambda tokens: tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
+        self.text_embed_tokens = lambda tokens: (
+            tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
         )
-        self.speech_embedding = (
-            lambda tokens: tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
+        self.speech_embedding = lambda tokens: (
+            tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
         )
+
+
+def test_reference_encoding_batches_distinct_s3_requests_and_merges_same_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_sizes: list[int] = []
+    speaker_markers: list[int] = []
+
+    class _BatchSpeechTokenizer:
+        def extract_speech_tokens(
+            self, audios: list[np.ndarray], sample_rate: int
+        ) -> list[torch.Tensor]:
+            assert sample_rate == 16000
+            batch_sizes.append(len(audios))
+            return [
+                torch.tensor([[int(audio[0]), int(audio[0]) + 10]], dtype=torch.int32)
+                for audio in audios
+            ]
+
+        def extract_speech_token(
+            self, audio: np.ndarray, sample_rate: int
+        ) -> torch.Tensor:
+            return self.extract_speech_tokens([audio], sample_rate)[0]
+
+    class _MarkerSpeakerEncoder:
+        def extract_embedding(
+            self, audio: np.ndarray, sample_rate: int
+        ) -> torch.Tensor:
+            assert sample_rate == 16000
+            marker = int(audio[0])
+            speaker_markers.append(marker)
+            return torch.tensor([[marker]], dtype=torch.float32)
+
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: np.asarray(source, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: np.full(6, float(source[0]), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.full((1, 4, 80), float(audio[0])),
+    )
+
+    set_cosyvoice3_preprocessing_context(
+        model=_FakeModel(),
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_BatchSpeechTokenizer(),
+        speaker_encoder=_MarkerSpeakerEncoder(),
+        reference_max_batch_size=8,
+        reference_max_batch_wait_ms=200,
+    )
+    context = request_builders._PREPROCESSING_CONTEXT
+    assert context is not None
+    references = [
+        np.full(4, 1.0, dtype=np.float32),
+        np.full(4, 1.0, dtype=np.float32),
+        np.full(4, 2.0, dtype=np.float32),
+        np.full(4, 3.0, dtype=np.float32),
+    ]
+    start = threading.Barrier(len(references) + 1)
+
+    def encode(reference: np.ndarray):
+        start.wait(timeout=5)
+        return context.reference_service.get_or_encode(reference)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(encode, reference) for reference in references]
+        start.wait(timeout=5)
+        artifacts = [future.result(timeout=5) for future in futures]
+
+    assert batch_sizes == [3]
+    assert sorted(speaker_markers) == [1, 2, 3]
+    assert [artifact.llm_prompt_speech_token.tolist() for artifact in artifacts] == [
+        [[1, 11]],
+        [[1, 11]],
+        [[2, 12]],
+        [[3, 13]],
+    ]
+    stats = context.reference_service.stats()
+    assert stats["misses"] == 3
+    assert stats["merged"] == 1
+    assert stats["batched_items"] == 3
+    assert stats["entries"] == 3
+
+
+def test_preprocess_batch_forms_s3_batch_before_ordered_model_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_sizes: list[int] = []
+
+    class _BatchTokenizer:
+        def __call__(self, text: str) -> torch.Tensor:
+            token = {"first": 11, "second": 22}.get(text, 3)
+            return torch.tensor([[token]], dtype=torch.int32)
+
+    class _BatchSpeechTokenizer:
+        def extract_speech_tokens(
+            self, audios: list[np.ndarray], sample_rate: int
+        ) -> list[torch.Tensor]:
+            assert sample_rate == 16000
+            batch_sizes.append(len(audios))
+            return [
+                torch.tensor([[int(audio[0])]], dtype=torch.int32) for audio in audios
+            ]
+
+        def extract_speech_token(
+            self, audio: np.ndarray, sample_rate: int
+        ) -> torch.Tensor:
+            return self.extract_speech_tokens([audio], sample_rate)[0]
+
+    class _SpeakerEncoder:
+        def extract_embedding(
+            self, audio: np.ndarray, sample_rate: int
+        ) -> torch.Tensor:
+            assert sample_rate == 16000
+            return torch.zeros(1, 192)
+
+    class _RecordingModel(_FakeModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.text_embed_calls: list[list[list[int]]] = []
+            self.text_embed_tokens = self._embed_text
+
+        def _embed_text(self, tokens: torch.Tensor) -> torch.Tensor:
+            self.text_embed_calls.append(tokens.detach().cpu().tolist())
+            return tokens.to(torch.float32).unsqueeze(-1).expand(-1, -1, 4)
+
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: np.asarray(source, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: np.full(6, float(source[0]), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    model = _RecordingModel()
+    set_cosyvoice3_preprocessing_context(
+        model=model,
+        tokenizer=_BatchTokenizer(),
+        speech_tokenizer=_BatchSpeechTokenizer(),
+        speaker_encoder=_SpeakerEncoder(),
+        reference_max_batch_size=8,
+        reference_max_batch_wait_ms=200,
+    )
+
+    results = preprocess_cosyvoice3_payloads(
+        [
+            _payload(
+                {"text": "first", "ref_audio": np.full(4, 1.0, dtype=np.float32)},
+                request_id="req-first",
+            ),
+            _payload(
+                {"text": "second", "ref_audio": np.full(4, 2.0, dtype=np.float32)},
+                request_id="req-second",
+            ),
+        ]
+    )
+
+    assert batch_sizes == [2]
+    assert model.text_embed_calls == [[[3, 11]], [[3, 22]]]
+    assert [
+        result.request_id for result in results if isinstance(result, StagePayload)
+    ] == [
+        "req-first",
+        "req-second",
+    ]
+
+
+def test_preprocess_batch_isolates_invalid_reference_and_keeps_other_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_sizes: list[int] = []
+
+    class _BatchSpeechTokenizer(_FakeSpeechTokenizer):
+        def extract_speech_tokens(
+            self, audios: list[np.ndarray], sample_rate: int
+        ) -> list[torch.Tensor]:
+            batch_sizes.append(len(audios))
+            return [self.extract_speech_token(audio, sample_rate) for audio in audios]
+
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: np.zeros(1600, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: np.zeros(2400, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    set_cosyvoice3_preprocessing_context(
+        model=_FakeModel(),
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_BatchSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+        reference_max_batch_size=8,
+        reference_max_batch_wait_ms=50,
+    )
+
+    results = preprocess_cosyvoice3_payloads(
+        [
+            _payload(
+                {
+                    "text": "hello",
+                    "references": [
+                        {"audio_path": "first.wav"},
+                        {"audio_path": "second.wav"},
+                    ],
+                },
+                request_id="req-invalid",
+            ),
+            _payload("hello", request_id="req-no-reference"),
+            _payload(
+                {"text": "hello", "ref_audio": "valid.wav"},
+                request_id="req-valid",
+            ),
+        ]
+    )
+
+    assert isinstance(results[0], ValueError)
+    assert isinstance(results[1], StagePayload)
+    assert isinstance(results[2], StagePayload)
+    assert batch_sizes == [1]
+    assert results[1].data["flow_prompt_speech_token"] == [[]]
+    assert results[2].data["flow_prompt_speech_token"] == [[40, 41]]
+
+
+def test_cosyvoice_batch_encode_falls_back_to_single_item_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_attempts: list[int] = []
+    single_markers: list[int] = []
+
+    class _FallbackSpeechTokenizer(_FakeSpeechTokenizer):
+        def extract_speech_tokens(
+            self, audios: list[np.ndarray], sample_rate: int
+        ) -> list[torch.Tensor]:
+            batch_attempts.append(len(audios))
+            raise RuntimeError("simulated batch tokenizer failure")
+
+        def extract_speech_token(
+            self, audio: np.ndarray, sample_rate: int
+        ) -> torch.Tensor:
+            single_markers.append(int(audio[0]))
+            return torch.tensor([[int(audio[0]), int(audio[0]) + 1]], dtype=torch.int32)
+
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: np.full(1600, float(source[0]), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: np.full(2400, float(source[0]), dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    set_cosyvoice3_preprocessing_context(
+        model=_FakeModel(),
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_FallbackSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+        reference_max_batch_size=8,
+        reference_max_batch_wait_ms=50,
+    )
+
+    results = preprocess_cosyvoice3_payloads(
+        [
+            _payload(
+                {"text": "hello", "ref_audio": np.full(4, 1.0, dtype=np.float32)},
+                request_id="req-one",
+            ),
+            _payload(
+                {"text": "hello", "ref_audio": np.full(4, 2.0, dtype=np.float32)},
+                request_id="req-two",
+            ),
+        ]
+    )
+
+    assert all(isinstance(result, StagePayload) for result in results)
+    assert batch_attempts == [2]
+    assert sorted(single_markers) == [1, 2]
+    context = request_builders._PREPROCESSING_CONTEXT
+    assert context is not None
+    assert context.reference_service.stats()["batches"] == 0
+
+
+def test_preprocessing_scheduler_runs_batch_and_emits_each_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fun_cosyvoice3 import stages
+
+    batch_sizes: list[int] = []
+
+    class _BatchSpeechTokenizer(_FakeSpeechTokenizer):
+        def extract_speech_tokens(
+            self, audios: list[np.ndarray], sample_rate: int
+        ) -> list[torch.Tensor]:
+            batch_sizes.append(len(audios))
+            return [self.extract_speech_token(audio, sample_rate) for audio in audios]
+
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: np.zeros(1600, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: np.zeros(2400, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    set_cosyvoice3_preprocessing_context(
+        model=_FakeModel(),
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_BatchSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+    )
+    scheduler = stages.create_preprocessing_executor("unused-model-path")
+    payloads = [
+        _payload(
+            {"text": "hello", "ref_audio": "one.wav"}, request_id="req-one"
+        ),
+        _payload(
+            {"text": "hello", "ref_audio": "two.wav"}, request_id="req-two"
+        ),
+    ]
+    for payload in payloads:
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+
+    worker = threading.Thread(target=scheduler.start)
+    worker.start()
+    try:
+        outputs = [scheduler.outbox.get(timeout=5) for _ in payloads]
+        assert {output.request_id for output in outputs} == {"req-one", "req-two"}
+        assert all(output.type == "result" for output in outputs)
+        assert all(isinstance(output.data, StagePayload) for output in outputs)
+        assert batch_sizes == [2]
+    finally:
+        scheduler.stop()
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+
+
+def test_preprocessing_shutdown_completes_with_inflight_reference_encode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fun_cosyvoice3 import stages
+
+    batch_started = threading.Event()
+    release_batch = threading.Event()
+
+    class _BlockingBatchSpeechTokenizer(_FakeSpeechTokenizer):
+        def extract_speech_tokens(
+            self, audios: list[np.ndarray], sample_rate: int
+        ) -> list[torch.Tensor]:
+            batch_started.set()
+            assert release_batch.wait(timeout=5)
+            return [self.extract_speech_token(audio, sample_rate) for audio in audios]
+
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: np.zeros(1600, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: np.zeros(2400, dtype=np.float32),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    set_cosyvoice3_preprocessing_context(
+        model=_FakeModel(),
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_BlockingBatchSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+        reference_max_batch_size=8,
+        reference_max_batch_wait_ms=0,
+    )
+    context = request_builders._PREPROCESSING_CONTEXT
+    assert context is not None
+    scheduler = stages.create_preprocessing_executor("unused-model-path")
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(
+        context.reference_service.get_or_encode,
+        "inflight-reference.wav",
+    )
+    try:
+        assert batch_started.wait(timeout=5)
+        release_batch.set()
+        scheduler.stop()
+        artifact = future.result(timeout=5)
+        assert artifact.llm_prompt_speech_token.tolist() == [[40, 41]]
+        assert request_builders._PREPROCESSING_CONTEXT is None
+    finally:
+        release_batch.set()
+        scheduler.stop()
+        executor.shutdown(wait=True)
+
+
+def test_preprocessing_executor_enables_batching_and_closes_context() -> None:
+    from sglang_omni.models.fun_cosyvoice3 import stages
+
+    class _BatchSpeechTokenizer(_FakeSpeechTokenizer):
+        def extract_speech_tokens(
+            self, audios: list[np.ndarray], sample_rate: int
+        ) -> list[torch.Tensor]:
+            return [self.extract_speech_token(audio, sample_rate) for audio in audios]
+
+    set_cosyvoice3_preprocessing_context(
+        model=_FakeModel(),
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_BatchSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+    )
+    context = request_builders._PREPROCESSING_CONTEXT
+    assert context is not None
+    assert context.reference_service.batching_enabled
+    batch_thread = context.reference_service._batch_thread
+    assert batch_thread is not None
+    assert batch_thread.is_alive()
+
+    scheduler = stages.create_preprocessing_executor("unused-model-path")
+    assert scheduler._max_concurrency == 1
+    assert scheduler._batch_fn is preprocess_cosyvoice3_payloads
+    assert scheduler._max_batch_size == 8
+    assert scheduler._max_batch_wait_s == pytest.approx(0.004)
+    scheduler.stop()
+
+    assert request_builders._PREPROCESSING_CONTEXT is None
+    assert not batch_thread.is_alive()
 
 
 def test_preprocess_and_build_request_share_prepared_state(
