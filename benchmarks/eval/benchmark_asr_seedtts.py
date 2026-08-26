@@ -6,7 +6,7 @@
 
 This script transcribes SeedTTS reference clips directly through a running ASR
 router and reports WER, request throughput, RTFx, RTF, latency, and worker
-routing balance. It supports both Qwen3-ASR and Fun-ASR-Nano through
+routing balance. It supports Qwen3-ASR, Fun-ASR-Nano, and Whisper ASR through
 ``--model-path``.
 
 Usage:
@@ -45,6 +45,22 @@ Usage:
     python -m benchmarks.eval.benchmark_asr_seedtts \
         --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
         --concurrencies 32 --repeats 3 --warmup --stream
+
+    # Use whisper-base for a low-cost profiling smoke. Replace both model
+    # values below with openai/whisper-large-v3 for the canonical checkpoint.
+    # Start the same Whisper checkpoint named by the benchmark request:
+    sgl-omni serve \
+        --model-path openai/whisper-base \
+        --model-name openai/whisper-base \
+        --port 8000
+
+    # In another shell, capture a separate request-event profile pass:
+    python -m benchmarks.eval.benchmark_asr_seedtts \
+        --port 8000 --model-path openai/whisper-base \
+        --max-samples 20 --concurrencies 1,2,4,8 \
+        --repeats 3 --warmup --profile-events \
+        --profile-event-dir /tmp/whisper_asr_profile \
+        --fingerprint --output whisper_profile.json
 
 Reference results on the full SeedTTS EN set (1088 clips, bf16, single RTX
 4080 SUPER 32 GB, DP=1, three repeats plus one discarded warmup per level):
@@ -104,6 +120,7 @@ from benchmarks.eval.asr_profiling import (
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
+    OMNI_WHISPER_MODEL_PATH,
     QWEN3_ASR_MODEL_PATH,
     build_asr_eval_results,
     run_asr_transcription,
@@ -490,7 +507,8 @@ def add_common_args(
         help=(
             "ASR model id served by the router. Defaults to "
             f"{QWEN3_ASR_MODEL_PATH}; use "
-            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano."
+            f"{FUN_ASR_MODEL_PATH} for Fun-ASR-Nano or "
+            f"{OMNI_WHISPER_MODEL_PATH} for Whisper ASR."
         ),
     )
     parser.add_argument(
