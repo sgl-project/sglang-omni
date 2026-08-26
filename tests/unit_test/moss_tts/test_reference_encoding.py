@@ -591,7 +591,7 @@ def test_moss_tts_cached_reference_encoder_merges_inflight(tmp_path: Path) -> No
             device = "cuda:0"
             model = None
 
-        _audio_tokenizer = AudioTokenizer()
+        _audio_encoder = AudioTokenizer()
 
         @staticmethod
         def load(source):
