@@ -4289,7 +4289,7 @@ def test_qwen3_tts_rocm_disables_private_compile(
         "_compile_qwen3_tts_backbone",
         lambda model: compiled.append(model),
     )
-    server_args = FakeServerArgs(
+    server_args = SimpleNamespace(
         enable_deterministic_inference=False,
         enable_torch_compile=True,
     )
