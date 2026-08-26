@@ -48,6 +48,8 @@ QWEN3_TTS_TASK_VOICE_DESIGN = "VoiceDesign"
 QWEN3_TTS_DEFAULT_CUSTOM_VOICE = "Vivian"
 _QWEN3_TTS_PREPARED_MARKER = "_qwen3_tts_prepared_request"
 _QWEN3_TTS_REF_CODE_BATCH_STOP = object()
+_QWEN3_TTS_REFERENCE_MAX_BATCH_SIZE = 8
+_QWEN3_TTS_REFERENCE_MAX_BATCH_WAIT_MS = 4.0
 
 _GENERATION_FIELDS = (
     "do_sample",
@@ -787,43 +789,93 @@ class _Qwen3TTSAdhocReferenceHook(
             separators=(",", ":"),
         )
 
+    def can_encode_batch(self) -> bool:
+        return callable(
+            getattr(getattr(self._model, "speech_tokenizer", None), "encode", None)
+        ) and callable(getattr(self._model, "extract_speaker_embeddings", None))
+
     def encode_one(
         self, item: _Qwen3TTSAdhocReferenceInput
     ) -> tuple[dict[str, Any], str | None]:
-        if not item.x_vector_only_mode and not item.ref_text:
-            raise ValueError(
-                "ref_text is required when x_vector_only_mode=False (ICL mode)"
-            )
-        with torch.no_grad():
-            normalized = self._wrapper._normalize_audio_inputs([item.ref_audio])
-            if len(normalized) != 1:
-                raise ValueError("Qwen3-TTS expects exactly one reference audio")
-            waveform, sample_rate = normalized[0]
-            ref_code_future = self._ref_code_batcher.submit(waveform, sample_rate)
-            speaker_waveform = waveform
-            speaker_sample_rate = self._model.speaker_encoder_sample_rate
-            if sample_rate != speaker_sample_rate:
-                import librosa
+        return self.encode_batch([item])[0]
 
-                speaker_waveform = librosa.resample(
-                    y=speaker_waveform.astype("float32"),
-                    orig_sr=int(sample_rate),
-                    target_sr=speaker_sample_rate,
+    def encode_batch(
+        self, items: list[_Qwen3TTSAdhocReferenceInput]
+    ) -> list[tuple[dict[str, Any], str | None]]:
+        if not items:
+            return []
+        for item in items:
+            if not item.x_vector_only_mode and not item.ref_text:
+                raise ValueError(
+                    "ref_text is required when x_vector_only_mode=False (ICL mode)"
                 )
-            speaker_embedding = self._model.extract_speaker_embedding(
-                audio=speaker_waveform,
-                sr=speaker_sample_rate,
+
+        with torch.no_grad():
+            normalized_items: list[tuple[Any, int]] = []
+            for item in items:
+                normalized = self._wrapper._normalize_audio_inputs([item.ref_audio])
+                if len(normalized) != 1:
+                    raise ValueError("Qwen3-TTS expects exactly one reference audio")
+                normalized_items.append(normalized[0])
+
+            ref_code_futures = [
+                self._ref_code_batcher.submit(waveform, sample_rate)
+                for waveform, sample_rate in normalized_items
+            ]
+            speaker_sample_rate = self._model.speaker_encoder_sample_rate
+            speaker_waveforms: list[Any] = []
+            for waveform, sample_rate in normalized_items:
+                if sample_rate != speaker_sample_rate:
+                    import librosa
+
+                    waveform = librosa.resample(
+                        y=waveform.astype("float32"),
+                        orig_sr=int(sample_rate),
+                        target_sr=speaker_sample_rate,
+                    )
+                speaker_waveforms.append(waveform)
+
+            extract_batch = getattr(self._model, "extract_speaker_embeddings", None)
+            if callable(extract_batch):
+                speaker_embeddings = extract_batch(
+                    audios=speaker_waveforms,
+                    sr=speaker_sample_rate,
+                )
+            else:
+                speaker_embeddings = [
+                    self._model.extract_speaker_embedding(
+                        audio=waveform,
+                        sr=speaker_sample_rate,
+                    )
+                    for waveform in speaker_waveforms
+                ]
+            if len(speaker_embeddings) != len(items):
+                raise RuntimeError(
+                    "Qwen3-TTS speaker encoder returned "
+                    f"{len(speaker_embeddings)} embeddings for {len(items)} references"
+                )
+            ref_codes = [
+                _record_ref_code_consumer_stream(future.result(timeout=130.0))
+                for future in ref_code_futures
+            ]
+
+        return [
+            (
+                {
+                    "ref_code": [None if item.x_vector_only_mode else ref_code],
+                    "ref_spk_embedding": [speaker_embedding],
+                    "x_vector_only_mode": [item.x_vector_only_mode],
+                    "icl_mode": [not item.x_vector_only_mode],
+                },
+                item.ref_text,
             )
-            ref_code = _record_ref_code_consumer_stream(
-                ref_code_future.result(timeout=130.0)
+            for item, ref_code, speaker_embedding in zip(
+                items,
+                ref_codes,
+                speaker_embeddings,
+                strict=True,
             )
-        voice_clone_prompt = {
-            "ref_code": [None if item.x_vector_only_mode else ref_code],
-            "ref_spk_embedding": [speaker_embedding],
-            "x_vector_only_mode": [item.x_vector_only_mode],
-            "icl_mode": [not item.x_vector_only_mode],
-        }
-        return voice_clone_prompt, item.ref_text
+        ]
 
     def store_artifact(self, artifact: tuple[dict[str, Any], str | None]) -> dict:
         voice_clone_prompt, ref_text = artifact
@@ -898,6 +950,9 @@ def _get_qwen3_tts_adhoc_reference_service_locked(
             max_bytes=64 * 1024 * 1024,
             timeout_s=130.0,
             log_prefix="Qwen3-TTS ad-hoc reference",
+            max_batch_size=_QWEN3_TTS_REFERENCE_MAX_BATCH_SIZE,
+            max_batch_wait_ms=_QWEN3_TTS_REFERENCE_MAX_BATCH_WAIT_MS,
+            batch_worker_name="qwen3-tts-reference-encode-batch",
         )
         entry = (owner, service)
         _ADHOC_REFERENCE_SERVICE_ENTRY = entry

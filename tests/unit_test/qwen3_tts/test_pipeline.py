@@ -43,6 +43,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
     get_speaker_artifact_cache,
@@ -756,7 +757,6 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
     cache.clear()
     qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
     batch_sizes: list[int] = []
-    both_normalizing = threading.Barrier(2)
 
     class PatientRefCodeBatcher(qwen3_request_builders._Qwen3TTSRefCodeBatcher):
         def __init__(self, speech_tokenizer, **kwargs):
@@ -767,6 +767,17 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
         qwen3_request_builders,
         "_Qwen3TTSRefCodeBatcher",
         PatientRefCodeBatcher,
+    )
+
+    class PatientReferenceEncodeService(ReferenceEncodeService):
+        def __init__(self, *args, **kwargs):
+            kwargs["max_batch_wait_ms"] = 500.0
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "ReferenceEncodeService",
+        PatientReferenceEncodeService,
     )
 
     class FakeSpeechTokenizer:
@@ -782,7 +793,6 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
-            both_normalizing.wait(timeout=5.0)
             return [(np.zeros(32, dtype=np.float32), 24000)]
 
         def _tokenize_texts(self, texts):
@@ -804,8 +814,16 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
         speech_tokenizer = FakeSpeechTokenizer()
         speaker_encoder_sample_rate = 24000
 
+        def __init__(self) -> None:
+            self.speaker_batch_sizes: list[int] = []
+
         def extract_speaker_embedding(self, *, audio, sr):
             return torch.ones(4)
+
+        def extract_speaker_embeddings(self, *, audios, sr):
+            assert sr == 24000
+            self.speaker_batch_sizes.append(len(audios))
+            return [torch.ones(4) for _ in audios]
 
         def build_voice_clone_inputs(self, **kwargs):
             del kwargs
@@ -827,8 +845,9 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
         "_build_qwen3_tts_pad_embed",
         lambda model: torch.zeros(4),
     )
+    fake_model = FakeModel()
     qwen3_request_builders.set_qwen3_tts_preprocessing_context(
-        model=FakeModel(),
+        model=fake_model,
         wrapper=FakeWrapper(),
     )
 
@@ -873,6 +892,96 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
 
     assert prepared_count == 2
     assert batch_sizes == [2]
+    assert fake_model.speaker_batch_sizes == [2]
+
+
+def test_qwen3_tts_reference_batching_requires_both_encoder_batch_apis() -> None:
+    class FakeSpeechTokenizer:
+        def encode(self, waveforms, *, sr):
+            del waveforms, sr
+
+    model = SimpleNamespace(speech_tokenizer=FakeSpeechTokenizer())
+    hook = qwen3_request_builders._Qwen3TTSAdhocReferenceHook(
+        model=model,
+        wrapper=SimpleNamespace(),
+    )
+    try:
+        assert hook.can_encode_batch() is False
+
+        model.extract_speaker_embeddings = lambda *, audios, sr: [
+            torch.ones(4) for _ in audios
+        ]
+        assert hook.can_encode_batch() is True
+    finally:
+        hook.close()
+
+
+def test_qwen3_tts_speaker_embedding_batch_preserves_order_without_padding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sglang_model
+
+    fake_qwen_module = types.ModuleType("qwen_tts.core.models.modeling_qwen3_tts")
+    fake_qwen_module.mel_spectrogram = lambda waveforms, **kwargs: waveforms.unsqueeze(
+        -1
+    )
+    monkeypatch.setitem(sys.modules, "qwen_tts", types.ModuleType("qwen_tts"))
+    monkeypatch.setitem(
+        sys.modules,
+        "qwen_tts.core",
+        types.ModuleType("qwen_tts.core"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "qwen_tts.core.models",
+        types.ModuleType("qwen_tts.core.models"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "qwen_tts.core.models.modeling_qwen3_tts",
+        fake_qwen_module,
+    )
+    monkeypatch.setattr(
+        sglang_model,
+        "apply_qwen_tts_transformers_compatibility_patches",
+        lambda: None,
+    )
+
+    class FakeSpeakerEncoder:
+        def __init__(self) -> None:
+            self.batch_shapes: list[tuple[int, ...]] = []
+
+        def __call__(self, mels: torch.Tensor) -> torch.Tensor:
+            self.batch_shapes.append(tuple(mels.shape))
+            return mels.mean(dim=2)
+
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.speaker_encoder_sample_rate = 24000
+    talker.speaker_encoder = FakeSpeakerEncoder()
+    talker.model = SimpleNamespace(
+        codec_embedding=SimpleNamespace(weight=torch.zeros(1, dtype=torch.float32))
+    )
+    audios = [
+        np.full(3, 1.0, dtype=np.float32),
+        np.full(5, 2.0, dtype=np.float32),
+        np.full(3, 3.0, dtype=np.float32),
+    ]
+
+    embeddings = Qwen3TTSTalker.extract_speaker_embeddings(
+        talker,
+        audios=audios,
+        sr=24000,
+    )
+
+    assert talker.speaker_encoder.batch_shapes == [(2, 1, 3), (1, 1, 5)]
+    assert [float(embedding.item()) for embedding in embeddings] == [
+        1.0,
+        2.0,
+        3.0,
+    ]
 
 
 def test_qwen3_tts_reference_code_overlaps_speaker_embedding() -> None:

@@ -546,7 +546,10 @@ class Qwen3TTSTalker(nn.Module):
         return (getattr(self.config, "spk_id", None) or {}).keys()
 
     @torch.inference_mode()
-    def extract_speaker_embedding(self, audio, sr):
+    def extract_speaker_embeddings(
+        self, *, audios: list[Any], sr: int
+    ) -> list[torch.Tensor]:
+        """Extract speaker embeddings without padding variable-length audio."""
         apply_qwen_tts_transformers_compatibility_patches()
         from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
 
@@ -556,17 +559,46 @@ class Qwen3TTSTalker(nn.Module):
             )
         if self.speaker_encoder is None:
             raise RuntimeError("Qwen3-TTS speaker encoder is not loaded")
-        mels = mel_spectrogram(
-            torch.from_numpy(audio).unsqueeze(0),
-            n_fft=1024,
-            num_mels=128,
-            sampling_rate=self.speaker_encoder_sample_rate,
-            hop_size=256,
-            win_size=1024,
-            fmin=0,
-            fmax=12000,
-        ).transpose(1, 2)
-        return self.speaker_encoder(mels.to(self.device).to(self.dtype))[0]
+        if not audios:
+            return []
+
+        # The upstream ECAPA encoder has no padding mask. Group only equal-length
+        # waveforms so batching cannot alter attentive pooling for shorter inputs.
+        groups: dict[int, list[tuple[int, Any]]] = {}
+        for index, audio in enumerate(audios):
+            groups.setdefault(len(audio), []).append((index, audio))
+
+        outputs: list[torch.Tensor | None] = [None] * len(audios)
+        for group in groups.values():
+            batch = torch.stack([torch.from_numpy(audio) for _, audio in group])
+            mels = mel_spectrogram(
+                batch,
+                n_fft=1024,
+                num_mels=128,
+                sampling_rate=self.speaker_encoder_sample_rate,
+                hop_size=256,
+                win_size=1024,
+                fmin=0,
+                fmax=12000,
+            ).transpose(1, 2)
+            embeddings = self.speaker_encoder(mels.to(self.device).to(self.dtype))
+            if embeddings.shape[0] != len(group):
+                raise RuntimeError(
+                    "Qwen3-TTS speaker encoder returned "
+                    f"{embeddings.shape[0]} embeddings for {len(group)} references"
+                )
+            for (index, _), embedding in zip(group, embeddings, strict=True):
+                outputs[index] = embedding
+
+        if any(embedding is None for embedding in outputs):
+            raise RuntimeError(
+                "Qwen3-TTS speaker encoder did not produce every embedding"
+            )
+        return [embedding for embedding in outputs if embedding is not None]
+
+    @torch.inference_mode()
+    def extract_speaker_embedding(self, audio, sr):
+        return self.extract_speaker_embeddings(audios=[audio], sr=sr)[0]
 
     @torch.inference_mode()
     def generate_speaker_prompt(self, voice_clone_prompt: dict[str, Any]):
