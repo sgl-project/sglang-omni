@@ -125,6 +125,8 @@ impl RequestLease {
 }
 
 pub(super) struct AdmissionController {
+    global_limit: usize,
+    class_limits: [Option<usize>; CAPACITY_CLASS_COUNT],
     global: Arc<Semaphore>,
     classes: [Option<Arc<Semaphore>>; CAPACITY_CLASS_COUNT],
 }
@@ -132,6 +134,8 @@ pub(super) struct AdmissionController {
 impl AdmissionController {
     pub(super) fn new(global: usize, limits: [Option<usize>; CAPACITY_CLASS_COUNT]) -> Self {
         Self {
+            global_limit: global,
+            class_limits: limits,
             global: Arc::new(Semaphore::new(global)),
             classes: limits.map(|limit| limit.map(|value| Arc::new(Semaphore::new(value)))),
         }
@@ -179,6 +183,20 @@ impl AdmissionController {
 
     pub(super) fn close(&self) {
         self.global.close();
+    }
+
+    pub(super) fn snapshot(&self) -> [(usize, usize); CAPACITY_CLASS_COUNT + 1] {
+        let mut snapshot = [(0, 0); CAPACITY_CLASS_COUNT + 1];
+        snapshot[0] = (
+            self.global_limit,
+            self.global_limit - self.global.available_permits(),
+        );
+        for (index, (limit, semaphore)) in self.class_limits.iter().zip(&self.classes).enumerate() {
+            if let (Some(limit), Some(semaphore)) = (limit, semaphore) {
+                snapshot[index + 1] = (*limit, *limit - semaphore.available_permits());
+            }
+        }
+        snapshot
     }
 
     #[cfg(test)]

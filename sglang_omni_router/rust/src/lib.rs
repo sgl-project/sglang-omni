@@ -11,6 +11,7 @@ mod http_generation;
 mod http_media;
 mod http_relay;
 mod lifecycle;
+mod operations;
 mod request_id;
 mod server;
 mod shutdown;

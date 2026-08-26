@@ -36,7 +36,27 @@ pub(crate) enum CapacityClass {
 pub(super) const CAPACITY_CLASS_COUNT: usize = 6;
 
 impl CapacityClass {
-    pub(super) const fn index(self) -> usize {
+    pub(crate) const ALL: [Self; CAPACITY_CLASS_COUNT] = [
+        Self::GenerationHttp,
+        Self::SpeechHttp,
+        Self::SpeechBatch,
+        Self::TranscriptionHttp,
+        Self::SpeechWebsocket,
+        Self::RealtimeWebsocket,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::GenerationHttp => "generation_http",
+            Self::SpeechHttp => "speech_http",
+            Self::SpeechBatch => "speech_batch",
+            Self::TranscriptionHttp => "transcription_http",
+            Self::SpeechWebsocket => "speech_websocket",
+            Self::RealtimeWebsocket => "realtime_websocket",
+        }
+    }
+
+    pub(crate) const fn index(self) -> usize {
         match self {
             Self::GenerationHttp => 0,
             Self::SpeechHttp => 1,
@@ -887,6 +907,17 @@ impl ServiceProfile {
             | Self::TranscriptionHttp { model_ids, .. }
             | Self::SpeechWebsocket { model_ids, .. } => model_ids.iter().any(|item| item == model),
             Self::RealtimeWebsocket => true,
+        }
+    }
+
+    pub(crate) fn model_ids(&self) -> Option<&[String]> {
+        match self {
+            Self::GenerationHttp { model_ids, .. }
+            | Self::SpeechHttp { model_ids, .. }
+            | Self::SpeechBatch { model_ids, .. }
+            | Self::TranscriptionHttp { model_ids, .. }
+            | Self::SpeechWebsocket { model_ids, .. } => Some(model_ids),
+            Self::RealtimeWebsocket { .. } => None,
         }
     }
 

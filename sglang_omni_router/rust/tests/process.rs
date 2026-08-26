@@ -54,6 +54,23 @@ impl TestDir {
         fs::write(&path, contents).expect("write isolated process config");
         path
     }
+
+    fn config_with_worker(
+        &self,
+        address: SocketAddr,
+        worker: SocketAddr,
+        max_connections: usize,
+        drain_timeout_ms: u64,
+    ) -> PathBuf {
+        let path = self.config(address, max_connections, drain_timeout_ms);
+        let contents = fs::read_to_string(&path).expect("read generated router config");
+        let contents = contents.replace(
+            "base_url = \"http://127.0.0.1:1/\"",
+            &format!("base_url = \"http://{worker}/\""),
+        );
+        fs::write(&path, contents).expect("write worker-address router config");
+        path
+    }
 }
 
 impl Drop for TestDir {
@@ -177,21 +194,47 @@ fn rapid_distinct_signals(process_id: u32) {
 }
 
 fn request(address: SocketAddr, method: &str, path: &str) -> String {
+    raw_request(
+        address,
+        format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
+    )
+}
+
+fn raw_request(address: SocketAddr, request: &[u8]) -> String {
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(250))
         .expect("connect to serving router");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("set bounded response timeout");
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-    )
-    .expect("write HTTP request");
+    stream.write_all(request).expect("write HTTP request");
     let mut response = String::new();
     stream
         .read_to_string(&mut response)
         .expect("read bounded local HTTP response");
     response
+}
+
+fn response_header<'a>(response: &'a str, name: &str) -> Option<&'a str> {
+    response.split("\r\n").find_map(|line| {
+        let (candidate, value) = line.split_once(':')?;
+        candidate.eq_ignore_ascii_case(name).then_some(value.trim())
+    })
+}
+
+fn response_body(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("complete HTTP response")
+}
+
+fn assert_exact_content_length(response: &str) {
+    let expected = response_body(response).len().to_string();
+    assert_eq!(
+        response_header(response, "content-length"),
+        Some(expected.as_str())
+    );
 }
 
 fn confirmed_keep_alive_connection(address: SocketAddr) -> TcpStream {
@@ -325,6 +368,22 @@ fn wait_until_live(address: SocketAddr, child: &mut ChildGuard) {
         assert!(
             Instant::now() < end,
             "router never became live: {last_observation}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_until_ready(address: SocketAddr, child: &mut ChildGuard) {
+    let end = Instant::now() + PROCESS_DEADLINE;
+    loop {
+        let response = request(address, "GET", "/ready");
+        if response.starts_with("HTTP/1.1 200") {
+            return;
+        }
+        child.assert_running();
+        assert!(
+            Instant::now() < end,
+            "router never became ready: {response}"
         );
         thread::sleep(Duration::from_millis(10));
     }
@@ -475,7 +534,7 @@ fn invalid_cli_and_config_exit_two_without_disclosing_contents() {
 }
 
 #[test]
-fn serves_only_exact_local_liveness_route_and_shuts_down_cleanly() {
+fn serves_exact_local_health_and_operations_routes_and_shuts_down_cleanly() {
     let _process_guard = process_lock();
     let directory = TestDir::new();
     let address = unused_address();
@@ -494,8 +553,6 @@ fn serves_only_exact_local_liveness_route_and_shuts_down_cleanly() {
         ("PUT", "/ready", "405"),
         ("GET", "/ready/", "404"),
         ("GET", "/health", "404"),
-        ("GET", "/metrics", "404"),
-        ("GET", "/v1/models", "404"),
         ("POST", "/generate", "404"),
     ] {
         let response = request(address, method, path);
@@ -505,10 +562,220 @@ fn serves_only_exact_local_liveness_route_and_shuts_down_cleanly() {
         );
     }
 
+    let models = raw_request(
+        address,
+        b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: models-caller\r\nConnection: close\r\n\r\n",
+    );
+    assert!(models.starts_with("HTTP/1.1 200"));
+    assert_eq!(
+        response_header(&models, "x-request-id"),
+        Some("models-caller")
+    );
+    assert_eq!(
+        response_header(&models, "content-type"),
+        Some("application/json")
+    );
+    assert_eq!(response_header(&models, "cache-control"), Some("no-store"));
+    assert_exact_content_length(&models);
+    assert_eq!(
+        response_body(&models),
+        r#"{"object":"list","data":[{"id":"omni","object":"model","created":0,"owned_by":"sglang-omni","permission":[{"id":"modelperm-default","object":"model_permission","allow_create_engine":false,"allow_sampling":true,"allow_logprobs":true}],"root":"omni"}]}"#
+    );
+
+    let metrics = request(address, "GET", "/metrics");
+    assert!(metrics.starts_with("HTTP/1.1 200"));
+    assert_eq!(
+        response_header(&metrics, "content-type"),
+        Some("text/plain; version=0.0.4; charset=utf-8")
+    );
+    assert_exact_content_length(&metrics);
+    assert!(metrics.contains("sglang_omni_router_lifecycle{state=\"serving\"} 1\n"));
+    assert!(metrics.contains("sglang_omni_router_ready 0\n"));
+    assert!(metrics.contains("sglang_omni_router_admission_limit{class=\"generation_http\"} 64\n"));
+    assert!(metrics.contains("sglang_omni_router_admission_limit{class=\"speech_http\"} 0\n"));
+    assert!(metrics.contains("sglang_omni_router_worker_active_requests 0\n"));
+    assert!(
+        metrics
+            .contains("sglang_omni_router_worker_capacity_limit{class=\"speech_websocket\"} 0\n")
+    );
+    assert!(
+        !metrics.contains("sglang_omni_router_worker_capacity_limit{class=\"generation_http\"}")
+    );
+    assert!(!metrics.contains("worker-a"));
+    assert!(!metrics.contains("127.0.0.1"));
+
+    let diagnostics = request(address, "GET", "/diagnostics");
+    assert!(diagnostics.starts_with("HTTP/1.1 200"));
+    assert_exact_content_length(&diagnostics);
+    let diagnostic_value: serde_json::Value =
+        serde_json::from_str(response_body(&diagnostics)).expect("parse diagnostics response");
+    assert_eq!(diagnostic_value["lifecycle"], "serving");
+    assert_eq!(diagnostic_value["ready"], false);
+    assert_eq!(diagnostic_value["admission"][0]["class"], "global");
+    assert_eq!(diagnostic_value["admission"][0]["limit"], 128);
+    assert_eq!(diagnostic_value["admission"][1]["class"], "generation_http");
+    assert_eq!(diagnostic_value["admission"][1]["limit"], 64);
+    assert_eq!(
+        diagnostic_value["admission"].as_array().map(Vec::len),
+        Some(7)
+    );
+    assert_eq!(diagnostic_value["workers"][0]["worker_id"], "worker-a");
+    assert_eq!(diagnostic_value["workers"][0]["registration_ordinal"], 0);
+    assert!(matches!(
+        diagnostic_value["workers"][0]["health"].as_str(),
+        Some("unknown" | "unhealthy")
+    ));
+    assert_eq!(diagnostic_value["workers"][0]["routable"], false);
+    assert_eq!(diagnostic_value["workers"][0]["active_requests"], 0);
+    assert_eq!(
+        diagnostic_value["workers"][0]["capacity"]
+            .as_array()
+            .map(Vec::len),
+        Some(0)
+    );
+    for forbidden in [
+        "base_url",
+        "trust_domain",
+        "health_path",
+        "default_model_id",
+        "127.0.0.1",
+        "/health",
+        "\"local\"",
+        "\"omni\"",
+    ] {
+        assert!(!response_body(&diagnostics).contains(forbidden));
+    }
+
+    let method_error = raw_request(
+        address,
+        b"POST /metrics HTTP/1.1\r\nHost: localhost\r\nX-Request-Id: operations-error\r\nConnection: close\r\n\r\n",
+    );
+    assert!(method_error.starts_with("HTTP/1.1 405"));
+    assert_eq!(response_header(&method_error, "allow"), Some("GET"));
+    assert_eq!(
+        response_header(&method_error, "x-request-id"),
+        Some("operations-error")
+    );
+
+    for (method, path, status) in [
+        ("HEAD", "/v1/models", "405"),
+        ("PUT", "/diagnostics", "405"),
+        ("GET", "/metrics/", "404"),
+        ("GET", "/diagnostics?full=true", "400"),
+    ] {
+        let response = request(address, method, path);
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "unexpected {method} {path} response: {response}"
+        );
+        if status == "405" {
+            assert_eq!(response_header(&response, "allow"), Some("GET"));
+        }
+    }
+
+    let framed = raw_request(
+        address,
+        b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
+    );
+    assert!(framed.starts_with("HTTP/1.1 400"));
+    let wrong_version = raw_request(
+        address,
+        b"GET /metrics HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    assert!(wrong_version.starts_with("HTTP/1.0 505"));
+
     signal(child.id(), "-TERM");
     assert_eq!(child.wait(PROCESS_DEADLINE).code(), Some(0));
     let reused = TcpListener::bind(address).expect("listener is reusable after joined shutdown");
     drop(reused);
+}
+
+#[test]
+fn operations_share_readiness_without_contacting_the_worker() {
+    let _process_guard = process_lock();
+    let worker = TcpListener::bind("127.0.0.1:0").expect("bind operations worker fixture");
+    let worker_address = worker.local_addr().expect("read worker fixture address");
+    worker
+        .set_nonblocking(true)
+        .expect("set worker fixture nonblocking");
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let non_health_requests = Arc::new(AtomicU64::new(0));
+    let worker_stop = Arc::clone(&stop);
+    let worker_non_health = Arc::clone(&non_health_requests);
+    let worker_thread = thread::spawn(move || {
+        while !worker_stop.load(Ordering::Acquire) {
+            let (mut stream, _) = match worker.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("operations worker accept failed: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("bound worker request read");
+            let mut request = Vec::new();
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let mut buffer = [0_u8; 512];
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("operations worker read failed: {error}"),
+                }
+            }
+            if !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                continue;
+            }
+            let health = request.starts_with(b"GET /health HTTP/1.1\r\n");
+            if !health {
+                worker_non_health.fetch_add(1, Ordering::Relaxed);
+            }
+            let status = if health {
+                "200 OK"
+            } else {
+                "500 Internal Server Error"
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write operations worker response");
+        }
+    });
+
+    let directory = TestDir::new();
+    let address = unused_address();
+    let config = directory.config_with_worker(address, worker_address, 1024, 2_000);
+    let mut child = ChildGuard::spawn(&config);
+    wait_until_live(address, &mut child);
+    wait_until_ready(address, &mut child);
+
+    let metrics = request(address, "GET", "/metrics");
+    assert!(metrics.contains("sglang_omni_router_ready 1\n"));
+    let diagnostics = request(address, "GET", "/diagnostics");
+    let diagnostics: serde_json::Value =
+        serde_json::from_str(response_body(&diagnostics)).expect("parse ready diagnostics");
+    assert_eq!(diagnostics["ready"], true);
+    assert!(request(address, "GET", "/v1/models").starts_with("HTTP/1.1 200"));
+    assert!(request(address, "HEAD", "/metrics").starts_with("HTTP/1.1 405"));
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(non_health_requests.load(Ordering::Relaxed), 0);
+
+    signal(child.id(), "-TERM");
+    assert_eq!(child.wait(PROCESS_DEADLINE).code(), Some(0));
+    stop.store(true, Ordering::Release);
+    worker_thread
+        .join()
+        .expect("join operations worker fixture");
 }
 
 #[test]
