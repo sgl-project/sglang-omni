@@ -5,7 +5,7 @@ stages:
   preprocessing:
     factory:
       device: cpu
-      dtype: float32
+      compute_dtype: bfloat16
       max_concurrency: 1
 
   tts_engine:
