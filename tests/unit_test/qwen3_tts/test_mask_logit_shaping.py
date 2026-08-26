@@ -19,11 +19,16 @@ def _runner() -> Qwen3TTSModelRunner:
     return runner
 
 
-def _request(rid: str, epoch: int, penalty: float, output_ids, suppress):
+def _request(rid: str, epoch: int, penalty: float, output_ids, suppress, codec=None):
     sp = types.SimpleNamespace(repetition_penalty=penalty)
     req = types.SimpleNamespace(sampling_params=sp, output_ids=output_ids)
+    if codec is not None:
+        req._codec_suppress_tokens = tuple(codec)
     data = types.SimpleNamespace(
-        req=req, suppress_tokens=suppress, _qwen3_tts_prep_epoch=epoch
+        req=req,
+        suppress_tokens=suppress,
+        suppress_row_memo=None,
+        _qwen3_tts_prep_epoch=epoch,
     )
     return types.SimpleNamespace(request_id=rid, data=data)
 
@@ -41,7 +46,10 @@ def _reference(logits, requests):
             scores = out[row, idx].to(torch.float32)
             scores = torch.where(scores > 0, scores / penalty, scores * penalty)
             out[row, idx] = scores.to(out.dtype)
-        for tok in sched_req.data.suppress_tokens or []:
+        suppress = sched_req.data.suppress_tokens
+        if not suppress:
+            suppress = getattr(req, "_codec_suppress_tokens", None) or []
+        for tok in suppress:
             tok = int(tok)
             if 0 <= tok < vocab:
                 out[row, tok] = float("-inf")
@@ -145,3 +153,78 @@ def test_mask_shaping_empty_history_after_retract():
     logits2 = torch.randn(1, vocab)
     got = _apply(runner, logits2.clone(), reqs)
     assert torch.equal(got, logits2), "no history means no penalty anywhere"
+
+
+def test_mask_shaping_mixed_suppress_rows_match_reference():
+    torch.manual_seed(13)
+    vocab = 64
+    runner = _runner()
+    reqs = [
+        _request("a", 1, 1.2, [3], [7, 9]),
+        _request("b", 2, 1.0, [4], []),
+        _request("c", 3, 1.2, [5], [7, 9]),
+        _request("d", 4, 1.0, [6], [20, 500]),
+        _request("e", 5, 1.3, [8], None, codec=[11, 12]),
+    ]
+    logits = torch.randn(5, vocab)
+    assert torch.equal(_apply(runner, logits.clone(), reqs), _reference(logits, reqs))
+
+    survivors = [reqs[4], reqs[3], reqs[1], reqs[0]]
+    logits2 = torch.randn(4, vocab)
+    assert torch.equal(
+        _apply(runner, logits2.clone(), survivors), _reference(logits2, survivors)
+    )
+
+
+def test_mask_shaping_all_invalid_suppress_is_inactive():
+    torch.manual_seed(17)
+    vocab = 32
+    runner = _runner()
+    reqs = [_request("a", 1, 1.0, [1], [vocab, vocab + 5])]
+    logits = torch.randn(1, vocab)
+    assert torch.equal(_apply(runner, logits.clone(), reqs), logits)
+    assert runner._mask_sup_active is False
+
+
+def test_mask_shaping_replaced_suppress_list_is_applied():
+    torch.manual_seed(19)
+    vocab = 64
+    runner = _runner()
+    reqs = [_request("a", 1, 1.0, [1], [7])]
+    logits = torch.randn(1, vocab)
+    assert torch.equal(_apply(runner, logits.clone(), reqs), _reference(logits, reqs))
+
+    reqs[0].data.suppress_tokens = [9]
+    runner._mask_prep_rids = None
+    logits2 = torch.randn(1, vocab)
+    got = _apply(runner, logits2.clone(), reqs)
+    assert torch.equal(got, _reference(logits2, reqs))
+    assert got[0, 7] == logits2[0, 7]
+
+
+def test_mask_shaping_warm_rebuild_builds_no_suppress_tensor(monkeypatch):
+    torch.manual_seed(23)
+    vocab = 2048
+    batch = 16
+    runner = _runner()
+    suppress = [t for t in range(vocab - 1024, vocab) if t != vocab - 1]
+    reqs = [_request(f"r{i}", i, 1.0, [i], list(suppress)) for i in range(batch)]
+
+    sizes = []
+    real_tensor = torch.tensor
+
+    def counting_tensor(values, *args, **kwargs):
+        sizes.append(len(values))
+        return real_tensor(values, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "tensor", counting_tensor)
+    logits = torch.randn(batch, vocab)
+    assert torch.equal(_apply(runner, logits.clone(), reqs), _reference(logits, reqs))
+    assert sizes.count(len(suppress)) == 1
+    assert max(sizes) == len(suppress)
+
+    sizes.clear()
+    runner._mask_prep_rids = None
+    logits2 = torch.randn(batch, vocab)
+    assert torch.equal(_apply(runner, logits2.clone(), reqs), _reference(logits2, reqs))
+    assert max(sizes) <= batch

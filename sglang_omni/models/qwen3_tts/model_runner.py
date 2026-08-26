@@ -25,6 +25,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         self._mask_prep_rids: list | None = None
         self._mask_rep_active = False
         self._mask_sup_active = False
+        self._suppress_zero: torch.Tensor | None = None
+        self._suppress_rows: dict[tuple, torch.Tensor] = {}
 
     def before_prefill(
         self,
@@ -161,17 +163,51 @@ class Qwen3TTSModelRunner(ModelRunner):
             torch.ones(rows, 1, dtype=torch.float32, device=device),
         )
         self._mask_prep_rids = None
+        self._suppress_zero = torch.zeros(vocab, dtype=torch.bool, device=device)
+        self._suppress_rows = {}
+
+    def _suppress_row(
+        self, data: Any, req: Any, vocab: int, device: Any
+    ) -> torch.Tensor:
+        """The request's suppress row: the shared zero row when it suppresses
+        nothing, otherwise one row per distinct suppress set, built once and
+        memoized on the request data.
+
+        The memo holds while the request carries the same token container and
+        the masks have not been reallocated; mutating the container in place
+        is outside the contract, as it is for the base runner's suppress cache.
+        """
+        tokens = data.suppress_tokens
+        if not tokens:
+            tokens = getattr(req, "_codec_suppress_tokens", None)
+        zero = self._suppress_zero
+        memo = data.suppress_row_memo
+        if memo is not None and memo[0] is tokens and memo[1] is zero:
+            return memo[2]
+        row = zero
+        if tokens:
+            key = tuple(int(t) for t in tokens)
+            row = self._suppress_rows.get(key)
+            if row is None:
+                row = zero
+                in_vocab = [t for t in key if 0 <= t < vocab]
+                if in_vocab:
+                    row = torch.zeros(vocab, dtype=torch.bool, device=device)
+                    row[torch.tensor(in_vocab, dtype=torch.long, device=device)] = True
+                self._suppress_rows[key] = row
+        data.suppress_row_memo = (tokens, zero, row)
+        return row
 
     def _rebuild_masks(self, requests: list, vocab: int, device: Any) -> None:
         rep_mask, sup_mask, pen_col = self._shape_masks
         batch_size = len(requests)
         rep_mask[:batch_size] = False
-        sup_mask[:batch_size] = False
         rep_rows: list[int] = []
         rep_toks: list[int] = []
         penalties = [1.0] * batch_size
-        sup_rows: list[int] = []
-        sup_toks: list[int] = []
+        zero = self._suppress_zero
+        sup_rows: list[torch.Tensor] = []
+        sup_active = False
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
@@ -182,26 +218,18 @@ class Qwen3TTSModelRunner(ModelRunner):
                 seen = ModelRunner._rep_penalty_unique_tokens(data, output_ids, vocab)
                 rep_rows.extend([row_idx] * len(seen))
                 rep_toks.extend(seen)
-            suppress_tokens = data.suppress_tokens
-            if not suppress_tokens:
-                suppress_tokens = getattr(req, "_codec_suppress_tokens", None)
-            if suppress_tokens:
-                for token_id in suppress_tokens:
-                    tok = int(token_id)
-                    if 0 <= tok < vocab:
-                        sup_rows.append(row_idx)
-                        sup_toks.append(tok)
+            row = self._suppress_row(data, req, vocab, device)
+            sup_rows.append(row)
+            sup_active = sup_active or row is not zero
         if rep_rows:
             pairs = torch.tensor(rep_rows + rep_toks, dtype=torch.long, device=device)
             rep_mask[pairs[: len(rep_rows)], pairs[len(rep_rows) :]] = True
-        if sup_rows:
-            pairs = torch.tensor(sup_rows + sup_toks, dtype=torch.long, device=device)
-            sup_mask[pairs[: len(sup_rows)], pairs[len(sup_rows) :]] = True
+        torch.stack(sup_rows, out=sup_mask[:batch_size])
         pen_col[:batch_size, 0] = torch.tensor(
             penalties, dtype=torch.float32, device=device
         )
         self._mask_rep_active = bool(rep_rows) or any(p != 1.0 for p in penalties)
-        self._mask_sup_active = bool(sup_rows)
+        self._mask_sup_active = sup_active
 
     def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits
