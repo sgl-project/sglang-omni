@@ -74,7 +74,6 @@ class MossTTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             factory=MossTTSPreprocessingFactoryArgs(
-                dtype="float32",
                 compute_dtype="bfloat16",
                 ref_audio_cache=True,
                 ref_audio_cache_max_items=_REF_AUDIO_CACHE_MAX_ITEMS,

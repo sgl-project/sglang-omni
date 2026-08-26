@@ -100,7 +100,6 @@ def test_repository_encoder_cpu_fallback_preserves_batch_lengths() -> None:
     model = MossAudioTokenizerEncoder(
         _tiny_config(),
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
     ).eval()
 
     output = model.batch_encode(
@@ -117,11 +116,20 @@ def test_repository_encoder_cpu_fallback_preserves_batch_lengths() -> None:
     assert resolution.fallback_reason is not None
 
 
+def test_repository_encoder_defaults_missing_compute_dtype_to_bfloat16() -> None:
+    config = _tiny_config()
+    config.pop("compute_dtype")
+
+    model = MossAudioTokenizerEncoder(config, parameter_device="cpu")
+
+    assert model.encoder_dtype is torch.bfloat16
+    assert model.compute_dtype is torch.bfloat16
+
+
 def test_repository_encoder_uses_shared_packed_attention_wrapper() -> None:
     model = MossAudioTokenizerEncoder(
         _tiny_config(),
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
     )
     stage = model.encoder[1]
 
@@ -136,7 +144,6 @@ def test_repository_encoder_uses_configured_attention_implementation() -> None:
     model = MossAudioTokenizerEncoder(
         config,
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
     )
 
     attention = model.encoder[1].transformer.layers[0].self_attn
@@ -191,7 +198,6 @@ def test_repository_encoder_loads_local_weights_without_remote_code(tmp_path) ->
     expected_model = MossAudioTokenizerEncoder(
         config,
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
     ).eval()
     with (tmp_path / "config.json").open("w", encoding="utf-8") as config_file:
         json.dump(config, config_file)
@@ -206,7 +212,6 @@ def test_repository_encoder_loads_local_weights_without_remote_code(tmp_path) ->
     loaded = load_moss_audio_encoder(
         str(tmp_path),
         device="cpu",
-        encoder_dtype=torch.float32,
     ).model
 
     expected = expected_model.state_dict()
@@ -229,7 +234,6 @@ def test_repository_encoder_strict_flash_fails_before_loading_weights(
         load_moss_audio_encoder(
             str(tmp_path),
             device="cpu",
-            encoder_dtype=torch.bfloat16,
             compute_dtype=torch.bfloat16,
             attention_backend="packed_flash_attention",
         )
@@ -242,7 +246,6 @@ def test_repository_encoder_materializes_compute_dtype_at_load(tmp_path) -> None
     expected_model = MossAudioTokenizerEncoder(
         config,
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
         # note (Zhang Yiyang): Simulate the FP32 checkpoint representation. The
         # loader below must materialize the encoder in the requested BF16
         # compute dtype.
@@ -264,7 +267,6 @@ def test_repository_encoder_materializes_compute_dtype_at_load(tmp_path) -> None
     loaded = load_moss_audio_encoder(
         str(tmp_path),
         device="cpu",
-        encoder_dtype=torch.float32,
         compute_dtype=torch.bfloat16,
     ).model
 
@@ -288,7 +290,6 @@ def test_repository_encoder_materialized_bfloat16_does_not_use_autocast(
     model = MossAudioTokenizerEncoder(
         config,
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
         compute_dtype=torch.bfloat16,
         attention_backend="sdpa",
     ).eval()
@@ -314,7 +315,6 @@ def test_repository_encoder_skips_missing_decoder_shard(tmp_path) -> None:
     expected_model = MossAudioTokenizerEncoder(
         config,
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
         compute_dtype=torch.float32,
     ).eval()
     with (tmp_path / "config.json").open("w", encoding="utf-8") as config_file:
@@ -336,7 +336,6 @@ def test_repository_encoder_skips_missing_decoder_shard(tmp_path) -> None:
     loaded = load_moss_audio_encoder(
         str(tmp_path),
         device="cpu",
-        encoder_dtype=torch.float32,
         compute_dtype=torch.float32,
     ).model
 
@@ -585,7 +584,6 @@ def test_repository_encoder_normalizes_moss_audio_tokenizer_v1_checkpoint_fields
     model = MossAudioTokenizerEncoder(
         _tiny_moss_audio_tokenizer_v1_config(),
         parameter_device="cpu",
-        encoder_dtype=torch.float32,
         compute_dtype=torch.bfloat16,
     )
     stage = model.encoder[1]
@@ -624,21 +622,16 @@ def test_repository_encoder_normalizes_moss_audio_tokenizer_v1_checkpoint_fields
 
 
 @pytest.mark.parametrize(
-    ("encoder_dtype", "compute_dtype"),
-    [
-        (torch.float16, torch.bfloat16),
-        (torch.bfloat16, torch.float16),
-    ],
+    "compute_dtype",
+    [torch.float16],
 )
 def test_repository_encoder_rejects_float16(
-    encoder_dtype: torch.dtype,
     compute_dtype: torch.dtype,
 ) -> None:
     with pytest.raises(ValueError, match="dtype"):
         MossAudioTokenizerEncoder(
             _tiny_config(),
             parameter_device="cpu",
-            encoder_dtype=encoder_dtype,
             compute_dtype=compute_dtype,
         )
 

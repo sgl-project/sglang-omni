@@ -542,7 +542,6 @@ def create_preprocessing_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: str | torch.dtype = "float32",
     compute_dtype: str | torch.dtype | None = "bfloat16",
     attention_backend: str = "auto",
     codec_model_path: str | None = None,
@@ -572,12 +571,6 @@ def create_preprocessing_executor(
         )
     device = _resolve_codec_device(device, gpu_id)
     processor = _load_moss_tts_local_processor(model_path)
-    encoder_dtype = resolve_moss_audio_dtype(
-        dtype,
-        name="dtype",
-        allow_none=False,
-    )
-    assert encoder_dtype is not None
     resolved_compute_dtype = resolve_moss_audio_dtype(
         compute_dtype,
         name="compute_dtype",
@@ -586,7 +579,6 @@ def create_preprocessing_executor(
     audio_tokenizer = load_moss_tts_local_audio_tokenizer(
         _resolve_audio_tokenizer_model_path(processor, codec_model_path),
         device=device,
-        encoder_dtype=encoder_dtype,
         compute_dtype=resolved_compute_dtype,
         attention_backend=attention_backend,
     )

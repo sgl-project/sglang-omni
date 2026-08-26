@@ -1203,16 +1203,10 @@ class MossAudioTokenizerEncoder(nn.Module):
         config: dict[str, Any],
         *,
         parameter_device: str | torch.device | None = None,
-        encoder_dtype: torch.dtype = torch.bfloat16,
         compute_dtype: torch.dtype | None = None,
         attention_backend: str = AUTO_ATTENTION_BACKEND,
     ) -> None:
         super().__init__()
-        _validate_audio_dtypes(
-            component_dtype=encoder_dtype,
-            component_name="encoder_dtype",
-            compute_dtype=compute_dtype,
-        )
         self.config = SimpleNamespace(**config)
         sampling_rate = config.get("sampling_rate") or config.get("sample_rate")
         if sampling_rate is None:
@@ -1223,7 +1217,7 @@ class MossAudioTokenizerEncoder(nn.Module):
         self.enable_channel_interleave = bool(
             config.get("enable_channel_interleave", self.number_channels > 1)
         )
-        configured_compute_dtype = str(config.get("compute_dtype", "bf16"))
+        configured_compute_dtype = str(config.get("compute_dtype") or "bfloat16")
         resolved_compute_dtype = {
             "bf16": torch.bfloat16,
             "bfloat16": torch.bfloat16,
@@ -1242,6 +1236,21 @@ class MossAudioTokenizerEncoder(nn.Module):
         requested_compute_dtype = (
             resolved_compute_dtype if compute_dtype is None else compute_dtype
         )
+        if requested_compute_dtype not in (
+            None,
+            torch.float32,
+            torch.bfloat16,
+        ):
+            raise ValueError(
+                "compute_dtype must be torch.float32, torch.bfloat16, or None; "
+                f"got {requested_compute_dtype!r}"
+            )
+        effective_encoder_dtype = (
+            torch.float32
+            if requested_compute_dtype is None
+            or requested_compute_dtype is torch.float32
+            else requested_compute_dtype
+        )
         self.compute_dtype = (
             None
             if requested_compute_dtype is torch.float32
@@ -1251,12 +1260,7 @@ class MossAudioTokenizerEncoder(nn.Module):
         # for the encoder weights. This avoids relying on autocast to recast
         # FP32 parameters on every request. The quantizer is intentionally kept
         # FP32 below.
-        self.encoder_dtype = (
-            torch.float32
-            if requested_compute_dtype is None
-            or requested_compute_dtype is torch.float32
-            else requested_compute_dtype
-        )
+        self.encoder_dtype = effective_encoder_dtype
         self.attention_backend = validate_attention_backend(attention_backend)
         self._uses_moss_audio_tokenizer_v1_weights = "number_channels" not in config
 
@@ -1667,7 +1671,6 @@ def load_moss_audio_encoder(
     model_path: str,
     *,
     device: str | torch.device,
-    encoder_dtype: torch.dtype = torch.bfloat16,
     compute_dtype: torch.dtype | None = None,
     attention_backend: str = AUTO_ATTENTION_BACKEND,
 ) -> MossAudioEncoder:
@@ -1678,7 +1681,6 @@ def load_moss_audio_encoder(
     model = MossAudioTokenizerEncoder(
         config,
         parameter_device="meta",
-        encoder_dtype=encoder_dtype,
         compute_dtype=compute_dtype,
         attention_backend=attention_backend,
     )

@@ -130,7 +130,6 @@ def test_moss_tts_config_and_registry_contracts() -> None:
     )
     vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
     assert preprocessing.factory.model_dump(exclude_none=True) == {
-        "dtype": "float32",
         "compute_dtype": "bfloat16",
         "ref_audio_cache": True,
         "ref_audio_cache_max_items": 8192,
@@ -153,7 +152,6 @@ def test_moss_tts_production_config_resolves_codec_memory_policy() -> None:
     vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=0)
 
     assert preprocessing_args == {
-        "dtype": "float32",
         "compute_dtype": "bfloat16",
         "ref_audio_cache": True,
         "ref_audio_cache_max_items": 8192,
@@ -181,7 +179,7 @@ def test_moss_tts_32gb_config_bounds_runtime_memory() -> None:
     vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=0)
 
     assert preprocessing_args["device"] == "cpu"
-    assert preprocessing_args["dtype"] == "float32"
+    assert preprocessing_args["compute_dtype"] == "bfloat16"
     assert preprocessing_args["max_concurrency"] == 1
     assert tts_engine_args["dtype"] == "bfloat16"
     assert tts_engine_args["server_args_overrides"] == {
@@ -207,7 +205,7 @@ def test_moss_tts_24gb_config_bounds_runtime_memory() -> None:
     vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=0)
 
     assert preprocessing_args["device"] == "cpu"
-    assert preprocessing_args["dtype"] == "float32"
+    assert preprocessing_args["compute_dtype"] == "bfloat16"
     assert preprocessing_args["max_concurrency"] == 1
     assert tts_engine_args["dtype"] == "bfloat16"
     assert tts_engine_args["server_args_overrides"] == {
@@ -228,7 +226,7 @@ def test_moss_tts_codec_runtime_overrides_take_precedence() -> None:
     config = ConfigManager(MossTTSPipelineConfig(model_path="model")).merge_config(
         [
             ("preprocessing.factory.device", "cuda:7"),
-            ("preprocessing.factory.dtype", "bfloat16"),
+            ("preprocessing.factory.compute_dtype", "bfloat16"),
             ("vocoder.factory.device", "cpu"),
             ("vocoder.factory.dtype", "float32"),
         ]
@@ -241,7 +239,7 @@ def test_moss_tts_codec_runtime_overrides_take_precedence() -> None:
     vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=2)
 
     assert preprocessing_args["device"] == "cuda:7"
-    assert preprocessing_args["dtype"] == "bfloat16"
+    assert preprocessing_args["compute_dtype"] == "bfloat16"
     assert preprocessing_args["gpu_id"] == 2
     assert vocoder_args["device"] == "cpu"
     assert vocoder_args["dtype"] == "float32"
@@ -627,18 +625,17 @@ def test_moss_tts_preprocessing_loads_separate_codec(
         ),
     )
     encoder = SimpleNamespace()
-    loaded: list[tuple[str, str, torch.dtype, torch.dtype | None]] = []
+    loaded: list[tuple[str, str, torch.dtype | None]] = []
 
     def load_encoder(
         model_path,
         *,
         device,
-        encoder_dtype,
         compute_dtype,
         attention_backend,
     ):
         assert attention_backend == "sdpa"
-        loaded.append((model_path, device, encoder_dtype, compute_dtype))
+        loaded.append((model_path, device, compute_dtype))
         return encoder
 
     monkeypatch.setattr(stages, "_load_moss_processor", lambda model_path: processor)
@@ -661,7 +658,7 @@ def test_moss_tts_preprocessing_loads_separate_codec(
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
-    assert loaded == [("codec-from-model-config", "cpu", torch.float32, torch.bfloat16)]
+    assert loaded == [("codec-from-model-config", "cpu", torch.bfloat16)]
 
 
 def test_moss_tts_preprocessing_uses_placement_gpu_id(
@@ -678,18 +675,17 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
         ),
     )
     encoder = SimpleNamespace()
-    loaded: list[tuple[str, str, torch.dtype, torch.dtype | None]] = []
+    loaded: list[tuple[str, str, torch.dtype | None]] = []
 
     def load_encoder(
         model_path,
         *,
         device,
-        encoder_dtype,
         compute_dtype,
         attention_backend,
     ):
         assert attention_backend == "auto"
-        loaded.append((model_path, device, encoder_dtype, compute_dtype))
+        loaded.append((model_path, device, compute_dtype))
         return encoder
 
     monkeypatch.setattr(stages, "_load_moss_processor", lambda model_path: processor)
@@ -707,7 +703,7 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
-    assert loaded == [("codec", "cuda:2", torch.float32, torch.bfloat16)]
+    assert loaded == [("codec", "cuda:2", torch.bfloat16)]
 
 
 def test_moss_tts_pathlike_reference_uses_separate_codec() -> None:

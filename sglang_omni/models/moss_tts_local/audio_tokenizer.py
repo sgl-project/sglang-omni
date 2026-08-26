@@ -165,14 +165,12 @@ def load_moss_tts_local_audio_tokenizer(
     model_path: str = DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
     *,
     device: str = "cuda:0",
-    encoder_dtype: torch.dtype = torch.bfloat16,
     compute_dtype: torch.dtype | None = None,
     attention_backend: str = AUTO_ATTENTION_BACKEND,
 ) -> MossTTSLocalAudioTokenizer:
     encoder = load_moss_audio_encoder(
         model_path,
         device=device,
-        encoder_dtype=encoder_dtype,
         compute_dtype=compute_dtype,
         attention_backend=attention_backend,
     )

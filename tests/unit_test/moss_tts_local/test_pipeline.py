@@ -354,7 +354,7 @@ def test_audio_tokenizer_reference_encode_uses_processor_stereo_contract():
     torch.testing.assert_close(model.calls[0][0][0], mono.repeat(2, 1) * scale)
 
 
-def test_audio_tokenizer_loader_matches_processor_codec_weight_dtype(monkeypatch):
+def test_audio_tokenizer_loader_matches_processor_codec_compute_dtype(monkeypatch):
     from sglang_omni.models.moss_tts_local import audio_tokenizer as audio_tokenizer_mod
     from sglang_omni.models.moss_tts_local.audio_tokenizer import (
         load_moss_tts_local_audio_tokenizer,
@@ -381,7 +381,6 @@ def test_audio_tokenizer_loader_matches_processor_codec_weight_dtype(monkeypatch
     tokenizer = load_moss_tts_local_audio_tokenizer(
         "codec",
         device="cuda:7",
-        encoder_dtype=torch.float32,
         compute_dtype=torch.bfloat16,
         attention_backend="sdpa",
     )
@@ -391,7 +390,6 @@ def test_audio_tokenizer_loader_matches_processor_codec_weight_dtype(monkeypatch
     assert loaded_kwargs == {
         "model_path": "codec",
         "device": "cuda:7",
-        "encoder_dtype": torch.float32,
         "compute_dtype": torch.bfloat16,
         "attention_backend": "sdpa",
     }

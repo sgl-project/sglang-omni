@@ -424,7 +424,6 @@ def create_preprocessing_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: str | torch.dtype = "float32",
     compute_dtype: str | torch.dtype | None = "bfloat16",
     attention_backend: str = "auto",
     codec_model_path: str | None = None,
@@ -457,17 +456,10 @@ def create_preprocessing_executor(
         processor,
         codec_model_path,
     )
-    encoder_dtype = resolve_moss_audio_dtype(
-        dtype,
-        name="dtype",
-        allow_none=False,
-    )
-    assert encoder_dtype is not None
     resolved_compute_dtype = _resolve_compute_dtype(compute_dtype)
     audio_encoder = load_moss_audio_encoder(
         resolved_codec_model_path,
         device=device,
-        encoder_dtype=encoder_dtype,
         compute_dtype=resolved_compute_dtype,
         attention_backend=attention_backend,
     )

@@ -38,7 +38,6 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             factory=FactoryArgs(
                 device=codec_device,
-                dtype="float32",
                 compute_dtype="bfloat16",
                 attention_backend="auto",
                 max_concurrency=_PREPROCESSING_MAX_CONCURRENCY,
