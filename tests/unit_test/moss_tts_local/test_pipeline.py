@@ -13,7 +13,10 @@ import torch
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
-from sglang_omni.models.moss_tts_local.audio_tokenizer import MossTTSLocalAudioTokenizer
+from sglang_omni.models.moss_tts_local.audio_tokenizer import (
+    MossTTSLocalAudioTokenizer,
+    MossTTSLocalAudioVocoder,
+)
 from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalColocatedPipelineConfig,
     MossTTSLocalPipelineConfig,
@@ -352,6 +355,16 @@ def test_audio_tokenizer_reference_encode_uses_processor_stereo_contract():
 
     scale = 10.0 ** (-3.0 / 20.0)
     torch.testing.assert_close(model.calls[0][0][0], mono.repeat(2, 1) * scale)
+
+
+def test_audio_tokenizer_wrappers_resolve_sample_rate_fallbacks():
+    model = types.SimpleNamespace(config=types.SimpleNamespace(sample_rate=24000))
+
+    tokenizer = MossTTSLocalAudioTokenizer(model, device="cpu")
+    vocoder = MossTTSLocalAudioVocoder(model, device="cpu")
+
+    assert tokenizer.sample_rate == 24000
+    assert vocoder.sample_rate == 24000
 
 
 def test_audio_tokenizer_loader_matches_processor_codec_compute_dtype(monkeypatch):

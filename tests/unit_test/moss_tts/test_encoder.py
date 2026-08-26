@@ -22,6 +22,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     load_moss_audio_vocoder,
     resolve_moss_audio_attention_backend,
     resolve_moss_audio_dtype,
+    resolve_moss_audio_sample_rate,
 )
 
 
@@ -719,3 +720,27 @@ def test_shared_audio_encoder_uses_model_channel_contract() -> None:
 
     assert model.prepared is not None
     assert model.prepared[0].shape == (2, 4)
+
+
+@pytest.mark.parametrize(
+    ("model_attrs", "config_attrs", "expected"),
+    [
+        ({"sampling_rate": 48_000}, {"sampling_rate": 24_000}, 48_000),
+        ({}, {"sampling_rate": 24_000}, 24_000),
+        ({}, {"sample_rate": 16_000}, 16_000),
+    ],
+)
+def test_shared_audio_sample_rate_resolution(
+    model_attrs: dict[str, int],
+    config_attrs: dict[str, int],
+    expected: int,
+) -> None:
+    model = type("Model", (), model_attrs)()
+    config = type("Config", (), config_attrs)()
+
+    assert resolve_moss_audio_sample_rate(model, config) == expected
+
+
+def test_shared_audio_sample_rate_resolution_rejects_missing_value() -> None:
+    with pytest.raises(ValueError, match="sampling_rate or sample_rate"):
+        resolve_moss_audio_sample_rate(object(), object())

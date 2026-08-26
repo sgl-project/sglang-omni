@@ -71,6 +71,21 @@ def resolve_moss_audio_attention_backend(
     return AUTO_ATTENTION_BACKEND
 
 
+# Note (Zhang Yiyang): Prefer the runtime model value, then the canonical config
+# field, and finally the legacy config alias for checkpoint compatibility.
+def resolve_moss_audio_sample_rate(model: Any, config: Any) -> int:
+    for value in (
+        getattr(model, "sampling_rate", None),
+        getattr(config, "sampling_rate", None),
+        getattr(config, "sample_rate", None),
+    ):
+        if value is not None:
+            return int(value)
+    raise ValueError(
+        "MOSS-Audio-Tokenizer model/config lacks sampling_rate or sample_rate"
+    )
+
+
 def _attention_backend_label(resolution: AttentionBackendResolution) -> str:
     if resolution.fallback_reason is None:
         return resolution.backend
@@ -1456,9 +1471,7 @@ class MossAudioEncoder:
         self.model = model
         self.device = str(device)
         config = model.config
-        self.sample_rate = int(
-            getattr(model, "sampling_rate", getattr(config, "sampling_rate"))
-        )
+        self.sample_rate = resolve_moss_audio_sample_rate(model, config)
         self.number_channels = int(
             getattr(model, "number_channels", getattr(config, "number_channels", 1))
         )

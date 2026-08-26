@@ -18,6 +18,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     load_moss_audio_encoder,
     resolve_moss_audio_attention_backend,
     resolve_moss_audio_dtype,
+    resolve_moss_audio_sample_rate,
     validate_attention_backend,
 )
 from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
@@ -50,9 +51,7 @@ class MossTTSLocalAudioTokenizer:
             config = encoder.model.config
         if config is None:
             raise ValueError("MOSS-TTS Local audio tokenizer model lacks config")
-        self.sample_rate = int(
-            getattr(model, "sampling_rate", getattr(config, "sampling_rate"))
-        )
+        self.sample_rate = resolve_moss_audio_sample_rate(model, config)
 
     def encode_paths(
         self,
@@ -198,9 +197,7 @@ class MossTTSLocalAudioVocoder:
         config = getattr(model, "config", None)
         if config is None:
             raise ValueError("MOSS-TTS Local vocoder model lacks config")
-        self.sample_rate = int(
-            getattr(model, "sampling_rate", getattr(config, "sampling_rate"))
-        )
+        self.sample_rate = resolve_moss_audio_sample_rate(model, config)
 
 
 def _resolve_local_codec_dtype(
