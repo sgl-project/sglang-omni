@@ -15,6 +15,10 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
     model_name = "MOSS-TTS Local"
     context_length = 8192
     model_arch_override = "MossTTSLocalSGLangModel"
+    # The model routes request-specific embeddings through OmniPrefillInputs,
+    # satisfying the shared runner's static-buffer refresh contract. The graph
+    # backend remains opt-in because generation_defaults does not enable it.
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,

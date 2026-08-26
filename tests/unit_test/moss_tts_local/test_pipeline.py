@@ -1879,6 +1879,79 @@ def test_encode_audio_stereo_wav_and_mono_fallback():
     assert struct.unpack("<H", mono_blob[22:24])[0] == 1
 
 
+def test_moss_local_prefill_forward_uses_prompt_row_sidecar():
+    from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
+    class FakeModel:
+        dtype = torch.float32
+        hidden_size = 2
+        _state_pool = types.SimpleNamespace(
+            reset_for_refill=lambda *_args: None,
+            rebuild_audio_history=lambda *_args: None,
+        )
+
+        @staticmethod
+        def _prepare_multi_modal_inputs(rows):
+            return rows.to(torch.float32)[:, :2]
+
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = FakeModel()
+    forward_batch = types.SimpleNamespace(
+        input_ids=torch.tensor([123456, 123457], dtype=torch.long),
+        input_embeds=None,
+        replace_embeds=None,
+    )
+    original_input_ids = forward_batch.input_ids.clone()
+    request = types.SimpleNamespace(
+        request_id="request",
+        data=types.SimpleNamespace(
+            req=types.SimpleNamespace(
+                rid="request",
+                extend_range=types.SimpleNamespace(length=2),
+                prefix_indices=[0],
+            ),
+            prompt_rows=torch.tensor(
+                [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+                dtype=torch.long,
+            ),
+            output_rows=[],
+            generation_steps=0,
+            sampling_steps=0,
+        ),
+    )
+
+    result = runner.custom_prefill_forward(forward_batch, object(), [request])
+
+    assert result is None
+    assert torch.equal(forward_batch.input_ids, original_input_ids)
+    assert forward_batch.input_embeds is None
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None
+    torch.testing.assert_close(
+        prefill_inputs.input_embeds,
+        torch.tensor([[4.0, 5.0], [7.0, 8.0]]),
+    )
+
+
+def test_moss_local_builder_allows_breakable_prefill_as_opt_in():
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.05,
+    )
+
+    assert builder.supports_breakable_prefill_cuda_graph is True
+    assert "cuda_graph_backend_prefill" not in builder.generation_defaults(
+        dtype="bfloat16"
+    )
+
+
 def test_post_process_outputs_skips_chunked_rows():
     """Chunked-prefill rows must not be appended to output_rows."""
     pytest.importorskip("sglang")
