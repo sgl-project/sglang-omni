@@ -16,7 +16,9 @@ Each assignment is its own tiny CUDA kernel launch. Requests that apply
 the same ~90-token set on every request) turn this into dozens-to-hundreds
 of launches per call, and this classmethod runs on every extend/prefill
 batch-composition step. We instead collect all (row, col, value) triples on
-the CPU and materialize the tensor with a single ``index_put_`` call.
+the CPU, deduplicating by (row, int(key)) so keys that canonicalize to the
+same token id resolve deterministically, and materialize the tensor with a
+single ``index_put_`` call.
 
 Captured against sglang==0.5.16
 (sglang/srt/sampling/sampling_batch_info.py, lines 82-217). This is a
@@ -45,20 +47,24 @@ def _build_logit_bias(reqs, vocab_size: int, device) -> Optional[torch.Tensor]:
     if not any(r.sampling_params.logit_bias is not None for r in reqs):
         return None
 
-    rows: list[int] = []
-    cols: list[int] = []
-    values: list[float] = []
+    # Canonicalize (row, token_id) -> value on the CPU first. Two distinct
+    # string keys can canonicalize to the same int token id; index_put_ with
+    # accumulate=False (the default) does not define which write wins when
+    # the index tensors contain duplicates, whereas this dict overwrite
+    # gives the same last-write-wins-by-iteration-order result as the
+    # original per-element loop it replaces.
+    canonical: dict[tuple[int, int], float] = {}
     for i, r in enumerate(reqs):
         bias = r.sampling_params.logit_bias
         if not bias:
             continue
         for key, value in bias.items():
-            rows.append(i)
-            cols.append(int(key))
-            values.append(float(value))
+            canonical[(i, int(key))] = float(value)
 
     logit_bias = torch.zeros(len(reqs), vocab_size, device=device)
-    if rows:
+    if canonical:
+        rows, cols = zip(*canonical.keys())
+        values = list(canonical.values())
         row_idx = torch.tensor(rows, dtype=torch.long, device=device)
         col_idx = torch.tensor(cols, dtype=torch.long, device=device)
         val = torch.tensor(values, dtype=logit_bias.dtype, device=device)

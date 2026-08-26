@@ -19,6 +19,12 @@ from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from tests.unit_test.fakes import FakeServerArgs
 
 
+def _server_args(**overrides):
+    params = {"max_prefill_tokens": 4096, "max_running_requests": 16, "tp_size": 1}
+    params.update(overrides)
+    return SimpleNamespace(**params)
+
+
 def _encoder_graph_builder(**kwargs):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
@@ -73,14 +79,14 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=_server_args(max_prefill_tokens=4096, max_running_requests=4),
         generation_cuda_graph_enabled=True,
     )
     assert calls == [([1, 2, 4], 3000)]
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=_server_args(max_prefill_tokens=4096, max_running_requests=4),
         generation_cuda_graph_enabled=False,
     )
     assert calls == [([1, 2, 4], 3000)]
@@ -98,10 +104,7 @@ def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(
-            max_prefill_tokens=6144,
-            max_running_requests=32,
-        ),
+        server_args=_server_args(max_prefill_tokens=6144, max_running_requests=32),
         generation_cuda_graph_enabled=True,
     )
 
@@ -132,14 +135,84 @@ def test_whisper_encoder_cuda_graph_buckets_are_filtered(
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(
-            max_prefill_tokens=max_prefill_tokens,
-            max_running_requests=16,
+        server_args=_server_args(
+            max_prefill_tokens=max_prefill_tokens, max_running_requests=16
         ),
         generation_cuda_graph_enabled=True,
     )
 
     assert calls == [expected]
+
+
+def test_whisper_encoder_graph_buckets_capped_by_request_build_concurrency() -> None:
+    calls: list[list[int]] = []
+    builder = _encoder_graph_builder(
+        max_running_requests=64, request_build_max_workers=4
+    )
+    model = SimpleNamespace(
+        init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=_server_args(
+            max_prefill_tokens=6144, max_running_requests=64, tp_size=1
+        ),
+        generation_cuda_graph_enabled=True,
+    )
+
+    # pre_lm_max_batch_size=16 and max_running_requests=64 would otherwise
+    # reach bucket 16, but only 4 request-build workers can ever have items
+    # in flight at once (encoder_service.py's encode_item blocks its caller
+    # until its batch drains), so buckets above 4 are unreachable.
+    assert calls == [[1, 2, 4]]
+
+
+def test_whisper_encoder_graph_buckets_follow_tp_forced_single_worker() -> None:
+    calls: list[list[int]] = []
+    builder = _encoder_graph_builder(
+        max_running_requests=64, request_build_max_workers=8
+    )
+    model = SimpleNamespace(
+        init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=_server_args(
+            max_prefill_tokens=6144, max_running_requests=64, tp_size=2
+        ),
+        generation_cuda_graph_enabled=True,
+    )
+
+    # OmniScheduler forces request_build_max_workers down to 1 whenever
+    # tp_size > 1 (to preserve identical admission order across TP ranks);
+    # this must be re-derived here since OmniScheduler doesn't exist yet
+    # when encoder graph buckets are resolved.
+    assert calls == [[1]]
+
+
+def test_whisper_encoder_graph_bucket_cap_ignored_for_explicit_buckets() -> None:
+    calls: list[list[int]] = []
+    builder = _encoder_graph_builder(
+        max_running_requests=64,
+        request_build_max_workers=4,
+        encoder_graph_batch_buckets=[1, 4, 8, 16],
+    )
+    model = SimpleNamespace(
+        init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=_server_args(max_prefill_tokens=6144, max_running_requests=64),
+        generation_cuda_graph_enabled=True,
+    )
+
+    # An explicit bucket list is still filtered by pre_lm_max_batch_size (16)
+    # but not further capped by request-build concurrency, matching the
+    # existing max_running_requests precedent for explicit bucket lists.
+    assert calls == [[1, 4, 8, 16]]
 
 
 def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
@@ -162,6 +235,60 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
 
     with pytest.raises(ValueError, match="encoder prefix must be admitted atomically"):
         builder.adjust_overrides({"chunked_prefill_size": 4096})
+
+
+def test_whisper_adjust_overrides_disables_decode_graph_for_unsafe_backend() -> None:
+    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    builder = WhisperASREngineBuilder(
+        max_running_requests=4, max_new_tokens=32, mem_fraction_static=0.2
+    )
+
+    # attention_backend alone selects fa3 for both phases.
+    overrides = {"attention_backend": "fa3"}
+    builder.adjust_overrides(overrides)
+    assert overrides["disable_decode_cuda_graph"] is True
+    assert "disable_cuda_graph" not in overrides
+
+    # decode_attention_backend overrides attention_backend for decode only;
+    # the base backend being safe must not mask an unsafe decode override.
+    overrides = {"attention_backend": "flashinfer", "decode_attention_backend": "fa3"}
+    builder.adjust_overrides(overrides)
+    assert overrides["disable_decode_cuda_graph"] is True
+
+    # The converse: decode_attention_backend explicitly opts into a safe
+    # backend, so an unsafe base attention_backend (prefill-only here) must
+    # not trigger the guard.
+    overrides = {"attention_backend": "fa3", "decode_attention_backend": "flashinfer"}
+    builder.adjust_overrides(overrides)
+    assert "disable_decode_cuda_graph" not in overrides
+
+
+def test_whisper_adjust_overrides_respects_explicit_cuda_graph_overrides() -> None:
+    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    builder = WhisperASREngineBuilder(
+        max_running_requests=4, max_new_tokens=32, mem_fraction_static=0.2
+    )
+
+    # An explicit disable_decode_cuda_graph=False must not be silently
+    # overwritten with a value the caller didn't ask for... except that the
+    # backend is genuinely unsafe, so the guard still fires (False is falsy,
+    # same as unset).
+    overrides = {"attention_backend": "fa3", "disable_decode_cuda_graph": False}
+    builder.adjust_overrides(overrides)
+    assert overrides["disable_decode_cuda_graph"] is True
+
+    # An already-disabled decode CUDA graph makes the guard a no-op.
+    overrides = {"attention_backend": "fa3", "disable_decode_cuda_graph": True}
+    builder.adjust_overrides(overrides)
+    assert overrides["disable_decode_cuda_graph"] is True
+
+    # The global disable_cuda_graph also satisfies the guard without the
+    # targeted flag being set.
+    overrides = {"attention_backend": "fa3", "disable_cuda_graph": True}
+    builder.adjust_overrides(overrides)
+    assert "disable_decode_cuda_graph" not in overrides
 
 
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:

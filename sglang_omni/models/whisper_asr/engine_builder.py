@@ -43,12 +43,25 @@ def _resolve_encoder_graph_buckets(
     max_prefill_tokens: int,
     encoder_token_count: int,
     max_running_requests: int | None,
+    request_build_concurrency: int | None = None,
 ) -> tuple[int, ...]:
     # note (guozhihao-224): pre-LM encoding is no longer limited by atomic prefill
     # admission, so capture against pre_lm_max_batch_size. Keep
     # max_prefill_tokens // encoder_token_count only for encoder-in-prefill.
     if enable_pre_lm_encoder:
         capture_limit = pre_lm_max_batch_size
+        # WhisperPreLMEncoderService.encode_item blocks its calling request-build
+        # worker thread until the batch it queued into is drained (encoder_service.py),
+        # so at most request_build_concurrency items can ever be queued at once --
+        # capturing a graph bucket above that is VRAM reserved for a batch size the
+        # encoder can never actually assemble.
+        if request_build_concurrency is not None:
+            if request_build_concurrency < 1:
+                raise ValueError(
+                    "request_build_concurrency must be >= 1, "
+                    f"got {request_build_concurrency}"
+                )
+            capture_limit = min(capture_limit, request_build_concurrency)
     else:
         if max_prefill_tokens < 1:
             raise ValueError(
@@ -177,6 +190,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
         max_prefill_tokens = int(server_args.max_prefill_tokens)
         max_running_requests = int(server_args.max_running_requests)
+        # Mirrors OmniScheduler.__init__'s own reduction (omni_scheduler.py):
+        # TP>1 forces request_build_max_workers down to 1 to keep request
+        # admission order identical across TP ranks. That reduction happens
+        # inside OmniScheduler, which is constructed after this method runs,
+        # so it must be re-derived here rather than read off the scheduler.
+        request_build_concurrency = max(1, int(self.request_build_max_workers))
+        if request_build_concurrency > 1 and int(server_args.tp_size) > 1:
+            request_build_concurrency = 1
         resolved_buckets = _resolve_encoder_graph_buckets(
             self.encoder_graph_batch_buckets,
             enable_pre_lm_encoder=self.enable_pre_lm_encoder,
@@ -188,17 +209,24 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
                 if self._using_default_encoder_graph_buckets
                 else None
             ),
+            request_build_concurrency=(
+                request_build_concurrency
+                if self._using_default_encoder_graph_buckets
+                else None
+            ),
         )
         logger.info(
             "Resolved Whisper encoder CUDA graph buckets configured=%s "
             "reachable=%s pre_lm=%s max_prefill_tokens=%d "
-            "encoder_token_count=%d max_running_requests=%d",
+            "encoder_token_count=%d max_running_requests=%d "
+            "request_build_concurrency=%d",
             self.encoder_graph_batch_buckets,
             resolved_buckets,
             self.enable_pre_lm_encoder,
             max_prefill_tokens,
             self.encoder_token_count,
             max_running_requests,
+            request_build_concurrency,
         )
         model.init_encoder_graphs(
             resolved_buckets,
@@ -249,21 +277,27 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         # per-request processor; this flag permits SGLang to execute it.
         overrides["enable_custom_logit_processor"] = True
 
-        attention_backend = overrides.get("attention_backend")
+        # Mirrors ServerArgs.get_attention_backends: decode_attention_backend
+        # overrides attention_backend for the decode phase only when set.
+        effective_decode_backend = overrides.get(
+            "decode_attention_backend"
+        ) or overrides.get("attention_backend")
         if (
-            attention_backend in _CUDA_GRAPH_UNSAFE_ATTENTION_BACKENDS
+            effective_decode_backend in _CUDA_GRAPH_UNSAFE_ATTENTION_BACKENDS
             and not overrides.get("disable_cuda_graph")
+            and not overrides.get("disable_decode_cuda_graph")
         ):
             logger.warning(
-                "attention_backend=%r is known to crash Whisper ASR under decode "
-                "CUDA graphs (CUDA device-side assert / out-of-bounds KV index in "
-                "encoder-decoder cross-attention once real requests replay a "
-                "captured graph); forcing disable_cuda_graph=True. Set "
-                "disable_cuda_graph explicitly in server_args_overrides to "
-                "override this.",
-                attention_backend,
+                "decode attention_backend=%r is known to crash Whisper ASR under "
+                "decode CUDA graphs (CUDA device-side assert / out-of-bounds KV "
+                "index in encoder-decoder cross-attention once real requests "
+                "replay a captured graph); forcing disable_decode_cuda_graph=True. "
+                "The encoder CUDA graph and prefill CUDA graph are unaffected. Set "
+                "disable_decode_cuda_graph or disable_cuda_graph explicitly in "
+                "server_args_overrides to override this.",
+                effective_decode_backend,
             )
-            overrides["disable_cuda_graph"] = True
+            overrides["disable_decode_cuda_graph"] = True
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
