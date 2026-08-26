@@ -69,7 +69,7 @@ export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DY
 sgl-omni serve \
   --model-path mlx-community/Qwen3-ASR-0.6B-4bit \
   --model-name Qwen/Qwen3-ASR-0.6B \
-  --max-running-requests 1 \
+  --asr.engine.max_running_requests 1 \
   --port 8000
 ```
 
@@ -87,7 +87,7 @@ unset SGLANG_USE_MLX
 sgl-omni serve \
   --model-path Qwen/Qwen3-ASR-0.6B \
   --model-name Qwen/Qwen3-ASR-0.6B \
-  --max-running-requests 1 \
+  --asr.engine.max_running_requests 1 \
   --port 8000
 ```
 
