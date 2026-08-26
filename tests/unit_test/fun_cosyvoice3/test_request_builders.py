@@ -540,18 +540,18 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
                 )
             )
 
-        assert finalization_started.wait(timeout=2.0), (
-            "preprocessing did not reach finalization after reference encoding"
-        )
-        assert tracking_lock.second_attempted.wait(timeout=2.0), (
-            "both preprocessing workers did not reach the finalization boundary"
-        )
+        assert finalization_started.wait(
+            timeout=2.0
+        ), "preprocessing did not reach finalization after reference encoding"
+        assert tracking_lock.second_attempted.wait(
+            timeout=2.0
+        ), "both preprocessing workers did not reach the finalization boundary"
         outputs = [scheduler.outbox.get(timeout=3.0) for _ in request_ids]
 
         assert {output.request_id for output in outputs} == request_ids
-        assert all(output.type == "result" for output in outputs), (
-            f"preprocessing errors: {outputs!r}"
-        )
+        assert all(
+            output.type == "result" for output in outputs
+        ), f"preprocessing errors: {outputs!r}"
         assert set(reference_inputs) == {b"reference-a", b"reference-b"}
         assert tracking_lock.attempt_count == 2
         assert max_active_finalizations == 1
