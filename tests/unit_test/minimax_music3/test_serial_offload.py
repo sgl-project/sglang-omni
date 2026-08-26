@@ -7,10 +7,17 @@ import pytest
 import torch
 
 from sglang_omni.models.minimax_music3.serial_offload import (
+    STALL_REPORT_SECONDS,
     SerialOffloadCoordinator,
     get_coordinator,
     move_module_to_device,
 )
+
+
+def _registered() -> SerialOffloadCoordinator:
+    coordinator = SerialOffloadCoordinator()
+    coordinator.register_ar(torch.nn.Linear(2, 2), torch.device("cpu"))
+    return coordinator
 
 
 def test_get_coordinator_returns_a_process_wide_singleton() -> None:
@@ -22,54 +29,84 @@ def test_disabled_coordinator_never_blocks_admission_and_handoffs_are_noops() ->
 
     assert coordinator.enabled is False
     assert coordinator.ar_can_admit() is True
-    coordinator.begin_dit_handoff()
-    coordinator.end_dit_handoff()
+    coordinator.begin_dit_handoff("req-1")
+    coordinator.end_dit_handoff("req-1")
     assert coordinator.ar_can_admit() is True
 
 
 def test_register_ar_enables_the_coordinator_and_starts_ar_active() -> None:
-    coordinator = SerialOffloadCoordinator()
-    model = torch.nn.Linear(2, 2)
-
-    coordinator.register_ar(model, torch.device("cpu"))
+    coordinator = _registered()
 
     assert coordinator.enabled is True
     assert coordinator.ar_can_admit() is True
 
 
 def test_begin_dit_handoff_moves_ar_off_the_gpu_and_blocks_admission() -> None:
-    coordinator = SerialOffloadCoordinator()
-    model = torch.nn.Linear(2, 2)
-    coordinator.register_ar(model, torch.device("cpu"))
+    coordinator = _registered()
 
-    coordinator.begin_dit_handoff()
+    coordinator.begin_dit_handoff("req-1")
 
     assert coordinator.ar_can_admit() is False
 
 
 def test_end_dit_handoff_restores_ar_and_reopens_admission() -> None:
-    coordinator = SerialOffloadCoordinator()
-    model = torch.nn.Linear(2, 2)
-    coordinator.register_ar(model, torch.device("cpu"))
-    coordinator.begin_dit_handoff()
+    coordinator = _registered()
+    coordinator.begin_dit_handoff("req-1")
 
-    coordinator.end_dit_handoff()
+    coordinator.end_dit_handoff("req-1")
 
     assert coordinator.ar_can_admit() is True
 
 
 def test_handoff_calls_are_idempotent() -> None:
-    coordinator = SerialOffloadCoordinator()
-    model = torch.nn.Linear(2, 2)
-    coordinator.register_ar(model, torch.device("cpu"))
+    coordinator = _registered()
 
-    coordinator.begin_dit_handoff()
-    coordinator.begin_dit_handoff()
+    coordinator.begin_dit_handoff("req-1")
+    coordinator.begin_dit_handoff("req-1")
     assert coordinator.ar_can_admit() is False
 
-    coordinator.end_dit_handoff()
-    coordinator.end_dit_handoff()
+    coordinator.end_dit_handoff("req-1")
+    coordinator.end_dit_handoff("req-1")
     assert coordinator.ar_can_admit() is True
+
+
+def test_ar_stays_parked_until_every_outstanding_request_retires() -> None:
+    """The wake is driven by the outstanding set, not by the last event."""
+    coordinator = _registered()
+    coordinator.begin_dit_handoff("req-1")
+    coordinator.begin_dit_handoff("req-2")
+
+    coordinator.end_dit_handoff("req-1")
+    assert coordinator.ar_can_admit() is False
+
+    coordinator.end_dit_handoff("req-2")
+    assert coordinator.ar_can_admit() is True
+
+
+def test_end_for_a_request_that_never_handed_off_does_not_wake_ar() -> None:
+    coordinator = _registered()
+    coordinator.begin_dit_handoff("req-1")
+
+    coordinator.end_dit_handoff("req-unknown")
+
+    assert coordinator.ar_can_admit() is False
+
+
+def test_a_stalled_handoff_is_reported_once_and_never_force_woken(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coordinator = _registered()
+    coordinator.begin_dit_handoff("req-1")
+    # Backdate the pause past the reporting threshold.
+    coordinator._paused_at -= STALL_REPORT_SECONDS + 1.0
+
+    with caplog.at_level("ERROR"):
+        assert coordinator.ar_can_admit() is False
+        assert coordinator.ar_can_admit() is False
+
+    stall_records = [r for r in caplog.records if "off the GPU for" in r.message]
+    assert len(stall_records) == 1
+    assert "req-1" in stall_records[0].message
 
 
 def test_handoff_without_registration_raises_if_force_enabled() -> None:
@@ -78,9 +115,9 @@ def test_handoff_without_registration_raises_if_force_enabled() -> None:
     coordinator._enabled = True
 
     with pytest.raises(RuntimeError, match="never registered"):
-        coordinator.begin_dit_handoff()
+        coordinator.begin_dit_handoff("req-1")
     with pytest.raises(RuntimeError, match="never registered"):
-        coordinator.end_dit_handoff()
+        coordinator.end_dit_handoff("req-1")
 
 
 def test_move_module_to_device_relocates_every_parameter() -> None:
@@ -99,8 +136,8 @@ def test_serial_offload_round_trip_moves_weights_between_devices() -> None:
     model = torch.nn.Linear(4, 4).to(device)
     coordinator.register_ar(model, device)
 
-    coordinator.begin_dit_handoff()
+    coordinator.begin_dit_handoff("req-1")
     assert next(model.parameters()).device.type == "cpu"
 
-    coordinator.end_dit_handoff()
+    coordinator.end_dit_handoff("req-1")
     assert next(model.parameters()).device == device

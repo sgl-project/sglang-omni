@@ -200,7 +200,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         logger.info(
             f"MiniMax Music 3 AR done request={request_id} frames={ar_state.generated_frames} prompt_tokens={req_data.prompt_tokens} finish_reason={ar_state.finish_reason} peak_buffer_frames={ar_state.frames.peak_frames} elapsed={time.perf_counter() - ar_state.started_s:.1f}s"
         )
-        self._serial_offload.begin_dit_handoff()
+        self._serial_offload.begin_dit_handoff(request_id)
 
     def reset_request(self, request_id: str) -> None:
         data = self._request_data.pop(request_id, None)

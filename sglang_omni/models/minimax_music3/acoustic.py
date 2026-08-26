@@ -509,7 +509,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
             state.last_condition = None
         if self._decoder.serial_offload:
             self._decoder.offload_to_cpu()
-            get_coordinator().end_dit_handoff()
+            get_coordinator().end_dit_handoff(request_id)
 
 
 __all__ = [
