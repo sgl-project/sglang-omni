@@ -419,8 +419,11 @@ def _compile_dit_backbone(
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     del model_path
+    # note(chenye): Reference conditioning supports concurrent calls;
+    # model prompt finalization is serialized.
     return SimpleScheduler(
         preprocess_cosyvoice3_payload,
+        max_concurrency=4,
         abort_callback=cleanup_prepared_cosyvoice3_request,
     )
 
