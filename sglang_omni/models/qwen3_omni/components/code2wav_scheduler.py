@@ -772,6 +772,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 self._pinned_quarantined.append(slot)
             else:
                 self._release_slot(slot)
+        if self._cuda_graph_runner is not None:
+            self._cuda_graph_runner.log_shape_telemetry(trigger="shutdown")
 
     def select_step_participants(self) -> list[tuple[str, Code2WavStreamState]]:
         now = time.monotonic()

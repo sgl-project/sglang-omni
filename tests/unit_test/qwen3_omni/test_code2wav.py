@@ -52,6 +52,10 @@ class _FakeCudaGraphRunner:
         self.model = model
         self.replay_error = replay_error
         self.calls: list[tuple[tuple[int, ...], bool]] = []
+        self.telemetry_triggers: list[str] = []
+
+    def log_shape_telemetry(self, *, trigger: str) -> None:
+        self.telemetry_triggers.append(trigger)
 
     def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
         self.calls.append((tuple(codes.shape), eligible))
@@ -932,3 +936,25 @@ def test_qwen_code2wav_emits_full_chunk_despite_model_output_deficit() -> None:
     assert second_audio.shape == (4,)
 
     assert first_audio.shape[0] + second_audio.shape[0] == 4 * 2 - 1
+
+
+def test_qwen_code2wav_serving_stop_logs_shutdown_shape_telemetry() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    runner = _FakeCudaGraphRunner(model)
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        enable_cuda_graph=True,
+        _cuda_graph_runner=runner,
+    )
+
+    scheduler.on_serving_stop()
+
+    assert runner.telemetry_triggers == ["shutdown"]
+
+
+def test_qwen_code2wav_serving_stop_without_runner_skips_telemetry() -> None:
+    scheduler = _make_scheduler(FakeCode2WavModel())
+    assert scheduler._cuda_graph_runner is None
+
+    scheduler.on_serving_stop()
