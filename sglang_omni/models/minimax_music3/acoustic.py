@@ -217,7 +217,7 @@ class MiniMaxMusic3AcousticDecoder:
             f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
         )
         self._resident_on_gpu = True
-        if self._serial_offload:s
+        if self._serial_offload:
             self.offload_to_cpu()
 
     @property
