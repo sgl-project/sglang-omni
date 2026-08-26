@@ -3233,6 +3233,8 @@ def test_qwen3_tts_request_data_keeps_decode_tensors_on_prepared_device(
     assert data.ref_code is prepared.ref_code
     assert data.tts_pad_embed is prepared.tts_pad_embed
     assert data.stream_codec_output is True
+    assert data.suppress_tokens == list(range(1200 - 1024, 1200))
+    assert data.suppress_row_memo is None
     assert isinstance(data.pending_text_queue, PendingTextTensorQueue)
     assert data.pending_text_queue.rows is not None
     assert data.pending_text_queue.rows.device == prepared.trailing_text_hidden.device

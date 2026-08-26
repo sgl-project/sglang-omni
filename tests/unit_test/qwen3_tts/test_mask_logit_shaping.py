@@ -214,11 +214,25 @@ def test_mask_shaping_warm_rebuild_builds_no_suppress_tensor(monkeypatch):
     monkeypatch.setattr(torch, "tensor", counting_tensor)
     logits = torch.randn(batch, vocab)
     assert torch.equal(_apply(runner, logits.clone(), reqs), _reference(logits, reqs))
-    assert sizes.count(len(suppress)) == 1
-    assert max(sizes) == len(suppress)
+    assert sizes == [len(suppress), batch]
 
     sizes.clear()
     runner._mask_prep_rids = None
     logits2 = torch.randn(batch, vocab)
     assert torch.equal(_apply(runner, logits2.clone(), reqs), _reference(logits2, reqs))
-    assert max(sizes) <= batch
+    assert sizes == [batch]
+
+
+def test_mask_shaping_vocab_growth_rebuilds_suppress_rows():
+    torch.manual_seed(29)
+    runner = _runner()
+    reqs = [_request("a", 1, 1.0, [1], [40])]
+    logits = torch.randn(1, 32)
+    assert torch.equal(_apply(runner, logits.clone(), reqs), logits)
+    assert runner._mask_sup_active is False
+
+    runner._mask_prep_rids = None
+    logits2 = torch.randn(1, 64)
+    got = _apply(runner, logits2.clone(), reqs)
+    assert torch.equal(got, _reference(logits2, reqs))
+    assert got[0, 40] == float("-inf")
