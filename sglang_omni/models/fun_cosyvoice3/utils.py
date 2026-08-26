@@ -11,7 +11,6 @@ import torch
 
 
 class CosyVoice3Tokenizer:
-
     def __init__(self, token_path: str, skip_special_tokens: bool = True):
         from transformers import AutoTokenizer
 
@@ -41,58 +40,85 @@ class CosyVoice3Tokenizer:
 
 
 class SpeechTokenizerV3:
-
     def __init__(self, model_path: str, device: str = "cpu"):
-        import onnxruntime
+        import s3tokenizer
 
-        option = onnxruntime.SessionOptions()
-        option.graph_optimization_level = (
-            onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
-        option.intra_op_num_threads = 1
+        self._backend = s3tokenizer
+        self.device = torch.device(device)
+        self.model = s3tokenizer.load_model(model_path).to(self.device).eval()
 
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if device.startswith("cuda")
-            else ["CPUExecutionProvider"]
-        )
-        self.session = onnxruntime.InferenceSession(
-            model_path, sess_options=option, providers=providers
-        )
-        self.device = device
-
-    def extract_speech_token(
-        self, audio: np.ndarray, sample_rate: int = 16000
-    ) -> torch.Tensor:
-        import whisper
-
+    @staticmethod
+    def _normalize_audio(audio: np.ndarray, sample_rate: int) -> torch.Tensor:
         if sample_rate != 16000:
             raise ValueError(
                 f"Speech tokenizer expects 16kHz audio, got {sample_rate}Hz"
             )
 
-        if audio.ndim == 1:
-            audio = audio.reshape(1, -1)
-
-        if audio.shape[1] / sample_rate > 30:
+        audio_array = np.asarray(audio, dtype=np.float32)
+        if audio_array.ndim == 2 and audio_array.shape[0] == 1:
+            audio_array = audio_array[0]
+        if audio_array.ndim != 1:
+            raise ValueError(
+                "Speech tokenizer audio must have shape [samples] or [1, samples]"
+            )
+        if audio_array.size == 0:
+            raise ValueError("Speech tokenizer audio must not be empty")
+        if audio_array.size / sample_rate > 30:
             raise ValueError(
                 "Audio longer than 30s is not supported for speech token extraction"
             )
+        return torch.from_numpy(np.ascontiguousarray(audio_array))
 
-        feat = whisper.log_mel_spectrogram(torch.from_numpy(audio), n_mels=128)
-        feat_len = feat.shape[2]
-        result = self.session.run(
-            None,
-            {
-                self.session.get_inputs()[0].name: feat.detach().cpu().numpy(),
-                self.session.get_inputs()[1].name: np.array([feat_len], dtype=np.int32),
-            },
-        )[0]
-        return torch.tensor([result.flatten().tolist()], dtype=torch.int32)
+    def extract_speech_tokens(
+        self, audios: list[np.ndarray], sample_rate: int = 16000
+    ) -> list[torch.Tensor]:
+        if not audios:
+            return []
+
+        mels = [
+            self._backend.log_mel_spectrogram(self._normalize_audio(audio, sample_rate))
+            for audio in audios
+        ]
+        padded_mels, mel_lengths = self._backend.padding(mels)
+        with torch.inference_mode():
+            codes, code_lengths = self.model.quantize(
+                padded_mels.to(self.device), mel_lengths.to(self.device)
+            )
+
+        if codes.ndim != 2 or code_lengths.ndim != 1:
+            raise RuntimeError(
+                "S3 tokenizer returned invalid batch shapes: "
+                f"codes={tuple(codes.shape)}, lengths={tuple(code_lengths.shape)}"
+            )
+        if codes.shape[0] != len(audios) or code_lengths.shape[0] != len(audios):
+            raise RuntimeError(
+                "S3 tokenizer returned an unexpected batch size: "
+                f"expected {len(audios)}, got codes={codes.shape[0]}, "
+                f"lengths={code_lengths.shape[0]}"
+            )
+
+        results: list[torch.Tensor] = []
+        for index, raw_length in enumerate(code_lengths):
+            length = int(raw_length.item())
+            if length < 0 or length > codes.shape[1]:
+                raise RuntimeError(
+                    f"S3 tokenizer returned invalid code length {length} "
+                    f"for row {index} with width {codes.shape[1]}"
+                )
+            results.append(
+                codes[index : index + 1, :length]
+                .detach()
+                .to(device="cpu", dtype=torch.int32, copy=True)
+            )
+        return results
+
+    def extract_speech_token(
+        self, audio: np.ndarray, sample_rate: int = 16000
+    ) -> torch.Tensor:
+        return self.extract_speech_tokens([audio], sample_rate)[0]
 
 
 class SpeakerEncoder:
-
     def __init__(self, model_path: str, device: str = "cpu"):
         import onnxruntime
 
@@ -175,8 +201,7 @@ def extract_prompt_speech_feat(
     mel = _run_cosyvoice3_mel_spectrogram(waveform)
     if mel.ndim != 3 or mel.shape[0] != waveform.shape[0] or mel.shape[1] != 80:
         raise RuntimeError(
-            "CosyVoice3 mel extractor returned an unexpected shape: "
-            f"{tuple(mel.shape)}"
+            f"CosyVoice3 mel extractor returned an unexpected shape: {tuple(mel.shape)}"
         )
     return mel.transpose(1, 2).contiguous()
 

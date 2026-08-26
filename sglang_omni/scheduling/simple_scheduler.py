@@ -6,6 +6,7 @@ No KV cache, no batching. Just: inbox.get() → run function → outbox.put().
 
 Same inbox/outbox interface as OmniScheduler so Stage doesn't need branching.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -204,7 +205,10 @@ class SimpleScheduler:
         for msg, result in zip(batch, results):
             if self._consume_if_aborted(msg.request_id):
                 continue
-            self._emit_result(msg.request_id, result, self.outbox)
+            if isinstance(result, BaseException):
+                self._emit_error(msg.request_id, result, self.outbox)
+            else:
+                self._emit_result(msg.request_id, result, self.outbox)
 
     @staticmethod
     async def _await_result(result: Awaitable[Any]) -> Any:
