@@ -7,15 +7,26 @@ import threading
 from array import array
 from types import SimpleNamespace
 
+import msgpack
 import pytest
 import torch
 from sglang.srt.disaggregation.utils import DisaggregationMode
-from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.schedule_batch import MultimodalInputs, Req
 from sglang.srt.managers.scheduler_components.metrics_reporter import (
     SchedulerMetricsReporter,
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
+    StreamingDetokenizeScheduler,
+)
+from sglang_omni.models.qwen3_omni.request_builders import (
+    QWEN_THINKER_PD_RESUME_SCHEMA,
+    make_thinker_pd_adapters,
+    make_thinker_scheduler_adapters,
+    make_thinker_stream_output_builder,
+    project_thinker_to_decode,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -573,3 +584,204 @@ def test_prefill_retries_admission_after_ack_returns_request_slot(monkeypatch) -
 
     assert scheduler.get_next_batch_to_run() is None
     assert running.batch_is_full is False
+
+
+class _Tokenizer:
+    eos_token_id = 2
+    additional_stop_token_ids = set()
+
+    def decode(self, ids, skip_special_tokens=True):
+        del skip_special_tokens
+        return "".join({2: "", 42: "A", 43: "B"}[int(token)] for token in ids)
+
+
+def _qwen_prefill_req(*, stream: bool) -> Req:
+    req = _prefill_req()
+    req.origin_input_ids[1] = 1 << 40
+    req.return_logprob = True
+    req.multimodal_inputs = MultimodalInputs(mm_items=[])
+    req.multimodal_inputs.mrope_position_delta = torch.tensor([[-2]])
+    req._omni_data.return_logprob = True
+    req._omni_data.output_token_logprobs = [[-0.1, 42]]
+    req._omni_data.stage_payload = StagePayload(
+        request_id=req.rid,
+        request=OmniRequest(
+            inputs={"image": torch.ones(2)},
+            params={"stream": stream, "return_logprob": True, "seed": 17},
+            metadata={"output_modalities": ["text"]},
+        ),
+        data={
+            "prompt": {"input_ids": torch.tensor([10, 11, 12])},
+            "encoder_outs": {"image": torch.ones(2, 4)},
+            "stream_state": {"token_ids": [], "text": ""},
+        },
+    )
+    return req
+
+
+def _rebuild_qwen_req(*, stream: bool) -> Req:
+    source = _qwen_prefill_req(stream=stream)
+    tokenizer = _Tokenizer()
+    state_builder, state_restorer = make_thinker_pd_adapters(tokenizer=tokenizer)
+    continuation = continuation_from_req(source, "transfer-qwen", state_builder)
+    assert continuation.multimodal_resume["schema"] == QWEN_THINKER_PD_RESUME_SCHEMA
+    continuation = decode_continuation(encode_continuation(continuation))
+    allocation = ReservedAllocation(
+        slots=torch.tensor([7, 8, 9], dtype=torch.int64),
+        page_indices=(7, 8, 9),
+        seq_len=3,
+    )
+    rebuilt = req_from_continuation(
+        continuation,
+        allocation,
+        req_to_token_pool=_ReqPool(),
+        state_restorer=state_restorer,
+    )
+    assert rebuilt.tokenizer is tokenizer
+    return rebuilt
+
+
+def test_qwen_pd_continuation_projects_tensors_and_restores_mrope() -> None:
+    rebuilt = _rebuild_qwen_req(stream=False)
+
+    assert rebuilt.sampling_params.sampling_seed == 17
+    assert list(rebuilt.origin_input_ids) == [10, 11, 12]
+    assert rebuilt._omni_data.return_logprob is True
+    assert rebuilt.return_logprob is False
+    assert rebuilt._omni_data.output_token_logprobs == [[-0.1, 42]]
+    assert rebuilt._omni_data.stage_payload.request.inputs is None
+    assert rebuilt._omni_data.stage_payload.data["prompt"]["input_ids"] == [10, 11, 12]
+    assert rebuilt.multimodal_inputs.mrope_position_delta.tolist() == [[-2]]
+    assert rebuilt.omni_model_inputs is None
+
+
+@pytest.mark.parametrize(
+    ("stop_strs", "stop_token_ids", "token", "expected"),
+    [(["B"], set(), 43, "B"), ([], {43}, 43, 43), ([], set(), 2, 2)],
+)
+def test_qwen_pd_runtime_tokenizer_handles_resumed_stop_conditions(
+    stop_strs, stop_token_ids, token, expected
+) -> None:
+    req = _rebuild_qwen_req(stream=False)
+    req.sampling_params.stop_strs = stop_strs
+    req.sampling_params.stop_regex_strs = []
+    req.sampling_params.stop_token_ids = stop_token_ids
+    req.output_ids.append(token)
+
+    req.update_finish_state()
+
+    assert req.finished_reason.matched == expected
+
+
+def test_qwen_pd_continuation_does_not_serialize_runtime_tokenizer() -> None:
+    source = _qwen_prefill_req(stream=False)
+    tokenizer = _Tokenizer()
+    state_builder, _ = make_thinker_pd_adapters(tokenizer=tokenizer)
+
+    continuation = continuation_from_req(source, "transfer-qwen", state_builder)
+    encoded = encode_continuation(continuation)
+
+    assert b"tokenizer" not in encoded
+    assert decode_continuation(encoded).request_id == source.rid
+
+
+def test_qwen_max_one_result_uses_msgpack_safe_existing_result_path() -> None:
+    source = _qwen_prefill_req(stream=False)
+    source.sampling_params.max_new_tokens = 1
+    source.update_finish_state()
+    data = source._omni_data
+    data.output_ids = list(source.output_ids)
+    data.finish_reason = source.finished_reason.to_json()["type"]
+    _, result_adapter = make_thinker_scheduler_adapters(
+        tokenizer=_Tokenizer(),
+        vocab_size=128,
+    )
+
+    payload = project_thinker_to_decode(result_adapter(data))
+    decode = StreamingDetokenizeScheduler(tokenizer=_Tokenizer(), eos_token_id=None)
+    decode._on_new_request(source.rid, payload)
+    result = decode.outbox.get_nowait().data.data
+    encoded = msgpack.packb(result, use_bin_type=True)
+
+    assert encoded
+    assert result["text"] == "A"
+    assert result["finish_reason"] == "length"
+    assert result["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "total_tokens": 4,
+    }
+
+
+def test_qwen_pd_decode_produces_existing_terminal_result_shape() -> None:
+    rebuilt = _rebuild_qwen_req(stream=False)
+    rebuilt.output_ids.append(43)
+    data = rebuilt._omni_data
+    data.output_ids = list(rebuilt.output_ids)
+    data.finish_reason = "stop"
+    data.output_token_logprobs = [-0.1, -0.2]
+    data.weight_version = "test-version"
+    _, result_adapter = make_thinker_scheduler_adapters(
+        tokenizer=_Tokenizer(),
+        vocab_size=128,
+    )
+    payload = project_thinker_to_decode(result_adapter(data))
+    decode = StreamingDetokenizeScheduler(tokenizer=_Tokenizer(), eos_token_id=None)
+
+    decode._on_new_request(rebuilt.rid, payload)
+
+    message = decode.outbox.get_nowait()
+    assert message.type == "result"
+    assert message.data.data == {
+        "events": [
+            {
+                "type": "text_final",
+                "modality": "text",
+                "payload": {"text": "AB"},
+                "is_final": True,
+            }
+        ],
+        "text": "AB",
+        "modality": "text",
+        "finish_reason": "stop",
+        "output_token_logprobs": [-0.1, -0.2],
+        "weight_version": "test-version",
+        "usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 2,
+            "total_tokens": 5,
+        },
+    }
+
+
+def test_qwen_pd_streaming_reuses_existing_chunk_and_slim_result_paths() -> None:
+    rebuilt = _rebuild_qwen_req(stream=True)
+    data = rebuilt._omni_data
+    chunks = make_thinker_stream_output_builder()(
+        rebuilt.rid,
+        data,
+        SimpleNamespace(data=43, extra={}),
+    )
+    assert [(chunk.type, chunk.target) for chunk in chunks] == [("stream", "decode")]
+
+    rebuilt.output_ids.append(43)
+    data.output_ids = list(rebuilt.output_ids)
+    _, result_adapter = make_thinker_scheduler_adapters(
+        tokenizer=_Tokenizer(),
+        vocab_size=128,
+    )
+    payload = project_thinker_to_decode(result_adapter(data))
+    decode = StreamingDetokenizeScheduler(tokenizer=_Tokenizer(), eos_token_id=None)
+    decode._on_stream_chunk(rebuilt.rid, SimpleNamespace(data=torch.tensor(43)))
+    decode._on_stream_done(rebuilt.rid)
+    decode._on_new_request(rebuilt.rid, payload)
+
+    messages = [decode.outbox.get_nowait(), decode.outbox.get_nowait()]
+    assert [message.type for message in messages] == ["stream", "result"]
+    assert messages[0].data["text"] == "B"
+    assert "text" not in messages[1].data.data
+    assert messages[1].data.data["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+    }

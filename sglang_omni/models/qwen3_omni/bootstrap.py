@@ -27,6 +27,8 @@ def create_thinker_scheduler(
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
     from sglang_omni.models.qwen3_omni.request_builders import (
+        QWEN_THINKER_PD_RESUME_SCHEMA,
+        make_thinker_pd_adapters,
         make_thinker_scheduler_adapters,
         make_thinker_stream_output_builder,
         should_generate_audio_output,
@@ -129,6 +131,7 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
     )
+    pd_state_builder, pd_state_restorer = make_thinker_pd_adapters(tokenizer=tokenizer)
     stream_output_builder = make_thinker_stream_output_builder()
 
     return OmniScheduler(
@@ -143,6 +146,9 @@ def create_thinker_scheduler(
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
+        pd_state_builder=pd_state_builder,
+        pd_state_restorer=pd_state_restorer,
+        pd_resume_schemas=frozenset({QWEN_THINKER_PD_RESUME_SCHEMA}),
         stream_output_builder=stream_output_builder,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,

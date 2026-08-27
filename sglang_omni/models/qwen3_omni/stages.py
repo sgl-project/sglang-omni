@@ -16,6 +16,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.config import pd_disaggregation_capable
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
 from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
@@ -995,6 +996,7 @@ def create_decode_executor(model_path: str):
 # ---------------------------------------------------------------------------
 
 
+@pd_disaggregation_capable
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
