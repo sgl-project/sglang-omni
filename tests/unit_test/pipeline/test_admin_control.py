@@ -193,6 +193,9 @@ def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._prompt_cache_epoch = 0
+    scheduler.waiting_queue = []
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: []
     scheduler.flush_cache = flush_cache
@@ -212,6 +215,45 @@ def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
     assert update_calls == [{"model_path": "/tmp/new-model", "torch_empty_cache": True}]
     assert flush_calls == 1
     assert empty_cache_calls == 1
+    assert scheduler._prompt_cache_epoch == 1
+
+
+def test_weight_swap_isolates_prompt_cache_when_flush_fails() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    cache_key = "qwen3_tts:prompt:v1"
+    retracted = SimpleNamespace(
+        extra_key=f"{cache_key}:weights:0",
+        _omni_prompt_cache_key=cache_key,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=lambda _: (True, "swapped")
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._engine_paused = True
+    scheduler._last_pause_mode = "retract"
+    scheduler._prompt_cache_epoch = 0
+    scheduler.waiting_queue = [retracted]
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: ["req-1"]
+    scheduler.flush_cache = lambda: False
+    scheduler._empty_torch_cache = lambda: None
+
+    result = OmniScheduler._admin_update_weights_from_disk(
+        scheduler, {"model_path": "/tmp/new-model"}
+    )
+
+    fresh = SimpleNamespace(extra_key=cache_key, _omni_prompt_cache_key=cache_key)
+    plain = SimpleNamespace(extra_key="plain")
+    scheduler._apply_prompt_cache_epoch(fresh)
+    scheduler._apply_prompt_cache_epoch(plain)
+    assert result["success"] is False
+    assert result["data"]["flush_success"] is False
+    assert result["data"]["engine_paused"] is True
+    assert retracted.extra_key == fresh.extra_key == f"{cache_key}:weights:1"
+    assert plain.extra_key == "plain"
 
 
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
@@ -340,6 +382,9 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._prompt_cache_epoch = 0
+    scheduler.waiting_queue = []
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: ["req-1"]
     scheduler._abort_all_requests = abort_all_requests
@@ -366,6 +411,7 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
     assert abort_calls == 1
     assert flush_calls == 1
     assert empty_cache_calls == 1
+    assert scheduler._prompt_cache_epoch == 1
 
 
 def test_omni_scheduler_distributed_update_failure_keeps_engine_paused() -> None:
