@@ -1373,7 +1373,7 @@ class OmniScheduler:
 
     def process_batch_result(self, batch, result) -> None:
         _Upstream.process_batch_result(self, batch, result)
-        # Cache complete prefills upstream before keeping generated tails private.
+        # note (Richard Wang): cache prompt before blocking tail inserts
         for req in batch.reqs:
             if req.output_ids and getattr(req, "_omni_prompt_only_radix", False):
                 req.skip_radix_cache_insert = True
