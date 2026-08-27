@@ -108,10 +108,10 @@ class SGLangGenerationEngineBuilder(ABC):
             prefill_graph_backend != CudaGraphBackend.DISABLED
             and not operator_selected_prefill_backend
         ):
-            # SGLang treats every non-default source as operator-locked. A
-            # model-qualified stage default should survive compatibility
-            # resolution, but must remain eligible for the late free-memory
-            # safety gate immediately before graph capture.
+            # SGLang treats every non-default source as operator-locked, and a
+            # locked prefill backend skips upstream's model compatibility
+            # resolution; a model-qualified stage default must stay eligible
+            # for it.
             server_args._cuda_graph_config_locked.discard(("prefill", "backend"))
         if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
             if not self.supports_breakable_prefill_cuda_graph:
