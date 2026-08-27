@@ -48,8 +48,13 @@ def _seeded_gumbel_argmax_kernel(
     # Match multinomial_with_seed exactly, including hash_value == UINT32_MAX.
     uniform = hash_value.to(tl.float64) / _UINT32_MAX_F64
     log_uniform = libdevice.log(uniform)
-    neg_log_uniform = -tl.maximum(log_uniform, -1.7976931348623157e308)
-    gumbel = -libdevice.log(neg_log_uniform)
+    # Clamp both ends like sglang's multinomial_with_seed: a uniform of exactly
+    # 1 would give +inf noise and a NaN score against a -inf logprob, so the
+    # top bucket is capped at the hash spacing (2 ** -32).
+    log_uniform = tl.minimum(
+        tl.maximum(log_uniform, -1.7976931348623157e308), -2.3283064365386963e-10
+    )
+    gumbel = -libdevice.log(-log_uniform)
     score = tl.load(
         scores_ptr + row * SCORE_ROW_STRIDE + token_ids * SCORE_COL_STRIDE,
         mask=valid,
@@ -139,7 +144,7 @@ def multinomial_with_seed_and_token_ids(
     seed = seed.to(torch.uint64)
     hashed = murmur_hash32(seed, positions, token_ids)
     noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max
-    noise.log_().clamp_(min=torch.finfo(noise.dtype).min).neg_()
+    noise.log_().clamp_(min=torch.finfo(noise.dtype).min, max=-(2.0**-32)).neg_()
     noise.log_().neg_()
     noise.add_(logprobs.to(torch.float64))
     return torch.argmax(noise, dim=1)

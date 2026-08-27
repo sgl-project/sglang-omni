@@ -8,6 +8,7 @@ from typing import Any
 
 from sglang_omni.models.qwen3_tts import request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -93,6 +94,13 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
 
     def compile_model(self, model: Any, server_args: Any) -> None:
+        if current_platform.is_rocm():
+            override_server_args(
+                server_args,
+                "sglang_omni.qwen3_tts.rocm",
+                enable_torch_compile=False,
+            )
+            return
         if server_args.enable_deterministic_inference:
             override_server_args(
                 server_args,

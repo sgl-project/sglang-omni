@@ -80,14 +80,11 @@ class _CosyVoice3NullTokenizer:
     ``BatchedMinNewTokensPenalizer`` (``eos_token_id``,
     ``additional_stop_token_ids``).
 
-    ``eos_token_id`` is set to the real ``EOS_ID`` rather than ``None``:
-    the installed ``sglang==0.5.16`` penalizer builds
-    ``{req.tokenizer.eos_token_id}`` unconditionally (no ``is not None``
-    guard), so a ``None`` here becomes a literal ``{None}`` in the stop-id
-    set and crashes ``torch.tensor(...)`` with "'NoneType' object cannot be
-    interpreted as an integer" on the very first request. ``EOS_ID`` is
-    already part of ``stop_token_ids``/``CONTROL_TOKEN_IDS``, so this is a
-    harmless duplicate, not a behavior change.
+    eos_token_id is the real EOS_ID rather than None: BatchedMinNewTokensPenalizer
+    unions it into the stop-id set it suppresses until min_new_tokens is
+    reached, and EOS_ID is already part of stop_token_ids and
+    CONTROL_TOKEN_IDS, so the tokenizer stand-in reports the same EOS the
+    request stops on.
     """
 
     eos_token_id: int = EOS_ID

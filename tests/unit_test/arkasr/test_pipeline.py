@@ -28,7 +28,6 @@ from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_i
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def _tiny_config():
@@ -192,7 +191,7 @@ def _stub_arkasr_engine_build(
             model=SimpleNamespace(set_encoder_max_batch_size=encoder_batch_sizes.append)
         ),
     )
-    infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+    infra = (want_cuda_graph, (model_worker, None, None, None, None))
 
     monkeypatch.setattr(
         platforms.current_platform, "get_device", lambda index: "cpu", raising=False
@@ -241,7 +240,7 @@ def _stub_arkasr_engine_build(
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
-        server_args = FakeServerArgs(context_length=context_length, **overrides)
+        server_args = SimpleNamespace(context_length=context_length, **overrides)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],

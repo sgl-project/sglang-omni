@@ -49,9 +49,8 @@ tests/
     ├── sampling/
     │   └── test_seed.py
     ├── vendor/
-    │   ├── test_sglang_parallel_state.py
-    │   ├── test_sglang_server_args.py
-    │   └── test_sglang_signature.py
+    │   ├── test_sglang_layers_patch.py
+    │   └── test_sglang_server_args.py
     ├── xpu/
     │   ├── test_device_layer.py
     │   └── test_install_script.py
@@ -777,9 +776,9 @@ that happened to contain an older version of the test.
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
 
-- `unit_test/vendor/`: Compatibility boundaries for supported SGLang parallel
-  state layouts, server-argument publication, and version-dependent call
-  signatures.
+- `unit_test/vendor/`: Server-argument publication boundaries and the vendor
+  RMSNorm patch staying on the fused-op dispatch path (dtype fallback,
+  zero-token contract, kwargs passthrough).
 
 - `unit_test/whisper_asr/`: Whisper pipeline configuration, encoder CUDA Graph,
   decoder LayerNorm fast-path placement, and PyTorch fallback behavior

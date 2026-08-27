@@ -19,24 +19,24 @@ dependencies = [
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
     "pybase64>=1.4.0",        # Fast base64 decoding for inline media payloads
-    "torch==2.11.0",          # PyTorch for tensor operations
-    "torchvision==0.26.0",    # torchvision for vision processor, pinned version based on torch 2.11.0
+    "torch==2.13.0",          # PyTorch for tensor operations
+    "torchvision==0.28.0",    # torchvision for vision processor, pinned version based on torch 2.13.0
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
-    "transformers==5.12.1",  # Match SGLang 0.5.16
+    "transformers==5.12.1",  # Match the pinned sglang stack
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
-    "sglang==0.5.16",
-    "flashinfer_python[cu13]==0.6.14",  # SGLang 0.5.16 pin. Do NOT add flashinfer-cubin: PyPI has no 0.6.14 cubin, and any leftover cubin wheel fails MiniMax DIT import.
+    "sglang==0.5.18",
+    "flashinfer_python[cu13]==0.6.17",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
     "cache-dit==1.3.0",      # MiniMax Music 3 DIT (hard import, not optional)
     "addict==2.4.0",         # sglang.multimodal_gen server_args; MiniMax DIT import
     "imageio==2.36.0",       # sglang.multimodal_gen vision utils; MiniMax DIT import
-    "imageio-ffmpeg==0.5.1", # Pinned with SGLang 0.5.16 diffusion extra
-    "flash-attn-4>=4.0.0b18",  # Required by SGLang 0.5.16; pairs with cutlass-dsl 4.6.0
-    "kernels>=0.14.1,<0.15",  # Match the SGLang 0.5.16 stack
+    "imageio-ffmpeg==0.5.1", # Pinned with the sglang diffusion extra
+    "flash-attn-4>=4.0.0b18",  # Required by sglang, pairs with cutlass-dsl 4.6.2
+    "kernels>=0.14.1,<0.15",  # Match the pinned sglang stack
     "nixl-cu13>=1.1.0",  # CUDA 13 relay wheel; the generic nixl/-cu12 wheel breaks on cu130
     "mooncake-transfer-engine-cuda13>=0.3.10",  # CUDA 13 relay wheel; generic mooncake-transfer-engine pulls cu12 and breaks import mooncake on cu130
     "logger",
@@ -49,7 +49,7 @@ dependencies = [
     "sox>=1.4.1",
     "av>=16.1.0",
     "qwen-vl-utils==0.0.11",
-    "numba==0.65.1",  # Match SGLang 0.5.16
+    "numba==0.65.1",  # Match the pinned sglang stack
     "librosa>=0.11.0",
     "pandas",
     "tabulate",
@@ -78,7 +78,7 @@ dependencies = [
     "hydra-core",
     "omegaconf",
     "torchaudio==2.11.0",
-    "torchcodec==0.11.1",     # Matches torch 2.11.x / sglang 0.5.16
+    "torchcodec==0.15.0",     # Matches torch 2.13.x and the pinned sglang stack
     # Gradio playground
     "gradio>=4.0.0",
     # dots.tts model operators; serving/runtime stays owned by sglang-omni

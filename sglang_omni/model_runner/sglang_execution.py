@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """SGLang execution-contract adapter.
 
-SGLang 0.5.15 made the scheduler/worker boundary an explicit protocol:
+SGLang's scheduler/worker boundary is an explicit protocol:
 
 * decode tokens cross iterations through FutureMap; and
 * decode lookahead isolates forward-only sampling state while
-  ForwardBatch.init_new applies per-forward overrides. (0.5.15 consumed
-  one-shot fields off the ScheduleBatch; 0.5.16 made them explicit keyword
-  arguments and forbids init_new from mutating the batch.)
+  ForwardBatch.init_new applies per-forward overrides passed as explicit
+  keyword arguments, never by mutating the batch.
 
 Omni owns its scheduler loop and model-runner wrapper, so it cannot rely on
 sglang.srt.managers.scheduler.Scheduler.run_batch to provide that protocol.
@@ -50,7 +49,7 @@ def attn_forward_context(attn_backend: Any):
 
 
 class SGLangExecutionBridge:
-    """Adapt Omni's custom runner to SGLang's 0.5.16 execution contract."""
+    """Adapt Omni's custom runner to SGLang's execution contract."""
 
     def __init__(
         self,
@@ -117,10 +116,9 @@ class SGLangExecutionBridge:
         # spec_v2-gated and this bridge refuses speculative decoding. Upstream's
         # non-overlap non-spec run_batch likewise stashes without publishing.
 
-        # SGLang 0.5.15 resolves the next decode input from FutureMap at forward
-        # entry. Keeping a direct tensor here reintroduces the removed 0.5.12
-        # contract and is unsafe when the live batch is filtered on another
-        # stream.
+        # The next decode input is resolved from FutureMap at forward entry; a
+        # direct tensor here bypasses that and is unsafe once the live batch is
+        # filtered on another stream.
         batch.input_ids = None
 
     def record_completion(self):

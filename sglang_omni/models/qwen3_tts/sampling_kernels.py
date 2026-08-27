@@ -71,7 +71,10 @@ if triton is not None:
 
         u = h.to(tl.float64) / 4294967295.0
         u = tl.maximum(u, 2.2250738585072014e-308)
-        gumbel = -tl.log(-tl.log(u))
+        # Cap log(u) at -(2 ** -32) like sglang's multinomial_with_seed so a
+        # uniform of exactly 1 cannot produce +inf noise.
+        log_u = tl.minimum(tl.log(u), -2.3283064365386963e-10)
+        gumbel = -tl.log(-log_u)
         weights = tl.load(
             logprobs + row * logprobs_stride_b + offsets * logprobs_stride_k,
             mask=mask,

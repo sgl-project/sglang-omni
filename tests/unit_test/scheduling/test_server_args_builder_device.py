@@ -19,6 +19,7 @@ class _CapturedServerArgs:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.enable_dp_attention = False
+        self.startup_weight_load_mode = kwargs.get("startup_weight_load_mode", "serial")
 
 
 def _build(monkeypatch, **extra: Any) -> dict[str, Any]:
@@ -43,6 +44,16 @@ def test_caller_resolved_device_is_not_overwritten(monkeypatch) -> None:
     """A cpu stage on an accelerator host keeps cpu, index-free."""
     monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)
     assert _build(monkeypatch, device="cpu")["device"] == "cpu"
+
+
+def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
+    """Omni's bootstrap never calls finalize_startup_weight_load, so the
+    overlap mode would serve the staged sentinel weights.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="startup_weight_load_mode"):
+        _build(monkeypatch, startup_weight_load_mode="overlap")
 
 
 def _drive_build(monkeypatch, *, overrides, gpu_id=0):
