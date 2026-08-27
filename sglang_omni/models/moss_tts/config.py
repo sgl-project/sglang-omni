@@ -22,6 +22,7 @@ _REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
 class MossTTSPreprocessingFactoryArgs(FactoryArgs):
     """Reference-encode cache knobs, typed like the shared ones."""
 
+    compute_dtype: str | None = None
     ref_audio_cache: bool | None = None
     ref_audio_cache_max_items: int | None = Field(default=None, ge=1)
     ref_audio_cache_max_bytes: int | None = Field(default=None, ge=1)
@@ -73,7 +74,7 @@ class MossTTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             factory=MossTTSPreprocessingFactoryArgs(
-                dtype="float32",
+                compute_dtype="bfloat16",
                 ref_audio_cache=True,
                 ref_audio_cache_max_items=_REF_AUDIO_CACHE_MAX_ITEMS,
                 ref_audio_cache_max_bytes=_REF_AUDIO_CACHE_MAX_BYTES,

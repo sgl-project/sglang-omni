@@ -38,6 +38,8 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             factory=FactoryArgs(
                 device=codec_device,
+                compute_dtype="bfloat16",
+                attention_backend="auto",
                 max_concurrency=_PREPROCESSING_MAX_CONCURRENCY,
             ),
             gpu_memory_fraction=(
@@ -65,7 +67,12 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             name="vocoder",
             process="vocoder" if colocated else "pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FactoryArgs(device=codec_device),
+            factory=FactoryArgs(
+                device=codec_device,
+                dtype="float32",
+                compute_dtype="bfloat16",
+                attention_backend="auto",
+            ),
             gpu_memory_fraction=(
                 _COLOCATED_VOCODER_GPU_MEMORY_FRACTION if colocated else None
             ),

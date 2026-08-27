@@ -27,15 +27,14 @@ _SDPA_QUERY_CHUNK_SIZE = 512
 _LOCAL_CAUSAL_FLASH_QUERY_CHUNK_SIZE = 128
 # note (Zhang Yiyang): Use the direct local-window kernel on Hopper and newer SMs.
 _PACKED_FLASH_DIRECT_MIN_SM = 90
-_HF_FLASH_ATTENTION_CONFIG = "flash_attention_2"
 PACKED_FLASH_ATTENTION_BACKEND = "packed_flash_attention"
-_SDPA_ATTENTION_BACKEND = "sdpa"
+SDPA_ATTENTION_BACKEND = "sdpa"
 AUTO_ATTENTION_BACKEND = "auto"
 _SUPPORTED_ATTENTION_BACKENDS: frozenset[str] = frozenset(
     {
         AUTO_ATTENTION_BACKEND,
         PACKED_FLASH_ATTENTION_BACKEND,
-        _SDPA_ATTENTION_BACKEND,
+        SDPA_ATTENTION_BACKEND,
     }
 )
 
@@ -48,17 +47,6 @@ def validate_attention_backend(attention_backend: str) -> str:
             f"got {attention_backend!r}"
         )
     return attention_backend
-
-
-def _preferred_attention_backend(
-    attention_backend: str,
-    attention_implementation: str | None,
-) -> str:
-    if attention_backend != AUTO_ATTENTION_BACKEND:
-        return attention_backend
-    if attention_implementation == _SDPA_ATTENTION_BACKEND:
-        return _SDPA_ATTENTION_BACKEND
-    return PACKED_FLASH_ATTENTION_BACKEND
 
 
 def _packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
@@ -102,7 +90,7 @@ def merge_attention_backend_resolutions(
     resolutions: Sequence[AttentionBackendResolution],
 ) -> AttentionBackendResolution:
     if not resolutions:
-        return AttentionBackendResolution(_SDPA_ATTENTION_BACKEND)
+        return AttentionBackendResolution(SDPA_ATTENTION_BACKEND)
     backends = {resolution.backend for resolution in resolutions}
     if len(backends) != 1:
         raise RuntimeError(
@@ -626,7 +614,6 @@ class MossAudioTokenizerAttention(nn.Module):
         causal: bool,
         context: int | None,
         rope: nn.Module | None,
-        attention_implementation: str | None,
         attention_backend: str = AUTO_ATTENTION_BACKEND,
         packed_rope_cache: MossPackedRopeCache | None = None,
     ) -> None:
@@ -649,16 +636,6 @@ class MossAudioTokenizerAttention(nn.Module):
         self.causal = bool(causal)
         self.context = None if context is None else int(context)
         self.rope = rope
-        if attention_implementation not in (
-            None,
-            _HF_FLASH_ATTENTION_CONFIG,
-            _SDPA_ATTENTION_BACKEND,
-        ):
-            raise ValueError(
-                "attention_implementation must be None, 'flash_attention_2', "
-                f"or 'sdpa'; got {attention_implementation!r}"
-            )
-        self.attention_implementation = attention_implementation
         self.attention_backend = validate_attention_backend(attention_backend)
         self._flash_attn_varlen = flash_attn_varlen_func
         max_period = self.rope.max_period if self.rope is not None else 10000.0
@@ -682,11 +659,6 @@ class MossAudioTokenizerAttention(nn.Module):
             causal=bool(module.causal),
             context=module.context,
             rope=module.rope,
-            attention_implementation=getattr(
-                module,
-                "attention_implementation",
-                None,
-            ),
             attention_backend=attention_backend,
             packed_rope_cache=packed_rope_cache,
         )
@@ -696,12 +668,8 @@ class MossAudioTokenizerAttention(nn.Module):
         device: torch.device,
         dtype: torch.dtype | None,
     ) -> AttentionBackendResolution:
-        preferred = _preferred_attention_backend(
-            self.attention_backend,
-            self.attention_implementation,
-        )
-        if preferred == _SDPA_ATTENTION_BACKEND:
-            return AttentionBackendResolution(_SDPA_ATTENTION_BACKEND)
+        if self.attention_backend == SDPA_ATTENTION_BACKEND:
+            return AttentionBackendResolution(SDPA_ATTENTION_BACKEND)
 
         unavailable_reason = self._packed_flash_unavailable_reason(device, dtype)
         if unavailable_reason is None:
@@ -714,7 +682,7 @@ class MossAudioTokenizerAttention(nn.Module):
                 f"{unavailable_reason}"
             )
         return AttentionBackendResolution(
-            _SDPA_ATTENTION_BACKEND,
+            SDPA_ATTENTION_BACKEND,
             fallback_reason=unavailable_reason,
         )
 
@@ -732,13 +700,7 @@ class MossAudioTokenizerAttention(nn.Module):
         device: torch.device,
         dtype: torch.dtype | None,
     ) -> bool:
-        if (
-            _preferred_attention_backend(
-                self.attention_backend,
-                self.attention_implementation,
-            )
-            != PACKED_FLASH_ATTENTION_BACKEND
-        ):
+        if self.attention_backend == SDPA_ATTENTION_BACKEND:
             return False
         return self._packed_flash_unavailable_reason(device, dtype) is None
 
