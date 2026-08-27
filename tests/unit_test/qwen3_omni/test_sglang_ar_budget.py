@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,7 @@ from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
 import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
+from sglang_omni.platforms import current_platform
 
 
 def _configurator(*, total_gpu_memory_fraction: float | None):
@@ -395,7 +398,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
         {
             "cuda_graph_bs": [1, 2, 4, 8, 12, 16, 24, 32],
             "cuda_graph_max_bs": 32,
-            "disable_cuda_graph": False,
+            "disable_cuda_graph": not current_platform.enable_talker_graph(),
             "max_running_requests": 32,
             "sampling_backend": "pytorch",
             "torch_compile_max_bs": 32,
@@ -454,3 +457,115 @@ def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
         "dummy", server_args_overrides={"max_running_requests": 8}
     )
     assert captured[-1]["max_running_requests"] == 8
+
+
+def _thinker_overrides(monkeypatch, *, allows: bool, **kwargs) -> dict[str, object]:
+    captured: list[dict[str, object]] = []
+    _patch_thinker_startup(monkeypatch)
+    inner = qwen_stages.build_sglang_server_args
+
+    def _recording_builder(model_path, context_length, **overrides):
+        captured.append(dict(overrides))
+        return inner(model_path, context_length, **overrides)
+
+    monkeypatch.setattr(qwen_stages, "build_sglang_server_args", _recording_builder)
+    monkeypatch.setattr(current_platform, "enable_thinker_decode_graph", lambda: allows)
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy", total_gpu_memory_fraction=0.75, **kwargs
+    )
+    return captured[-1]
+
+
+@pytest.mark.parametrize("allows, expected", [(False, True), (True, None)])
+def test_thinker_decode_graph_follows_the_platform_gate(
+    monkeypatch, allows: bool, expected: bool | None
+) -> None:
+    overrides = _thinker_overrides(monkeypatch, allows=allows)
+
+    assert overrides.get("disable_decode_cuda_graph") is expected
+    # The gate reaches for the decode key only, never the global switch.
+    assert overrides["disable_cuda_graph"] is False
+
+
+def test_thinker_decode_graph_stays_available_to_an_explicit_override(
+    monkeypatch,
+) -> None:
+    overrides = _thinker_overrides(
+        monkeypatch,
+        allows=False,
+        server_args_overrides={"disable_decode_cuda_graph": False},
+    )
+
+    assert overrides["disable_decode_cuda_graph"] is False
+
+
+def test_importing_the_stages_module_does_not_load_the_platform_layer() -> None:
+    """Read in a subprocess: the suite loads the platform layer long before this."""
+    probe = (
+        "import sys;"
+        "import sglang_omni.models.qwen3_omni.stages;"
+        "print('LOADED' if 'sglang_omni.platforms' in sys.modules else 'ABSENT')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip().splitlines()[-1] == "ABSENT"
+
+
+def _talker_overrides(monkeypatch, *, allows: bool, **kwargs) -> dict[str, object]:
+    captured: list[dict[str, object]] = []
+
+    def _recording_builder(model_path, context_length, **overrides):
+        captured.append(dict(overrides))
+        return SimpleNamespace(
+            mem_fraction_static=overrides.get("mem_fraction_static"),
+            sampling_backend=overrides["sampling_backend"],
+            max_running_requests=overrides["max_running_requests"],
+            cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
+            cuda_graph_bs=overrides["cuda_graph_bs"],
+            torch_compile_max_bs=overrides["torch_compile_max_bs"],
+            disable_cuda_graph=overrides["disable_cuda_graph"],
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(
+                    max_bs=overrides["cuda_graph_max_bs"],
+                    bs=overrides["cuda_graph_bs"],
+                ),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            ),
+            enable_torch_compile=overrides.get("enable_torch_compile", False),
+        )
+
+    monkeypatch.setattr(qwen_stages, "build_sglang_server_args", _recording_builder)
+    monkeypatch.setattr(
+        qwen_bootstrap, "create_talker_scheduler", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
+    monkeypatch.setattr(
+        qwen_stages, "get_process_gpu_memory_bytes", lambda gpu_id: None
+    )
+    monkeypatch.setattr(current_platform, "enable_talker_graph", lambda: allows)
+
+    qwen_stages.create_talker_ar_executor_from_config("dummy", **kwargs)
+    return captured[-1]
+
+
+@pytest.mark.parametrize("allows, expected", [(False, True), (True, False)])
+def test_talker_decode_graph_follows_the_platform_gate(
+    monkeypatch, allows: bool, expected: bool
+) -> None:
+    overrides = _talker_overrides(monkeypatch, allows=allows)
+
+    assert overrides["disable_cuda_graph"] is expected
+
+
+def test_talker_graph_stays_available_to_an_explicit_override(monkeypatch) -> None:
+    """The stage note promises engine.disable_cuda_graph wins."""
+    overrides = _talker_overrides(
+        monkeypatch,
+        allows=False,
+        server_args_overrides={"disable_cuda_graph": False},
+    )
+
+    assert overrides["disable_cuda_graph"] is False
