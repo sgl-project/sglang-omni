@@ -51,6 +51,7 @@ from sglang_omni.proto import (
 )
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.pd_continuation import PrefillContinuationProducer
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,19 @@ class Stage:
             rank_endpoints=rank_endpoints,
             task_done_callback=self._on_background_task_done,
         )
+        if pd_execution is not None:
+            if scheduler is None or not hasattr(scheduler, "bind_pd_runtime"):
+                raise TypeError(
+                    f"PD stage {name!r} requires an OmniScheduler PD runtime"
+                )
+            pool, receiver = scheduler.bind_pd_runtime(
+                stage_name=name,
+                role=pd_execution.role,
+                partner=pd_execution.partner,
+            )
+            self._comm.register_kv_pool(pool)
+            if receiver is not None:
+                self._comm.register_kv_receiver(pool.pool_id, receiver)
 
         self._running = False
         self._aborted: set[str] = set()
@@ -1106,9 +1120,20 @@ class Stage:
                 continue
 
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
-                if out.request_id in self._active_requests:
+                if out.type == "pd_admitted":
+                    self._active_requests.add(out.request_id)
+                    if self._stream_queue is not None and not self._stream_queue.has(
+                        out.request_id
+                    ):
+                        self._stream_queue.open(out.request_id)
+                elif out.request_id in self._active_requests or (
+                    out.type == "error"
+                    and (out.metadata or {}).get("pd_pre_admission") is True
+                ):
                     if out.type == "result":
                         await self._route_result(out.request_id, out.data)
+                    elif out.type == "pd_handoff":
+                        self._launch_pd_handoff(out.request_id, out.data)
                     elif out.type == "stream":
                         if out.target is None:
                             if self._stream_targets:
@@ -1147,6 +1172,40 @@ class Stage:
                     out = outbox.get_nowait()
                 except _queue_mod.Empty:
                     break
+
+    def _launch_pd_handoff(self, request_id: str, handoff: Any) -> None:
+        # Note (Yue Yin): ACK latency must not stop this stage from draining
+        # scheduler output for unrelated requests.
+        task = asyncio.create_task(self._send_pd_handoff(request_id, handoff))
+        self._receive_tasks.add(task)
+        task.add_done_callback(self._receive_tasks.discard)
+        task.add_done_callback(
+            lambda done: self._on_background_task_done(done, f"PD handoff {request_id}")
+        )
+
+    async def _send_pd_handoff(self, request_id: str, handoff: Any) -> None:
+        metadata = PrefillContinuationProducer(tp_size=1).prepare_rank_metadata(
+            handoff.continuation,
+            0,
+        )
+        try:
+            await self._comm.send_kv_pages(
+                request_id=request_id,
+                source_pool_id=handoff.source_pool_id,
+                source_page_indices=handoff.source_page_indices,
+                target_pool_id=handoff.target_pool_id,
+                to_stage=handoff.to_stage,
+                metadata=metadata,
+                transfer_id=handoff.continuation.transfer_id,
+                lease=handoff.lease,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("PD handoff failed for request %s", request_id)
+            await self._send_failure(request_id, f"PD handoff failed: {exc}")
+        finally:
+            self._clear_request_state(request_id)
 
     async def _drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""

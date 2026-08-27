@@ -220,6 +220,42 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
     asyncio.run(_run())
 
 
+def test_pd_pre_admission_error_reaches_coordinator() -> None:
+    async def _run() -> None:
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        stage = Stage(
+            name="thinker_decode",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=_FakeRelay(),
+            scheduler=scheduler,
+            is_terminal=True,
+        )
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type="error",
+                data=ValueError("invalid continuation state"),
+                metadata={"pd_pre_admission": True},
+            )
+        )
+
+        await stage._drain_outbox_external()
+
+        assert len(control_plane.completions) == 1
+        completion = control_plane.completions[0]
+        assert completion.request_id == "req"
+        assert completion.success is False
+        assert completion.error == "invalid continuation state"
+        assert "req" not in stage._active_requests
+
+    asyncio.run(_run())
+
+
 def test_outbox_drain_reuses_one_executor_wakeup_for_ready_messages(
     monkeypatch,
 ) -> None:

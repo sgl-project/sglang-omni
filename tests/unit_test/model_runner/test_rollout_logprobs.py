@@ -48,6 +48,40 @@ def test_rollout_logprobs_align_per_request_at_batch_2() -> None:
     assert math.isclose(data1.output_token_logprobs[0][0], -1.5, abs_tol=1e-4)
 
 
+def test_rollout_logprobs_skip_middle_prefill_placeholder() -> None:
+    runner = object.__new__(ModelRunner)
+    middle_req = SimpleNamespace(inflight_middle_chunks=1)
+    final_req = SimpleNamespace(inflight_middle_chunks=0)
+    middle_data = SimpleNamespace(
+        req=middle_req,
+        return_logprob=True,
+        output_token_logprobs=[],
+    )
+    final_data = SimpleNamespace(
+        req=final_req,
+        return_logprob=True,
+        output_token_logprobs=[],
+    )
+
+    runner._record_rollout_logprobs(
+        torch.tensor([-0.5, -1.5]),
+        torch.tensor([11, 22]),
+        [SimpleNamespace(data=middle_data), SimpleNamespace(data=final_data)],
+    )
+
+    assert middle_data.output_token_logprobs == []
+    assert final_data.output_token_logprobs == [[-1.5, 22]]
+
+    middle_req.inflight_middle_chunks = 0
+    runner._record_rollout_logprobs(
+        torch.tensor([-0.25]),
+        torch.tensor([33]),
+        [SimpleNamespace(data=middle_data)],
+    )
+
+    assert middle_data.output_token_logprobs == [[-0.25, 33]]
+
+
 def test_rollout_logprobs_raises_on_batch_size_mismatch() -> None:
     runner = object.__new__(ModelRunner)
     data = SimpleNamespace(return_logprob=True, output_token_logprobs=[])

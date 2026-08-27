@@ -1971,6 +1971,10 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     assert scheduler.dp_attn_adapter is not None
     assert scheduler.pool_stats_observer is not None
     assert scheduler.load_inquirer is not None
+    assert scheduler.disagg_decode_prealloc_queue.queue == []
+    assert scheduler.disagg_decode_prealloc_queue.retracted_queue == []
+    assert scheduler.disagg_decode_prealloc_queue.num_tokens_pre_allocated == 0
+    assert scheduler.disagg_decode_transfer_queue.queue == []
     assert scheduler.min_free_slots_delayer is None
     assert scheduler.max_queued_requests == 7
     assert scheduler.max_running_requests == 1

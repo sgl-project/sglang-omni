@@ -62,6 +62,7 @@ class DecodeContinuation:
     mm_audio_tokens: int = 0
     mm_video_tokens: int = 0
     return_logprob: bool = False
+    output_token_logprobs: list[Any] = dataclasses.field(default_factory=list)
     top_logprobs_num: int = 0
     token_ids_logprob: list[int] | None = None
     logprob_start_len: int = -1
@@ -130,6 +131,7 @@ def validate_continuation(
     source_tp_size: int,
     target_tp_size: int,
     is_local: bool = True,
+    allowed_resume_schemas: frozenset[str] = frozenset(),
 ) -> None:
     """Raise `PDCapabilityError` if the continuation is not supported in PR 2."""
 
@@ -148,7 +150,15 @@ def validate_continuation(
         raise PDCapabilityError("speculative decoding is not supported")
 
     if continuation.multimodal_resume is not None:
-        raise PDCapabilityError("multimodal resume is not supported")
+        schema = (
+            continuation.multimodal_resume.get("schema")
+            if isinstance(continuation.multimodal_resume, dict)
+            else None
+        )
+        if schema not in allowed_resume_schemas:
+            raise PDCapabilityError(
+                f"multimodal resume schema {schema!r} is not supported"
+            )
 
     sampling_params = continuation.sampling_params or {}
     if any(
@@ -481,12 +491,14 @@ class ContinuationAwareKVReceiver:
         source_tp_size: int = 1,
         target_tp_size: int = 1,
         is_local: bool = True,
+        allowed_resume_schemas: frozenset[str] = frozenset(),
     ) -> None:
         self._inner = inner
         self._controller = controller
         self._source_tp_size = source_tp_size
         self._target_tp_size = target_tp_size
         self._is_local = is_local
+        self._allowed_resume_schemas = allowed_resume_schemas
 
     def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
         continuation, continuation_expected = self._decode_metadata(request)
@@ -554,6 +566,7 @@ class ContinuationAwareKVReceiver:
             source_tp_size=self._source_tp_size,
             target_tp_size=self._target_tp_size,
             is_local=self._is_local,
+            allowed_resume_schemas=self._allowed_resume_schemas,
         )
         return continuation, True
 

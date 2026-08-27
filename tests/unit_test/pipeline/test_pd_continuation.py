@@ -625,6 +625,16 @@ def test_unsupported_mode_rejections():
             target_tp_size=1,
         )
 
+    validate_continuation(
+        dataclasses.replace(
+            base,
+            multimodal_resume={"schema": "test-adapter-v1", "state": [1, 2]},
+        ),
+        source_tp_size=1,
+        target_tp_size=1,
+        allowed_resume_schemas=frozenset({"test-adapter-v1"}),
+    )
+
     with pytest.raises(PDCapabilityError, match="grammar"):
         validate_continuation(
             dataclasses.replace(

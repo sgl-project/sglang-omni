@@ -887,6 +887,11 @@ class ModelRunner:
             )
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
+            req = getattr(data, "req", None)
+            if req is not None and req.inflight_middle_chunks > 0:
+                # Note (Yue Yin): A middle Prefill chunk samples a placeholder
+                # that upstream deliberately excludes from generated output.
+                continue
             if data.return_logprob:
                 data.output_token_logprobs.append(
                     [logprobs[row_idx], token_ids[row_idx]]
