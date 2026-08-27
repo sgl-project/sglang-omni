@@ -1624,6 +1624,12 @@ class OmniScheduler:
                 # idempotent) and drop the stale terminal result so it cannot
                 # resurrect the request downstream.
                 self._run_abort_callback(rid)
+                data = req._omni_data
+                data.prefill_input_embeds = None
+                data.decode_input_embeds = None
+                data.pending_feedback_count = 0
+                data.retracted_feedback_embed = None
+                data.feedback_slot_idx = None
                 self._first_emit_done.discard(rid)
                 self._emit_model_path_end_once(rid, status="aborted")
                 _detach_request_data(req)
@@ -1666,6 +1672,9 @@ class OmniScheduler:
                             terminal_error = exc
                 data.prefill_input_embeds = None
                 data.decode_input_embeds = None
+                data.pending_feedback_count = 0
+                data.retracted_feedback_embed = None
+                data.feedback_slot_idx = None
                 # Note: (Jiaxin Deng) close the model-path interval before
                 # _close_completed_request, which discards the same rid that
                 # _emit_model_path_end_once dedups on. Emitting afterwards

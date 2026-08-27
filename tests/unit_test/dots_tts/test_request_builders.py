@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.request_builders import (
     apply_latent_result,
@@ -51,6 +54,50 @@ def test_public_budget_counts_only_emitted_post_prompt_patches() -> None:
 
     # The first decoded patch regenerates the prompt tail and is not emitted.
     assert data.req.sampling_params.max_new_tokens == 2
+
+
+def test_built_request_carries_feedback_through_runner_decode() -> None:
+    state = DotsTTSState(
+        generation_schedule=torch.tensor([[1, 99]]),
+        audio_span_token_ids=[99],
+        vocab_size=128,
+    )
+    data = build_sglang_dots_tts_request(_payload(state))
+    feedback = torch.full((4,), 7.0)
+
+    class _Flow:
+        is_batched = False
+
+        def decode_batch(self, *_args, **_kwargs):
+            return [
+                SimpleNamespace(
+                    feedback_embedding=feedback,
+                    latent_patch=torch.zeros(1, 2, 2),
+                    finished=False,
+                    emit=True,
+                )
+            ]
+
+    runner = object.__new__(DotsTTSModelRunner)
+    runner.model = SimpleNamespace(
+        flow=_Flow(),
+        graph_feedback_buffer=None,
+        parameters=lambda: iter([torch.zeros(1)]),
+    )
+    request = SimpleNamespace(request_id="rid", data=data)
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(hidden_states=torch.zeros(1, 4)),
+        next_token_ids=None,
+    )
+
+    runner.post_decode(result, object(), object(), [request])
+
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([0]), input_embeds=None)
+    runner.before_decode(forward_batch, object(), [request])
+
+    assert result.next_token_ids.tolist() == [99]
+    assert not data.pending_feedback_queue
+    torch.testing.assert_close(forward_batch.input_embeds, feedback.unsqueeze(0))
 
 
 def test_prompt_schedule_requires_a_patch_after_regeneration() -> None:

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
 from typing import Any
+
+from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -30,8 +33,10 @@ def configure_talker_server_args(
         "disable_radix_cache": True,
         "chunked_prefill_size": 0,
     }
+    overlap_requested = os.environ.get("SGLANG_OMNI_TALKER_OVERLAP", "0") == "1"
     if feedback_enabled:
-        overrides["disable_overlap_schedule"] = True
+        if not overlap_requested:
+            overrides["disable_overlap_schedule"] = True
         if want_cuda_graph:
             overrides["disable_cuda_graph"] = True
     override_server_args(server_args, "qwen3_omni.talker", **overrides)
@@ -117,6 +122,25 @@ class QwenTalkerScheduler(OmniScheduler):
             self._rollback_decode_prep_after_skip(batch)
             return None
         return batch
+
+    def _add_request_to_queue(self, req: Any, is_retracted: bool = False) -> None:
+        # Note (wenyao): snapshot before another request reuses the freed pool row.
+        if is_retracted or req.is_retracted:
+            runner = self._model_runner
+            if runner is not None:
+                try:
+                    runner.snapshot_feedback_for_retract(req)
+                except Exception as exc:
+                    # Note (wenyao): contain replay failure to this request.
+                    logger.exception(
+                        "Talker retract feedback snapshot failed for request=%s; "
+                        "aborting that request alone",
+                        req.rid,
+                    )
+                    self._emit_request_error(req.rid, exc)
+                    self.abort(req.rid, defer_running_cleanup=False)
+                    return
+        return _Upstream._add_request_to_queue(self, req, is_retracted=is_retracted)
 
     def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
         # Note(Chenchen Hong, Xuesong): This is talker-only. It does not fully

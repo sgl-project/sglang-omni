@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import collections
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ class DotsFlowResume:
 
 @dataclass
 class DotsTTSSGLangRequestData(SGLangARRequestData):
+    pending_feedback_queue: Any = field(default_factory=collections.deque)
     state: DotsTTSState = field(default_factory=DotsTTSState)
     generation_schedule: torch.Tensor | None = None
     span_positions: torch.Tensor | None = None
