@@ -15,6 +15,7 @@ from typing import Any, TypeAlias
 
 import torch
 
+from sglang_omni.models.moss_tts.audio_tokenizer import resolve_moss_audio_dtype
 from sglang_omni.models.moss_tts.hf_loading import (
     load_moss_processor_class,
     moss_transformers_processor_compat,
@@ -23,6 +24,7 @@ from sglang_omni.models.moss_tts.request_builders import _DATA_URI_RE
 from sglang_omni.models.moss_tts_local.audio_tokenizer import (
     DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
     load_moss_tts_local_audio_tokenizer,
+    load_moss_tts_local_audio_vocoder,
 )
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
@@ -127,11 +129,9 @@ def _apply_colocated_ar_memory_budget(
     explicit_mem_fraction = overrides.get("mem_fraction_static")
     applied_codec_mem_reserve = codec_mem_reserve
     if explicit_mem_fraction is not None:
+        # Range is the schema's rule (engine.mem_fraction_static in (0, 1));
+        # only the model's own budget relation is checked here.
         explicit_mem_fraction = float(explicit_mem_fraction)
-        if not 0.0 < explicit_mem_fraction < 1.0:
-            raise ValueError(
-                f"mem_fraction_static must be > 0 and < 1, got {explicit_mem_fraction}"
-            )
         if explicit_mem_fraction > total_gpu_memory_fraction:
             raise ValueError(
                 f"MOSS-TTS Local tts_engine mem_fraction_static cannot exceed "
@@ -542,6 +542,8 @@ def create_preprocessing_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    compute_dtype: str | torch.dtype | None = "bfloat16",
+    attention_backend: str = "auto",
     codec_model_path: str | None = None,
     max_concurrency: int = 16,
     encode_batch_size: int = 8,
@@ -569,9 +571,16 @@ def create_preprocessing_executor(
         )
     device = _resolve_codec_device(device, gpu_id)
     processor = _load_moss_tts_local_processor(model_path)
+    resolved_compute_dtype = resolve_moss_audio_dtype(
+        compute_dtype,
+        name="compute_dtype",
+        allow_none=True,
+    )
     audio_tokenizer = load_moss_tts_local_audio_tokenizer(
         _resolve_audio_tokenizer_model_path(processor, codec_model_path),
         device=device,
+        compute_dtype=resolved_compute_dtype,
+        attention_backend=attention_backend,
     )
     reference_encoder: Any = _BatchedReferenceEncoder(
         audio_tokenizer,
@@ -643,6 +652,9 @@ def create_vocoder_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    dtype: str | torch.dtype = "float32",
+    compute_dtype: str | torch.dtype | None = "bfloat16",
+    attention_backend: str = "auto",
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
     codec_model_path: str | None = None,
@@ -658,14 +670,29 @@ def create_vocoder_executor(
 ) -> MossTTSLocalStreamingVocoderScheduler:
     device = _resolve_codec_device(device, gpu_id)
     processor = _load_moss_tts_local_processor(model_path)
-    audio_tokenizer = load_moss_tts_local_audio_tokenizer(
+    decoder_dtype = resolve_moss_audio_dtype(
+        dtype,
+        name="dtype",
+        allow_none=False,
+    )
+    assert decoder_dtype is not None
+    resolved_compute_dtype = resolve_moss_audio_dtype(
+        compute_dtype,
+        name="compute_dtype",
+        allow_none=True,
+    )
+    audio_vocoder = load_moss_tts_local_audio_vocoder(
         _resolve_audio_tokenizer_model_path(processor, codec_model_path),
         device=device,
+        decoder_dtype=decoder_dtype,
+        compute_dtype=resolved_compute_dtype,
+        attention_backend=attention_backend,
     )
     scheduler = MossTTSLocalStreamingVocoderScheduler(
-        audio_tokenizer.model,
+        audio_vocoder.model,
         n_vq=int(processor.model_config.n_vq),
-        sample_rate=audio_tokenizer.sample_rate,
+        sample_rate=audio_vocoder.sample_rate,
+        attention_backend=attention_backend,
         stream_slots=stream_slots,
         stream_chunk_frames=stream_chunk_frames,
         initial_chunk_frames=initial_chunk_frames,

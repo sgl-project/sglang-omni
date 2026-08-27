@@ -48,8 +48,8 @@ eager, and requests are non-streaming unless `stream` is set.
 For non-streaming requests, `audio_decode` sends the complete generated latent sequence through
 one full-sequence AudioVAE decode. Streaming requests use the separate incremental AudioVAE path
 with request-local cache and overlap state. Older configs need three changes, all enforced
-during config loading: remove `decode_mode` from `audio_decode.factory_args` or
-`runtime_overrides.audio_decode`, because non-streaming chunked decode is no longer supported;
+during config loading: remove `decode_mode` from the audio_decode stage's
+`factory` group, because non-streaming chunked decode is no longer supported;
 set `tts_engine.stream_to` to `[audio_decode]` to declare the latent stream edge; and set
 `audio_decode.can_accept_stream_before_payload` to `true` so the consumer accepts latents that
 arrive while generation is still running. The provided YAML already carries all three.
@@ -113,7 +113,7 @@ Streaming returns headerless mono signed 16-bit little-endian PCM (`s16le`) at 4
 sample rate, channel count, and bit depth; HTTP EOF ends the stream.
 
 Ming AudioVAE uses separate initial and steady cadence settings. Its first non-terminal call
-buffers `audio_decode.factory_args.initial_chunk_patches` latent patches and emits no PCM; a
+buffers `stages.audio_decode.factory.initial_chunk_patches` latent patches and emits no PCM; a
 later call supplies the right-hand context needed to emit that initial group. Subsequent calls
 consume `steady_chunk_patches` at a time. The provided configuration uses two initial patches and
 four steady patches, and the terminal step flushes any remainder. Pipe the response to `ffplay`

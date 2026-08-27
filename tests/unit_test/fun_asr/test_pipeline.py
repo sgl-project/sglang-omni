@@ -17,7 +17,6 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.models.fun_asr import request_builders
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
@@ -27,32 +26,17 @@ def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     assert [stage.name for stage in config.stages] == ["asr"]
     assert config.terminal_stages == ["asr"]
     assert config.gpu_placement == {"asr": 0}
-    assert config.stages[0].factory.endswith("create_sglang_fun_asr_executor")
-    assert config.stages[0].factory_args["device"] == "cuda:0"
-    assert config.stages[0].factory_args["max_running_requests"] == 64
-    assert config.stages[0].factory_args["max_new_tokens"] == 200
-    assert config.stages[0].factory_args["enable_pre_lm_encoder"] is True
-    assert config.stages[0].factory_args["pre_lm_cache_max_entries"] == 4096
-    assert config.stages[0].factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
-    assert config.stages[0].factory_args["pre_lm_max_batch_size"] == 8
-    assert config.stages[0].factory_args["pre_lm_max_batch_wait_ms"] == 10
-    assert config.stages[0].factory_args["request_build_max_workers"] == 8
-    assert config.stages[0].factory_args["request_build_max_pending"] == 32
+    assert config.stages[0].factory_path.endswith("create_sglang_fun_asr_executor")
+    # Constructor defaults live on the factory signature (pinned below); the
+    # config declares no overrides of its own.
+    assert config.stages[0].factory.model_dump(exclude_none=True) == {}
+    assert not config.stages[0].factory.model_extra
+    assert type(config).stage_config_cls("asr").engine_stage
+    assert config.stage_factory_kwargs("asr") == {"enable_encoder_cuda_graph": True}
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("FunAsrNanoForConditionalGeneration")
         is FunASRPipelineConfig
     )
-
-
-def test_fun_asr_config_enables_pending_build_aware_prefill_coalescing() -> None:
-    factory_args = FunASRPipelineConfig(model_path="dummy").stages[0].factory_args
-
-    assert factory_args["prefill_coalesce_requests"] == 16
-    assert factory_args["prefill_coalesce_wait_ms"] == 24
-    assert factory_args["prefill_coalesce_when_idle"] is True
-    assert factory_args["prefill_coalesce_requires_pending_builds"] is True
-    assert factory_args["prefill_coalesce_after_builds_during_decode"] is True
-    assert factory_args["async_decode_min_batch_size"] == 2
 
 
 def test_fun_asr_stage_default_allows_64_running_requests() -> None:
@@ -70,7 +54,7 @@ def test_fun_asr_stage_default_allows_64_running_requests() -> None:
     assert signature.parameters["stream_emit_interval_s"].default == 0.05
 
 
-def test_fun_asr_stage_default_prefill_coalescing_matches_config() -> None:
+def test_fun_asr_stage_defaults_enable_pending_build_aware_coalescing() -> None:
     signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
     assert signature.parameters["prefill_coalesce_requests"].default == 16
@@ -83,6 +67,8 @@ def test_fun_asr_stage_default_prefill_coalescing_matches_config() -> None:
         signature.parameters["prefill_coalesce_after_builds_during_decode"].default
         is True
     )
+    assert signature.parameters["enable_async_decode"].default is True
+    assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
 @pytest.mark.parametrize(
@@ -216,7 +202,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         build_kwargs.clear()
         build_kwargs.update(overrides)
         prefill_bs = overrides.get("cuda_graph_bs_prefill")
-        server_args = FakeServerArgs(**overrides)
+        server_args = SimpleNamespace(**overrides)
         server_args.mm_attention_backend = None
         server_args.cuda_graph_config = SimpleNamespace(
             prefill=SimpleNamespace(
@@ -237,8 +223,6 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     )
     infrastructure = (
         model_worker,
-        object(),
-        object(),
         object(),
         object(),
         object(),

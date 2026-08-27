@@ -1,17 +1,27 @@
 config_cls: DotsTTSPipelineConfig
 model_path: dots-studio/dots.tts-soar
-runtime_overrides:
+
+# The solver settings feed two consumers: the latent AR engine solves with
+# them, and preprocessing sizes its generation schedule from them.
+# note (luojiaxuan): SOAR is a flow-matching checkpoint, so it runs the
+# single-request solver (max_running_requests=1) with CFG. num_steps is the
+# upstream SOAR default; the MeanFlow checkpoint uses 4.
+shared:
+  - select:
+      stages: [preprocessing, latent_engine]
+    factory:
+      num_steps: 10
+      max_generate_length: 500
+
+stages:
   latent_engine:
-    optimize: true
-    # note (luojiaxuan): SOAR is a flow-matching checkpoint, so it runs the
-    # single-request solver (max_running_requests=1) with CFG. num_steps is the
-    # upstream SOAR default; the MeanFlow checkpoint uses 4.
-    num_steps: 10
-    max_generate_length: 500
-    server_args_overrides:
+    factory:
+      optimize: true
+    engine:
       mem_fraction_static: 0.20
       max_running_requests: 1
       disable_cuda_graph: false
       cuda_graph_max_bs: 1
   vocoder:
-    optimize: true
+    factory:
+      optimize: true

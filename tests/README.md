@@ -49,9 +49,8 @@ tests/
     ├── sampling/
     │   └── test_seed.py
     ├── vendor/
-    │   ├── test_sglang_parallel_state.py
-    │   ├── test_sglang_server_args.py
-    │   └── test_sglang_signature.py
+    │   ├── test_sglang_layers_patch.py
+    │   └── test_sglang_server_args.py
     ├── xpu/
     │   ├── test_device_layer.py
     │   └── test_install_script.py
@@ -489,7 +488,7 @@ that happened to contain an older version of the test.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory `max_running_requests=64` default,
     async-decode default,
-    and `--decode-mode async|sync` CLI overrides
+    and the dotted `factory.enable_async_decode` CLI override
   - RTX 4090 profile config resolution, SM-specific multimodal-attention
     defaults, and resolved decode CUDA Graph bucket diagnostics
   - single-source audio token length formula used by both processor and
@@ -508,7 +507,7 @@ that happened to contain an older version of the test.
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
   - pipeline config, stage factory concurrency defaults, deferred CUDA-graph
-    capture, async-decode default, and `--decode-mode async|sync` CLI overrides
+    capture, async-decode default, and the dotted `factory.enable_async_decode` CLI override
   - audio-token count formula, audio-tower forward shape, marker-token
     suppression, and the fp16 encoder residual clamp.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
@@ -658,7 +657,7 @@ that happened to contain an older version of the test.
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
-  - async-decode default-on config + `--decode-mode async|sync` CLI override.
+  - async-decode default-on config + the dotted `factory.enable_async_decode` CLI override.
 
 - `unit_test/moss_tts/`: MOSS-TTS unit tests:
   - pipeline config and registry contracts
@@ -777,9 +776,9 @@ that happened to contain an older version of the test.
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
 
-- `unit_test/vendor/`: Compatibility boundaries for supported SGLang parallel
-  state layouts, server-argument publication, and version-dependent call
-  signatures.
+- `unit_test/vendor/`: Server-argument publication boundaries and the vendor
+  RMSNorm patch staying on the fused-op dispatch path (dtype fallback,
+  zero-token contract, kwargs passthrough).
 
 - `unit_test/whisper_asr/`: Whisper pipeline configuration, encoder CUDA Graph,
   decoder LayerNorm fast-path placement, and PyTorch fallback behavior

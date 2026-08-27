@@ -1,45 +1,41 @@
 # SPDX-License-Identifier: Apache-2.0
 """ASR concurrency benchmark on the Pipecat STT benchmark set.
 
-This script transcribes ``pipecat-ai/stt-benchmark-data`` (1000 English
+This script transcribes pipecat-ai/stt-benchmark-data (1000 English
 utterances, 1 to 16 s, 16 kHz WAV, punctuated transcripts) through a running
 ASR router and reports WER, request throughput, RTFx, RTF, latency, and worker
-routing balance. It reuses the sweep loop, aggregation, table, and common
-arguments of ``benchmark_asr_seedtts`` so the two result JSONs line up column
-for column; the difference is the workload: longer, conversational voice-agent
-turns instead of short SeedTTS prompts.
+routing balance.
+
+Author:
+
+    Jeffro Qu https://github.com/0xjeffro
 
 Usage:
 
-    # Download the test set once:
+    1. Download the test set once:
     python -m benchmarks.dataset.prepare --dataset stt-benchmark
 
     # Launch Qwen3-ASR:
     sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B --port 8000
 
     # Sweep the full set (3 repeats each):
-    python -m benchmarks.eval.benchmark_asr_stt_benchmark \\
-        --port 8000 \\
-        --concurrencies 1,2,4,8,16,32,64 \\
+    python -m benchmarks.eval.benchmark_asr_stt_benchmark \
+        --port 8000 \
+        --concurrencies 1,2,4,8,16,32,64 \
         --repeats 3 --warmup
 
     # Quick local smoke on a 20-sample subset:
-    python -m benchmarks.eval.benchmark_asr_stt_benchmark \\
+    python -m benchmarks.eval.benchmark_asr_stt_benchmark \
         --port 8000 --max-samples 20 --concurrencies 2,32 --repeats 1
 
     # Run the same sweep against Fun-ASR-Nano with SSE streaming:
-    python -m benchmarks.eval.benchmark_asr_stt_benchmark \\
-        --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \\
+    python -m benchmarks.eval.benchmark_asr_stt_benchmark \
+        --port 8000 --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
         --concurrencies 32 --repeats 3 --warmup --stream
 
 Pipecat's own benchmark reports Semantic WER and TTFS for this dataset; this
 script does not reproduce those metrics, so its numbers are not comparable to
 the Pipecat leaderboard.
-
-The dataset is English only, so WER uses the Whisper English normalizer and
-the request language is fixed to ``en``. Use ``--repo-id`` to point at a
-re-upload with the same columns; the canonical repo loads at its pinned
-revision unless you pass ``--dataset-revision``.
 """
 
 from __future__ import annotations

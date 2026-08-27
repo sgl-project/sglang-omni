@@ -513,8 +513,8 @@ class Qwen3TTSTalker(nn.Module):
         )
         self._predictor_graphs: dict[tuple, _PredictorDecodeGraph] = {}
         self._predictor_graph_disabled: set[tuple] = set()
-        # Note: (Jiaxin Deng) None = resolved at decode time; bootstrap forces
-        # disable_cuda_graph on during init (deferred capture), so not here.
+        # Note: (Jiaxin Deng) None = resolved at decode time; the bootstrap
+        # defers graph capture past init, so nothing is decided here.
         self._predictor_graph_enabled: bool | None = None
         self._predictor_graph_failure_count = 0
         self._predictor_graph_pool = None

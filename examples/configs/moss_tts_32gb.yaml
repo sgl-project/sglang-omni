@@ -1,19 +1,21 @@
 config_cls: MossTTSPipelineConfig
 model_path: OpenMOSS-Team/MOSS-TTS-v1.5
 
-runtime_overrides:
+stages:
   preprocessing:
-    device: cpu
-    dtype: float32
-    max_concurrency: 1
+    factory:
+      device: cpu
+      compute_dtype: bfloat16
+      max_concurrency: 1
 
   tts_engine:
-    server_args_overrides:
+    engine:
       max_running_requests: 1
       mem_fraction_static: 0.70
       cuda_graph_max_bs: 1
 
   vocoder:
-    dtype: bfloat16
-    max_batch_size: 1
-    max_batch_wait_ms: 2
+    factory:
+      dtype: bfloat16
+      max_batch_size: 1
+      max_batch_wait_ms: 2

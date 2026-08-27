@@ -14,7 +14,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
-from tests.unit_test.fakes import FakeServerArgs
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
 def _server_args(
@@ -26,8 +26,8 @@ def _server_args(
     chunked_prefill_size: int | None = 8192,
     max_prefill_tokens: int = 16384,
     disable_cuda_graph: bool = False,
-) -> FakeServerArgs:
-    return FakeServerArgs(
+) -> SimpleNamespace:
+    return SimpleNamespace(
         max_running_requests=4,
         disable_cuda_graph=disable_cuda_graph,
         enable_torch_compile=False,
@@ -55,7 +55,7 @@ def _server_args(
 _PREFILL_BS_LOCKED = frozenset({("prefill", "bs")})
 
 
-def _validate(server_args: FakeServerArgs) -> None:
+def _validate(server_args: SimpleNamespace) -> None:
     validate_generation_batch_policy(
         model_name="Test TTS",
         server_args=server_args,
@@ -191,7 +191,7 @@ def test_breakable_rejects_sglang_incompatible_features(
         prefill_max_bs=512,
         locked=_PREFILL_BS_LOCKED,
     )
-    server_args.override("test", **incompatibility)
+    override_server_args(server_args, "test", **incompatibility)
 
     with pytest.raises(ValueError, match=match):
         _validate(server_args)
@@ -467,8 +467,6 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 

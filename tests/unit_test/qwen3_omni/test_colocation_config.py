@@ -31,14 +31,12 @@ def _set_colocated_runtime(
         "code2wav": 0.02,
     }
     for stage_name, fraction in fractions.items():
-        _stage(config, stage_name).runtime.resources.total_gpu_memory_fraction = (
-            fraction
-        )
+        _stage(config, stage_name).gpu_memory_fraction = fraction
     if include_mem_fraction:
-        _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static = (
+        _stage(config, "thinker").engine.mem_fraction_static = (
             0.74 if conflicting_mem_fraction else 0.75
         )
-        _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static = (
+        _stage(config, "talker_ar").engine.mem_fraction_static = (
             0.11 if conflicting_mem_fraction else 0.12
         )
 
@@ -58,11 +56,12 @@ def test_default_speech_topology_stays_disaggregated() -> None:
         code2wav_args["enable_cuda_graph"] is current_platform.enable_code2wav_graph()
     )
     assert code2wav_args["total_gpu_memory_fraction"] == pytest.approx(0.02)
-    assert "enable_batching" not in code2wav.factory_args
-    assert "max_batch_wait_ms" not in code2wav.factory_args
-    assert "batch_floor" not in code2wav.factory_args
-    assert "batch_ceiling" not in code2wav.factory_args
-    assert _stage(config, "talker_ar").factory_args["enable_partial_start"] is True
+    code2wav_extra = code2wav.factory.model_extra or {}
+    assert "enable_batching" not in code2wav_extra
+    assert "batch_floor" not in code2wav_extra
+    assert "batch_ceiling" not in code2wav_extra
+    assert code2wav.factory.max_batch_wait_ms is None
+    assert _stage(config, "talker_ar").factory.enable_partial_start is True
     assert config.placement.require_memory_fraction_for_colocation is False
     assert {stage.name: stage.process for stage in config.stages} == {
         "preprocessing": "preprocessing",
@@ -92,7 +91,7 @@ def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
     assert Variants["speech-colocated"] is Qwen3OmniSpeechColocatedPipelineConfig
-    assert _stage(config, "talker_ar").factory_args["enable_partial_start"] is False
+    assert _stage(config, "talker_ar").factory.enable_partial_start is False
     for stage_name in (
         "image_encoder",
         "audio_encoder",
@@ -112,10 +111,10 @@ def test_audio_encoder_scopes_pooled_payload_transport(config_cls) -> None:
     config = config_cls(model_path="dummy")
     assert _stage(config, "audio_encoder").disable_direct_cuda_ipc_payload is True
     assert _stage(config, "image_encoder").disable_direct_cuda_ipc_payload is False
-    assert (
-        _stage(config, "audio_encoder").factory_args["enable_layer_cuda_graph"] is True
-    )
-    assert "enable_layer_cuda_graph" not in _stage(config, "image_encoder").factory_args
+    audio_extra = _stage(config, "audio_encoder").factory.model_extra or {}
+    assert audio_extra["enable_layer_cuda_graph"] is True
+    image_extra = _stage(config, "image_encoder").factory.model_extra or {}
+    assert "enable_layer_cuda_graph" not in image_extra
 
 
 def test_colocated_config_passes_with_explicit_budgets_without_ar_mem_fraction() -> (
@@ -173,7 +172,7 @@ def test_colocated_config_rejects_conflicting_ar_mem_fraction() -> None:
 def test_colocated_config_rejects_missing_stage_budgets() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
-    with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
+    with pytest.raises(ValueError, match="gpu_memory_fraction"):
         build_stage_placement_plan(config)
 
 
@@ -207,7 +206,7 @@ def test_default_speech_rejects_same_gpu_thinker_and_talker_colocation() -> None
         "talker_ar",
         "code2wav",
     ):
-        _stage(config, stage_name).runtime.resources.total_gpu_memory_fraction = 0.10
+        _stage(config, stage_name).gpu_memory_fraction = 0.10
 
     with pytest.raises(ValueError, match="Qwen3OmniSpeechColocatedPipelineConfig"):
         build_stage_placement_plan(config)
@@ -217,7 +216,6 @@ def test_default_speech_allows_thinker_tp_placement() -> None:
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     thinker = _stage(config, "thinker")
     thinker.tp_size = 2
-    thinker.parallelism.tp = 2
     thinker.gpu = [0, 1]
 
     plan = build_stage_placement_plan(config)
@@ -230,7 +228,6 @@ def test_colocated_config_rejects_thinker_tp() -> None:
     _set_colocated_runtime(config)
     thinker = _stage(config, "thinker")
     thinker.tp_size = 2
-    thinker.parallelism.tp = 2
     thinker.gpu = [0, 1]
 
     with pytest.raises(ValueError, match="thinker TP"):

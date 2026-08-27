@@ -1,20 +1,20 @@
-# SPDX-License-Identifier: Apache-2.0
-# Author:
-# chenyang zhao: https://github.com/zhaochenyang20
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 """ASR concurrency benchmark on SeedTTS reference audio (issue #646).
 
 This script transcribes SeedTTS reference clips directly through a running ASR
 router and reports WER, request throughput, RTFx, RTF, latency, and worker
-routing balance. It supports both Qwen3-ASR and Fun-ASR-Nano through
-``--model-path``.
+routing balance.
+
+Author:
+
+    Chenyang Zhao https://github.com/zhaochenyang20
+    PoTaTo-Mika https://github.com/PoTaTo-Mika
 
 Usage:
 
-    # Download the test set once:
+    1. Download the test set once:
     python -m benchmarks.dataset.prepare --dataset seedtts
 
-    # Pin and launch Qwen3-ASR:
+    2. Pin and launch Qwen3-ASR:
     MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B \
         --revision 7278e1e70fe206f11671096ffdd38061171dd6e5)
     sgl-omni serve \
@@ -134,11 +134,7 @@ def _parse_concurrencies(value: str) -> list[int]:
 def _evaluation_input_sha256(
     samples: list[SampleInput], *, namespace: str = "seedtts"
 ) -> str:
-    """Fingerprint the exact evaluation input: ids, texts, and audio bytes.
-
-    *namespace* keeps digests from different datasets distinct; the SeedTTS
-    default reproduces the digests this script has always written.
-    """
+    """Fingerprint the exact evaluation input: ids, texts, and audio bytes."""
     digest = hashlib.sha256(f"{namespace}-evaluation-input-v1\0".encode())
     for sample in samples:
         for value in (sample.sample_id, sample.ref_text, sample.target_text):

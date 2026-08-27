@@ -41,7 +41,7 @@ def test_ming_text_config_imports_and_uses_current_stage_schema() -> None:
     )
     assert stages["decode"].can_accept_stream_before_payload is True
     assert all(
-        stage.factory.startswith("sglang_omni.models.ming_omni.stages.create_")
+        stage.factory_path.startswith("sglang_omni.models.ming_omni.stages.create_")
         for stage in config.stages
     )
     assert all("executor" not in stage.model_dump() for stage in config.stages)
@@ -245,7 +245,7 @@ def test_ming_speech_launcher_places_thinker_tp_and_talker(monkeypatch) -> None:
     stages = {stage.name: stage for stage in config.stages}
     thinker = stages["thinker"]
     talker = stages["talker"]
-    overrides = thinker.factory_args["server_args_overrides"]
+    overrides = thinker.engine.overrides() if thinker.engine is not None else {}
 
     assert thinker.tp_size == 4
     assert thinker.gpu == [0, 1, 2, 3]

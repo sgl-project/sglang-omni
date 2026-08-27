@@ -420,7 +420,7 @@ def _validate_gpu_process_colocation(
         gpu_processes[gpu_id].add(process_name)
         if stage.name in replica_device_stage_names:
             replica_gpus.add(gpu_id)
-        if stage.runtime.resources.total_gpu_memory_fraction is None:
+        if stage.gpu_memory_fraction is None:
             missing_fraction[gpu_id].add(stage.name)
 
     for group in topology_plan.groups:
@@ -453,7 +453,7 @@ def _validate_gpu_process_colocation(
             )
             raise ValueError(
                 f"GPU {gpu_id} {sharing} without "
-                "runtime.resources.total_gpu_memory_fraction: "
+                "gpu_memory_fraction: "
                 f"{_render_missing_fraction_stages(missing, gpu_placement)}"
             )
         total = gpu_placement.gpus[gpu_id].total_gpu_memory_fraction

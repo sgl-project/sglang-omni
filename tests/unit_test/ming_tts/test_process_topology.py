@@ -50,9 +50,7 @@ def test_engine_to_audio_decode_remains_cross_process_safe() -> None:
     }
     for stage in config_data["stages"]:
         if stage["name"] in fractions:
-            stage["runtime"]["resources"]["total_gpu_memory_fraction"] = fractions[
-                stage["name"]
-            ]
+            stage["gpu_memory_fraction"] = fractions[stage["name"]]
     config = MingTTSPipelineConfig(**config_data)
 
     plan = build_compiled_process_topology(config)

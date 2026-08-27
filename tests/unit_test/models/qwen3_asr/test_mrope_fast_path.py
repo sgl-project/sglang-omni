@@ -17,8 +17,10 @@ _ORIG = ForwardBatch._compute_mrope_positions
 @pytest.fixture(autouse=True)
 def _upstream(monkeypatch):
     monkeypatch.setattr(
-        "sglang.srt.model_executor.forward_batch_info.get_server_args",
-        lambda: SimpleNamespace(rl_on_policy_target=None),
+        "sglang.srt.model_executor.forward_batch_info.get_exec",
+        lambda: SimpleNamespace(
+            deterministic=SimpleNamespace(rl_on_policy_target=None)
+        ),
     )
     monkeypatch.setattr(mrope_fast_path, "_orig_compute_mrope_positions", _ORIG)
 
@@ -40,6 +42,7 @@ def _run(fn, mode, seq_lens, mm_inputs, **batch_fields):
     fb = object.__new__(ForwardBatch)
     fb.forward_mode = mode
     fb.seq_lens_cpu = torch.tensor(seq_lens, dtype=torch.int64)
+    fb.seq_lens = torch.tensor(seq_lens, dtype=torch.int64)
     fb.mrope_positions = None
     fn(fb, _RUNNER, SimpleNamespace(multimodal_inputs=mm_inputs, **batch_fields))
     return fb.mrope_positions

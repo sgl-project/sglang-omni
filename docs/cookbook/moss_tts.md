@@ -38,9 +38,14 @@ sgl-omni serve \
   --port 8000
 ```
 
-The default model-specific layout keeps the FP32 reference encoder on CPU and
-loads the GPU vocoder in BF16. This removes one codec copy from GPU and halves
-the parameter memory of the remaining codec.
+The default model-specific layout places the repository-local encoder and
+vocoder components on the configured pipeline GPU. The encoder and decoder
+weights materialize in BF16 according to `compute_dtype`; the quantizers and
+explicit FP32 norms remain in FP32. Each stage constructs only the codec
+components it uses instead of loading a complete codec copy.
+
+The bounded 24 GB and 32 GB configurations explicitly move preprocessing to
+CPU. They retain BF16 compute unless `compute_dtype` is overridden.
 
 For the bounded 32 GB qualification layout, use:
 
@@ -73,7 +78,7 @@ requested `max_total_tokens: 8192`. Treat this as a concurrency-1,
 CUDA-Graph-cap-1 qualification point, not a broader 24 GB capacity claim.
 
 Both policies can be changed explicitly through the preprocessing/vocoder
-`runtime_overrides` entries when profiling another layout. Explicit `device`
+stages' `factory.*` entries when profiling another layout. Explicit `device`
 values take precedence over the GPU selected by stage placement.
 
 ## Synthesizing Speech
