@@ -269,6 +269,38 @@ def test_weight_swap_isolates_prompt_cache_when_flush_fails() -> None:
     assert plain.extra_key == "plain"
 
 
+@pytest.mark.parametrize("failure_mode", ["return", "raise"])
+def test_tensor_update_failure_keeps_engine_paused(failure_mode: str) -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    def update_weights_from_tensor(payload: dict) -> tuple[bool, str]:
+        if failure_mode == "raise":
+            raise RuntimeError("partially updated")
+        return False, "partially updated"
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_tensor=update_weights_from_tensor
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._engine_paused = False
+    scheduler._last_pause_mode = None
+    scheduler._prompt_cache_epoch = 0
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: []
+
+    if failure_mode == "raise":
+        with pytest.raises(RuntimeError, match="partially updated"):
+            scheduler._admin_update_weights_from_tensor({})
+    else:
+        result = scheduler._admin_update_weights_from_tensor({})
+        assert result["success"] is False
+        assert result["data"]["engine_paused"] is True
+
+    assert scheduler._engine_paused is True
+    assert scheduler._prompt_cache_epoch == 0
+
+
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 

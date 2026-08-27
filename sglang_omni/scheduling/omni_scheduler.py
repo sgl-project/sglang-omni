@@ -2078,6 +2078,7 @@ class OmniScheduler:
             {
                 "metadata_only": payload.get("serialized_named_tensors") is None,
             },
+            keep_pause_on_failure=True,
         )
 
     def _admin_update_weights_from_distributed(
