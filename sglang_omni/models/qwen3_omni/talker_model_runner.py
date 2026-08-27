@@ -12,6 +12,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.scheduling.messages import OutgoingMessage
 
 
@@ -42,16 +43,21 @@ class QwenTalkerModelRunner(ModelRunner):
     ) -> None:
         del schedule_batch
         composed = self._compose_prefill_embeds(forward_batch, requests)
-        if composed is None:
-            return
-        input_embeds, input_embeds_are_projected = composed
-        attach_omni_prefill_inputs(
-            forward_batch,
-            OmniPrefillInputs(
-                input_embeds=input_embeds,
-                input_embeds_are_projected=input_embeds_are_projected,
-            ),
-        )
+        if composed is not None:
+            input_embeds, input_embeds_are_projected = composed
+            attach_omni_prefill_inputs(
+                forward_batch,
+                OmniPrefillInputs(
+                    input_embeds=input_embeds,
+                    input_embeds_are_projected=input_embeds_are_projected,
+                ),
+            )
+        for request_id in getattr(forward_batch, "rids", ()) or ():
+            _emit_event(
+                request_id=request_id,
+                stage=None,
+                event_name="talker_prefill_forward_start",
+            )
 
     def before_decode(
         self,

@@ -8,6 +8,7 @@ from collections import deque
 from typing import Any
 
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -78,10 +79,19 @@ class QwenTalkerScheduler(OmniScheduler):
         if not self._enable_partial_start:
             return False
         prefetched = getattr(payload, "prefetched_chunks", None) or []
-        return (
-            self._count_usable_prefetched_chunks(prefetched)
-            >= self._partial_start_min_chunks
-        )
+        usable_chunks = self._count_usable_prefetched_chunks(prefetched)
+        ready = usable_chunks >= self._partial_start_min_chunks
+        if ready:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="talker_partial_start_ready",
+                metadata={
+                    "usable_chunks": usable_chunks,
+                    "min_chunks": self._partial_start_min_chunks,
+                },
+            )
+        return ready
 
     def _initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
         del req_data, payload
