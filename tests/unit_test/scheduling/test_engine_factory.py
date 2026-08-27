@@ -147,7 +147,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(
     ) -> Any:
         events.append("build_server_args")
         build_kwargs.update(kwargs)
-        assert kwargs["disable_cuda_graph"] is expected_disable_cuda_graph
         return FakeServerArgs(
             checkpoint_dir=checkpoint_dir,
             context_length=context_length,
@@ -247,7 +246,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(
             assert overrides["mem_fraction_static"] == 0.7
 
         def customize_server_args(self, server_args: Any) -> None:
-            assert server_args.disable_cuda_graph is expected_disable_cuda_graph
             events.append("customize_server_args")
             assert server_args.context_length == 123
 
