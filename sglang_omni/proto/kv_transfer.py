@@ -54,7 +54,9 @@ class KVTransferPrepareMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "kv_transfer_prepare", **msgspec.to_builtins(self)}
+        value = msgspec.to_builtins(self)
+        value["metadata"] = self.metadata
+        return {"type": "kv_transfer_prepare", **value}
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "KVTransferPrepareMessage":
