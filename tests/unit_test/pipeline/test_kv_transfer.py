@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 from typing import Any
 from unittest.mock import Mock
 from uuid import uuid4
@@ -25,6 +26,7 @@ from sglang_omni.proto import (
     KVTransferPrepareMessage,
     KVTransferReadyMessage,
 )
+from sglang_omni.scheduling.pd_utils import DecodeContinuation, DecodeKVReceiver
 from tests.unit_test.fixtures.pipeline_fakes import FakeOp, FakeRelay
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace
 
@@ -180,6 +182,24 @@ def _pool(pool_id: str, *, buffer_name: str = "layer.0.kv") -> KVPool:
         page_size=1,
         buffers=(KVBufferRegion(buffer_name, tensor, bytes_per_page=4),),
     )
+
+
+def test_prepare_metadata_keeps_continuation_bytes() -> None:
+    message = KVTransferPrepareMessage(
+        request_id="request-1",
+        transfer_id="transfer-1",
+        from_stage="source",
+        to_stage="destination",
+        source_pool_id="source:kv",
+        target_pool_id="destination:kv",
+        source_page_indices=(1,),
+        source_layout=_pool("source:kv").layout,
+        metadata={"decode_continuation": b"\x00\xff"},
+    )
+
+    decoded = deserialize_message(serialize_message(message))
+
+    assert decoded.metadata["decode_continuation"] == b"\x00\xff"
 
 
 def _kv_endpoints(tp_size: int) -> dict[str, tuple[str, ...]]:
@@ -371,6 +391,59 @@ def test_kv_transfer_uses_rank_endpoint_for_full_lifecycle() -> None:
             lease.release.assert_called_once_with()
             assert relay.put_ops[0].waited
             assert ("op_ack", "kv-put") in relay.log.events
+        finally:
+            await source.close()
+            await destination.close()
+
+    asyncio.run(_run())
+
+
+def test_pd_continuation_is_admitted_after_comm_engine_handoff() -> None:
+    async def _run() -> None:
+        relay, source, destination = await _start_pair()
+        try:
+            source.register_kv_pool(_pool("prefill:kv"))
+            destination.register_kv_pool(_pool("decode:kv"))
+            allocator = Mock()
+            allocator.available_size.return_value = 6
+            allocator.alloc.return_value = torch.tensor([0, 3, 5])
+            admissions = queue.SimpleQueue()
+            destination.register_kv_receiver(
+                "decode:kv",
+                DecodeKVReceiver(
+                    pool_id="decode:kv",
+                    allocator=allocator,
+                    admissions=admissions,
+                    resume_schema="test-v1",
+                ),
+            )
+            continuation = DecodeContinuation(
+                request_id="request",
+                transfer_id="transfer",
+                origin_input_ids=[10, 11, 12],
+                output_ids=[42],
+                vocab_size=128,
+                sampling_params={},
+                stage_payload={},
+            )
+            lease = Mock()
+
+            await source.send_kv_pages(
+                request_id="request",
+                transfer_id="transfer",
+                source_pool_id="prefill:kv",
+                source_page_indices=(1, 2, 3),
+                target_pool_id="decode:kv",
+                to_stage="destination",
+                metadata={"decode_continuation": continuation.encode()},
+                lease=lease,
+            )
+
+            admission = admissions.get_nowait()
+            assert admission.continuation == continuation
+            assert admission.allocation.page_indices == (0, 3, 5)
+            assert relay.get_calls == [("decode:kv", (1, 2, 3), (0, 3, 5))]
+            lease.release.assert_called_once_with()
         finally:
             await source.close()
             await destination.close()
