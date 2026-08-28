@@ -26,6 +26,8 @@ from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_FLOW_STEPS = 10
+
 _COSYVOICE_INSTALL_HINT = (
     "Fun-CosyVoice3 support requires the `cosyvoice` package. "
     "Clone the official repository and set PYTHONPATH, or install it "
@@ -41,10 +43,44 @@ def store_state(payload: StagePayload, state: FunCosyVoice3State) -> StagePayloa
     return _store_pipeline_state(payload, state)
 
 
+def _apply_flow_step_override(flow: Any, flow_steps: int) -> None:
+    decoder = flow.decoder
+    decoder_cls = type(decoder)
+    if not getattr(decoder_cls, "_sglang_flow_steps_override", False):
+        original = decoder_cls.forward
+
+        @torch.inference_mode()
+        def forward(
+            self,
+            mu,
+            mask,
+            n_timesteps,
+            temperature=1.0,
+            spks=None,
+            cond=None,
+            streaming=False,
+        ):
+            return original(
+                self,
+                mu,
+                mask,
+                getattr(self, "n_timesteps", n_timesteps),
+                temperature,
+                spks,
+                cond,
+                streaming,
+            )
+
+        decoder_cls.forward = forward
+        decoder_cls._sglang_flow_steps_override = True
+    decoder.n_timesteps = int(flow_steps)
+
+
 def _load_cosyvoice3_flow_hift(
     checkpoint_dir: str,
     device: str,
     fp16: bool = False,
+    flow_steps: int = _DEFAULT_FLOW_STEPS,
 ) -> tuple[Any, Any]:
     try:
         from cosyvoice.cli.cosyvoice import CosyVoice3
@@ -57,6 +93,7 @@ def _load_cosyvoice3_flow_hift(
     flow.to(device).eval()
     hift.to(device).eval()
     del cv.model.llm
+    _apply_flow_step_override(flow, flow_steps)
     return flow, hift
 
 
@@ -98,10 +135,12 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         flow: Any,
         hift: Any,
         fp16: bool = False,
+        flow_steps: int = _DEFAULT_FLOW_STEPS,
     ) -> None:
         self._flow = flow
         self._hift = hift
         self._fp16 = fp16
+        self._flow_steps = int(flow_steps)
 
     def prepare_item(
         self, payload: StagePayload
@@ -203,6 +242,15 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         return payload
 
 
+def _positive_flow_steps(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            "Fun-CosyVoice3 flow_steps must be a positive integer, "
+            f"got {value!r}"
+        )
+    return int(value)
+
+
 def create_vocoder_executor(
     model_path: str,
     *,
@@ -211,16 +259,32 @@ def create_vocoder_executor(
     dtype: str = "bfloat16",
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
+    flow_steps: int = _DEFAULT_FLOW_STEPS,
 ) -> SimpleScheduler:
+    flow_steps = _positive_flow_steps(flow_steps)
+    if flow_steps != _DEFAULT_FLOW_STEPS:
+        logger.info(
+            "Fun-CosyVoice3 flow decoder sampling with %d ODE steps "
+            "(default %d); fewer steps trade audio quality for speed and "
+            "are intended for a step-distilled flow checkpoint.",
+            flow_steps,
+            _DEFAULT_FLOW_STEPS,
+        )
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
         device=device,
         fp16=(dtype == "float16"),
+        flow_steps=flow_steps,
     )
 
-    return _CosyVoice3Vocoder(flow, hift, fp16=(dtype == "float16")).build_scheduler(
+    return _CosyVoice3Vocoder(
+        flow,
+        hift,
+        fp16=(dtype == "float16"),
+        flow_steps=flow_steps,
+    ).build_scheduler(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
     )

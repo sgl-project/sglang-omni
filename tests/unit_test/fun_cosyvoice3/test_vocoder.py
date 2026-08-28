@@ -140,3 +140,80 @@ def test_cosyvoice3_vocoder_decode_batch_uses_state_conditioning() -> None:
     assert len(results) == 1
     assert results[0][1] == 24000
     assert flow.calls[0]["prompt_token"].tolist() == [[5]]
+
+
+def _make_decoder_and_flow():
+    class FakeCFMDecoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+            self.received_steps = []
+
+        def forward(
+            self,
+            mu,
+            mask,
+            n_timesteps,
+            temperature=1.0,
+            spks=None,
+            cond=None,
+            streaming=False,
+        ):
+            self.received_steps.append(n_timesteps)
+            return mu
+
+    class FakeFlowWithDecoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+            self.decoder = FakeCFMDecoder()
+
+        def inference(self, mu, mask, spks, cond):
+            return self.decoder(
+                mu=mu,
+                mask=mask,
+                spks=spks,
+                cond=cond,
+                n_timesteps=10,
+                streaming=False,
+            )
+
+    return FakeFlowWithDecoder()
+
+
+def test_apply_flow_step_override_forces_decoder_steps() -> None:
+    flow = _make_decoder_and_flow()
+    stages._apply_flow_step_override(flow, 4)
+
+    flow.inference(
+        torch.zeros(1, 80, 4),
+        torch.ones(1, 1, 4),
+        torch.ones(1, 80),
+        torch.zeros(1, 80, 4),
+    )
+
+    assert flow.decoder.received_steps == [4]
+    assert flow.decoder.n_timesteps == 4
+
+
+def test_apply_flow_step_override_is_idempotent() -> None:
+    flow = _make_decoder_and_flow()
+    stages._apply_flow_step_override(flow, 4)
+    stages._apply_flow_step_override(flow, 4)
+
+    flow.inference(
+        torch.zeros(1, 80, 4),
+        torch.ones(1, 1, 4),
+        torch.ones(1, 80),
+        torch.zeros(1, 80, 4),
+    )
+
+    assert flow.decoder.received_steps == [4]
+
+
+def test_positive_flow_steps_rejects_invalid_values() -> None:
+    for bad in (0, -1, True, False, "3", 1.5):
+        with pytest.raises(ValueError, match="flow_steps must be a positive integer"):
+            stages._positive_flow_steps(bad)
+    assert stages._positive_flow_steps(4) == 4
+    assert stages._positive_flow_steps(10) == 10
