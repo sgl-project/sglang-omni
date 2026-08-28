@@ -211,7 +211,8 @@ def create_vocoder_executor(
         enable_deterministic_inference=enable_deterministic_inference,
         followup_cuda_graph=followup_cuda_graph,
     )
-    # Factory construction completes before the stage process publishes readiness,
-    # so CUDA capture cannot overlap request-time GPU work from colocated stages.
+    # note (ratish): Factory construction completes before the stage process
+    # publishes readiness, so CUDA capture cannot overlap request-time GPU work
+    # from colocated stages.
     scheduler.warmup_now()
     return scheduler
