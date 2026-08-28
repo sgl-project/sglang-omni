@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import Any
@@ -192,6 +193,54 @@ class SGLangGenerationEngineBuilder(ABC):
         # The shared builder treats checkpoint resolution as a family policy.
         # Subclasses override this when they need a resolved local snapshot.
         return model_path
+
+    # ------------------------------------------------------------------
+    # Shared helper utilities for subclass builders.
+    #
+    # These helpers exist only to remove duplicated boilerplate across the
+    # concrete TtsEngineBuilder subclasses. They never change the default
+    # behavior of the base class (post_scheduler_setup / make_abort_callback
+    # remain no-op/None by default); subclasses opt in by calling them.
+    # ------------------------------------------------------------------
+
+    def make_model_runner_from_path(
+        self,
+        model_worker: Any,
+        output_proc: Any,
+        *,
+        module_path: str,
+        class_name: str,
+    ) -> Any:
+        """Instantiate a ``(model_worker, output_proc)``-style ModelRunner.
+
+        Most TTS runners share the exact same 2-argument constructor
+        ``SomeModelRunner(model_worker, output_proc)``; subclasses with that
+        shape can delegate ``make_model_runner`` to this helper instead of
+        repeating the importlib boilerplate.
+        """
+        model_runner_mod = importlib.import_module(module_path)
+        return getattr(model_runner_mod, class_name)(model_worker, output_proc)
+
+    def bind_stream_outbox(self, scheduler: Any, model_runner: Any) -> None:
+        """Bind the scheduler's stream outbox to the model runner.
+
+        Several builders repeat ``model_runner.set_stream_outbox(
+        scheduler.outbox)`` verbatim in ``post_scheduler_setup``; they can
+        call this helper instead.
+        """
+        model_runner.set_stream_outbox(scheduler.outbox)
+
+    def model_reset_request_abort_callback(self) -> Any | None:
+        """Return ``self.model.reset_request`` if a model was set up.
+
+        Builders that tear down a single in-process model on abort can return
+        ``self.model.reset_request``. This helper centralizes the
+        "assert set up, then expose reset_request" pattern.
+        """
+        model = getattr(self, "model", None)
+        if model is None:
+            return None
+        return model.reset_request
 
     @abstractmethod
     def generation_defaults(

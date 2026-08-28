@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib
 import os
 from typing import Any
 
@@ -152,11 +151,12 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        model_runner_mod = importlib.import_module(
-            "sglang_omni.models.fishaudio_s2_pro.model_runner"
+        return self.make_model_runner_from_path(
+            model_worker,
+            output_proc,
+            module_path="sglang_omni.models.fishaudio_s2_pro.model_runner",
+            class_name="FishS2ProModelRunner",
         )
-
-        return model_runner_mod.FishS2ProModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model

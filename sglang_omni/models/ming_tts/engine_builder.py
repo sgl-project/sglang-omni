@@ -196,9 +196,12 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
-
-        self._model_runner = MingTTSModelRunner(model_worker, output_proc)
+        self._model_runner = self.make_model_runner_from_path(
+            model_worker,
+            output_proc,
+            module_path="sglang_omni.models.ming_tts.model_runner",
+            class_name="MingTTSModelRunner",
+        )
         return self._model_runner
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
