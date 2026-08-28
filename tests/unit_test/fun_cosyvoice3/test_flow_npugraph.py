@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -201,27 +202,25 @@ def test_graph_safe_mask_preserves_rows_and_repairs_empty_rows():
 
 
 def test_enable_is_npu_only(monkeypatch):
-    from sglang_omni import platforms
-
+    platforms = ModuleType("sglang_omni.platforms")
+    platforms.current_platform = SimpleNamespace(device_type="cuda")
+    monkeypatch.setitem(sys.modules, "sglang_omni.platforms", platforms)
     flow = SimpleNamespace(decoder=SimpleNamespace(estimator=_Estimator()))
-    monkeypatch.setattr(platforms.current_platform, "device_type", "cuda")
     assert enable_flow_npugraph(flow) is False
     assert not isinstance(flow.decoder.estimator.forward, FlowNPUGraphRunner)
 
-    monkeypatch.setattr(platforms.current_platform, "device_type", "npu")
+    platforms.current_platform.device_type = "npu"
     assert enable_flow_npugraph(flow, max_graphs=2) is True
     assert isinstance(flow.decoder.estimator.forward, FlowNPUGraphRunner)
 
 
 def test_prepare_environment_disables_internal_format_on_npu(monkeypatch):
-    import sys
-
-    from sglang_omni import platforms
-
+    platforms = ModuleType("sglang_omni.platforms")
+    platforms.current_platform = SimpleNamespace(device_type="npu")
+    monkeypatch.setitem(sys.modules, "sglang_omni.platforms", platforms)
     config = SimpleNamespace(allow_internal_format=True)
     torch_npu = SimpleNamespace(npu=SimpleNamespace(config=config))
     monkeypatch.setitem(sys.modules, "torch_npu", torch_npu)
-    monkeypatch.setattr(platforms.current_platform, "device_type", "npu")
 
     assert prepare_flow_npugraph_environment() is True
     assert config.allow_internal_format is False
