@@ -107,10 +107,18 @@ def test_mlx_scheduler_runner_launches_then_chains_before_resolve() -> None:
 
 def test_mlx_scheduler_runner_rejects_changed_chained_batch() -> None:
     runner = _Runner(_Worker())
-    runner.execute_launch(_scheduler_output("req-a"))
+    previous = runner.execute_launch(_scheduler_output("req-a"))
 
     with pytest.raises(RuntimeError, match="unchanged request batch"):
         runner.execute_launch(_scheduler_output("req-b"))
+
+    # A failed successor launch must not orphan the scheduler-owned lazy step.
+    assert runner._last_mlx_pending is previous
+    assert runner.execute_resolve(previous) == "resolved"
+    assert runner._last_mlx_pending is None
+
+    runner.execute_launch(_scheduler_output("req-b"))
+    assert runner.tp_worker.calls[-1] == ("fresh", ["req-b"])
 
 
 def test_mlx_scheduler_runner_drains_before_changed_chain() -> None:
