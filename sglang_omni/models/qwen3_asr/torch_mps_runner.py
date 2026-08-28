@@ -72,7 +72,10 @@ def _load_language_weights(
     language_model.load_state_dict(state_dict, strict=True, assign=True)
 
     rotary = language_model.model.rotary_emb
-    rope_theta = float(language_model.config.rope_parameters["rope_theta"])
+    rope_config = language_model.config.rope_parameters
+    if not isinstance(rope_config, dict):
+        rope_config = language_model.config.rope_scaling
+    rope_theta = float(rope_config["rope_theta"])
     head_dim = int(language_model.config.head_dim)
     inv_freq = 1.0 / (
         rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)

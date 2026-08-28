@@ -481,7 +481,9 @@ def test_qwen3_asr_mlx_rejects_non_greedy_sampling(monkeypatch) -> None:
     monkeypatch.setattr(
         transcription,
         "load_audio",
-        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+        lambda source, **kwargs: pytest.fail(
+            "non-greedy Apple request should fail before audio decoding"
+        ),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),

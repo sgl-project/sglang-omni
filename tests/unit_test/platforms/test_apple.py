@@ -35,6 +35,16 @@ def test_apple_device_binding_is_single_device() -> None:
         apple.set_device(torch.device("cpu"))
 
 
+def test_apple_device_total_memory_uses_torch_without_mlx(monkeypatch) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    expected = 12_713_115_648
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: expected)
+
+    assert AppleOmniPlatform().get_device_total_memory(0) == expected
+
+
 def test_apple_stage_rejects_tensor_parallelism() -> None:
     apple = AppleOmniPlatform()
     spec = SimpleNamespace(stage_name="asr", tp_size=2, gpu_id=0)

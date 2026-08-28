@@ -24,16 +24,16 @@ export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DY
 ```
 
 Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
-currently installs FFmpeg 9, while the pinned `torchcodec==0.11.1` supports
-FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library directory must
-also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
+currently installs FFmpeg 9, while Apple installs `torchcodec==0.11.1`, which
+supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
+directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
 
 Create one virtual environment for both repositories, then install the pinned
 SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.16 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.18 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple
@@ -77,6 +77,7 @@ The MLX path currently supports one device (`tp_size=1`) and greedy decoding.
 Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
 HTTP and SSE transcription interfaces below are the same as on CUDA;
 `stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
+The Apple paths do not provide sampling penalties or token logprobs yet.
 
 To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
 and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
@@ -98,11 +99,12 @@ intended for short clips; use the MLX path for the larger native context limit.
 
 Qwen3-ASR runs a single ASR stage on one GPU. Its default `auto` dtype follows
 the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass
-`--stages.asr.factory-args.dtype float16` to force FP16.
+`--asr.factory.dtype float16` to force FP16.
 Async decode is enabled by default for all decode batch sizes, allowing the
 shared one-step-lookahead path to overlap host-side result processing with the
-next GPU decode forward even for a single request. Use `--asr.factory.enable_async_decode false` to
-disable it, or tune the crossover with `--asr.factory.async_decode_min_batch_size`.
+next GPU decode forward even for a single request. Use
+`--asr.factory.enable_async_decode false` to disable it, or tune the crossover
+with `--asr.factory.async_decode_min_batch_size`.
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 40 ms. Once request-build work drains, a ready prefill is released immediately

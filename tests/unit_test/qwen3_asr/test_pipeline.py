@@ -240,6 +240,24 @@ def test_qwen3_asr_torch_mps_uses_eager_native_profile() -> None:
     }
 
 
+def test_qwen3_asr_mlx_profile_overrides_typed_torch_compile_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_mps", lambda: True)
+    builder = _make_engine_builder()
+    builder.device = "mps"
+    overrides = {"enable_torch_compile": True}
+
+    defaults = builder.generation_defaults(dtype="auto")
+    builder.adjust_overrides(overrides)
+
+    assert defaults["enable_torch_compile"] is False
+    assert overrides["enable_torch_compile"] is False
+
+
 def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     config = Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B")
 

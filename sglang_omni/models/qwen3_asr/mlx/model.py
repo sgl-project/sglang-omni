@@ -586,8 +586,7 @@ class Qwen3ASRModel(nn.Module):
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 
-    @staticmethod
-    def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+    def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Sanitize weights from HuggingFace/PyTorch format to MLX format."""
         sanitized = {}
         is_formatted = not any(k.startswith("thinker.") for k in weights.keys())
@@ -596,7 +595,7 @@ class Qwen3ASRModel(nn.Module):
             if k.startswith("thinker."):
                 k = k[len("thinker.") :]
 
-            if k == "lm_head.weight":
+            if k == "lm_head.weight" and self.config.text_config.tie_word_embeddings:
                 continue
 
             if (

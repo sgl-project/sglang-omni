@@ -62,7 +62,7 @@ source .venv-apple/bin/activate
 
 The script is idempotent and creates (or reuses) `.venv-apple`, installs the
 Homebrew formulae `ffmpeg@7` and `uv` (and `git` only when a working git is not
-already available), installs SGLang `v0.5.16` from source with its `all_mps`
+already available), installs SGLang `v0.5.18` from source with its `all_mps`
 extra, and installs this checkout with `uv pip`. SGLang's optional Rust
 extensions are not needed by this Apple Silicon path and are skipped.
 `ffmpeg@7` is intentional: `torchcodec==0.11.1` does not support the current
@@ -79,7 +79,7 @@ Homebrew's bootstrapper. Use `--non-interactive` (or `NONINTERACTIVE=1`) to
 disable Homebrew auto-update in CI, `SGLANG_OMNI_VENV=/path/to/venv` to choose a virtualenv, and
 `SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3` to enable optional extras.
 The persistent SGLang source checkout defaults to
-`~/.cache/sglang-omni/sglang-v0.5.16` and can be changed with
+`~/.cache/sglang-omni/sglang-v0.5.18` and can be changed with
 `SGLANG_SOURCE_DIR`. Slow or proxied networks can override the installer's uv
 defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 

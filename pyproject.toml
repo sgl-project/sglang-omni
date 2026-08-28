@@ -19,8 +19,10 @@ dependencies = [
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
     "pybase64>=1.4.0",        # Fast base64 decoding for inline media payloads
-    "torch==2.13.0",          # PyTorch for tensor operations
-    "torchvision==0.28.0",    # torchvision for vision processor, pinned version based on torch 2.13.0
+    "torch==2.13.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "torchvision==0.28.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "torchvision==0.26.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
     "transformers==5.12.1",  # Match the pinned sglang stack
     "safetensors>=0.4.3",     # Direct weight loading
@@ -80,7 +82,8 @@ dependencies = [
     "hydra-core",
     "omegaconf",
     "torchaudio==2.11.0",
-    "torchcodec==0.15.0",     # Matches torch 2.13.x and the pinned sglang stack
+    "torchcodec==0.15.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "torchcodec==0.11.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
     # Gradio playground
     "gradio>=4.0.0",
     # note (yexiaodong): dots.tts pulls Pynini, whose OpenFst build is not
@@ -130,7 +133,8 @@ environments = [
     "sys_platform == 'linux'",
 ]
 override-dependencies = [
-    "protobuf>=6.31.1,<7.0.0",
+    "protobuf>=6.31.1,<7.0.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "protobuf>=7.35.1,<8.0.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [tool.pytest.ini_options]

@@ -26,20 +26,31 @@ class _Batch:
 
 
 class _Worker:
-    def __init__(self):
+    def __init__(self, next_token_ids=None):
         self.calls = []
+        self.next_token_ids = next_token_ids
+
+    @staticmethod
+    def _launch(lazy_tokens, decode):
+        return SimpleNamespace(
+            lazy_tokens=lazy_tokens,
+            prefills=[],
+            extends=[],
+            decode=decode,
+            mode="decode",
+        )
 
     def async_forward_batch_generation_mlx(self, batch):
         self.calls.append(("fresh", [req.rid for req in batch.reqs]))
-        return "lazy-1", [], [], "decode-1", "decode"
+        return self._launch("lazy-1", "decode-1")
 
     def async_chained_decode_mlx(self, previous):
         self.calls.append(("chained", previous))
-        return "lazy-2", [], [], "decode-2", "decode"
+        return self._launch("lazy-2", "decode-2")
 
-    def finalize_mlx_result(self, prefills, extends, decode, mode, reqs):
-        self.calls.append(("finalize", decode, [req.rid for req in reqs]))
-        return SimpleNamespace(next_token_ids=None)
+    def finalize_mlx_result(self, launch, reqs):
+        self.calls.append(("finalize", launch.decode, [req.rid for req in reqs]))
+        return SimpleNamespace(next_token_ids=self.next_token_ids)
 
 
 class _Runner(MlxSchedulerModelRunner):
@@ -102,6 +113,28 @@ def test_mlx_scheduler_runner_rejects_changed_chained_batch() -> None:
         runner.execute_launch(_scheduler_output("req-b"))
 
 
+def test_mlx_scheduler_runner_drains_before_changed_chain() -> None:
+    runner = _Runner(_Worker())
+    runner.execute_launch(_scheduler_output("req-a"))
+    sampling_params = SimpleNamespace(
+        repetition_penalty=1.0,
+        frequency_penalty=0.0,
+        presence_penalty=0.0,
+        min_new_tokens=0,
+    )
+    changed_batch = SimpleNamespace(
+        reqs=[
+            SimpleNamespace(
+                rid="req-b",
+                sampling_params=sampling_params,
+                custom_logit_processor=None,
+            )
+        ]
+    )
+
+    assert not runner.lookahead_eligible(changed_batch)
+
+
 def test_mlx_scheduler_runner_clears_chain_after_resolve_failure() -> None:
     worker = _Worker()
     runner = _Runner(worker)
@@ -138,3 +171,30 @@ def test_mlx_scheduler_runner_limits_lookahead_to_concurrency_one() -> None:
     assert not runner.lookahead_eligible(
         SimpleNamespace(reqs=[request("a"), request("b")])
     )
+
+
+def test_mlx_scheduler_runner_uses_future_map_bridge(monkeypatch) -> None:
+    import sglang.srt.managers.overlap_utils as overlap_utils
+
+    resolved = []
+    bridge = SimpleNamespace(
+        future_map=object(),
+        published=[],
+        publish_next_tokens=lambda batch, tokens: bridge.published.append(
+            (batch, tokens)
+        ),
+    )
+    monkeypatch.setattr(
+        overlap_utils,
+        "resolve_forward_inputs",
+        lambda batch, future_map: resolved.append((batch, future_map)),
+    )
+    runner = _Runner(_Worker(next_token_ids="token-ids"))
+    runner._execution_bridge = bridge
+    scheduler_output = _scheduler_output("req")
+
+    pending = runner.execute_launch(scheduler_output)
+    runner.execute_resolve(pending)
+
+    assert resolved == [(scheduler_output.batch_data, bridge.future_map)]
+    assert bridge.published == [(pending.schedule_batch, "token-ids")]

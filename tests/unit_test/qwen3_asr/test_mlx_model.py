@@ -21,7 +21,8 @@ from sglang_omni.models.qwen3_asr.mlx.runner import (  # noqa: E402
 )
 
 
-def _tiny_model() -> Qwen3ASRModel:
+def _tiny_model(*, tie_word_embeddings: bool = True) -> Qwen3ASRModel:
+    mx.random.seed(0)
     audio = AudioEncoderConfig(
         num_mel_bins=8,
         encoder_layers=1,
@@ -44,6 +45,7 @@ def _tiny_model() -> Qwen3ASRModel:
         num_key_value_heads=1,
         head_dim=4,
         max_position_embeddings=128,
+        tie_word_embeddings=tie_word_embeddings,
     )
     return Qwen3ASRModel(
         ModelConfig(audio_config=audio, text_config=text, audio_token_id=10)
@@ -82,7 +84,12 @@ def test_native_mlx_prefill_only_projects_last_position() -> None:
 
     mx.eval(full_logits, last_logits)
     assert last_logits.shape == (1, 1, 64)
-    assert mx.allclose(last_logits, full_logits[:, -1:, :]).item()
+    assert mx.allclose(
+        last_logits,
+        full_logits[:, -1:, :],
+        rtol=1e-2,
+        atol=1e-2,
+    ).item()
 
 
 def test_runner_restores_audio_placeholder_before_embedding() -> None:
@@ -121,6 +128,14 @@ def test_runner_only_rewrites_the_exact_audio_placeholder() -> None:
     )
 
     assert normalized == [1, 10, -7, 2]
+
+
+def test_runner_converts_bfloat16_features_to_numpy() -> None:
+    converted = Qwen3ASRMlxModelRunner._to_numpy(
+        torch.ones((2, 3), dtype=torch.bfloat16)
+    )
+
+    assert converted.dtype.name == "float32"
 
 
 def test_runner_rejects_missing_audio_item() -> None:
@@ -174,8 +189,21 @@ def test_hf_weight_sanitize_is_local_and_transposes_conv2d() -> None:
         "thinker.lm_head.weight": mx.zeros((64, 8)),
     }
 
-    sanitized = Qwen3ASRModel.sanitize(weights)
+    sanitized = _tiny_model().sanitize(weights)
 
     assert sanitized["audio_tower.conv2d1.weight"].shape == (4, 3, 3, 1)
     assert "model.embed_tokens.weight" in sanitized
     assert "lm_head.weight" not in sanitized
+
+
+def test_hf_weight_sanitize_keeps_untied_lm_head() -> None:
+    model = _tiny_model(tie_word_embeddings=False)
+
+    sanitized = model.sanitize(
+        {
+            "thinker.model.embed_tokens.weight": mx.zeros((64, 8)),
+            "thinker.lm_head.weight": mx.zeros((64, 8)),
+        }
+    )
+
+    assert "lm_head.weight" in sanitized

@@ -18,10 +18,10 @@ if TYPE_CHECKING:
 class AppleOmniPlatform(OmniPlatform):
     """Single-device Apple Metal platform.
 
-    SGLang 0.5.16 enables its MLX runner through SGLANG_USE_MLX=1 but does
-    not register an MPS SRTPlatform. Omni still needs concrete device
-    operations because every accelerator-backed stage binds its scheduler
-    thread through current_platform.get_device and set_device.
+    SGLang enables its MLX runner through SGLANG_USE_MLX=1 but does not
+    register an MPS SRTPlatform. Omni still needs concrete device operations
+    because every accelerator-backed stage binds its scheduler thread through
+    current_platform.get_device and set_device.
     """
 
     _enum: PlatformEnum = PlatformEnum.MPS
@@ -56,9 +56,13 @@ class AppleOmniPlatform(OmniPlatform):
 
     def get_device_total_memory(self, device_id: int = 0) -> int:
         self._validate_device_id(device_id)
-        import mlx.core as mx
+        from sglang.srt.utils.tensor_bridge import use_mlx
 
-        return int(mx.device_info()["max_recommended_working_set_size"])
+        if use_mlx():
+            import mlx.core as mx
+
+            return int(mx.device_info()["max_recommended_working_set_size"])
+        return int(torch.mps.recommended_max_memory())
 
     def get_current_memory_usage(self, device: torch.device | None = None) -> float:
         if device is not None and device.type != "mps":

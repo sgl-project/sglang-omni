@@ -144,6 +144,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         from sglang.srt.utils.tensor_bridge import use_mlx
 
         if use_mlx():
+            if not current_platform.is_mps():
+                raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
             # note (yexiaodong): Audio embeddings exist only inside the native
             # MLX prefill, so token-only radix reuse and split prefill are unsafe.
             return {
@@ -151,6 +153,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 "disable_cuda_graph": True,
                 "disable_overlap_schedule": True,
                 "disable_radix_cache": True,
+                "enable_torch_compile": False,
                 "max_prefill_tokens": self.context_length,
                 "chunked_prefill_size": -1,
                 "mem_fraction_static": self.mem_fraction_static,
@@ -256,6 +259,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         )
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx() and server_args.mlx_enable_sampling:
+            raise ValueError(
+                "Qwen3-ASR MLX currently requires mlx_enable_sampling=False"
+            )
         if self._uses_torch_mps() and server_args.max_running_requests != 1:
             raise ValueError(
                 "Qwen3-ASR Torch MPS currently requires max_running_requests=1"
@@ -289,6 +298,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
         if use_mlx() or self._uses_torch_mps():
+            # note (yexiaodong): Typed pipeline engine defaults are merged after
+            # the backend profile and otherwise re-enable Torch compilation.
+            overrides["enable_torch_compile"] = False
             return
         if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
             return
