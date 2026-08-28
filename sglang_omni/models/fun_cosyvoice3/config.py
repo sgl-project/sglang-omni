@@ -25,13 +25,13 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     required_speech_reference_count: ClassVar[int | None] = 1
     speech_reference_text_excludes_instructions: ClassVar[bool] = True
 
-    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "tts_engine": EngineStageConfig,
-    }
-
     @classmethod
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         return frozenset({("preprocessing", "tts_engine")})
+
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "tts_engine": EngineStageConfig,
+    }
 
     stages: list[StageConfig] = [
         StageConfig(
