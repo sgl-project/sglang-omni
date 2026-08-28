@@ -240,6 +240,236 @@ def test_cache_hit_skips_reencode() -> None:
     assert service.stats()["hits"] == 1
 
 
+def test_weight_update_context_clears_cached_embeddings() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+
+    first = _item(11, 3)
+    service.encode_item(first)
+    assert model.encode_calls == 1
+
+    with service.weight_update_context():
+        pass
+
+    second = _item(11, 3)
+    service.encode_item(second)
+
+    assert model.encode_calls == 2
+    assert service.stats()["cache_entries"] == 1
+
+
+def test_weight_update_context_clears_cache_after_update_failure() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    service.encode_item(_item(12, 3))
+
+    with pytest.raises(RuntimeError, match="update failed"):
+        with service.weight_update_context():
+            raise RuntimeError("update failed")
+
+    service.encode_item(_item(12, 3))
+    assert model.encode_calls == 2
+
+
+def test_weight_update_context_waits_for_accepted_encode() -> None:
+    model = _StubModel()
+    encode_gate = threading.Event()
+    encode_started = threading.Event()
+    model.encode_gate = encode_gate
+    model.encode_started = encode_started
+    service = _make_service(model)
+
+    future = service.submit_item(_item(41, 3))
+    assert encode_started.wait(timeout=2)
+
+    update_started = threading.Event()
+
+    def update() -> None:
+        with service.weight_update_context():
+            assert future.done()
+            update_started.set()
+
+    thread = threading.Thread(target=update)
+    thread.start()
+    assert not update_started.wait(timeout=0.05)
+
+    encode_gate.set()
+    assert update_started.wait(timeout=2)
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    future.result(timeout=2)
+
+
+def test_weight_update_holds_queued_batch_for_new_weights() -> None:
+    model = _StubModel()
+    encode_gate = threading.Event()
+    encode_started = threading.Event()
+    model.encode_gate = encode_gate
+    model.encode_started = encode_started
+    service = _make_service(model, max_batch_size=1)
+
+    first = service.submit_item(_item(41, 3))
+    assert encode_started.wait(timeout=2)
+    second = service.submit_item(_item(42, 3))
+
+    update_started = threading.Event()
+    release_update = threading.Event()
+
+    def update() -> None:
+        with service.weight_update_context():
+            update_started.set()
+            assert release_update.wait(timeout=2)
+
+    thread = threading.Thread(target=update)
+    thread.start()
+    encode_gate.set()
+    assert update_started.wait(timeout=2)
+
+    first.result(timeout=2)
+    assert not second.done()
+    assert model.encode_calls == 1
+
+    release_update.set()
+    second.result(timeout=2)
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert model.encode_calls == 2
+
+
+def test_cancelled_future_does_not_finish_encoder_work_early() -> None:
+    model = _StubModel()
+    encode_gate = threading.Event()
+    encode_started = threading.Event()
+    model.encode_gate = encode_gate
+    model.encode_started = encode_started
+    service = _make_service(model)
+
+    future = service.submit_item(_item(43, 3))
+    assert encode_started.wait(timeout=2)
+    assert future.cancel()
+
+    update_started = threading.Event()
+
+    def update() -> None:
+        with service.weight_update_context():
+            update_started.set()
+
+    thread = threading.Thread(target=update)
+    thread.start()
+    assert not update_started.wait(timeout=0.05)
+
+    encode_gate.set()
+    assert update_started.wait(timeout=2)
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert model.encode_calls == 1
+
+
+def test_weight_update_timeout_restores_submissions() -> None:
+    model = _StubModel()
+    encode_gate = threading.Event()
+    encode_started = threading.Event()
+    model.encode_gate = encode_gate
+    model.encode_started = encode_started
+    service = _make_service(model)
+    service.WEIGHT_UPDATE_DRAIN_TIMEOUT_S = 0.01
+
+    future = service.submit_item(_item(44, 3))
+    assert encode_started.wait(timeout=2)
+
+    with pytest.raises(TimeoutError, match="active Qwen3-ASR encoder work"):
+        with service.weight_update_context():
+            pytest.fail("weight update started before encoder work drained")
+
+    encode_gate.set()
+    future.result(timeout=2)
+    service.submit_item(_item(45, 3)).result(timeout=2)
+
+
+def test_omni_scheduler_admin_update_waits_for_real_inflight_encode() -> None:
+    """Integration check: OmniScheduler._admin_update_weights_from_disk must
+    not call the model_worker's update_weights_from_disk until a REAL
+    Qwen3ASRPreLMEncoderService confirms no encode is in flight.
+
+    test_weight_update_context_waits_for_accepted_encode (above) already
+    proves weight_update_context() blocks in isolation. This proves the
+    scheduler's admin lifecycle actually composes with that real gate
+    end-to-end -- the other admin-control tests only stub
+    _weight_update_context with a bare contextlib.nullcontext, which cannot
+    catch a regression where the scheduler stopped calling it, called it too
+    late, or called it against the wrong encoder instance.
+    """
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    model = _StubModel()
+    encode_gate = threading.Event()
+    encode_started = threading.Event()
+    model.encode_gate = encode_gate
+    model.encode_started = encode_started
+    service = _make_service(model)
+
+    # Simulate a request admitted moments before the weight update arrives:
+    # its encode is already running on the encoder's own worker thread.
+    future = service.submit_item(_item(91, 3))
+    assert encode_started.wait(timeout=2)
+
+    update_fn_called = threading.Event()
+
+    def update_weights_from_disk(payload: dict) -> tuple[bool, str]:
+        del payload
+        # If this runs before the in-flight encode resolves, the weight copy
+        # could land mid-forward-pass through audio_tower.
+        assert future.done(), "update_fn ran while an encode was still in flight"
+        update_fn_called.set()
+        return True, "ok"
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=update_weights_from_disk
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._engine_paused = False
+    scheduler._last_pause_mode = None
+    scheduler._async_pending = None
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: []
+    scheduler._empty_torch_cache = lambda: None
+    scheduler.flush_cache = lambda: True
+    scheduler._weight_update_context = service.weight_update_context
+
+    result_box: dict[str, dict] = {}
+
+    def run_admin() -> None:
+        result_box["result"] = OmniScheduler._admin_update_weights_from_disk(
+            scheduler, {"model_path": "/tmp/new-model"}
+        )
+
+    admin_thread = threading.Thread(target=run_admin)
+    admin_thread.start()
+
+    # The admin call must genuinely block here: the gate is still held, so
+    # update_fn must not have run yet.
+    assert not update_fn_called.wait(timeout=0.2)
+    assert not future.done()
+
+    encode_gate.set()  # let the in-flight encode finish
+    future.result(timeout=2)
+
+    assert update_fn_called.wait(timeout=2)
+    admin_thread.join(timeout=2)
+    assert not admin_thread.is_alive()
+    assert result_box["result"]["success"] is True
+
+    # weight_update_context()'s own finally clears the cache: a later
+    # request for the same audio must miss and re-encode, not silently reuse
+    # the embedding computed before the update.
+    service.encode_item(_item(91, 3))
+    assert model.encode_calls == 2
+
+
 def test_lookup_cached_embedding_returns_only_valid_entries() -> None:
     model = _StubModel()
     service = _make_service(model)

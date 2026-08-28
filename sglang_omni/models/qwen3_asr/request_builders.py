@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable
@@ -60,6 +61,29 @@ _ASR_TEXT = "<asr_text>"
 # Qwen3-ASR's checkpoint chat template emits this empty system turn even
 # when no caller-provided system context is present.
 _SYSTEM_PROMPT = "<|im_start|>system\n<|im_end|>\n"
+
+
+def _extract_audio_features(
+    feature_extractor: Any, audio: Any
+) -> tuple[torch.Tensor, torch.Tensor]:
+    extracted = feature_extractor(
+        audio,
+        sampling_rate=_SAMPLE_RATE,
+        return_tensors="pt",
+        return_attention_mask=True,
+        padding="longest",
+        # note (Junnan Li): Qwen3-ASR's encoder accepts mel sequences beyond
+        # Whisper's 30-second window, so preprocessing must not truncate them.
+        truncation=False,
+    )
+    features = extracted.input_features
+    feature_attention_mask = getattr(extracted, "attention_mask", None)
+    if feature_attention_mask is None:
+        # WhisperFeatureExtractor normally returns one; fall back to all-valid.
+        feature_attention_mask = torch.ones(
+            (features.shape[0], features.shape[-1]), dtype=torch.long
+        )
+    return features, feature_attention_mask
 
 
 @dataclass
@@ -253,23 +277,9 @@ def make_qwen3_asr_scheduler_adapters(
             # refs:
             #  https://github.com/huggingface/transformers/blob/main/src/transformers/models/whisper/feature_extraction_whisper.py
             #  https://github.com/huggingface/transformers/issues/26241
-            extracted = feature_extractor(
-                audio,
-                sampling_rate=_SAMPLE_RATE,
-                return_tensors="pt",
-                return_attention_mask=True,
-                padding="longest",
-                # note (Junnan Li): Qwen3-ASR's encoder accepts mel sequences beyond
-                # Whisper's 30-second window, so preprocessing must not truncate them.
-                truncation=False,
+            features, feature_attention_mask = _extract_audio_features(
+                feature_extractor, audio
             )
-            features = extracted.input_features
-            feature_attention_mask = getattr(extracted, "attention_mask", None)
-            if feature_attention_mask is None:
-                # WhisperFeatureExtractor normally returns one; fall back to all-valid.
-                feature_attention_mask = torch.ones(
-                    (features.shape[0], features.shape[-1]), dtype=torch.long
-                )
             # note (Jeffro Qu): get_audio_feature uses the mask to select valid
             # frames; its no-mask branch transposes wrong, so the mask path must be taken.
             num_mel_frames = int(feature_attention_mask.sum().item())
@@ -442,6 +452,42 @@ def make_qwen3_asr_scheduler_adapters(
         )
 
     return request_builder, result_adapter
+
+
+def refresh_qwen3_asr_audio_embedding(
+    request_data: Qwen3ASRRequestData,
+    *,
+    feature_extractor: Any,
+    audio_encoder_service: Any,
+) -> Future[Any]:
+    req = request_data.req
+    prepared = prepare_audio(
+        request_data.stage_payload,
+        source_name="Qwen3-ASR",
+        target_sample_rate=_SAMPLE_RATE,
+    )
+    features, feature_attention_mask = _extract_audio_features(
+        feature_extractor, prepared.waveform
+    )
+    audio_items = [
+        item
+        for item in req.multimodal_inputs.mm_items
+        if item.modality == Modality.AUDIO
+    ]
+    if len(audio_items) != 1:
+        raise RuntimeError("Qwen3-ASR refresh expected exactly one audio item")
+    item = audio_items[0]
+    expected_tokens = int(item.num_audio_tokens)
+    actual_tokens = qwen3_asr_num_audio_tokens(int(feature_attention_mask.sum().item()))
+    if actual_tokens != expected_tokens:
+        raise RuntimeError(
+            "Qwen3-ASR audio token count changed during refresh "
+            f"({actual_tokens} != {expected_tokens})"
+        )
+    item.feature = features
+    item.model_specific_data["feature_attention_mask"] = feature_attention_mask
+    item.precomputed_embeddings = None
+    return audio_encoder_service.submit_item(item)
 
 
 def make_qwen3_asr_stream_output_builder(

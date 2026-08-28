@@ -105,6 +105,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
     ENCODE_TIMEOUT_S = 300.0
+    WEIGHT_UPDATE_DRAIN_TIMEOUT_S = 300.0
 
     def __init__(
         self,
@@ -136,6 +137,9 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
         self._lock = threading.Lock()
         self._lifecycle_lock = threading.Lock()
+        self._encoder_condition = threading.Condition()
+        self._encoder_paused = False
+        self._active_encodes = 0
         self._closed = False
         self._inflight: dict[str, concurrent.futures.Future[torch.Tensor]] = {}
         self._hits = 0
@@ -158,6 +162,35 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             self._closed = True
             self._queue.put(_SHUTDOWN)
         self._thread.join(timeout=5)
+
+    def clear_cache(self) -> None:
+        """Drop cached embeddings when the model weights may have changed."""
+        self._cache.clear()
+
+    @contextlib.contextmanager
+    def weight_update_context(self) -> Iterator[None]:
+        condition = self._encoder_condition
+        with condition:
+            if self._encoder_paused:
+                raise RuntimeError("Qwen3-ASR encoder weight update is already active")
+            self._encoder_paused = True
+            ready = condition.wait_for(
+                lambda: self._active_encodes == 0,
+                timeout=self.WEIGHT_UPDATE_DRAIN_TIMEOUT_S,
+            )
+        try:
+            if not ready:
+                raise TimeoutError(
+                    "timed out waiting for active Qwen3-ASR encoder work"
+                )
+            try:
+                yield
+            finally:
+                self.clear_cache()
+        finally:
+            with condition:
+                self._encoder_paused = False
+                condition.notify_all()
 
     def _enqueue(
         self,
@@ -542,6 +575,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             )
 
     def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
+        condition = self._encoder_condition
+        with condition:
+            condition.wait_for(lambda: not self._encoder_paused)
+            self._active_encodes += 1
         dequeue_time = time.perf_counter()
         queue_waits = [
             dequeue_time - entry.enqueued_at
@@ -563,6 +600,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         retry_recovered: int | None,
         elapsed_s: float,
     ) -> None:
+        with self._encoder_condition:
+            self._active_encodes -= 1
+            if self._active_encodes == 0:
+                self._encoder_condition.notify_all()
         with self._lock:
             self._encoder_time_s += elapsed_s
             if batch_exc is not None:

@@ -13,6 +13,7 @@ inheriting from ``SGLangScheduler``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue as _queue_mod
 import threading
@@ -196,6 +197,10 @@ class OmniScheduler:
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        weight_update_context: (
+            Callable[[], contextlib.AbstractContextManager[Any]] | None
+        ) = None,
+        weight_update_request_refresh: Callable[[Any], Future[Any]] | None = None,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -211,6 +216,8 @@ class OmniScheduler:
         self._abort_callback = abort_callback
         self._request_finished_callback = request_finished_callback
         self._shutdown_callback = shutdown_callback
+        self._weight_update_context = weight_update_context
+        self._weight_update_request_refresh = weight_update_request_refresh
         self._shutdown_lock = threading.Lock()
         self._request_admission_lock = threading.RLock()
         self.request_build_max_workers = max(1, int(request_build_max_workers))
@@ -248,6 +255,7 @@ class OmniScheduler:
         self._pending_request_admissions: dict[
             str, tuple[Any, bool, DeferredAdmission]
         ] = {}
+        self._pending_request_refreshes: dict[str, tuple[Any, Future[Any]]] = {}
         self._backlogged_request_build_payloads: deque[Any] = deque()
         self._request_build_max_pending_observed = 0
 
@@ -716,6 +724,10 @@ class OmniScheduler:
         if name == "grammar_backend":
             self.__dict__[name] = None
             return None
+        if name == "_pending_request_refreshes":
+            value = {}
+            self.__dict__[name] = value
+            return value
 
         try:
             attr = getattr(_Upstream, name)
@@ -832,6 +844,7 @@ class OmniScheduler:
 
     def process_input_requests(self, recv_reqs):
         """Convert incoming payloads to SGLang Reqs and enqueue."""
+        self._drain_request_refreshes()
         self._drain_request_admission_results()
         self._drain_request_build_results()
         recv_reqs, rejected = self._stage_request_build_payloads(recv_reqs)
@@ -844,6 +857,7 @@ class OmniScheduler:
                     req_id in self._aborted_request_ids
                     or req_id in self._pending_request_builds
                     or req_id in self._pending_request_admissions
+                    or req_id in self._pending_request_refreshes
                 ):
                     continue
             if self._waiting_queue_is_full():
@@ -937,7 +951,9 @@ class OmniScheduler:
     def _sleep_during_idle(self) -> None:
         with self._request_admission_lock:
             request_admission_pending = bool(
-                self._pending_request_builds or self._pending_request_admissions
+                self._pending_request_builds
+                or self._pending_request_admissions
+                or self._pending_request_refreshes
             )
         time.sleep(0.0001 if request_admission_pending else 0.001)
 
@@ -946,6 +962,7 @@ class OmniScheduler:
             len(self.waiting_queue)
             + len(self._pending_request_builds)
             + len(self._pending_request_admissions)
+            + len(self._pending_request_refreshes)
             + len(self._backlogged_request_build_payloads)
             + len(self._deferred_request_payloads)
         )
@@ -973,6 +990,7 @@ class OmniScheduler:
             backlog = self._backlogged_request_build_payloads
             pending_builds = self._pending_request_builds
             pending_admissions = self._pending_request_admissions
+            pending_refreshes = self._pending_request_refreshes
             rejected: list[Any] = []
             if self._waiting_queue_is_full():
                 while backlog:
@@ -1002,6 +1020,7 @@ class OmniScheduler:
                     req_id in self._aborted_request_ids
                     or req_id in pending_builds
                     or req_id in pending_admissions
+                    or req_id in pending_refreshes
                 ):
                     continue
                 selected.append(payload)
@@ -1016,6 +1035,7 @@ class OmniScheduler:
                     req_id in self._aborted_request_ids
                     or req_id in pending_builds
                     or req_id in pending_admissions
+                    or req_id in pending_refreshes
                     or req_id in backlog_ids
                     or req_id in selected_ids
                 ):
@@ -1143,6 +1163,36 @@ class OmniScheduler:
                     deferred,
                     request_admission_lock_held=True,
                 )
+
+    def _drain_request_refreshes(self) -> None:
+        with self._request_admission_lock:
+            ready = [
+                request_id
+                for request_id, (_, future) in self._pending_request_refreshes.items()
+                if future.done()
+            ]
+            for request_id in ready:
+                pending = self._pending_request_refreshes.pop(request_id, None)
+                if pending is None or request_id in self._aborted_request_ids:
+                    continue
+                req, future = pending
+                try:
+                    result = future.result()
+                    if isinstance(result, Future):
+                        if not result.done():
+                            self._pending_request_refreshes[request_id] = (req, result)
+                            continue
+                        result.result()
+                except Exception as exc:
+                    logger.exception(
+                        "OmniScheduler: request refresh failed for %s", request_id
+                    )
+                    self._emit_request_error(request_id, exc)
+                    _detach_request_data(req)
+                    self.abort(request_id)
+                    continue
+                req._coalesce_enqueue_t = time.perf_counter()
+                self._add_request_to_queue(req)
 
     def _enqueue_built_request(
         self,
@@ -1730,6 +1780,7 @@ class OmniScheduler:
     def _discard_pending_request_admissions(self) -> None:
         with self._request_admission_lock:
             self._pending_request_admissions.clear()
+            self._pending_request_refreshes.clear()
 
     def _shutdown_resources(self) -> None:
         with self._shutdown_lock:
@@ -1768,6 +1819,10 @@ class OmniScheduler:
             if pending is not None:
                 pending[2].cancel()
             self._pending_request_admissions.pop(request_id, None)
+            refresh = self._pending_request_refreshes.pop(request_id, None)
+            if refresh is not None:
+                refresh[1].cancel()
+                _detach_request_data(refresh[0])
             if self._backlogged_request_build_payloads:
                 retained = [
                     payload
@@ -1976,6 +2031,8 @@ class OmniScheduler:
     ) -> dict[str, Any]:
         keep_pause = bool(payload.get("keep_pause", False))
         keep_engine_paused = keep_pause
+        held_requests: list[Any] = []
+        weights_updated = False
         with self._admin_lock:
             previous_pause_state = self._engine_paused
             self._engine_paused = True
@@ -1987,15 +2044,21 @@ class OmniScheduler:
                     num_paused = self._abort_all_requests()
                 else:
                     active_request_ids = self._active_request_ids()
-                    if active_request_ids and not self._can_update_active_requests(
-                        previous_pause_state
-                    ):
+                    refreshes_pending = bool(self._pending_request_refreshes)
+                    can_keep_active = (
+                        self._can_update_active_requests(previous_pause_state)
+                        and not refreshes_pending
+                    )
+                    if active_request_ids and not can_keep_active:
                         if not keep_pause:
                             self._engine_paused = previous_pause_state
                         return {
                             "success": False,
                             "message": (
-                                "active requests are present; set "
+                                "request refreshes are still pending; wait for them "
+                                "to finish before updating weights"
+                                if refreshes_pending
+                                else "active requests are present; set "
                                 "abort_all_requests=true or pause_generation with "
                                 "mode=retract before updating weights"
                             ),
@@ -2009,24 +2072,43 @@ class OmniScheduler:
                             },
                         }
 
-                try:
-                    success, message = update_fn(payload)
-                except Exception:
-                    if keep_pause_on_failure:
-                        keep_engine_paused = True
-                    raise
-                flush_success: bool | None = None
-                if success and bool(payload.get("flush_cache", True)):
-                    flush_success = self._flush_cache_after_update()
-                    success = success and bool(flush_success)
-                    if not flush_success:
-                        message = f"{message}; cache flush failed"
+                if getattr(self, "_weight_update_request_refresh", None) is not None:
+                    self._finish_pending_request_builds()
+                with self._weight_update_scope():
+                    if getattr(
+                        self, "_weight_update_request_refresh", None
+                    ) is not None and self._can_update_active_requests(
+                        previous_pause_state
+                    ):
+                        self._drain_request_admission_results()
+                        with self._request_admission_lock:
+                            held_requests = list(self.waiting_queue)
+                            self.waiting_queue.clear()
+                    try:
+                        success, message = update_fn(payload)
+                        weights_updated = bool(success)
+                    except Exception:
+                        if keep_pause_on_failure:
+                            keep_engine_paused = True
+                        raise
+                    flush_success: bool | None = None
+                    if success and bool(payload.get("flush_cache", True)):
+                        flush_success = self._flush_cache_after_update()
+                        success = success and bool(flush_success)
+                        if not flush_success:
+                            message = f"{message}; cache flush failed"
 
-                if keep_pause_on_failure and not success:
-                    keep_engine_paused = True
-                if bool(payload.get("torch_empty_cache", False)):
-                    self._empty_torch_cache()
+                    if keep_pause_on_failure and not success:
+                        keep_engine_paused = True
+                    if bool(payload.get("torch_empty_cache", False)):
+                        self._empty_torch_cache()
+
             finally:
+                if held_requests:
+                    if weights_updated:
+                        self._start_request_refreshes(held_requests)
+                    else:
+                        self.waiting_queue.extend(held_requests)
                 if keep_engine_paused:
                     self._engine_paused = True
                 else:
@@ -2046,6 +2128,56 @@ class OmniScheduler:
             "data": data,
             "error": None if success else str(message),
         }
+
+    def _weight_update_scope(self) -> contextlib.AbstractContextManager[Any]:
+        context_factory = getattr(self, "_weight_update_context", None)
+        return (
+            contextlib.nullcontext() if context_factory is None else context_factory()
+        )
+
+    def _finish_pending_request_builds(self) -> None:
+        while True:
+            with self._request_admission_lock:
+                if not self._pending_request_builds:
+                    return
+                future = next(iter(self._pending_request_builds.values()))[2]
+            try:
+                future.result()
+            except Exception:
+                pass
+            self._drain_request_build_results()
+
+    @staticmethod
+    def _invoke_refresh_callback(
+        callback: Callable[[Any], Future[Any]], req: Any
+    ) -> Future[Any]:
+        """Call the refresh callback and enforce that it returns a Future."""
+        future = callback(req)
+        if not isinstance(future, Future):
+            raise TypeError(
+                "weight_update_request_refresh must return a "
+                f"concurrent.futures.Future, got {type(future).__name__}"
+            )
+        return future
+
+    def _start_request_refreshes(self, requests: list[Any]) -> None:
+        callback = self._weight_update_request_refresh
+        assert callback is not None
+        executor = self._request_build_executor
+        for req in requests:
+            try:
+                if executor is None:
+                    future = self._invoke_refresh_callback(callback, req)
+                else:
+                    future = executor.submit(
+                        self._invoke_refresh_callback, callback, req
+                    )
+            except Exception as exc:
+                future = Future()
+                future.set_exception(exc)
+            with self._request_admission_lock:
+                if req.rid not in self._aborted_request_ids:
+                    self._pending_request_refreshes[req.rid] = (req, future)
 
     def _admin_update_weights_from_tensor(
         self, payload: dict[str, Any]
@@ -2128,6 +2260,8 @@ class OmniScheduler:
                 request_ids.update(self._pending_request_builds.keys())
             if self._pending_request_admissions:
                 request_ids.update(self._pending_request_admissions.keys())
+            if self._pending_request_refreshes:
+                request_ids.update(self._pending_request_refreshes.keys())
             if self._backlogged_request_build_payloads:
                 request_ids.update(
                     payload.request_id

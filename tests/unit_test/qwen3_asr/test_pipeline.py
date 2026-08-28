@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import logging
 from pathlib import Path
@@ -352,7 +353,10 @@ def _patch_engine_dependencies(
         infra_kwargs=[],
         attest_calls=[],
         graph_init_calls=[],
-        encoder_service=SimpleNamespace(close=lambda: None),
+        encoder_service=SimpleNamespace(
+            close=lambda: None,
+            weight_update_context=lambda: contextlib.nullcontext(),
+        ),
         encoder_service_kwargs={},
         tokenizer=object(),
         stream_output_builder=object(),
@@ -507,6 +511,11 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.prefill_coalesce_after_builds_during_decode is True
     assert scheduler.shutdown_callback is recorded.encoder_service.close
+    assert (
+        scheduler.weight_update_context
+        is recorded.encoder_service.weight_update_context
+    )
+    assert callable(scheduler.weight_update_request_refresh)
     assert scheduler.stream_output_builder is recorded.stream_output_builder
     assert recorded.stream_builder_calls == [
         {"tokenizer": recorded.tokenizer, "min_emit_interval_s": 0.125}

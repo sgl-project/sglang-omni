@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
 import queue
 import threading
 import time
@@ -212,6 +214,233 @@ def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
     assert update_calls == [{"model_path": "/tmp/new-model", "torch_empty_cache": True}]
     assert flush_calls == 1
     assert empty_cache_calls == 1
+
+
+def test_omni_scheduler_runs_weight_update_inside_model_context() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    events: list[str] = []
+
+    @contextlib.contextmanager
+    def weight_update_context():  # noqa: ANN202
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=lambda payload: events.append("update") or (True, "ok")
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._engine_paused = False
+    scheduler._last_pause_mode = None
+    scheduler._async_pending = None
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: []
+    scheduler._empty_torch_cache = lambda: None
+    scheduler._weight_update_context = weight_update_context
+
+    result = OmniScheduler._admin_update_weights_from_disk(
+        scheduler, {"model_path": "/tmp/new-model", "flush_cache": False}
+    )
+
+    assert result["success"] is True
+    assert events == ["enter", "update", "exit"]
+
+
+def test_omni_scheduler_finishes_pending_builds_before_weight_update() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    build_future: concurrent.futures.Future[None] = concurrent.futures.Future()
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_builds = {"req-build": (object(), False, build_future)}
+    drained = threading.Event()
+
+    def drain() -> None:
+        assert build_future.done()
+        scheduler._pending_request_builds.clear()
+        drained.set()
+
+    scheduler._drain_request_build_results = drain
+    thread = threading.Thread(
+        target=OmniScheduler._finish_pending_request_builds,
+        args=(scheduler,),
+    )
+    thread.start()
+
+    assert not drained.wait(timeout=0.05)
+    build_future.set_result(None)
+    assert drained.wait(timeout=1)
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+
+
+def test_omni_scheduler_requeues_retracted_request_after_refresh() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    refresh_future: concurrent.futures.Future[None] = concurrent.futures.Future()
+    submitted: list[tuple[object, object]] = []
+
+    class DeferredExecutor:
+        def submit(self, fn, *args):  # noqa: ANN001, ANN002, ANN202
+            del fn  # the real executor runs fn(*args); this stub fakes its result
+            submitted.append(args)
+            outer: concurrent.futures.Future[object] = concurrent.futures.Future()
+            outer.set_result(refresh_future)
+            return outer
+
+    req = SimpleNamespace(rid="req-1")
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=lambda payload: (True, "ok")
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._engine_paused = True
+    scheduler._last_pause_mode = "retract"
+    scheduler._async_pending = None
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: [req.rid]
+    scheduler._pending_request_builds = {}
+    scheduler._pending_request_admissions = {}
+    scheduler._pending_request_refreshes = {}
+    scheduler._aborted_request_ids = set()
+    scheduler._request_build_executor = DeferredExecutor()
+    scheduler._weight_update_context = contextlib.nullcontext
+    scheduler._weight_update_request_refresh = lambda refreshed: None
+    scheduler.waiting_queue = [req]
+    scheduler._empty_torch_cache = lambda: None
+
+    def flush_cache() -> bool:
+        assert scheduler.waiting_queue == []
+        return False
+
+    scheduler.flush_cache = flush_cache
+
+    result = OmniScheduler._admin_update_weights_from_disk(
+        scheduler, {"model_path": "/tmp/new-model"}
+    )
+
+    assert result["success"] is False
+    assert scheduler.waiting_queue == []
+    assert list(scheduler._pending_request_refreshes) == [req.rid]
+    assert submitted == [(scheduler._weight_update_request_refresh, req)]
+
+    second = OmniScheduler._admin_update_weights_from_disk(
+        scheduler, {"model_path": "/tmp/newer-model", "flush_cache": False}
+    )
+    assert second["success"] is False
+    assert "request refreshes are still pending" in second["message"]
+
+    scheduler._add_request_to_queue = scheduler.waiting_queue.append
+    OmniScheduler._drain_request_refreshes(scheduler)
+
+    assert scheduler.waiting_queue == []
+    assert list(scheduler._pending_request_refreshes) == [req.rid]
+
+    refresh_future.set_result(None)
+    OmniScheduler._drain_request_refreshes(scheduler)
+
+    assert scheduler.waiting_queue == [req]
+    assert scheduler._pending_request_refreshes == {}
+
+
+def test_omni_scheduler_failed_refresh_aborts_request() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    future: concurrent.futures.Future[None] = concurrent.futures.Future()
+    future.set_exception(RuntimeError("refresh failed"))
+    req = SimpleNamespace(rid="req-1", _omni_data=object())
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_refreshes = {req.rid: (req, future)}
+    scheduler._aborted_request_ids = set()
+    errors: list[tuple[str, Exception]] = []
+    aborted: list[str] = []
+    scheduler._emit_request_error = lambda rid, exc: errors.append((rid, exc))
+    scheduler.abort = aborted.append
+
+    OmniScheduler._drain_request_refreshes(scheduler)
+
+    assert errors[0][0] == req.rid
+    assert str(errors[0][1]) == "refresh failed"
+    assert aborted == [req.rid]
+    assert req._omni_data is None
+    assert scheduler._pending_request_refreshes == {}
+
+
+def test_omni_scheduler_refresh_rejects_non_future_return_direct_call() -> None:
+    """executor is None: _start_request_refreshes calls the callback
+    directly. A callback that forgets to return a Future must fail this
+    request loudly (TypeError, aborted) instead of _drain_request_refreshes
+    crashing on `.done()` or silently readmitting an unrefreshed request."""
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    req = SimpleNamespace(rid="req-1", _omni_data=object())
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_refreshes = {}
+    scheduler._aborted_request_ids = set()
+    scheduler._request_build_executor = None
+    scheduler._weight_update_request_refresh = lambda _req: None  # bug: no Future
+
+    OmniScheduler._start_request_refreshes(scheduler, [req])
+
+    pending_req, pending_future = scheduler._pending_request_refreshes[req.rid]
+    assert pending_req is req
+    assert pending_future.done()
+    assert isinstance(pending_future.exception(), TypeError)
+
+    errors: list[tuple[str, Exception]] = []
+    aborted: list[str] = []
+    scheduler._emit_request_error = lambda rid, exc: errors.append((rid, exc))
+    scheduler.abort = aborted.append
+
+    OmniScheduler._drain_request_refreshes(scheduler)
+
+    assert aborted == [req.rid]
+    assert isinstance(errors[0][1], TypeError)
+    assert scheduler._pending_request_refreshes == {}
+
+
+def test_omni_scheduler_refresh_rejects_non_future_return_via_executor() -> None:
+    """executor is not None: the callback runs on a worker thread, and only
+    the executor's own wrapper future is guaranteed to be a real Future --
+    the callback's actual return value is not visible until that wrapper
+    resolves. A callback that forgets to return a Future must still fail
+    this request loudly rather than being silently treated as a finished
+    refresh."""
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    req = SimpleNamespace(rid="req-1", _omni_data=object())
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_refreshes = {}
+    scheduler._aborted_request_ids = set()
+    scheduler._weight_update_request_refresh = lambda _req: None  # bug: no Future
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    scheduler._request_build_executor = executor
+    try:
+        OmniScheduler._start_request_refreshes(scheduler, [req])
+
+        _, pending_future = scheduler._pending_request_refreshes[req.rid]
+        assert isinstance(pending_future.exception(timeout=2), TypeError)
+
+        errors: list[tuple[str, Exception]] = []
+        aborted: list[str] = []
+        scheduler._emit_request_error = lambda rid, exc: errors.append((rid, exc))
+        scheduler.abort = aborted.append
+
+        OmniScheduler._drain_request_refreshes(scheduler)
+
+        assert aborted == [req.rid]
+        assert isinstance(errors[0][1], TypeError)
+        assert scheduler._pending_request_refreshes == {}
+    finally:
+        executor.shutdown(wait=True)
 
 
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:

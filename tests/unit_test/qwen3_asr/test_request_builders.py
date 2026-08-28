@@ -23,6 +23,7 @@ from sglang_omni.models.qwen3_asr.languages import (
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
     make_qwen3_asr_scheduler_adapters,
+    refresh_qwen3_asr_audio_embedding,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import DeferredAdmission
@@ -607,11 +608,18 @@ def test_qwen3_asr_rejects_full_context_before_mel_extraction(
 
 
 def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None:
-    class _UnexpectedFeatureExtractor:
+    class _FeatureExtractor:
         hop_length = 160
 
+        def __init__(self) -> None:
+            self.calls = 0
+
         def __call__(self, *args, **kwargs):
-            raise AssertionError("feature extractor should not be called")
+            self.calls += 1
+            return SimpleNamespace(
+                input_features=torch.zeros((1, 128, 100)),
+                attention_mask=torch.ones((1, 100), dtype=torch.long),
+            )
 
     class _EncoderService:
         def __init__(self) -> None:
@@ -640,10 +648,11 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
         lambda source, **kwargs: np.zeros(16000, dtype=np.float32),
     )
     encoder_service = _EncoderService()
+    feature_extractor = _FeatureExtractor()
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
         max_new_tokens=32,
-        feature_extractor=_UnexpectedFeatureExtractor(),
+        feature_extractor=feature_extractor,
         audio_encoder_service=encoder_service,
     )
     payload = StagePayload(
@@ -660,6 +669,28 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
     assert item.feature is None
     assert item.precomputed_embeddings is encoder_service.embedding
     assert item.num_audio_tokens == 13
+    assert feature_extractor.calls == 0
+
+    refreshed: list[torch.Tensor] = []
+
+    def submit_item(refreshed_item):  # noqa: ANN001, ANN202
+        refreshed.append(refreshed_item.feature)
+        refreshed_item.precomputed_embeddings = torch.ones((13, 4))
+        refreshed_item.feature = None
+        future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+        future.set_result(refreshed_item.precomputed_embeddings)
+        return future
+
+    encoder_service.submit_item = submit_item
+    refresh_qwen3_asr_audio_embedding(
+        data,
+        feature_extractor=feature_extractor,
+        audio_encoder_service=encoder_service,
+    )
+
+    assert feature_extractor.calls == 1
+    assert refreshed[0].shape == (1, 128, 100)
+    assert item.feature_attention_mask.shape == (1, 100)
 
 
 def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> None:
