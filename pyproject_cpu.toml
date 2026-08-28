@@ -1,7 +1,7 @@
 [build-system]
 # >=77 for the PEP 639 license fields below, which 76.1 and older reject; that also
 # covers the PEP 660 build_editable an editable install needs. Installs here pass
-# --no-build-isolation, so pip never enforces this -- scripts/xpu/install_cpu.sh does.
+# --no-build-isolation, so pip never enforces this -- scripts/cpu/install_cpu.sh does.
 requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sglang-omni"
 dynamic = ["version"]
-description = "Multi-stage pipeline framework for omni models (Intel XPU build)"
+description = "Multi-stage pipeline framework for omni models (Intel CPU build)"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -91,7 +91,7 @@ pythonpath = ["."]
 markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
-    "gpu: requires an accelerator device (auto-skipped without one)",
+    "accelerator: requires an accelerator device (skipped on CPU)",
 ]
 
 [tool.setuptools.packages.find]

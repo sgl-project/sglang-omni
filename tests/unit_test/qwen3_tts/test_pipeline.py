@@ -39,7 +39,6 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.messages import IncomingMessage
@@ -244,16 +243,7 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     ]
     assert config.stages[1].factory_path.endswith("create_sglang_tts_engine_executor")
     assert config.terminal_stages == ["vocoder"]
-    expected_gpu_map = (
-        {}
-        if current_platform.is_cpu()
-        else {
-            "tts_engine": 0,
-            "vocoder": 0,
-        }
-    )
-
-    assert config.gpu_placement == expected_gpu_map
+    assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.stages[1].factory.device is None
     assert config.stages[2].factory.device is None
     assert {stage.process for stage in config.stages} == {"pipeline"}

@@ -173,14 +173,10 @@ def test_tts_engine_builder_phase_order_and_override_contract(
     ) -> tuple[Any, ...]:
         events.append("infrastructure")
         assert gpu_id == expected_gpu_id
-        if expected_disable_cuda_graph:
-            # CPU: only care about the final disable_cuda_graph state.
-            assert kwargs["model_arch_override"] == "TestArch"
-        else:
-            assert kwargs == {
-                "defer_cuda_graph_capture": True,
-                "model_arch_override": "TestArch",
-            }
+        assert kwargs == {
+            "defer_cuda_graph_capture": not expected_disable_cuda_graph,
+            "model_arch_override": "TestArch",
+        }
         infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
         return (
             FakeWorker(server_args),

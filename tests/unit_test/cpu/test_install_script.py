@@ -27,7 +27,7 @@ def repo(tmp_path: Path) -> Path:
     (root / "scripts" / "cpu").mkdir(parents=True)
     shutil.copy(_SCRIPT, root / "scripts" / "cpu" / "install_cpu.sh")
     (root / "pyproject.toml").write_text(f'{_ORIGINAL_MARKER}\n[project]\nname = "x"\n')
-    (root / "pyproject_cpu.toml").write_text('[project]\nname = "x-xpu"\n')
+    (root / "pyproject_cpu.toml").write_text('[project]\nname = "x-cpu"\n')
     return root
 
 

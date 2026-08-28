@@ -25,7 +25,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-editable) EDITABLE=""; shift ;;
     --check)       CHECK_ONLY=1; shift ;;
-    --extras)      EXTRAS="${2:-}"; shift 2 ;;
+    --extras)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --extras requires a value." >&2
+        exit 1
+      fi
+      EXTRAS="$2"
+      shift 2
+      ;;
     -h|--help)
       sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -71,6 +78,29 @@ PY
 # script is created. Without isolation it uses this env's setuptools, so an
 # editable install needs PEP 660 support (setuptools>=64) here; check up front
 # rather than silently producing the legacy layout.
+"${PYBIN}" - <<'PY' || exit 1
+import sys
+
+import setuptools
+import setuptools.build_meta
+
+version = tuple(
+    int("".join(char for char in part if char.isdigit()) or 0)
+    for part in setuptools.__version__.split(".")[:2]
+)
+if version < (77, 0):
+    sys.exit(
+        f"setuptools {setuptools.__version__} is too old: pyproject_cpu.toml uses "
+        "the PEP 639 license fields, which 76.1 and older reject with 'invalid "
+        "pyproject.toml config: `project.license`'. --no-build-isolation means pip "
+        "will not upgrade it for you, so run: pip install -U 'setuptools>=77.0.0'"
+    )
+if not hasattr(setuptools.build_meta, "build_editable"):
+    sys.exit(
+        f"setuptools {setuptools.__version__} lacks PEP 660 support; an editable "
+        "install would emit a legacy egg-info."
+    )
+PY
 NOISO="--no-build-isolation"
 INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} \
 --index-url ${CPU_INDEX} --extra-index-url https://pypi.org/simple"
@@ -119,12 +149,6 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo "  # then restore pyproject.toml from backup"
   exit 0
 fi
-
-uv pip install \
-  --index-url https://download.pytorch.org/whl/cpu \
-  torch==2.12.0 \
-  torchvision==0.27.0 \
-  torchaudio==2.11.0
 
 # Restore the original pyproject.toml no matter how we exit.
 restore() {
@@ -198,4 +222,4 @@ fi
 
 echo
 echo "=== done. Next: ==="
-echo "  SGLANG_USE_CPU_ENGINE=1 sgl-omni serve --device cpu --model-path <path-to-qwen3-tts> --port 8000"
+echo "  SGLANG_USE_CPU_ENGINE=1 sgl-omni serve --model-path <path-to-qwen3-tts> --port 8000"

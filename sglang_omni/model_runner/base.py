@@ -283,7 +283,7 @@ class ModelRunner:
     def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call
         ``post_decode_launch`` to publish a model-specific resolve payload
-        (returned as ``launch_buf``), and record a device event right after
+        (returned as launch_buf), and record a device event right after
         publication. Does NOT wait on the GPU. Decode batches only. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next

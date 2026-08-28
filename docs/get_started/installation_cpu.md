@@ -18,7 +18,8 @@ keeps the dependency set scoped to Qwen3-TTS serving.
 
 ## Prerequisites
 
-- Python >= 3.10.
+- Python >= 3.10,<3.13
+- `uv`
 - A CPU build of SGLang from the matching upstream release.
 - Standard audio runtime libraries such as `ffmpeg` and `libsndfile`.
 
@@ -61,21 +62,21 @@ git checkout v0.5.16
 
 cd python
 cp pyproject_cpu.toml pyproject.toml
-uv pip install . --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+uv pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu
 
-cd sglang/kernels/aot
+cd ../sgl-kernel
 cp pyproject_cpu.toml pyproject.toml
-uv pip install . --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+uv pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 Install `sglang-omni` with the CPU pyproject:
 
 ```bash
-cd OMNI_DIR
+cd "$OMNI_DIR"
 bash scripts/cpu/install_cpu.sh
 ```
 Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
-Option B install it here, because `pyproject_xpu.toml` deliberately does not pin it.
+Option B install it here, because `pyproject_cpu.toml` deliberately does not pin it.
 `--no-deps` is required on both lines: `qwen-tts` pins Transformers 4.57.3, which
 would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
 `numba==0.65.1` ceiling. See
@@ -88,11 +89,6 @@ sudo apt-get install -y sox
 uv pip install --no-deps sox
 uv pip install --no-deps qwen-tts==0.1.1
 ```
-
---no-deps is required because qwen-tts pins an older Transformers version,
-which would otherwise replace the Transformers version used by SGLang-Omni.
-Installing Python sox without dependency resolution also avoids changing the
-existing NumPy stack.
 
 ## Verify
 
