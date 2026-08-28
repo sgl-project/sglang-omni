@@ -2461,6 +2461,62 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     assert scheduler.outbox.empty()
 
 
+def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
+    """Clamp requests that pass the surface KV check but cannot be prefetched."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler.max_req_len = 23
+    scheduler.max_req_input_len = 22
+    scheduler.max_new_tokens_limit = None
+    scheduler.page_size = 4
+    scheduler.max_total_num_tokens = 24
+    _init_sync_request_build_state(scheduler)
+
+    requested_max_new_tokens = 14
+    sampling_params = SimpleNamespace(
+        max_new_tokens=requested_max_new_tokens,
+        min_new_tokens=0,
+    )
+    req = SimpleNamespace(
+        rid="req-near-capacity",
+        origin_input_ids=[1] * 9,
+        origin_input_ids_unpadded=[1] * 9,
+        sampling_params=sampling_params,
+        output_ids=[],
+        priority=None,
+    )
+    req_data = SimpleNamespace(
+        req=req,
+        max_new_tokens=requested_max_new_tokens,
+        enforce_request_limits=True,
+    )
+    scheduler._request_builder = lambda payload: req_data
+
+    scheduler.process_input_requests([_new_stage_payload("req-near-capacity")])
+
+    input_tokens = len(req.origin_input_ids)
+    paged_input_tokens = 12
+    assert input_tokens + requested_max_new_tokens == scheduler.max_req_len
+    assert (
+        paged_input_tokens + requested_max_new_tokens + scheduler.page_size
+        >= scheduler.max_total_num_tokens
+    )
+    assert req.sampling_params.max_new_tokens == 7
+    assert req_data.max_new_tokens == 7
+    assert (
+        paged_input_tokens + req.sampling_params.max_new_tokens + scheduler.page_size
+        < scheduler.max_total_num_tokens
+    )
+    assert scheduler.waiting_queue == [req]
+    assert scheduler.outbox.empty()
+
+
 def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     """Covers context-length validation for custom request builders."""
     scheduler = object.__new__(OmniScheduler)

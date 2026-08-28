@@ -163,6 +163,21 @@ def test_qwen3_asr_short_audio_keeps_the_floor_budget(monkeypatch) -> None:
     assert data.max_new_tokens == 128
 
 
+def test_qwen3_asr_request_builder_enforces_scheduler_request_limits(
+    monkeypatch,
+) -> None:
+    request_builder = _budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-request-limits",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.enforce_request_limits is True
+
+
 def test_qwen3_asr_long_audio_scales_the_budget(monkeypatch) -> None:
     # 60s of audio needs ~300 output tokens; the scaled default (10/s with
     # margin) covers it without a large flat default.
