@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 import torch
@@ -25,6 +26,14 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_int_tuple(value: Any) -> tuple[int, ...]:
+    if isinstance(value, str):
+        value = json.loads(value)
+    if isinstance(value, int):
+        value = (value,)
+    return tuple(int(item) for item in value)
 
 _COSYVOICE_INSTALL_HINT = (
     "Fun-CosyVoice3 support requires the `cosyvoice` package. "
@@ -237,8 +246,8 @@ def create_vocoder_executor(
         install_flow_npugraph(
             flow,
             max_graphs=flow_npugraph_max_graphs,
-            bucket_sizes=tuple(int(value) for value in flow_npugraph_bucket_sizes),
-            warmup_buckets=tuple(int(value) for value in flow_npugraph_warmup_buckets),
+            bucket_sizes=_normalize_int_tuple(flow_npugraph_bucket_sizes),
+            warmup_buckets=_normalize_int_tuple(flow_npugraph_warmup_buckets),
         )
 
     return _CosyVoice3Vocoder(flow, hift, fp16=(dtype == "float16")).build_scheduler(

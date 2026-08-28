@@ -17,6 +17,7 @@ from sglang_omni.models.fun_cosyvoice3.flow_npugraph import (
     enable_flow_npugraph,
     prepare_flow_npugraph_environment,
 )
+from sglang_omni.models.fun_cosyvoice3.stages import _normalize_int_tuple
 
 
 class _Estimator(torch.nn.Module):
@@ -224,6 +225,10 @@ def test_enable_accepts_cli_string_bucket_values(monkeypatch):
         flow, max_graphs=2, bucket_sizes=("200", "256"), warmup_buckets=("200",)
     ) is True
     assert flow.decoder.estimator.forward._bucket_sizes == (200, 256)
+
+
+def test_normalize_int_tuple_accepts_json_list():
+    assert _normalize_int_tuple("[200, 256, 320]") == (200, 256, 320)
 
 
 def test_prepare_environment_disables_internal_format_on_npu(monkeypatch):
