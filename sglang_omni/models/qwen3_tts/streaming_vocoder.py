@@ -487,11 +487,15 @@ class Qwen3TTSStreamingVocoderScheduler(
         super().stop()
         self._join_async_workers()
 
-    def on_serving_start(self) -> None:
+    def warmup_now(self) -> None:
         if not self._async_decode:
             return
         self._initial_decode_graphs.capture()
         self._followup_decode_graphs.capture()
+
+    def on_serving_start(self) -> None:
+        if not self._async_decode:
+            return
         self._initial_queue = queue.Queue()
         self._followup_queue = queue.PriorityQueue()
         self._followup_sequence = count()

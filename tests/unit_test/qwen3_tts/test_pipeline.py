@@ -1332,6 +1332,12 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         "_load_qwen3_tts_tokenizer",
         lambda *args, **kwargs: FakeTokenizer(),
     )
+    warmed_schedulers: list[Qwen3TTSStreamingVocoderScheduler] = []
+    monkeypatch.setattr(
+        Qwen3TTSStreamingVocoderScheduler,
+        "warmup_now",
+        lambda scheduler: warmed_schedulers.append(scheduler),
+    )
 
     scheduler = stages.create_vocoder_executor(
         "model",
@@ -1339,6 +1345,7 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         max_batch_size=2,
         max_batch_wait_ms=3,
     )
+    assert warmed_schedulers == [scheduler]
     assert scheduler.create_stream_state("request").initial_chunk_frames == 8
     assert scheduler._stream_left_context_frames == 16
     assert scheduler._stream_followup_stride == 8
@@ -1606,6 +1613,34 @@ def test_qwen3_tts_streaming_vocoder_followup_graphs_can_be_disabled() -> None:
 
     assert scheduler._followup_decode_graphs._enabled is False
     assert scheduler._initial_decode_graphs is not scheduler._followup_decode_graphs
+
+
+def test_qwen3_tts_vocoder_warms_graphs_before_serving_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    captures: list[str] = []
+    monkeypatch.setattr(
+        scheduler._initial_decode_graphs,
+        "capture",
+        lambda: captures.append("initial"),
+    )
+    monkeypatch.setattr(
+        scheduler._followup_decode_graphs,
+        "capture",
+        lambda: captures.append("followup"),
+    )
+
+    scheduler.warmup_now()
+    scheduler.on_serving_start()
+    try:
+        assert captures == ["initial", "followup"]
+    finally:
+        scheduler.stop()
 
 
 def test_qwen3_tts_deterministic_streaming_vocoder_decodes_each_plan_at_b1() -> None:
