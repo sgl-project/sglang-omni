@@ -692,7 +692,11 @@ def test_factory_builds_batched_keys_with_batching(monkeypatch) -> None:
             captured.update(kwargs)
             return _FakeGraphRunner(model, kwargs["graph_keys"])
 
-    monkeypatch.setattr(mod, "Code2WavCudaGraphRunner", _FakeRunnerCls)
+    monkeypatch.setattr(
+        mod,
+        "current_platform",
+        SimpleNamespace(device_type="cuda", code2wav_graph_runner=_FakeRunnerCls),
+    )
     scheduler = mod.create_code2wav_scheduler(
         "fake-path",
         device="cuda:0",
@@ -733,7 +737,11 @@ def test_factory_selects_npu_graph_runner(monkeypatch) -> None:
             return _FakeGraphRunner(model, kwargs["graph_keys"])
 
     monkeypatch.setattr(mod, "load_code2wav_model", _fake_load)
-    monkeypatch.setattr(mod, "Code2WavNpuGraphRunner", _FakeNpuRunnerCls)
+    monkeypatch.setattr(
+        mod,
+        "current_platform",
+        SimpleNamespace(device_type="npu", code2wav_graph_runner=_FakeNpuRunnerCls),
+    )
 
     scheduler = mod.create_code2wav_scheduler(
         "fake-path",

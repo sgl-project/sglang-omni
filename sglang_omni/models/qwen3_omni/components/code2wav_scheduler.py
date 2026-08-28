@@ -18,9 +18,7 @@ import numpy as np
 import torch
 
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
-    Code2WavCudaGraphRunner,
     Code2WavGraphRunner,
-    Code2WavNpuGraphRunner,
     Code2WavRunResult,
     GraphKey,
 )
@@ -1032,14 +1030,11 @@ def create_code2wav_scheduler(
                 stream_chunk_size,
                 left_context_size,
             )
-        if concrete_device.type in ("cuda", "musa"):
-            graph_runner_cls = Code2WavCudaGraphRunner
-        elif concrete_device.type == "npu":
-            graph_runner_cls = Code2WavNpuGraphRunner
-        else:
+        graph_runner_cls = current_platform.code2wav_graph_runner
+        if graph_runner_cls is None:
             raise ValueError(
-                "Code2Wav graph requires a concrete CUDA, MUSA, or NPU device, got "
-                f"{concrete_device}"
+                "Code2Wav graph is unsupported on platform "
+                f"{current_platform.device_type!r}, device={concrete_device}"
             )
         cuda_graph_runner = graph_runner_cls.build(
             model,

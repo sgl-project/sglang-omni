@@ -11,6 +11,9 @@ from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
     from sglang_omni.comm.data_ref import TransportKind
+    from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+        Code2WavGraphRunner,
+    )
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 
 
@@ -57,6 +60,11 @@ class OmniPlatform(DeviceMixin):
             effective_quantization = server_quantization
         return effective_quantization
 
-    def enable_code2wav_graph(self):
+    @property
+    def code2wav_graph_runner(self) -> type[Code2WavGraphRunner] | None:
+        """Return the platform-specific Code2Wav graph runner, if supported."""
+        return None
+
+    def enable_code2wav_graph(self) -> bool:
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
-        return True
+        return self.code2wav_graph_runner is not None

@@ -17,5 +17,10 @@ class NPUOmniPlatform(OmniPlatform):
     def set_device(self, device: "torch.device") -> None:
         torch.npu.set_device(device)
 
-    def enable_code2wav_graph(self) -> bool:
-        return True
+    @property
+    def code2wav_graph_runner(self):
+        from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+            Code2WavNpuGraphRunner,
+        )
+
+        return Code2WavNpuGraphRunner
