@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import ClassVar
 
 from pydantic import Field
@@ -13,6 +14,7 @@ from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
+    ResolvedAudioChunking,
     StageConfig,
 )
 from sglang_omni.models.qwen3_asr.audio_lengths import QWEN3_ASR_MAX_INPUT_SECONDS
@@ -85,6 +87,25 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             terminal=True,
         )
     ]
+
+    @property
+    def resolved_audio_chunking(self) -> ResolvedAudioChunking:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        from sglang_omni.platforms import current_platform
+
+        policy = super().resolved_audio_chunking
+        if not current_platform.is_mps() or use_mlx():
+            return policy
+
+        # note (yexiaodong): Torch MPS currently uses one clip shape for the
+        # encoder path, so keep its native and whole-upload limits aligned with
+        # the operator-selected chunk length. MLX retains the model-native cap.
+        return replace(
+            policy,
+            max_native_clip_s=policy.max_audio_clip_s,
+            max_total_audio_s=policy.max_audio_clip_s,
+        )
 
 
 EntryClass = Qwen3ASRPipelineConfig

@@ -1726,6 +1726,25 @@ def test_streamed_audio_beyond_the_native_limit_is_rejected() -> None:
     assert transcription_client.requests == []
 
 
+def test_streamed_audio_beyond_total_limit_requests_shorter_file() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(
+        transcription_client,
+        max_total_audio_s=2.0,
+        max_native_clip_s=2.0,
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "use a shorter audio file" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
 def test_streamed_short_audio_streams_as_before() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = _chunking_test_client(transcription_client)

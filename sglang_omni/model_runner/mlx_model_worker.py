@@ -95,9 +95,9 @@ class MlxSchedulerModelRunner(ModelRunner):
             previous_ids = [req.rid for req in previous.reqs]
             current_ids = [req.rid for req in reqs]
             if previous.launch.mode != "decode" or previous_ids != current_ids:
-                # The scheduler still owns ``previous`` and must resolve it
-                # before launching a changed batch. Keep this reference so the
-                # runner and scheduler do not disagree about the lazy cache root.
+                # note (yexiaodong): The scheduler still owns the previous
+                # pending step. Keep this reference until resolve so both sides
+                # retain the same lazy cache root.
                 raise RuntimeError(
                     "MLX chained decode requires an unchanged request batch; "
                     "resolve the outstanding pending step before launching a "

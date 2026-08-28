@@ -77,7 +77,9 @@ The MLX path currently supports one device (`tp_size=1`) and greedy decoding.
 Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
 HTTP and SSE transcription interfaces below are the same as on CUDA;
 `stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
-The Apple paths do not provide sampling penalties or token logprobs yet.
+The Apple paths do not provide sampling penalties or token logprobs yet. MLX
+can batch multiple requests, but `max_running_requests=1` is recommended when
+single-request latency matters; increase it only when throughput is preferred.
 
 To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
 and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
@@ -92,8 +94,9 @@ sgl-omni serve \
   --port 8000
 ```
 
-The initial Torch MPS profile is bounded to a 2,048-token KV budget and is
-intended for short clips; use the MLX path for the larger native context limit.
+The initial Torch MPS profile is bounded to a 2,048-token KV budget and accepts
+audio up to 60 seconds. Use the MLX path for long audio and the larger native
+context limit.
 
 ## Server Configuration
 

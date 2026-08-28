@@ -99,13 +99,20 @@ def register_transcriptions(app: FastAPI) -> None:
                 chunking.allow_audio_chunking
                 and duration_s > chunking.stream_clip_limit_s
             ):
+                if (
+                    chunking.max_total_audio_s is not None
+                    and chunking.max_total_audio_s <= chunking.stream_clip_limit_s
+                ):
+                    recovery = "use a shorter audio file"
+                else:
+                    recovery = (
+                        "use stream=false, which transcribes long audio in chunks"
+                    )
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         "stream=true does not support audio longer than "
-                        f"{chunking.stream_clip_limit_s:g} seconds; "
-                        "use stream=false, which transcribes long audio in "
-                        "chunks"
+                        f"{chunking.stream_clip_limit_s:g} seconds; {recovery}"
                     ),
                 )
             gen_req = speech_to_text.build_speech_to_text_generate_request(

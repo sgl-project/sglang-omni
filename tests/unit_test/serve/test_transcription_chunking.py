@@ -96,7 +96,46 @@ def test_qwen3_asr_pipeline_declaresResolvedAudioChunking() -> None:
     assert declared.max_native_clip_s == 1200.0
 
 
-def test_whisper_asr_pipeline_declaresResolvedAudioChunking() -> None:
+def test_qwen3_asr_torch_mps_limits_runtime_audio_policy(monkeypatch) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: True)
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+
+    resolved = Qwen3ASRPipelineConfig(
+        model_path="Qwen/Qwen3-ASR-0.6B"
+    ).resolved_audio_chunking
+
+    assert resolved.max_audio_clip_s == 30.0
+    assert resolved.max_native_clip_s == 30.0
+    assert resolved.max_total_audio_s == 30.0
+
+
+@pytest.mark.parametrize(("is_mps", "use_mlx"), [(False, False), (True, True)])
+def test_qwen3_asr_non_torch_mps_keeps_native_audio_policy(
+    monkeypatch, is_mps: bool, use_mlx: bool
+) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: is_mps)
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: use_mlx)
+
+    resolved = Qwen3ASRPipelineConfig(
+        model_path="Qwen/Qwen3-ASR-0.6B"
+    ).resolved_audio_chunking
+
+    assert resolved.max_audio_clip_s == 30.0
+    assert resolved.max_native_clip_s == 1200.0
+    assert resolved.max_total_audio_s == 3600.0
+
+
+def test_whisper_asr_pipeline_declares_chunking() -> None:
     from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 
     declared = WhisperASRPipelineConfig(model_path="dummy").resolved_audio_chunking

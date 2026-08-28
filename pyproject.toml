@@ -34,6 +34,8 @@ dependencies = [
     # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
     # so Apple Silicon installs this exact tag from source with the all_mps extra.
     "sglang==0.5.18; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "flashinfer_python[cu13]==0.6.17; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
     "cache-dit==1.3.0",      # MiniMax Music 3 DIT (hard import, not optional)
     "addict==2.4.0",         # sglang.multimodal_gen server_args; MiniMax DIT import
