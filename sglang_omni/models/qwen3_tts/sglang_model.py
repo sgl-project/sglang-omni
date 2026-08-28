@@ -182,7 +182,13 @@ class _PredictorDecodeGraph:
 
 
 class Qwen3TTSTalkerDecoderLayer(nn.Module):
-    def __init__(self, config: Any, layer_id: int, prefix: str = "") -> None:
+    def __init__(
+        self,
+        config: Any,
+        layer_id: int,
+        quant_config: Any = None,
+        prefix: str = "",
+    ) -> None:
         super().__init__()
         self.self_attn = Qwen3OmniMoeThinkerTextAttention(
             hidden_size=config.hidden_size,
@@ -203,6 +209,7 @@ class Qwen3TTSTalkerDecoderLayer(nn.Module):
         self.mlp = Qwen3OmniMoeTalkerDenseMLP(
             config.hidden_size,
             config.intermediate_size,
+            quant_config=quant_config,
             prefix=add_prefix("mlp", prefix),
         )
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -234,7 +241,7 @@ class Qwen3TTSTalkerDecoderLayer(nn.Module):
 
 
 class Qwen3TTSTalkerTextModel(nn.Module):
-    def __init__(self, config: Any, prefix: str = "") -> None:
+    def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
         super().__init__()
         self.config = config
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -246,6 +253,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
                 Qwen3TTSTalkerDecoderLayer(
                     config,
                     idx,
+                    quant_config=quant_config,
                     prefix=add_prefix(f"layers.{idx}", prefix),
                 )
                 for idx in range(config.num_hidden_layers)
@@ -329,7 +337,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
 
 
 class Qwen3TTSCodePredictor(nn.Module):
-    def __init__(self, config: Any, prefix: str = "") -> None:
+    def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
         super().__init__()
         self.config = config
         cp_config = config.code_predictor_config
@@ -345,6 +353,7 @@ class Qwen3TTSCodePredictor(nn.Module):
                 Qwen3TTSTalkerDecoderLayer(
                     cp_config,
                     idx,
+                    quant_config=quant_config,
                     prefix=add_prefix(f"model.layers.{idx}", prefix),
                 )
                 for idx in range(cp_config.num_hidden_layers)
@@ -379,7 +388,6 @@ class Qwen3TTSTalker(nn.Module):
     """Qwen3-TTS Base talker with SGLang-managed KV cache for the main AR loop."""
 
     def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
-        del quant_config
         super().__init__()
         if hasattr(config, "talker_config"):
             root_config = config
@@ -404,7 +412,11 @@ class Qwen3TTSTalker(nn.Module):
             config.hidden_size,
             prefix=add_prefix("text_projection", prefix),
         )
-        self.model = Qwen3TTSTalkerTextModel(config, prefix=add_prefix("model", prefix))
+        self.model = Qwen3TTSTalkerTextModel(
+            config,
+            quant_config=quant_config,
+            prefix=add_prefix("model", prefix),
+        )
         self.codec_head = ReplicatedLinear(
             config.hidden_size,
             config.vocab_size,
@@ -413,6 +425,7 @@ class Qwen3TTSTalker(nn.Module):
         )
         self.code_predictor = Qwen3TTSCodePredictor(
             config,
+            quant_config=quant_config,
             prefix=add_prefix("code_predictor", prefix),
         )
 
