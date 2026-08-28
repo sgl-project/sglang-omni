@@ -103,17 +103,17 @@ def test_stage_devices_resolve_from_platform_type() -> None:
     config = HiggsTtsPipelineConfig(model_path="unused")
 
     for stage in config.stages:
-        if "device" in stage.factory_args:
-            assert stage.factory_args["device"] == current_platform.device_type
+        if stage.factory.device is not None:
+            assert stage.factory.device == current_platform.device_type
 
 
 def test_vocoder_decode_graph_domain_follows_platform_capability() -> None:
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
     config = HiggsTtsPipelineConfig(model_path="unused")
-    vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
+    vocoder_kwargs = config.stage_factory_kwargs("vocoder")
 
-    counts = vocoder.factory_args["decode_cuda_graph_frame_counts"]
+    counts = vocoder_kwargs["decode_cuda_graph_frame_counts"]
     if current_platform.enable_code2wav_graph():
         assert counts == tuple(range(1, 151))
     else:
