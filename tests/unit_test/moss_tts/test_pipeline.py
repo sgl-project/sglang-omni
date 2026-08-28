@@ -38,7 +38,6 @@ from sglang_omni.models.moss_tts.request_builders import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,7 +372,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         captured["model_path"] = model_path
         captured["context_length"] = context_length
         captured["build_kwargs"].append(dict(kwargs))
-        return FakeServerArgs(
+        return SimpleNamespace(
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=False,
             max_running_requests=kwargs["max_running_requests"],
@@ -426,8 +425,6 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         )
         return (
             model_worker,
-            object(),
-            object(),
             object(),
             object(),
             object(),

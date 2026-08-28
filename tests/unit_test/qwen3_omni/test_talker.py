@@ -81,35 +81,31 @@ def _take_decode_input(sched_req: SimpleNamespace) -> torch.Tensor | None:
     )
 
 
-def test_configure_talker_server_args_uses_override_in_strict_mode() -> None:
-    environ_mod = pytest.importorskip("sglang.srt.environ")
+def test_configure_talker_server_args_writes_through_the_mutation_guard() -> None:
+    """A materialized ServerArgs rejects bare attribute writes, so the talker
+    configuration must go through the audited override path.
+    """
     server_args_mod = pytest.importorskip("sglang.srt.server_args")
     server_args = server_args_mod.ServerArgs(model_path="dummy")
-    object.__setattr__(server_args, "_declarations_materialized", True)
 
-    with environ_mod.envs.SGLANG_STRICT_CONFIG_MUTATION.override(True):
-        want_cuda_graph = configure_talker_server_args(
-            server_args,
-            feedback_enabled=True,
-        )
+    want_cuda_graph = configure_talker_server_args(
+        server_args,
+        feedback_enabled=True,
+    )
 
     assert want_cuda_graph is True
     assert server_args.disable_overlap_schedule is True
-    assert server_args.disable_cuda_graph is True
+    assert server_args.disable_cuda_graph is False
     assert server_args.disable_radix_cache is True
     assert server_args.chunked_prefill_size == 0
     audited_overrides = {}
-    for source, fields in [
-        *server_args._resolved_overrides,
-        *server_args._runtime_mutations,
-    ]:
+    for source, fields in server_args._runtime_mutations:
         assert source == "qwen3_omni.talker"
         audited_overrides.update(fields)
     assert audited_overrides == {
         "disable_radix_cache": True,
         "chunked_prefill_size": 0,
         "disable_overlap_schedule": True,
-        "disable_cuda_graph": True,
     }
 
 
@@ -1498,11 +1494,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
         "alloc_for_decode",
         _fake_alloc_for_decode,
     )
-    monkeypatch.setattr(
-        schedule_batch_mod,
-        "get_server_args",
-        lambda: SimpleNamespace(enable_mamba_extra_buffer=lambda: False),
-    )
+    monkeypatch.setattr(schedule_batch_mod, "mamba_extra_buffer_enabled", lambda: False)
 
     ScheduleBatch.prepare_for_decode(batch)
     assert batch.seq_lens_sum is None

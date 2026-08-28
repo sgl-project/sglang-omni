@@ -28,7 +28,6 @@ from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_i
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def _tiny_config():
@@ -60,6 +59,7 @@ def test_arkasr_config_registered():
     assert config.stages[0].name == "asr"
     assert config.stages[0].terminal
     assert config.stages[0].factory.encoder_max_batch_size == 8
+    assert config.stages[0].factory.enable_encoder_cuda_graph is True
     assert config.stages[0].factory.prefill_coalesce_requests == 16
     assert config.stages[0].factory.prefill_coalesce_wait_ms == 32
     assert config.stages[0].factory.prefill_coalesce_when_idle is True
@@ -90,6 +90,7 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
     assert signature.parameters["pre_lm_max_pending"].default == 32
+    assert signature.parameters["enable_encoder_cuda_graph"].default is False
 
 
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
@@ -116,6 +117,7 @@ def test_arkasr_pre_lm_encoder_knobs_are_stage_configurable():
     assert factory.pre_lm_max_batch_size == 8
     assert factory.pre_lm_max_batch_wait_ms == 0
     assert factory.pre_lm_max_pending == 32
+    assert factory.enable_encoder_cuda_graph is True
 
 
 def test_arkasr_rejects_invalid_pre_lm_batch_size():
@@ -192,7 +194,7 @@ def _stub_arkasr_engine_build(
             model=SimpleNamespace(set_encoder_max_batch_size=encoder_batch_sizes.append)
         ),
     )
-    infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+    infra = (want_cuda_graph, (model_worker, None, None, None, None))
 
     monkeypatch.setattr(
         platforms.current_platform, "get_device", lambda index: "cpu", raising=False
@@ -241,7 +243,7 @@ def _stub_arkasr_engine_build(
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
-        server_args = FakeServerArgs(context_length=context_length, **overrides)
+        server_args = SimpleNamespace(context_length=context_length, **overrides)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
@@ -417,6 +419,7 @@ def _tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
     nn.Module.__init__(model)
     model.audio_encoder = ArkAudioMLPAdapter(_tiny_config()).eval()
     model.encoder_max_batch_size = model.DEFAULT_ENCODER_MAX_BATCH_SIZE
+    model.encoder_cuda_graph_runner = None
     return model
 
 

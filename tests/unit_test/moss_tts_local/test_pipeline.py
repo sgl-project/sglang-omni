@@ -42,7 +42,6 @@ from sglang_omni.models.moss_tts_local.request_builders import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio_payload import audio_waveform_payload
-from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 N_VQ = 12
@@ -710,7 +709,7 @@ def _install_fake_moss_ar_factory(
     process_memory_queries = []
 
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
-        server_args = FakeServerArgs(
+        server_args = types.SimpleNamespace(
             model_path=model_path,
             context_length=context_length,
             **kwargs,
@@ -742,8 +741,6 @@ def _install_fake_moss_ar_factory(
         )
         return (
             model_worker,
-            object(),
-            object(),
             object(),
             object(),
             object(),

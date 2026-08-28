@@ -54,13 +54,14 @@ class ArkasrForConditionalGeneration(nn.Module):
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self.encoder_max_batch_size = self.DEFAULT_ENCODER_MAX_BATCH_SIZE
+        self.encoder_cuda_graph_runner = None
 
     def set_encoder_max_batch_size(self, max_batch_size: int) -> None:
         if max_batch_size < 1:
             raise ValueError(
                 f"encoder_max_batch_size must be >= 1, got {max_batch_size}"
             )
-        self.encoder_max_batch_size = int(max_batch_size)
+        self.encoder_max_batch_size = max_batch_size
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
@@ -153,19 +154,21 @@ class ArkasrForConditionalGeneration(nn.Module):
                 device=device, dtype=dtype, non_blocking=True
             )
 
-        # Pass the original-frame mask, rather than only its downsampled form:
-        # the tower needs it between conv1 and conv2 so the right boundary of a
-        # short sample has exactly the same convolution context as a serial
-        # encode.  The tower derives its own post-conv2 SDPA mask.
-        if batch_size == 1:
-            encoder_mask = None
-        else:
-            frame_index = torch.arange(max_frames, device=device).unsqueeze(0)
-            encoder_mask = frame_index < torch.tensor(
-                mel_lengths, device=device, dtype=torch.long
-            ).unsqueeze(1)
+        encoded = None
+        if self.encoder_cuda_graph_runner is not None:
+            encoded = self.encoder_cuda_graph_runner.run(batched, mel_lengths)
 
-        encoded = self.audio_encoder(batched, attention_mask=encoder_mask)
+        if encoded is None:
+            # note (guozhihao-224): B=1 is unpadded; leave mask=None to match
+            # the unmasked encoder forward.
+            if batch_size == 1:
+                encoder_mask = None
+            else:
+                frame_index = torch.arange(max_frames, device=device).unsqueeze(0)
+                encoder_mask = frame_index < torch.tensor(
+                    mel_lengths, device=device, dtype=torch.long
+                ).unsqueeze(1)
+            encoded = self.audio_encoder(batched, attention_mask=encoder_mask)
         outputs = []
         for batch_index, mel_length in enumerate(mel_lengths):
             num_tokens = arkasr_num_audio_tokens(

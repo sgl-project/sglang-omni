@@ -56,7 +56,7 @@ class DotsTTSSGLangModel(nn.Module):
     def enable_graph_feedback(self, max_batch_size: int) -> None:
         """Route decode feedback embeddings through a persistent buffer.
 
-        SGLang 0.5.16's decode CUDA graph only stages ``forward_batch
+        SGLang's decode CUDA graph only stages ``forward_batch
         .input_embeds`` into a static buffer for dFlash draft workers, so a
         graph replay would silently ignore the per-step latent feedback and
         decode from the control-token embeddings instead. Owning the static

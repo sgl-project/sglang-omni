@@ -8,7 +8,10 @@ import torch
 from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 from sglang.srt.layers.sampler import multinomial_with_seed
 
-from sglang_omni.models.moss_tts.sampling_kernels import seeded_gumbel_argmax
+from sglang_omni.models.moss_tts.sampling_kernels import (
+    multinomial_with_seed_and_token_ids,
+    seeded_gumbel_argmax,
+)
 
 pytestmark = pytest.mark.accelerator
 
@@ -60,7 +63,26 @@ def test_seeded_gumbel_argmax_matches_uint32_max_hash() -> None:
     torch.cuda.synchronize()
 
     assert hashes[0, 0].item() == torch.iinfo(torch.uint32).max
-    assert expected.item() == 0
+    assert expected.item() == 1
+    assert torch.equal(expected, actual)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_token_id_sampler_matches_sglang_at_the_uint32_max_hash() -> None:
+    device = torch.device("cuda")
+    scores = torch.tensor([[-100.0, 0.0]], device=device)
+    seeds = torch.tensor([0], device=device, dtype=torch.long)
+    positions = torch.tensor(
+        [_UINT32_MAX_HASH_POSITION], device=device, dtype=torch.long
+    )
+    token_ids = torch.arange(scores.shape[1], device=device)
+
+    hashes = murmur_hash32(seeds.to(torch.uint64), positions, token_ids)
+    expected = multinomial_with_seed(scores, seeds, positions).view(-1)
+    actual = multinomial_with_seed_and_token_ids(scores, seeds, positions, token_ids)
+
+    assert hashes[0, 0].item() == torch.iinfo(torch.uint32).max
+    assert expected.item() == 1
     assert torch.equal(expected, actual)
 
 

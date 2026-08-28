@@ -91,7 +91,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.16   # the pinned release
+git checkout v0.5.18   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 ```
