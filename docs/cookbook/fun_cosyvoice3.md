@@ -294,6 +294,12 @@ execution. Override the bound with
 the eager path because its chunk mask contract differs from buffered inference.
 The option is ignored on non-NPU platforms.
 
+For variable-length buffered requests, optional length buckets can share a
+single graph (inputs are padded and the mel output is cropped back):
+`--stages.vocoder.factory_args.flow_npugraph_bucket_sizes 200 256 320`.
+Use `flow_npugraph_warmup_buckets` with the same values to capture selected
+buckets on the first request. The cache is LRU-bounded by `max_graphs`.
+
 ## Model Architecture
 
 | Component | Detail |

@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from sglang_omni.models.fun_cosyvoice3.flow_npugraph import (
+    FlowDiTNPUGraphRunner,
     FlowNPUGraphRunner,
     _graph_safe_non_streaming_mask,
     _GraphEntry,
@@ -103,6 +104,79 @@ def test_graph_cache_is_shape_keyed_and_bounded(monkeypatch):
 
     assert len(runner._graphs) == 1
     torch.testing.assert_close(actual, estimator(**_inputs(length=5)))
+
+
+def test_flow_runner_buckets_and_crops_output(monkeypatch):
+    runner = FlowNPUGraphRunner(
+        _Estimator(), max_graphs=2, bucket_sizes=(4, 8)
+    )
+    _install_fake_capture(monkeypatch, runner)
+
+    actual = runner(**_inputs(length=5))
+
+    assert next(iter(runner._graphs))[1][1][-1] == 8
+    torch.testing.assert_close(actual, _Estimator()(**_inputs(length=5)))
+
+
+def test_flow_runner_evicts_least_recently_used_graph(monkeypatch):
+    runner = FlowNPUGraphRunner(_Estimator(), max_graphs=2)
+    _install_fake_capture(monkeypatch, runner)
+    runner(**_inputs(length=4))
+    runner(**_inputs(length=5))
+    runner(**_inputs(length=4))  # make length 5 the LRU entry
+    runner(**_inputs(length=6))
+
+    lengths = [signature[0][1][-1] for signature in runner._graphs]
+    assert lengths == [4, 6]
+
+
+def test_flow_runner_prewarm_configured_buckets(monkeypatch):
+    runner = FlowNPUGraphRunner(
+        _Estimator(), max_graphs=3, bucket_sizes=(4, 8), warmup_buckets=(4, 8)
+    )
+    _install_fake_capture(monkeypatch, runner)
+
+    runner(**_inputs(length=4))
+
+    assert len(runner._graphs) == 2
+
+
+def test_generic_runner_accepts_non_cosyvoice_input_names(monkeypatch):
+    class _VideoEstimator(torch.nn.Module):
+        def forward(self, latent, timestep, context, streaming=False):
+            del context, streaming
+            return latent + timestep.reshape(-1, 1, 1, 1, 1)
+
+    runner = FlowDiTNPUGraphRunner(
+        _VideoEstimator(), input_names=("latent", "timestep", "context")
+    )
+    capture_stream = SimpleNamespace(wait_stream=lambda stream: None)
+
+    def capture(inputs):
+        static = {name: value.clone() for name, value in inputs.items()}
+        output = static["latent"] + static["timestep"].reshape(-1, 1, 1, 1, 1)
+        return _GraphEntry(
+            static,
+            SimpleNamespace(replay=lambda: None),
+            output,
+            capture_stream,
+        )
+
+    monkeypatch.setattr(runner, "_capture", capture)
+    monkeypatch.setattr(
+        torch.npu,
+        "current_stream",
+        lambda: SimpleNamespace(wait_stream=lambda stream: None),
+    )
+    values = {
+        "latent": torch.ones(1, 1, 2, 2, 2),
+        "timestep": torch.tensor([2.0]),
+        "context": torch.zeros(1, 1),
+    }
+
+    actual = runner(**values)
+
+    torch.testing.assert_close(actual, _VideoEstimator()(**values))
 
 
 def test_streaming_uses_eager_path(monkeypatch):

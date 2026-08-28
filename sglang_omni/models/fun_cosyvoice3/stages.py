@@ -213,6 +213,8 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     enable_flow_npugraph: bool = False,
     flow_npugraph_max_graphs: int = 8,
+    flow_npugraph_bucket_sizes: tuple[int, ...] = (),
+    flow_npugraph_warmup_buckets: tuple[int, ...] = (),
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
@@ -232,7 +234,12 @@ def create_vocoder_executor(
         fp16=(dtype == "float16"),
     )
     if install_flow_npugraph is not None:
-        install_flow_npugraph(flow, max_graphs=flow_npugraph_max_graphs)
+        install_flow_npugraph(
+            flow,
+            max_graphs=flow_npugraph_max_graphs,
+            bucket_sizes=tuple(flow_npugraph_bucket_sizes),
+            warmup_buckets=tuple(flow_npugraph_warmup_buckets),
+        )
 
     return _CosyVoice3Vocoder(flow, hift, fp16=(dtype == "float16")).build_scheduler(
         max_batch_size=max_batch_size,
