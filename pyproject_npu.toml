@@ -1,7 +1,6 @@
 [build-system]
-# >=77 for the PEP 639 license fields below, which 76.1 and older reject; that also
-# covers the PEP 660 build_editable an editable install needs. Installs here pass
-# --no-build-isolation, so pip never enforces this -- scripts/npu/install_npu.sh does.
+# >=77 for the PEP 639 license fields below, which 76.1 and older reject; this also
+# covers the PEP 660 build_editable hook used by editable installs.
 requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 

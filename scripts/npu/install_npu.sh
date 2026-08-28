@@ -165,41 +165,9 @@ if errors:
     sys.exit(1)
 PY
 
-# --- Verify setuptools >= 77 (same rationale as XPU) ---------------------
-# --no-build-isolation is REQUIRED (see docs/get_started/installation_npu.md):
-# with build isolation, pip spins up an isolated build env whose fallback
-# setuptools emits a legacy in-tree egg-info instead of a PEP 660 editable .pth
-# — the package then isn't importable outside the repo and no sgl-omni console
-# script is created. Without isolation the build uses this env's setuptools, so the
-# build requirement in pyproject_npu.toml is never enforced by pip -- check it here
-# instead of failing later in metadata generation.
-"${PYBIN}" - <<'PY' || exit 1
-import sys
-
-import setuptools
-import setuptools.build_meta
-
-version = tuple(
-    int("".join(char for char in part if char.isdigit()) or 0)
-    for part in setuptools.__version__.split(".")[:2]
-)
-if version < (77, 0):
-    sys.exit(
-        f"setuptools {setuptools.__version__} is too old: pyproject_npu.toml uses "
-        "the PEP 639 license fields, which 76.1 and older reject with 'invalid "
-        "pyproject.toml config: `project.license`'. --no-build-isolation means pip "
-        "will not upgrade it for you, so run: pip install -U 'setuptools>=77.0.0'"
-    )
-if not hasattr(setuptools.build_meta, "build_editable"):
-    sys.exit(
-        f"setuptools {setuptools.__version__} lacks PEP 660 support; an editable "
-        "install would emit a legacy egg-info."
-    )
-PY
-NOISO="--no-build-isolation"
 INSTALL_CMD=("${PYBIN}" -m pip install)
 [[ -n "${EDITABLE}" ]] && INSTALL_CMD+=("${EDITABLE}")
-INSTALL_CMD+=("${TARGET}" "${NOISO}")
+INSTALL_CMD+=("${TARGET}")
 
 print_install_command() {
   printf '%q ' "${INSTALL_CMD[@]}"
@@ -270,7 +238,7 @@ print_install_command
 "${INSTALL_CMD[@]}"
 
 # Restore immediately (don't wait for EXIT) so verification below runs against a
-# clean tree and a setuptools editable .pth (not the swapped file).
+# clean tree and the installed editable metadata (not the swapped file).
 restore
 trap - EXIT INT TERM
 
@@ -311,9 +279,7 @@ fi
 
 if [[ "${VERIFY_RC}" -ne 0 ]]; then
   echo
-  echo "INSTALL VERIFICATION FAILED. If setuptools fell back to legacy egg-info,"
-  echo "retry with a PEP 660 editable build, e.g.:"
-  echo "  ${PYBIN} -m pip install -e . --config-settings editable_mode=strict"
+  echo "INSTALL VERIFICATION FAILED. Review the pip build output above."
   exit 1
 fi
 

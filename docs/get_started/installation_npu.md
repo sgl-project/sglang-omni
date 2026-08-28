@@ -12,18 +12,10 @@ Mirroring upstream SGLang ([Ascend NPU docs](https://docs.sglang.io/docs/hardwar
 family and CUDA-only wheels would replace the `torch+npu` stack.
 [`pyproject_npu.toml`](../../pyproject_npu.toml) encodes the NPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
+Core dependencies cover Qwen3-Omni plus the API server;
 `[eval]` adds SeedTTS/WER tooling, `[all]` aliases it, and `[fun-cosyvoice3]`
 adds the Fun-CosyVoice3 dependencies. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
-
-> **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
-> `egg-info` instead of a PEP 660 editable install. The installer always passes it.
-> Because of that pip does not install build requirements either, so this
-> environment's own `setuptools` must be **≥ 77.0.0**: older releases reject the
-> PEP 639 license metadata with ``invalid pyproject.toml config: `project.license` ``.
-> The installer checks this before building; upgrade with
-> `pip install -U 'setuptools>=77.0.0'`.
 
 ## Prerequisites
 
@@ -61,8 +53,8 @@ pip install https://gitcode.com/Ascend/pytorch/releases/download/v26.0.0-pytorch
 
 ## 🛠️ Install sglang-omni
 
-The helper swaps in `pyproject_npu.toml`, installs with `--no-build-isolation`, then
-restores the CUDA one:
+The helper swaps in `pyproject_npu.toml`, installs the package, then restores the
+CUDA manifest:
 
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git
@@ -94,7 +86,7 @@ Or do it manually (the same steps the script automates):
 ```bash
 cp pyproject.toml .pyproject.cuda.bak
 cp pyproject_npu.toml pyproject.toml
-pip install -e . --no-build-isolation
+pip install -e .
 cp -f .pyproject.cuda.bak pyproject.toml && rm .pyproject.cuda.bak   # restore CUDA pyproject
 ```
 
@@ -130,37 +122,11 @@ pytest tests/unit_test/test_platforms.py -v
 
 ## Serve
 
-### Qwen3-ASR (speech-to-text, single NPU)
+### Qwen3-Omni text-only (30B-A3B MoE, multi-NPU tensor parallel)
 
-```bash
-sgl-omni serve --model-path /path/to/Qwen3-ASR-1.7B --host 0.0.0.0 --port 8000
-# transcribe:
-curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
-  -F "file=@sample.wav" -F "model=/path/to/Qwen3-ASR-1.7B"
-```
-
-### Qwen3-TTS (text-to-speech, single NPU)
-
-Qwen3-TTS needs the upstream `qwen-tts` package, which is not pinned in `pyproject_npu.toml`.
-Install it with `--no-deps` to avoid version conflicts:
-
-```bash
-apt-get update && apt-get install -y sox   # the Python sox package shells out to it
-pip install --no-deps sox einops
-pip install --no-deps qwen-tts==0.1.1
-```
-
-```bash
-sgl-omni serve --model-path /path/to/Qwen3-TTS-12Hz-1.7B-Base --host 0.0.0.0 --port 8000
-# Base checkpoint clones a reference voice — pass ref_audio (+ ref_text):
-curl -s -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{"model":"/path/to/Qwen3-TTS-12Hz-1.7B-Base","input":"Hello from Ascend NPU.",
-       "voice":"default","ref_audio":"/path/to/ref.wav","ref_text":"reference transcript",
-       "response_format":"wav"}' -o out.wav
-```
-
-### Qwen3-Omni (30B-A3B MoE, multi-NPU tensor parallel)
+This is the model path currently validated on Ascend NPU. Qwen3-ASR and
+Qwen3-TTS have not yet been validated on NPU and are therefore not claimed as
+supported here.
 
 The 30B MoE does not fit one card; shard the thinker across NPUs with tensor parallelism.
 `--text-only` serves the thinker (chat) without the talker/speech stages. The text-only

@@ -70,6 +70,13 @@ def test_clean_dry_run_does_not_modify_manifest(repo: Path) -> None:
     assert not (repo / ".pyproject.cuda.bak").exists()
 
 
+def test_install_uses_build_isolation_by_default(repo: Path) -> None:
+    result = _run(repo, "--check")
+
+    assert result.returncode == 0
+    assert "--no-build-isolation" not in result.stdout
+
+
 @pytest.mark.parametrize(
     "extra", ["eval", "all", "fun-cosyvoice3", "eval,fun-cosyvoice3"]
 )
