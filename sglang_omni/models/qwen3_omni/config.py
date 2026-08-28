@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from pydantic import Field
 
 from sglang_omni.config import (
+    EngineArgs,
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
@@ -19,6 +20,8 @@ from sglang_omni.platforms import current_platform
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 THINKER_STAGE = "thinker"
+THINKER_PREFILL_STAGE = "thinker_prefill"
+THINKER_DECODE_STAGE = "thinker_decode"
 MIN_PARTIAL_START_CHUNKS = 3
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
@@ -39,11 +42,21 @@ _COLOCATED_STAGE_ENV_DEFAULTS = {
 }
 
 
-def _preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageConfig:
+def _preprocessing_stage(
+    *,
+    process: str,
+    speech_enabled: bool = False,
+    thinker_stage: str = THINKER_STAGE,
+) -> StageConfig:
     if speech_enabled:
-        next_stages = ["image_encoder", "audio_encoder", "thinker", "talker_ar"]
-        route_fn = f"{_PKG}.request_builders.resolve_preprocessing_next_stages_speech"
-        join_targets = ("thinker", "talker_ar")
+        next_stages = ["image_encoder", "audio_encoder", thinker_stage, "talker_ar"]
+        route_name = (
+            "resolve_preprocessing_next_stages_speech_pd"
+            if thinker_stage == THINKER_PREFILL_STAGE
+            else "resolve_preprocessing_next_stages_speech"
+        )
+        route_fn = f"{_PKG}.request_builders.{route_name}"
+        join_targets = (thinker_stage, "talker_ar")
     else:
         next_stages = ["image_encoder", "audio_encoder", "mm_aggregate"]
         route_fn = f"{_PKG}.request_builders.resolve_preprocessing_next_stages"
@@ -72,13 +85,22 @@ def _preprocessing_stage(*, process: str, speech_enabled: bool = False) -> Stage
     )
 
 
-def _encoder_join_edges(*, speech_enabled: bool) -> dict[str, object]:
+def _encoder_join_edges(
+    *, speech_enabled: bool, thinker_stage: str = THINKER_STAGE
+) -> dict[str, object]:
     if speech_enabled:
+        route_name = (
+            "resolve_encoder_next_stages_pd"
+            if thinker_stage == THINKER_PREFILL_STAGE
+            else "resolve_encoder_next_stages"
+        )
         return {
-            "next": ["thinker", "talker_ar"],
-            "route_fn": f"{_PKG}.request_builders.resolve_encoder_next_stages",
+            "next": [thinker_stage, "talker_ar"],
+            "route_fn": f"{_PKG}.request_builders.{route_name}",
             "project_payload": {
-                "thinker": (f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"),
+                thinker_stage: (
+                    f"{_PKG}.request_builders.project_encoder_to_mm_aggregate"
+                ),
                 "talker_ar": (f"{_PKG}.request_builders.project_encoder_to_talker_ar"),
             },
         }
@@ -91,19 +113,30 @@ def _encoder_join_edges(*, speech_enabled: bool) -> dict[str, object]:
 
 
 def _image_encoder_stage(
-    *, gpu: int, process: str, speech_enabled: bool = False
+    *,
+    gpu: int,
+    process: str,
+    speech_enabled: bool = False,
+    thinker_stage: str = THINKER_STAGE,
 ) -> StageConfig:
     return StageConfig(
         name="image_encoder",
         process=process,
         factory_path=f"{_PKG}.stages.create_image_encoder_executor",
         gpu=gpu,
-        **_encoder_join_edges(speech_enabled=speech_enabled),
+        **_encoder_join_edges(
+            speech_enabled=speech_enabled,
+            thinker_stage=thinker_stage,
+        ),
     )
 
 
 def _audio_encoder_stage(
-    *, gpu: int, process: str, speech_enabled: bool = False
+    *,
+    gpu: int,
+    process: str,
+    speech_enabled: bool = False,
+    thinker_stage: str = THINKER_STAGE,
 ) -> StageConfig:
     return StageConfig(
         name="audio_encoder",
@@ -112,11 +145,16 @@ def _audio_encoder_stage(
         factory=FactoryArgs(enable_layer_cuda_graph=True),
         gpu=gpu,
         disable_direct_cuda_ipc_payload=True,
-        **_encoder_join_edges(speech_enabled=speech_enabled),
+        **_encoder_join_edges(
+            speech_enabled=speech_enabled,
+            thinker_stage=thinker_stage,
+        ),
     )
 
 
-def _aggregate_stage(*, process: str, gpu: int) -> StageConfig:
+def _aggregate_stage(
+    *, process: str, gpu: int, thinker_stage: str = THINKER_STAGE
+) -> StageConfig:
     return StageConfig(
         name="mm_aggregate",
         process=process,
@@ -125,7 +163,7 @@ def _aggregate_stage(*, process: str, gpu: int) -> StageConfig:
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.merge.merge_for_thinker",
-        next="thinker",
+        next=thinker_stage,
         disable_direct_cuda_ipc_payload=True,
     )
 
@@ -170,6 +208,76 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
             "decode": f"{_PKG}.request_builders.project_thinker_to_decode",
         },
     )
+
+
+def _thinker_pd_stages(
+    *,
+    prefill_gpu: int,
+    decode_gpu: int,
+    speech_enabled: bool,
+    prefill_process: str,
+    decode_process: str,
+) -> list[StageConfig]:
+    """Declare the two PD halves as ordinary engine stages."""
+    common_factory = {
+        "max_seq_len": 8192,
+        **({"speech_enabled": True} if speech_enabled else {}),
+    }
+    stream_targets = ["talker_ar", "decode"] if speech_enabled else ["decode"]
+    join_kwargs: dict[str, object] = {}
+    if speech_enabled:
+        join_kwargs = {
+            "wait_for": ["preprocessing", "image_encoder", "audio_encoder"],
+            "wait_for_fn": (
+                f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources"
+            ),
+            "merge_fn": f"{_PKG}.merge.merge_for_thinker",
+        }
+
+    return [
+        EngineStageConfig(
+            name=THINKER_PREFILL_STAGE,
+            process=prefill_process,
+            factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+            factory=FactoryArgs(
+                **common_factory,
+                scheduler_role="prefill",
+                enable_async_decode=False,
+            ),
+            engine=EngineArgs(disable_radix_cache=True, page_size=1),
+            gpu=prefill_gpu,
+            next=THINKER_DECODE_STAGE,
+            stream_to=stream_targets,
+            **join_kwargs,
+        ),
+        EngineStageConfig(
+            name=THINKER_DECODE_STAGE,
+            process=decode_process,
+            factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+            factory=FactoryArgs(
+                **common_factory,
+                scheduler_role="decode",
+                enable_async_decode=True,
+            ),
+            engine=EngineArgs(disable_radix_cache=True, page_size=1),
+            gpu=decode_gpu,
+            next="decode",
+            stream_to=stream_targets,
+            route_fn=(
+                f"{_PKG}.request_builders.resolve_thinker_next_stages"
+                if speech_enabled
+                else None
+            ),
+            stream_done_to_fn=(
+                f"{_PKG}.request_builders.resolve_thinker_stream_done_targets"
+                if speech_enabled
+                else None
+            ),
+            project_payload={
+                "decode": f"{_PKG}.request_builders.project_thinker_to_decode",
+            },
+        ),
+    ]
 
 
 def _decode_stage(*, process: str) -> StageConfig:
@@ -240,6 +348,27 @@ def _text_stages() -> list[StageConfig]:
     ]
 
 
+def _text_pd_stages() -> list[StageConfig]:
+    return [
+        _preprocessing_stage(process="preprocessing"),
+        _image_encoder_stage(gpu=0, process="image_encoder"),
+        _audio_encoder_stage(gpu=0, process="audio_encoder"),
+        _aggregate_stage(
+            process="mm_aggregate",
+            gpu=0,
+            thinker_stage=THINKER_PREFILL_STAGE,
+        ),
+        *_thinker_pd_stages(
+            prefill_gpu=0,
+            decode_gpu=1,
+            speech_enabled=False,
+            prefill_process=THINKER_PREFILL_STAGE,
+            decode_process=THINKER_DECODE_STAGE,
+        ),
+        _decode_stage(process="decode"),
+    ]
+
+
 def _speech_stages(
     *,
     thinker_gpu: int,
@@ -277,6 +406,42 @@ def _speech_stages(
     ]
 
 
+def _speech_pd_stages() -> list[StageConfig]:
+    return [
+        _preprocessing_stage(
+            process="preprocessing",
+            speech_enabled=True,
+            thinker_stage=THINKER_PREFILL_STAGE,
+        ),
+        _image_encoder_stage(
+            gpu=0,
+            process="image_encoder",
+            speech_enabled=True,
+            thinker_stage=THINKER_PREFILL_STAGE,
+        ),
+        _audio_encoder_stage(
+            gpu=0,
+            process="audio_encoder",
+            speech_enabled=True,
+            thinker_stage=THINKER_PREFILL_STAGE,
+        ),
+        *_thinker_pd_stages(
+            prefill_gpu=0,
+            decode_gpu=1,
+            speech_enabled=True,
+            prefill_process=THINKER_PREFILL_STAGE,
+            decode_process=THINKER_DECODE_STAGE,
+        ),
+        _decode_stage(process="decode"),
+        _talker_stage(
+            gpu=2,
+            process="talker_ar",
+            enable_partial_start=True,
+        ),
+        _code2wav_stage(gpu=0, process="code2wav"),
+    ]
+
+
 _SPEECH_DEFAULT_PROCESSES = {
     "preprocessing": "preprocessing",
     "image_encoder": "image_encoder",
@@ -310,7 +475,15 @@ class _Qwen3OmniBasePipelineConfig(PipelineConfig):
             # Device selection is deferred to the worker; the encoders read
             # the platform default at construction.
             return {}
-        if stage_name == "thinker" and speech_enabled:
+        if (
+            stage_name
+            in {
+                THINKER_STAGE,
+                THINKER_PREFILL_STAGE,
+                THINKER_DECODE_STAGE,
+            }
+            and speech_enabled
+        ):
             return {"speech_enabled": True}
         return {}
 
@@ -326,6 +499,97 @@ class Qwen3OmniPipelineConfig(_Qwen3OmniBasePipelineConfig):
         )
     )
     stages: list[StageConfig] = Field(default_factory=_text_stages)
+
+
+class Qwen3OmniPDPipelineConfig(_Qwen3OmniBasePipelineConfig):
+    """Text-only pipeline with explicit Prefill and Decode engine stages."""
+
+    tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = (
+        THINKER_PREFILL_STAGE,
+        THINKER_DECODE_STAGE,
+    )
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        THINKER_PREFILL_STAGE: EngineStageConfig,
+        THINKER_DECODE_STAGE: EngineStageConfig,
+    }
+
+    @classmethod
+    def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
+        return {THINKER_PREFILL_STAGE, THINKER_DECODE_STAGE}
+
+    model_path: str
+    placement_policy: str | None = _PLACEMENT_POLICY
+    placement: PlacementConfig = Field(
+        default_factory=lambda: PlacementConfig(
+            require_memory_fraction_for_colocation=False
+        )
+    )
+    stages: list[StageConfig] = Field(default_factory=_text_pd_stages)
+
+    def model_post_init(self, context: Any = None) -> None:
+        super().model_post_init(context)
+        stages = {stage.name: stage for stage in self.stages}
+        try:
+            prefill = stages[THINKER_PREFILL_STAGE]
+            decode = stages[THINKER_DECODE_STAGE]
+        except KeyError as exc:
+            raise ValueError(
+                "Qwen PD pipelines require thinker_prefill and thinker_decode"
+            ) from exc
+
+        expected = (
+            (prefill, "prefill", THINKER_DECODE_STAGE),
+            (decode, "decode", "decode"),
+        )
+        effective_gpus: list[int] = []
+        for stage, role, next_stage in expected:
+            if stage.tp_size != 1:
+                raise ValueError(f"Qwen PD stage {stage.name!r} requires tp_size=1")
+            if stage.next != next_stage:
+                raise ValueError(
+                    f"Qwen PD stage {stage.name!r} must route to {next_stage!r}"
+                )
+            if (stage.factory.model_extra or {}).get("scheduler_role") != role:
+                raise ValueError(
+                    f"Qwen PD stage {stage.name!r} requires scheduler_role={role!r}"
+                )
+            if stage.engine is None:
+                raise ValueError(f"Qwen PD stage {stage.name!r} requires engine config")
+            engine = stage.engine.overrides()
+            if engine.get("page_size") != 1:
+                raise ValueError(f"Qwen PD stage {stage.name!r} requires page_size=1")
+            if engine.get("disable_radix_cache") is not True:
+                raise ValueError(
+                    f"Qwen PD stage {stage.name!r} requires disable_radix_cache=true"
+                )
+            gpu = stage.gpu
+            if gpu is None or isinstance(gpu, list):
+                raise ValueError(
+                    f"Qwen PD stage {stage.name!r} requires one explicit GPU"
+                )
+
+            process_name = stage.process
+            assert process_name is not None
+            process = self.processes.get(process_name)
+            if process is not None and process.num_replicas != 1:
+                raise ValueError(
+                    f"Qwen PD stage {stage.name!r} does not support replicas"
+                )
+            if process is not None and process.replica_devices is not None:
+                if len(process.replica_devices) != 1:
+                    raise ValueError(
+                        f"Qwen PD stage {stage.name!r} requires one process GPU"
+                    )
+                effective_gpus.append(process.replica_devices[0])
+            else:
+                effective_gpus.append(gpu)
+
+        if prefill.process == decode.process:
+            raise ValueError("Qwen PD stages must run in separate processes")
+        if effective_gpus[0] == effective_gpus[1]:
+            raise ValueError("Qwen PD stages must run on separate GPUs")
+        if prefill.factory.enable_async_decode is not False:
+            raise ValueError("Qwen PD Prefill requires enable_async_decode=false")
 
 
 class Qwen3OmniSpeechPipelineConfig(_Qwen3OmniBasePipelineConfig):
@@ -356,6 +620,35 @@ class Qwen3OmniSpeechPipelineConfig(_Qwen3OmniBasePipelineConfig):
             enable_partial_start=True,
         )
     )
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        if stage_name == "talker_ar":
+            return {
+                "speech_enabled": True,
+                "feedback_enabled": True,
+            }
+        if stage_name == "code2wav":
+            return {
+                "enable_cuda_graph": current_platform.enable_code2wav_graph(),
+            }
+        return super().stage_factory_kwargs(stage_name)
+
+
+class Qwen3OmniSpeechPDPipelineConfig(Qwen3OmniPDPipelineConfig):
+    """Speech pipeline with explicit Prefill and Decode engine stages."""
+
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        THINKER_PREFILL_STAGE: EngineStageConfig,
+        THINKER_DECODE_STAGE: EngineStageConfig,
+        "talker_ar": EngineStageConfig,
+    }
+
+    @classmethod
+    def code2wav_stage(cls) -> str | None:
+        return "code2wav"
+
+    terminal_stages_fn: str | None = f"{_PKG}.request_builders.resolve_terminal_stages"
+    stages: list[StageConfig] = Field(default_factory=_speech_pd_stages)
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name == "talker_ar":

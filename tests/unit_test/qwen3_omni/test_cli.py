@@ -11,8 +11,10 @@ from sglang_omni.cli.serve import serve
 from sglang_omni.config import PipelineConfig, StageConfig, resolve_stage_factory_args
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni.config import (
+    Qwen3OmniPDPipelineConfig,
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
+    Qwen3OmniSpeechPDPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -47,6 +49,7 @@ def _serve_kwargs(**overrides):
         model_path="dummy",
         config=None,
         text_only=False,
+        enable_pd_disaggregation=False,
         colocate=False,
         host="0.0.0.0",
         port=8000,
@@ -177,6 +180,57 @@ def test_cli_text_only_selects_text_variant(from_model_path, launch_server):
 
     from_model_path.assert_called_once_with("dummy", variant="text")
     launch_server.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("config_cls", "text_only", "expected_cls"),
+    [
+        (Qwen3OmniPipelineConfig, True, Qwen3OmniPDPipelineConfig),
+        (
+            Qwen3OmniSpeechPipelineConfig,
+            False,
+            Qwen3OmniSpeechPDPipelineConfig,
+        ),
+    ],
+)
+@patch("sglang_omni.cli.serve.launch_server")
+@patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
+def test_cli_pd_flag_splits_the_selected_qwen_pipeline(
+    from_model_path,
+    launch_server,
+    config_cls,
+    text_only,
+    expected_cls,
+):
+    from_model_path.return_value = _DummyManager(config_cls(model_path="dummy"))
+
+    serve(
+        **_serve_kwargs(
+            text_only=text_only,
+            enable_pd_disaggregation=True,
+        )
+    )
+
+    if text_only:
+        from_model_path.assert_called_once_with("dummy", variant="text")
+    else:
+        from_model_path.assert_called_once_with("dummy")
+    launched = launch_server.call_args.args[0]
+    assert isinstance(launched, expected_cls)
+    assert [stage.name for stage in launched.stages if "thinker" in stage.name] == [
+        "thinker_prefill",
+        "thinker_decode",
+    ]
+
+
+def test_cli_pd_flag_rejects_config_file() -> None:
+    with pytest.raises(typer.BadParameter, match="--config"):
+        serve(
+            **_serve_kwargs(
+                config="pipeline.yaml",
+                enable_pd_disaggregation=True,
+            )
+        )
 
 
 @pytest.mark.parametrize(

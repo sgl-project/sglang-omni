@@ -56,6 +56,25 @@ def _validate_colocate_config(pipeline_config: PipelineConfig) -> None:
         )
 
 
+def _select_qwen_pd_config(config_manager: ConfigManager) -> ConfigManager:
+    from sglang_omni.models.qwen3_omni.config import (
+        Qwen3OmniPDPipelineConfig,
+        Qwen3OmniPipelineConfig,
+        Qwen3OmniSpeechPDPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig,
+    )
+
+    pd_config_cls = {
+        Qwen3OmniPipelineConfig: Qwen3OmniPDPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig: Qwen3OmniSpeechPDPipelineConfig,
+    }.get(type(config_manager.config))
+    if pd_config_cls is None:
+        raise typer.BadParameter(
+            "--enable-pd-disaggregation is supported only for Qwen3-Omni"
+        )
+    return ConfigManager(pd_config_cls(model_path=config_manager.config.model_path))
+
+
 def _should_print_merged_config(*, colocate: bool, log_level: str) -> bool:
     """Return whether to print the full resolved pipeline config."""
 
@@ -272,6 +291,13 @@ def serve(
             help="Use thinker-only pipeline (1 GPU, no talker/speech output).",
         ),
     ] = False,
+    enable_pd_disaggregation: Annotated[
+        bool,
+        typer.Option(
+            "--enable-pd-disaggregation",
+            help=("Run the Qwen thinker as separate Prefill and Decode stages."),
+        ),
+    ] = False,
     colocate: Annotated[
         bool,
         typer.Option(
@@ -359,6 +385,10 @@ def serve(
         config=config,
         text_only=text_only,
     )
+    if enable_pd_disaggregation and config is not None:
+        raise typer.BadParameter(
+            "--enable-pd-disaggregation cannot be combined with --config"
+        )
 
     # --- Resolve config ---
     if config:
@@ -377,6 +407,8 @@ def serve(
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
         config_manager = ConfigManager.from_model_path(model_path)
+    if enable_pd_disaggregation:
+        config_manager = _select_qwen_pd_config(config_manager)
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
     # we do expect the extra arguments to be pairs of names and values

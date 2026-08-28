@@ -3,7 +3,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
+
+
+def _thinker_scheduler_cls(role: Literal["prefill", "decode"] | None):
+    from sglang_omni.scheduling import omni_scheduler, pd_scheduler
+
+    if role is None:
+        return omni_scheduler.OmniScheduler
+    if role == "prefill":
+        return pd_scheduler.OmniPrefillScheduler
+    if role == "decode":
+        return pd_scheduler.OmniDecodeScheduler
+    raise ValueError(f"Unsupported thinker scheduler role: {role!r}")
 
 
 def create_thinker_scheduler(
@@ -19,12 +31,17 @@ def create_thinker_scheduler(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    scheduler_role: Literal["prefill", "decode"] | None = None,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
     from sglang_omni.models.qwen3_omni.request_builders import (
+        QWEN_THINKER_PD_RESUME_SCHEMA,
+        THINKER_DECODE_STAGE,
+        THINKER_PREFILL_STAGE,
+        make_thinker_pd_adapters,
         make_thinker_scheduler_adapters,
         make_thinker_stream_output_builder,
         should_generate_audio_output,
@@ -40,7 +57,6 @@ def create_thinker_scheduler(
         CudaGraphBackend,
         get_prefill_cuda_graph_backend,
     )
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
     from sglang_omni.utils import cuda_graph_batch_validator
 
@@ -109,7 +125,23 @@ def create_thinker_scheduler(
     )
     stream_output_builder = make_thinker_stream_output_builder()
 
-    return OmniScheduler(
+    scheduler_cls = _thinker_scheduler_cls(scheduler_role)
+    pd_kwargs: dict[str, Any] = {}
+    if scheduler_role is not None:
+        state_builder, state_restorer = make_thinker_pd_adapters(tokenizer)
+        if scheduler_role == "prefill":
+            pd_kwargs = {
+                "stage_name": THINKER_PREFILL_STAGE,
+                "partner_stage": THINKER_DECODE_STAGE,
+                "state_builder": state_builder,
+            }
+        else:
+            pd_kwargs = {
+                "stage_name": THINKER_DECODE_STAGE,
+                "state_restorer": state_restorer,
+                "resume_schema": QWEN_THINKER_PD_RESUME_SCHEMA,
+            }
+    return scheduler_cls(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -120,11 +152,14 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
-        enable_async_decode=enable_async_decode,
+        enable_async_decode=(
+            enable_async_decode if scheduler_role != "prefill" else False
+        ),
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        **pd_kwargs,
     )
 
 

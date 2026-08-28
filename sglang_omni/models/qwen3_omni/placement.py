@@ -15,6 +15,10 @@ _SPEECH_STAGE_ORDER = (
     "code2wav",
 )
 _SPEECH_STAGE_SET = set(_SPEECH_STAGE_ORDER)
+_SPEECH_PD_STAGE_SET = (_SPEECH_STAGE_SET - {"thinker"}) | {
+    "thinker_prefill",
+    "thinker_decode",
+}
 _COLOCATED_BUDGET_STAGES = {
     "image_encoder",
     "audio_encoder",
@@ -51,7 +55,11 @@ class Qwen3OmniPlacementPolicy:
             self._validate_colocated_qwen_runtime(stage_map)
             return
 
-        thinkers = plan.instances_of("thinker")
+        thinkers = [
+            placement
+            for stage_name in ("thinker", "thinker_prefill", "thinker_decode")
+            for placement in plan.instances_of(stage_name)
+        ]
         talkers = plan.instances_of("talker_ar")
         has_replicated_ar_stage = len(thinkers) > 1 or len(talkers) > 1
         for thinker in thinkers:
@@ -91,9 +99,14 @@ class Qwen3OmniPlacementPolicy:
 
     def _validate_speech_topology(self, stage_map) -> None:
         names = set(stage_map)
-        if names != _SPEECH_STAGE_SET:
-            missing = sorted(_SPEECH_STAGE_SET - names)
-            extra = sorted(names - _SPEECH_STAGE_SET)
+        if names not in (_SPEECH_STAGE_SET, _SPEECH_PD_STAGE_SET):
+            expected = (
+                _SPEECH_PD_STAGE_SET
+                if {"thinker_prefill", "thinker_decode"} & names
+                else _SPEECH_STAGE_SET
+            )
+            missing = sorted(expected - names)
+            extra = sorted(names - expected)
             raise ValueError(
                 "Qwen speech must use the seven configured stages; "
                 f"missing={missing}, extra={extra}"
@@ -111,7 +124,7 @@ class Qwen3OmniPlacementPolicy:
 
         if invalid:
             raise ValueError(
-                "Qwen colocated speech requires exactly one GPU id for " f"{invalid}"
+                f"Qwen colocated speech requires exactly one GPU id for {invalid}"
             )
         if len(gpu_ids) != 1:
             raise ValueError(

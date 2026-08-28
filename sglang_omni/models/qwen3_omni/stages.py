@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
@@ -1012,6 +1012,7 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    scheduler_role: Literal["prefill", "decode"] | None = None,
 ):
     """Returns OmniScheduler for thinker."""
     # note (luojiaxuan):
@@ -1103,6 +1104,7 @@ def create_sglang_thinker_executor_from_config(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        scheduler_role=scheduler_role,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(

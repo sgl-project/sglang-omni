@@ -30,6 +30,31 @@ Use the selector below to generate the exact launch command for your configurati
 <div id="sgl-server-gen-mount"></div>
 ```
 
+### Prefill/decode disaggregation (experimental)
+
+Qwen3-Omni declares Prefill and Decode as two normal pipeline stages. Select
+that topology directly; no generated config or graph rewrite is involved:
+
+```bash
+# Text output: thinker_prefill on GPU 0, thinker_decode on GPU 1
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --enable-pd-disaggregation
+
+# Text + audio output: additionally places talker_ar on GPU 2
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --enable-pd-disaggregation
+```
+
+The current implementation is single-node and TP=1 for both thinker stages;
+it transfers KV pages with CUDA IPC, so `thinker_prefill` and
+`thinker_decode` must use different GPUs and processes. The PD configuration sets
+`page_size=1`, disable RadixCache, and disable async decode on Prefill. Stage
+overrides use the declared names, for example
+`--thinker_decode.engine.mem_fraction_static 0.7`.
+
 ## Compatibility Matrix
 
 Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
