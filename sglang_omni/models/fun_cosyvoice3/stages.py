@@ -237,8 +237,8 @@ def create_vocoder_executor(
         install_flow_npugraph(
             flow,
             max_graphs=flow_npugraph_max_graphs,
-            bucket_sizes=tuple(flow_npugraph_bucket_sizes),
-            warmup_buckets=tuple(flow_npugraph_warmup_buckets),
+            bucket_sizes=tuple(int(value) for value in flow_npugraph_bucket_sizes),
+            warmup_buckets=tuple(int(value) for value in flow_npugraph_warmup_buckets),
         )
 
     return _CosyVoice3Vocoder(flow, hift, fp16=(dtype == "float16")).build_scheduler(

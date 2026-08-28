@@ -58,6 +58,8 @@ class FlowDiTNPUGraphRunner:
             raise ValueError("max_graphs must be positive")
         if not input_names:
             raise ValueError("input_names must not be empty")
+        bucket_sizes = tuple(int(size) for size in bucket_sizes)
+        warmup_buckets = tuple(int(size) for size in warmup_buckets)
         if any(size < 1 for size in bucket_sizes + warmup_buckets):
             raise ValueError("Graph bucket sizes must be positive")
         if tuple(sorted(set(bucket_sizes))) != bucket_sizes:

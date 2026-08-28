@@ -214,6 +214,18 @@ def test_enable_is_npu_only(monkeypatch):
     assert isinstance(flow.decoder.estimator.forward, FlowNPUGraphRunner)
 
 
+def test_enable_accepts_cli_string_bucket_values(monkeypatch):
+    platforms = ModuleType("sglang_omni.platforms")
+    platforms.current_platform = SimpleNamespace(device_type="npu")
+    monkeypatch.setitem(sys.modules, "sglang_omni.platforms", platforms)
+    flow = SimpleNamespace(decoder=SimpleNamespace(estimator=_Estimator()))
+
+    assert enable_flow_npugraph(
+        flow, max_graphs=2, bucket_sizes=("200", "256"), warmup_buckets=("200",)
+    ) is True
+    assert flow.decoder.estimator.forward._bucket_sizes == (200, 256)
+
+
 def test_prepare_environment_disables_internal_format_on_npu(monkeypatch):
     platforms = ModuleType("sglang_omni.platforms")
     platforms.current_platform = SimpleNamespace(device_type="npu")
