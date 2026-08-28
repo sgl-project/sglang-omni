@@ -53,6 +53,10 @@ class DecodeContinuation:
     cached_tokens: int
 
     version: str = CONTINUATION_VERSION
+    # Absolute Unix wall-clock deadline. Unlike a monotonic timestamp this is
+    # meaningful on another host; multi-host PD deployments must keep their
+    # wall clocks synchronized. None disables the end-to-end waiting deadline.
+    deadline_unix_s: float | None = None
     origin_input_ids_unpadded: list[int] | None = None
     eos_token_ids: list[int] | None = None
     cached_tokens_device: int = 0
@@ -492,6 +496,9 @@ class ContinuationAwareKVReceiver:
         target_tp_size: int = 1,
         is_local: bool = True,
         allowed_resume_schemas: frozenset[str] = frozenset(),
+        ownership_reserve: Callable[[DecodeContinuation], None] | None = None,
+        ownership_committed: Callable[[str], None] | None = None,
+        ownership_release: Callable[[str], None] | None = None,
     ) -> None:
         self._inner = inner
         self._controller = controller
@@ -499,17 +506,34 @@ class ContinuationAwareKVReceiver:
         self._target_tp_size = target_tp_size
         self._is_local = is_local
         self._allowed_resume_schemas = allowed_resume_schemas
+        self._ownership_reserve = ownership_reserve
+        self._ownership_committed = ownership_committed
+        self._ownership_release = ownership_release
 
     def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
         continuation, continuation_expected = self._decode_metadata(request)
-        self._controller.start_handoff(request.request_id, request.transfer_id)
-        if continuation is not None:
-            self._controller.set_continuation(request.request_id, continuation)
-        elif not continuation_expected:
-            self._controller.set_continuation_not_required(
-                request.request_id, request.transfer_id
+        ownership_reserved = False
+        try:
+            if continuation is not None and self._ownership_reserve is not None:
+                self._ownership_reserve(continuation)
+                ownership_reserved = True
+            self._controller.start_handoff(request.request_id, request.transfer_id)
+            if continuation is not None:
+                self._controller.set_continuation(request.request_id, continuation)
+            elif not continuation_expected:
+                self._controller.set_continuation_not_required(
+                    request.request_id, request.transfer_id
+                )
+            return self._inner.reserve(request)
+        except Exception:
+            self._controller.abort(
+                request.request_id,
+                reason="KV reservation failed",
+                transfer_id=request.transfer_id,
             )
-        return self._inner.reserve(request)
+            if ownership_reserved and self._ownership_release is not None:
+                self._ownership_release(request.request_id)
+            raise
 
     def commit(
         self,
@@ -517,6 +541,8 @@ class ContinuationAwareKVReceiver:
         destination: KVPageDestination,
     ) -> None:
         self._inner.commit(request, destination)
+        if self._ownership_committed is not None:
+            self._ownership_committed(request.request_id)
         self._controller.set_kv_committed(request.request_id, request.transfer_id)
 
     def abort(
@@ -525,12 +551,20 @@ class ContinuationAwareKVReceiver:
         destination: KVPageDestination | None,
         error: BaseException,
     ) -> None:
-        self._inner.abort(request, destination, error)
-        self._controller.abort(
-            request.request_id,
-            reason=str(error) or type(error).__name__,
-            transfer_id=request.transfer_id,
-        )
+        if self._ownership_release is None:
+            self._inner.abort(request, destination, error)
+            self._controller.abort(
+                request.request_id,
+                reason=str(error) or type(error).__name__,
+                transfer_id=request.transfer_id,
+            )
+        else:
+            self._controller.abort(
+                request.request_id,
+                reason=str(error) or type(error).__name__,
+                transfer_id=request.transfer_id,
+            )
+            self._ownership_release(request.request_id)
 
     def _decode_metadata(
         self, request: KVTransferPrepareMessage

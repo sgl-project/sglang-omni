@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from array import array
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -16,17 +18,21 @@ from sglang.srt.managers.scheduler_components.metrics_reporter import (
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.comm.kv_transfer import KVTransferPrepareMessage
+from sglang_omni.proto import KVBufferSpec, KVPoolLayout, OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_continuation import (
+    PrefillContinuationProducer,
     decode_continuation,
     encode_continuation,
 )
 from sglang_omni.scheduling.pd_kv_adapter import ReservedAllocation
 from sglang_omni.scheduling.pd_runtime import (
+    DecodeOwnershipCapacityExhausted,
     DecodeRequestPoolExhausted,
     PDDecodeAdmission,
+    PDDecodeOwnershipTracker,
     continuation_from_req,
     req_from_continuation,
 )
@@ -82,6 +88,47 @@ class _CapacityReqPool(_ReqPool):
     def free(self, req):
         self.active.pop(req.req_pool_idx, None)
         super().free(req)
+
+
+class _TokenAllocator:
+    def __init__(self) -> None:
+        self.freed: list[torch.Tensor] = []
+        self._next_slot = 0
+
+    def get_kvcache(self):
+        return object()
+
+    def available_size(self):
+        return 64
+
+    def alloc(self, count):
+        slots = torch.arange(self._next_slot, self._next_slot + count)
+        self._next_slot += count
+        return slots
+
+    def free(self, slots):
+        self.freed.append(slots)
+
+
+@dataclass(frozen=True)
+class _BatchResultProcessor:
+    disaggregation_mode: object | None = None
+
+
+class _RetractedBatch:
+    def __init__(self, reqs):
+        self.reqs = reqs
+        self.batch_is_full = True
+        self.req_to_token_pool = object()
+        self.token_to_kv_pool_allocator = object()
+        self.tree_cache = object()
+        self.hisparse_coordinator = None
+
+    def is_empty(self):
+        return not self.reqs
+
+    def filter_batch(self):
+        return None
 
 
 def _prefill_req() -> Req:
@@ -143,6 +190,7 @@ def _decode_scheduler(
         scheduler._pd_ready_queue.put(admission)
     scheduler._pd_deferred_admission = None
     scheduler._pd_admission_lock = threading.Lock()
+    scheduler._pd_ownership = PDDecodeOwnershipTracker(max_queued_requests=16)
     scheduler._pd_state_restorer = state_restorer
     scheduler._aborted_request_ids = set()
     scheduler.req_to_token_pool = pool
@@ -151,6 +199,43 @@ def _decode_scheduler(
     scheduler.outbox = queue.Queue()
     scheduler.is_entry_rank = True
     return scheduler, freed
+
+
+def _bound_decode_scheduler(monkeypatch):
+    allocator = _TokenAllocator()
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.tp_size = 1
+    scheduler.page_size = 1
+    scheduler.server_args = SimpleNamespace(disable_radix_cache=True)
+    scheduler.token_to_kv_pool_allocator = allocator
+    scheduler.batch_result_processor = _BatchResultProcessor()
+    scheduler._pd_resume_schemas = frozenset()
+    scheduler._pd_ready_queue = queue.Queue()
+    scheduler._pd_deferred_admission = None
+    scheduler._pd_admission_lock = threading.Lock()
+    scheduler._pd_ownership = PDDecodeOwnershipTracker(max_queued_requests=8)
+    scheduler._pd_receiver = None
+    scheduler._pd_controller = None
+    monkeypatch.setattr(
+        omni_scheduler_module, "build_kv_pool", lambda *_a, **_k: object()
+    )
+    _, receiver = scheduler.bind_pd_runtime(
+        stage_name="decode", role="decode", partner="prefill"
+    )
+    return scheduler, receiver, allocator
+
+
+def _own_admissions(scheduler, admissions) -> None:
+    for admission in admissions:
+        tracker = scheduler._pd_ownership
+        tracker.reserve(
+            admission.continuation.request_id,
+            admission.continuation.deadline_unix_s,
+        )
+        assert tracker.mark_committed(admission.continuation.request_id)
+        assert tracker.mark_ready(
+            admission.continuation.request_id, admission.allocation
+        )
 
 
 def test_continuation_reconstructs_req_and_transferred_mapping() -> None:
@@ -269,6 +354,7 @@ def test_request_pool_exhaustion_has_a_retryable_signal() -> None:
 def test_committed_decode_admission_enters_waiting_queue() -> None:
     pool = _ReqPool()
     scheduler, freed = _decode_scheduler([_decode_admission("request-1", 7)], pool)
+    _own_admissions(scheduler, list(scheduler._pd_ready_queue.queue))
 
     scheduler._drain_pd_admissions()
 
@@ -282,6 +368,7 @@ def test_committed_decode_admission_enters_waiting_queue() -> None:
 def test_aborted_decode_admission_releases_transferred_slots() -> None:
     admission = _decode_admission("request-1", 7)
     scheduler, freed = _decode_scheduler([admission], _ReqPool())
+    _own_admissions(scheduler, [admission])
     scheduler._aborted_request_ids = {"request-1"}
 
     scheduler._drain_pd_admissions()
@@ -295,6 +382,7 @@ def test_decode_admission_retries_pool_exhaustion_without_releasing_kv() -> None
     admission = _decode_admission("request-1", 7)
     pool = _CapacityReqPool(capacity=0)
     scheduler, freed = _decode_scheduler([admission], pool)
+    _own_admissions(scheduler, [admission])
 
     scheduler._drain_pd_admissions()
 
@@ -323,6 +411,7 @@ def test_decode_admission_preserves_fifo_across_capacity_waves() -> None:
     ]
     pool = _CapacityReqPool(capacity=1)
     scheduler, freed = _decode_scheduler(admissions, pool)
+    _own_admissions(scheduler, admissions)
     admitted = []
 
     for expected in ("request-1", "request-2", "request-3"):
@@ -354,6 +443,7 @@ def test_permanent_decode_reconstruction_error_is_not_retried(monkeypatch) -> No
         fail_reconstruction,
     )
     scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=1))
+    _own_admissions(scheduler, [admission])
 
     scheduler._drain_pd_admissions()
     scheduler._drain_pd_admissions()
@@ -370,6 +460,7 @@ def test_permanent_decode_reconstruction_error_is_not_retried(monkeypatch) -> No
 def test_abort_while_decode_admission_is_deferred_releases_once() -> None:
     admission = _decode_admission("request-1", 7)
     scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=0))
+    _own_admissions(scheduler, [admission])
     scheduler._drain_pd_admissions()
     scheduler._aborted_request_ids.add("request-1")
 
@@ -388,6 +479,7 @@ def test_discard_decode_admissions_releases_each_allocation_once() -> None:
         _decode_admission("request-2", 10),
     ]
     scheduler, freed = _decode_scheduler(admissions, _CapacityReqPool(capacity=0))
+    _own_admissions(scheduler, admissions)
     scheduler._drain_pd_admissions()
 
     scheduler._discard_pd_admissions()
@@ -409,6 +501,7 @@ def test_metrics_reporter_handles_multiple_reconstructed_requests() -> None:
         _CapacityReqPool(capacity=2),
     )
     scheduler.disaggregation_mode = DisaggregationMode.DECODE
+    _own_admissions(scheduler, list(scheduler._pd_ready_queue.queue))
     scheduler.disagg_decode_prealloc_queue = SimpleNamespace(
         queue=[], retracted_queue=[], num_tokens_pre_allocated=0
     )
@@ -427,6 +520,237 @@ def test_metrics_reporter_handles_multiple_reconstructed_requests() -> None:
     ]
     assert len(snapshots) == 2
     assert all(snapshot.num_decode_requests == 0 for snapshot in snapshots)
+
+
+def test_decode_owned_states_share_one_hard_queue_bound() -> None:
+    tracker = PDDecodeOwnershipTracker(max_queued_requests=2)
+    tracker.reserve("committed", None)
+    assert tracker.mark_committed("committed")
+    tracker.reserve("deferred", None)
+    assert tracker.mark_committed("deferred")
+    allocation = ReservedAllocation(torch.tensor([1]), (1,), 1)
+    assert tracker.mark_ready("deferred", allocation)
+    assert tracker.transition_if_owned("deferred", {"ready"}, "deferred")
+
+    with pytest.raises(DecodeOwnershipCapacityExhausted):
+        tracker.reserve("new", None)
+
+    assert tracker.snapshot() == {"committed": 1, "deferred": 1}
+
+
+def test_expired_deferred_admission_releases_destination_kv_once() -> None:
+    admission = _decode_admission("request-1", 7)
+    admission = PDDecodeAdmission(
+        replace(admission.continuation, deadline_unix_s=time.time() - 1),
+        admission.allocation,
+    )
+    scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=0))
+    _own_admissions(scheduler, [admission])
+
+    scheduler._drain_pd_admissions()
+    scheduler._drain_pd_admissions()
+
+    assert freed == [admission.allocation.slots]
+    assert scheduler._pd_ownership.snapshot() == {}
+    assert scheduler.waiting_queue == []
+
+
+def test_deadline_expired_before_reconstruction_never_enters_waiting() -> None:
+    admission = _decode_admission("request-1", 7)
+    admission = PDDecodeAdmission(
+        replace(admission.continuation, deadline_unix_s=time.time() - 1),
+        admission.allocation,
+    )
+    scheduler, freed = _decode_scheduler([admission], _ReqPool())
+    _own_admissions(scheduler, [admission])
+
+    scheduler._drain_pd_admissions()
+
+    assert scheduler.waiting_queue == []
+    assert freed == [admission.allocation.slots]
+
+
+def test_timeout_ready_abort_race_has_one_terminal_owner(monkeypatch) -> None:
+    # Race the actual receiver commit/rank-ready callback against the two
+    # controller terminal callbacks used by abort and timeout.
+    scheduler, receiver, allocator = _bound_decode_scheduler(monkeypatch)
+    continuation = _decode_admission("request-1", 7).continuation
+    metadata = PrefillContinuationProducer().prepare_rank_metadata(continuation, 0)
+    prepare = KVTransferPrepareMessage(
+        request_id=continuation.request_id,
+        transfer_id=continuation.transfer_id,
+        from_stage="prefill",
+        to_stage="decode",
+        source_pool_id="prefill:kv",
+        target_pool_id="decode:kv",
+        source_page_indices=(7, 8, 9),
+        source_layout=KVPoolLayout(
+            layout_id="test",
+            page_size=1,
+            buffers=(KVBufferSpec(name="kv", bytes_per_page=1),),
+        ),
+        metadata=metadata,
+    )
+    destination = receiver.reserve(prepare)
+    barrier = threading.Barrier(4)
+    errors = []
+
+    def commit():
+        barrier.wait()
+        try:
+            receiver.commit(prepare, destination)
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    def abort():
+        barrier.wait()
+        scheduler._pd_controller.abort(
+            "request-1", transfer_id=continuation.transfer_id
+        )
+
+    def timeout():
+        barrier.wait()
+        scheduler._pd_controller._on_timeout("request-1", continuation.transfer_id)
+
+    threads = [
+        threading.Thread(target=commit),
+        threading.Thread(target=abort),
+        threading.Thread(target=timeout),
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=1)
+
+    scheduler._release_pd_owned("request-1", reason="test terminal")
+
+    assert len(errors) <= 1
+    assert len(allocator.freed) == 1
+    assert scheduler._pd_ownership.snapshot() == {}
+
+
+def test_running_timeout_claims_one_terminal_cleanup(monkeypatch) -> None:
+    scheduler, _ = _decode_scheduler([], _ReqPool())
+    allocation = ReservedAllocation(torch.tensor([7, 8, 9]), (7, 8, 9), 3)
+    req = SimpleNamespace(rid="request-1", req_pool_idx=0, mamba_pool_idx=None)
+    tracker = scheduler._pd_ownership
+    tracker.reserve("request-1", time.time() - 1)
+    assert tracker.mark_committed("request-1")
+    assert tracker.mark_ready("request-1", allocation)
+    assert tracker.mark_waiting("request-1", req)
+    assert tracker.transition_if_owned("request-1", {"waiting"}, "running")
+    scheduler._emit_request_error = lambda *_a, **_k: None
+    scheduler._mark_running_request_aborted = lambda _rid: True
+    scheduler.tree_cache = object()
+    releases = []
+
+    def release(req, _cache):
+        releases.append(req.rid)
+        req.req_pool_idx = None
+
+    monkeypatch.setattr(omni_scheduler_module, "release_kv_cache", release)
+
+    scheduler._expire_pd_owned_requests()
+    assert tracker.snapshot() == {"terminal_pending": 1}
+    scheduler._release_request_kv_cache(req)
+    scheduler._release_request_kv_cache(req)
+
+    assert releases == ["request-1"]
+    assert tracker.snapshot() == {}
+
+
+def test_retracted_pd_request_returns_and_reclaims_queue_credit(monkeypatch) -> None:
+    scheduler, _ = _decode_scheduler([], _ReqPool())
+    req = SimpleNamespace(rid="request-1")
+    allocation = ReservedAllocation(torch.tensor([7]), (7,), 1)
+    tracker = scheduler._pd_ownership
+    tracker.reserve(req.rid, None)
+    assert tracker.mark_committed(req.rid)
+    assert tracker.mark_ready(req.rid, allocation)
+    assert tracker.mark_waiting(req.rid, req)
+    assert tracker.transition_if_owned(req.rid, {"waiting"}, "running")
+    scheduler.running_batch = _RetractedBatch([req])
+    scheduler.server_args = object()
+    scheduler.tree_cache = object()
+    scheduler.hisparse_coordinator = None
+    scheduler.chunked_req = object()
+    scheduler._add_request_to_queue = scheduler.waiting_queue.append
+    monkeypatch.setattr(omni_scheduler_module, "retract_all", lambda **_kwargs: None)
+
+    assert scheduler._retract_running_requests() == 1
+    assert tracker.snapshot() == {"waiting": 1}
+
+    scheduler._drain_pd_admissions = lambda: None
+    scheduler._pd_role = "decode"
+    plan = SimpleNamespace(
+        running_batch=scheduler.running_batch,
+        batch_to_run=scheduler.running_batch,
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module._Upstream,
+        "get_next_disagg_decode_batch_to_run",
+        lambda *_args: plan,
+    )
+    scheduler.running_batch.reqs = [req]
+
+    scheduler.get_next_batch_to_run()
+
+    assert tracker.snapshot() == {"running": 1}
+
+
+def test_queue_slot_release_allows_exactly_one_next_admission() -> None:
+    tracker = PDDecodeOwnershipTracker(max_queued_requests=1)
+    tracker.reserve("first", None)
+    assert tracker.mark_committed("first")
+    allocation = ReservedAllocation(torch.tensor([1]), (1,), 1)
+    assert tracker.mark_ready("first", allocation)
+    assert tracker.mark_waiting("first", object())
+    with pytest.raises(DecodeOwnershipCapacityExhausted):
+        tracker.reserve("second", None)
+
+    assert tracker.transition_if_owned("first", {"waiting"}, "running")
+    tracker.reserve("second", None)
+    with pytest.raises(DecodeOwnershipCapacityExhausted):
+        tracker.reserve("third", None)
+
+    assert tracker.snapshot() == {"reserved": 1, "running": 1}
+
+
+def test_all_decode_owned_exit_paths_return_accounting_to_zero() -> None:
+    tracker = PDDecodeOwnershipTracker(max_queued_requests=8)
+    allocation = ReservedAllocation(torch.tensor([1]), (1,), 1)
+    for request_id in (
+        "reserved",
+        "committed",
+        "ready",
+        "deferred",
+        "waiting",
+        "running",
+    ):
+        tracker.reserve(request_id, None)
+        if request_id != "reserved":
+            assert tracker.mark_committed(request_id)
+        if request_id in {"ready", "deferred", "waiting", "running"}:
+            assert tracker.mark_ready(request_id, allocation)
+        if request_id == "deferred":
+            assert tracker.transition_if_owned(request_id, {"ready"}, "deferred")
+        if request_id in {"waiting", "running"}:
+            assert tracker.mark_waiting(request_id, object())
+        if request_id == "running":
+            assert tracker.transition_if_owned(request_id, {"waiting"}, "running")
+    for request_id in (
+        "reserved",
+        "committed",
+        "ready",
+        "deferred",
+        "waiting",
+        "running",
+    ):
+        assert tracker.pop_for_release(request_id) is not None
+        assert tracker.pop_for_release(request_id) is None
+
+    assert tracker.snapshot() == {}
 
 
 def test_prefill_handoff_reuses_request_mapping_and_detaches_batch() -> None:

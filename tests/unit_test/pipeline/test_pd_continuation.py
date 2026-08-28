@@ -26,6 +26,10 @@ from sglang_omni.scheduling.pd_continuation import (
     encode_continuation,
     validate_continuation,
 )
+from sglang_omni.scheduling.pd_runtime import (
+    DecodeOwnershipCapacityExhausted,
+    PDDecodeOwnershipTracker,
+)
 
 
 def _sample_continuation(**overrides) -> DecodeContinuation:
@@ -85,6 +89,35 @@ def test_continuation_bytes_survive_control_plane_round_trip():
     decoded = deserialize_message(serialize_message(prepare))
 
     assert decoded.metadata["pd_continuation"] == encode_continuation(cont)
+
+
+def test_decode_queue_capacity_is_claimed_before_inner_kv_reservation():
+    inner = _FakeReceiver()
+    controller = PDHandoffController()
+    tracker = PDDecodeOwnershipTracker(max_queued_requests=1)
+    receiver = ContinuationAwareKVReceiver(
+        inner,
+        controller,
+        ownership_reserve=lambda continuation: tracker.reserve(
+            continuation.request_id, continuation.deadline_unix_s
+        ),
+        ownership_release=lambda request_id: tracker.pop_for_release(request_id),
+    )
+    first = _sample_continuation(request_id="first", transfer_id="xfer-first")
+    second = _sample_continuation(request_id="second", transfer_id="xfer-second")
+
+    receiver.reserve(
+        _prepare(first, PrefillContinuationProducer().prepare_rank_metadata(first, 0))
+    )
+    with pytest.raises(DecodeOwnershipCapacityExhausted):
+        receiver.reserve(
+            _prepare(
+                second,
+                PrefillContinuationProducer().prepare_rank_metadata(second, 0),
+            )
+        )
+
+    assert [request.request_id for request in inner.reserves] == ["first"]
 
 
 def test_schema_version_rejection():
