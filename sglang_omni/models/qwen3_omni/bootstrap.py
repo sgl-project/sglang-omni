@@ -21,6 +21,8 @@ def create_thinker_scheduler(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -131,7 +133,8 @@ def create_thinker_scheduler(
     )
     stream_output_builder = make_thinker_stream_output_builder()
 
-    return OmniScheduler(
+    scheduler_cls = scheduler_cls or OmniScheduler
+    return scheduler_cls(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -149,6 +152,7 @@ def create_thinker_scheduler(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        **(scheduler_kwargs or {}),
     )
 
 

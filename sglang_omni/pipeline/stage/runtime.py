@@ -52,6 +52,7 @@ from sglang_omni.proto import (
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.pd_continuation import PrefillContinuationProducer
+from sglang_omni.scheduling.pd_runtime import PDTransportBinding
 
 logger = logging.getLogger(__name__)
 
@@ -111,12 +112,11 @@ class Stage:
         disable_direct_cuda_ipc_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
-        pd_execution: Any = None,
+        pd_transport_binding: PDTransportBinding | None = None,
         replica_topology: dict[str, list[str]] | None = None,
     ):
         self.name = name
         self.role = role
-        self.pd_execution = pd_execution
         self.get_next = get_next
         self.gpu_id = gpu_id
         self.endpoints = endpoints
@@ -153,19 +153,13 @@ class Stage:
             rank_endpoints=rank_endpoints,
             task_done_callback=self._on_background_task_done,
         )
-        if pd_execution is not None:
-            if scheduler is None or not hasattr(scheduler, "bind_pd_runtime"):
-                raise TypeError(
-                    f"PD stage {name!r} requires an OmniScheduler PD runtime"
+        if pd_transport_binding is not None:
+            self._comm.register_kv_pool(pd_transport_binding.pool)
+            if pd_transport_binding.receiver is not None:
+                self._comm.register_kv_receiver(
+                    pd_transport_binding.pool.pool_id,
+                    pd_transport_binding.receiver,
                 )
-            pool, receiver = scheduler.bind_pd_runtime(
-                stage_name=name,
-                role=pd_execution.role,
-                partner=pd_execution.partner,
-            )
-            self._comm.register_kv_pool(pool)
-            if receiver is not None:
-                self._comm.register_kv_receiver(pool.pool_id, receiver)
 
         self._running = False
         self._aborted: set[str] = set()

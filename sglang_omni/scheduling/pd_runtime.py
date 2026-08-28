@@ -17,6 +17,14 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 
 
 @dataclass(frozen=True)
+class PDTransportBinding:
+    """Transport resources prepared by a concrete PD scheduler."""
+
+    pool: Any
+    receiver: Any | None = None
+
+
+@dataclass(frozen=True)
 class PDPrefillHandoff:
     continuation: DecodeContinuation
     source_pool_id: str

@@ -291,6 +291,8 @@ def create_sglang_thinker_executor_from_config(
     thinker_max_seq_len: int = 8192,
     server_args_overrides: dict[str, Any] | None = None,
     enable_streaming_tts: bool = False,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
 ):
     validate_stage_tp_support(stage_name="thinker", tp_size=tp_size)
 
@@ -317,6 +319,8 @@ def create_sglang_thinker_executor_from_config(
         tp_size=tp_size,
         nccl_port=nccl_port,
         enable_streaming_tts=enable_streaming_tts,
+        scheduler_cls=scheduler_cls,
+        scheduler_kwargs=scheduler_kwargs,
     )
 
 

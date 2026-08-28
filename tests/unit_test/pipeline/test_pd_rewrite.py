@@ -94,6 +94,8 @@ def test_pd_expansion_rewrites_edges_and_metadata() -> None:
     assert prefill.pd_execution.partner == "thinker_decode"
     assert decode.pd_execution.role == "decode"
     assert decode.pd_execution.partner == "thinker_prefill"
+    assert prefill.pd_execution.scheduler_class.endswith(".OmniPrefillScheduler")
+    assert decode.pd_execution.scheduler_class.endswith(".OmniDecodeScheduler")
     assert "pd_role" not in prefill.factory.model_dump()
     assert "pd_partner" not in decode.factory.model_dump()
 

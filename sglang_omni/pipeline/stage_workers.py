@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import inspect
 import logging
 import multiprocessing
 import os
@@ -620,6 +621,9 @@ def _construct_stage(
     )
 
     scheduler = _construct_scheduler(spec, gpu_id, log)
+    pd_transport_binding = (
+        scheduler.transport_binding if spec.pd_execution is not None else None
+    )
 
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
@@ -795,7 +799,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
-        pd_execution=spec.pd_execution,
+        pd_transport_binding=pd_transport_binding,
         replica_topology=spec.replica_topology or None,
     )
 
@@ -826,12 +830,67 @@ def _construct_scheduler(
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,
     )
+    expected_scheduler_cls = None
+    if spec.pd_execution is not None:
+        from sglang_omni.scheduling.omni_scheduler import (
+            OmniDecodeScheduler,
+            OmniPrefillScheduler,
+        )
+
+        expected_by_role = {
+            "prefill": OmniPrefillScheduler,
+            "decode": OmniDecodeScheduler,
+        }
+        expected_scheduler_cls = import_string(spec.pd_execution.scheduler_class)
+        role_scheduler_cls = expected_by_role[spec.pd_execution.role]
+        if expected_scheduler_cls is not role_scheduler_cls:
+            raise TypeError(
+                f"PD stage {spec.stage_name!r} role {spec.pd_execution.role!r} "
+                f"requires {role_scheduler_cls.__module__}."
+                f"{role_scheduler_cls.__qualname__}, got "
+                f"{spec.pd_execution.scheduler_class!r}"
+            )
+        parameters = inspect.signature(factory).parameters
+        accepts_any_kwarg = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        missing = {
+            name
+            for name in ("scheduler_cls", "scheduler_kwargs")
+            if name not in parameters and not accepts_any_kwarg
+        }
+        if missing:
+            raise TypeError(
+                f"PD-capable factory {spec.factory!r} for stage "
+                f"{spec.stage_name!r} must accept compiler-owned scheduler "
+                f"construction arguments {sorted(missing)}"
+            )
+        factory_args["scheduler_cls"] = expected_scheduler_cls
+        factory_args["scheduler_kwargs"] = {
+            "stage_name": spec.stage_name,
+            "partner": spec.pd_execution.partner,
+        }
+
+    def construct() -> Any:
+        scheduler = factory(**factory_args)
+        if expected_scheduler_cls is not None and not isinstance(
+            scheduler, expected_scheduler_cls
+        ):
+            raise TypeError(
+                f"PD stage {spec.stage_name!r} factory returned "
+                f"{type(scheduler).__module__}.{type(scheduler).__qualname__}; "
+                f"expected {expected_scheduler_cls.__module__}."
+                f"{expected_scheduler_cls.__qualname__}"
+            )
+        return scheduler
+
     if gpu_id is None:
-        return factory(**factory_args)
+        return construct()
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return factory(**factory_args)
+        return construct()
 
 
 def _prepare_accelerator_environment(

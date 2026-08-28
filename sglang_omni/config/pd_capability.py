@@ -19,7 +19,13 @@ _PD_CAPABLE_ATTR = "__sglang_pd_disaggregation_capable__"
 
 
 def pd_disaggregation_capable(factory: Callable[..., Any]) -> Callable[..., Any]:
-    """Mark *factory* as able to run as a PD prefill/decode half."""
+    """Mark *factory* as able to construct a concrete PD scheduler.
+
+    Marked factories must accept the compiler-owned ``scheduler_cls`` and
+    ``scheduler_kwargs`` keyword arguments and instantiate that class before
+    returning. The worker validates the returned concrete type before Stage
+    construction.
+    """
     setattr(factory, _PD_CAPABLE_ATTR, True)
     return factory
 

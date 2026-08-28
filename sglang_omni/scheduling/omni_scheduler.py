@@ -76,6 +76,7 @@ from sglang_omni.scheduling.pd_runtime import (
     DecodeRequestPoolExhausted,
     PDDecodeAdmission,
     PDPrefillHandoff,
+    PDTransportBinding,
     continuation_from_req,
     req_from_continuation,
 )
@@ -540,198 +541,6 @@ class OmniScheduler:
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
         self._prefill_end_done: set[str] = set()
-        self._pd_role: str | None = None
-        self._pd_partner: str | None = None
-        self._pd_pool_id: str | None = None
-        self._pd_ready_queue = _queue_mod.Queue()
-        self._pd_deferred_admission: PDDecodeAdmission | None = None
-        self._pd_admission_lock = threading.Lock()
-        self._pd_receiver: AllocatorKVReceiver | None = None
-        self._pd_controller: PDHandoffController | None = None
-
-    def bind_pd_runtime(
-        self,
-        *,
-        stage_name: str,
-        role: str,
-        partner: str,
-    ) -> tuple[Any, Any | None]:
-        if self.tp_size != 1:
-            raise NotImplementedError("PR3 PD runtime supports tp_size == 1 only")
-        if self.page_size != 1:
-            raise NotImplementedError("PR3 PD runtime supports page_size == 1 only")
-        if not self.server_args.disable_radix_cache:
-            raise NotImplementedError("PR3 PD runtime requires RadixCache disabled")
-        if role not in {"prefill", "decode"}:
-            raise ValueError(f"invalid PD role {role!r}")
-
-        self._pd_role = role
-        self._pd_partner = partner
-        self._pd_pool_id = f"{stage_name}:kv"
-        raw_pool = self.token_to_kv_pool_allocator.get_kvcache()
-        layout_id = (
-            f"{type(raw_pool).__module__}.{type(raw_pool).__qualname__}:"
-            f"page_size={self.page_size}"
-        )
-        pool = build_kv_pool(
-            raw_pool,
-            pool_id=self._pd_pool_id,
-            layout_id=layout_id,
-        )
-        if role == "prefill":
-            return pool, None
-
-        from sglang.srt.disaggregation.utils import DisaggregationMode
-
-        self.disaggregation_mode = DisaggregationMode.DECODE
-        self.batch_result_processor = dataclasses.replace(
-            self.batch_result_processor,
-            disaggregation_mode=DisaggregationMode.DECODE,
-        )
-        receiver = AllocatorKVReceiver(
-            pool_id=self._pd_pool_id,
-            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
-            page_size=self.page_size,
-        )
-
-        def on_ready(pending):
-            if pending.continuation is None:
-                raise RuntimeError("rank-ready handoff has no continuation")
-            allocation = receiver.take_committed(pending.request_id)
-            try:
-                self._pd_ready_queue.put(
-                    PDDecodeAdmission(pending.continuation, allocation)
-                )
-            except Exception:
-                # Note (Yue Yin): take_committed transfers ownership out of the
-                # receiver before the scheduler queue can accept it.
-                self.token_to_kv_pool_allocator.free(allocation.slots)
-                raise
-
-        controller = PDHandoffController(
-            rank_ready_callback=on_ready,
-            cleanup_callback=lambda pending, _reason: receiver.release(
-                pending.request_id
-            ),
-        )
-        self._pd_receiver = receiver
-        self._pd_controller = controller
-        return pool, ContinuationAwareKVReceiver(
-            receiver,
-            controller,
-            allowed_resume_schemas=self._pd_resume_schemas,
-        )
-
-    def _drain_pd_admissions(self) -> None:
-        ready_queue = self.__dict__.get("_pd_ready_queue")
-        if ready_queue is None:
-            return
-        with self._pd_admission_lock:
-            while True:
-                admission = self._pd_deferred_admission
-                if admission is None:
-                    try:
-                        admission = ready_queue.get_nowait()
-                    except _queue_mod.Empty:
-                        return
-                request_id = admission.continuation.request_id
-                if request_id in self._aborted_request_ids:
-                    self._pd_deferred_admission = None
-                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-                    continue
-                try:
-                    req = req_from_continuation(
-                        admission.continuation,
-                        admission.allocation,
-                        req_to_token_pool=self.req_to_token_pool,
-                        state_restorer=self.__dict__.get("_pd_state_restorer"),
-                    )
-                except DecodeRequestPoolExhausted:
-                    # Note (Yue Yin): The committed KV must remain owned while
-                    # an earlier request is still using the request-pool slot.
-                    self._pd_deferred_admission = admission
-                    return
-                except Exception as exc:
-                    self._pd_deferred_admission = None
-                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-                    self._emit_request_error(
-                        request_id, exc, metadata={"pd_pre_admission": True}
-                    )
-                    continue
-                self._pd_deferred_admission = None
-                self.waiting_queue.append(req)
-                self.outbox.put(
-                    OutgoingMessage(request_id=request_id, type="pd_admitted")
-                )
-
-    def _discard_pd_admissions(self) -> None:
-        ready_queue = self.__dict__.get("_pd_ready_queue")
-        if ready_queue is None:
-            return
-        with self._pd_admission_lock:
-            admission = self._pd_deferred_admission
-            self._pd_deferred_admission = None
-            if admission is not None:
-                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-            while True:
-                try:
-                    admission = ready_queue.get_nowait()
-                except _queue_mod.Empty:
-                    return
-                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-
-    def _queue_pd_prefill_handoffs(
-        self,
-        batch: ScheduleBatch,
-        sampled_request_ids: set[int],
-    ) -> None:
-        retained = []
-        for req in batch.reqs:
-            if req.finished() or getattr(req, "_pd_handoff_started", False):
-                continue
-            if id(req) not in sampled_request_ids or req.inflight_middle_chunks > 0:
-                # Note (Yue Yin): Upstream decrements middle-chunk accounting
-                # before returning even though that chunk produced no token.
-                retained.append(req)
-                continue
-            if req.req_pool_idx is None:
-                self._emit_request_error(
-                    req.rid,
-                    RuntimeError("prefill request lost its KV allocation"),
-                )
-                continue
-            try:
-                req._pd_handoff_started = True
-                transfer_id = f"{req.rid}:pd:{uuid4().hex}"
-                continuation = continuation_from_req(
-                    req,
-                    transfer_id,
-                    self.__dict__.get("_pd_state_builder"),
-                )
-                pages = resolve_page_indices(
-                    self.req_to_token_pool,
-                    req_pool_idx=req.req_pool_idx,
-                    seq_len=len(req.origin_input_ids),
-                    page_size=self.page_size,
-                )
-                self.outbox.put(
-                    OutgoingMessage(
-                        request_id=req.rid,
-                        type="pd_handoff",
-                        data=PDPrefillHandoff(
-                            continuation=continuation,
-                            source_pool_id=self._pd_pool_id,
-                            target_pool_id=f"{self._pd_partner}:kv",
-                            source_page_indices=pages,
-                            to_stage=self._pd_partner,
-                            lease=SGLangKVPageLease(req, self.tree_cache),
-                        ),
-                    )
-                )
-            except Exception as exc:
-                self._release_request_kv_cache(req)
-                self._emit_request_error(req.rid, exc)
-        batch.reqs = retained
 
     def bind_model_runner(self, model_runner: Any) -> None:
         """Attach a custom runner and its SGLang execution-contract bridge.
@@ -1565,48 +1374,14 @@ class OmniScheduler:
         own that state, so feed it in and write the (possibly rebuilt) running
         batch back before handing the runnable batch to the caller.
         """
-        self._drain_pd_admissions()
-        pd_role = self.__dict__.get("_pd_role")
-        if (
-            pd_role == "prefill"
-            and self.running_batch.is_empty()
-            and self.running_batch.batch_is_full
-            and self.req_to_token_pool.available_size() > 0
-        ):
-            # Note (Yue Yin): ACK can return a source request slot after the
-            # empty running batch was marked full by the prior admission wave.
-            self.running_batch.batch_is_full = False
-        if pd_role == "decode":
-            # Note (Yue Yin): Reuse upstream admission so PREBUILT cache and
-            # batching ownership stay aligned with the installed SGLang version.
-            plan = _Upstream.get_next_disagg_decode_batch_to_run(
-                self, self.running_batch
-            )
-        else:
-            plan = _Upstream.get_next_batch_to_run(
-                self, self.running_batch, self.last_batch
-            )
+        plan = _Upstream.get_next_batch_to_run(
+            self, self.running_batch, self.last_batch
+        )
         self.running_batch = plan.running_batch
         return plan.batch_to_run
 
     def process_batch_result(self, batch, result):
-        is_pd_prefill = (
-            self.__dict__.get("_pd_role") == "prefill"
-            and batch.forward_mode.is_extend()
-        )
-        output_lengths = (
-            {id(req): len(req.output_ids) for req in batch.reqs}
-            if is_pd_prefill
-            else {}
-        )
         _Upstream.process_batch_result(self, batch, result)
-        if is_pd_prefill:
-            sampled_request_ids = {
-                id(req)
-                for req in batch.reqs
-                if len(req.output_ids) > output_lengths[id(req)]
-            }
-            self._queue_pd_prefill_handoffs(batch, sampled_request_ids)
 
     def get_new_batch_prefill(self, running_batch):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
@@ -2023,7 +1798,6 @@ class OmniScheduler:
     def _discard_pending_request_admissions(self) -> None:
         with self._request_admission_lock:
             self._pending_request_admissions.clear()
-        self._discard_pd_admissions()
 
     def _shutdown_resources(self) -> None:
         with self._shutdown_lock:
@@ -2040,9 +1814,6 @@ class OmniScheduler:
         self._request_build_executor = None
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
-        pd_controller = self.__dict__.get("_pd_controller")
-        if pd_controller is not None:
-            pd_controller.abort(request_id)
         with self._request_admission_lock:
             if request_id not in self._aborted_request_ids:
                 if len(self._aborted_request_ids) >= _ABORTED_REQUEST_ID_LIMIT:
@@ -2977,6 +2748,243 @@ class OmniScheduler:
             req_data.stream_done = True
             return
         self._stream_done_handler(req_data)
+
+
+def _build_scheduler_kv_pool(scheduler: OmniScheduler, stage_name: str) -> Any:
+    if scheduler.tp_size != 1:
+        raise NotImplementedError("PR3 PD runtime supports tp_size == 1 only")
+    if scheduler.page_size != 1:
+        raise NotImplementedError("PR3 PD runtime supports page_size == 1 only")
+    if not scheduler.server_args.disable_radix_cache:
+        raise NotImplementedError("PR3 PD runtime requires RadixCache disabled")
+
+    raw_pool = scheduler.token_to_kv_pool_allocator.get_kvcache()
+    layout_id = (
+        f"{type(raw_pool).__module__}.{type(raw_pool).__qualname__}:"
+        f"page_size={scheduler.page_size}"
+    )
+    return build_kv_pool(
+        raw_pool,
+        pool_id=f"{stage_name}:kv",
+        layout_id=layout_id,
+    )
+
+
+class OmniPrefillScheduler(OmniScheduler):
+    """Omni scheduler with Prefill continuation and source-lease ownership."""
+
+    @property
+    def transport_binding(self) -> PDTransportBinding:
+        return self._transport_binding
+
+    def __init__(self, *args: Any, stage_name: str, partner: str, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._partner_stage = partner
+        pool = _build_scheduler_kv_pool(self, stage_name)
+        self._source_pool_id = pool.pool_id
+        self._transport_binding = PDTransportBinding(pool=pool)
+
+    def get_next_batch_to_run(self):
+        if (
+            self.running_batch.is_empty()
+            and self.running_batch.batch_is_full
+            and self.req_to_token_pool.available_size() > 0
+        ):
+            # ACK can return a source request slot after the empty running batch
+            # was marked full by the prior admission wave.
+            self.running_batch.batch_is_full = False
+        return super().get_next_batch_to_run()
+
+    def process_batch_result(self, batch, result):
+        is_prefill = batch.forward_mode.is_extend()
+        output_lengths = (
+            {id(req): len(req.output_ids) for req in batch.reqs} if is_prefill else {}
+        )
+        _Upstream.process_batch_result(self, batch, result)
+        if is_prefill:
+            sampled_request_ids = {
+                id(req)
+                for req in batch.reqs
+                if len(req.output_ids) > output_lengths[id(req)]
+            }
+            self._queue_prefill_handoffs(batch, sampled_request_ids)
+
+    def _queue_prefill_handoffs(
+        self,
+        batch: ScheduleBatch,
+        sampled_request_ids: set[int],
+    ) -> None:
+        retained = []
+        for req in batch.reqs:
+            if req.finished() or getattr(req, "_pd_handoff_started", False):
+                continue
+            if id(req) not in sampled_request_ids or req.inflight_middle_chunks > 0:
+                retained.append(req)
+                continue
+            if req.req_pool_idx is None:
+                self._emit_request_error(
+                    req.rid,
+                    RuntimeError("prefill request lost its KV allocation"),
+                )
+                continue
+            try:
+                req._pd_handoff_started = True
+                transfer_id = f"{req.rid}:pd:{uuid4().hex}"
+                continuation = continuation_from_req(
+                    req,
+                    transfer_id,
+                    self._pd_state_builder,
+                )
+                pages = resolve_page_indices(
+                    self.req_to_token_pool,
+                    req_pool_idx=req.req_pool_idx,
+                    seq_len=len(req.origin_input_ids),
+                    page_size=self.page_size,
+                )
+                self.outbox.put(
+                    OutgoingMessage(
+                        request_id=req.rid,
+                        type="pd_handoff",
+                        data=PDPrefillHandoff(
+                            continuation=continuation,
+                            source_pool_id=self._source_pool_id,
+                            target_pool_id=f"{self._partner_stage}:kv",
+                            source_page_indices=pages,
+                            to_stage=self._partner_stage,
+                            lease=SGLangKVPageLease(req, self.tree_cache),
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self._release_request_kv_cache(req)
+                self._emit_request_error(req.rid, exc)
+        batch.reqs = retained
+
+
+class OmniDecodeScheduler(OmniScheduler):
+    """Omni scheduler with destination readiness and PREBUILT admission."""
+
+    @property
+    def transport_binding(self) -> PDTransportBinding:
+        return self._transport_binding
+
+    def __init__(self, *args: Any, stage_name: str, partner: str, **kwargs: Any):
+        del partner
+        super().__init__(*args, **kwargs)
+
+        from sglang.srt.disaggregation.utils import DisaggregationMode
+
+        self.disaggregation_mode = DisaggregationMode.DECODE
+        self.batch_result_processor = dataclasses.replace(
+            self.batch_result_processor,
+            disaggregation_mode=DisaggregationMode.DECODE,
+        )
+        self._ready_queue: _queue_mod.Queue[PDDecodeAdmission] = _queue_mod.Queue()
+        self._deferred_admission: PDDecodeAdmission | None = None
+        self._admission_lock = threading.Lock()
+
+        pool = _build_scheduler_kv_pool(self, stage_name)
+        receiver = AllocatorKVReceiver(
+            pool_id=pool.pool_id,
+            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+            page_size=self.page_size,
+        )
+
+        def on_ready(pending):
+            if pending.continuation is None:
+                raise RuntimeError("rank-ready handoff has no continuation")
+            allocation = receiver.take_committed(pending.request_id)
+            try:
+                self._ready_queue.put(
+                    PDDecodeAdmission(pending.continuation, allocation)
+                )
+            except Exception:
+                self.token_to_kv_pool_allocator.free(allocation.slots)
+                raise
+
+        controller = PDHandoffController(
+            rank_ready_callback=on_ready,
+            cleanup_callback=lambda pending, _reason: receiver.release(
+                pending.request_id
+            ),
+        )
+        self._receiver = receiver
+        self._controller = controller
+        self._transport_binding = PDTransportBinding(
+            pool=pool,
+            receiver=ContinuationAwareKVReceiver(
+                receiver,
+                controller,
+                allowed_resume_schemas=self._pd_resume_schemas,
+            ),
+        )
+
+    def get_next_batch_to_run(self):
+        self._drain_admissions()
+        plan = _Upstream.get_next_disagg_decode_batch_to_run(self, self.running_batch)
+        self.running_batch = plan.running_batch
+        return plan.batch_to_run
+
+    def _drain_admissions(self) -> None:
+        with self._admission_lock:
+            while True:
+                admission = self._deferred_admission
+                if admission is None:
+                    try:
+                        admission = self._ready_queue.get_nowait()
+                    except _queue_mod.Empty:
+                        return
+                request_id = admission.continuation.request_id
+                if request_id in self._aborted_request_ids:
+                    self._deferred_admission = None
+                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    continue
+                try:
+                    req = req_from_continuation(
+                        admission.continuation,
+                        admission.allocation,
+                        req_to_token_pool=self.req_to_token_pool,
+                        state_restorer=self._pd_state_restorer,
+                    )
+                except DecodeRequestPoolExhausted:
+                    self._deferred_admission = admission
+                    return
+                except Exception as exc:
+                    self._deferred_admission = None
+                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    self._emit_request_error(
+                        request_id, exc, metadata={"pd_pre_admission": True}
+                    )
+                    continue
+                self._deferred_admission = None
+                self.waiting_queue.append(req)
+                self.outbox.put(
+                    OutgoingMessage(request_id=request_id, type="pd_admitted")
+                )
+
+    def _discard_admissions(self) -> None:
+        with self._admission_lock:
+            admission = self._deferred_admission
+            self._deferred_admission = None
+            if admission is not None:
+                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+            while True:
+                try:
+                    admission = self._ready_queue.get_nowait()
+                except _queue_mod.Empty:
+                    return
+                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+
+    def _discard_pending_request_admissions(self) -> None:
+        super()._discard_pending_request_admissions()
+        self._discard_admissions()
+
+    def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+        self._controller.abort(request_id)
+        super().abort(
+            request_id,
+            defer_running_cleanup=defer_running_cleanup,
+        )
 
 
 def _remove_from_batch(batch: Any, request_id: str) -> None:

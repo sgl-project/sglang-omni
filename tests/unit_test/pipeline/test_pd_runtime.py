@@ -18,7 +18,10 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
+)
 from sglang_omni.scheduling.pd_continuation import (
     decode_continuation,
     encode_continuation,
@@ -135,14 +138,14 @@ def _decode_scheduler(
     pool: _ReqPool,
     *,
     state_restorer=None,
-) -> tuple[OmniScheduler, list[torch.Tensor]]:
+) -> tuple[OmniDecodeScheduler, list[torch.Tensor]]:
     freed: list[torch.Tensor] = []
-    scheduler = object.__new__(OmniScheduler)
-    scheduler._pd_ready_queue = queue.Queue()
+    scheduler = object.__new__(OmniDecodeScheduler)
+    scheduler._ready_queue = queue.Queue()
     for admission in admissions:
-        scheduler._pd_ready_queue.put(admission)
-    scheduler._pd_deferred_admission = None
-    scheduler._pd_admission_lock = threading.Lock()
+        scheduler._ready_queue.put(admission)
+    scheduler._deferred_admission = None
+    scheduler._admission_lock = threading.Lock()
     scheduler._pd_state_restorer = state_restorer
     scheduler._aborted_request_ids = set()
     scheduler.req_to_token_pool = pool
@@ -270,7 +273,7 @@ def test_committed_decode_admission_enters_waiting_queue() -> None:
     pool = _ReqPool()
     scheduler, freed = _decode_scheduler([_decode_admission("request-1", 7)], pool)
 
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
 
     assert [req.rid for req in scheduler.waiting_queue] == ["request-1"]
     assert freed == []
@@ -284,7 +287,7 @@ def test_aborted_decode_admission_releases_transferred_slots() -> None:
     scheduler, freed = _decode_scheduler([admission], _ReqPool())
     scheduler._aborted_request_ids = {"request-1"}
 
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
 
     assert scheduler.waiting_queue == []
     assert freed == [admission.allocation.slots]
@@ -296,18 +299,18 @@ def test_decode_admission_retries_pool_exhaustion_without_releasing_kv() -> None
     pool = _CapacityReqPool(capacity=0)
     scheduler, freed = _decode_scheduler([admission], pool)
 
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
 
-    assert scheduler._pd_deferred_admission is admission
+    assert scheduler._deferred_admission is admission
     assert scheduler.waiting_queue == []
     assert freed == []
     assert scheduler.outbox.empty()
 
     pool.capacity = 1
-    scheduler._drain_pd_admissions()
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
+    scheduler._drain_admissions()
 
-    assert scheduler._pd_deferred_admission is None
+    assert scheduler._deferred_admission is None
     assert [req.rid for req in scheduler.waiting_queue] == ["request-1"]
     assert [list(req.output_ids) for req in scheduler.waiting_queue] == [[42]]
     assert freed == []
@@ -326,17 +329,17 @@ def test_decode_admission_preserves_fifo_across_capacity_waves() -> None:
     admitted = []
 
     for expected in ("request-1", "request-2", "request-3"):
-        scheduler._drain_pd_admissions()
+        scheduler._drain_admissions()
         admitted.append(scheduler.outbox.get_nowait().request_id)
         req = scheduler.waiting_queue.pop(0)
         assert req.rid == expected
         assert list(req.output_ids) == [42]
         pool.free(req)
 
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
 
     assert admitted == ["request-1", "request-2", "request-3"]
-    assert scheduler._pd_deferred_admission is None
+    assert scheduler._deferred_admission is None
     assert scheduler.waiting_queue == []
     assert freed == []
     assert scheduler.outbox.empty()
@@ -355,10 +358,10 @@ def test_permanent_decode_reconstruction_error_is_not_retried(monkeypatch) -> No
     )
     scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=1))
 
-    scheduler._drain_pd_admissions()
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
+    scheduler._drain_admissions()
 
-    assert scheduler._pd_deferred_admission is None
+    assert scheduler._deferred_admission is None
     assert freed == [admission.allocation.slots]
     error = scheduler.outbox.get_nowait()
     assert error.type == "error"
@@ -370,13 +373,13 @@ def test_permanent_decode_reconstruction_error_is_not_retried(monkeypatch) -> No
 def test_abort_while_decode_admission_is_deferred_releases_once() -> None:
     admission = _decode_admission("request-1", 7)
     scheduler, freed = _decode_scheduler([admission], _CapacityReqPool(capacity=0))
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
     scheduler._aborted_request_ids.add("request-1")
 
-    scheduler._drain_pd_admissions()
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
+    scheduler._drain_admissions()
 
-    assert scheduler._pd_deferred_admission is None
+    assert scheduler._deferred_admission is None
     assert freed == [admission.allocation.slots]
     assert scheduler.waiting_queue == []
     assert scheduler.outbox.empty()
@@ -388,12 +391,12 @@ def test_discard_decode_admissions_releases_each_allocation_once() -> None:
         _decode_admission("request-2", 10),
     ]
     scheduler, freed = _decode_scheduler(admissions, _CapacityReqPool(capacity=0))
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
 
-    scheduler._discard_pd_admissions()
-    scheduler._discard_pd_admissions()
+    scheduler._discard_admissions()
+    scheduler._discard_admissions()
 
-    assert scheduler._pd_deferred_admission is None
+    assert scheduler._deferred_admission is None
     assert freed == [
         admissions[0].allocation.slots,
         admissions[1].allocation.slots,
@@ -416,7 +419,7 @@ def test_metrics_reporter_handles_multiple_reconstructed_requests() -> None:
     reporter = object.__new__(SchedulerMetricsReporter)
     reporter.scheduler = scheduler
 
-    scheduler._drain_pd_admissions()
+    scheduler._drain_admissions()
     snapshots = [
         reporter._build_queued_request_metrics() for _ in scheduler.waiting_queue
     ]
@@ -437,22 +440,36 @@ def test_prefill_handoff_reuses_request_mapping_and_detaches_batch() -> None:
         (req.req_pool_idx, slice(0, 3)),
         torch.tensor([7, 8, 9], dtype=torch.int64),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = object.__new__(OmniPrefillScheduler)
     scheduler.req_to_token_pool = pool
     scheduler.page_size = 1
-    scheduler._pd_pool_id = "prefill:kv"
-    scheduler._pd_partner = "decode"
+    scheduler._source_pool_id = "prefill:kv"
+    scheduler._partner_stage = "decode"
+    scheduler._pd_state_builder = None
     scheduler.tree_cache = object()
     scheduler.outbox = queue.Queue()
     batch = SimpleNamespace(reqs=[req])
 
-    scheduler._queue_pd_prefill_handoffs(batch, {id(req)})
+    scheduler._queue_prefill_handoffs(batch, {id(req)})
 
     assert batch.reqs == []
     handoff = scheduler.outbox.get_nowait()
     assert handoff.type == "pd_handoff"
     assert handoff.data.source_page_indices == (7, 8, 9)
     assert handoff.data.continuation.output_ids == [42]
+
+
+def test_prefill_terminal_first_token_does_not_create_handoff() -> None:
+    req = _prefill_req()
+    req.finished_reason = object()
+    scheduler = object.__new__(OmniPrefillScheduler)
+    scheduler.outbox = queue.Queue()
+    batch = SimpleNamespace(reqs=[req])
+
+    scheduler._queue_prefill_handoffs(batch, {id(req)})
+
+    assert batch.reqs == []
+    assert scheduler.outbox.empty()
 
 
 def test_prefill_middle_chunk_waits_for_sampled_token(monkeypatch) -> None:
@@ -465,12 +482,12 @@ def test_prefill_middle_chunk_waits_for_sampled_token(monkeypatch) -> None:
         (req.req_pool_idx, slice(0, 3)),
         torch.tensor([7, 8, 9], dtype=torch.int64),
     )
-    scheduler = object.__new__(OmniScheduler)
-    scheduler._pd_role = "prefill"
+    scheduler = object.__new__(OmniPrefillScheduler)
     scheduler.req_to_token_pool = pool
     scheduler.page_size = 1
-    scheduler._pd_pool_id = "prefill:kv"
-    scheduler._pd_partner = "decode"
+    scheduler._source_pool_id = "prefill:kv"
+    scheduler._partner_stage = "decode"
+    scheduler._pd_state_builder = None
     scheduler.tree_cache = object()
     scheduler.outbox = queue.Queue()
     batch = SimpleNamespace(
@@ -538,11 +555,10 @@ def test_decode_scheduler_delegates_prebuilt_admission(monkeypatch) -> None:
         "get_next_disagg_decode_batch_to_run",
         get_next,
     )
-    scheduler = object.__new__(OmniScheduler)
-    scheduler._pd_role = "decode"
-    scheduler._pd_ready_queue = queue.SimpleQueue()
-    scheduler._pd_deferred_admission = None
-    scheduler._pd_admission_lock = threading.Lock()
+    scheduler = object.__new__(OmniDecodeScheduler)
+    scheduler._ready_queue = queue.SimpleQueue()
+    scheduler._deferred_admission = None
+    scheduler._admission_lock = threading.Lock()
     scheduler.running_batch = object()
 
     assert scheduler.get_next_batch_to_run() is batch
@@ -562,11 +578,7 @@ def test_prefill_retries_admission_after_ack_returns_request_slot(monkeypatch) -
         "get_next_batch_to_run",
         get_next,
     )
-    scheduler = object.__new__(OmniScheduler)
-    scheduler._pd_role = "prefill"
-    scheduler._pd_ready_queue = queue.Queue()
-    scheduler._pd_deferred_admission = None
-    scheduler._pd_admission_lock = threading.Lock()
+    scheduler = object.__new__(OmniPrefillScheduler)
     scheduler.running_batch = running
     scheduler.last_batch = None
     scheduler.req_to_token_pool = SimpleNamespace(available_size=lambda: 1)

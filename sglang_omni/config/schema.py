@@ -241,14 +241,16 @@ class PDExecution(BaseModel):
     """Compiler-generated PD execution metadata for one physical half.
 
     Set by the PD graph rewrite on generated prefill/decode halves. Kept as a
-    typed launch/runtime field (not in ``factory_args``) so it cannot leak into
-    factory constructors or break strict signatures.
+    typed launch/runtime field (not in user ``factory_args``). The worker uses
+    ``scheduler_class`` to inject a compiler-owned construction contract into
+    PD-capable model factories.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     role: Literal["prefill", "decode"]
     partner: str
+    scheduler_class: str
 
 
 class StageConfig(BaseModel):

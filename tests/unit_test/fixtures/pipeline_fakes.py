@@ -13,6 +13,7 @@ import os
 import queue
 import threading
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import torch
@@ -230,14 +231,62 @@ def dummy_factory(**kwargs: Any) -> dict[str, Any]:
 
 
 @pd_disaggregation_capable
-def pd_capable_factory(**kwargs: Any) -> dict[str, Any]:
-    return dict(kwargs)
+def pd_capable_factory(
+    *,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
+    post_setup: Callable[[Any], None] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Construct the compiler-selected scheduler without GPU dependencies."""
+    if scheduler_cls is None:
+        from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+        scheduler_cls = OmniScheduler
+    scheduler = object.__new__(scheduler_cls)
+    scheduler.factory_kwargs = dict(kwargs)
+    scheduler.scheduler_kwargs = dict(scheduler_kwargs or {})
+    if scheduler_kwargs:
+        from sglang_omni.scheduling.pd_runtime import PDTransportBinding
+
+        pool = SimpleNamespace(pool_id=f"{scheduler_kwargs['stage_name']}:kv")
+        receiver = (
+            object() if scheduler_kwargs["stage_name"].endswith("decode") else None
+        )
+        scheduler._transport_binding = PDTransportBinding(pool, receiver)
+    if post_setup is not None:
+        post_setup(scheduler)
+    return scheduler
 
 
 @pd_disaggregation_capable
-def strict_pd_capable_factory(*, model_path: str, gpu_id: int) -> dict[str, Any]:
+def strict_pd_capable_factory(
+    *,
+    model_path: str,
+    gpu_id: int,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
+) -> Any:
     """PD-capable factory with a strict signature (no ``**kwargs``)."""
-    return {"model_path": model_path, "gpu_id": gpu_id}
+    if scheduler_cls is None:
+        return {"model_path": model_path, "gpu_id": gpu_id}
+    scheduler = object.__new__(scheduler_cls)
+    scheduler.factory_kwargs = {"model_path": model_path, "gpu_id": gpu_id}
+    scheduler.scheduler_kwargs = dict(scheduler_kwargs or {})
+    return scheduler
+
+
+@pd_disaggregation_capable
+def mismatched_pd_scheduler_factory(
+    *,
+    scheduler_cls: type,
+    scheduler_kwargs: dict[str, Any],
+    **kwargs: Any,
+) -> Any:
+    del scheduler_cls, scheduler_kwargs, kwargs
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    return object.__new__(OmniScheduler)
 
 
 def runtime_factory(

@@ -22,6 +22,8 @@ def create_thinker_scheduler(
     tp_size: int = 1,
     nccl_port: int | None = None,
     enable_streaming_tts: bool = False,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
@@ -95,7 +97,8 @@ def create_thinker_scheduler(
         eos_token_id=getattr(tokenizer, "eos_token_id", None),
     )
 
-    return OmniScheduler(
+    scheduler_cls = scheduler_cls or OmniScheduler
+    return scheduler_cls(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -108,6 +111,7 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
+        **(scheduler_kwargs or {}),
     )
 
 

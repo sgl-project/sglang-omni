@@ -555,6 +555,9 @@ def test_pd_stage_specs_carry_typed_pd_execution_outside_factory_args(
         "decode",
         "thinker_prefill",
     )
+    assert prefill.pd_execution.scheduler_class.endswith(".OmniPrefillScheduler")
+    assert decode.pd_execution.scheduler_class.endswith(".OmniDecodeScheduler")
+    assert prefill.pd_execution.scheduler_class != decode.pd_execution.scheduler_class
     assert "pd_role" not in prefill.factory_kwargs
     assert "pd_partner" not in decode.factory_kwargs
 
