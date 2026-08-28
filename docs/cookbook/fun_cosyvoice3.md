@@ -276,6 +276,24 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Reserved for the planned incremental decoder; current decode is buffered |
 
+### Ascend Flow NPUGraph
+
+Ascend deployments can opt into NPUGraph replay for the 10-step Flow DiT loop:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --stages.vocoder.factory_args.enable_flow_npugraph true
+```
+
+The runner captures one graph per input shape, dtype, and device signature. It
+caches at most eight graphs by default; additional signatures use NPU eager
+execution. Override the bound with
+`--stages.vocoder.factory_args.flow_npugraph_max_graphs N`. Streaming Flow uses
+the eager path because its chunk mask contract differs from buffered inference.
+The option is ignored on non-NPU platforms.
+
 ## Model Architecture
 
 | Component | Detail |
