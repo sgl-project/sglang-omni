@@ -6,7 +6,7 @@ FROM ubuntu:24.04
 SHELL ["/bin/bash", "-c"]
 
 ARG SGLANG_REPO=https://github.com/sgl-project/sglang.git
-ARG VER_SGLANG=v0.5.16
+ARG VER_SGLANG=v0.5.18
 
 RUN apt-get update && \
     apt-get full-upgrade -y && \
@@ -60,8 +60,7 @@ RUN source /opt/.venv/bin/activate && \
     cd python && \
     cp pyproject_cpu.toml pyproject.toml && \
     uv pip install . --no-build-isolation && \
-    cd .. && \
-    cd sgl-kernel && \
+    cd sglang/kernels/aot && \
     cp pyproject_cpu.toml pyproject.toml && \
     uv pip install . --no-build-isolation
 COPY . /sgl-workspace/sglang-omni

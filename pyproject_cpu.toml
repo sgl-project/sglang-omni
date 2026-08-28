@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 # Intel CPU variant of pyproject.toml (see docs/get_started/installation_cpu.md).
 # Torch family pinned to +cpu; CUDA-only wheels dropped; deps scoped to the
-# CPU-supported models. sglang is verified against v0.5.16 but cannot be
+# CPU-supported models. sglang is verified against v0.5.18 but cannot be
 # pinned here -- every published wheel pulls CUDA torch.
 
 [project]

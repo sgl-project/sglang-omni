@@ -44,7 +44,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_CPU="${REPO_ROOT}/pyproject_cpu.toml"
 
 
-SGLANG_VERIFIED_VERSION="v0.5.16"
+SGLANG_VERIFIED_VERSION="v0.5.18"
 
 [[ -f "${PYPROJECT_CPU}" ]] || { echo "ERROR: ${PYPROJECT_CPU} not found" >&2; exit 1; }
 
@@ -210,6 +210,9 @@ else
   echo "           git checkout ${SGLANG_VERIFIED_VERSION}"
   echo "           cd python && cp pyproject_cpu.toml pyproject.toml"
   echo "           pip install -e . --no-build-isolation --index-url ${CPU_INDEX} --extra-index-url https://pypi.org/simple"
+  echo "           cd sglang/kernels/aot"
+  echo "           cp pyproject_cpu.toml pyproject.toml"
+  echo "           pip install . --no-build-isolation --index-url ${CPU_INDEX} --extra-index-url https://pypi.org/simple"
 fi
 
 if [[ "${VERIFY_RC}" -ne 0 ]]; then

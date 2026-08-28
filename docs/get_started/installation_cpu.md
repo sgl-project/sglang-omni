@@ -58,13 +58,13 @@ Install the matching CPU SGLang build:
 ```bash
 git clone https://github.com/sgl-project/sglang ../sglang
 cd ../sglang
-git checkout v0.5.16
+git checkout v0.5.18
 
 cd python
 cp pyproject_cpu.toml pyproject.toml
 uv pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu
 
-cd ../sgl-kernel
+cd sglang/kernels/aot
 cp pyproject_cpu.toml pyproject.toml
 uv pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/cpu
 ```
@@ -144,8 +144,6 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     "ref_text": "Reference transcript for the voice prompt.",
     "language": "English",
     "response_format": "wav",
-    "do_sample": false,
-    "subtalker_dosample": false
   }' \
   --output output.wav
 ```
