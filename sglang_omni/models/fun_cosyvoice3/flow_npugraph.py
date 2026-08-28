@@ -146,7 +146,7 @@ class FlowDiTNPUGraphRunner:
         if streaming:
             return self._call_eager(values, streaming=True)
 
-        inputs = dict(zip(self._input_names, values, strict=True))
+        inputs = dict(zip(self._input_names, values))
         original_inputs = inputs
         inputs = self._prepare(inputs)
         if inputs is None:
