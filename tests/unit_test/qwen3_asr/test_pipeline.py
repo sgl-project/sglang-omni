@@ -26,7 +26,6 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def _fake_server_args_builder(build_kwargs: dict[str, object]):
@@ -46,7 +45,7 @@ def _fake_server_args_builder(build_kwargs: dict[str, object]):
             ("moe_a2a_backend", "none"),
         ):
             flat.setdefault(name, default)
-        server_args = FakeServerArgs(context_length=context_length, **flat)
+        server_args = SimpleNamespace(context_length=context_length, **flat)
         prefill_bs = overrides.get("cuda_graph_bs_prefill")
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
@@ -442,8 +441,6 @@ def _patch_engine_dependencies(
         )
         return want_cuda_graph, (
             model_worker,
-            object(),
-            object(),
             object(),
             object(),
             object(),

@@ -23,8 +23,16 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
-from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.pipeline.helpers import run_scheduler
+
+
+@pytest.fixture(autouse=True)
+def _serving_bag(monkeypatch):
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_serving",
+        lambda: SimpleNamespace(weight_version=None),
+    )
 
 
 def _ingress(
@@ -1031,7 +1039,6 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     scheduler = object.__new__(OmniScheduler)
     _init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = {"req-finished"}
     scheduler._prefill_start_done = {"req-finished"}
@@ -1190,7 +1197,6 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda data: {"ok": True}
-    scheduler.server_args = SimpleNamespace(weight_version=None)
 
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
     scheduler._model_runner = SimpleNamespace(
@@ -1226,7 +1232,6 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     cleanup_calls: list[str] = []
     scheduler._request_finished_callback = cleanup_calls.append
 
@@ -1263,7 +1268,6 @@ def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
     scheduler._first_emit_done = set()
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     cleanup_calls: list[str] = []
     scheduler._request_finished_callback = cleanup_calls.append
 
@@ -1359,7 +1363,6 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     scheduler._aborted_request_ids = set()
     scheduler._aborted_request_id_order = deque()
     scheduler._completed_request_ids = {}
@@ -1572,7 +1575,6 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda _data: None
-    scheduler.server_args = SimpleNamespace(weight_version=None)
 
     gc_was_enabled = gc.isenabled()
     gc.disable()
@@ -1642,7 +1644,6 @@ def test_stream_output_closes_late_stream_ingress() -> None:
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda _data: {"ok": True}
-    scheduler.server_args = SimpleNamespace(weight_version=None)
 
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
     req = SimpleNamespace(
@@ -1859,7 +1860,7 @@ def test_omni_scheduler_normalizes_req_token_arrays() -> None:
 def _construct_omni_scheduler(
     monkeypatch,
     *,
-    return_global_server_args: bool = False,
+    return_runtime_context: bool = False,
     server_max_queued_requests: int | None = 7,
     **kwargs,
 ) -> OmniScheduler | tuple[OmniScheduler, object]:
@@ -1889,23 +1890,33 @@ def _construct_omni_scheduler(
         raising=False,
     )
 
-    class StrictGlobalServerArgs:
+    class StrictParallelContext:
         def __init__(self) -> None:
             object.__setattr__(self, "pp_max_micro_batch_size", None)
-            object.__setattr__(self, "override_calls", [])
+            object.__setattr__(self, "attn_dcp_size", 1)
 
         def __setattr__(self, name, value) -> None:
             raise AttributeError(f"bare mutation of {name}")
 
+    class StrictRuntimeContext:
+        def __init__(self, parallel) -> None:
+            self.parallel = parallel
+            self.override_calls = []
+
         def override(self, source, **fields) -> None:
             self.override_calls.append((source, dict(fields)))
             for name, value in fields.items():
-                object.__setattr__(self, name, value)
+                object.__setattr__(self.parallel, name, value)
 
-    global_server_args = StrictGlobalServerArgs()
+    parallel_context = StrictParallelContext()
+    runtime_context = StrictRuntimeContext(parallel_context)
     monkeypatch.setattr(
-        "sglang.srt.server_args.get_global_server_args",
-        lambda: global_server_args,
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: parallel_context,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_context",
+        lambda: runtime_context,
     )
     tp_worker = SimpleNamespace(
         gpu_id=0,
@@ -1944,6 +1955,12 @@ def _construct_omni_scheduler(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
     )
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
+        lambda: SimpleNamespace(
+            schedule_conservativeness=server_args.schedule_conservativeness
+        ),
+    )
 
     scheduler = OmniScheduler(
         tp_worker=tp_worker,
@@ -1955,15 +1972,15 @@ def _construct_omni_scheduler(
         **kwargs,
     )
 
-    if return_global_server_args:
-        return scheduler, global_server_args
+    if return_runtime_context:
+        return scheduler, runtime_context
     return scheduler
 
 
 def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     """Upstream requeue helpers read max_queued_requests on OmniScheduler."""
-    scheduler, global_server_args = _construct_omni_scheduler(
-        monkeypatch, return_global_server_args=True
+    scheduler, runtime_context = _construct_omni_scheduler(
+        monkeypatch, return_runtime_context=True
     )
 
     assert scheduler._pending_chunked_abort_req is None
@@ -1975,8 +1992,8 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
     assert scheduler.max_queued_requests == 7
     assert scheduler.max_running_requests == 1
     assert scheduler.max_req_len == 63
-    assert global_server_args.pp_max_micro_batch_size == 1
-    assert global_server_args.override_calls == [
+    assert runtime_context.parallel.pp_max_micro_batch_size == 1
+    assert runtime_context.override_calls == [
         (
             "sglang_omni.scheduler.pp_max_micro_batch_size_default",
             {"pp_max_micro_batch_size": 1},
@@ -2067,9 +2084,19 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         ),
         raising=False,
     )
+    bridge_parallel = SimpleNamespace(pp_max_micro_batch_size=None, attn_dcp_size=1)
+
+    def _override(_source, **fields) -> None:
+        for name, value in fields.items():
+            setattr(bridge_parallel, name, value)
+
     monkeypatch.setattr(
-        "sglang.srt.server_args.get_global_server_args",
-        lambda: FakeServerArgs(pp_max_micro_batch_size=None),
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: bridge_parallel,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_context",
+        lambda: SimpleNamespace(override=_override),
     )
 
     observed = []
@@ -2122,6 +2149,12 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
+        lambda: SimpleNamespace(
+            schedule_conservativeness=server_args.schedule_conservativeness
+        ),
     )
 
     scheduler = OmniScheduler(
@@ -2595,7 +2628,6 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     _init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
-    scheduler.server_args = SimpleNamespace(weight_version=None)
     scheduler._aborted_request_ids = set()
     scheduler._first_emit_done = {"req-adapter"}
     scheduler._prefill_start_done = {"req-adapter"}

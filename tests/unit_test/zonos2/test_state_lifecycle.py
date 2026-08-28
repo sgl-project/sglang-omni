@@ -27,6 +27,7 @@ from sglang_omni.models.zonos2.request_builders import (
 from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
 from sglang_omni.models.zonos2.state_pool import Zonos2DecodeStatePool
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 
@@ -90,7 +91,9 @@ def _terminal_data(request_id: str = "req-zonos2") -> Zonos2SGLangRequestData:
     )
 
 
-def test_length_terminal_releases_pool_row_through_scheduler_result_path() -> None:
+def test_length_terminal_releases_pool_row_through_scheduler_result_path(
+    monkeypatch,
+) -> None:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -129,7 +132,11 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path() -> No
     scheduler._result_adapter = result_adapter
     scheduler._model_runner = None
     scheduler._stream_output_builder = None
-    scheduler.server_args = SimpleNamespace(weight_version=None)
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_serving",
+        lambda: SimpleNamespace(weight_version=None),
+    )
 
     scheduler.stream_output([req])
 

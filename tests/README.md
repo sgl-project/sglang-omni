@@ -49,9 +49,8 @@ tests/
     ├── sampling/
     │   └── test_seed.py
     ├── vendor/
-    │   ├── test_sglang_parallel_state.py
-    │   ├── test_sglang_server_args.py
-    │   └── test_sglang_signature.py
+    │   ├── test_sglang_layers_patch.py
+    │   └── test_sglang_server_args.py
     ├── xpu/
     │   ├── test_device_layer.py
     │   └── test_install_script.py
@@ -157,6 +156,7 @@ tests/
     │   ├── test_stream_output_builder.py
     │   └── test_streaming_client.py
     ├── arkasr/
+    │   ├── test_encoder_cuda_graph.py
     │   ├── test_encoder_service.py
     │   └── test_pipeline.py
     ├── moss_transcribe_diarize/
@@ -507,8 +507,13 @@ that happened to contain an older version of the test.
 - `unit_test/arkasr/`: ARK-ASR-3B unit tests:
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
-  - pipeline config, stage factory concurrency defaults, deferred CUDA-graph
-    capture, async-decode default, and the dotted `factory.enable_async_decode` CLI override
+  - pipeline config, stage factory concurrency defaults, encoder CUDA-graph
+    working-set precapture, async-decode default, and the dotted `factory.enable_async_decode` CLI override
+  - encoder CUDA graph runner: 2-D `(batch, T)` buckets aligned to
+    `merge_factor`, batch buckets derived from `encoder_max_batch_size`,
+    startup working-set precapture (no request-path capture), eager
+    fallback for uncaptured shapes, and a CUDA-only graph-vs-eager
+    parity check
   - audio-token count formula, audio-tower forward shape, marker-token
     suppression, and the fp16 encoder residual clamp.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
@@ -777,9 +782,9 @@ that happened to contain an older version of the test.
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
 
-- `unit_test/vendor/`: Compatibility boundaries for supported SGLang parallel
-  state layouts, server-argument publication, and version-dependent call
-  signatures.
+- `unit_test/vendor/`: Server-argument publication boundaries and the vendor
+  RMSNorm patch staying on the fused-op dispatch path (dtype fallback,
+  zero-token contract, kwargs passthrough).
 
 - `unit_test/whisper_asr/`: Whisper pipeline configuration, encoder CUDA Graph,
   decoder LayerNorm fast-path placement, and PyTorch fallback behavior

@@ -107,28 +107,30 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
     assert seen["forward_metadata"] is attention_metadata
 
 
+@pytest.fixture
+def asr_server_args():
+    from sglang.srt.runtime_context import get_context
+
+    mm_attention_backend = "aiter_attn" if current_platform.is_rocm() else "triton_attn"
+    with get_context().override_server_args(
+        model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend
+    ):
+        yield
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_graph_matches_eager_tower():
+def test_graph_matches_eager_tower(asr_server_args):
     from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig
     from sglang.srt.distributed import (
         init_distributed_environment,
         initialize_model_parallel,
     )
     from sglang.srt.distributed.parallel_state import model_parallel_is_initialized
-    from sglang.srt.runtime_context import get_context
-    from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.models.qwen3_asr.audio_lengths import qwen3_asr_num_audio_tokens
     from sglang_omni.models.qwen3_asr.encoder_cuda_graph import eager_preamble
 
-    is_rocm = current_platform.is_rocm()
-    mm_attention_backend = "aiter_attn" if is_rocm else "triton_attn"
-    get_context().set_server_args(
-        ServerArgs(
-            model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend
-        )
-    )
     if not model_parallel_is_initialized():
         init_distributed_environment(
             backend="nccl",

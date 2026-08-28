@@ -17,7 +17,6 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.models.fun_asr import request_builders
 from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
@@ -203,7 +202,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         build_kwargs.clear()
         build_kwargs.update(overrides)
         prefill_bs = overrides.get("cuda_graph_bs_prefill")
-        server_args = FakeServerArgs(**overrides)
+        server_args = SimpleNamespace(**overrides)
         server_args.mm_attention_backend = None
         server_args.cuda_graph_config = SimpleNamespace(
             prefill=SimpleNamespace(
@@ -224,8 +223,6 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     )
     infrastructure = (
         model_worker,
-        object(),
-        object(),
         object(),
         object(),
         object(),
