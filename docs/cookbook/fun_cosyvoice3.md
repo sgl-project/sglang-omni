@@ -129,6 +129,26 @@ The built-in Flow implementation is tied to the Flow/CFM structure in the docume
 CosyVoice checkout; an incompatible Flow structure fails directly instead of using a
 fallback implementation.
 
+### torch.compile for the DiT backbone
+
+The flow decoder's DiT backbone (`flow.decoder.estimator`, a 22-layer DiT invoked
+once per Euler step) can be compiled with `torch.compile` to reduce per-step
+kernel-launch overhead. It is opt-in because it pays a one-time compile cost at
+startup and is most beneficial under sustained throughput load. The compile uses
+`dynamic=True`, so one symbolic-sequence-length graph serves every utterance
+length.
+
+Enable it by overriding the vocoder stage's `factory` args (the `stages.`
+prefix is implied in the CLI dotted path):
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --vocoder.factory.enable_dit_torch_compile true \
+  --port 8000
+```
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
