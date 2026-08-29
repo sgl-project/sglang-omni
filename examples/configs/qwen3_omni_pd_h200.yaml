@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Qwen3-Omni with the thinker split into a prefill half and a decode half,
+# both on one H200.
+#
+# One card is the placement to start from. What PD needs is the process
+# split -- a prefill step leaves the decode scheduler thread whichever card it
+# runs on -- so a second card is a separate decision about hardware, not what
+# makes the split work.
+#
+# Both halves must declare memory_fraction when they share a card. The
+# launcher sums declared fractions per GPU and skips a stage that declares
+# none, so two undeclared halves would each size against the whole card and
+# whichever won the startup lock would take the memory.
+
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-pd-h200
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+
+stages:
+  image_encoder:
+    gpu_memory_fraction: 0.017
+  audio_encoder:
+    gpu_memory_fraction: 0.017
+  thinker:
+    # Replaces this stage with thinker_prefill and thinker_decode. Downstream
+    # edges follow automatically; nothing else in the graph changes.
+    pd_disaggregation:
+      prefill:
+        gpu: 0
+        memory_fraction: 0.30
+        engine:
+          # Prefill sizes batches for one forward, decode for many steps.
+          max_running_requests: 8
+      decode:
+        gpu: 0
+        memory_fraction: 0.47
+        engine:
+          max_running_requests: 64
+          # Overload on a split pair arrives as latency, not rejection, so
+          # bound the queue rather than leaving it unbounded.
+          max_queued_requests: 64
+      # Each handoff holds its request's prompt KV on the prefill card until
+      # decode acknowledges the copy.
+      max_inflight_handoffs: 16
+  talker_ar:
+    gpu_memory_fraction: 0.123
+  code2wav:
+    gpu_memory_fraction: 0.014
