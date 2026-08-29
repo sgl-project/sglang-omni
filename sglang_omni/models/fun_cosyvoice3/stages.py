@@ -334,13 +334,8 @@ def _load_cosyvoice3_flow_hift(
 
 
 def _configure_dit_torch_compile() -> None:
-    """Enable Inductor/Dynamo flags that make the DiT graph compile well.
-
-    Mirrors the relevant subset of SGLang's ``set_torch_compile_config``
-    without importing ``sglang.srt``. The vocoder stage is a plain pipeline
-    process and should not pull in the full serving stack just to compile the
-    flow decoder.
-    """
+    """Enable the Inductor/Dynamo flags the DiT graph wants, without pulling in
+    the full ``sglang.srt`` stack (the vocoder is a plain pipeline process)."""
     torch._inductor.config.fx_graph_cache = True
     if hasattr(torch._dynamo.config, "cache_size_limit"):
         torch._dynamo.config.cache_size_limit = 1024
@@ -354,22 +349,16 @@ def _run_dit_estimator(
     *,
     compute_dtype: torch.dtype | None = None,
 ) -> None:
-    """Run one DiT estimator forward with classifier-free-guidance shapes.
+    """Run one warmup forward at the serving CFG/autocast signature.
 
-    ``CausalConditionalCFM.solve_euler`` calls the estimator with a doubled
-    batch of two: one conditioned sample and one unconditional sample for CFG.
-    The mel time axis ``T`` varies with utterance length; the warmup forward
-    builds one symbolic-length graph so every subsequent length reuses it.
-
-    ``compute_dtype`` mirrors the vocoder's autocast dtype (None = fp32, no
-    autocast) so the warm graph matches the serving compute precision.
+    The solver calls the estimator with a CFG batch of two and a variable mel
+    time axis ``T``; ``dynamic=True`` turns that into one symbolic-length graph.
+    ``compute_dtype`` mirrors the vocoder's autocast (None = fp32).
     """
     param = next(estimator.parameters())
     device, dtype = param.device, param.dtype
     t = int(mel_frames)
-    # 2 == the fixed classifier-free-guidance batch in ``solve_euler``;
-    # 80 == the DiT mel/channel dim for the pinned CosyVoice3 checkpoint
-    # (``flow.decoder.estimator.proj_out.out_features``).
+    # CFG batch 2, mel dim 80 (proj_out.out_features for the pinned checkpoint).
     x = torch.randn(2, 80, t, device=device, dtype=dtype)
     mask = torch.ones(2, 1, t, device=device, dtype=dtype)
     mu = torch.randn(2, 80, t, device=device, dtype=dtype)
@@ -393,54 +382,27 @@ def _compile_dit_backbone(
 ) -> bool:
     """torch.compile the CosyVoice3 DiT backbone (``flow.decoder.estimator``).
 
-    The DiT backbone is a ``cosyvoice.flow.DiT.dit.DiT`` invoked once per
-    Euler step (``n_timesteps=10``) with a classifier-free-guidance batch of
-    ``[2, 80, T]`` samples. ``torch.compile(..., dynamic=True)`` builds a
-    single symbolic-sequence-length graph instead of specializing per length
-    (which would recompile per new utterance length until Dynamo's recompile
-    limit silently falls back to eager).
-
-    The bound ``forward`` is compiled rather than wrapping the module in an
-    ``OptimizedModule`` so parameter names stay stable. The warmup forwards pay
-    the one-time compile cost at startup instead of on the first request.
-    Dynamo guards on grad mode, so warmup runs under ``torch.inference_mode``
-    to match the ``@torch.inference_mode()`` decorator on ``flow.inference``,
-    and under the same autocast precision as serving (``compute_dtype``), so the
-    first real request reuses the warmed graph.
-
-    Known limitations (documented, not correctness bugs):
-
-    - CosyVoice's ``add_optional_chunk_mask`` ends in a ``Tensor.item()``
-      guard, which Dynamo cannot trace in-graph (``capture_scalar_outputs``
-      hits an Inductor ``Invalid NaN comparison`` error under dynamic shapes).
-      It stays a graph break with a host/device sync once per Euler step — the
-      same sync eager already pays, so there is no regression, only a ceiling
-      on the attainable speedup.
-    - The causal streaming estimator branch (``streaming=True``, used by the
-      in-flight chunk-wise streaming work) uses
-      ``torch.div(..., rounding_mode='trunc')`` in ``subsequent_chunk_mask``,
-      which Inductor cannot bounds-check under a dynamic sequence length and
-      fails to compile. It is therefore not warmed here and falls back to eager
-      until that Inductor path is fixed.
-    - ``compute_dtype`` must match the vocoder's serving autocast exactly or
-      the first real request recompiles (~85 s): pass ``torch.bfloat16`` for
-      bfloat16 configs and ``torch.float16`` for float16 configs, matching the
-      vocoder's ``_AUTOCAST_DTYPES`` mapping.
+    The estimator runs once per Euler step (10 steps) with a CFG batch of
+    ``[2, 80, T]``. ``dynamic=True`` builds one symbolic-sequence-length graph
+    so every utterance length reuses it instead of recompiling per length. The
+    bound forward is compiled (not an ``OptimizedModule``) so parameter names
+    stay stable, and warmup runs under ``inference_mode`` + the serving
+    ``compute_dtype`` so the first real request reuses the graph. ``torch.compile``
+    is lazy, so a failed compile surfaces during warmup and we restore the eager
+    forward and keep serving. The causal streaming branch is not warmed because
+    its mask math fails Inductor's dynamic-shape bounds check.
     """
     estimator = getattr(getattr(flow, "decoder", None), "estimator", None)
     if not isinstance(estimator, torch.nn.Module):
         logger.warning(
-            "Fun-CosyVoice3 DiT estimator is not a PyTorch module "
-            "(type=%s); skipping torch.compile",
+            "Fun-CosyVoice3 DiT estimator is not a PyTorch module (%s); "
+            "skipping torch.compile",
             type(estimator).__name__,
         )
         return False
     if warmup_mel_frames < 2:
         raise ValueError(f"warmup_mel_frames must be >= 2, got {warmup_mel_frames}")
 
-    # Keep a handle on the eager forward so a failed compile can restore it.
-    # ``torch.compile`` is lazy - the trace/inductor error surfaces on the first
-    # warmup call - so the whole compile + warmup is one fallback unit.
     original_forward = estimator.forward
     _configure_dit_torch_compile()
     try:

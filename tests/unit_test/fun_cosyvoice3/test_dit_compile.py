@@ -54,18 +54,15 @@ def test_compile_dit_backbone_compiles_estimator_forward_dynamic(monkeypatch) ->
 
     assert [call["dynamic"] for call in compile_calls] == [True]
     assert compile_calls[0]["fn"] == original_forward
-    # Bound-method compile must leave parameter names stable (no _orig_mod /
-    # OptimizedModule prefix) so checkpoint loading and weight updates keep
-    # matching named_parameters.
+    # Bound-method compile keeps parameter names stable (no _orig_mod prefix).
     assert set(dict(estimator.named_parameters())) == param_names
-    # Warmup runs the classifier-free-guidance [2, 80, T] signature.
+    # Warmup runs the CFG [2, 80, T] signature.
     assert forward_shapes == [((2, 80, 16), (2, 1, 16), (2, 80, 16), False)] * 3
 
 
 def test_compile_dit_backbone_warmup_matches_serving_grad_mode(monkeypatch) -> None:
-    # flow.inference is decorated with @torch.inference_mode(), and Dynamo
-    # guards on grad mode; warmup must run in inference_mode so the first real
-    # request hits the warmed graph instead of paying a recompile.
+    # flow.inference is @torch.inference_mode(); warmup must match (Dynamo
+    # guards on grad mode) so the first request reuses the warmed graph.
     estimator = _FakeDiTEstimator()
     flow = _FakeFlow(estimator)
     modes = []
@@ -97,9 +94,8 @@ def test_compile_dit_backbone_skips_non_module_estimator(monkeypatch) -> None:
 def test_compile_dit_backbone_falls_back_to_eager_on_compile_failure(
     monkeypatch,
 ) -> None:
-    # torch.compile is lazy: a trace/inductor failure surfaces on the first
-    # warmup call. The helper must restore the original eager forward and keep
-    # serving instead of leaving a broken compiled function in place.
+    # torch.compile is lazy: a failure surfaces on the first warmup call and
+    # must restore the eager forward.
     estimator = _FakeDiTEstimator()
     flow = _FakeFlow(estimator)
     original_forward = estimator.forward

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""GPU smoke test for the DiT torch.compile wiring.
+"""GPU smoke test: torch.compile(dynamic=True) on a tiny DiT-shaped module.
 
-Uses a tiny DiT-shaped module (matching the ``flow.decoder.estimator`` forward
-signature, including the ``Tensor.item()`` mask guard) to verify that
-``torch.compile(dynamic=True)`` + the flags set by
-``_configure_dit_torch_compile`` produce eager-equivalent output across two
-sequence lengths, without needing the CosyVoice checkout or checkpoint.
+Verifies eager-equivalent output across two sequence lengths without the
+CosyVoice checkout or checkpoint.
 """
 
 from __future__ import annotations
@@ -29,11 +26,9 @@ class _TinyDiT(torch.nn.Module):
 
     def forward(self, x, mask, mu, t, spks=None, cond=None, streaming=False):
         del mu, t, spks, cond, streaming
-        # The real DiT transposes to [batch, time, channels] before its linear
-        # layers; mirror that so the Linear operates on the channel dim.
+        # The real DiT transposes to [batch, time, channels] first.
         x = x.transpose(1, 2)
-        # Mirrors the data-dependent .item() guard in add_optional_chunk_mask;
-        # the branch is never taken on the serving path.
+        # Mirrors the never-taken .item() guard in add_optional_chunk_mask.
         if mask.sum().item() < 0:
             x = x * 0
         out = self.norm(self.proj(x))
@@ -64,9 +59,7 @@ def test_compile_dit_backbone_dynamic_shapes_match_eager() -> None:
     estimator.forward = torch.compile(estimator.forward, dynamic=True)
 
     with torch.no_grad():
-        # Run two different sequence lengths on the SAME inputs: a warm length
-        # first, then a different length to prove the symbolic sequence-length
-        # graph is reused (no per-length specialization).
+        # Two lengths on the same inputs prove the symbolic-length graph is reused.
         for t in (32, 48):
             x, mask, mu, timestep, spks, cond = _make_inputs(estimator, t)
             compiled = estimator(x, mask, mu, timestep, spks, cond, streaming=False)
