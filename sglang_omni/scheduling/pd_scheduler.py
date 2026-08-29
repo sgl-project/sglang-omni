@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import types
@@ -59,6 +60,9 @@ def model_pd_scheduler_kwargs(
     if scheduler_cls is OmniScheduler:
         return {}
     raise TypeError(f"unsupported scheduler class {scheduler_cls!r}")
+
+
+logger = logging.getLogger(__name__)
 
 
 class OmniPrefillScheduler(OmniScheduler):
@@ -233,6 +237,7 @@ class OmniDecodeScheduler(OmniScheduler):
         _validate_pd_runtime(self)
 
         _serialize_kv_allocation(self)
+        _warn_if_decode_queue_unbounded(self, stage_name)
 
         pool_id = f"{stage_name}:kv"
         pool = build_kv_pool(
@@ -376,6 +381,34 @@ def kv_allocator_holders(scheduler: OmniDecodeScheduler) -> dict[str, Any]:
         if holder is not None:
             found[name] = getattr(holder, "token_to_kv_pool_allocator", None)
     return found
+
+
+def _warn_if_decode_queue_unbounded(scheduler: Any, stage_name: str) -> None:
+    """Say which admission policy this Decode half is running under.
+
+    A colocated replica throttles admission without trying to: prefill and
+    decode contend for one card and one scheduler thread, so accepting more
+    work slows the accepting. Splitting the halves removes that feedback and
+    nothing replaces it.
+
+    With no queue bound the excess arrives as latency rather than as
+    rejection. Measured on two H200s at offered 16, the Decode half held about
+    437 requests against max_running_requests 64, and a request took 40.96 s
+    against 2.29 s colocated -- while admission read 100% throughout, which is
+    why it does not surface as a failure.
+
+    Unbounded is a legitimate choice for an offline workload and a poor one
+    for interactive serving, so state which one is in effect rather than pick.
+    """
+    if getattr(scheduler.server_args, "max_queued_requests", 0):
+        return
+    logger.info(
+        "PD decode stage %s has no max_queued_requests, so its queue is "
+        "unbounded and overload will appear as latency rather than "
+        "rejection. Set --max-queued-requests to bound it; "
+        "models/qwen3_tts sets 16 for its generation stage.",
+        stage_name,
+    )
 
 
 def _validate_pd_runtime(scheduler: OmniScheduler) -> None:

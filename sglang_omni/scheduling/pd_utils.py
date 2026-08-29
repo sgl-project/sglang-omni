@@ -56,6 +56,12 @@ class DecodeContinuation:
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
     multimodal_resume: dict[str, Any] | None = None
+    # Note (Audrey Zheng): the Decode half rebuilds this request and schedules
+    # it. Without this it rebuilds at the default, so a request admitted ahead
+    # of others on Prefill loses that standing exactly when it starts
+    # competing for decode steps -- and priority scheduling is a server-wide
+    # setting, so the demotion is silent wherever it is on.
+    priority: int | None = None
     version: int = CONTINUATION_VERSION
 
     def __post_init__(self) -> None:
@@ -153,6 +159,7 @@ def continuation_from_req(
     ):
         raise NotImplementedError("PD does not support projected input embeddings")
     sampling = _sampling_params_to_dict(req.sampling_params)
+    priority = getattr(req, "priority", None)
     if any(
         sampling.get(key)
         for key in (
@@ -177,6 +184,7 @@ def continuation_from_req(
     return DecodeContinuation(
         request_id=req.rid,
         transfer_id=transfer_id,
+        priority=priority,
         origin_input_ids=origin_input_ids,
         origin_input_ids_unpadded=(
             list(req.origin_input_ids_unpadded)
@@ -242,6 +250,7 @@ def req_from_continuation(
             else None
         ),
         sampling_params=sampling_params,
+        priority=continuation.priority,
         # Prefill logprobs are already retained by Omni request data.
         return_logprob=False,
         top_logprobs_num=continuation.top_logprobs_num,

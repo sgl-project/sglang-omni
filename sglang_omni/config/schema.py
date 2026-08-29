@@ -255,6 +255,13 @@ class PDConfig(BaseModel):
 
     prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
     decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
+    # Note (Audrey Zheng): how many handoffs the Prefill half may have in
+    # flight. Each one holds that request's prompt KV on the Prefill card
+    # until Decode acknowledges the copy, so this bounds how much of the
+    # Prefill pool sits in leases. Unset leaves the count where it lands
+    # today, which is Prefill's max_running_requests -- a number chosen to
+    # size batches, not to bound leases.
+    max_inflight_handoffs: int | None = Field(default=None, gt=0)
 
 
 class PDExecution(BaseModel):
@@ -264,6 +271,7 @@ class PDExecution(BaseModel):
 
     role: Literal["prefill", "decode"]
     partner: str = Field(min_length=1)
+    max_inflight_handoffs: int | None = None
     # Note (Audrey Zheng): the Decode halves this Prefill may hand off to. One
     # entry today, and `partner` stays the name a 1:1 reader expects. Carrying
     # a sequence means a second Decode half does not migrate this schema or
@@ -359,6 +367,19 @@ class StageConfig(BaseModel):
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
 
+    # Note (Audrey Zheng): the model saying it wrote this stage for PD. It is
+    # a field rather than a marker on the factory because the compiler has to
+    # answer "is this config valid" from the config: reading an attribute off
+    # the factory meant importing a model module -- and torch, transformers
+    # and the model registry with it -- into the launcher, and it made the
+    # answer depend on something outside the config that the config cannot
+    # show you.
+    #
+    # This is the declaration, not the proof. `_construct_scheduler` still
+    # checks that the factory takes the compiler's arguments and returns the
+    # scheduler class for its role, so a stage that declares this and did not
+    # do the work still fails -- just later, and in the process that owns it.
+    pd_capable: bool = False
     pd_disaggregation: PDConfig | None = None
     pd_execution: PDExecution | None = None
 

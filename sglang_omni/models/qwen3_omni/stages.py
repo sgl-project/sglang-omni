@@ -1012,6 +1012,8 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
 ):
     """Returns OmniScheduler for thinker."""
     # note (luojiaxuan):
@@ -1103,6 +1105,8 @@ def create_sglang_thinker_executor_from_config(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        scheduler_cls=scheduler_cls,
+        scheduler_kwargs=scheduler_kwargs,
     )
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(

@@ -15,7 +15,6 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
-from sglang_omni.config.pd_capability import PD_CAPABLE_MARKER
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
@@ -786,6 +785,11 @@ def _construct_stage(
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
         replica_topology=spec.replica_topology or None,
+        max_inflight_handoffs=(
+            spec.pd_execution.max_inflight_handoffs
+            if spec.pd_execution is not None
+            else None
+        ),
         kv_registrations=kv_registrations,
     )
 
@@ -819,17 +823,6 @@ def _construct_scheduler(
 
     expected_scheduler_cls = None
     if spec.pd_execution is not None:
-        # Note (Audrey Zheng): checked here rather than at config time. The
-        # marker lives on the model's factory, and reading it in the launcher
-        # meant importing a model module -- and whatever it pulls in -- just
-        # to look at a boolean. This process is about to import that factory
-        # anyway, so the check costs nothing here and the compiler stops
-        # reaching into model code.
-        if not getattr(factory, PD_CAPABLE_MARKER, False):
-            raise ValueError(
-                f"Stage {spec.stage_name!r} is PD-disaggregated, but factory "
-                f"{spec.factory!r} has not declared PD support"
-            )
         import inspect
 
         from sglang_omni.scheduling.pd_scheduler import scheduler_class_for_role

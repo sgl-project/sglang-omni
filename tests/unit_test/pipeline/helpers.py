@@ -30,6 +30,11 @@ if TYPE_CHECKING:
 
 def stage(name: str, **kwargs: Any) -> StageConfig:
     kwargs.setdefault("factory_path", FACTORY)
+    # A stage declaring pd_disaggregation has, by construction here, a factory
+    # that was written for it. Declare it, so tests exercise the compiler
+    # rather than trip its opt-in check.
+    if kwargs.get("pd_disaggregation") is not None:
+        kwargs.setdefault("pd_capable", True)
     if kwargs.get("tp_size", 1) == 1:
         kwargs.setdefault("process", "pipeline")
     return StageConfig(name=name, **kwargs)

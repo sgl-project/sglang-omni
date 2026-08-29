@@ -34,6 +34,7 @@ DECODE_STAGE = "decode"
 TALKER_STAGE = "talker_ar"
 CODE2WAV_STAGE = "code2wav"
 MM_AGGREGATE_STAGE = "mm_aggregate"
+QWEN_THINKER_PD_RESUME_SCHEMA = "qwen3-omni-thinker-v1"
 
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
@@ -1023,6 +1024,68 @@ def make_thinker_scheduler_adapters(
         )
 
     return request_builder, result_adapter
+
+
+def make_thinker_pd_adapters(*, tokenizer: Any):
+    """Project and restore the model state needed after a thinker Prefill."""
+
+    def state_builder(req: Any):
+        data = req._omni_data
+        payload = data.stage_payload
+        state = Qwen3OmniPipelineState.from_dict(payload.data)
+        prompt_ids = state.prompt["input_ids"]
+        if hasattr(prompt_ids, "tolist"):
+            prompt_ids = prompt_ids.tolist()
+        prompt_ids = list(prompt_ids)
+        projected = Qwen3OmniPipelineState(
+            prompt={"input_ids": prompt_ids},
+            stream_state=dict(state.stream_state),
+        )
+        projected_payload = StagePayload(
+            request_id=payload.request_id,
+            request=OmniRequest(
+                inputs=None,
+                params=dict(payload.request.params),
+                metadata=dict(payload.request.metadata),
+            ),
+            data=projected.to_dict(),
+        )
+        mm_inputs = req.multimodal_inputs
+        delta = (
+            None
+            if mm_inputs is None
+            else getattr(mm_inputs, "mrope_position_delta", None)
+        )
+        resume = None
+        if delta is not None:
+            resume = {
+                "schema": QWEN_THINKER_PD_RESUME_SCHEMA,
+                "mrope_position_delta": delta.tolist(),
+            }
+        return projected_payload.to_dict(), resume, prompt_ids
+
+    def state_restorer(req: Any, data: Any, resume: dict[str, Any] | None) -> None:
+        del data
+        req.tokenizer = tokenizer
+        req.omni_model_inputs = None
+        req._omni_consumed = None
+        req._omni_mm_positions = None
+        if resume is None:
+            return
+        if set(resume) != {"schema", "mrope_position_delta"}:
+            raise ValueError("invalid Qwen thinker PD resume fields")
+        if resume["schema"] != QWEN_THINKER_PD_RESUME_SCHEMA:
+            raise ValueError(f"unsupported Qwen thinker PD resume {resume['schema']!r}")
+        from sglang.srt.managers.schedule_batch import MultimodalInputs
+
+        delta = torch.tensor(resume["mrope_position_delta"], dtype=torch.long)
+        if delta.shape != (1, 1):
+            raise ValueError("Qwen thinker PD mRoPE delta must have shape (1, 1)")
+        mm_inputs = MultimodalInputs(mm_items=[])
+        mm_inputs.mrope_position_delta = delta
+        req.multimodal_inputs = mm_inputs
+
+    return state_builder, state_restorer
 
 
 def make_talker_scheduler_adapters(

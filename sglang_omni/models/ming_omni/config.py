@@ -175,6 +175,9 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         name=THINKER_STAGE,
         process=process,
         factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+        # This factory projects and restores the state a Decode half needs, so
+        # the compiler may split it.
+        pd_capable=True,
         factory=MingThinkerFactoryArgs(thinker_max_seq_len=8192),
         gpu=gpu,
         next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
@@ -194,6 +197,9 @@ def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
         name=THINKER_STAGE,
         process=process,
         factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+        # This factory projects and restores the state a Decode half needs, so
+        # the compiler may split it.
+        pd_capable=True,
         factory=MingThinkerFactoryArgs(
             thinker_max_seq_len=8192, enable_streaming_tts=True
         ),

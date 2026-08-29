@@ -153,6 +153,9 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
         factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
         factory=factory_group,
         gpu=gpu,
+        # This factory projects and restores the state a Decode half needs, so
+        # the compiler may split it.
+        pd_capable=True,
         next="decode",
         **join_kwargs,
         stream_to=["talker_ar", "decode"] if speech_enabled else ["decode"],

@@ -19,12 +19,16 @@ def create_thinker_scheduler(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
     from sglang_omni.models.qwen3_omni.request_builders import (
+        QWEN_THINKER_PD_RESUME_SCHEMA,
+        make_thinker_pd_adapters,
         make_thinker_scheduler_adapters,
         make_thinker_stream_output_builder,
         should_generate_audio_output,
@@ -108,8 +112,22 @@ def create_thinker_scheduler(
         thinker_config=thinker_config,
     )
     stream_output_builder = make_thinker_stream_output_builder()
+    scheduler_cls = scheduler_cls or OmniScheduler
+    construction_kwargs = dict(scheduler_kwargs or {})
+    if scheduler_cls is not OmniScheduler:
+        from sglang_omni.scheduling.pd_scheduler import model_pd_scheduler_kwargs
 
-    return OmniScheduler(
+        state_builder, state_restorer = make_thinker_pd_adapters(tokenizer=tokenizer)
+        construction_kwargs.update(
+            model_pd_scheduler_kwargs(
+                scheduler_cls,
+                state_builder=state_builder,
+                state_restorer=state_restorer,
+                resume_schema=QWEN_THINKER_PD_RESUME_SCHEMA,
+            )
+        )
+
+    return scheduler_cls(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -125,6 +143,7 @@ def create_thinker_scheduler(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        **construction_kwargs,
     )
 
 

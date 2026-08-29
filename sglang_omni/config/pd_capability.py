@@ -1,19 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Explicit factory opt-in for compiler-owned PD scheduler construction."""
+"""What a stage must declare before the compiler will split it."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from typing import Any
+from collections.abc import Iterable
 
 from sglang_omni.config.schema import StageConfig
 
-PD_CAPABLE_MARKER = "__sglang_pd_disaggregation_capable__"
 
+def validate_pd_capabilities(stages: Iterable[StageConfig]) -> None:
+    """Reject a PD config for a stage that never declared PD support.
 
-def pd_disaggregation_capable(factory: Callable[..., Any]) -> Callable[..., Any]:
-    setattr(factory, PD_CAPABLE_MARKER, True)
-    return factory
+    Reads `pd_capable` off the stage. The declaration lives in the config
+    because that is what makes this a function of its input: the compiler can
+    answer "is this valid" without importing model code, and the answer cannot
+    change while the config stays the same.
+
+    This is the declaration only. `_construct_scheduler` proves it, by
+    checking that the factory accepts the compiler's arguments and returns the
+    scheduler class for its role.
+    """
+    for stage in stages:
+        if stage.pd_execution is None or stage.pd_capable:
+            continue
+        raise ValueError(
+            f"Stage {stage.name!r} is PD-disaggregated, but it has not "
+            "declared pd_capable"
+        )
 
 
 # Note (Audrey Zheng): what a PD half cannot do yet. The scheduler enforces

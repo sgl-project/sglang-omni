@@ -247,17 +247,14 @@ def test_pd_factory_wrong_type_and_missing_capability_fail_at_startup(tmp_path) 
     with pytest.raises(TypeError, match="expected OmniDecodeScheduler"):
         stage_workers._construct_scheduler(wrong, None, logging.getLogger(__name__))
 
-    # The marker is on the model's factory, so it is read in the process that
-    # imports that factory rather than in the launcher.
-    undeclared = StageLaunchConfig(
-        stage_name="thinker_decode",
-        factory=fake_factory_path("make_scheduler"),
-        pd_execution=PDExecution(role="decode", partner="thinker_prefill"),
-    )
-    with pytest.raises(ValueError, match="has not declared PD support"):
-        stage_workers._construct_scheduler(
-            undeclared, None, logging.getLogger(__name__)
-        )
+    # The declaration is config data, so a stage that never made it is
+    # rejected before any process starts.
+    config = _config(factory="make_scheduler")
+    config.endpoints.base_path = str(tmp_path)
+    for item in config.stages:
+        item.pd_capable = False
+    with pytest.raises(ValueError, match="has not declared pd_capable"):
+        prepare_pipeline_runtime(config)
 
 
 @pytest.mark.parametrize(

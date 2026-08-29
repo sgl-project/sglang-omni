@@ -17,7 +17,6 @@ from typing import Any, Callable
 
 import torch
 
-from sglang_omni.config.pd_capability import pd_disaggregation_capable
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
@@ -226,7 +225,6 @@ def make_scheduler(**_: Any) -> FakeScheduler:
     return FakeScheduler()
 
 
-@pd_disaggregation_capable
 def make_pd_scheduler(*, scheduler_cls, scheduler_kwargs, **kwargs):
     """Exercise the real worker factory contract without initializing SGLang."""
 
@@ -237,7 +235,6 @@ def make_pd_scheduler(*, scheduler_cls, scheduler_kwargs, **kwargs):
     return scheduler
 
 
-@pd_disaggregation_capable
 def make_wrong_pd_scheduler(*, scheduler_cls, scheduler_kwargs, **kwargs):
     del scheduler_cls, scheduler_kwargs, kwargs
     return FakeScheduler()

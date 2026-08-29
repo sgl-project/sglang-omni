@@ -11,6 +11,7 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 logger = logging.getLogger(__name__)
 
 StreamOutputBuilder = Callable[[str, Any, Any], list[Any]]
+MING_THINKER_PD_RESUME_SCHEMA = "ming-omni-thinker-v1"
 
 
 def create_thinker_scheduler(
@@ -22,6 +23,8 @@ def create_thinker_scheduler(
     tp_size: int = 1,
     nccl_port: int | None = None,
     enable_streaming_tts: bool = False,
+    scheduler_cls: type | None = None,
+    scheduler_kwargs: dict[str, Any] | None = None,
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
@@ -92,8 +95,22 @@ def create_thinker_scheduler(
         tokenizer=tokenizer,
         eos_token_id=getattr(tokenizer, "eos_token_id", None),
     )
+    scheduler_cls = scheduler_cls or OmniScheduler
+    construction_kwargs = dict(scheduler_kwargs or {})
+    if scheduler_cls is not OmniScheduler:
+        from sglang_omni.scheduling.pd_scheduler import model_pd_scheduler_kwargs
 
-    return OmniScheduler(
+        state_builder, state_restorer = make_thinker_pd_adapters(tokenizer=tokenizer)
+        construction_kwargs.update(
+            model_pd_scheduler_kwargs(
+                scheduler_cls,
+                state_builder=state_builder,
+                state_restorer=state_restorer,
+                resume_schema=MING_THINKER_PD_RESUME_SCHEMA,
+            )
+        )
+
+    return scheduler_cls(
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -104,7 +121,46 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
+        **construction_kwargs,
     )
+
+
+def make_thinker_pd_adapters(*, tokenizer: Any):
+    """Project Ming Prefill state and restore its Decode-only request fields."""
+
+    def state_builder(req: Any):
+        from sglang_omni.models.ming_omni.io import MingOmniPipelineState
+        from sglang_omni.proto import OmniRequest, StagePayload
+
+        payload = req._omni_data.stage_payload
+        state = MingOmniPipelineState.from_dict(payload.data)
+        input_ids = list(req.origin_input_ids)
+        projected = MingOmniPipelineState(
+            prompt={"input_ids": input_ids},
+            stream_state=dict(state.stream_state),
+        )
+        projected_payload = StagePayload(
+            request_id=payload.request_id,
+            request=OmniRequest(
+                inputs=None,
+                params=dict(payload.request.params),
+                metadata=dict(payload.request.metadata),
+            ),
+            data=projected.to_dict(),
+        )
+        resume = {"schema": MING_THINKER_PD_RESUME_SCHEMA}
+        return projected_payload.to_dict(), resume, input_ids
+
+    def state_restorer(req: Any, data: Any, resume: dict[str, Any] | None) -> None:
+        del data
+        if resume != {"schema": MING_THINKER_PD_RESUME_SCHEMA}:
+            raise ValueError(f"unsupported Ming thinker PD resume {resume!r}")
+        req.tokenizer = tokenizer
+        req.omni_model_inputs = None
+        req._omni_consumed = None
+        req._codec_suppress_tokens = None
+
+    return state_builder, state_restorer
 
 
 def make_thinker_scheduler_adapters(

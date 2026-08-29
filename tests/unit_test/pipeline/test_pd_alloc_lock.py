@@ -297,3 +297,62 @@ def test_a_replicated_target_without_a_binding_is_an_error() -> None:
 
     with pytest.raises(RuntimeError, match="no replica binding"):
         stage._resolve_target_instance("req-1", "thinker_decode")
+
+
+def _gated_stage(limit):
+    from sglang_omni.pipeline.stage.runtime import Stage
+
+    stage = Stage.__new__(Stage)
+    stage._max_inflight_handoffs = limit
+    return stage
+
+
+def test_an_unset_bound_installs_no_gate() -> None:
+    """Leaving it unset keeps today's behaviour rather than picking a number."""
+    assert _gated_stage(None)._pd_handoff_gate() is None
+
+
+def test_a_set_bound_installs_a_semaphore_of_that_size() -> None:
+    assert _gated_stage(4)._pd_handoff_gate()._value == 4
+
+
+def test_the_same_gate_is_reused_across_handoffs() -> None:
+    """A fresh semaphore per handoff would bound nothing."""
+    stage = _gated_stage(4)
+
+    assert stage._pd_handoff_gate() is stage._pd_handoff_gate()
+
+
+def test_cancelling_while_queued_releases_the_prompt_kv() -> None:
+    """The lease exists before the wait, so nothing downstream releases it."""
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    class _Lease:
+        def __init__(self) -> None:
+            self.released = 0
+
+        def release(self) -> None:
+            self.released += 1
+
+    lease = _Lease()
+    transfer = SimpleNamespace(request_id="req-1", lease=lease)
+    stage = _gated_stage(1)
+    cleared: list[str] = []
+    stage._clear_request_state = cleared.append
+
+    async def scenario() -> None:
+        gate = stage._pd_handoff_gate()
+        await gate.acquire()  # the one permit is taken by another handoff
+        queued = _asyncio.create_task(stage._send_kv_transfer(transfer))
+        await _asyncio.sleep(0)
+        queued.cancel()
+        try:
+            await queued
+        except _asyncio.CancelledError:
+            pass
+
+    _asyncio.run(scenario())
+
+    assert lease.released == 1
+    assert cleared == ["req-1"]

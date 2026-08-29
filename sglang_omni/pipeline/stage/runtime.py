@@ -112,6 +112,7 @@ class Stage:
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
         replica_topology: dict[str, list[str]] | None = None,
+        max_inflight_handoffs: int | None = None,
         kv_registrations: tuple[tuple[Any, Any | None], ...] = (),
     ):
         self.name = name
@@ -133,6 +134,7 @@ class Stage:
         self._is_terminal = is_terminal
         self._owns_external_io = role in {"single", "leader"}
         self._replica_topology = ReplicaTopology.from_dict(replica_topology)
+        self._max_inflight_handoffs = max_inflight_handoffs
         self._replica_bindings: dict[str, dict[str, int]] = {}
 
         self._comm = CommEngine(
@@ -1196,7 +1198,53 @@ class Stage:
             )
         )
 
+    def _pd_handoff_gate(self) -> Any:
+        """The semaphore bounding handoffs in flight, or None if unset.
+
+        Each handoff holds that request's prompt KV on the Prefill card until
+        Decode acknowledges the copy. Without a bound the count lands on
+        Prefill's ``max_running_requests``, which was chosen to size batches
+        rather than to bound leases: measured at 256 offered, the Prefill half
+        held 64 handoffs at once, and at a 6127-token prompt that is 392,128
+        tokens of lease against a 344,253-token pool.
+
+        What this bounds is concurrent sends, not pinned KV -- the lease
+        exists before the send is queued. Bounding pinned KV means refusing
+        the request before its KV exists, which is Prefill admission.
+        """
+        gate = self.__dict__.get("_pd_handoff_semaphore")
+        if gate is not None:
+            return gate
+        limit = self.__dict__.get("_max_inflight_handoffs")
+        if not limit:
+            return None
+        gate = asyncio.Semaphore(int(limit))
+        self._pd_handoff_semaphore = gate
+        return gate
+
     async def _send_kv_transfer(self, transfer: KVPageTransfer) -> None:
+        gate = self._pd_handoff_gate()
+        if gate is None:
+            await self._send_kv_transfer_now(transfer)
+            return
+        # Note (Audrey Zheng): the wait happens here rather than before the
+        # task is created, so the stage keeps draining scheduler output for
+        # unrelated requests while a handoff queues for a slot.
+        #
+        # The request's prompt KV is already leased by the time this runs, so
+        # a cancellation during the wait has to release it: the send never
+        # starts, so nothing downstream will. Release is idempotent.
+        try:
+            async with gate:
+                await self._send_kv_transfer_now(transfer)
+        except asyncio.CancelledError:
+            lease = getattr(transfer, "lease", None)
+            if lease is not None:
+                lease.release()
+            self._clear_request_state(transfer.request_id)
+            raise
+
+    async def _send_kv_transfer_now(self, transfer: KVPageTransfer) -> None:
         if not isinstance(transfer, KVPageTransfer):
             raise TypeError(
                 "kv_transfer outbox messages require KVPageTransfer data, got "

@@ -725,3 +725,38 @@ def test_send_failure_releases_source_and_reports_request_failure() -> None:
         assert failures == [("request", "copy failed")]
 
     asyncio.run(run())
+
+
+def test_priority_survives_the_handoff() -> None:
+    """A request admitted ahead of others must not be demoted on Decode."""
+    from sglang_omni.scheduling.pd_utils import DecodeContinuation
+
+    carried = DecodeContinuation(
+        request_id="r",
+        transfer_id="t",
+        origin_input_ids=[1, 2],
+        output_ids=[3],
+        vocab_size=32,
+        sampling_params={},
+        stage_payload={},
+        priority=7,
+    )
+
+    assert DecodeContinuation.decode(carried.encode()).priority == 7
+
+
+def test_a_continuation_without_a_priority_stays_valid() -> None:
+    """Most requests have none, and that must not be an error."""
+    from sglang_omni.scheduling.pd_utils import DecodeContinuation
+
+    plain = DecodeContinuation(
+        request_id="r",
+        transfer_id="t",
+        origin_input_ids=[1],
+        output_ids=[2],
+        vocab_size=32,
+        sampling_params={},
+        stage_payload={},
+    )
+
+    assert DecodeContinuation.decode(plain.encode()).priority is None
