@@ -399,3 +399,78 @@ def test_a_supported_engine_argument_passes() -> None:
     expansion = expand_pd_stages([logical], entry_stage="thinker")
 
     validate_pd_engine_args(expansion.stages)
+
+
+def test_weight_sharing_is_off_until_asked_for() -> None:
+    """It needs the model's cooperation, so it is not a silent default."""
+    logical = stage(
+        "thinker",
+        terminal=True,
+        pd_disaggregation=PDConfig(
+            prefill=PDStagePlacement(gpu=0, memory_fraction=0.45),
+            decode=PDStagePlacement(gpu=0, memory_fraction=0.45),
+        ),
+    )
+    halves = {
+        s.name: s for s in expand_pd_stages([logical], entry_stage="thinker").stages
+    }
+
+    assert halves["thinker_prefill"].pd_execution.share_weights is False
+    assert halves["thinker_decode"].pd_execution.share_weights is False
+
+
+def test_the_larger_declared_share_publishes() -> None:
+    """The publisher holds the weights on top of its own KV."""
+    logical = stage(
+        "thinker",
+        terminal=True,
+        pd_disaggregation=PDConfig(
+            prefill=PDStagePlacement(gpu=0, memory_fraction=0.30),
+            decode=PDStagePlacement(gpu=0, memory_fraction=0.62),
+            share_weights=True,
+        ),
+    )
+    halves = {
+        s.name: s for s in expand_pd_stages([logical], entry_stage="thinker").stages
+    }
+
+    assert halves["thinker_decode"].pd_execution.publishes_weights is True
+    assert halves["thinker_prefill"].pd_execution.publishes_weights is False
+
+
+def test_equal_shares_are_a_tie_that_prefill_takes() -> None:
+    """Fixing the order only replaces a startup-lock race."""
+    logical = stage(
+        "thinker",
+        terminal=True,
+        pd_disaggregation=PDConfig(
+            prefill=PDStagePlacement(gpu=0, memory_fraction=0.45),
+            decode=PDStagePlacement(gpu=0, memory_fraction=0.45),
+            share_weights=True,
+        ),
+    )
+    halves = {
+        s.name: s for s in expand_pd_stages([logical], entry_stage="thinker").stages
+    }
+
+    assert halves["thinker_prefill"].pd_execution.publishes_weights is True
+    assert halves["thinker_decode"].pd_execution.publishes_weights is False
+
+
+def test_halves_on_separate_gpus_do_not_share() -> None:
+    """The handles would name memory the peer cannot reach."""
+    logical = stage(
+        "thinker",
+        terminal=True,
+        pd_disaggregation=PDConfig(
+            prefill=PDStagePlacement(gpu=0),
+            decode=PDStagePlacement(gpu=1),
+            share_weights=True,
+        ),
+    )
+    halves = {
+        s.name: s for s in expand_pd_stages([logical], entry_stage="thinker").stages
+    }
+
+    assert halves["thinker_prefill"].pd_execution.share_weights is False
+    assert halves["thinker_decode"].pd_execution.share_weights is False

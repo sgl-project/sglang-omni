@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import inspect
 import logging
 import multiprocessing
 import os
@@ -795,6 +796,98 @@ def _construct_stage(
     return stage
 
 
+def _weight_sharing_plan(spec: StageLaunchConfig, gpu_id: int | None) -> Any:
+    """Return this half's weight-sharing plan, or None when it does not apply.
+
+    Only reaches a factory that declares ``weight_sharing_plan``, because
+    ``resolve_factory_signature_args`` injects a default only when the factory
+    names it. A stage opts in by taking the parameter.
+
+    The run directory comes from this stage's own endpoint rather than a new
+    argument: ``allocate_endpoints`` puts every stage socket directly in the
+    directory ``create_ipc_runtime_dir`` made for this run.
+    """
+    if spec.pd_execution is None or gpu_id is None or not spec.recv_endpoint:
+        return None
+    if not getattr(spec.pd_execution, "share_weights", True):
+        return None
+    from sglang_omni.model_runner.weight_rendezvous import (
+        RendezvousUnavailable,
+        rendezvous_dir_from_endpoint,
+    )
+    from sglang_omni.model_runner.weight_sharing import WeightSharingPlan
+
+    try:
+        rendezvous_dir = rendezvous_dir_from_endpoint(spec.recv_endpoint)
+    except RendezvousUnavailable:
+        return None
+    return WeightSharingPlan(
+        stage_name=spec.stage_name,
+        peer_stage=spec.pd_execution.partner,
+        rendezvous_dir=rendezvous_dir,
+        gpu_id=int(gpu_id),
+        publishes=bool(getattr(spec.pd_execution, "publishes_weights", True)),
+    )
+
+
+def _adopt_peer_weights(plan: Any, log: logging.Logger) -> Any:
+    """Fetch the peer's parameter handles before this stage takes the GPU lock."""
+    if plan.publishes:
+        return plan
+    from sglang_omni.model_runner.weight_rendezvous import wait_for_parameter_handles
+
+    log.info(
+        f"Waiting for {plan.peer_stage} to publish parameter handles "
+        f"before building {plan.stage_name}"
+    )
+    handles = wait_for_parameter_handles(
+        rendezvous_dir=plan.rendezvous_dir,
+        stage_name=plan.peer_stage,
+        gpu_id=plan.gpu_id,
+        timeout_s=_WEIGHT_SHARING_TIMEOUT_S,
+    )
+    return dataclasses.replace(plan, adopted=handles)
+
+
+def _check_room_to_load_before_swapping(plan: Any, gpu_id: int) -> None:
+    """Reject an adopting half that cannot materialize its own copy first.
+
+    Adopting does not lower peak memory: this half still loads the weights
+    before it can point at the peer's, and only then is the KV pool sized. On
+    one card the publisher is already holding its weights and its pool by now,
+    so the shares have to leave a whole extra copy free at this moment.
+
+    Measured on one H200 at ``thinker=0@0.30:0@0.62``: the 0.62 publisher ends
+    up holding 87.0 GiB of a 140.4 GiB card, and the adopter's own 56.94 GiB
+    load does not fit. Without this the failure is a CUDA out-of-memory
+    several frames deep in the loader, which does not say that the shares are
+    the problem.
+    """
+    from sglang_omni.model_runner.weight_rendezvous import read_published_weight_bytes
+
+    needed = read_published_weight_bytes(
+        rendezvous_dir=plan.rendezvous_dir, stage_name=plan.peer_stage
+    )
+    if needed <= 0:
+        return
+    try:
+        import torch
+
+        free_bytes, _total = torch.cuda.mem_get_info(gpu_id)
+    except Exception:  # noqa: BLE001 - a probe, not a contract
+        return
+    if free_bytes >= needed:
+        return
+    gib = 1024**3
+    raise RuntimeError(
+        f"Stage {plan.stage_name} shares weights with {plan.peer_stage} on GPU "
+        f"{gpu_id}, but only {free_bytes / gib:.1f} GiB is free and it must "
+        f"load its own {needed / gib:.1f} GiB copy before it can point at the "
+        f"peer's. Lower the share of {plan.peer_stage} so the card keeps one "
+        f"spare copy free while this half loads."
+    )
+
+
 def _construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
@@ -809,10 +902,23 @@ def _construct_scheduler(
         spec.typed_kwargs,
         stage_name=spec.stage_name,
     )
+    defaults = dict(spec.factory_arg_defaults)
+    plan = _weight_sharing_plan(spec, gpu_id)
+    if plan is not None:
+        if "weight_sharing_plan" not in inspect.signature(factory).parameters:
+            raise RuntimeError(
+                f"Stage {spec.stage_name} enables same-GPU PD weight sharing, "
+                f"but factory {spec.factory!r} does not support weight sharing"
+            )
+        # Note (Audrey Zheng): the adopter waits here, outside
+        # gpu_startup_lock. Waiting inside it would hold the lock against the
+        # publishing half, which needs the same lock to load at all.
+        plan = _adopt_peer_weights(plan, log)
+        defaults["weight_sharing_plan"] = plan
     factory_args = resolve_factory_signature_args(
         factory,
         factory_args,
-        defaults=spec.factory_arg_defaults,
+        defaults=defaults,
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,
     )
@@ -874,6 +980,8 @@ def _construct_scheduler(
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
+        if plan is not None and not plan.publishes:
+            _check_room_to_load_before_swapping(plan, int(gpu_id))
         return construct()
 
 

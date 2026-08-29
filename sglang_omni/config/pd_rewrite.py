@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sglang_omni.config.schema import EngineArgs, PDExecution, StageConfig
+from sglang_omni.config.schema import EngineArgs, PDExecution, StageConfig, _pd_gpu_set
 
 
 @dataclass(frozen=True)
@@ -119,6 +119,28 @@ def _half_engine(stage: StageConfig, placement) -> EngineArgs | None:
     return base.model_copy(update=dict(placement.engine))
 
 
+def _publishing_half_is_prefill(pd) -> bool:
+    """Whether the Prefill half is the one that keeps the copy it loaded.
+
+    The publisher holds the weights on top of its own KV; the adopter releases
+    what it loaded and needs only KV. Deciding this from the declared shares
+    rather than from whichever half wins `gpu_startup_lock` is what makes a
+    placement start the same way twice: at prefill 0.30 / decode 0.62 the
+    smaller half cannot hold a 56.94 GiB copy, so a run where it published
+    failed and a run where it adopted came up.
+
+    Equal shares are a tie and Prefill takes it, which only fixes an order
+    that was otherwise a race. When either share is absent there is nothing to
+    compare, and the halves are on separate GPUs anyway -- `_validate_pd`
+    requires both shares to share a card -- so sharing will decline itself.
+    """
+    prefill_share = pd.prefill.memory_fraction
+    decode_share = pd.decode.memory_fraction
+    if prefill_share is None or decode_share is None:
+        return True
+    return prefill_share >= decode_share
+
+
 def _split(
     stage: StageConfig,
     inbound: dict[str, str],
@@ -128,6 +150,9 @@ def _split(
     assert pd is not None
     prefill_name = f"{stage.name}_prefill"
     decode_name = f"{stage.name}_decode"
+    shares_a_gpu = bool(_pd_gpu_set(pd.prefill.gpu) & _pd_gpu_set(pd.decode.gpu))
+    share_weights = pd.share_weights and shares_a_gpu
+    prefill_publishes = _publishing_half_is_prefill(pd)
     prefill = stage.model_copy(
         deep=True,
         update={
@@ -152,6 +177,8 @@ def _split(
                 role="prefill",
                 partner=decode_name,
                 decode_targets=(decode_name,),
+                share_weights=share_weights,
+                publishes_weights=share_weights and prefill_publishes,
             ),
         },
     )
@@ -173,7 +200,12 @@ def _split(
             "wait_for_fn": None,
             "merge_fn": None,
             "pd_disaggregation": None,
-            "pd_execution": PDExecution(role="decode", partner=prefill_name),
+            "pd_execution": PDExecution(
+                role="decode",
+                partner=prefill_name,
+                share_weights=share_weights,
+                publishes_weights=share_weights and not prefill_publishes,
+            ),
         },
     )
     return prefill, decode

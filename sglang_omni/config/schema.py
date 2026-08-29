@@ -255,6 +255,18 @@ class PDConfig(BaseModel):
 
     prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
     decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
+    # Note (Audrey Zheng): when both halves sit on one GPU they load the same
+    # weights twice. One copy is exportable over CUDA IPC, so the other half
+    # can point its parameters at it and release what it loaded. Only has an
+    # effect on a shared GPU; across GPUs the handles name memory the peer
+    # cannot reach and sharing declines itself.
+    #
+    # Off by default because it needs the model's cooperation: the stage
+    # factory has to accept `weight_sharing_plan`, and one that does not is an
+    # error rather than a silent fallback -- an operator who asked for sharing
+    # sized the two budgets expecting one copy, and quietly loading two would
+    # exhaust the card instead of saying why.
+    share_weights: bool = False
 
 
 class PDExecution(BaseModel):
@@ -271,6 +283,13 @@ class PDExecution(BaseModel):
     # receives a given request can move to admission without touching the send
     # path. Empty means "just `partner`".
     decode_targets: tuple[str, ...] = ()
+    share_weights: bool = False
+    # Note (Audrey Zheng): which half keeps the copy it loaded. Decided from
+    # the declared shares at compile time, not from whichever half wins
+    # gpu_startup_lock: the publisher's budget has to hold the weights on top
+    # of its own KV, so letting the race decide makes a placement start one
+    # way and fail the other.
+    publishes_weights: bool = False
 
 
 class StageConfig(BaseModel):
