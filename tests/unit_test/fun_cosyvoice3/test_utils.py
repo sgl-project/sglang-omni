@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
+import pytest
 import torch
 
 from sglang_omni.models.fun_cosyvoice3 import utils
@@ -14,11 +17,183 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import (
     TOTAL_VOCAB_SIZE,
     VOCAB_SIZE,
 )
-from sglang_omni.models.fun_cosyvoice3.utils import build_llm_prompt_embeddings
+from sglang_omni.models.fun_cosyvoice3.utils import (
+    SpeechTokenizerV3,
+    build_llm_prompt_embeddings,
+)
 
 
 def _speech_embed(ids: torch.Tensor) -> torch.Tensor:
     return ids.to(dtype=torch.float32).unsqueeze(-1).expand(*ids.shape, 4)
+
+
+def test_speech_tokenizer_v3_loads_onnx_weights_on_requested_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    class _FakeModel:
+        def to(self, device: torch.device) -> _FakeModel:
+            calls.append(device)
+            return self
+
+        def eval(self) -> _FakeModel:
+            calls.append("eval")
+            return self
+
+    class _FakeBackend:
+        @staticmethod
+        def load_model(model_path: str) -> _FakeModel:
+            calls.append(model_path)
+            return _FakeModel()
+
+    monkeypatch.setitem(sys.modules, "s3tokenizer", _FakeBackend())
+
+    tokenizer = SpeechTokenizerV3("speech_tokenizer_v3.onnx", device="cpu")
+
+    assert calls == ["speech_tokenizer_v3.onnx", torch.device("cpu"), "eval"]
+    assert tokenizer.device == torch.device("cpu")
+
+
+def test_speech_tokenizer_v3_batches_ragged_audio_and_slices_codes() -> None:
+    class _FakeBackend:
+        @staticmethod
+        def log_mel_spectrogram(audio: torch.Tensor) -> torch.Tensor:
+            return torch.full(
+                (128, audio.numel()),
+                float(audio[0].item()),
+                dtype=torch.float32,
+            )
+
+        @staticmethod
+        def padding(mels: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+            max_frames = max(mel.shape[-1] for mel in mels)
+            padded = torch.zeros(len(mels), 128, max_frames)
+            lengths = torch.tensor([mel.shape[-1] for mel in mels])
+            for index, mel in enumerate(mels):
+                padded[index, :, : mel.shape[-1]] = mel
+            return padded, lengths
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.seen_mels: torch.Tensor | None = None
+            self.seen_lengths: torch.Tensor | None = None
+
+        def quantize(
+            self, mels: torch.Tensor, lengths: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            assert torch.is_inference_mode_enabled()
+            self.seen_mels = mels.clone()
+            self.seen_lengths = lengths.clone()
+            return (
+                torch.tensor([[10, 11, 99], [20, 21, 22]]),
+                torch.tensor([2, 3]),
+            )
+
+    tokenizer = SpeechTokenizerV3.__new__(SpeechTokenizerV3)
+    tokenizer._backend = _FakeBackend()
+    tokenizer.device = torch.device("cpu")
+    tokenizer.model = _FakeModel()
+
+    tokens = tokenizer.extract_speech_tokens(
+        [
+            np.ones(3, dtype=np.float32),
+            np.full(5, 2.0, dtype=np.float32),
+        ]
+    )
+
+    assert tokenizer.model.seen_mels is not None
+    assert tokenizer.model.seen_lengths is not None
+    assert tokenizer.model.seen_mels.shape == (2, 128, 5)
+    assert tokenizer.model.seen_lengths.tolist() == [3, 5]
+    assert [token.tolist() for token in tokens] == [[[10, 11]], [[20, 21, 22]]]
+    assert all(token.dtype == torch.int32 for token in tokens)
+    assert all(token.device.type == "cpu" for token in tokens)
+
+
+def test_speech_tokenizer_v3_empty_batch_returns_empty_list() -> None:
+    tokenizer = SpeechTokenizerV3.__new__(SpeechTokenizerV3)
+
+    class _Backend:
+        def log_mel_spectrogram(self, audio: torch.Tensor) -> torch.Tensor:
+            raise AssertionError("empty batches must not invoke the backend")
+
+    tokenizer._backend = _Backend()
+    assert tokenizer.extract_speech_tokens([]) == []
+
+
+def test_speech_tokenizer_v3_accepts_audio_at_30_second_boundary() -> None:
+    audio = np.ones(30 * 16000, dtype=np.float32)
+
+    normalized = SpeechTokenizerV3._normalize_audio(audio, 16000)
+
+    assert normalized.shape == (30 * 16000,)
+    assert normalized.dtype == torch.float32
+
+
+@pytest.mark.parametrize(
+    ("codes", "code_lengths", "message"),
+    [
+        (
+            torch.zeros(1, 2, 1),
+            torch.tensor([1]),
+            "invalid batch shapes",
+        ),
+        (
+            torch.zeros(1, 2),
+            torch.tensor([3]),
+            "invalid code length",
+        ),
+        (
+            torch.zeros(1, 2),
+            torch.tensor([-1]),
+            "invalid code length",
+        ),
+    ],
+)
+def test_speech_tokenizer_v3_rejects_invalid_model_outputs(
+    codes: torch.Tensor,
+    code_lengths: torch.Tensor,
+    message: str,
+) -> None:
+    class _Backend:
+        @staticmethod
+        def log_mel_spectrogram(audio: torch.Tensor) -> torch.Tensor:
+            return torch.zeros(128, 4)
+
+        @staticmethod
+        def padding(mels: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+            return torch.zeros(len(mels), 128, 4), torch.tensor([4] * len(mels))
+
+    class _Model:
+        def quantize(
+            self, mels: torch.Tensor, lengths: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            return codes, code_lengths
+
+    tokenizer = SpeechTokenizerV3.__new__(SpeechTokenizerV3)
+    tokenizer._backend = _Backend()
+    tokenizer.device = torch.device("cpu")
+    tokenizer.model = _Model()
+
+    with pytest.raises(RuntimeError, match=message):
+        tokenizer.extract_speech_tokens([np.ones(4, dtype=np.float32)])
+
+
+@pytest.mark.parametrize(
+    ("audio", "sample_rate", "message"),
+    [
+        (np.ones(4, dtype=np.float32), 24000, "16kHz"),
+        (np.ones((2, 4), dtype=np.float32), 16000, "shape"),
+        (np.array([], dtype=np.float32), 16000, "must not be empty"),
+        (np.ones(480001, dtype=np.float32), 16000, "30s"),
+    ],
+)
+def test_speech_tokenizer_v3_rejects_invalid_audio(
+    audio: np.ndarray, sample_rate: int, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        SpeechTokenizerV3._normalize_audio(audio, sample_rate)
 
 
 def test_cosyvoice3_prompt_embeddings_use_speech_control_tokens_and_reference_tokens() -> (

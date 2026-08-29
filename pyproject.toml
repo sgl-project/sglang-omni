@@ -98,6 +98,7 @@ audar-tts = [
 fun-cosyvoice3 = [
     "conformer==0.3.2",
     "HyperPyYAML==1.2.3",
+    "s3tokenizer==0.3.0",
     "pyworld==0.3.4",
     "wetext==0.0.4",
     "inflect==7.3.1",

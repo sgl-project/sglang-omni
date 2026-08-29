@@ -13,7 +13,9 @@ import torch.nn.functional as F
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
+    clear_cosyvoice3_preprocessing_context,
     preprocess_cosyvoice3_payload,
+    preprocess_cosyvoice3_payloads,
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
@@ -329,11 +331,20 @@ def _load_cosyvoice3_flow_hift(
     return FunCosyVoice3Flow(flow), hift
 
 
-def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
+def create_preprocessing_executor(
+    model_path: str,
+    *,
+    max_batch_size: int = 8,
+    max_batch_wait_ms: float = 4.0,
+) -> SimpleScheduler:
     del model_path
     return SimpleScheduler(
         preprocess_cosyvoice3_payload,
+        batch_compute_fn=preprocess_cosyvoice3_payloads,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
         abort_callback=cleanup_prepared_cosyvoice3_request,
+        shutdown_callback=clear_cosyvoice3_preprocessing_context,
     )
 
 

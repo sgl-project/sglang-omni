@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import threading
@@ -213,7 +214,6 @@ class _CosyVoice3ReferenceEncodeHook(
         dict[str, Any],
     ]
 ):
-
     model_id = "fun_cosyvoice3"
     encoder_id = "speech_tokenizer_v3+campplus+matcha_mel"
     artifact_kind = "reference_conditioning"
@@ -249,7 +249,7 @@ class _CosyVoice3ReferenceEncodeHook(
         speech_tokenizer: SpeechTokenizerV3,
         speaker_encoder: SpeakerEncoder,
     ) -> None:
-        """Attach the process-local ONNX encoders after hook construction."""
+        """Attach the process-local reference encoders after hook construction."""
         self._speech_tokenizer = speech_tokenizer
         self._speaker_encoder = speaker_encoder
 
@@ -290,6 +290,56 @@ class _CosyVoice3ReferenceEncodeHook(
             flow_embedding=speaker_embedding,
         )
 
+    def can_encode_batch(self) -> bool:
+        return self._speech_tokenizer is not None and callable(
+            getattr(self._speech_tokenizer, "extract_speech_tokens", None)
+        )
+
+    def encode_batch(
+        self, items: list[_CosyVoice3ReferenceInput]
+    ) -> list[_CosyVoice3ReferenceArtifact]:
+        if not items:
+            return []
+        if self._speech_tokenizer is None or self._speaker_encoder is None:
+            raise RuntimeError("CosyVoice3 reference encoders are not bound")
+
+        prompt_audios_16k = [_load_prompt_audio(item.ref_audio) for item in items]
+        prompt_audios_24k = [_load_prompt_audio_24k(item.ref_audio) for item in items]
+        prompt_speech_tokens = self._speech_tokenizer.extract_speech_tokens(
+            prompt_audios_16k, _PROMPT_AUDIO_SR
+        )
+        if len(prompt_speech_tokens) != len(items):
+            raise RuntimeError(
+                "CosyVoice3 S3 tokenizer dropped batch items: "
+                f"expected {len(items)}, got {len(prompt_speech_tokens)}"
+            )
+
+        artifacts: list[_CosyVoice3ReferenceArtifact] = []
+        # CAMPPlus and Flow mel extraction remain per-reference; this batch
+        # boundary intentionally covers only the S3 tokenizer.
+        for audio_16k, audio_24k, prompt_speech_token in zip(
+            prompt_audios_16k,
+            prompt_audios_24k,
+            prompt_speech_tokens,
+            strict=True,
+        ):
+            speaker_embedding = self._speaker_encoder.extract_embedding(
+                audio_16k, _PROMPT_AUDIO_SR
+            )
+            prompt_speech_feat = extract_prompt_speech_feat(audio_24k, _SAMPLE_RATE)
+            flow_prompt_speech_token, flow_prompt_speech_feat = _align_flow_prompt(
+                prompt_speech_token, prompt_speech_feat
+            )
+            artifacts.append(
+                _CosyVoice3ReferenceArtifact(
+                    llm_prompt_speech_token=prompt_speech_token,
+                    flow_prompt_speech_token=flow_prompt_speech_token,
+                    flow_prompt_speech_feat=flow_prompt_speech_feat,
+                    flow_embedding=speaker_embedding,
+                )
+            )
+        return artifacts
+
     def store_artifact(self, artifact: _CosyVoice3ReferenceArtifact) -> dict[str, Any]:
         return {
             "artifact_type": "fun_cosyvoice3_reference_conditioning",
@@ -329,6 +379,9 @@ class CosyVoice3PreprocessingContext:
     speaker_encoder: SpeakerEncoder
     reference_service: ReferenceEncodeService
 
+    def close(self) -> None:
+        self.reference_service.close()
+
 
 _PREPROCESSING_CONTEXT: CosyVoice3PreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, CosyVoice3PreparedRequest] = {}
@@ -342,6 +395,8 @@ def set_cosyvoice3_preprocessing_context(
     speech_tokenizer: SpeechTokenizerV3,
     speaker_encoder: SpeakerEncoder,
     model_revision: str | None = None,
+    reference_max_batch_size: int = 8,
+    reference_max_batch_wait_ms: float = 4.0,
 ) -> None:
     """Register model objects used by the preprocessing stage."""
     global _PREPROCESSING_CONTEXT
@@ -353,28 +408,38 @@ def set_cosyvoice3_preprocessing_context(
         speech_tokenizer=speech_tokenizer,
         speaker_encoder=speaker_encoder,
     )
+    context = CosyVoice3PreprocessingContext(
+        model=model,
+        tokenizer=tokenizer,
+        speech_tokenizer=speech_tokenizer,
+        speaker_encoder=speaker_encoder,
+        reference_service=ReferenceEncodeService(
+            reference_hook,
+            max_items=256,
+            max_bytes=128 * 1024 * 1024,
+            timeout_s=130.0,
+            log_prefix="Fun-CosyVoice3",
+            max_batch_size=reference_max_batch_size,
+            max_batch_wait_ms=reference_max_batch_wait_ms,
+            batch_worker_name="cosyvoice3-s3-tokenizer-batch",
+        ),
+    )
     with _PREPARED_REQUESTS_LOCK:
-        _PREPROCESSING_CONTEXT = CosyVoice3PreprocessingContext(
-            model=model,
-            tokenizer=tokenizer,
-            speech_tokenizer=speech_tokenizer,
-            speaker_encoder=speaker_encoder,
-            reference_service=ReferenceEncodeService(
-                reference_hook,
-                max_items=256,
-                max_bytes=128 * 1024 * 1024,
-                timeout_s=130.0,
-                log_prefix="Fun-CosyVoice3",
-            ),
-        )
+        previous_context = _PREPROCESSING_CONTEXT
+        _PREPROCESSING_CONTEXT = context
         _PREPARED_REQUESTS.clear()
+    if previous_context is not None:
+        previous_context.close()
 
 
 def clear_cosyvoice3_preprocessing_context() -> None:
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
+        context = _PREPROCESSING_CONTEXT
         _PREPROCESSING_CONTEXT = None
         _PREPARED_REQUESTS.clear()
+    if context is not None:
+        context.close()
 
 
 def cleanup_prepared_cosyvoice3_request(request_id: str) -> None:
@@ -435,13 +500,13 @@ def build_cosyvoice3_state(payload: StagePayload) -> FunCosyVoice3State:
         inputs
     )
     reference = references[0] if references else {}
-    ref_audio = (
-        input_ref_audio
-        or reference.get("audio_path")
-        or reference.get("ref_audio")
-        or reference.get("audio")
-        or audio_data_uri_from_reference(reference)
-        or tts_params.get("ref_audio")
+    ref_audio = _first_reference_audio(
+        input_ref_audio,
+        reference.get("audio_path"),
+        reference.get("ref_audio"),
+        reference.get("audio"),
+        audio_data_uri_from_reference(reference),
+        tts_params.get("ref_audio"),
     )
     ref_text = input_ref_text or reference.get("text") or tts_params.get("ref_text")
 
@@ -495,9 +560,22 @@ def _normalize_cosyvoice3_inputs(
     return (
         str(inputs.get("text", inputs.get("input", ""))),
         references,
-        inputs.get("ref_audio") or inputs.get("audio") or inputs.get("file"),
+        _first_reference_audio(
+            inputs.get("ref_audio"), inputs.get("audio"), inputs.get("file")
+        ),
         inputs.get("ref_text"),
     )
+
+
+def _first_reference_audio(*candidates: Any) -> Any | None:
+    """Return the first usable reference source without coercing array-like inputs."""
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, (str, bytes, bytearray, dict)) and not candidate:
+            continue
+        return candidate
+    return None
 
 
 def normalize_language(language: Any) -> str:
@@ -619,8 +697,10 @@ def _prepare_cosyvoice3_request(
     model: Any,
     tokenizer: CosyVoice3Tokenizer,
     reference_service: ReferenceEncodeService,
+    state: FunCosyVoice3State | None = None,
+    reference_artifact: _CosyVoice3ReferenceArtifact | None = None,
 ) -> CosyVoice3PreparedRequest:
-    state = build_cosyvoice3_state(payload)
+    state = state or build_cosyvoice3_state(payload)
     gen_kwargs = state.generation_kwargs
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
@@ -636,10 +716,11 @@ def _prepare_cosyvoice3_request(
         text_embed = model.text_embed_tokens(text_token)
 
     if state.ref_audio is not None:
-        reference_artifact = reference_service.get_or_encode(
-            state.ref_audio,
-            desc="Fun-CosyVoice3 reference conditioning",
-        )
+        if reference_artifact is None:
+            reference_artifact = reference_service.get_or_encode(
+                state.ref_audio,
+                desc="Fun-CosyVoice3 reference conditioning",
+            )
         spk_embedding = reference_artifact.flow_embedding
         prompt_speech_token = reference_artifact.llm_prompt_speech_token
         flow_prompt_speech_token = reference_artifact.flow_prompt_speech_token
@@ -694,18 +775,18 @@ def _prepare_cosyvoice3_request(
     )
 
 
-def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
+def _current_preprocessing_context() -> CosyVoice3PreprocessingContext:
     with _PREPARED_REQUESTS_LOCK:
         context = _PREPROCESSING_CONTEXT
     if context is None:
         raise RuntimeError("CosyVoice3 preprocessing context is not initialized")
+    return context
 
-    prepared = _prepare_cosyvoice3_request(
-        payload,
-        model=context.model,
-        tokenizer=context.tokenizer,
-        reference_service=context.reference_service,
-    )
+
+def _store_preprocessed_cosyvoice3_request(
+    payload: StagePayload,
+    prepared: CosyVoice3PreparedRequest,
+) -> StagePayload:
     with _PREPARED_REQUESTS_LOCK:
         _PREPARED_REQUESTS[payload.request_id] = prepared
 
@@ -720,6 +801,94 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
         request=payload.request,
         data=data,
     )
+
+
+def _encode_batch_references(
+    states: list[FunCosyVoice3State | BaseException],
+    reference_service: ReferenceEncodeService,
+) -> list[_CosyVoice3ReferenceArtifact | BaseException | None]:
+    artifacts: list[_CosyVoice3ReferenceArtifact | BaseException | None] = [None] * len(
+        states
+    )
+    references = [
+        (index, state.ref_audio)
+        for index, state in enumerate(states)
+        if not isinstance(state, BaseException) and state.ref_audio is not None
+    ]
+    if not references:
+        return artifacts
+
+    # ReferenceEncodeService owns cache and single-flight behavior. These callers
+    # only let its dedicated S3 worker receive all batch members before any TP
+    # collective below is entered.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(references)) as pool:
+        futures = {
+            index: pool.submit(
+                reference_service.get_or_encode,
+                ref_audio,
+                desc="Fun-CosyVoice3 reference conditioning",
+            )
+            for index, ref_audio in references
+        }
+        for index, future in futures.items():
+            try:
+                artifacts[index] = future.result()
+            except BaseException as exc:
+                artifacts[index] = exc
+    return artifacts
+
+
+def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
+    context = _current_preprocessing_context()
+
+    prepared = _prepare_cosyvoice3_request(
+        payload,
+        model=context.model,
+        tokenizer=context.tokenizer,
+        reference_service=context.reference_service,
+    )
+    return _store_preprocessed_cosyvoice3_request(payload, prepared)
+
+
+def preprocess_cosyvoice3_payloads(
+    payloads: list[StagePayload],
+) -> list[StagePayload | BaseException]:
+    """Prepare a scheduler batch without reordering TP embedding collectives."""
+    if not payloads:
+        return []
+    context = _current_preprocessing_context()
+
+    states: list[FunCosyVoice3State | BaseException] = []
+    for payload in payloads:
+        try:
+            states.append(build_cosyvoice3_state(payload))
+        except BaseException as exc:
+            states.append(exc)
+    artifacts = _encode_batch_references(states, context.reference_service)
+
+    results: list[StagePayload | BaseException] = []
+    # All ranks receive payloads in the same FIFO order. Keep model embedding
+    # calls in that order: VocabParallelEmbedding performs a TP all-reduce.
+    for payload, state, artifact in zip(payloads, states, artifacts, strict=True):
+        if isinstance(state, BaseException):
+            results.append(state)
+            continue
+        if isinstance(artifact, BaseException):
+            results.append(artifact)
+            continue
+        try:
+            prepared = _prepare_cosyvoice3_request(
+                payload,
+                model=context.model,
+                tokenizer=context.tokenizer,
+                reference_service=context.reference_service,
+                state=state,
+                reference_artifact=artifact,
+            )
+            results.append(_store_preprocessed_cosyvoice3_request(payload, prepared))
+        except BaseException as exc:
+            results.append(exc)
+    return results
 
 
 def build_sglang_cosyvoice3_request(
