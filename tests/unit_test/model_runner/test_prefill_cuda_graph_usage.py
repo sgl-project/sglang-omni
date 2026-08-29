@@ -24,6 +24,58 @@ def _forward_batch(
     )
 
 
+def _prefill_admission_runner(
+    *, capture_num_tokens: list[int]
+) -> PrefillCudaGraphRunner:
+    runner = object.__new__(PrefillCudaGraphRunner)
+    runner._is_full_backend = False
+    runner.prefill_backend_name = "breakable"
+    runner.has_mha_companion_layers = False
+    runner.capture_hidden_mode = object()
+    runner.capture_num_tokens = capture_num_tokens
+    runner.max_num_tokens = max(capture_num_tokens)
+    runner._has_inactive_dp_rank = lambda _forward_batch: False
+    runner._uses_eager_prefill_tail = lambda: True
+    return runner
+
+
+def _prefill_admission_batch(
+    num_tokens: int,
+    *,
+    capture_hidden_mode: object,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        input_ids=torch.zeros(num_tokens, dtype=torch.long),
+        input_embeds=None,
+        replace_embeds=None,
+        extend_prefix_lens_cpu=None,
+        forward_mode=SimpleNamespace(is_target_verify=lambda: False),
+        capture_hidden_mode=capture_hidden_mode,
+        global_num_tokens_cpu=None,
+        return_logprob=False,
+    )
+
+
+def test_prefill_admission_rejects_tokens_above_largest_bucket() -> None:
+    runner = _prefill_admission_runner(capture_num_tokens=[128, 256])
+    forward_batch = _prefill_admission_batch(
+        257,
+        capture_hidden_mode=runner.capture_hidden_mode,
+    )
+
+    assert runner.can_run_graph(forward_batch) is False
+
+
+def test_prefill_admission_rejects_more_than_two_x_padding() -> None:
+    runner = _prefill_admission_runner(capture_num_tokens=[64, 256])
+    forward_batch = _prefill_admission_batch(
+        65,
+        capture_hidden_mode=runner.capture_hidden_mode,
+    )
+
+    assert runner.can_run_graph(forward_batch) is False
+
+
 def test_prefill_cuda_graph_usage_instances_do_not_share_buckets() -> None:
     first = _PrefillCudaGraphUsage()
     second = _PrefillCudaGraphUsage()

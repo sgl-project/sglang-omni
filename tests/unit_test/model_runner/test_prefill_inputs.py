@@ -18,10 +18,11 @@ from sglang_omni.model_runner.prefill_inputs import (
 def _forward_batch(
     *,
     num_tokens: int = 4,
+    input_embeds=None,
     replace_embeds=None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        input_embeds=None,
+        input_embeds=input_embeds,
         replace_embeds=replace_embeds,
         mm_inputs=[object(), None],
         input_ids=torch.zeros(num_tokens, dtype=torch.long),
@@ -49,6 +50,13 @@ def test_attach_rejects_replace_embeds() -> None:
     forward_batch = _forward_batch(replace_embeds=torch.zeros(1, 8))
 
     with pytest.raises(RuntimeError, match="replace_embeds"):
+        attach_omni_prefill_inputs(forward_batch, _payload())
+
+
+def test_attach_rejects_input_embeds_instead_of_silently_falling_back() -> None:
+    forward_batch = _forward_batch(input_embeds=torch.zeros(4, 8))
+
+    with pytest.raises(RuntimeError, match="forward_batch.input_embeds"):
         attach_omni_prefill_inputs(forward_batch, _payload())
 
 

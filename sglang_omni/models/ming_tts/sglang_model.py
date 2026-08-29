@@ -939,8 +939,9 @@ class MingTTSSGLangModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
         pp_proxy_tensors: Any = None,
+        omni_prefill_rids: Optional[list[str] | tuple[str, ...]] = None,
     ) -> LogitsProcessorOutput:
-        del pp_proxy_tensors
+        del pp_proxy_tensors, omni_prefill_rids
 
         if input_embeds is None:
             input_embeds = getattr(forward_batch, "input_embeds", None)
