@@ -10,6 +10,7 @@ import types
 from collections import deque
 from queue import Empty, Queue
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -526,6 +527,36 @@ def _uploaded_voice_prompt_test_input(
     return state, key
 
 
+def _get_or_create_uploaded_voice_prompt_for_test(
+    state: SimpleNamespace,
+    wrapper: _UploadedVoicePromptTestWrapper,
+    cache_key: SpeakerCacheKey,
+) -> tuple[dict[str, Any], str | None]:
+    cache = get_speaker_artifact_cache()
+
+    def compute() -> dict[str, Any]:
+        prompt_items = wrapper.create_voice_clone_prompt(
+            ref_audio=state.ref_audio,
+            ref_text=state.ref_text,
+            x_vector_only_mode=state.x_vector_only_mode,
+        )
+        prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
+        return qwen3_request_builders._cacheable_qwen3_tts_voice_prompt(
+            prompt,
+            ref_text=prompt_items[0].ref_text,
+        )
+
+    artifact = cache.get_or_compute(
+        cache_key,
+        compute,
+        accept_cached=lambda value: isinstance(value, dict)
+        and value.get("artifact_type") == "qwen3_tts_voice_clone_prompt",
+    )
+    result = qwen3_request_builders._qwen3_tts_voice_prompt_from_cache(artifact)
+    assert result is not None
+    return result
+
+
 def _track_uploaded_voice_prompt_followers(
     monkeypatch: pytest.MonkeyPatch,
     expected_followers: int,
@@ -558,14 +589,10 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     cache.clear()
     calls = 0
 
-    class FakePrompt:
-        ref_text = "reference"
-
     class FakeWrapper:
         def create_voice_clone_prompt(self, **kwargs):
-            nonlocal calls
-            calls += 1
-            return [FakePrompt()]
+            del kwargs
+            raise AssertionError("uploaded voices must use the reference service")
 
         def _prompt_items_to_voice_clone_prompt(self, prompt_items):
             del prompt_items
@@ -607,10 +634,29 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
         def text_projection(self, embeds):
             return embeds
 
+    class FakeReferenceService:
+        def get_or_encode(self, state, *, desc):
+            nonlocal calls
+            calls += 1
+            assert desc == "Qwen3-TTS uploaded voice guide"
+            return (
+                {
+                    "ref_code": [torch.ones((1, 2), dtype=torch.long)],
+                    "ref_spk_embedding": [torch.ones(4)],
+                    "icl_mode": [True],
+                },
+                state.ref_text,
+            )
+
     monkeypatch.setattr(
         qwen3_request_builders,
         "_build_qwen3_tts_pad_embed",
         lambda model: torch.zeros(4),
+    )
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_get_qwen3_tts_adhoc_reference_service",
+        lambda model, wrapper: FakeReferenceService(),
     )
 
     def make_uploaded_payload(created_at: int) -> StagePayload:
@@ -691,7 +737,7 @@ def test_qwen3_tts_uploaded_voice_cold_miss_is_single_flight(
         try:
             start.wait(timeout=5)
             results[index] = (
-                qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+                _get_or_create_uploaded_voice_prompt_for_test(
                     state,
                     wrapper,
                     cache_key,
@@ -726,7 +772,7 @@ def test_qwen3_tts_uploaded_voice_cold_miss_is_single_flight(
 
     prompts[0]["ref_spk_embedding"][0].fill_(99)
     hit_prompt, hit_ref_text = (
-        qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+        _get_or_create_uploaded_voice_prompt_for_test(
             state,
             wrapper,
             cache_key,
@@ -778,7 +824,7 @@ def test_qwen3_tts_uploaded_voice_different_keys_build_in_parallel() -> None:
         try:
             start.wait(timeout=5)
             results[index] = (
-                qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+                _get_or_create_uploaded_voice_prompt_for_test(
                     state,
                     wrapper,
                     cache_key,
@@ -841,7 +887,7 @@ def test_qwen3_tts_uploaded_voice_failure_fans_out_and_is_retryable(
     def worker() -> None:
         try:
             start.wait(timeout=5)
-            qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+            _get_or_create_uploaded_voice_prompt_for_test(
                 state,
                 wrapper,
                 cache_key,
@@ -866,10 +912,8 @@ def test_qwen3_tts_uploaded_voice_failure_fans_out_and_is_retryable(
     assert all(isinstance(error, ValueError) for error in errors)
     assert all(str(error) == "uploaded voice boom" for error in errors)
     assert cache.get(cache_key) is None
-    assert cache_key not in qwen3_request_builders._UPLOADED_VOICE_PROMPT_INFLIGHT
-
     prompt, ref_text = (
-        qwen3_request_builders._get_or_create_qwen3_tts_uploaded_voice_prompt(
+        _get_or_create_uploaded_voice_prompt_for_test(
             state,
             wrapper,
             cache_key,
@@ -1033,7 +1077,7 @@ def test_qwen3_tts_preprocessing_executor_admits_concurrent_requests() -> None:
     assert executor._max_concurrency > 1
 
 
-def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
+def test_qwen3_tts_preprocess_payload_batches_uploaded_voice_codes_across_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cache = get_speaker_artifact_cache()
@@ -1126,6 +1170,8 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
                     "tts_params": {
                         "ref_audio": f"data:audio/wav;base64,AAA{index}",
                         "ref_text": f"reference-{index}",
+                        "uploaded_voice_name": f"guide-{index}",
+                        "uploaded_voice_created_at": index + 1,
                     }
                 },
             ),
@@ -1289,15 +1335,10 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
     cache.clear()
     calls = 0
 
-    class FakePrompt:
-        ref_text = None
-
     class FakeWrapper:
         def create_voice_clone_prompt(self, **kwargs):
-            nonlocal calls
-            calls += 1
-            assert kwargs["x_vector_only_mode"] is True
-            return [FakePrompt()]
+            del kwargs
+            raise AssertionError("uploaded voices must use the reference service")
 
         def _prompt_items_to_voice_clone_prompt(self, prompt_items):
             del prompt_items
@@ -1337,10 +1378,30 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
         def text_projection(self, embeds):
             return embeds
 
+    class FakeReferenceService:
+        def get_or_encode(self, state, *, desc):
+            nonlocal calls
+            calls += 1
+            assert state.x_vector_only_mode is True
+            assert desc == "Qwen3-TTS uploaded voice guide"
+            return (
+                {
+                    "ref_code": [None],
+                    "ref_spk_embedding": [torch.ones(4)],
+                    "icl_mode": [False],
+                },
+                None,
+            )
+
     monkeypatch.setattr(
         qwen3_request_builders,
         "_build_qwen3_tts_pad_embed",
         lambda model: torch.zeros(4),
+    )
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_get_qwen3_tts_adhoc_reference_service",
+        lambda model, wrapper: FakeReferenceService(),
     )
 
     payload = make_payload(
