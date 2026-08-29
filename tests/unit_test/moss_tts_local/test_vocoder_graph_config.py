@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 import torch
 
@@ -37,6 +39,12 @@ def test_rocm_wsl_dxg_detection_uses_hip_and_dxg_signals(
         monkeypatch.setenv("HSA_ENABLE_DXG_DETECTION", dxg_detection)
 
     assert config_module._uses_rocm_wsl_dxg() is expected
+
+
+def test_rocm_wsl_dxg_detection_without_torch_is_false(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "torch", None)
+
+    assert config_module._uses_rocm_wsl_dxg() is False
 
 
 def test_rocm_wsl_dxg_default_disables_vocoder_graph_before_factory(

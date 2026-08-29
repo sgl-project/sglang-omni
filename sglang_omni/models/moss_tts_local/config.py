@@ -6,7 +6,6 @@ from __future__ import annotations
 import os
 from typing import Any, ClassVar
 
-import torch
 from pydantic import Field
 
 from sglang_omni.config import (
@@ -34,6 +33,10 @@ _MAX_PIPELINE_INTRAOP_THREADS = 8
 
 def _uses_rocm_wsl_dxg() -> bool:
     """Return whether PyTorch HIP can select the WSL DXG device path."""
+    try:
+        import torch
+    except ImportError:
+        return False
     return (
         torch.version.hip is not None
         and os.environ.get("HSA_ENABLE_DXG_DETECTION") != "0"
