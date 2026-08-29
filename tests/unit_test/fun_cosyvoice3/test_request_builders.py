@@ -470,6 +470,7 @@ def test_build_request_derives_generation_length_contract_when_unset(
     # max_new_tokens = min(2048, 20 * 2) = 40; min_new_tokens = 2 * 2 = 4.
     assert request_data.max_new_tokens == 40
     assert request_data.req.sampling_params.min_new_tokens == 4
+    assert request_data.req.sampling_params.repetition_penalty == 1.21
 
 
 def test_preprocess_includes_reference_text_before_target_text(

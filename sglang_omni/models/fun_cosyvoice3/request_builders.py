@@ -63,7 +63,7 @@ _IMPLICIT_SAMPLING_DEFAULTS = {
     "temperature": {1.0, 0.8, 0.7},
     "top_p": {1.0, 0.8},
     "top_k": {-1, 20, 25, 30},
-    "repetition_penalty": {1.0, 1.05, 1.1},
+    "repetition_penalty": {1.0, 1.05, 1.1, 1.21},
 }
 
 _COSYVOICE3_PREPARED_MARKER = "_cosyvoice3_prepared_request"
@@ -760,7 +760,7 @@ def build_sglang_cosyvoice3_request(
         temperature=temperature,
         top_p=float(gen_kwargs.get("top_p", 0.8)),
         top_k=int(gen_kwargs.get("top_k", 20)),
-        repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.1)),
+        repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.21)),
         # Stop on any of the 200 ids CosyVoice3 treats as terminal/non-speech
         # control ids, not only EOS_ID — the other 199 never stopped the
         # scheduler when only EOS_ID was registered, so generation could run
