@@ -55,6 +55,10 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 dtype="bfloat16",
                 flow_batch_bucket_frames=50,
                 flow_batch_admission_frames=2000,
+                # Opt-in: torch.compile the DiT (flow decoder) backbone. Off by
+                # default because it adds a one-time compile cost at startup
+                # and is most beneficial under sustained throughput load.
+                enable_dit_torch_compile=False,
             ),
             gpu=0,
             terminal=True,

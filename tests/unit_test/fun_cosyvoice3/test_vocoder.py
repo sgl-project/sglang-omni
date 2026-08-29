@@ -416,4 +416,5 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
         "dtype": "bfloat16",
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 2000,
+        "enable_dit_torch_compile": False,
     }
