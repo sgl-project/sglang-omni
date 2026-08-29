@@ -191,6 +191,10 @@ def _make_engine_builder(
         mm_attention_backend="fa3",
         request_build_max_workers=8,
         request_build_max_pending=32,
+        prefill_coalesce_requests=16,
+        prefill_coalesce_wait_ms=32.0,
+        prefill_coalesce_when_idle=True,
+        prefill_coalesce_requires_pending_builds=True,
     )
     builder.context_length = context_length
     return builder
