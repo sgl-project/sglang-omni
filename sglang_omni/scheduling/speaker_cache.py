@@ -7,7 +7,7 @@ import concurrent.futures
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from threading import RLock
+from threading import RLock, get_ident
 from typing import Any, TypeVar
 
 import numpy as np
@@ -32,6 +32,7 @@ class SpeakerCacheKey:
 @dataclass
 class _SpeakerCacheFlight:
     future: concurrent.futures.Future[Any]
+    owner_thread_id: int
     invalidated: bool = False
 
 
@@ -95,10 +96,18 @@ class SpeakerArtifactCache:
             self._miss_count += 1
             flight = self._inflight.get(encoded_key)
             if flight is None:
-                flight = _SpeakerCacheFlight(concurrent.futures.Future())
+                flight = _SpeakerCacheFlight(
+                    concurrent.futures.Future(),
+                    owner_thread_id=get_ident(),
+                )
                 self._inflight[encoded_key] = flight
                 leader = True
             else:
+                if flight.owner_thread_id == get_ident():
+                    raise RuntimeError(
+                        "Speaker cache compute re-entered its own in-flight "
+                        f"computation for {key!r}"
+                    )
                 self._singleflight_merged_count += 1
                 leader = False
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import sys
 import threading
 import time
@@ -42,10 +43,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.speaker_cache import (
-    SpeakerCacheKey,
-    get_speaker_artifact_cache,
-)
+from sglang_omni.scheduling.speaker_cache import get_speaker_artifact_cache
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
 
@@ -588,6 +586,8 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     cache = get_speaker_artifact_cache()
     cache.clear()
     calls = 0
+    first_encode_started = threading.Event()
+    release_first_encode = threading.Event()
 
     class FakeWrapper:
         def create_voice_clone_prompt(self, **kwargs):
@@ -639,6 +639,9 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
             nonlocal calls
             calls += 1
             assert desc == "Qwen3-TTS uploaded voice guide"
+            if calls == 1:
+                first_encode_started.set()
+                assert release_first_encode.wait(timeout=5.0)
             return (
                 {
                     "ref_code": [torch.ones((1, 2), dtype=torch.long)],
@@ -658,6 +661,7 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
         "_get_qwen3_tts_adhoc_reference_service",
         lambda model, wrapper: FakeReferenceService(),
     )
+    merged_before = cache.stats()["singleflight_merged_count"]
 
     def make_uploaded_payload(created_at: int) -> StagePayload:
         return make_payload(
@@ -670,24 +674,41 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
             },
         )
 
-    qwen3_request_builders._prepare_qwen3_tts_request(
-        make_uploaded_payload(7),
-        model=FakeModel(),
-        wrapper=FakeWrapper(),
-    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        leader = executor.submit(
+            qwen3_request_builders._prepare_qwen3_tts_request,
+            make_uploaded_payload(7),
+            model=FakeModel(),
+            wrapper=FakeWrapper(),
+        )
+        assert first_encode_started.wait(timeout=5.0)
+        follower = executor.submit(
+            qwen3_request_builders._prepare_qwen3_tts_request,
+            make_uploaded_payload(7),
+            model=FakeModel(),
+            wrapper=FakeWrapper(),
+        )
+        deadline = time.monotonic() + 5.0
+        while (
+            cache.stats()["singleflight_merged_count"] <= merged_before
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.001)
+        merged_after = cache.stats()["singleflight_merged_count"]
+        release_first_encode.set()
+        leader.result(timeout=5.0)
+        follower.result(timeout=5.0)
+        assert merged_after == merged_before + 1
     cached = cache.get(
-        SpeakerCacheKey("qwen3_tts_icl", "guide", 7, "voice_clone_prompt")
+        qwen3_request_builders._qwen3_tts_uploaded_voice_cache_key(
+            build_qwen3_tts_state(make_uploaded_payload(7))
+        )
     )
     assert isinstance(cached, dict)
     assert cached["artifact_type"] == "qwen3_tts_voice_clone_prompt"
     assert cached["ref_spk_embedding"][0].device.type == "cpu"
     assert cached["ref_code"][0].device.type == "cpu"
 
-    qwen3_request_builders._prepare_qwen3_tts_request(
-        make_uploaded_payload(7),
-        model=FakeModel(),
-        wrapper=FakeWrapper(),
-    )
     qwen3_request_builders._prepare_qwen3_tts_request(
         make_uploaded_payload(8),
         model=FakeModel(),
@@ -736,12 +757,10 @@ def test_qwen3_tts_uploaded_voice_cold_miss_is_single_flight(
     def worker(index: int) -> None:
         try:
             start.wait(timeout=5)
-            results[index] = (
-                _get_or_create_uploaded_voice_prompt_for_test(
-                    state,
-                    wrapper,
-                    cache_key,
-                )
+            results[index] = _get_or_create_uploaded_voice_prompt_for_test(
+                state,
+                wrapper,
+                cache_key,
             )
         except Exception as exc:
             errors.append(exc)
@@ -771,12 +790,10 @@ def test_qwen3_tts_uploaded_voice_cold_miss_is_single_flight(
     assert cached["ref_spk_embedding"][0].data_ptr() not in prompt_pointers
 
     prompts[0]["ref_spk_embedding"][0].fill_(99)
-    hit_prompt, hit_ref_text = (
-        _get_or_create_uploaded_voice_prompt_for_test(
-            state,
-            wrapper,
-            cache_key,
-        )
+    hit_prompt, hit_ref_text = _get_or_create_uploaded_voice_prompt_for_test(
+        state,
+        wrapper,
+        cache_key,
     )
     assert calls == 1
     assert hit_ref_text == "single-flight reference"
@@ -823,12 +840,10 @@ def test_qwen3_tts_uploaded_voice_different_keys_build_in_parallel() -> None:
         state, cache_key = inputs[index]
         try:
             start.wait(timeout=5)
-            results[index] = (
-                _get_or_create_uploaded_voice_prompt_for_test(
-                    state,
-                    wrapper,
-                    cache_key,
-                )
+            results[index] = _get_or_create_uploaded_voice_prompt_for_test(
+                state,
+                wrapper,
+                cache_key,
             )
         except Exception as exc:
             errors.append(exc)
@@ -912,17 +927,141 @@ def test_qwen3_tts_uploaded_voice_failure_fans_out_and_is_retryable(
     assert all(isinstance(error, ValueError) for error in errors)
     assert all(str(error) == "uploaded voice boom" for error in errors)
     assert cache.get(cache_key) is None
-    prompt, ref_text = (
-        _get_or_create_uploaded_voice_prompt_for_test(
-            state,
-            wrapper,
-            cache_key,
-        )
+    prompt, ref_text = _get_or_create_uploaded_voice_prompt_for_test(
+        state,
+        wrapper,
+        cache_key,
     )
     assert calls == 2
     assert ref_text == "flaky reference"
     assert int(prompt["ref_code"][0].item()) == 9
     assert isinstance(cache.get(cache_key), dict)
+
+
+def test_qwen3_tts_uploaded_voice_different_transcripts_do_not_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = get_speaker_artifact_cache()
+    cache.clear()
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    calls: list[str | None] = []
+    calls_lock = threading.Lock()
+
+    class FakeReferenceService:
+        def get_or_encode(self, state, *, desc):
+            assert desc == "Qwen3-TTS uploaded voice guide"
+            with calls_lock:
+                calls.append(state.ref_text)
+            if state.ref_text == "first transcript":
+                first_started.set()
+                assert release_first.wait(timeout=5.0)
+            else:
+                second_started.set()
+            return (
+                {
+                    "ref_code": [torch.ones((1, 2), dtype=torch.long)],
+                    "ref_spk_embedding": [torch.ones(4)],
+                    "icl_mode": [True],
+                },
+                state.ref_text,
+            )
+
+    class FakeWrapper:
+        def _tokenize_texts(self, texts):
+            values = {
+                "target": 0,
+                "first transcript": 1,
+                "second transcript": 2,
+            }
+            return [torch.tensor([[values[texts[0]]]], dtype=torch.long)]
+
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_ref_text(self, text):
+            return text
+
+    class FakeModel:
+        def build_voice_clone_inputs(self, **kwargs):
+            ref_id = kwargs["ref_id"]
+            return ref_id, torch.ones(1), torch.ones(1), None
+
+    def prepare(ref_text: str):
+        state = Qwen3TTSState(
+            text="target",
+            ref_audio="data:audio/wav;base64,AAAA",
+            ref_text=ref_text,
+            uploaded_voice_name="guide",
+            uploaded_voice_created_at=7,
+        )
+        return qwen3_request_builders._prepare_qwen3_tts_base_request(
+            state=state,
+            model=FakeModel(),
+            wrapper=FakeWrapper(),
+        )
+
+    service = FakeReferenceService()
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "_get_qwen3_tts_adhoc_reference_service",
+        lambda model, wrapper: service,
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(prepare, "first transcript")
+        assert first_started.wait(timeout=5.0)
+        second = executor.submit(prepare, "second transcript")
+        second_reached_encoder = second_started.wait(timeout=1.0)
+        release_first.set()
+        first_result = first.result(timeout=5.0)
+        second_result = second.result(timeout=5.0)
+
+    assert second_reached_encoder, "different effective transcripts merged"
+    assert sorted(calls) == ["first transcript", "second transcript"]
+    assert int(first_result[0].item()) == 1
+    assert int(second_result[0].item()) == 2
+
+
+def test_qwen3_tts_uploaded_voice_cache_key_uses_effective_icl_transcript() -> None:
+    common = {
+        "uploaded_voice_name": "guide",
+        "uploaded_voice_created_at": 7,
+    }
+    first = qwen3_request_builders._qwen3_tts_uploaded_voice_cache_key(
+        Qwen3TTSState(ref_text="first transcript", **common)
+    )
+    same = qwen3_request_builders._qwen3_tts_uploaded_voice_cache_key(
+        Qwen3TTSState(ref_text="first transcript", **common)
+    )
+    different = qwen3_request_builders._qwen3_tts_uploaded_voice_cache_key(
+        Qwen3TTSState(ref_text="second transcript", **common)
+    )
+    xvec_first = qwen3_request_builders._qwen3_tts_uploaded_voice_cache_key(
+        Qwen3TTSState(
+            ref_text="first transcript",
+            x_vector_only_mode=True,
+            **common,
+        )
+    )
+    xvec_different = qwen3_request_builders._qwen3_tts_uploaded_voice_cache_key(
+        Qwen3TTSState(
+            ref_text="second transcript",
+            x_vector_only_mode=True,
+            **common,
+        )
+    )
+
+    assert first is not None
+    assert same is not None
+    assert different is not None
+    assert xvec_first is not None
+    assert xvec_different is not None
+    assert first == same
+    assert first != different
+    assert "first transcript" not in first.artifact_kind
+    assert xvec_first == xvec_different
 
 
 def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
@@ -1420,7 +1559,9 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
         wrapper=FakeWrapper(),
     )
     cached = cache.get(
-        SpeakerCacheKey("qwen3_tts_xvec", "guide", 9, "voice_clone_prompt")
+        qwen3_request_builders._qwen3_tts_uploaded_voice_cache_key(
+            build_qwen3_tts_state(payload)
+        )
     )
     assert isinstance(cached, dict)
     assert "ref_code" not in cached

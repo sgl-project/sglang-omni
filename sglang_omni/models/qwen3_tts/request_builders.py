@@ -150,6 +150,8 @@ _ADHOC_REFERENCE_SERVICE_ENTRY: (
     tuple[tuple[int, int], ReferenceEncodeService] | None
 ) = None
 _PREPARED_REQUESTS_LOCK = threading.Lock()
+
+
 def set_qwen3_tts_preprocessing_context(*, model: Any, wrapper: Any) -> None:
     """Register model objects used by the preprocessing stage."""
 
@@ -520,11 +522,20 @@ def _qwen3_tts_uploaded_voice_cache_key(state: Qwen3TTSState) -> SpeakerCacheKey
     if state.uploaded_voice_name is None or state.uploaded_voice_created_at is None:
         return None
     mode = "xvec" if state.x_vector_only_mode else "icl"
+    artifact_kind = "voice_clone_prompt"
+    if not state.x_vector_only_mode:
+        effective_transcript = json.dumps(
+            state.ref_text,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        transcript_digest = hashlib.sha256(effective_transcript).hexdigest()
+        artifact_kind = f"{artifact_kind}:ref_text:{transcript_digest}"
     return SpeakerCacheKey(
         model_type=f"qwen3_tts_{mode}",
         voice_name=state.uploaded_voice_name,
         voice_version=int(state.uploaded_voice_created_at),
-        artifact_kind="voice_clone_prompt",
+        artifact_kind=artifact_kind,
     )
 
 
@@ -960,6 +971,7 @@ def _prepare_qwen3_tts_base_request(
             desc="Qwen3-TTS ad-hoc reference",
         )
     else:
+
         def encode_uploaded_voice() -> dict[str, Any]:
             reference_service = _get_qwen3_tts_adhoc_reference_service(model, wrapper)
             voice_clone_prompt, ref_text = reference_service.get_or_encode(

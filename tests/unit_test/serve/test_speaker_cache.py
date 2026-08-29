@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import queue
 import threading
 import time
 
@@ -166,6 +167,33 @@ def test_speaker_cache_singleflight_store_failure_does_not_poison(
     assert cache.get_or_compute(key, lambda: "retry") == "retry"
 
 
+def test_speaker_cache_reentrant_same_key_compute_fails_fast() -> None:
+    cache = SpeakerArtifactCache(max_bytes=1024)
+    key = SpeakerCacheKey("qwen3_tts_icl", "guide", 1, "voice_clone_prompt")
+    outcomes: queue.Queue[BaseException | str] = queue.Queue()
+
+    def run() -> None:
+        try:
+            cache.get_or_compute(
+                key,
+                lambda: cache.get_or_compute(key, lambda: "nested"),
+            )
+        except BaseException as exc:
+            outcomes.put(exc)
+        else:
+            outcomes.put("unexpected success")
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive(), "same-key reentrant compute deadlocked"
+    outcome = outcomes.get_nowait()
+    assert isinstance(outcome, RuntimeError)
+    assert "re-entered its own in-flight computation" in str(outcome)
+    assert cache.get_or_compute(key, lambda: "retry") == "retry"
+
+
 def test_speaker_cache_put_wins_over_late_singleflight_leader() -> None:
     cache = SpeakerArtifactCache(max_bytes=1024)
     key = SpeakerCacheKey("qwen3_tts_icl", "guide", 1, "voice_clone_prompt")
@@ -206,6 +234,30 @@ def test_speaker_cache_delete_does_not_resurrect_inflight_voice() -> None:
         assert leader.result(timeout=5.0) == "stale"
 
     assert cache.get(key) is None
+
+
+def test_speaker_cache_delete_invalidates_all_voice_artifact_variants() -> None:
+    cache = SpeakerArtifactCache(max_bytes=1024)
+    keys = (
+        SpeakerCacheKey(
+            "qwen3_tts_icl",
+            "guide",
+            1,
+            "voice_clone_prompt:ref_text:first",
+        ),
+        SpeakerCacheKey(
+            "qwen3_tts_icl",
+            "guide",
+            1,
+            "voice_clone_prompt:ref_text:second",
+        ),
+    )
+    for key in keys:
+        cache.put(key, key.artifact_kind)
+
+    cache.clear_voice("GUIDE")
+
+    assert [cache.get(key) for key in keys] == [None, None]
 
 
 def test_speaker_cache_delete_detaches_invalidated_flight() -> None:
