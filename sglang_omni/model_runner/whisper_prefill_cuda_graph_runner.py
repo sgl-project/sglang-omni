@@ -43,9 +43,7 @@ class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
         static_forward_batch = super().load_batch(forward_batch, **kwargs)
         static_forward_batch.encoder_lens_cpu = forward_batch.encoder_lens_cpu
         static_forward_batch.encoder_cached = forward_batch.encoder_cached
-        static_forward_batch.encoder_out_cache_loc = (
-            forward_batch.encoder_out_cache_loc
-        )
+        static_forward_batch.encoder_out_cache_loc = forward_batch.encoder_out_cache_loc
         return static_forward_batch
 
 
