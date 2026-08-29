@@ -382,15 +382,12 @@ def _compile_dit_backbone(
 ) -> bool:
     """torch.compile the CosyVoice3 DiT backbone (``flow.decoder.estimator``).
 
-    The estimator runs once per Euler step (10 steps) with a CFG batch of
-    ``[2, 80, T]``. ``dynamic=True`` builds one symbolic-sequence-length graph
-    so every utterance length reuses it instead of recompiling per length. The
-    bound forward is compiled (not an ``OptimizedModule``) so parameter names
-    stay stable, and warmup runs under ``inference_mode`` + the serving
-    ``compute_dtype`` so the first real request reuses the graph. ``torch.compile``
-    is lazy, so a failed compile surfaces during warmup and we restore the eager
-    forward and keep serving. The causal streaming branch is not warmed because
-    its mask math fails Inductor's dynamic-shape bounds check.
+    ``dynamic=True`` gives one symbolic-sequence-length graph reused by every
+    utterance length. The bound forward is compiled (parameter names stay
+    stable), warmup runs under ``inference_mode`` + the serving
+    ``compute_dtype``, and a lazy-compile failure falls back to eager. The
+    causal streaming branch is not warmed (its mask math fails Inductor's
+    dynamic-shape bounds check).
     """
     estimator = getattr(getattr(flow, "decoder", None), "estimator", None)
     if not isinstance(estimator, torch.nn.Module):
