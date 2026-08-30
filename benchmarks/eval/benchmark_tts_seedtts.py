@@ -90,7 +90,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
 from benchmarks.benchmarker.utils import managed_omni_server
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import (
@@ -209,12 +209,7 @@ def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
 
 
 def _resolve_warmup(config: TtsSeedttsBenchmarkConfig) -> int:
-    # note (luojiaxuan): warmup=None means match the benchmark concurrency, so
-    # the timed cohort is not the first to absorb concurrency-shaped cold work.
-    # An explicit --warmup always wins, including 0 and 1.
-    if config.warmup is not None:
-        return config.warmup
-    return config.concurrency if config.concurrency > 0 else 1
+    return resolve_warmup(config.warmup, config.concurrency)
 
 
 def _build_results_config(
