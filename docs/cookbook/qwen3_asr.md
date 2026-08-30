@@ -28,6 +28,12 @@ currently installs FFmpeg 9, while Apple installs `torchcodec==0.11.1`, which
 supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
 directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
 
+macOS may remove `DYLD_*` variables when a SIP-protected system executable
+launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
+for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
+`/usr/bin/time`. Test a compressed input such as M4A or MP3, since WAV decoding
+can succeed without loading FFmpeg.
+
 Create one virtual environment for both repositories, then install the pinned
 SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:

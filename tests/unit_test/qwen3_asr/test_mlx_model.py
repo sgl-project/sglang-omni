@@ -147,6 +147,49 @@ def test_runner_rejects_missing_audio_item() -> None:
         Qwen3ASRMlxModelRunner._audio_item(req)
 
 
+def test_runner_resolves_revision_and_checks_remote_code(monkeypatch, tmp_path) -> None:
+    import mlx_lm.utils as mlx_lm_utils
+    import sglang.srt.hardware_backend.mlx.remote_code_gate as remote_code_gate
+
+    observed = {}
+    monkeypatch.setattr(
+        remote_code_gate,
+        "resolve_model_directory",
+        lambda model_path, revision=None: observed.update(
+            model_path=model_path,
+            revision=revision,
+        )
+        or tmp_path,
+    )
+    monkeypatch.setattr(
+        remote_code_gate,
+        "ensure_remote_code_allowed",
+        lambda model_dir, trust_remote_code: observed.update(
+            model_dir=model_dir,
+            trust_remote_code=trust_remote_code,
+        ),
+    )
+    monkeypatch.setattr(
+        mlx_lm_utils,
+        "load_model",
+        lambda model_path, **kwargs: ("loaded-model", {}),
+    )
+    runner = object.__new__(Qwen3ASRMlxModelRunner)
+    runner.model_path = "org/model"
+    runner.revision = "revision-sha"
+    runner.trust_remote_code = True
+
+    runner._load_model()
+
+    assert observed == {
+        "model_path": "org/model",
+        "revision": "revision-sha",
+        "model_dir": tmp_path,
+        "trust_remote_code": True,
+    }
+    assert runner.model == "loaded-model"
+
+
 def test_native_mlx_rejects_audio_feature_count_mismatch() -> None:
     model = _tiny_model()
     input_ids = mx.array([[1, 10, 2]], dtype=mx.int32)

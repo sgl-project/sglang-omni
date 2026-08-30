@@ -29,6 +29,15 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    # Backend-specific tests opt into MLX explicitly. Keep CUDA/ROCm/Torch MPS
+    # profile tests independent of the caller's SGLANG_USE_MLX environment.
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+
+
 def _fake_server_args_builder(build_kwargs: dict[str, object]):
     def _build(model_path, context_length, **overrides):
         del model_path

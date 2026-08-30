@@ -5,23 +5,12 @@ from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
 import torch
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_model_path(model_path: str) -> Path:
-    path = Path(model_path).expanduser()
-    if path.is_dir():
-        return path.resolve()
-
-    from huggingface_hub import snapshot_download
-
-    return Path(snapshot_download(model_path))
 
 
 class Qwen3ASRMlxModelRunner:
@@ -34,11 +23,19 @@ class Qwen3ASRMlxModelRunner:
 
     def _load_model(self) -> None:
         from mlx_lm.utils import load_model
+        from sglang.srt.hardware_backend.mlx.remote_code_gate import (
+            ensure_remote_code_allowed,
+            resolve_model_directory,
+        )
 
         from .config import ModelConfig
         from .model import Qwen3ASRModel
 
-        model_path = _resolve_model_path(self.model_path)
+        model_path = resolve_model_directory(
+            self.model_path,
+            revision=self.revision,
+        )
+        ensure_remote_code_allowed(model_path, self.trust_remote_code)
         logger.info("Loading native MLX Qwen3-ASR model: %s", model_path)
         started = time.perf_counter()
         self.model, _config = load_model(
