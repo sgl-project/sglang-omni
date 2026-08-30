@@ -217,6 +217,12 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    stage_params = params.get("stage_params")
+    tts_engine_params = {}
+    if isinstance(stage_params, dict) and isinstance(
+        stage_params.get("tts_engine"), dict
+    ):
+        tts_engine_params = stage_params["tts_engine"]
 
     text, references = normalize_qwen3_tts_inputs(inputs)
     has_reference = has_voice_clone_reference(references, tts_params)
@@ -309,7 +315,11 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         ),
         x_vector_only_mode=x_vector_only_mode,
         non_streaming_mode=non_streaming_mode,
-        generation_kwargs=build_generation_kwargs(params, tts_params=tts_params),
+        generation_kwargs=build_generation_kwargs(
+            params,
+            tts_params=tts_params,
+            tts_engine_params=tts_engine_params,
+        ),
         seed=normalized_seed,
     )
 
@@ -448,6 +458,7 @@ def build_generation_kwargs(
     params: dict[str, Any],
     *,
     tts_params: dict[str, Any],
+    tts_engine_params: dict[str, Any],
 ) -> dict[str, Any]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
@@ -455,25 +466,29 @@ def build_generation_kwargs(
     else:
         explicit_fields = set()
 
-    selected_fields = set()
+    selected_fields: dict[str, Any] = {}
     for field in _GENERATION_FIELDS:
+        stage_value = tts_engine_params.get(field)
+        if stage_value is not None:
+            selected_fields[field] = stage_value
+            continue
         value = params.get(field)
         if value is None:
             continue
         if field in _IMPLICIT_SAMPLING_DEFAULTS and field not in explicit_fields:
             if value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
                 continue
-        selected_fields.add(field)
+        selected_fields[field] = value
 
-    max_new_tokens = params.get("max_new_tokens")
+    max_new_tokens = selected_fields.get("max_new_tokens")
     if max_new_tokens is None:
         max_new_tokens = QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS
     generation_kwargs: dict[str, Any] = {"max_new_tokens": int(max_new_tokens)}
     for field in _GENERATION_FIELDS:
         if field == "max_new_tokens":
             continue
-        if field in selected_fields and params.get(field) is not None:
-            generation_kwargs[field] = params[field]
+        if field in selected_fields:
+            generation_kwargs[field] = selected_fields[field]
     return generation_kwargs
 
 

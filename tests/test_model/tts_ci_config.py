@@ -50,28 +50,28 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 
 # Higgs thresholds.
-HIGGS_VC_WER_MAX_CORPUS = 0.0109
+HIGGS_VC_WER_MAX_CORPUS = 0.0116
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
-HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0106
+HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0102
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
-HIGGS_VC_SIMILARITY_MEAN_MIN = 66.06310302734374
-HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.163
+HIGGS_VC_SIMILARITY_MEAN_MIN = 66.07207473754883
+HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1643
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
 _HIGGS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 15.846,
-        "output_tok_per_req_s": 131.1,
-        "latency_mean_s": 1.005,
-        "rtf_mean": 0.2451,
+        "throughput_qps": 19.725,
+        "output_tok_per_req_s": 160.7,
+        "latency_mean_s": 0.806,
+        "rtf_mean": 0.1929,
     }
 }
 
 _HIGGS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 17.467,
-        "latency_mean_s": 0.854,
-        "rtf_mean": 0.2049,
+        "throughput_qps": 19.932,
+        "latency_mean_s": 0.798,
+        "rtf_mean": 0.19,
     }
 }
 
@@ -84,28 +84,28 @@ HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # MOSS Local thresholds.
-MOSS_VC_WER_MAX_CORPUS = 0.0222
+MOSS_VC_WER_MAX_CORPUS = 0.0253
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0229
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0254
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 62.690567626953126
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9545
+MOSS_VC_SIMILARITY_MEAN_MIN = 64.07273590087891
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9511
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
 _MOSS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 14.166,
-        "output_tok_per_req_s": 69.2,
-        "latency_mean_s": 1.123,
-        "rtf_mean": 0.2615,
+        "throughput_qps": 18.71,
+        "output_tok_per_req_s": 84.8,
+        "latency_mean_s": 0.851,
+        "rtf_mean": 0.197,
     }
 }
 
 _MOSS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 7.209,
-        "latency_mean_s": 2.199,
-        "rtf_mean": 0.5223,
+        "throughput_qps": 11.157,
+        "latency_mean_s": 1.426,
+        "rtf_mean": 0.3345,
     }
 }
 
@@ -121,34 +121,34 @@ MOSS_VC_STREAM_THRESHOLDS = apply_slack(
 # MPS-DP2 pool on peak throughput and holds a several-fold better first-audio
 # latency, so colocation is no longer the recommended topology for it.
 #
-# Note: (Jiaxin Deng) calibrated on the CI host, lane 0,1 pinned cpuset
-# (2-15,66-79), worst-of-5 clean rounds with destructive rejection
-# (run .tune-runs/20260813T021112Z_tts_qwen3tts_r5). Raw pre-slack references
+# Note: (wenyao) recalibrated on the CI host, lane 2,3 pinned cpuset
+# (16-31,80-95), worst-of-5 clean rounds with destructive rejection
+# (run .tune-runs/20260830T024753Z_tts_combined). Raw pre-slack references
 # only; the CI slack calculation is unchanged.
-QWEN3_TTS_VC_WER_MAX_CORPUS = 0.011
+QWEN3_TTS_VC_WER_MAX_CORPUS = 0.0112
 QWEN3_TTS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(QWEN3_TTS_VC_WER_MAX_CORPUS)
-QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.0116
+QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.011
 QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS
 )
-QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.4295639038086
-QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.195
+QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.00611707687378
+QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.1926
 QWEN3_TTS_VC_UTMOS_MEAN_MIN = apply_mos_slack(QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE)
 
 _QWEN3_TTS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 17.66,
-        "output_tok_per_req_s": 71.1,
-        "latency_mean_s": 0.901,
-        "rtf_mean": 0.2236,
+        "throughput_qps": 18.007,
+        "output_tok_per_req_s": 74.9,
+        "latency_mean_s": 0.882,
+        "rtf_mean": 0.2182,
     }
 }
 
 _QWEN3_TTS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 15.324,
-        "latency_mean_s": 1.039,
-        "rtf_mean": 0.257,
+        "throughput_qps": 16.58,
+        "latency_mean_s": 0.96,
+        "rtf_mean": 0.2341,
     }
 }
 

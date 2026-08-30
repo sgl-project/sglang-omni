@@ -362,6 +362,43 @@ def test_qwen3_tts_ignores_client_sampling_defaults() -> None:
     assert state.generation_kwargs == {"max_new_tokens": 2048}
 
 
+def test_qwen3_tts_forwards_tts_engine_stage_sampling_params() -> None:
+    sampled_payload = make_payload(
+        inputs="sampled",
+        params={
+            "subtalker_dosample": False,
+            "subtalker_top_k": 1,
+            "stage_params": {
+                "tts_engine": {
+                    "subtalker_dosample": True,
+                    "subtalker_temperature": 0.7,
+                    "subtalker_top_p": 0.8,
+                    "subtalker_top_k": 40,
+                }
+            },
+        },
+    )
+    greedy_payload = make_payload(
+        inputs="greedy",
+        params={"stage_params": {"tts_engine": {"subtalker_dosample": False}}},
+    )
+
+    sampled_state = build_qwen3_tts_state(sampled_payload)
+    greedy_state = build_qwen3_tts_state(greedy_payload)
+
+    assert sampled_state.generation_kwargs == {
+        "max_new_tokens": 2048,
+        "subtalker_dosample": True,
+        "subtalker_temperature": 0.7,
+        "subtalker_top_p": 0.8,
+        "subtalker_top_k": 40,
+    }
+    assert greedy_state.generation_kwargs == {
+        "max_new_tokens": 2048,
+        "subtalker_dosample": False,
+    }
+
+
 def test_qwen3_tts_embedding_cache_keys_are_stable_and_content_based() -> None:
     """Protects radix-cache keys for Qwen requests that prefill with embeddings."""
     embeds = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
@@ -4147,6 +4184,8 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     talker._sub_top_k_tensor = torch.empty(2, dtype=torch.long)
     talker._semantic_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
+    talker._sub_do_sample_tensor = torch.empty(2, dtype=torch.bool)
+    talker._sub_identity_row_indices_tensor = torch.arange(2, dtype=torch.long)
     talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
     requests = [
         SimpleNamespace(
@@ -4177,9 +4216,10 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     assert talker._semantic_sampling_seed_tensor[:2].tolist() == [5, 9]
     assert talker._sub_sampling_seed_tensor[:2].tolist() == [7, 11]
     assert talker._sub_temperature_tensor[:2].tolist() == pytest.approx([0.8, 1.0])
-    assert talker._sub_sample_rows == [0]
+    assert talker._sub_top_k_tensor[:2].tolist() == [40, 1]
+    assert talker._sub_do_sample_tensor[:2].tolist() == [True, False]
     assert talker._sub_sample_count == 1
-    assert talker._sub_sample_row_indices_tensor[:1].tolist() == [0]
+    assert talker._sub_identity_row_indices_tensor.tolist() == [0, 1]
     assert talker._sub_has_sampled_rows is True
     assert talker._sub_sampled_has_top_p is True
     # top_k=40 ladder-quantizes to 50 (shared predictor-graph key width).
@@ -4234,8 +4274,10 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     talker._sub_top_p_tensor = torch.tensor([1.0, 1.0])
     talker._sub_top_k_tensor = torch.tensor([-1, -1])
     talker._sub_sampling_seed_tensor = torch.tensor([17, 23])
-    talker._sub_sample_rows = [0, 1]
+    talker._sub_do_sample_tensor = torch.tensor([True, True])
+    talker._sub_identity_row_indices_tensor = torch.tensor([0, 1])
     talker._sub_sample_row_indices_tensor = torch.tensor([0, 1])
+    talker._sub_sample_max_row_index = 1
     talker._sub_sample_count = 2
     talker._sub_has_sampled_rows = True
     talker._sub_sampled_has_top_p = False
@@ -4350,8 +4392,10 @@ def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(
     talker._sub_top_p_tensor = torch.tensor([1.0])
     talker._sub_top_k_tensor = torch.tensor([-1])
     talker._sub_sampling_seed_tensor = torch.tensor([17])
-    talker._sub_sample_rows = [0]
+    talker._sub_do_sample_tensor = torch.tensor([True])
+    talker._sub_identity_row_indices_tensor = torch.tensor([0])
     talker._sub_sample_row_indices_tensor = torch.tensor([0])
+    talker._sub_sample_max_row_index = 0
     talker._sub_sample_count = 1
     talker._sub_has_sampled_rows = True
     talker._sub_sampled_has_top_p = False
@@ -4871,6 +4915,8 @@ def _make_prep_talker(monkeypatch):
     talker._sub_top_k_tensor = torch.empty(2, dtype=torch.long)
     talker._semantic_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
+    talker._sub_do_sample_tensor = torch.empty(2, dtype=torch.bool)
+    talker._sub_identity_row_indices_tensor = torch.arange(2, dtype=torch.long)
     talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
     return Qwen3TTSTalker, talker
 
