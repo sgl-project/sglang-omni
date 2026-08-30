@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -423,6 +423,31 @@ class AudioChunkingConfig(BaseModel):
         return max(int(self.max_audio_clip_s * sample_rate), 1)
 
 
+class RealtimeAudioConfig(BaseModel):
+    """Pipeline-owned audio framing for the WebSocket realtime endpoint.
+
+    ``turn`` preserves the existing VAD/utterance behavior. ``frame`` is for
+    lockstep duplex models that consume every fixed-duration PCM frame while
+    the user and assistant may speak at the same time.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["turn", "frame"] = "turn"
+    input_sample_rate: int = Field(default=16_000, gt=0)
+    output_sample_rate: int = Field(default=24_000, gt=0)
+    frame_samples: int | None = Field(default=None, gt=0)
+    max_pending_frames: int = Field(default=256, ge=1)
+    max_inflight_frames: int = Field(default=4, ge=1)
+    warmup_frames: int = Field(default=0, ge=0)
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.mode == "frame" and self.frame_samples is None:
+            raise ValueError("frame-mode realtime audio requires frame_samples")
+        if self.mode == "turn" and self.frame_samples is not None:
+            raise ValueError("turn-mode realtime audio must not set frame_samples")
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -441,6 +466,7 @@ class PipelineConfig(BaseModel):
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig()
+    realtime_audio: ClassVar[RealtimeAudioConfig] = RealtimeAudioConfig()
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {}
     """Stage name -> ``StageConfig`` subclass for this pipeline's stage types.

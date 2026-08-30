@@ -57,7 +57,7 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
-from sglang_omni.config import AudioChunkingConfig
+from sglang_omni.config import AudioChunkingConfig, RealtimeAudioConfig
 from sglang_omni.http.admin_auth import (
     make_admin_auth_dependency,
     resolve_admin_api_key,
@@ -185,6 +185,7 @@ def create_app(
     additional_speech_languages: frozenset[str] = frozenset(),
     enable_realtime: bool = False,
     supports_realtime_audio_output: bool = False,
+    realtime_audio: RealtimeAudioConfig | None = None,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     admin_api_key: str | None = None,
@@ -214,6 +215,7 @@ def create_app(
             endpoint (OpenAI Realtime API).
         supports_realtime_audio_output: Whether the mounted realtime endpoint
             can request streamed audio from the configured pipeline.
+        realtime_audio: Pipeline-owned turn- or fixed-frame realtime behavior.
         allowed_local_media_path: Directory allowed for ``file://`` TTS
             reference audio.
         allowed_media_domains: Domains allowed for remote TTS reference audio.
@@ -250,6 +252,7 @@ def create_app(
     )  # allow_audio_chunking default false
     app.state.realtime_enabled = enable_realtime
     app.state.supports_realtime_audio_output = supports_realtime_audio_output
+    app.state.realtime_audio = realtime_audio or RealtimeAudioConfig()
     app.state.speaker_sample_store = SpeakerSampleStore()
     app.state.speech_service = SpeechRequestValidator(
         default_model=app.state.model_name,
@@ -1193,6 +1196,7 @@ def _register_realtime(app: FastAPI) -> None:
         client=client,
         model_name=model_name,
         supports_audio_output=app.state.supports_realtime_audio_output,
+        audio_config=app.state.realtime_audio,
     )
     app.state.realtime_manager = manager
 

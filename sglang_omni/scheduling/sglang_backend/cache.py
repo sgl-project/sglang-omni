@@ -28,6 +28,12 @@ def create_tree_cache(
     if server_args.disable_radix_cache:
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
-        return ChunkCache(params)
+        cache = ChunkCache(params)
+    else:
+        cache = RadixCache(params)
 
-    return RadixCache(params)
+    if server_args.enable_streaming_session and not cache.supports_streaming_session():
+        from sglang.srt.session.streaming_session import StreamingSession
+
+        cache = StreamingSession(cache)
+    return cache

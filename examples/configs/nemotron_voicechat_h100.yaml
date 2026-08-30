@@ -1,0 +1,31 @@
+config_cls: NemotronVoiceChatPipelineConfig
+model_path: /path/to/voicechat-data
+name: nvidia-nemotronlabs-voicechat-11b
+stages:
+  perception:
+    factory:
+      dtype: float32
+      use_cudagraph: true
+      max_sessions: 1
+    gpu_memory_fraction: 0.12
+  thinker:
+    factory:
+      dtype: bfloat16
+      context_length: 8192
+      max_sessions: 1
+    engine:
+      mem_fraction_static: 0.45
+    gpu_memory_fraction: 0.52
+  talker:
+    factory:
+      dtype: float32
+      context_length: 8192
+      max_sessions: 1
+    engine:
+      mem_fraction_static: 0.20
+    gpu_memory_fraction: 0.22
+  code2wav:
+    factory:
+      dtype: float32
+      max_sessions: 1
+    gpu_memory_fraction: 0.08

@@ -109,6 +109,7 @@ Supported Models
    cookbook/moss_transcribe_diarize.md
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md
+   cookbook/nemotron_voicechat.md
    cookbook/ming_omni.md
    cookbook/llada2_uni.md
 

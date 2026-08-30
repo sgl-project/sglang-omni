@@ -35,6 +35,13 @@ class DeferredAdmission:
     ready: Future[Any]
 
 
+@dataclass(slots=True)
+class FollowupAdmission:
+    """Replace an internal AR result with another request on the same stage."""
+
+    value: Any
+
+
 @dataclass
 class SchedulerOutput:
     requests: list[SchedulerRequest]
@@ -85,6 +92,10 @@ class ARRequestData:
     max_new_tokens: int | None = None
     enforce_request_limits: bool = False
     temperature: float = 0.0
+    streaming_session_id: str | None = None
+    streaming_session_capacity: int | None = None
+    streaming_session_timeout: float | None = None
+    close_streaming_session: bool = False
 
 
 def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:

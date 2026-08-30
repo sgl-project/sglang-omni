@@ -25,6 +25,7 @@ Export a config to JSON::
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ import signal
 import socket
 import threading
 import time
+import uuid
 from contextlib import contextmanager, suppress
 from typing import Any
 
@@ -39,7 +41,7 @@ import uvicorn
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from sglang_omni.client import Client
+from sglang_omni.client import Client, GenerateRequest, SamplingParams
 from sglang_omni.config import PipelineConfig
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
@@ -57,6 +59,55 @@ from sglang_omni.utils.gpu_memory import (
 logger = logging.getLogger(__name__)
 
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+async def _warmup_frame_realtime_pipeline(
+    client: Client,
+    pipeline_config: PipelineConfig,
+    *,
+    enabled: bool,
+) -> None:
+    config = type(pipeline_config).realtime_audio
+    if not enabled or config.mode != "frame" or config.warmup_frames == 0:
+        return
+    assert config.frame_samples is not None
+    session_id = f"warmup-{uuid.uuid4().hex}"
+    silence = base64.b64encode(bytes(config.frame_samples * 2)).decode("ascii")
+    started = time.perf_counter()
+    try:
+        for frame_index in range(config.warmup_frames):
+            request = GenerateRequest(
+                model=pipeline_config.name,
+                prompt={
+                    "event": "audio_frame",
+                    "session_id": session_id,
+                    "frame_index": frame_index,
+                    "pcm16": silence,
+                    "instructions": "You are a helpful realtime voice assistant.",
+                },
+                sampling=SamplingParams(temperature=0.0, max_new_tokens=1),
+                output_modalities=["text", "audio"],
+                stream=False,
+            )
+            async for _ in client.generate(
+                request, request_id=f"{session_id}-{frame_index}"
+            ):
+                pass
+    finally:
+        close_request = GenerateRequest(
+            model=pipeline_config.name,
+            prompt={"event": "session_close", "session_id": session_id},
+            sampling=SamplingParams(temperature=0.0, max_new_tokens=1),
+            output_modalities=["audio"],
+            stream=False,
+        )
+        async for _ in client.generate(close_request, request_id=f"{session_id}-close"):
+            pass
+    logger.info(
+        "Frame-realtime warmup completed: frames=%d duration_ms=%.1f",
+        config.warmup_frames,
+        (time.perf_counter() - started) * 1000,
+    )
 
 
 class _PipelineUvicornServer(uvicorn.Server):
@@ -414,6 +465,9 @@ async def _run_server(
     try:
         cl_kwargs = client_kwargs or {}
         client = Client(coordinator, **cl_kwargs)
+        await _warmup_frame_realtime_pipeline(
+            client, pipeline_config, enabled=enable_realtime
+        )
         app = create_app(
             client,
             model_name=model_name or pipeline_config.name,
@@ -438,6 +492,7 @@ async def _run_server(
             supports_realtime_audio_output=(
                 type(pipeline_config).code2wav_stage() is not None
             ),
+            realtime_audio=type(pipeline_config).realtime_audio,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
