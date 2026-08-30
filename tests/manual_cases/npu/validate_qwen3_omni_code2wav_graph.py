@@ -1,5 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Validate Qwen3-Omni Code2Wav NPUGraph capture and replay on one NPU."""
+"""Validate Qwen3-Omni Code2Wav NPUGraph capture and replay on one NPU.
+
+Usage:
+    python tests/manual_cases/npu/validate_qwen3_omni_code2wav_graph.py \
+        --model-path /path/to/Qwen3-Omni-checkpoint \
+        --device npu:0 \
+        --iterations 20
+"""
 
 from __future__ import annotations
 
@@ -11,9 +18,9 @@ from typing import Any
 import torch
 import torch_npu  # noqa: F401  # Registers the ``npu`` PyTorch backend.
 
-from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import GraphKey
+from sglang_omni.models.qwen3_omni.components.code2wav_npu_graph import (
     Code2WavNpuGraphRunner,
-    GraphKey,
 )
 from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     load_code2wav_model,
@@ -22,51 +29,75 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-path", required=True)
-    parser.add_argument("--device", default="npu:0")
-    parser.add_argument("--dtype", default=None)
-    parser.add_argument("--memory-fraction", type=float, default=0.02)
-    parser.add_argument("--iterations", type=int, default=20)
-    parser.add_argument("--frames", type=int, nargs="+", default=[10, 20, 30, 35])
-    return parser.parse_args()
-
-
-def _synchronize(device: torch.device) -> None:
-    torch.npu.synchronize(device)
+    parser.add_argument(
+        "--model-path",
+        required=True,
+        help="Local path or Hugging Face ID for the Qwen3-Omni checkpoint.",
+    )
+    parser.add_argument(
+        "--device",
+        default="npu:0",
+        help="Concrete NPU device used for model loading and graph capture (default: npu:0).",
+    )
+    parser.add_argument(
+        "--dtype",
+        default=None,
+        help="Optional model dtype accepted by the serving loader (default: checkpoint dtype).",
+    )
+    parser.add_argument(
+        "--memory-fraction",
+        type=float,
+        default=0.02,
+        help="Fraction of total device memory available to Code2Wav graphs (default: 0.02).",
+    )
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=20,
+        help="Number of measured eager and graph calls (default: 20).",
+    )
+    parser.add_argument(
+        "--frames",
+        type=int,
+        nargs="+",
+        default=[10, 20, 30, 35],
+        help="Exact frame lengths to capture (default: 10 20 30 35).",
+    )
+    args = parser.parse_args()
+    args.device = torch.device(args.device)
+    if args.device.type != "npu" or args.device.index is None:
+        parser.error("--device must be a concrete NPU device such as npu:0")
+    if args.iterations <= 0:
+        parser.error("--iterations must be positive")
+    return args
 
 
 def _milliseconds_per_call(fn, *, iterations: int, device: torch.device) -> float:
     with torch.inference_mode():
         for _ in range(3):
             fn()
-    _synchronize(device)
+    torch.npu.synchronize(device)
     started = time.perf_counter()
     with torch.inference_mode():
         for _ in range(iterations):
             fn()
-    _synchronize(device)
+    torch.npu.synchronize(device)
     return (time.perf_counter() - started) * 1000.0 / iterations
 
 
 def main() -> None:
     args = _parse_args()
-    device = torch.device(args.device)
-    if device.type != "npu" or device.index is None:
-        raise ValueError("--device must be a concrete NPU device such as npu:0")
-    if args.iterations <= 0:
-        raise ValueError("--iterations must be positive")
-
-    torch.npu.set_device(device)
+    torch.npu.set_device(args.device)
     model = load_code2wav_model(
         args.model_path,
-        device=str(device),
+        device=args.device,
         dtype=args.dtype,
     )
     num_quantizers = int(model.config.num_quantizers)
     graph_keys = tuple(GraphKey(batch_size=1, frames=frames) for frames in args.frames)
     runner = Code2WavNpuGraphRunner.build(
         model,
-        device=device,
+        device=args.device,
         num_quantizers=num_quantizers,
         total_gpu_memory_fraction=args.memory_fraction,
         graph_keys=graph_keys,
@@ -84,7 +115,7 @@ def main() -> None:
         codes = torch.arange(
             num_quantizers * key.frames,
             dtype=torch.long,
-            device=device,
+            device=args.device,
         ).reshape(1, num_quantizers, key.frames)
         codes.remainder_(16)
         inputs[key] = codes
@@ -92,7 +123,7 @@ def main() -> None:
             eager = model(codes).detach().clone()
         graph_result = runner.run(codes)
         graph_output = graph_result.output.detach().clone()
-        _synchronize(device)
+        torch.npu.synchronize(args.device)
         exact = bool(torch.equal(eager, graph_output))
         parity.append(
             {
@@ -110,16 +141,16 @@ def main() -> None:
     eager_ms = _milliseconds_per_call(
         lambda: model(benchmark_codes),
         iterations=args.iterations,
-        device=device,
+        device=args.device,
     )
     graph_ms = _milliseconds_per_call(
         lambda: runner.run(benchmark_codes),
         iterations=args.iterations,
-        device=device,
+        device=args.device,
     )
     result = {
         "status": "pass",
-        "device": str(device),
+        "device": str(args.device),
         "parity": parity,
         "benchmark": {
             "frames": benchmark_key.frames,
