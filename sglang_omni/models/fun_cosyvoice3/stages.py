@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Sequence, cast
@@ -66,6 +67,9 @@ class _PackedFlowBatch:
     prompt_mel_lengths_tensor: torch.Tensor
     prompt_feat: torch.Tensor
     embedding: torch.Tensor
+
+
+logger = logging.getLogger(__name__)
 
 
 def _flow_device_and_dtype(flow: Any) -> tuple[torch.device, torch.dtype]:
@@ -329,6 +333,90 @@ def _load_cosyvoice3_flow_hift(
     return FunCosyVoice3Flow(flow), hift
 
 
+def _configure_dit_torch_compile() -> None:
+    """Enable the Inductor/Dynamo flags the DiT graph wants, without pulling in
+    the full ``sglang.srt`` stack (the vocoder is a plain pipeline process)."""
+    torch._inductor.config.fx_graph_cache = True
+    if hasattr(torch._dynamo.config, "cache_size_limit"):
+        torch._dynamo.config.cache_size_limit = 1024
+    if hasattr(torch._dynamo.config, "accumulated_cache_size_limit"):
+        torch._dynamo.config.accumulated_cache_size_limit = 1024
+
+
+def _run_dit_estimator(
+    estimator: Any,
+    mel_frames: int,
+    *,
+    compute_dtype: torch.dtype | None = None,
+) -> None:
+
+    param = next(estimator.parameters())
+    device, dtype = param.device, param.dtype
+    t = int(mel_frames)
+    # CFG batch 2, mel dim 80 (proj_out.out_features for the pinned checkpoint).
+    x = torch.randn(2, 80, t, device=device, dtype=dtype)
+    mask = torch.ones(2, 1, t, device=device, dtype=dtype)
+    mu = torch.randn(2, 80, t, device=device, dtype=dtype)
+    timestep = torch.zeros(2, device=device, dtype=dtype)
+    spks = torch.randn(2, 80, device=device, dtype=dtype)
+    cond = torch.randn(2, 80, t, device=device, dtype=dtype)
+    with torch.autocast(
+        device_type=current_platform.device_type,
+        dtype=compute_dtype,
+        enabled=compute_dtype is not None,
+    ):
+        estimator(x, mask, mu, timestep, spks, cond, streaming=False)
+
+
+def _compile_dit_backbone(
+    flow: Any,
+    *,
+    warmup_mel_frames: int = 128,
+    warmup_steps: int = 3,
+    compute_dtype: torch.dtype | None = None,
+) -> bool:
+
+    estimator = getattr(getattr(flow, "decoder", None), "estimator", None)
+    if not isinstance(estimator, torch.nn.Module):
+        logger.warning(
+            "Fun-CosyVoice3 DiT estimator is not a PyTorch module (%s); "
+            "skipping torch.compile",
+            type(estimator).__name__,
+        )
+        return False
+    if warmup_mel_frames < 2:
+        raise ValueError(f"warmup_mel_frames must be >= 2, got {warmup_mel_frames}")
+
+    original_forward = estimator.forward
+    _configure_dit_torch_compile()
+    try:
+        estimator.forward = torch.compile(original_forward, dynamic=True)
+        with torch.inference_mode():
+            for _ in range(warmup_steps):
+                _run_dit_estimator(
+                    estimator,
+                    warmup_mel_frames,
+                    compute_dtype=compute_dtype,
+                )
+    except Exception as exc:
+        estimator.forward = original_forward
+        logger.warning(
+            "torch.compile for the Fun-CosyVoice3 DiT backbone failed "
+            "(%s: %s); the flow decoder will run eager",
+            type(exc).__name__,
+            exc,
+        )
+        return False
+    logger.info(
+        "Compiled Fun-CosyVoice3 DiT backbone (dynamic=True, compute_dtype=%s, "
+        "warmup_mel_frames=%d, warmup_steps=%d)",
+        compute_dtype,
+        warmup_mel_frames,
+        warmup_steps,
+    )
+    return True
+
+
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     del model_path
     return SimpleScheduler(
@@ -398,8 +486,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             raise RuntimeError(
                 "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
             )
-        # The AR runner stores one-element tensors per step, which serialize as
-        # ``[num_tokens, 1]``. Flow consumes one unbatched token sequence here.
+
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
         return state, codes
 
@@ -532,6 +619,7 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
+    enable_dit_torch_compile: bool = False,
 ) -> SimpleScheduler:
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
@@ -548,6 +636,8 @@ def create_vocoder_executor(
         device=device,
         fp16=(dtype == "float16"),
     )
+    if enable_dit_torch_compile:
+        _compile_dit_backbone(flow, compute_dtype=compute_dtype)
 
     vocoder = _CosyVoice3Vocoder(
         flow,

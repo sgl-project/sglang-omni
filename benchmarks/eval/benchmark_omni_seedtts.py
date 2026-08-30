@@ -142,7 +142,12 @@ from dataclasses import dataclass
 import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
+from benchmarks.benchmarker.runner import (
+    BenchmarkRunner,
+    RunConfig,
+    SendFn,
+    resolve_warmup,
+)
 from benchmarks.benchmarker.utils import (
     get_wav_duration,
     save_json_results,
@@ -211,12 +216,7 @@ class OmniSeedttsBenchmarkConfig:
 
 
 def _resolve_warmup(config: OmniSeedttsBenchmarkConfig) -> int:
-    # note (luojiaxuan): warmup=None means match the benchmark concurrency, so
-    # the timed cohort is not the first to absorb concurrency-shaped cold work.
-    # An explicit --warmup always wins, including 0 and 1.
-    if config.warmup is not None:
-        return config.warmup
-    return config.max_concurrency if config.max_concurrency > 0 else 1
+    return resolve_warmup(config.warmup, config.max_concurrency)
 
 
 def _build_results_config(
