@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib
 import logging
 from typing import Any
 
@@ -130,11 +129,12 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         return model.sampler_pool_max_running_requests
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        model_runner_mod = importlib.import_module(
-            "sglang_omni.models.higgs_tts.model_runner"
+        return self.make_model_runner_from_path(
+            model_worker,
+            output_proc,
+            module_path="sglang_omni.models.higgs_tts.model_runner",
+            class_name="HiggsTTSModelRunner",
         )
-
-        return model_runner_mod.HiggsTTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
@@ -147,7 +147,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
 
     def make_abort_callback(self) -> Any | None:
         assert self.model is not None
-        return self.model.reset_request
+        return self.model_reset_request_abort_callback()
 
     def make_request_finished_callback(self) -> Any | None:
         assert self.model is not None
@@ -162,4 +162,4 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         }
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
-        model_runner.set_stream_outbox(scheduler.outbox)
+        self.bind_stream_outbox(scheduler, model_runner)

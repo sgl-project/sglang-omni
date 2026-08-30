@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from sglang_omni.profiler.gpu_metrics import GPU_METRIC_KEYS
+
 logger = logging.getLogger(__name__)
 
 
@@ -397,6 +399,7 @@ def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
         "timelines": {rid: tl.to_relative() for rid, tl in timelines.items()},
         "stage_breakdown": [row.to_dict() for row in stage_breakdown(timelines)],
         "hop_breakdown": [row.to_dict() for row in hop_breakdown(timelines)],
+        "gpu_breakdown": gpu_breakdown(timelines),
         "request_count": len(timelines),
     }
 
@@ -414,3 +417,67 @@ def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
         " | ".join(str(r.get(c, "")).ljust(widths[c]) for c in columns) for r in rows
     )
     return f"{header}\n{sep}\n{body}\n"
+
+
+# ---------------------------------------------------------------------------
+# GPU metrics breakdown
+# ---------------------------------------------------------------------------
+
+
+def gpu_breakdown(timelines: dict[str, "RequestTimeline"]) -> dict[str, Any]:
+    """Aggregate GPU memory samples that were attached to request events.
+
+    Events carry optional ``gpu_mem_allocated_mb`` / ``gpu_mem_reserved_mb``
+    fields (see :mod:`sglang_omni.profiler.gpu_metrics`). When the profiler
+    ran on a CUDA-capable runtime these are present; on CPU-only runs they
+    are absent and this helper returns an empty result gracefully.
+
+    Returns
+    -------
+    dict
+        ``{"per_request": [...], "global": {peak/mean fields}}`` where each
+        ``per_request`` entry reports the peak allocated memory seen for that
+        request (a proxy for its working-set size) and the global block
+        reports the peak across all requests plus the mean per request.
+    """
+    per_request: list[dict[str, Any]] = []
+    global_allocated: list[float] = []
+    global_reserved: list[float] = []
+
+    for rid, tl in timelines.items():
+        req_alloc: list[float] = []
+        req_resv: list[float] = []
+        for ev in tl.events:
+            md = ev.get("metadata") or {}
+            alloc = md.get("gpu_mem_allocated_mb")
+            resv = md.get("gpu_mem_reserved_mb")
+            if alloc is not None:
+                req_alloc.append(float(alloc))
+                global_allocated.append(float(alloc))
+            if resv is not None:
+                req_resv.append(float(resv))
+                global_reserved.append(float(resv))
+        if req_alloc or req_resv:
+            per_request.append(
+                {
+                    "request_id": rid,
+                    "gpu_mem_allocated_peak_mb": max(req_alloc) if req_alloc else None,
+                    "gpu_mem_reserved_peak_mb": max(req_resv) if req_resv else None,
+                }
+            )
+
+    def _peak_mean(values: list[float]) -> dict[str, float | None]:
+        if not values:
+            return {"peak_mb": None, "mean_mb": None}
+        return {
+            "peak_mb": max(values),
+            "mean_mb": sum(values) / len(values),
+        }
+
+    return {
+        "per_request": per_request,
+        "global": {
+            "gpu_mem_allocated": _peak_mean(global_allocated),
+            "gpu_mem_reserved": _peak_mean(global_reserved),
+        },
+    }

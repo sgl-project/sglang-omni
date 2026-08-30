@@ -49,6 +49,7 @@ from sglang_omni.profiler.event_recorder import (
     emit_model_path_start as _emit_model_path_start,
 )
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
+from sglang_omni.profiler.gpu_metrics import sample_gpu_metrics
 from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
@@ -1444,6 +1445,7 @@ class OmniScheduler:
                         request_id=request_id,
                         stage=None,
                         event_name="scheduler_first_emit",
+                        metadata=sample_gpu_metrics(self.device),
                     )
                 emitted_any = True
             self.outbox.put(msg)
@@ -1521,6 +1523,10 @@ class OmniScheduler:
         metadata = {
             "is_prefill_only": bool(batch.is_prefill_only),
             "is_extend_in_batch": bool(batch.is_extend_in_batch),
+            # GPU memory snapshot at the moment the first batch is scheduled.
+            # Sampling is free (no device sync) and returns {} when CUDA is
+            # unavailable, so this is a no-op on CPU-only runtimes.
+            **sample_gpu_metrics(self.device),
         }
         for req in batch.reqs:
             rid = req.rid
