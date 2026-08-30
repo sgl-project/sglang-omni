@@ -349,12 +349,7 @@ def _run_dit_estimator(
     *,
     compute_dtype: torch.dtype | None = None,
 ) -> None:
-    """Run one warmup forward at the serving CFG/autocast signature.
 
-    The solver calls the estimator with a CFG batch of two and a variable mel
-    time axis ``T``; ``dynamic=True`` turns that into one symbolic-length graph.
-    ``compute_dtype`` mirrors the vocoder's autocast (None = fp32).
-    """
     param = next(estimator.parameters())
     device, dtype = param.device, param.dtype
     t = int(mel_frames)
@@ -380,15 +375,7 @@ def _compile_dit_backbone(
     warmup_steps: int = 3,
     compute_dtype: torch.dtype | None = None,
 ) -> bool:
-    """torch.compile the CosyVoice3 DiT backbone (``flow.decoder.estimator``).
 
-    ``dynamic=True`` gives one symbolic-sequence-length graph reused by every
-    utterance length. The bound forward is compiled (parameter names stay
-    stable), warmup runs under ``inference_mode`` + the serving
-    ``compute_dtype``, and a lazy-compile failure falls back to eager. The
-    causal streaming branch is not warmed (its mask math fails Inductor's
-    dynamic-shape bounds check).
-    """
     estimator = getattr(getattr(flow, "decoder", None), "estimator", None)
     if not isinstance(estimator, torch.nn.Module):
         logger.warning(
@@ -499,8 +486,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             raise RuntimeError(
                 "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
             )
-        # The AR runner stores one-element tensors per step, which serialize as
-        # ``[num_tokens, 1]``. Flow consumes one unbatched token sequence here.
+
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
         return state, codes
 
