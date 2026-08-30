@@ -211,21 +211,35 @@ def test_arkasr_prefill_graph_defaults() -> None:
     assert builder.supports_breakable_prefill_cuda_graph
     assert overrides["cuda_graph_backend_prefill"] == "breakable"
     assert overrides["cuda_graph_bs_prefill"] == (
-        build_default_prefill_cuda_graph_bs(builder.context_length)
+        build_default_prefill_cuda_graph_bs(4096)
     )
-    assert overrides["cuda_graph_max_bs_prefill"] == builder.context_length
+    assert overrides["cuda_graph_max_bs_prefill"] == 4096
 
 
-def test_arkasr_prefill_graph_respects_effective_token_cap() -> None:
+def test_arkasr_prefill_graph_allows_unset_chunked_prefill_size() -> None:
     builder = _make_engine_builder()
     overrides = build_generation_batch_overrides(
-        server_args_overrides={"context_length": 768, "max_total_tokens": 512},
+        server_args_overrides={"chunked_prefill_size": None},
         **builder.generation_defaults(dtype="bfloat16"),
     )
 
     builder.adjust_overrides(overrides)
 
-    assert builder.context_length == 768
+    assert overrides["cuda_graph_bs_prefill"] == (
+        build_default_prefill_cuda_graph_bs(4096)
+    )
+    assert overrides["cuda_graph_max_bs_prefill"] == 4096
+
+
+def test_arkasr_prefill_graph_respects_effective_token_cap() -> None:
+    builder = _make_engine_builder()
+    overrides = build_generation_batch_overrides(
+        server_args_overrides={"max_total_tokens": 512},
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+
+    builder.adjust_overrides(overrides)
+
     assert overrides["cuda_graph_bs_prefill"] == (
         build_default_prefill_cuda_graph_bs(512)
     )
@@ -451,8 +465,9 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert stub.infra_kwargs_seen["enable_prefill_input_embeds"] is True
     assert stub.build_kwargs["cuda_graph_backend_prefill"] == "breakable"
     assert stub.build_kwargs["cuda_graph_bs_prefill"] == (
-        build_default_prefill_cuda_graph_bs(scheduler.server_args.context_length)
+        build_default_prefill_cuda_graph_bs(4096)
     )
+    assert stub.build_kwargs["cuda_graph_max_bs_prefill"] == 4096
     assert stub.attest_calls == (
         [(stub.model_worker.model_runner, scheduler.server_args)]
         if want_cuda_graph

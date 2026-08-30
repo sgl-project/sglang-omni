@@ -18,6 +18,7 @@ from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
+    clamp_prefill_cuda_graph_max_bs,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
@@ -133,31 +134,15 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        if "context_length" in overrides:
-            self.context_length = int(overrides.pop("context_length"))
-        if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
-            return
-        if "cuda_graph_bs_prefill" in overrides:
+        if (
+            overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED
+            or "cuda_graph_bs_prefill" in overrides
+        ):
             return
 
-        # Note (musclemuller): Bound the ladder by every effective token cap so
-        # SGLang's post-merge max_bs clamp cannot invalidate explicit buckets.
-        caps = [
-            self.context_length,
-            overrides["max_prefill_tokens"],
-            overrides.get("cuda_graph_max_bs_prefill"),
-            overrides.get("max_total_tokens"),
-        ]
-        if overrides["chunked_prefill_size"] > 0:
-            caps.append(overrides["chunked_prefill_size"])
-        ladder = build_default_prefill_cuda_graph_bs(
-            min(int(cap) for cap in caps if cap is not None)
+        overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(
+            clamp_prefill_cuda_graph_max_bs(overrides)
         )
-        overrides["cuda_graph_bs_prefill"] = ladder
-        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
-
-    def customize_server_args(self, server_args: Any) -> None:
-        self.context_length = int(server_args.context_length)
 
     def setup_model_resources(
         self,
