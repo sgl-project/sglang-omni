@@ -31,7 +31,7 @@ def create_dllm_thinker_scheduler(
 
     dllm_config = DllmConfig.from_server_args(server_args)
 
-    # sglang 0.5.16 supports radix cache with dLLM, but Omni's dLLM staging
+    # sglang supports radix cache with dLLM, but Omni's dLLM staging
     # path has only been validated without it; keep it disabled deliberately.
     override_server_args(
         server_args,
@@ -44,8 +44,6 @@ def create_dllm_thinker_scheduler(
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        _,
-        _,
         model_config,
     ) = create_sglang_infrastructure(
         server_args,

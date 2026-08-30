@@ -1243,7 +1243,7 @@ def test_transformer_layer_uses_source_modules_for_primitive_ops() -> None:
 def test_vocoder_decoder_wraps_supported_stage_types() -> None:
     patch_stage = _PatchStage(patch_size=2, is_downsample=False)
     decoder = nn.ModuleList([_FallbackProjectedStage(), patch_stage])
-    wrapped = MossAudioTokenizerVocoderDecoder(decoder)
+    wrapped = MossAudioTokenizerVocoderDecoder.from_module(decoder)
 
     assert len(wrapped) == 2
     assert isinstance(wrapped[0], MossAudioTokenizerProjectedTransformer)
@@ -1259,7 +1259,7 @@ def test_vocoder_decoder_computes_output_lengths_on_host() -> None:
             _PatchStage(patch_size=2, is_downsample=True),
         ]
     )
-    wrapped = MossAudioTokenizerVocoderDecoder(decoder)
+    wrapped = MossAudioTokenizerVocoderDecoder.from_module(decoder)
 
     assert wrapped.output_lengths([3, 5]) == [12, 20]
 
@@ -1273,7 +1273,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
         lambda device: None if device.type == "cuda" else "not CUDA",
     )
     moss_audio_tokenizer_v1_source = _MossAudioTokenizerV1ProjectedStage()
-    moss_audio_tokenizer_v1_decoder = MossAudioTokenizerVocoderDecoder(
+    moss_audio_tokenizer_v1_decoder = MossAudioTokenizerVocoderDecoder.from_module(
         nn.ModuleList([moss_audio_tokenizer_v1_source])
     )
     moss_audio_tokenizer_v1_attention = (
@@ -1296,7 +1296,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
     local_source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
-    local = MossAudioTokenizerVocoderDecoder(nn.ModuleList([local_source]))
+    local = MossAudioTokenizerVocoderDecoder.from_module(nn.ModuleList([local_source]))
     local_attention = local[0].transformer.layers[0].self_attn
     local_attention._flash_attn_varlen = lambda *args, **kwargs: None
 
@@ -1306,7 +1306,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
 
 def test_vocoder_decoder_wraps_moss_audio_tokenizer_v1_weight_fields() -> None:
     source = _MossAudioTokenizerV1ProjectedStage()
-    wrapped = MossAudioTokenizerVocoderDecoder(nn.ModuleList([source]))
+    wrapped = MossAudioTokenizerVocoderDecoder.from_module(nn.ModuleList([source]))
     source_layer = source.transformer.layers[0]
     wrapped_layer = wrapped[0].transformer.layers[0]
     attention = wrapped_layer.self_attn

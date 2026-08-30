@@ -2,8 +2,10 @@
 """Streaming vocoder scheduler for MOSS-TTS Local.
 
 Streaming requests share one persistent batched ``codec.streaming()`` session.
-Pure non-streaming traffic uses the MOSS decoder with packed SGLang FlashAttention
-when no live streaming session owns the codec state.
+The remote codec uses SDPA for the lifetime of that session because its
+FlashAttention streaming path is unreliable. Pure non-streaming traffic uses
+the MOSS decoder with packed SGLang FlashAttention when no live streaming
+session owns the codec state.
 """
 
 from __future__ import annotations
@@ -16,6 +18,10 @@ from typing import Any, Mapping
 
 import torch
 
+from sglang_omni.models.moss_tts.attention import (
+    AUTO_ATTENTION_BACKEND,
+    SDPA_ATTENTION_BACKEND,
+)
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoderDecoder
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.proto import StagePayload
@@ -41,7 +47,12 @@ class _CodecStreamSession:
     """
 
     def __init__(
-        self, codec: Any, *, stream_slots: int, offline_slots: int, n_vq: int
+        self,
+        codec: Any,
+        *,
+        stream_slots: int,
+        offline_slots: int,
+        n_vq: int,
     ) -> None:
         self._codec = codec
         self._stream_slots = int(stream_slots)
@@ -62,8 +73,35 @@ class _CodecStreamSession:
         # Retain the streaming ExitStack so per-slot causal state lives across steps (closed in close());
         # graph replay is kept bit-identical to this stateful decode by the in-place cache patch.
         self._exit_stack = contextlib.ExitStack()
-        with torch.no_grad():
-            self._exit_stack.enter_context(codec.streaming(self._batch_size))
+        set_attention_implementation = getattr(
+            codec, "set_attention_implementation", None
+        )
+        previous_attention_implementation = getattr(
+            codec, "attention_implementation", None
+        )
+        if previous_attention_implementation is None:
+            previous_attention_implementation = getattr(
+                getattr(codec, "config", None), "attention_implementation", None
+            )
+        if (
+            not callable(set_attention_implementation)
+            or previous_attention_implementation is None
+        ):
+            self._exit_stack.close()
+            raise RuntimeError(
+                "MOSS-TTS Local streaming vocoder requires the codec's "
+                "set_attention_implementation API to force SDPA"
+            )
+        try:
+            set_attention_implementation(SDPA_ATTENTION_BACKEND)
+            self._exit_stack.callback(
+                set_attention_implementation, previous_attention_implementation
+            )
+            with torch.no_grad():
+                self._exit_stack.enter_context(codec.streaming(self._batch_size))
+        except BaseException:
+            self._exit_stack.close()
+            raise
 
     def warmup_cuda_graph(
         self, frames: list[int], *, min_free_gb: float = 3.0
@@ -343,6 +381,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         sample_rate: int,
         stream_slots: int = 15,
         stream_chunk_frames: int = 25,
+        attention_backend: str = AUTO_ATTENTION_BACKEND,
         initial_chunk_frames: int = 5,
         coalesce_floor_frames: int = 5,
         max_step_frames: int = 100,
@@ -366,6 +405,7 @@ class MossTTSLocalStreamingVocoderScheduler(
                 "_set_streaming_exec_mask",
                 "_decode_frame",
                 "decode",
+                "set_attention_implementation",
             )
             if not hasattr(codec, name)
         ]
@@ -374,13 +414,19 @@ class MossTTSLocalStreamingVocoderScheduler(
                 f"MOSS-TTS Local streaming vocoder: codec is missing {missing}; "
                 "the installed MOSS-Audio-Tokenizer-v2 version is incompatible"
             )
-        nonstream_decoder = MossAudioTokenizerVocoderDecoder(codec.decoder)
+        nonstream_decoder = MossAudioTokenizerVocoderDecoder.from_module(
+            codec.decoder,
+            attention_backend=attention_backend,
+        )
         logger.info(
-            f"MOSS-TTS Local non-streaming vocoder uses packed SGLang attention "
-            f"stages={len(nonstream_decoder)}"
+            "MOSS-TTS Local non-streaming vocoder uses configured attention "
+            "backend=%s stages=%d",
+            attention_backend,
+            len(nonstream_decoder),
         )
         self._codec = codec
         self._nonstream_decoder = nonstream_decoder
+        self._attention_backend = attention_backend
         self._stream_slots = int(stream_slots)
         # Coalesce up to one full set of streaming lanes per pump, not the offline batch width.
         self._stream_chunk_batch_max = self._stream_slots

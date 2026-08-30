@@ -6,31 +6,10 @@ from typing import Any
 
 import pytest
 import torch
+from sglang.srt.runtime_context import get_context, get_serving
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.weight_checker import StrictWeightChecker, _tensor_bytes
-from tests.unit_test.fakes import FakeServerArgs
-
-
-class _StrictServerArgsDouble:
-    """Minimal ServerArgs double that rejects every bare post-resolution write."""
-
-    def __init__(self, **fields: Any) -> None:
-        object.__setattr__(self, "_locked", False)
-        object.__setattr__(self, "override_calls", [])
-        for name, value in fields.items():
-            object.__setattr__(self, name, value)
-        object.__setattr__(self, "_locked", True)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if self._locked and not name.startswith("_"):
-            raise AttributeError(f"bare mutation of {name}")
-        object.__setattr__(self, name, value)
-
-    def override(self, source: str, **fields: Any) -> None:
-        self.override_calls.append((source, dict(fields)))
-        for name, value in fields.items():
-            object.__setattr__(self, name, value)
 
 
 def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
@@ -93,7 +72,7 @@ def test_tensor_bytes_supports_float8_fallback_path() -> None:
     assert len(raw) == tensor.numel() * tensor.element_size()
 
 
-def test_model_worker_update_weights_from_disk_updates_visible_model_info() -> None:
+def test_model_worker_update_weights_from_disk_publishes_the_weight_version() -> None:
     calls: list[tuple[str, str, bool]] = []
 
     def update_weights_from_disk(
@@ -105,85 +84,63 @@ def test_model_worker_update_weights_from_disk_updates_visible_model_info() -> N
         calls.append((model_path, load_format, recapture_cuda_graph))
         return True, "ok"
 
-    worker_args = FakeServerArgs(
-        model_path="/tmp/old-model",
-        load_format="auto",
-        weight_version="old",
-    )
-    runner_args = FakeServerArgs(
-        model_path="/tmp/old-model",
-        load_format="auto",
-        weight_version="old",
-    )
-    runner = SimpleNamespace(
-        server_args=runner_args,
-        model_config=SimpleNamespace(model_path="/tmp/old-model"),
-        update_weights_from_disk=update_weights_from_disk,
-    )
-    worker = object.__new__(ModelWorker)
-    worker.server_args = worker_args
-    worker.model_runner = runner
+    with get_context().override_server_args(
+        load_format="auto", weight_version="old"
+    ) as published:
+        worker = object.__new__(ModelWorker)
+        worker.server_args = published
+        worker.model_runner = SimpleNamespace(
+            update_weights_from_disk=update_weights_from_disk
+        )
 
-    success, message = ModelWorker.update_weights_from_disk(
-        worker,
-        {
-            "model_path": "/tmp/new-model",
-            "load_format": "safetensors",
-            "weight_version": "v2",
-            "recapture_cuda_graph": True,
-        },
-    )
-
-    assert success is True
-    assert message == "ok"
-    assert calls == [("/tmp/new-model", "safetensors", True)]
-    assert worker_args.model_path == "/tmp/new-model"
-    assert worker_args.load_format == "safetensors"
-    assert worker_args.weight_version == "v2"
-    assert runner_args.model_path == "/tmp/new-model"
-    assert runner_args.load_format == "safetensors"
-    assert runner_args.weight_version == "v2"
-    assert runner.model_config.model_path == "/tmp/new-model"
-
-
-def test_model_worker_update_weights_from_disk_uses_server_args_override() -> None:
-    server_args = _StrictServerArgsDouble(
-        model_path="/tmp/old-model",
-        load_format="auto",
-        weight_version="old",
-    )
-    runner = SimpleNamespace(
-        server_args=server_args,
-        model_config=SimpleNamespace(model_path="/tmp/old-model"),
-        update_weights_from_disk=lambda *args, **kwargs: (True, "ok"),
-    )
-    worker = object.__new__(ModelWorker)
-    worker.server_args = server_args
-    worker.model_runner = runner
-
-    success, message = ModelWorker.update_weights_from_disk(
-        worker,
-        {
-            "model_path": "/tmp/new-model",
-            "load_format": "safetensors",
-            "weight_version": "v2",
-        },
-    )
-
-    assert (success, message) == (True, "ok")
-    assert server_args.override_calls == [
-        (
-            "sglang-omni-weight-update-disk",
+        success, message = ModelWorker.update_weights_from_disk(
+            worker,
             {
                 "model_path": "/tmp/new-model",
-                "load_format": "safetensors",
                 "weight_version": "v2",
+                "recapture_cuda_graph": True,
             },
         )
-    ]
-    assert server_args.model_path == "/tmp/new-model"
-    assert server_args.load_format == "safetensors"
-    assert server_args.weight_version == "v2"
+
+        assert (success, message) == (True, "ok")
+        assert calls == [("/tmp/new-model", "auto", True)]
+        assert get_serving().weight_version == "v2"
+        assert get_context().overrides_log() == [
+            ("sglang-omni-weight-update-disk", {"weight_version": "v2"})
+        ]
+        assert published.weight_version == "old"
+
+
+def test_model_worker_update_weights_from_disk_without_a_version_leaves_the_bags() -> (
+    None
+):
+    calls: list[tuple[str, str, bool]] = []
+
+    def update_weights_from_disk(
+        model_path: str,
+        load_format: str,
+        *,
+        recapture_cuda_graph: bool,
+    ) -> tuple[bool, str]:
+        calls.append((model_path, load_format, recapture_cuda_graph))
+        return True, "ok"
+
+    with get_context().override_server_args(weight_version="old") as published:
+        worker = object.__new__(ModelWorker)
+        worker.server_args = published
+        worker.model_runner = SimpleNamespace(
+            update_weights_from_disk=update_weights_from_disk
+        )
+
+        success, _ = ModelWorker.update_weights_from_disk(
+            worker,
+            {"model_path": "/tmp/new-model", "load_format": "safetensors"},
+        )
+
+        assert success is True
+        assert calls == [("/tmp/new-model", "safetensors", False)]
+        assert get_serving().weight_version == "old"
+        assert get_context().overrides_log() == []
 
 
 def test_model_worker_info_uses_effective_hybrid_swa_capacity() -> None:
@@ -306,63 +263,33 @@ def test_model_worker_update_weights_from_distributed_passes_positional_args() -
         calls.append((names, dtypes, shapes, group_name, load_format))
         return True, "ok"
 
-    runner_args = FakeServerArgs(weight_version="old")
-    runner = SimpleNamespace(
-        server_args=runner_args,
-        update_weights_from_distributed=update_weights_from_distributed,
-    )
-    worker = object.__new__(ModelWorker)
-    worker.server_args = FakeServerArgs(weight_version="old")
-    worker.model_runner = runner
-
-    success, message = ModelWorker.update_weights_from_distributed(
-        worker,
-        {
-            "names": ["model.embed.weight"],
-            "dtypes": ["bfloat16"],
-            "shapes": [[4, 8]],
-            "group_name": "talker_group",
-            "weight_version": "v2",
-        },
-    )
-
-    assert success is True
-    assert message == "ok"
-    assert calls == [
-        (["model.embed.weight"], ["bfloat16"], [[4, 8]], "talker_group", None)
-    ]
-    assert worker.server_args.weight_version == "v2"
-    assert runner_args.weight_version == "v2"
-
-
-def test_model_worker_distributed_update_uses_server_args_override() -> None:
-    server_args = _StrictServerArgsDouble(weight_version="old")
-    runner = SimpleNamespace(
-        server_args=server_args,
-        update_weights_from_distributed=lambda *args, **kwargs: (True, "ok"),
-    )
-    worker = object.__new__(ModelWorker)
-    worker.server_args = server_args
-    worker.model_runner = runner
-
-    success, message = ModelWorker.update_weights_from_distributed(
-        worker,
-        {
-            "names": ["model.embed.weight"],
-            "dtypes": ["bfloat16"],
-            "shapes": [[4, 8]],
-            "weight_version": "v2",
-        },
-    )
-
-    assert (success, message) == (True, "ok")
-    assert server_args.override_calls == [
-        (
-            "sglang-omni-weight-update-distributed",
-            {"weight_version": "v2"},
+    with get_context().override_server_args(weight_version="old") as published:
+        worker = object.__new__(ModelWorker)
+        worker.server_args = published
+        worker.model_runner = SimpleNamespace(
+            update_weights_from_distributed=update_weights_from_distributed
         )
-    ]
-    assert server_args.weight_version == "v2"
+
+        success, message = ModelWorker.update_weights_from_distributed(
+            worker,
+            {
+                "names": ["model.embed.weight"],
+                "dtypes": ["bfloat16"],
+                "shapes": [[4, 8]],
+                "group_name": "talker_group",
+                "weight_version": "v2",
+            },
+        )
+
+        assert (success, message) == (True, "ok")
+        assert calls == [
+            (["model.embed.weight"], ["bfloat16"], [[4, 8]], "talker_group", None)
+        ]
+        assert get_serving().weight_version == "v2"
+        assert get_context().overrides_log() == [
+            ("sglang-omni-weight-update-distributed", {"weight_version": "v2"})
+        ]
+        assert published.weight_version == "old"
 
 
 def test_model_worker_update_weights_from_distributed_requires_names() -> None:

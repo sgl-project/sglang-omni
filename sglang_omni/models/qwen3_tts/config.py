@@ -49,7 +49,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     model_path: str
     # note (0xtoward): Keep deterministic inference opt-in because it serializes
     # preprocessing and vocoder decoding and disables Talker compilation and the
-    # initial vocoder CUDA Graph, reducing throughput.
+    # vocoder CUDA graphs, reducing throughput.
     enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
@@ -82,8 +82,8 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         if not self.enable_deterministic_inference:
             return {}
         # note (0xtoward): deterministic inference serializes preprocessing
-        # and vocoder decoding and disables the initial vocoder CUDA graph;
-        # applied at launch so an explicit factory.* value still wins.
+        # and vocoder decoding and disables the vocoder CUDA graphs.
+        # Applied at launch so an explicit factory.* value still wins.
         if stage_name == "preprocessing":
             return {"max_concurrency": 1}
         if stage_name == "tts_engine":
@@ -92,6 +92,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             return {
                 "enable_deterministic_inference": True,
                 "initial_cuda_graph": False,
+                "followup_cuda_graph": False,
             }
         return {}
 

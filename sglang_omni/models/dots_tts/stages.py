@@ -16,6 +16,7 @@ from sglang_omni.models.dots_tts.codec import (
     DotsReferenceEncoder,
     load_dots_audio_codec,
 )
+from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
 from sglang_omni.proto import StagePayload
@@ -39,6 +40,7 @@ def _configure_optimized_kernels() -> None:
     This temporary upstream monkey patch is restored once dots.tts supports
     shared-module FX for its one-shot prefill and recurrent decode modules.
     """
+    import_dots_tts()
     from dots_tts.modules.backbone import dit_inference, inference_utils
     from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
@@ -100,6 +102,7 @@ def preprocess_dots_tts_payload(
     max_sequence_length: int,
     num_steps: int = 4,
 ) -> StagePayload:
+    import_dots_tts()
     from dots_tts.data.pipelines.tokenizing import build_generation_schedule
     from dots_tts.data.pipelines.tts_pipeline import (
         DEFAULT_INSTRUCTION_TTS_TEMPLATE,
@@ -325,6 +328,7 @@ def preprocess_dots_tts_payload(
 
 
 def _load_model_metadata(model_path: str) -> tuple[str, Any, Any, int]:
+    import_dots_tts()
     from dots_tts.models.dots_tts.config import ModelConfig
     from transformers import AutoTokenizer
 

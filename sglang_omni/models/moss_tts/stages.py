@@ -17,8 +17,10 @@ from transformers import AutoConfig, AutoTokenizer
 
 from sglang_omni.models.moss_tts.audio_tokenizer import (
     DEFAULT_MOSS_TTS_AUDIO_TOKENIZER,
-    MossTTSAudioTokenizer,
-    load_moss_tts_audio_tokenizer,
+    MossAudioEncoder,
+    load_moss_audio_encoder,
+    load_moss_audio_vocoder,
+    resolve_moss_audio_dtype,
 )
 from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
 from sglang_omni.models.moss_tts.hf_loading import (
@@ -65,25 +67,14 @@ _ReferenceEncodeQueueEntry: TypeAlias = tuple[
 ]
 
 
-_COMPUTE_DTYPES: dict[str, torch.dtype] = {
-    "float32": torch.float32,
-    "bfloat16": torch.bfloat16,
-}
-
-
 def _resolve_compute_dtype(
     dtype: str | torch.dtype | None,
 ) -> torch.dtype | None:
-    if dtype is None:
-        return None
-    if isinstance(dtype, str):
-        try:
-            return _COMPUTE_DTYPES[dtype.lower()]
-        except KeyError:
-            pass
-    elif isinstance(dtype, torch.dtype) and dtype in (torch.float32, torch.bfloat16):
-        return dtype
-    raise ValueError(f"compute_dtype must be float32, bfloat16, or null; got {dtype!r}")
+    return resolve_moss_audio_dtype(
+        dtype,
+        name="compute_dtype",
+        allow_none=True,
+    )
 
 
 def _normalize_moss_processor_config(processor: Any) -> None:
@@ -164,20 +155,20 @@ def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
 
 
 class _BatchedReferenceEncoder:
-    """Coalesce concurrent Delay reference encodes into codec batches."""
+    """Coalesce concurrent Delay reference encodes into encoder batches."""
 
     MAX_REFERENCE_SECONDS = _MAX_REFERENCE_SECONDS
     ENCODE_TIMEOUT_S = 120.0
 
     def __init__(
         self,
-        audio_tokenizer: MossTTSAudioTokenizer,
+        audio_encoder: MossAudioEncoder,
         *,
         n_vq: int,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 4,
     ) -> None:
-        self._audio_tokenizer = audio_tokenizer
+        self._audio_encoder = audio_encoder
         self._n_vq = int(n_vq)
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
@@ -192,7 +183,7 @@ class _BatchedReferenceEncoder:
         self._thread.start()
 
     def close(self) -> None:
-        """Stop the codec worker after all already-queued jobs finish."""
+        """Stop the reference encoder worker after all queued jobs finish."""
         with self._lifecycle_lock:
             if self._closed:
                 return
@@ -204,7 +195,7 @@ class _BatchedReferenceEncoder:
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("MOSS-TTS reference encoder is closed")
-        return _load_reference_waveform(self._audio_tokenizer, source)
+        return _load_reference_waveform(self._audio_encoder, source)
 
     def encode(self, source: str | os.PathLike[str]) -> torch.Tensor:
         return self.encode_input(self.load(source))
@@ -286,7 +277,7 @@ class _BatchedReferenceEncoder:
             group_indices[group].append(index)
 
         try:
-            encoded = self._audio_tokenizer.encode_waveforms(
+            encoded = self._audio_encoder.encode_waveforms(
                 waveforms,
                 num_quantizers=self._n_vq,
             )
@@ -306,7 +297,7 @@ class _BatchedReferenceEncoder:
 
         for indices, waveform in zip(group_indices, waveforms):
             try:
-                codes = self._audio_tokenizer.encode_waveforms(
+                codes = self._audio_encoder.encode_waveforms(
                     [waveform],
                     num_quantizers=self._n_vq,
                 )[0]
@@ -318,7 +309,7 @@ class _BatchedReferenceEncoder:
 
 
 def _load_reference_waveform(
-    audio_tokenizer: MossTTSAudioTokenizer,
+    audio_encoder: MossAudioEncoder,
     source: str | os.PathLike[str],
 ) -> _LoadedReferenceWaveform:
     """Load once through the shared resolver and key the exact codec input."""
@@ -326,10 +317,10 @@ def _load_reference_waveform(
     waveform = load_audio(
         os.fsdecode(source),
         source_name="MOSS-TTS reference",
-        target_sample_rate=audio_tokenizer.sample_rate,
+        target_sample_rate=audio_encoder.sample_rate,
         mono=True,
     )
-    duration = len(waveform) / max(audio_tokenizer.sample_rate, 1)
+    duration = len(waveform) / max(audio_encoder.sample_rate, 1)
     if duration > _MAX_REFERENCE_SECONDS:
         raise ValueError(
             f"reference audio is {duration:.1f}s long, limit is "
@@ -337,14 +328,14 @@ def _load_reference_waveform(
         )
     return _LoadedReferenceWaveform(
         torch.from_numpy(waveform),
-        audio_tokenizer.sample_rate,
+        audio_encoder.sample_rate,
         f"waveform:{audio_fingerprint(waveform)}",
     )
 
 
 class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWaveform]):
     model_id = "moss_tts_delay"
-    encoder_id = "moss_audio_tokenizer"
+    encoder_id = "moss_audio_encoder"
     artifact_kind = "moss_tts_reference_codes"
     storage_dtype = torch.int32
     output_dtype = torch.long
@@ -358,15 +349,15 @@ class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWave
     ) -> None:
         self._encoder = encoder
         self.model_revision = str(codec_model_path)
-        model = getattr(encoder._audio_tokenizer, "model", None)
+        model = getattr(encoder._audio_encoder, "model", None)
         try:
             parameter_dtype = str(next(model.parameters()).dtype)
         except (AttributeError, StopIteration):
             parameter_dtype = "unknown"
         config = (
             f"n_vq:{int(n_vq)}|sample_rate:"
-            f"{getattr(encoder._audio_tokenizer, 'sample_rate', 'unknown')}|device:"
-            f"{getattr(encoder._audio_tokenizer, 'device', 'unknown')}|dtype:"
+            f"{getattr(encoder._audio_encoder, 'sample_rate', 'unknown')}|device:"
+            f"{getattr(encoder._audio_encoder, 'device', 'unknown')}|dtype:"
             f"{parameter_dtype}"
         )
         self.encoder_config_hash = hash_bytes(config.encode("utf-8"))
@@ -433,7 +424,8 @@ def create_preprocessing_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: str = "float32",
+    compute_dtype: str | torch.dtype | None = "bfloat16",
+    attention_backend: str = "auto",
     codec_model_path: str | None = None,
     max_concurrency: int = 16,
     encode_batch_size: int = 8,
@@ -464,13 +456,15 @@ def create_preprocessing_executor(
         processor,
         codec_model_path,
     )
-    audio_tokenizer = load_moss_tts_audio_tokenizer(
+    resolved_compute_dtype = _resolve_compute_dtype(compute_dtype)
+    audio_encoder = load_moss_audio_encoder(
         resolved_codec_model_path,
         device=device,
-        dtype=dtype,
+        compute_dtype=resolved_compute_dtype,
+        attention_backend=attention_backend,
     )
     reference_encoder: Any = _BatchedReferenceEncoder(
-        audio_tokenizer,
+        audio_encoder,
         n_vq=int(processor.model_config.n_vq),
         max_batch_size=encode_batch_size,
         max_batch_wait_ms=encode_batch_wait_ms,
@@ -531,6 +525,7 @@ def create_vocoder_executor(
     stream_holdback_tokens: int = 1,
     initial_chunk_frames: int = 0,
     compute_dtype: str | torch.dtype | None = "bfloat16",
+    attention_backend: str = "auto",
 ) -> MossStreamingVocoderScheduler:
     # An explicit device is a model policy/user override; gpu_id is only the
     # placement-derived fallback. This matches preprocessing resolution and
@@ -538,15 +533,23 @@ def create_vocoder_executor(
     device = _resolve_codec_device(device, gpu_id)
     resolved_compute_dtype = _resolve_compute_dtype(compute_dtype)
     processor = _load_moss_processor(model_path)
-    audio_tokenizer = load_moss_tts_audio_tokenizer(
+    decoder_dtype = resolve_moss_audio_dtype(
+        dtype,
+        name="dtype",
+        allow_none=False,
+    )
+    assert decoder_dtype is not None
+    audio_vocoder = load_moss_audio_vocoder(
         _resolve_audio_tokenizer_model_path(processor, codec_model_path),
         device=device,
-        dtype=dtype,
+        decoder_dtype=decoder_dtype,
+        compute_dtype=resolved_compute_dtype,
+        attention_backend=attention_backend,
     )
 
     vocoder = MossTTSVocoder(
         processor,
-        audio_tokenizer,
+        audio_vocoder,
         device,
         compute_dtype=resolved_compute_dtype,
         max_segment_batch_size=max_batch_size,

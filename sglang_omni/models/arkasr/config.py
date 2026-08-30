@@ -22,6 +22,7 @@ class ArkasrFactoryArgs(FactoryArgs):
     """ARK-ASR's own constructor knobs, typed like the shared ones."""
 
     encoder_max_batch_size: int | None = Field(default=None, ge=1)
+    enable_encoder_cuda_graph: bool | None = None
     enable_pre_lm_encoder: bool | None = None
     pre_lm_cache_max_entries: int | None = Field(default=None, ge=1)
     pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)
@@ -62,6 +63,7 @@ class ArkasrPipelineConfig(PipelineConfig):
                 device="cuda:0",
                 max_new_tokens=256,
                 encoder_max_batch_size=8,
+                enable_encoder_cuda_graph=True,
                 prefill_coalesce_requests=16,
                 prefill_coalesce_wait_ms=32,
                 prefill_coalesce_when_idle=True,

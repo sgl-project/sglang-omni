@@ -15,7 +15,7 @@ Fish Audio requires its model-specific DAC dependencies. Complete the
 before starting the server.
 
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains in place:
+so the SGLang-Omni Transformers 5.12 / SGLang 0.5.18 stack remains in place:
 
 ```bash
 apt-get update && apt-get install -y sox

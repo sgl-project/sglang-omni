@@ -188,6 +188,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_stt_benchmark.py` | ASR concurrency scaling on the Pipecat STT benchmark set (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_longform.py` | ASR concurrency scaling on LongLibriHeavy 30/60 s and Meanwhile (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -244,6 +245,37 @@ numbers are not comparable to the Pipecat leaderboard.
 python -m benchmarks.dataset.prepare --dataset stt-benchmark
 python -m benchmarks.eval.benchmark_asr_stt_benchmark \
   --port 8000 --concurrencies 1,8,32 --repeats 3 --warmup
+```
+
+`benchmark_asr_longform.py` registers three canonical long-form English
+workloads: the complete LongLibriHeavy `llh_test_30` (1203 samples) and
+`llh_test_60` (591 samples) splits, plus all 64 samples in the Meanwhile `test`
+split. The LongLibriHeavy names refer to the published splits; the loader does
+not apply another duration filter. Likewise, Meanwhile's `begin` and `end`
+metadata are not used to crop the already segmented `audio` field.
+
+The loader decodes each source clip and stages it as mono 16 kHz PCM WAV before
+the timed sweep. The result JSON uses the same schema and metrics as the
+SeedTTS and Pipecat ASR sweeps, and records the dataset alias, repository,
+split, pinned revision, expected sample count, and exact input fingerprint.
+`--stream` uploads each complete file rather than simulating real-time audio
+arrival.
+
+```bash
+python -m benchmarks.dataset.prepare --dataset longlibriheavy-30
+python -m benchmarks.eval.benchmark_asr_longform \
+  --dataset longlibriheavy-30 --port 8000 \
+  --concurrencies 1,8,32 --repeats 3 --warmup
+
+python -m benchmarks.dataset.prepare --dataset longlibriheavy-60
+python -m benchmarks.eval.benchmark_asr_longform \
+  --dataset longlibriheavy-60 --port 8000 \
+  --concurrencies 1,8,32 --repeats 3 --warmup
+
+python -m benchmarks.dataset.prepare --dataset meanwhile
+python -m benchmarks.eval.benchmark_asr_longform \
+  --dataset meanwhile --port 8000 \
+  --concurrencies 1,8,32 --repeats 3 --warmup
 ```
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
@@ -308,6 +340,9 @@ python -m benchmarks.dataset.prepare --dataset seedtts       # full SeedTTS
 python -m benchmarks.dataset.prepare --dataset seedtts-mini  # smoke-test subset
 python -m benchmarks.dataset.prepare --dataset seedtts-50    # 50-sample subset
 python -m benchmarks.dataset.prepare --dataset stt-benchmark # Pipecat STT benchmark set (1000 EN clips)
+python -m benchmarks.dataset.prepare --dataset longlibriheavy-30  # LongLibriHeavy llh_test_30 only
+python -m benchmarks.dataset.prepare --dataset longlibriheavy-60  # LongLibriHeavy llh_test_60 only
+python -m benchmarks.dataset.prepare --dataset meanwhile     # complete Meanwhile test split (64 EN clips)
 python -m benchmarks.dataset.prepare --dataset mmmu          # full MMMU (30 subjects)
 python -m benchmarks.dataset.prepare --dataset mmmu-ci-50    # MMMU CI subset
 python -m benchmarks.dataset.prepare --dataset mmsu          # full MMSU (ddwang2000/MMSU)

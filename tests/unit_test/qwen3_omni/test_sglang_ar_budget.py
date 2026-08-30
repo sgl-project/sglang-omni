@@ -10,7 +10,6 @@ from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
 import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def _configurator(*, total_gpu_memory_fraction: float | None):
@@ -36,7 +35,7 @@ def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
         assert model_path == "dummy"
         assert context_length == 8192
         assert overrides["sampling_backend"] == "pytorch"
-        return FakeServerArgs(
+        return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
             sampling_backend=overrides["sampling_backend"],
             max_running_requests=overrides["max_running_requests"],
@@ -274,7 +273,7 @@ def test_qwen_thinker_threads_explicit_generation_batch_policy(
         assert model_path == "dummy"
         assert context_length == 8192
         build_calls.append(dict(overrides))
-        return FakeServerArgs(
+        return SimpleNamespace(
             mem_fraction_static=0.85,
             max_running_requests=overrides["max_running_requests"],
             cuda_graph_max_bs=overrides["cuda_graph_max_bs"],
@@ -341,7 +340,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
         assert model_path == "dummy"
         assert context_length == 4096
         build_calls.append(dict(overrides))
-        return FakeServerArgs(
+        return SimpleNamespace(
             mem_fraction_static=0.55,
             sampling_backend=overrides["sampling_backend"],
             max_running_requests=overrides["max_running_requests"],
@@ -422,7 +421,7 @@ def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
 
     def _fake_builder(model_path, context_length, **overrides):
         captured.append(dict(overrides))
-        return FakeServerArgs(
+        return SimpleNamespace(
             mem_fraction_static=overrides.get("mem_fraction_static"),
             max_running_requests=overrides["max_running_requests"],
             cuda_graph_max_bs=overrides["cuda_graph_max_bs"],

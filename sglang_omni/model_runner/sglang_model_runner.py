@@ -21,8 +21,6 @@ from sglang_omni.utils.gpu_memory import (
     get_gpu_device_info,
     get_process_gpu_memory_bytes,
 )
-from sglang_omni.vendor.sglang.parallel_state import create_parallel_state
-from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -188,10 +186,6 @@ class SGLModelRunner(ModelRunner):
         # model_config is already fully configured by ModelWorker._init_model_config()
         # (architecture override, text_config swap, etc. are all done there)
 
-        # SGLang 0.5.16 replaced the flat rank arguments with a ParallelState.
-        # Mirror upstream's own construction (Scheduler.__init__), but keep the
-        # moe_ep_size / pp_size this wrapper is called with rather than reading
-        # them back off server_args.
         attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
             compute_dp_attention_world_info(
                 server_args.enable_dp_attention,
@@ -201,10 +195,8 @@ class SGLModelRunner(ModelRunner):
                 server_args.attn_cp_size,
             )
         )
-        ps = create_parallel_state(
-            ParallelState,
+        ps = ParallelState(
             tp_rank=tp_rank,
-            dcp_size=server_args.dcp_size,
             tp_size=tp_size,
             pp_rank=pp_rank,
             pp_size=pp_size,
@@ -214,6 +206,8 @@ class SGLModelRunner(ModelRunner):
             attn_tp_size=attn_tp_size,
             attn_cp_rank=0,
             attn_cp_size=server_args.attn_cp_size,
+            attn_dcp_rank=tp_rank % server_args.dcp_size,
+            attn_dcp_size=server_args.dcp_size,
             attn_dp_rank=attn_dp_rank,
             attn_dp_size=attn_dp_size,
             moe_ep_rank=moe_ep_rank,
@@ -251,6 +245,12 @@ class SGLModelRunner(ModelRunner):
                 "forward kwarg"
             )
 
+        if prefill_inputs.input_embeds.dtype != self.dtype:
+            raise RuntimeError(
+                "Omni prefill sidecar must be in model dtype "
+                f"{self.dtype}, got {prefill_inputs.input_embeds.dtype}; the "
+                "prefill graph slot copy would silently cast it"
+            )
         kwargs["input_embeds"] = prefill_inputs.input_embeds
         kwargs["omni_prefill_rids"] = forward_batch.rids
         if prefill_inputs.input_embeds_are_projected is not None:
@@ -258,6 +258,20 @@ class SGLModelRunner(ModelRunner):
                 prefill_inputs.input_embeds_are_projected
             )
         return kwargs
+
+    def _resolve_draft_load_format(self) -> str | None:
+        """A weight-share follower builds its module tree with dummy weights.
+
+        This is the runner's own load format, which upstream resolves in
+        ModelRunner.__init__ and feeds to the loader, so the published
+        load_format record is never touched.
+        """
+        from sglang_omni.utils import ipc_weights
+
+        ws = ipc_weights.get_weight_share_config()
+        if ws is not None and ws.role == "follower":
+            return "dummy"
+        return super()._resolve_draft_load_format()
 
     def load_model(self):
         """Load weights, honoring the same-GPU weight-share role, if any.
@@ -291,7 +305,7 @@ class SGLModelRunner(ModelRunner):
         architectures = (
             [self._model_arch_override]
             if self._model_arch_override is not None
-            else getattr(self.model_config.hf_config, "architectures", None)
+            else self.model_config.hf_config.architectures
         )
         policy = ipc_weights.validate_weight_share_architecture(architectures)
 
@@ -324,20 +338,7 @@ class SGLModelRunner(ModelRunner):
         import torch
 
         ipc_weights.wait_for_any_export(ws.dir_path, timeout_s=ws.attach_timeout_s)
-        original_load_format = self.server_args.load_format
-        override_server_args(
-            self.server_args,
-            "sglang_omni.weight_share.follower_dummy_load",
-            load_format="dummy",
-        )
-        try:
-            super().load_model()
-        finally:
-            override_server_args(
-                self.server_args,
-                "sglang_omni.weight_share.restore_load_format",
-                load_format=original_load_format,
-            )
+        super().load_model()
         self._weight_share_record, self._weight_ipc_leader_monitor = (
             ipc_weights.follower_attach(
                 self.model,
@@ -360,7 +361,7 @@ class SGLModelRunner(ModelRunner):
         after attach (would silently serve dummy weights). Leader: catches a
         post-export .data rebind (would silently orphan the followers).
 
-        SGLang 0.5.16 optionally reserves the KV pool as virtual memory and
+        SGLang optionally reserves the KV pool as virtual memory and
         backs its serving span only after CUDA graph capture. Omni has several
         deferred graph-capture call sites, so finalize here at the common
         capture boundary instead of relying on every stage to mirror the
@@ -371,17 +372,13 @@ class SGLModelRunner(ModelRunner):
             from sglang_omni.utils import ipc_weights
 
             ipc_weights.verify_attachment(self.model, record)
-        # 0.5.16 seeds the capture flags once at ServerArgs publish, before
-        # engine builders disable enable_torch_compile; re-seed so capture
-        # honors the override.
-        from sglang.srt.runtime_context import get_flags
+        # Engine builders turn enable_torch_compile off on the exec bag after the
+        # capture flags were seeded at publish; re-seed so capture honors that.
+        from sglang.srt.runtime_context import get_exec, get_flags
 
-        get_flags().capture.enable_torch_compile = bool(
-            self.server_args.enable_torch_compile
-        )
+        get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         result = super().init_cuda_graphs(capture_decode_cuda_graph)
-        token_to_kv_pool = getattr(self, "token_to_kv_pool", None)
-        if bool(getattr(token_to_kv_pool, "post_capture_active", False)):
+        if self.token_to_kv_pool.post_capture_active:
             self.post_capture_resize_kv_pool()
         return result
 
@@ -396,10 +393,8 @@ class SGLModelRunner(ModelRunner):
             "whole replica group with new weights instead"
         )
 
-    # SGLang 0.5.16 moved the weight-update entry points off ModelRunner onto the
-    # composed WeightUpdater. Keep them on the runner: ModelWorker probes them
-    # with getattr/hasattr, so dropping them would silently downgrade every
-    # update to "not supported" instead of raising.
+    # Kept on the runner so ModelWorker has one call target and the weight-share
+    # guard applies to every update path.
     def update_weights_from_disk(self, *args, **kwargs):
         reason = self._weight_update_blocked_reason()
         if reason is not None:
@@ -418,8 +413,7 @@ class SGLModelRunner(ModelRunner):
             return False, reason
         return self.weight_updater.update_weights_from_distributed(*args, **kwargs)
 
-    # Process-group lifecycle does not mutate weights, so it stays unguarded by
-    # the weight-share check — matching the pre-0.5.16 inherited behavior.
+    # Process-group lifecycle does not mutate weights, so it stays unguarded.
     def init_weights_update_group(self, *args, **kwargs):
         return self.weight_updater.init_weights_update_group(*args, **kwargs)
 
@@ -475,8 +469,8 @@ class SGLModelRunner(ModelRunner):
     def init_kv_cache_configurator(self):
         """Swap in the Omni configurator so the colocated budget stays hooked.
 
-        SGLang 0.5.16 moved ``_profile_available_bytes`` off the ModelRunner MRO
-        onto the composed ``KVCacheConfigurator``. Rebuild upstream's instance as
+        Upstream keeps _profile_available_bytes on the composed
+        KVCacheConfigurator, not on the ModelRunner MRO. Rebuild upstream's instance as
         the Omni subclass, copying every declared field so upstream can add
         fields without silently dropping them here.
         """

@@ -12,10 +12,15 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
+
+from sglang_omni.models.dots_tts.compat import import_dots_tts
+
+import_dots_tts()
+
 from dots_tts.modules.backbone.dit_inference import FusedAdaLNDiT
 from dots_tts.modules.backbone.inference_utils import fuse_qkv_projection
 from dots_tts.modules.backbone.layers import rotate_half
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 logger = logging.getLogger(__name__)
 

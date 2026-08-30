@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections import deque
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
 
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
@@ -111,6 +113,75 @@ def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
     assert torch.equal(out[-1], leftover)
     assert list(sched_req.data.pending_feedback_queue) == []
     assert len(sched_req.data.decode_input_embeds) == generated_len
+
+
+def test_reprefill_restores_retained_repetition_penalty_history() -> None:
+    retained_req = SimpleNamespace(
+        output_ids=[2, 5, 2],
+        sampling_params=SimpleNamespace(repetition_penalty=1.05),
+    )
+    fresh_req = SimpleNamespace(
+        output_ids=[],
+        sampling_params=SimpleNamespace(repetition_penalty=1.05),
+    )
+    identity_req = SimpleNamespace(
+        output_ids=[3],
+        sampling_params=SimpleNamespace(repetition_penalty=1.0),
+    )
+    reqs = [retained_req, fresh_req, identity_req]
+
+    class _PenaltyOrchestrator:
+        vocab_size = 8
+        device = "cpu"
+
+        def __init__(self) -> None:
+            self.penalizers = {}
+
+        def reqs(self):
+            return reqs
+
+    orchestrator = _PenaltyOrchestrator()
+    penalizer = BatchedRepetitionPenalizer(orchestrator)
+    penalizer.prepare()
+    orchestrator.penalizers[BatchedRepetitionPenalizer] = penalizer
+    schedule_batch = SimpleNamespace(
+        reqs=reqs,
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+        sampling_info=SimpleNamespace(penalizer_orchestrator=orchestrator),
+    )
+
+    scaling = penalizer.get_scaling_penalties()
+    expected = torch.ones(3, 8)
+    expected[0, [2, 5]] = 1.05
+
+    class _ExecutionBridge:
+        def forward_context(self, batch, *, isolate_sampling):
+            assert batch is schedule_batch
+            assert isolate_sampling
+            assert torch.equal(scaling, expected)
+            return contextlib.nullcontext()
+
+    runner = _runner()
+    runner._execution_bridge = _ExecutionBridge()
+    with runner._execution_context(schedule_batch, isolate_sampling=True):
+        pass
+
+    assert torch.equal(scaling, expected)
+
+    logits = torch.tensor(
+        [
+            [1.0, 2.0, 10.0, 4.0, 5.0, -10.0, 7.0, 8.0],
+            [1.0, 2.0, 10.0, 4.0, 5.0, -10.0, 7.0, 8.0],
+            [1.0, 2.0, 10.0, 4.0, 5.0, -10.0, 7.0, 8.0],
+        ]
+    )
+    original_logits = logits.clone()
+    penalizer.apply(logits)
+
+    assert logits[0, 2].item() == pytest.approx(10.0 / 1.05)
+    assert logits[0, 5].item() == pytest.approx(-10.0 * 1.05)
+    assert torch.equal(logits[1], original_logits[1])
+    assert torch.equal(logits[2], original_logits[2])
 
 
 def test_reprefill_replays_prompt_tail_and_generated_tail() -> None:

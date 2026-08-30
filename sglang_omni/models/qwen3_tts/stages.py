@@ -183,6 +183,7 @@ def create_vocoder_executor(
     followup_batch_wait_ms: int = 1,
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
+    followup_cuda_graph: bool = True,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
     tokenizer = _load_qwen3_tts_tokenizer(
@@ -192,7 +193,7 @@ def create_vocoder_executor(
         attn_implementation=attn_implementation,
     )
 
-    return Qwen3TTSStreamingVocoderScheduler(
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
         tokenizer,
         device=device,
         stream_stride=stream_stride,
@@ -208,4 +209,10 @@ def create_vocoder_executor(
         followup_batch_wait_ms=followup_batch_wait_ms,
         initial_cuda_graph=initial_cuda_graph,
         enable_deterministic_inference=enable_deterministic_inference,
+        followup_cuda_graph=followup_cuda_graph,
     )
+    # note (ratish): Factory construction completes before the stage process
+    # publishes readiness, so CUDA capture cannot overlap request-time GPU work
+    # from colocated stages.
+    scheduler.warmup_now()
+    return scheduler

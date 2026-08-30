@@ -35,10 +35,10 @@ def _all_degenerate(multimodal_inputs: list[Any]) -> bool:
 def _fast_compute_mrope_positions(self: Any, model_runner: Any, batch: Any) -> None:
     """Drop-in replacement for ForwardBatch._compute_mrope_positions.
 
-    Upstream rebuilds the positions with a per-request loop on every decode
-    step -- one (3, 1) tensor per request, then a concatenate and a device copy, ref:
-    https://github.com/sgl-project/sglang/blob/v0.5.16/python/sglang/srt/model_executor/forward_batch_info.py#L1095-L1109
-    Every degenerate ASR request lands on seq_len - 1, so the loop collapses into one broadcast.
+    For a batch with multimodal inputs, upstream still walks the requests on
+    every decode step to read each mrope_position_delta before one broadcast.
+    Every degenerate ASR request lands on seq_len - 1, so the loop collapses
+    into one broadcast from seq_lens_cpu.
     """
     if not (self.forward_mode.is_decode() and _all_degenerate(batch.multimodal_inputs)):
         _orig_compute_mrope_positions(self, model_runner, batch)
