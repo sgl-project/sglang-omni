@@ -254,8 +254,8 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 
 - Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
   operational behavior before production deployment.
-- `verbose_json` returns a single segment spanning the audio duration; `srt`
-  and `vtt` are not supported and return HTTP 400.
+- `verbose_json` returns a single segment spanning the audio duration. `srt` and
+  `vtt` are supported for non-streaming requests; `stream=true` returns HTTP 400.
 - Encoder CUDA Graph is enabled by default and requires SGLang generation CUDA
   Graph. Validate the selected buckets before production use.
 - Audio encoding runs before LM admission by default
