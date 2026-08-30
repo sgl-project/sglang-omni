@@ -19,7 +19,7 @@ class NPUOmniPlatform(OmniPlatform):
 
     @property
     def code2wav_graph_runner(self):
-        from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+        from sglang_omni.models.qwen3_omni.components.code2wav_npu_graph import (
             Code2WavNpuGraphRunner,
         )
 

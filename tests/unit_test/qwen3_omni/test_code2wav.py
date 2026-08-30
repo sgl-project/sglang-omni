@@ -154,7 +154,7 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
 
 def test_platforms_select_supported_code2wav_graph_backends() -> None:
     """CUDA-compatible and NPU platforms enable their graph runners."""
-    from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+    from sglang_omni.models.qwen3_omni.components.code2wav_npu_graph import (
         Code2WavNpuGraphRunner,
     )
     from sglang_omni.platforms.cpu import CPUOmniPlatform

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sglang.srt.platforms.device_mixin import DeviceMixin
 
@@ -11,9 +11,6 @@ from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
     from sglang_omni.comm.data_ref import TransportKind
-    from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
-        Code2WavGraphRunner,
-    )
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 
 
@@ -61,7 +58,7 @@ class OmniPlatform(DeviceMixin):
         return effective_quantization
 
     @property
-    def code2wav_graph_runner(self) -> type[Code2WavGraphRunner] | None:
+    def code2wav_graph_runner(self) -> type[Any] | None:
         """Return the platform-specific Code2Wav graph runner, if supported."""
         return None
 

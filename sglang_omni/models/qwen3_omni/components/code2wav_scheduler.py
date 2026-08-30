@@ -12,13 +12,12 @@ import logging
 import queue
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 import numpy as np
 import torch
 
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
-    Code2WavGraphRunner,
     Code2WavRunResult,
     GraphKey,
 )
@@ -33,6 +32,17 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
+
+
+class _Code2WavGraphRunner(Protocol):
+    def available_batch_sizes(self, frames: int) -> tuple[int, ...]: ...
+
+    def run(
+        self,
+        codes: torch.Tensor,
+        *,
+        eligible: bool,
+    ) -> Code2WavRunResult: ...
 
 
 # Note (ruoyu): the decomposition, the captured batched keys and the batch
@@ -76,7 +86,10 @@ def _batched_graph_keys(
 
 
 def load_code2wav_model(
-    model_path: str, *, device: str = "cuda", dtype: str | None = None
+    model_path: str,
+    *,
+    device: str | torch.device = "cuda",
+    dtype: str | None = None,
 ):
     """Load Code2Wav model from HF checkpoint."""
     from transformers import AutoConfig
@@ -169,7 +182,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         batch_ceiling: int = 8,
         enable_output_overlap: bool = True,
         enable_cuda_graph: bool = False,
-        _cuda_graph_runner: Code2WavGraphRunner | None = None,
+        _cuda_graph_runner: _Code2WavGraphRunner | None = None,
     ):
         self._model = model
         self._device = torch.device(device)
