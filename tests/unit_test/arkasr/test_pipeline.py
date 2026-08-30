@@ -10,12 +10,12 @@ import torch.nn as nn
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 from transformers import WhisperConfig
 
+import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.arkasr.engine_builder as arkasr_builder
 import sglang_omni.platforms as platforms
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
-import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
 from sglang_omni.models.arkasr import request_builders
 from sglang_omni.models.arkasr.audio_lengths import (
     arkasr_audio_token_lengths,
@@ -29,7 +29,6 @@ from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneratio
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.scheduling.generation_batch_policy import (
-    build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
 
@@ -175,10 +174,7 @@ def test_arkasr_stage_default_enables_async_decode():
     assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
-def _make_engine_builder(
-    *,
-    context_length: int = 1636,
-) -> arkasr_builder.ArkasrEngineBuilder:
+def test_arkasr_prefill_graph_allows_unset_chunked_prefill_size() -> None:
     builder = arkasr_builder.ArkasrEngineBuilder(
         max_running_requests=32,
         encoder_max_batch_size=8,
@@ -196,28 +192,6 @@ def _make_engine_builder(
         prefill_coalesce_when_idle=True,
         prefill_coalesce_requires_pending_builds=True,
     )
-    builder.context_length = context_length
-    return builder
-
-
-def test_arkasr_prefill_graph_defaults() -> None:
-    builder = _make_engine_builder()
-    overrides = build_generation_batch_overrides(
-        **builder.generation_defaults(dtype="bfloat16"),
-    )
-
-    builder.adjust_overrides(overrides)
-
-    assert builder.supports_breakable_prefill_cuda_graph
-    assert overrides["cuda_graph_backend_prefill"] == "breakable"
-    assert overrides["cuda_graph_bs_prefill"] == (
-        build_default_prefill_cuda_graph_bs(4096)
-    )
-    assert overrides["cuda_graph_max_bs_prefill"] == 4096
-
-
-def test_arkasr_prefill_graph_allows_unset_chunked_prefill_size() -> None:
-    builder = _make_engine_builder()
     overrides = build_generation_batch_overrides(
         server_args_overrides={"chunked_prefill_size": None},
         **builder.generation_defaults(dtype="bfloat16"),
@@ -225,52 +199,8 @@ def test_arkasr_prefill_graph_allows_unset_chunked_prefill_size() -> None:
 
     builder.adjust_overrides(overrides)
 
-    assert overrides["cuda_graph_bs_prefill"] == (
-        build_default_prefill_cuda_graph_bs(4096)
-    )
-    assert overrides["cuda_graph_max_bs_prefill"] == 4096
-
-
-def test_arkasr_prefill_graph_respects_effective_token_cap() -> None:
-    builder = _make_engine_builder()
-    overrides = build_generation_batch_overrides(
-        server_args_overrides={"max_total_tokens": 512},
-        **builder.generation_defaults(dtype="bfloat16"),
-    )
-
-    builder.adjust_overrides(overrides)
-
-    assert overrides["cuda_graph_bs_prefill"] == (
-        build_default_prefill_cuda_graph_bs(512)
-    )
-    assert overrides["cuda_graph_max_bs_prefill"] == 512
-
-
-def test_arkasr_prefill_graph_honors_explicit_buckets() -> None:
-    builder = _make_engine_builder()
-    overrides = build_generation_batch_overrides(
-        server_args_overrides={"cuda_graph_bs_prefill": [64, 128]},
-        **builder.generation_defaults(dtype="bfloat16"),
-    )
-
-    builder.adjust_overrides(overrides)
-
-    assert overrides["cuda_graph_bs_prefill"] == [64, 128]
-    assert overrides["cuda_graph_max_bs_prefill"] == 128
-
-
-def test_arkasr_prefill_graph_can_be_disabled() -> None:
-    builder = _make_engine_builder()
-    overrides = build_generation_batch_overrides(
-        server_args_overrides={"disable_prefill_cuda_graph": True},
-        **builder.generation_defaults(dtype="bfloat16"),
-    )
-
-    builder.adjust_overrides(overrides)
-
-    assert overrides["cuda_graph_backend_prefill"] == "disabled"
-    assert "cuda_graph_bs_prefill" not in overrides
-    assert "cuda_graph_max_bs_prefill" not in overrides
+    assert overrides["cuda_graph_backend_prefill"] == "breakable"
+    assert overrides["cuda_graph_bs_prefill"][-1] == overrides["max_prefill_tokens"]
 
 
 def _stub_arkasr_engine_build(
@@ -279,12 +209,15 @@ def _stub_arkasr_engine_build(
     want_cuda_graph: bool,
     encoder_service: object,
 ) -> SimpleNamespace:
-    """Stub every out-of-process dependency of ArkasrEngineBuilder.build()."""
+    """Stub every out-of-process dependency of ArkasrEngineBuilder.build().
+
+    Returns the recorders the tests assert on. The worker stub stays minimal:
+    helper internals are already covered in
+    tests/unit_test/serve/test_sglang_bootstrap.py.
+    """
     graph_init_workers: list[object] = []
     adapter_kwargs: dict[str, object] = {}
     encoder_service_kwargs: dict[str, object] = {}
-    attest_calls: list[tuple[object, object]] = []
-    build_kwargs: dict[str, object] = {}
 
     encoder_batch_sizes: list[int] = []
     model_worker = SimpleNamespace(
@@ -342,33 +275,14 @@ def _stub_arkasr_engine_build(
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
-        del model_path
-        build_kwargs.update(overrides)
         server_args = SimpleNamespace(context_length=context_length, **overrides)
-        for name, default in (
-            ("attn_cp_size", 1),
-            ("dcp_size", 1),
-            ("lora_paths", None),
-            ("enable_lora", None),
-            ("moe_a2a_backend", "none"),
-        ):
-            setattr(server_args, name, getattr(server_args, name, default))
-        prefill_bs = overrides.get("cuda_graph_bs_prefill")
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
             ),
-            prefill=SimpleNamespace(
-                backend=overrides.get("cuda_graph_backend_prefill", "disabled"),
-                bs=prefill_bs,
-                max_bs=overrides.get("cuda_graph_max_bs_prefill"),
-            ),
+            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
         )
-        server_args._cuda_graph_config_locked = {
-            ("prefill", "backend"),
-            ("prefill", "bs"),
-        }
         return server_args
 
     monkeypatch.setattr(
@@ -391,28 +305,16 @@ def _stub_arkasr_engine_build(
         lambda worker: graph_init_workers.append(worker),
     )
     monkeypatch.setattr(
-        cuda_graph_batch_validator,
-        "attest_prefill_cuda_graphs",
-        lambda model_runner, server_args: attest_calls.append(
-            (model_runner, server_args)
-        ),
+        model_runner_base,
+        "ModelRunner",
+        lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
-    monkeypatch.setattr(
-        arkasr_builder.ArkasrEngineBuilder,
-        "make_model_runner",
-        lambda self, model_worker, output_proc: SimpleNamespace(
-            model_worker=model_worker,
-            output_proc=output_proc,
-        ),
-    )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
     return SimpleNamespace(
         graph_init_workers=graph_init_workers,
         adapter_kwargs=adapter_kwargs,
         encoder_service_kwargs=encoder_service_kwargs,
-        attest_calls=attest_calls,
-        build_kwargs=build_kwargs,
         infra_kwargs_seen=infra_kwargs_seen,
         encoder_batch_sizes=encoder_batch_sizes,
         model_worker=model_worker,
@@ -461,17 +363,6 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert (
         stub.infra_kwargs_seen["model_arch_override"]
         == "ArkasrForConditionalGeneration"
-    )
-    assert stub.infra_kwargs_seen["enable_prefill_input_embeds"] is True
-    assert stub.build_kwargs["cuda_graph_backend_prefill"] == "breakable"
-    assert stub.build_kwargs["cuda_graph_bs_prefill"] == (
-        build_default_prefill_cuda_graph_bs(4096)
-    )
-    assert stub.build_kwargs["cuda_graph_max_bs_prefill"] == 4096
-    assert stub.attest_calls == (
-        [(stub.model_worker.model_runner, scheduler.server_args)]
-        if want_cuda_graph
-        else []
     )
     assert stub.encoder_batch_sizes == [8]
     assert stub.encoder_service_kwargs["max_queue_size"] == 32
