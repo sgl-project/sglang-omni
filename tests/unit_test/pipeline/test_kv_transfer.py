@@ -806,6 +806,13 @@ def test_kv_ack_timeout_traces_the_retained_transfer_with_a_running_count(
     assert retained["object_id"] == "transfer"
     assert retained["retained_count"] == 1
     assert retained["num_ops"] == 1
+    assert retained["bytes"] == 1
+    failed = _first(events, "comm_transfer_failed")
+    assert failed["object_id"] == "transfer"
+    assert failed["num_ops"] == 1
+    assert failed["error"] == "TimeoutError"
+    assert failed["timeout_s"] == 0.1
+    assert failed["elapsed_ms"] >= 0.0
     assert "comm_kv_transfer_failed" in _kv_events(events)
 
 
