@@ -759,7 +759,6 @@ fn validate_upgrade(
         || path_and_query.as_str().len() > policy.uri_max_bytes
         || headers.len() > policy.header_max_fields
         || headers.contains_key("sec-websocket-protocol")
-        || headers.contains_key("sec-websocket-extensions")
     {
         return Err(());
     }

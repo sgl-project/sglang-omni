@@ -451,6 +451,10 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
     speech_request
         .headers_mut()
         .insert("x-request-id", HeaderValue::from_static("speech-request-1"));
+    speech_request.headers_mut().insert(
+        "sec-websocket-extensions",
+        HeaderValue::from_static("permessage-deflate; client_max_window_bits"),
+    );
     let (mut speech, speech_response) = connect_async(speech_request)
         .await
         .expect("connect speech with caller request ID");
@@ -460,6 +464,12 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
             .get("x-request-id")
             .and_then(|value| value.to_str().ok()),
         Some("speech-request-1")
+    );
+    assert!(
+        !speech_response
+            .headers()
+            .contains_key("sec-websocket-extensions"),
+        "unsupported extension offers are declined rather than negotiated"
     );
     let exact =
         r#"{"type":"session.config","model":"omni","response_format":"pcm","stream_audio":true}"#;
