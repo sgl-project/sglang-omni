@@ -12,9 +12,9 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
-(S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni, Ming-Omni-TTS) plus the
+API server; `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model
+families (S2-Pro, Ming-Omni chat, Voxtral-TTS) are CUDA-only and are not offered here.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
 > `egg-info` instead of a PEP 660 editable install. The installer always passes it.
@@ -182,10 +182,50 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
        "messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'
 ```
 
+### Ming-Omni-TTS (16.8B-A3B MoE, multi-XPU tensor parallel)
+
+The AR backbone is 31 GiB in bf16, so it does not fit one 24 GB card either: shard
+`tts_engine` and leave the AudioVAE stages (`reference_encode`, `audio_decode`, ~2 GiB
+together) on a card of their own. Two process groups may not share a card without a
+memory fraction, which is why `tts_engine` takes cards of its own here.
+
+```bash
+export SGLANG_OMNI_STARTUP_TIMEOUT=1800
+sgl-omni serve --model-path /path/to/Ming-omni-tts-16.8B-A3B \
+  --tts_engine.process tts_engine \
+  --tts_engine.tp_size 4 --tts_engine.gpu "[1, 2, 3, 4]" \
+  --host 0.0.0.0 --port 8000
+# synthesize (the checkpoint ships its own speaker, so no reference audio is needed):
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"/path/to/Ming-omni-tts-16.8B-A3B",
+       "input":"Hello from Intel XPU.","voice":"default","response_format":"wav"}' -o out.wav
+```
+
+TP=4 needs no memory-fraction flag: the shards leave SGLang's own default fraction
+enough room for the KV pool (186k tokens on a 24 GB card). TP=2 fits in three cards
+instead of five, but its shards take about 0.66 of a card, and there the default
+fraction refuses to start (`Loaded weights leave no GPU memory for the KV cache`);
+add `--mem-fraction-static 0.9` to serve at that width.
+
+Ming keeps generation graphs off by default on every platform. Turning them on captures
+both SGLang's decode graph and Ming's own DiTAR tail graph, which on Arc Pro B60 took
+one request on a 13-word prompt from 4.7 s to 1.0 s (0.92x to 0.20x real time):
+
+```bash
+sgl-omni serve --model-path /path/to/Ming-omni-tts-16.8B-A3B \
+  --tts_engine.process tts_engine \
+  --tts_engine.tp_size 4 --tts_engine.gpu "[1, 2, 3, 4]" \
+  --tts_engine.engine.disable_cuda_graph false \
+  --host 0.0.0.0 --port 8000
+```
+
 Health check for any of the above: `curl http://localhost:8000/v1/models`.
 
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni all serve end-to-end on Intel XPU**
-> (ASR single-card, TTS single-card, Qwen3-Omni thinker across 8 cards with tensor parallelism).
+> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, Qwen3-Omni, and Ming-Omni-TTS all serve
+> end-to-end on Intel XPU** (ASR single-card, TTS single-card, Qwen3-Omni thinker across
+> 8 cards with tensor parallelism, Ming-Omni-TTS with a TP=4 engine plus a card for the
+> AudioVAE stages).

@@ -357,11 +357,11 @@ class MingTTSModelRunner(ModelRunner):
         device = hidden_states.device
         next_ids = []
 
-        if device.type == "cuda":
+        if device.type != "cpu":
             dtype = weight.dtype
             if dtype not in (torch.float16, torch.bfloat16):
                 dtype = torch.bfloat16
-            context = torch.autocast(device_type="cuda", dtype=dtype)
+            context = torch.autocast(device_type=device.type, dtype=dtype)
         else:
             context = nullcontext()
 

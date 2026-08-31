@@ -66,6 +66,13 @@ dependencies = [
     "av>=16.1.0",
     "soundfile>=0.12.0",
     "scipy>=1.10.0",
+
+    # --- Ming-Omni-TTS ------------------------------------------------------
+    # Same pins as the CUDA manifest. diffusers is Omni's own Ming pin, not an
+    # sglang core dependency; x-transformers supplies the talker's rotary
+    # embeddings. The speaker-embedding extractor rides the onnxruntime above.
+    "diffusers==0.37.0",
+    "x-transformers",
 ]
 
 [project.optional-dependencies]

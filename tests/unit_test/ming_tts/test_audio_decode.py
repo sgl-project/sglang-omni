@@ -284,6 +284,9 @@ def _make_scripted_runner(
     stream = _ScriptedCudaStream()
     runner = _MingAudioStreamingRunner.__new__(_MingAudioStreamingRunner)
     runner._transition = transition
+    # The runner reaches its accelerator through the module it resolved at
+    # construction; this scripted instance skips __init__, so name it here.
+    runner._device_module = torch.cuda
     runner._cuda_graph_required_at_startup = True
     runner._startup_prepared = True
     runner._captured_graph = _CapturedAudioVAEGraph(
@@ -873,3 +876,90 @@ def test_ming_tts_full_payload_decodes_once(keep_latents: bool) -> None:
     }
     audio = np.frombuffer(result.data["audio_waveform"], dtype=np.float32)
     np.testing.assert_array_equal(audio, waveform.numpy())
+
+
+def test_fixed_streaming_rejects_a_cpu_bf16_decoder_by_naming_both_paths() -> None:
+    """CPU is the FP32 verification path; BF16 there is neither serving nor that."""
+    audio_vae = _make_tiny_audio_vae()
+    audio_vae.decoder.to(dtype=torch.bfloat16)
+
+    with pytest.raises(ValueError, match="accelerator BF16 decoder"):
+        _AudioVAEFixedStreamingTransition(
+            audio_vae.decoder,
+            capacity=1,
+            max_step_latents=4,
+        )
+
+
+def _accelerator_device() -> torch.device | None:
+    from sglang_omni import platforms
+
+    device_type = platforms.current_platform.device_type
+    if device_type == "cpu":
+        return None
+    module = torch.get_device_module(device_type)
+    if not module.is_available():
+        return None
+    return torch.device(device_type, 0)
+
+
+# Note (siju): Probed once at import. A skipif that called it would initialize the
+# accelerator runtime per decorator, including for runs that deselect these tests.
+_ACCELERATOR_DEVICE = _accelerator_device()
+_NEEDS_ACCELERATOR = pytest.mark.skipif(
+    _ACCELERATOR_DEVICE is None, reason="an accelerator is required"
+)
+
+
+@pytest.mark.accelerator
+@_NEEDS_ACCELERATOR
+def test_fixed_streaming_serves_on_whatever_accelerator_this_host_has() -> None:
+    """Serving admits any accelerator in BF16, not CUDA alone."""
+    device = _ACCELERATOR_DEVICE
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(4)
+        audio_vae = _make_tiny_audio_vae()
+    audio_vae.decoder.to(device=device, dtype=torch.bfloat16)
+
+    transition = _AudioVAEFixedStreamingTransition(
+        audio_vae.decoder,
+        capacity=1,
+        max_step_latents=4,
+    )
+
+    assert transition.device == device
+    assert transition.input_dtype is torch.bfloat16
+
+
+@pytest.mark.accelerator
+@_NEEDS_ACCELERATOR
+def test_the_streaming_graph_captures_and_replays_on_this_accelerator() -> None:
+    """The capture reaches streams, counters and the graph type through the device
+    module, so it has to run on the accelerator the host actually provides."""
+    device = _ACCELERATOR_DEVICE
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(5)
+        audio_vae = _make_tiny_audio_vae()
+    audio_vae.decoder.to(device=device, dtype=torch.bfloat16)
+    transition = _AudioVAEFixedStreamingTransition(
+        audio_vae.decoder,
+        capacity=1,
+        max_step_latents=4,
+    )
+    runner = _MingAudioStreamingRunner(transition, cuda_graph_required=True)
+
+    try:
+        runner.prepare_cuda_graph()
+
+        assert runner.is_ready
+        assert runner._captured_graph is not None
+        (waveform,) = runner.run(
+            slot_ids=(0,),
+            patch_groups=((torch.ones((4, 4), dtype=torch.float32),),),
+            terminal_flags=(True,),
+        )
+        assert waveform.device.type == "cpu"
+        assert waveform.dtype is torch.float32
+        assert torch.isfinite(waveform).all()
+    finally:
+        runner.close()

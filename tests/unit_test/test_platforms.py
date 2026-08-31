@@ -167,3 +167,31 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True
     assert CPUOmniPlatform().enable_thinker_decode_graph() is True
+
+
+def test_xpu_declines_the_fp32_widening_of_moe_router_logits() -> None:
+    """The gate computed in the model dtype, so XPU keeps it and stays lossless."""
+    xpu = xpu_platform.XPUOmniPlatform()
+
+    assert xpu.moe_router_logits_dtype(torch.bfloat16) is torch.bfloat16
+    assert xpu.moe_router_logits_dtype(torch.float16) is torch.float16
+    # A gate already in fp32 is handed back unchanged rather than narrowed.
+    assert xpu.moe_router_logits_dtype(torch.float32) is torch.float32
+    # Every other platform takes the fp32 router the CUDA path has always used.
+    for platform in (OmniPlatform(), CPUOmniPlatform(), CUDAOmniPlatform()):
+        assert platform.moe_router_logits_dtype(torch.bfloat16) is torch.float32
+
+
+def test_xpu_names_the_sdpa_backends_a_graph_capture_can_use() -> None:
+    """XPU's default SDPA selection is not capturable; naming any backend is."""
+    from torch.nn.attention import SDPBackend
+
+    backends = xpu_platform.XPUOmniPlatform().get_graph_capture_sdpa_backends()
+
+    assert backends[0] is SDPBackend.FLASH_ATTENTION
+    assert SDPBackend.MATH in backends, "no fallback for shapes flash declines"
+    assert all(isinstance(backend, SDPBackend) for backend in backends)
+    # Platforms whose default dispatch captures keep it: pinning would only
+    # narrow the kernels the capture may choose from.
+    for platform in (OmniPlatform(), CPUOmniPlatform(), CUDAOmniPlatform()):
+        assert platform.get_graph_capture_sdpa_backends() == ()

@@ -24,6 +24,9 @@ _MODELS = sorted(
 # Every stage that relies on device=None. Adding one means adding a test below that
 # proves the factory resolves it.
 _NONE_DEVICE_STAGES = {
+    ("ming_tts", "audio_decode"),
+    ("ming_tts", "reference_encode"),
+    ("ming_tts", "tts_engine"),
     ("qwen3_asr", "asr"),
     ("qwen3_omni", "audio_encoder"),
     ("qwen3_omni", "code2wav"),
@@ -142,3 +145,59 @@ def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
     # Placement injects gpu_id only when the signature declares it. Without it the
     # builder resolved a bare accelerator and told SGLang card 0.
     assert seen["gpu_id"] == 1
+
+
+def test_ming_tts_engine_stage_forwards_none_to_the_shared_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same contract as Qwen3-ASR: hand None down, and do not drop gpu_id."""
+    from sglang_omni.models.ming_tts import stages
+    from sglang_omni.scheduling import engine_factory
+
+    seen: dict[str, object] = {}
+
+    def spy_build(self, model_path, **kwargs):
+        del self, model_path
+        seen.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        engine_factory.SGLangGenerationEngineBuilder, "build", spy_build
+    )
+
+    stages.create_sglang_tts_engine_executor("unused", device=None, gpu_id=1)
+
+    assert "device" in seen, "the factory did not route through the shared builder"
+    assert seen["device"] is None
+    assert seen["gpu_id"] == 1
+
+
+@pytest.mark.parametrize("factory_name", ["reference_encode", "audio_decode"])
+def test_ming_tts_audio_stages_resolve_none_before_the_checkpoint_work(
+    monkeypatch: pytest.MonkeyPatch, factory_name: str
+) -> None:
+    """These place the AudioVAE themselves; stopping in the resolver skips the load.
+
+    Reaching the resolver at all is the point: before it, the factory would carry a
+    literal 'cuda:0' into torch.device() and AudioVAE.to().
+    """
+    from sglang_omni.models.ming_tts import stages
+
+    class _Stop(Exception):
+        pass
+
+    seen: dict[str, object] = {}
+
+    def spy_resolve(device, gpu_id):
+        seen["device"] = device
+        seen["gpu_id"] = gpu_id
+        raise _Stop
+
+    monkeypatch.setattr(stages, "resolve_device_spec", spy_resolve)
+
+    with pytest.raises(_Stop):
+        getattr(stages, f"create_{factory_name}_executor")(
+            "unused", device=None, gpu_id=1
+        )
+
+    assert seen == {"device": None, "gpu_id": 1}
