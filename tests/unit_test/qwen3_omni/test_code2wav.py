@@ -41,15 +41,18 @@ class _FactoryModel(FakeCode2WavModel):
 
 
 def _pin_cuda_platform(monkeypatch, graph_runner_cls=Code2WavCudaGraphRunner) -> None:
-    monkeypatch.setattr(
-        code2wav_scheduler,
-        "current_platform",
-        SimpleNamespace(
-            device_type="cuda",
-            code2wav_graph_runner=graph_runner_cls,
-            get_device=lambda index: torch.device("cuda", index),
-        ),
+    import sglang_omni.platforms as platforms
+
+    platform = SimpleNamespace(
+        device_type="cuda",
+        code2wav_graph_runner=graph_runner_cls,
+        get_device=lambda index: torch.device("cuda", index),
     )
+    # The scheduler keeps an imported alias while resolve_device_spec imports
+    # the platform module at call time. Pin both views so this remains a pure
+    # factory test on CPU, CUDA, and NPU hosts.
+    monkeypatch.setattr(code2wav_scheduler, "current_platform", platform)
+    monkeypatch.setattr(platforms, "current_platform", platform)
 
 
 class _FakeCudaGraphRunner:

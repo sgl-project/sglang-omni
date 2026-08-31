@@ -24,6 +24,13 @@ from sglang_omni.scheduling.messages import IncomingMessage
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel
 
 
+def _pin_factory_platform(monkeypatch, scheduler_module, platform) -> None:
+    import sglang_omni.platforms as platforms
+
+    monkeypatch.setattr(scheduler_module, "current_platform", platform)
+    monkeypatch.setattr(platforms, "current_platform", platform)
+
+
 class _FakeGraphRunner:
     def __init__(self, model, keys) -> None:
         self._model = model
@@ -692,9 +699,9 @@ def test_factory_builds_batched_keys_with_batching(monkeypatch) -> None:
             captured.update(kwargs)
             return _FakeGraphRunner(model, kwargs["graph_keys"])
 
-    monkeypatch.setattr(
+    _pin_factory_platform(
+        monkeypatch,
         mod,
-        "current_platform",
         SimpleNamespace(device_type="cuda", code2wav_graph_runner=_FakeRunnerCls),
     )
     scheduler = mod.create_code2wav_scheduler(
@@ -737,9 +744,9 @@ def test_factory_selects_npu_graph_runner(monkeypatch) -> None:
             return _FakeGraphRunner(model, kwargs["graph_keys"])
 
     monkeypatch.setattr(mod, "load_code2wav_model", _fake_load)
-    monkeypatch.setattr(
+    _pin_factory_platform(
+        monkeypatch,
         mod,
-        "current_platform",
         SimpleNamespace(device_type="npu", code2wav_graph_runner=_FakeNpuRunnerCls),
     )
 
