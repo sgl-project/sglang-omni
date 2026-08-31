@@ -916,6 +916,58 @@ def test_qwen3_tts_reference_batching_requires_both_encoder_batch_apis() -> None
         hook.close()
 
 
+def test_qwen3_tts_reference_batch_failure_does_not_resubmit_tokenizer_work() -> None:
+    tokenized_waveforms = 0
+
+    class FakeSpeechTokenizer:
+        def encode(self, waveforms, *, sr):
+            nonlocal tokenized_waveforms
+            assert sr == 24000
+            tokenized_waveforms += len(waveforms)
+            return SimpleNamespace(
+                audio_codes=[torch.ones((1, 2), dtype=torch.long) for _ in waveforms]
+            )
+
+    class FakeWrapper:
+        def _normalize_audio_inputs(self, ref_audio):
+            del ref_audio
+            return [(np.zeros(32, dtype=np.float32), 24000)]
+
+    class FakeModel:
+        device = torch.device("cpu")
+        speech_tokenizer = FakeSpeechTokenizer()
+        speaker_encoder_sample_rate = 24000
+
+        def extract_speaker_embeddings(self, *, audios, sr):
+            del audios, sr
+            raise RuntimeError("batch speaker failure")
+
+        def extract_speaker_embedding(self, *, audio, sr):
+            del audio, sr
+            raise RuntimeError("item speaker failure")
+
+    hook = qwen3_request_builders._Qwen3TTSAdhocReferenceHook(
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+    )
+    service = ReferenceEncodeService(hook)
+    items = [
+        qwen3_request_builders._Qwen3TTSAdhocReferenceInput(
+            ref_audio=f"data:audio/wav;base64,AAAA{index}",
+            ref_text=f"reference-{index}",
+            x_vector_only_mode=False,
+        )
+        for index in range(2)
+    ]
+    try:
+        outcomes = service._encode_batch(items)
+    finally:
+        service.close()
+
+    assert all(isinstance(outcome, RuntimeError) for outcome in outcomes)
+    assert tokenized_waveforms == len(items)
+
+
 def test_qwen3_tts_speaker_embedding_batch_preserves_order_without_padding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
