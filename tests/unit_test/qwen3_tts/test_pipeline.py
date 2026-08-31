@@ -4420,6 +4420,7 @@ def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
     shared_runner = SGLModelRunner.__new__(SGLModelRunner)
     shared_runner.support_pp = False
     shared_runner.is_generation = True
+    shared_runner.dtype = torch.float32
 
     def forward_batch_generation(forward_batch):
         kwargs = shared_runner._extend_forward_kwargs(forward_batch, object())
