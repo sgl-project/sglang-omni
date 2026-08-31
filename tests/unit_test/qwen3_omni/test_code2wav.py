@@ -129,6 +129,25 @@ def test_qwen_load_code2wav_model_returns_eval_model(monkeypatch) -> None:
     assert model.eval_calls == 1
 
 
+def test_transformers_capture_patch_is_scoped_to_npu(monkeypatch) -> None:
+    from sglang_omni.utils import hf_transformers_patches
+
+    calls = []
+    monkeypatch.setattr(
+        hf_transformers_patches,
+        "patch_transformers_stream_capture_detection",
+        lambda: calls.append("patched"),
+    )
+
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("cpu")
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("cuda")
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("musa")
+    assert calls == []
+
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("npu")
+    assert calls == ["patched"]
+
+
 def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -> None:
     model = _FactoryModel()
     monkeypatch.setattr(
