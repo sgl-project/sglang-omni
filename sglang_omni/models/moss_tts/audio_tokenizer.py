@@ -1156,7 +1156,7 @@ class _ResidualLFQ(nn.Module):
         input_lengths: torch.Tensor,
         num_quantizers: int | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        with torch.autocast(device_type="cuda", enabled=False):
+        with torch.autocast(device_type=z.device.type, enabled=False):
             z = self.input_proj(z.float()).float()
             batch_size, _, max_time = z.shape
             mask = torch.arange(max_time, device=z.device).expand(

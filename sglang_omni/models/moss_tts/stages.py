@@ -42,6 +42,7 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio import audio_fingerprint, load_audio
+from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -149,9 +150,7 @@ def _resolve_audio_tokenizer_model_path(
 def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
     if device:
         return device
-    if gpu_id is not None:
-        return f"cuda:{int(gpu_id)}"
-    return "cuda:0"
+    return resolve_device_spec(None, gpu_id)
 
 
 class _BatchedReferenceEncoder:
@@ -493,7 +492,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,

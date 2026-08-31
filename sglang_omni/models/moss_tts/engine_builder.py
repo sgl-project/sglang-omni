@@ -7,6 +7,7 @@ import importlib
 from typing import Any
 
 from sglang_omni.models.moss_tts import request_builders
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
@@ -24,7 +25,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         return {
             "max_running_requests": 16,
             "dtype": dtype,
-            "disable_cuda_graph": False,
+            "disable_cuda_graph": current_platform.is_xpu(),
             "disable_overlap_schedule": True,
             "enable_torch_compile": False,
             "max_prefill_tokens": 8192,
