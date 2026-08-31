@@ -72,11 +72,17 @@ class SGLangGenerationEngineBuilder(ABC):
 
         self.pre_infra_setup(checkpoint_dir)
 
+        resolved_type = torch.device(device).type
+        effective_overrides = dict(server_args_overrides or {})
+
+        if resolved_type == "cpu":
+            effective_overrides["disable_cuda_graph"] = True
+
         operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
-            server_args_overrides
+            effective_overrides
         )
         overrides = build_generation_batch_overrides(
-            server_args_overrides=server_args_overrides,
+            server_args_overrides=effective_overrides,
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)

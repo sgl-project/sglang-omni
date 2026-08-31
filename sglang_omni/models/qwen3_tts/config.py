@@ -12,8 +12,12 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.qwen3_tts"
+# CPU has no accelerator placement id.
+_DEFAULT_DEVICE_ID: int | None = None if current_platform.is_cpu() else 0
+
 _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
     "custom_voice",
     "customvoice",
@@ -63,7 +67,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(dtype="bfloat16"),
-            gpu=0,
+            gpu=_DEFAULT_DEVICE_ID,
             next="vocoder",
             stream_to=["vocoder"],
         ),
@@ -72,7 +76,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             factory=FactoryArgs(dtype="bfloat16"),
-            gpu=0,
+            gpu=_DEFAULT_DEVICE_ID,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),

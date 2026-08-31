@@ -84,15 +84,35 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
     assert list(adjust_overrides_signature.parameters) == ["self", "overrides"]
 
 
-def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("device", "expected_device", "expected_gpu_id", "expected_disable_cuda_graph"),
+    [
+        ("cuda:0", "cuda:2", 2, False),
+        ("cpu", "cpu", 0, True),
+    ],
+)
+def test_tts_engine_builder_phase_order_and_override_contract(
+    monkeypatch,
+    device: str,
+    expected_device: str,
+    expected_gpu_id: int,
+    expected_disable_cuda_graph: bool,
+) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
+    device_type = "cpu" if device == "cpu" else "cuda"
+
     monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
+        platforms.current_platform,
+        "device_type",
+        device_type,
+        raising=False,
     )
+
     monkeypatch.setattr(
-        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
+        "sglang.srt.utils.get_device",
+        lambda device_id=None: ("cpu" if device_type == "cpu" else f"cuda:{device_id}"),
     )
 
     events: list[str] = []
@@ -150,9 +170,9 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         **kwargs: Any,
     ) -> tuple[Any, ...]:
         events.append("infrastructure")
-        assert gpu_id == 2
+        assert gpu_id == expected_gpu_id
         assert kwargs == {
-            "defer_cuda_graph_capture": True,
+            "defer_cuda_graph_capture": not expected_disable_cuda_graph,
             "model_arch_override": "TestArch",
         }
         return (
@@ -232,9 +252,9 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             events.append("setup_model")
             assert isinstance(model_worker.model_runner.model, FakeModel)
             assert checkpoint_dir == "model-resolved"
-            assert device == "cuda:2"
-            assert gpu_id == 2
-            assert server_args.disable_cuda_graph is False
+            assert device == expected_device
+            assert gpu_id == expected_gpu_id
+            assert server_args.disable_cuda_graph is expected_disable_cuda_graph
 
         def get_model_buffer_bs(self, model: Any) -> int | None:
             events.append("get_model_buffer_bs")
@@ -295,7 +315,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     scheduler = RecordingBuilder().build(
         "model",
-        device="cuda:0",
+        device=device,
         gpu_id=2,
         server_args_overrides={
             "cuda_graph_max_bs": 8,
@@ -306,7 +326,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         },
     )
 
-    assert events == [
+    expected_events = [
         "resolve_checkpoint",
         "pre_infra_setup",
         "generation_defaults",
@@ -317,22 +337,35 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         "setup_model",
         "get_model_buffer_bs",
         "compile_model",
-        "init_graphs",
-        "post_cuda_graph_setup",
+    ]
+
+    if not expected_disable_cuda_graph:
+        expected_events += [
+            "init_graphs",
+            "post_cuda_graph_setup",
+        ]
+
+    expected_events += [
         "output_processor",
         "make_model_runner",
         "make_adapters",
         "make_scheduler",
         "post_scheduler_setup",
     ]
+
+    assert events == expected_events
     assert build_kwargs["max_running_requests"] == 2
-    assert build_kwargs["device"] == "cuda"
+    assert build_kwargs["device"] == ("cpu" if expected_disable_cuda_graph else "cuda")
     assert build_kwargs["cuda_graph_max_bs"] == 8
     assert build_kwargs["torch_compile_max_bs"] == 8
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
-    assert init_graph_calls == [True]
-    assert scheduler.kwargs["server_args"].disable_cuda_graph is False
+    assert infrastructure_saw_graph_disabled == [True]
+    assert init_graph_calls == ([] if expected_disable_cuda_graph else [True])
+    assert (
+        scheduler.kwargs["server_args"].disable_cuda_graph
+        is expected_disable_cuda_graph
+    )
     assert scheduler.kwargs["model_runner"].outbox == "outbox"
 
 
