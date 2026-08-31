@@ -17,8 +17,9 @@ pub(crate) use admission::{
 pub(crate) use health::{HealthSupervisor, WorkerHealth};
 pub(crate) use profile::{
     CapacityClass, ChatAudioFormat, MediaPlacement, MessageContentForm, ModelSelection,
-    ProfileRequirement, ReferenceForm, RouteRequirement, ServiceClass, SpeechResponseFormat,
-    SpeechTask, SpeechToTextTask, StreamMode, TranscriptionResponseFormat, TrustDomain,
+    ProfileRequirement, RealtimeProtocol, ReferenceForm, RouteRequirement, ServiceClass,
+    SpeechResponseFormat, SpeechTask, SpeechToTextTask, StreamMode, TranscriptionResponseFormat,
+    TrustDomain, valid_model_id,
 };
 pub(crate) use resolver::ResolvedTarget;
 
@@ -144,6 +145,8 @@ impl WorkerPool {
                 admission_limit(config.admission.speech_http)?,
                 admission_limit(config.admission.speech_batch)?,
                 admission_limit(config.admission.transcription_http)?,
+                admission_limit(config.admission.speech_websocket)?,
+                admission_limit(config.admission.realtime_websocket)?,
             ],
         );
         let mut records = Vec::with_capacity(config.workers.len());
@@ -381,6 +384,17 @@ impl WorkerPool {
                             if u32::from(*max_batch_size) >= size
                     )
                 })
+        })
+    }
+
+    pub(crate) fn service_ready(&self, trust: &TrustDomain, service: ServiceClass) -> bool {
+        self.records.iter().any(|record| {
+            &record.trust_domain == trust
+                && record.is_routable()
+                && record
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.service_class() == service)
         })
     }
 
@@ -650,7 +664,10 @@ mod tests {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
             homogeneous_media_http: build_content_blind_media_cohorts(&records),
             records,
-            admission: AdmissionController::new(admission, [Some(admission), None, None, None]),
+            admission: AdmissionController::new(
+                admission,
+                [Some(admission), None, None, None, None, None],
+            ),
             selector,
             health_client: client.clone(),
             http_client: client,
@@ -1104,10 +1121,16 @@ mod tests {
                 &requirement("omni", "local"),
             )
             .expect("dispatch");
-        assert_eq!(pool.admission.available(), (0, [Some(0), None, None, None]));
+        assert_eq!(
+            pool.admission.available(),
+            (0, [Some(0), None, None, None, None, None])
+        );
         assert_eq!(pool.records[0].load(), 1);
         drop(lease);
-        assert_eq!(pool.admission.available(), (1, [Some(1), None, None, None]));
+        assert_eq!(
+            pool.admission.available(),
+            (1, [Some(1), None, None, None, None, None])
+        );
         assert_eq!(pool.records[0].load(), 0);
     }
 
@@ -1179,7 +1202,10 @@ mod tests {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
             homogeneous_media_http: build_content_blind_media_cohorts(&records),
             records,
-            admission: AdmissionController::new(8, [Some(8), Some(8), Some(8), Some(8)]),
+            admission: AdmissionController::new(
+                8,
+                [Some(8), Some(8), Some(8), Some(8), None, None],
+            ),
             selector,
             health_client: client.clone(),
             http_client: client,

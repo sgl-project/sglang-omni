@@ -3,6 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
+use super::profile::CAPACITY_CLASS_COUNT;
 use super::{CapacityClass, ResolvedTarget, WorkerRecord};
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -96,11 +97,11 @@ impl RequestLease {
 
 pub(super) struct AdmissionController {
     global: Arc<Semaphore>,
-    classes: [Option<Arc<Semaphore>>; 4],
+    classes: [Option<Arc<Semaphore>>; CAPACITY_CLASS_COUNT],
 }
 
 impl AdmissionController {
-    pub(super) fn new(global: usize, limits: [Option<usize>; 4]) -> Self {
+    pub(super) fn new(global: usize, limits: [Option<usize>; CAPACITY_CLASS_COUNT]) -> Self {
         Self {
             global: Arc::new(Semaphore::new(global)),
             classes: limits.map(|limit| limit.map(|value| Arc::new(Semaphore::new(value)))),
@@ -152,7 +153,7 @@ impl AdmissionController {
     }
 
     #[cfg(test)]
-    pub(super) fn available(&self) -> (usize, [Option<usize>; 4]) {
+    pub(super) fn available(&self) -> (usize, [Option<usize>; CAPACITY_CLASS_COUNT]) {
         let classes = std::array::from_fn(|index| {
             self.classes[index]
                 .as_ref()

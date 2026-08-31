@@ -17,7 +17,7 @@ impl ResolvedTarget {
         Self::from_parts(worker.base_url.as_str(), worker.health_path.as_str())
     }
 
-    pub(super) fn from_parts(base_url: &str, health_path: &str) -> Option<Self> {
+    pub(crate) fn from_parts(base_url: &str, health_path: &str) -> Option<Self> {
         let base_url = Url::parse(base_url).ok()?;
         if !matches!(base_url.scheme(), "http" | "https")
             || !base_url.username().is_empty()
@@ -48,6 +48,27 @@ impl ResolvedTarget {
 
     pub(super) fn health_url(&self) -> &Url {
         &self.health_url
+    }
+
+    /// Builds a WebSocket endpoint while retaining the configured authority.
+    pub(crate) fn websocket_uri(&self, path: &str, query: Option<&str>) -> Option<Url> {
+        let mut url = self.base_url.clone();
+        url.set_scheme(match self.base_url.scheme() {
+            "http" => "ws",
+            "https" => "wss",
+            _ => return None,
+        })
+        .ok()?;
+        url.set_path(path);
+        url.set_query(query);
+        Some(url)
+    }
+
+    pub(crate) fn connect_authority(&self) -> Option<(&str, u16)> {
+        Some((
+            self.base_url.host_str()?,
+            self.base_url.port_or_known_default()?,
+        ))
     }
 }
 

@@ -4,6 +4,7 @@
 //! routing and health, byte-preserving chat and media HTTP relays, route-aware
 //! readiness, and joined process shutdown.
 
+mod classification;
 mod config;
 mod error;
 mod http_generation;
@@ -14,6 +15,7 @@ mod request_id;
 mod server;
 mod shutdown;
 mod speech_facts;
+mod websocket;
 mod worker_pool;
 
 use std::path::Path;
