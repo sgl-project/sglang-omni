@@ -6,25 +6,30 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from sglang_omni.models.qwen3_omni.components import audio_layer_graph
 from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
     DEFAULT_TOKEN_BUCKETS,
     AudioLayerGraphRunner,
+    _packed_attention_backend,
+    _resolve_packed_attention,
 )
 
 WINDOW = 104
+HEADS = 4
+HEAD_DIM = 64
 
 
 class _Config:
     def __init__(self, d_model: int) -> None:
         self.d_model = d_model
-        self._attn_implementation = "sdpa"
 
 
 class _Attention(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
-        self.config = _Config(dim)
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
 
@@ -126,22 +131,33 @@ def test_disabled_runner_declines_even_with_graphs() -> None:
     assert runner.maybe_replay(torch.zeros(4, 8), torch.zeros(3), [2, 2]) is None
 
 
-def test_varlen_install_does_not_mutate_the_shared_config() -> None:
-    """The config is shared with the rest of the thinker; flipping it in place
-    would switch attention for unrelated components."""
-    tower = _Tower()
-    shared = tower.layers[0].self_attn.config
-    tower.layers[1].self_attn.config = shared
-    tower.config = shared
-    runner = AudioLayerGraphRunner(tower, device=torch.device("cuda", 0), window=WINDOW)
-    runner._install_varlen()
-    assert shared._attn_implementation == "sdpa"
-    for layer in tower.layers:
-        assert layer.self_attn._omni_varlen_config is not shared
-        assert (
-            layer.self_attn._omni_varlen_config._attn_implementation
-            == "flash_attention_2"
-        )
+@pytest.mark.parametrize(
+    ("capability", "backend"),
+    (
+        ((9, 0), "fa3"),
+        ((8, 9), "triton_attn"),
+        ((10, 0), "triton_attn"),
+        ((12, 0), "triton_attn"),
+    ),
+)
+def test_packed_attention_backend_follows_the_device_capability(
+    capability: tuple[int, int], backend: str
+) -> None:
+    assert _packed_attention_backend(capability) == backend
+
+
+def test_an_unresolvable_kernel_stack_stays_eager_with_a_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def resolve(device: torch.device) -> tuple[nn.Module, str]:
+        raise ImportError("no flash attention build for this torch")
+
+    monkeypatch.setattr(audio_layer_graph, "_resolve_packed_attention", resolve)
+    runner = _runner()
+    runner.capture_all()
+    assert runner.has_graphs is False
+    assert runner._graphs == {}
+    assert "no flash attention build" in runner._disabled_reason
 
 
 def test_capture_segments_fit_the_declared_window() -> None:
@@ -156,10 +172,8 @@ def test_capture_segments_fit_the_declared_window() -> None:
 class _RealAttention(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
-        self.config = _Config(dim)
-        self.num_heads = 1
-        self.scaling = dim**-0.5
-        self.attention_dropout = 0.0
+        self.num_heads = HEADS
+        self.scaling = HEAD_DIM**-0.5
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.k_proj = nn.Linear(dim, dim, bias=False)
         self.v_proj = nn.Linear(dim, dim, bias=False)
@@ -178,10 +192,90 @@ class _RealLayer(nn.Module):
 
 
 class _RealTower(nn.Module):
-    def __init__(self, dim: int = 64, n: int = 2) -> None:
+    def __init__(self, dim: int = HEADS * HEAD_DIM, n: int = 2) -> None:
         super().__init__()
         self.config = _Config(dim)
         self.layers = nn.ModuleList(_RealLayer(dim) for _ in range(n))
+
+
+def _segmented_sdpa(q, k, v, cu_seqlens, softmax_scale):
+    bounds = cu_seqlens.tolist()
+    outputs = [
+        F.scaled_dot_product_attention(
+            q[start:end].transpose(0, 1),
+            k[start:end].transpose(0, 1),
+            v[start:end].transpose(0, 1),
+            scale=softmax_scale,
+        ).transpose(0, 1)
+        for start, end in zip(bounds, bounds[1:])
+    ]
+    return torch.cat(outputs, dim=0)
+
+
+class _SegmentedSdpa(nn.Module):
+    def forward(self, q, k, v, cu_seqlens, bsz, seq_len, softmax_scale, **kwargs):
+        return _segmented_sdpa(q, k, v, cu_seqlens, softmax_scale)
+
+
+def _cu_seqlens(segments: list[int], device: torch.device) -> torch.Tensor:
+    return (
+        torch.tensor([0, *segments], dtype=torch.int32)
+        .cumsum(0)
+        .to(torch.int32)
+        .to(device)
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_packed_attention_matches_fp32_sdpa_per_segment_and_head() -> None:
+    torch.manual_seed(0)
+    device = torch.device("cuda", 0)
+    packed_attention, _ = _resolve_packed_attention(device)
+    segments = [104, 104, 49, 37, 90]
+    q, k, v = (
+        torch.randn(sum(segments), HEADS, HEAD_DIM, device=device).to(torch.bfloat16)
+        for _ in range(3)
+    )
+    cu_seqlens = _cu_seqlens(segments, device)
+    with torch.no_grad():
+        packed = packed_attention(
+            q,
+            k,
+            v,
+            cu_seqlens,
+            bsz=1,
+            seq_len=q.shape[0],
+            softmax_scale=HEAD_DIM**-0.5,
+            max_seqlen=WINDOW,
+        )
+        with sdpa_kernel(SDPBackend.MATH):
+            reference = _segmented_sdpa(
+                q.float(), k.float(), v.float(), cu_seqlens, HEAD_DIM**-0.5
+            )
+    assert packed.shape == reference.shape
+    torch.testing.assert_close(packed.float(), reference, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_packed_layer_stack_matches_segmented_sdpa() -> None:
+    torch.manual_seed(0)
+    device = torch.device("cuda", 0)
+    tower = _RealTower().to(device, torch.bfloat16)
+    runner = AudioLayerGraphRunner(tower, device=device, window=WINDOW)
+    runner._resolve_attention()
+    assert runner._disabled_reason is None, runner._disabled_reason
+    segments = [104, 104, 49, 37, 90]
+    hidden = torch.randn(sum(segments), tower.config.d_model, device=device).to(
+        torch.bfloat16
+    )
+    cu_seqlens = _cu_seqlens(segments, device)
+    with torch.no_grad():
+        packed = runner._run_layers(hidden, cu_seqlens, WINDOW)
+        runner._packed_attention = _SegmentedSdpa()
+        reference = runner._run_layers(hidden, cu_seqlens, WINDOW)
+    torch.testing.assert_close(packed, reference, rtol=2e-2, atol=2e-2)
 
 
 @pytest.mark.accelerator
@@ -196,7 +290,7 @@ def test_capture_all_records_a_graph_for_every_bucket() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_replay_matches_eager_varlen_across_bucket_boundaries() -> None:
+def test_replay_matches_the_uncaptured_packed_stack_across_bucket_boundaries() -> None:
     torch.manual_seed(0)
     device = torch.device("cuda", 0)
     tower = _RealTower().to(device, torch.bfloat16)
@@ -219,13 +313,8 @@ def test_replay_matches_eager_varlen_across_bucket_boundaries() -> None:
             hidden = torch.randn(tokens, tower.config.d_model, device=device).to(
                 torch.bfloat16
             )
-            cu_seqlens = (
-                torch.tensor([0, *segments], dtype=torch.int32)
-                .cumsum(0)
-                .to(torch.int32)
-                .to(device)
-            )
-            eager = runner._run_layers(hidden, cu_seqlens, WINDOW)
+            cu_seqlens = _cu_seqlens(segments, device)
+            uncaptured = runner._run_layers(hidden, cu_seqlens, WINDOW)
             replayed = runner.maybe_replay(hidden, cu_seqlens, segments)
             assert replayed is not None
-            torch.testing.assert_close(replayed, eager)
+            torch.testing.assert_close(replayed, uncaptured)

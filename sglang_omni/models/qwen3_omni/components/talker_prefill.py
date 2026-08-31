@@ -262,8 +262,9 @@ class TalkerPrefillBuilder:
             return
 
         pending_text_queue = getattr(req_data, "pending_text_queue", None)
-        pending_text_queue = coerce_pending_text_queue(pending_text_queue)
-        req_data.pending_text_queue = pending_text_queue
+        if not isinstance(pending_text_queue, PendingTextTensorQueue):
+            pending_text_queue = coerce_pending_text_queue(pending_text_queue)
+            req_data.pending_text_queue = pending_text_queue
         pending_text_queue.append(self.project_assistant_chunk(chunk))
 
     def mark_thinker_done(self, req_data: Any) -> None:
@@ -272,8 +273,9 @@ class TalkerPrefillBuilder:
 
         req_data.thinker_chunks_done = True
         pending_text_queue = getattr(req_data, "pending_text_queue", None)
-        pending_text_queue = coerce_pending_text_queue(pending_text_queue)
-        req_data.pending_text_queue = pending_text_queue
+        if not isinstance(pending_text_queue, PendingTextTensorQueue):
+            pending_text_queue = coerce_pending_text_queue(pending_text_queue)
+            req_data.pending_text_queue = pending_text_queue
         if isinstance(req_data.tts_eos_embed, torch.Tensor):
             pending_text_queue.append(req_data.tts_eos_embed)
 

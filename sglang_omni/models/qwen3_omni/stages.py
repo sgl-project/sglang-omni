@@ -1035,6 +1035,10 @@ def create_sglang_thinker_executor_from_config(
         sampling_backend="pytorch",
     )
     overrides["tp_size"] = tp_size
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.enable_thinker_decode_graph():
+        overrides.setdefault("disable_decode_cuda_graph", True)
     has_explicit_colocated_mem_fraction = (
         total_gpu_memory_fraction is not None
         and overrides.get("mem_fraction_static") is not None
@@ -1153,6 +1157,12 @@ def create_talker_ar_executor_from_config(
         disable_cuda_graph=False,
         sampling_backend="pytorch",
     )
+    from sglang_omni.platforms import current_platform
+
+    # A platform may decline the default above; the caller's setting still wins.
+    stated_disable = "disable_cuda_graph" in (server_args_overrides or {})
+    if not stated_disable and not current_platform.enable_talker_graph():
+        overrides["disable_cuda_graph"] = True
     overrides["tp_size"] = tp_size
     _apply_colocated_ar_memory_contract(
         overrides,

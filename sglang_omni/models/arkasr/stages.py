@@ -32,6 +32,7 @@ def create_sglang_arkasr_executor(
     pre_lm_max_batch_size: int = 8,
     pre_lm_max_batch_wait_ms: int = 0,
     pre_lm_max_pending: int = 32,
+    enable_encoder_cuda_graph: bool = False,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
@@ -60,6 +61,7 @@ def create_sglang_arkasr_executor(
         pre_lm_max_batch_size=pre_lm_max_batch_size,
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         pre_lm_max_pending=pre_lm_max_pending,
+        enable_encoder_cuda_graph=enable_encoder_cuda_graph,
     ).build(
         model_path,
         device=device,

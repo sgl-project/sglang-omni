@@ -527,6 +527,48 @@ def _commit_step_slot(allocator, req_to_token_pool, req):
     return int(slot[0])
 
 
+def test_prompt_only_radix_reuses_prompt_without_caching_tail():
+    from sglang.srt.managers.schedule_batch import Req
+    from sglang.srt.mem_cache.common import maybe_cache_unfinished_req, release_kv_cache
+    from sglang.srt.mem_cache.radix_cache import MatchPrefixParams, RadixKey
+    from sglang.srt.runtime_context import get_context
+    from sglang.srt.sampling.sampling_params import SamplingParams
+
+    with get_context().override_server_args(page_size=1):
+        allocator, req_to_token_pool, cache = _real_radix_pools()
+        total = allocator.available_size()
+        prompt = [1, 2, 3]
+        first = _decoding_req(allocator, req_to_token_pool, "first", prompt, [20])
+        first.extra_key = "qwen3_tts:prompt:v1"
+        first.init_next_round_input(cache)
+        first.set_extend_range(0, len(prompt))
+        maybe_cache_unfinished_req(first, cache)
+
+        first.skip_radix_cache_insert = True
+        _commit_step_slot(allocator, req_to_token_pool, first)
+        first.output_ids.append(21)
+        release_kv_cache(first, cache)
+
+        second = Req(
+            "second",
+            "",
+            prompt,
+            SamplingParams(max_new_tokens=8),
+            extra_key="qwen3_tts:prompt:v1",
+        )
+        second.output_ids = []
+        second.init_next_round_input(cache)
+        tail_match = cache.match_prefix(
+            MatchPrefixParams(
+                key=RadixKey(prompt + [20], extra_key="qwen3_tts:prompt:v1")
+            )
+        )
+
+        assert len(second.prefix_indices) == len(prompt) - 1
+        assert len(tail_match.device_indices) == cache.total_size() == len(prompt)
+        assert allocator.available_size() + cache.evictable_size() == total
+
+
 class _StaleDecodeBatch:
     def __init__(self, reqs, out_cache_loc):
         from sglang.srt.model_executor.forward_batch_info import ForwardMode

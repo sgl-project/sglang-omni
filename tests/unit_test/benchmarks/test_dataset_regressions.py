@@ -8,11 +8,16 @@ import types
 import wave
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
-from benchmarks.dataset import prepare, seedtts, stt_benchmark
-from benchmarks.eval import benchmark_asr_seedtts, benchmark_asr_stt_benchmark
+from benchmarks.dataset import asr_longform, prepare, seedtts, stt_benchmark
+from benchmarks.eval import (
+    benchmark_asr_longform,
+    benchmark_asr_seedtts,
+    benchmark_asr_stt_benchmark,
+)
 
 _MODELS_DIR = (
     Path(__file__).resolve().parents[3] / ".claude/skills/tune-ci-thresholds/models"
@@ -854,3 +859,224 @@ def test_evaluation_input_fingerprint_is_namespaced(tmp_path: Path) -> None:
 
     assert fingerprint(samples) == fingerprint(samples, namespace="seedtts")
     assert fingerprint(samples) != fingerprint(samples, namespace="stt-benchmark")
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "repo_id", "split", "revision"),
+    [
+        (
+            "longlibriheavy-30",
+            prepare.LONGLIBRIHEAVY_DATASET_ID,
+            "llh_test_30",
+            prepare.LONGLIBRIHEAVY_DATASET_REVISION,
+        ),
+        (
+            "longlibriheavy-60",
+            prepare.LONGLIBRIHEAVY_DATASET_ID,
+            "llh_test_60",
+            prepare.LONGLIBRIHEAVY_DATASET_REVISION,
+        ),
+        (
+            "meanwhile",
+            prepare.MEANWHILE_DATASET_ID,
+            "test",
+            prepare.MEANWHILE_DATASET_REVISION,
+        ),
+    ],
+)
+def test_download_asr_longform_dataset_uses_split_and_pinned_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    dataset_name: str,
+    repo_id: str,
+    split: str,
+    revision: str,
+) -> None:
+    observed: dict = {}
+
+    def fake_load_dataset(observed_repo_id: str, **kwargs):
+        observed["repo_id"] = observed_repo_id
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        types.SimpleNamespace(
+            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            load_dataset=fake_load_dataset,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+    )
+
+    prepare.download_dataset(prepare.DATASETS[dataset_name], quiet=True)
+
+    assert observed == {
+        "repo_id": repo_id,
+        "split": split,
+        "revision": revision,
+    }
+
+
+def _longform_rows(count: int) -> list[dict]:
+    return [
+        {
+            "audio": {"bytes": f"encoded-{index}".encode(), "path": None},
+            "text": f"Transcript {index}.",
+        }
+        for index in range(count)
+    ]
+
+
+def _stage_longform_into(monkeypatch: pytest.MonkeyPatch, staging_dir: Path) -> None:
+    monkeypatch.setattr(
+        asr_longform.tempfile, "mkdtemp", lambda prefix: str(staging_dir)
+    )
+    monkeypatch.setattr(asr_longform.atexit, "register", lambda *a, **k: None)
+
+
+def test_load_asr_longform_samples_selects_before_decode_and_stages_pcm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    asr_longform._STAGED_CACHE.clear()
+    dataset = _FakeDataset(_longform_rows(5))
+    staging_dir = tmp_path / "longform_stage"
+    staging_dir.mkdir()
+    decoded_sources: list[bytes | str] = []
+
+    def fake_load_audio(source, **kwargs):
+        decoded_sources.append(source)
+        assert kwargs["target_sample_rate"] == 16000
+        assert kwargs["mono"] is True
+        return np.array([0.0, 0.25, -0.25, 0.0], dtype=np.float32)
+
+    monkeypatch.setattr(asr_longform, "load_dataset", lambda *a, **k: dataset)
+    monkeypatch.setattr(asr_longform, "Audio", lambda **kwargs: ("Audio", kwargs))
+    monkeypatch.setattr(asr_longform, "load_audio", fake_load_audio)
+    _stage_longform_into(monkeypatch, staging_dir)
+
+    samples = asr_longform.load_asr_longform_samples("meanwhile", max_samples=2)
+
+    assert dataset.selected_indices == [0, 1]
+    assert decoded_sources == [b"encoded-0", b"encoded-1"]
+    assert [sample.sample_id for sample in samples] == [
+        "meanwhile-000000",
+        "meanwhile-000001",
+    ]
+    assert samples[0].ref_text == "Transcript 0."
+    assert samples[0].target_text == "Transcript 0."
+    with wave.open(samples[0].ref_audio, "rb") as wav_file:
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getsampwidth() == 2
+        assert wav_file.getframerate() == 16000
+        assert wav_file.getnframes() == 4
+
+    monkeypatch.setattr(
+        asr_longform,
+        "load_dataset",
+        lambda *a, **k: pytest.fail("reloaded instead of using staged cache"),
+    )
+    again = asr_longform.load_asr_longform_samples("meanwhile", max_samples=2)
+    assert [sample.sample_id for sample in again] == [
+        "meanwhile-000000",
+        "meanwhile-000001",
+    ]
+
+    asr_longform._STAGED_CACHE.clear()
+
+
+def test_load_asr_longform_full_split_checks_canonical_sample_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asr_longform._STAGED_CACHE.clear()
+    monkeypatch.setattr(
+        asr_longform,
+        "load_dataset",
+        lambda *a, **k: _FakeDataset(_longform_rows(1)),
+    )
+
+    with pytest.raises(ValueError, match="Expected 64 samples"):
+        asr_longform.load_asr_longform_samples("meanwhile")
+
+
+def test_load_asr_longform_rejects_empty_reference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    asr_longform._STAGED_CACHE.clear()
+    rows = _longform_rows(1)
+    rows[0]["text"] = "  "
+    staging_dir = tmp_path / "longform_stage"
+    staging_dir.mkdir()
+    monkeypatch.setattr(
+        asr_longform, "load_dataset", lambda *a, **k: _FakeDataset(rows)
+    )
+    monkeypatch.setattr(asr_longform, "Audio", lambda **kwargs: ("Audio", kwargs))
+    _stage_longform_into(monkeypatch, staging_dir)
+
+    with pytest.raises(ValueError, match="Empty text"):
+        asr_longform.load_asr_longform_samples("meanwhile", max_samples=1)
+
+
+def test_asr_longform_main_records_registered_dataset_provenance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    loaded: dict = {}
+    captured: dict = {}
+    output_path = tmp_path / "result.json"
+
+    def capture_load(dataset_name: str, **kwargs):
+        loaded["dataset_name"] = dataset_name
+        loaded.update(kwargs)
+        return _one_stt_sample(tmp_path)
+
+    async def empty_sweep(*_args, **_kwargs):
+        return []
+
+    def capture_provenance(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_asr_longform",
+            "--dataset",
+            "meanwhile",
+            "--port",
+            "8000",
+            "--output",
+            str(output_path),
+        ],
+    )
+    monkeypatch.setattr(
+        benchmark_asr_longform, "load_asr_longform_samples", capture_load
+    )
+    monkeypatch.setattr(benchmark_asr_longform, "_sweep", empty_sweep)
+    monkeypatch.setattr(benchmark_asr_longform, "_print_table", lambda *_args: None)
+    monkeypatch.setattr(
+        benchmark_asr_longform,
+        "collect_benchmark_provenance",
+        capture_provenance,
+    )
+
+    benchmark_asr_longform.main()
+
+    assert loaded == {
+        "dataset_name": "meanwhile",
+        "max_samples": None,
+        "revision": prepare.MEANWHILE_DATASET_REVISION,
+    }
+    assert captured["dataset_id"] == prepare.MEANWHILE_DATASET_ID
+    assert captured["dataset_revision"] == prepare.MEANWHILE_DATASET_REVISION
+    payload = json.loads(output_path.read_text())
+    assert payload["schema_version"] == 2
+    assert payload["config"]["dataset"] == "meanwhile"
+    assert payload["config"]["repo_id"] == prepare.MEANWHILE_DATASET_ID
+    assert payload["config"]["split"] == "test"
+    assert payload["config"]["lang"] == "en"
+    assert payload["config"]["expected_num_samples"] == 64
+    assert payload["results"] == []

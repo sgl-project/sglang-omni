@@ -247,7 +247,7 @@ _ASYNC_STOP = None
 
 
 class _Qwen3TTSInitialDecodeGraphs:
-    """CUDA graphs for the fixed-size first streaming decode."""
+    """CUDA graphs for fixed shape streaming decodes, one holder per stream."""
 
     def __init__(
         self,
@@ -255,32 +255,38 @@ class _Qwen3TTSInitialDecodeGraphs:
         *,
         device: torch.device,
         num_quantizers: int,
-        input_frames: int,
+        input_frames: int | tuple[int, ...],
         batch_sizes: tuple[int, ...] = (1, 2, 4, 8),
         enabled: bool = True,
     ) -> None:
         self._decoder = decoder
         self._device = device
         self._num_quantizers = int(num_quantizers)
-        self._input_frames = int(input_frames)
+        frames = (
+            input_frames if isinstance(input_frames, (tuple, list)) else (input_frames,)
+        )
+        self._input_frames = tuple(sorted(set(int(f) for f in frames if int(f) > 0)))
         self._batch_sizes = tuple(sorted(set(int(size) for size in batch_sizes)))
         self._enabled = bool(enabled and device.type == "cuda")
-        self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
-        self._inputs: dict[int, torch.Tensor] = {}
-        self._outputs: dict[int, torch.Tensor] = {}
+        self._graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
+        self._inputs: dict[tuple[int, int], torch.Tensor] = {}
+        self._outputs: dict[tuple[int, int], torch.Tensor] = {}
 
     def capture(self) -> None:
         if not self._enabled or self._graphs:
             return
         capture_stream = torch.cuda.Stream(device=self._device)
         graph_pool = torch.cuda.graph_pool_handle()
-        for batch_size in self._batch_sizes:
+        for input_frames, batch_size in (
+            (f, b) for f in self._input_frames for b in self._batch_sizes
+        ):
             try:
                 static_input = torch.zeros(
-                    (batch_size, self._num_quantizers, self._input_frames),
+                    (batch_size, self._num_quantizers, input_frames),
                     dtype=torch.long,
                     device=self._device,
                 )
+                capture_stream.wait_stream(torch.cuda.current_stream(self._device))
                 with torch.inference_mode(), torch.cuda.stream(capture_stream):
                     for _ in range(2):
                         self._decoder(static_input)
@@ -297,32 +303,39 @@ class _Qwen3TTSInitialDecodeGraphs:
                     static_output = self._decoder(static_input)
             except Exception:
                 logger.warning(
-                    "Qwen3-TTS initial decoder graph capture failed for batch=%d",
+                    "Qwen3-TTS decoder graph capture failed for frames=%d batch=%d",
+                    input_frames,
                     batch_size,
                     exc_info=True,
                 )
                 continue
-            self._graphs[batch_size] = graph
-            self._inputs[batch_size] = static_input
-            self._outputs[batch_size] = static_output
+            self._graphs[(input_frames, batch_size)] = graph
+            self._inputs[(input_frames, batch_size)] = static_input
+            self._outputs[(input_frames, batch_size)] = static_output
+        if self._graphs:
+            logger.info(
+                "Qwen3-TTS decoder graphs captured for (frames, batch) %s",
+                sorted(self._graphs),
+            )
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor | None:
         if (
             not self._graphs
             or codes.ndim != 3
             or int(codes.shape[1]) != self._num_quantizers
-            or int(codes.shape[2]) != self._input_frames
+            or int(codes.shape[2]) not in self._input_frames
         ):
             return None
         batch_size = int(codes.shape[0])
         bucket = next((size for size in self._batch_sizes if size >= batch_size), None)
-        if bucket is None or bucket not in self._graphs:
+        key = (int(codes.shape[2]), bucket) if bucket is not None else None
+        if key is None or key not in self._graphs:
             return None
-        static_input = self._inputs[bucket]
+        static_input = self._inputs[key]
         static_input.zero_()
         static_input[:batch_size].copy_(codes)
-        self._graphs[bucket].replay()
-        return self._outputs[bucket][:batch_size].clone()
+        self._graphs[key].replay()
+        return self._outputs[key][:batch_size].clone()
 
 
 class Qwen3TTSStreamingVocoderScheduler(
@@ -349,6 +362,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         followup_batch_wait_ms: int = 1,
         initial_cuda_graph: bool = True,
         enable_deterministic_inference: bool = False,
+        followup_cuda_graph: bool = True,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -379,6 +393,26 @@ class Qwen3TTSStreamingVocoderScheduler(
             input_frames=int(stream_left_context_frames) + int(initial_chunk_frames),
             batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
             enabled=bool(initial_cuda_graph and num_quantizers > 0),
+        )
+        followup_frames = (
+            int(stream_left_context_frames) + int(stream_followup_stride),
+            int(stream_left_context_frames)
+            + int(
+                min(
+                    DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE,
+                    stream_followup_stride,
+                )
+                if stream_initial_followup_stride is None
+                else stream_initial_followup_stride
+            ),
+        )
+        self._followup_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
+            self._decoder,
+            device=self._device,
+            num_quantizers=num_quantizers,
+            input_frames=followup_frames,
+            batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
+            enabled=bool(followup_cuda_graph and num_quantizers > 0),
         )
         self._samples_per_frame = int(self._decoder.total_upsample)
         self._stream_stride = int(stream_stride)
@@ -453,10 +487,15 @@ class Qwen3TTSStreamingVocoderScheduler(
         super().stop()
         self._join_async_workers()
 
-    def on_serving_start(self) -> None:
+    def warmup_now(self) -> None:
         if not self._async_decode:
             return
         self._initial_decode_graphs.capture()
+        self._followup_decode_graphs.capture()
+
+    def on_serving_start(self) -> None:
+        if not self._async_decode:
+            return
         self._initial_queue = queue.Queue()
         self._followup_queue = queue.PriorityQueue()
         self._followup_sequence = count()
@@ -787,11 +826,16 @@ class Qwen3TTSStreamingVocoderScheduler(
                 gpu_input = self._stage_decoder_input(
                     decoder_input, slot if pinned else None
                 )
-                waveform = (
-                    self._initial_decode_graphs.decode(gpu_input)
+                graphs = (
+                    self._initial_decode_graphs
                     if stream is self._decode_stream
-                    else None
+                    else (
+                        self._followup_decode_graphs
+                        if stream is self._followup_decode_stream
+                        else None
+                    )
                 )
+                waveform = graphs.decode(gpu_input) if graphs is not None else None
                 if waveform is None:
                     waveform = self._decoder.chunked_decode(gpu_input)
                 keepalives.append(waveform)

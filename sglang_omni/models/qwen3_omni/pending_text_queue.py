@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -29,15 +30,28 @@ def _as_rows(tensor: torch.Tensor) -> torch.Tensor | None:
 
 @dataclass(slots=True)
 class PendingTextTensorQueue:
-    """FIFO queue backed by one tensor plus a cursor.
+    """FIFO queue backed by device-resident tensor chunks.
 
-    The talker consumes one future text row per decode step. Keeping those rows
-    as a single device tensor avoids row-wise D2H/H2D copies and Python deque
-    object churn while preserving the small queue API used by the runner.
+    The talker consumes one future text row per decode step. Incoming rows stay
+    on device and are appended as chunks, avoiding repeated concatenation of
+    unconsumed rows.
     """
 
     rows: torch.Tensor | None = None
     cursor: int = 0
+    _chunks: deque[torch.Tensor] = field(default_factory=deque, repr=False)
+    _pending_rows: int = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Note (cuzmi): Initialize the remaining-row count after construction or copy.
+        head_rows = (
+            max(0, int(self.rows.shape[0]) - self.cursor)
+            if self.rows is not None
+            else 0
+        )
+        self._pending_rows = head_rows + sum(
+            int(chunk.shape[0]) for chunk in self._chunks
+        )
 
     @classmethod
     def from_tensor(cls, tensor: torch.Tensor) -> "PendingTextTensorQueue":
@@ -49,34 +63,48 @@ class PendingTextTensorQueue:
         return len(self) > 0
 
     def copy(self) -> "PendingTextTensorQueue":
-        return type(self)(rows=self.rows, cursor=self.cursor)
+        return type(self)(
+            rows=self.rows,
+            cursor=self.cursor,
+            _chunks=deque(self._chunks),
+        )
 
     def __len__(self) -> int:
-        if self.rows is None:
-            return 0
-        return max(0, int(self.rows.shape[0]) - self.cursor)
+        return self._pending_rows
 
     def __iter__(self) -> Iterator[torch.Tensor]:
         if self.rows is None:
             return
         for idx in range(self.cursor, int(self.rows.shape[0])):
             yield self.rows[idx]
+        for chunk in self._chunks:
+            yield from chunk
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         if not isinstance(idx, int):
             raise TypeError("PendingTextTensorQueue indices must be integers")
-        if idx < 0:
-            idx += len(self)
-        absolute_idx = self.cursor + idx
-        if self.rows is None or idx < 0 or absolute_idx >= int(self.rows.shape[0]):
+        if self.rows is None:
             raise IndexError(idx)
-        return self.rows[absolute_idx]
+        # Note (cuzmi): Talker only peeks at the first row during decode, so
+        # keep this hot path O(1) and avoid consolidating the queued tensor chunks.
+        if idx == 0:
+            return self.rows[self.cursor]
+
+        # Note (cuzmi): Preserve the original queue's arbitrary-index behavior
+        # for callers outside the decode hot path.
+        remaining = self.rows[self.cursor :]
+        if not self._chunks:
+            return remaining[idx]
+        return torch.cat([remaining, *self._chunks], dim=0)[idx]
 
     def popleft(self) -> torch.Tensor:
         row = self[0]
         self.cursor += 1
+        self._pending_rows -= 1
         if self.rows is not None and self.cursor >= int(self.rows.shape[0]):
-            self.rows = None
+            # Note (cuzmi): Drop the consumed head and promote the next chunk
+            # without copying.
+            self.rows = self._chunks.popleft() if self._chunks else None
             self.cursor = 0
         return row
 
@@ -87,15 +115,22 @@ class PendingTextTensorQueue:
         rows = _as_rows(rows)
         if rows is None:
             return
+        appended_rows = int(rows.shape[0])
         if self.rows is None or len(self) == 0:
             self.rows = rows
             self.cursor = 0
+            self._chunks.clear()
+            self._pending_rows = appended_rows
             return
 
-        remaining = self.rows[self.cursor :]
-        rows = rows.to(device=remaining.device, dtype=remaining.dtype)
-        self.rows = torch.cat([remaining, rows], dim=0)
-        self.cursor = 0
+        if int(rows.shape[1]) != int(self.rows.shape[1]):
+            raise ValueError(
+                "pending text row hidden dimension must match the existing queue"
+            )
+
+        rows = rows.to(device=self.rows.device, dtype=self.rows.dtype)
+        self._chunks.append(rows)
+        self._pending_rows += appended_rows
 
 
 def coerce_pending_text_queue(value: object) -> PendingTextTensorQueue:

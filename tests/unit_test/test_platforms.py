@@ -8,6 +8,7 @@ import torch
 from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
 from sglang.srt.platforms.interface import SRTPlatform
 from sglang.srt.platforms.rocm import RocmSRTPlatform
+from sglang.srt.platforms.xpu import XpuSRTPlatform
 
 import sglang_omni.platforms as platforms
 import sglang_omni.platforms.xpu as xpu_platform
@@ -15,6 +16,7 @@ from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
 class _VendorDeviceMixin(DeviceMixin):
@@ -121,8 +123,6 @@ def test_srt_plugin_identity_round_trips_to_spawned_process() -> None:
 def test_xpu_set_device_accepts_an_index_or_a_device(
     monkeypatch, argument, expected_index
 ) -> None:
-    from sglang_omni.platforms.xpu import XPUOmniPlatform
-
     seen: list[int] = []
     monkeypatch.setattr(
         xpu_platform.torch,
@@ -136,21 +136,34 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
     assert seen == [expected_index]
 
 
-def test_xpu_probe_treats_a_missing_torch_xpu_as_unavailable(monkeypatch) -> None:
-    monkeypatch.delattr(platforms.torch, "xpu", raising=False)
+def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
+    platform = platforms._as_omni_platform(XpuSRTPlatform())
 
-    assert platforms._is_xpu_available() is False
+    assert type(platform) is XPUOmniPlatform
+    spec = SimpleNamespace(tp_size=2, gpu_id=0, stage_name="talker")
+    assert platform.get_stage_process_env(spec, {"ZE_AFFINITY_MASK": "0,1"}) == {
+        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"
+    }
 
 
-def test_xpu_probe_surfaces_a_driver_initialization_failure(monkeypatch) -> None:
-    """Swallowing it would resolve to the base path and fail later, cause lost."""
+def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
+    backend = xpu_platform.XPUOmniPlatform().get_decode_cuda_graph_backend()
 
-    def raise_driver_error() -> bool:
-        raise RuntimeError("Level Zero init failed")
+    # ServerArgs takes this as a config string, so the hook owes a plain str.
+    assert backend == "full"
+    assert type(backend) is str
+    # Other platforms keep SGLang's own device default.
+    assert OmniPlatform().get_decode_cuda_graph_backend() is None
+    assert CPUOmniPlatform().get_decode_cuda_graph_backend() is None
 
-    monkeypatch.setattr(
-        platforms.torch, "xpu", SimpleNamespace(is_available=raise_driver_error)
-    )
 
-    with pytest.raises(RuntimeError, match="Level Zero init failed"):
-        platforms._is_xpu_available()
+def test_xpu_keeps_the_qwen3_omni_talker_decode_eager() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is False
+    assert OmniPlatform().enable_talker_graph() is True
+    assert CPUOmniPlatform().enable_talker_graph() is True
+
+
+def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
+    assert OmniPlatform().enable_thinker_decode_graph() is True
+    assert CPUOmniPlatform().enable_thinker_decode_graph() is True

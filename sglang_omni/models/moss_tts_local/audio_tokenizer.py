@@ -3,12 +3,26 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 import torch
+from torch import nn
 
+from sglang_omni.models.moss_tts.audio_tokenizer import (
+    AUTO_ATTENTION_BACKEND,
+    PACKED_FLASH_ATTENTION_BACKEND,
+    SDPA_ATTENTION_BACKEND,
+    MossAudioEncoder,
+    load_moss_audio_encoder,
+    resolve_moss_audio_attention_backend,
+    resolve_moss_audio_dtype,
+    resolve_moss_audio_sample_rate,
+    validate_attention_backend,
+)
 from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
+from sglang_omni.models.weight_loader import load_module, resolve_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +41,17 @@ class MossTTSLocalAudioTokenizer:
         model: Any,
         *,
         device: str,
+        encoder: MossAudioEncoder | None = None,
     ) -> None:
         self.model = model
+        self._encoder = encoder
         self.device = str(device)
-        config = model.config
-        self.sample_rate = int(config.sampling_rate)
+        config = getattr(model, "config", None)
+        if config is None and encoder is not None:
+            config = encoder.model.config
+        if config is None:
+            raise ValueError("MOSS-TTS Local audio tokenizer model lacks config")
+        self.sample_rate = resolve_moss_audio_sample_rate(model, config)
 
     def encode_paths(
         self,
@@ -86,7 +106,10 @@ class MossTTSLocalAudioTokenizer:
         ]
 
         with torch.inference_mode():
-            encoded = self.model.batch_encode(
+            encoder_model = (
+                self._encoder.model if self._encoder is not None else self.model
+            )
+            encoded = encoder_model.batch_encode(
                 prepared,
                 num_quantizers=int(num_quantizers),
             )
@@ -141,24 +164,158 @@ def load_moss_tts_local_audio_tokenizer(
     model_path: str = DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
     *,
     device: str = "cuda:0",
+    compute_dtype: torch.dtype | None = None,
+    attention_backend: str = AUTO_ATTENTION_BACKEND,
 ) -> MossTTSLocalAudioTokenizer:
-    logger.info(f"Loading MOSS-TTS Local audio tokenizer from {model_path} on {device}")
-    try:
-        from transformers import AutoModel
-
-        with moss_transformers_processor_compat():
-            model = AutoModel.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-                codec_weight_dtype="bf16",
-            )
-    except Exception as exc:
-        raise RuntimeError(
-            "MOSS-TTS Local support requires OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
-        ) from exc
-    model.eval()
-    model.to(device)
-    return MossTTSLocalAudioTokenizer(
-        model,
+    encoder = load_moss_audio_encoder(
+        model_path,
         device=device,
+        compute_dtype=compute_dtype,
+        attention_backend=attention_backend,
     )
+    logger.info(
+        "Loaded repository-local MOSS-Audio-Tokenizer encoder for MOSS-TTS Local "
+        "from %s on %s (encoder_dtype=%s, compute_dtype=%s)",
+        model_path,
+        device,
+        encoder.model.encoder_dtype,
+        encoder.model.compute_dtype,
+    )
+    return MossTTSLocalAudioTokenizer(
+        encoder.model,
+        device=device,
+        encoder=encoder,
+    )
+
+
+class MossTTSLocalAudioVocoder:
+    """V2 streaming codec shell with only quantizer and decoder weights."""
+
+    def __init__(self, model: Any, *, device: str) -> None:
+        self.model = model
+        self.device = str(device)
+        config = getattr(model, "config", None)
+        if config is None:
+            raise ValueError("MOSS-TTS Local vocoder model lacks config")
+        self.sample_rate = resolve_moss_audio_sample_rate(model, config)
+
+
+def _resolve_local_codec_dtype(
+    value: str | torch.dtype | None,
+    *,
+    name: str,
+    allow_none: bool,
+) -> torch.dtype | None:
+    if isinstance(value, str):
+        value = {
+            "bf16": "bfloat16",
+            "fp32": "float32",
+        }.get(value.lower(), value)
+    return resolve_moss_audio_dtype(value, name=name, allow_none=allow_none)
+
+
+def _load_local_streaming_codec_config(model_path: str) -> tuple[Any, Any]:
+    resolved_path = resolve_model_path(str(model_path))
+    config_path = resolved_path / "config.json"
+    with config_path.open(encoding="utf-8") as config_file:
+        config_dict = json.load(config_file)
+    if config_dict.get("model_type") != "moss-audio-tokenizer":
+        raise ValueError(
+            f"expected model_type='moss-audio-tokenizer' in {config_path}, "
+            f"got {config_dict.get('model_type')!r}"
+        )
+    from transformers import AutoConfig
+
+    with moss_transformers_processor_compat():
+        config = AutoConfig.from_pretrained(
+            str(model_path),
+            trust_remote_code=True,
+        )
+    return resolved_path, config
+
+
+def load_moss_tts_local_audio_vocoder(
+    model_path: str = DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
+    *,
+    device: str = "cuda:0",
+    decoder_dtype: torch.dtype = torch.bfloat16,
+    compute_dtype: torch.dtype | None = None,
+    attention_backend: str = AUTO_ATTENTION_BACKEND,
+) -> MossTTSLocalAudioVocoder:
+    """Load the Local streaming shell with quantizer/decoder prefixes only."""
+    validate_attention_backend(attention_backend)
+    resolved_path, config = _load_local_streaming_codec_config(model_path)
+    configured_compute_dtype = _resolve_local_codec_dtype(
+        getattr(config, "compute_dtype", "bfloat16"),
+        name="compute_dtype",
+        allow_none=True,
+    )
+    effective_compute_dtype = (
+        configured_compute_dtype if compute_dtype is None else compute_dtype
+    )
+    if isinstance(effective_compute_dtype, str):
+        effective_compute_dtype = _resolve_local_codec_dtype(
+            effective_compute_dtype,
+            name="compute_dtype",
+            allow_none=True,
+        )
+    if effective_compute_dtype is None:
+        effective_decoder_dtype = decoder_dtype
+    else:
+        effective_decoder_dtype = effective_compute_dtype
+
+    config_attention_implementation = getattr(
+        config,
+        "attention_implementation",
+        "flash_attention_2",
+    )
+    selected_backend = resolve_moss_audio_attention_backend(
+        attention_backend,
+        config_attention_implementation,
+    )
+    if selected_backend == SDPA_ATTENTION_BACKEND:
+        config.attention_implementation = SDPA_ATTENTION_BACKEND
+    elif selected_backend == PACKED_FLASH_ATTENTION_BACKEND:
+        config.attention_implementation = "flash_attention_2"
+
+    from transformers import AutoModel
+
+    with moss_transformers_processor_compat(), torch.device("meta"):
+        model = AutoModel.from_config(config, trust_remote_code=True)
+    if not hasattr(model, "decoder") or not hasattr(model, "quantizer"):
+        raise ValueError("MOSS-Audio-Tokenizer-v2 model lacks decoder/quantizer")
+    model.encoder = nn.ModuleList()
+    model.quantizer = load_module(
+        model.quantizer,
+        str(resolved_path),
+        prefix="quantizer.",
+        dtype=torch.float32,
+        device=device,
+        strict=True,
+    )
+    model.decoder = load_module(
+        model.decoder,
+        str(resolved_path),
+        prefix="decoder.",
+        dtype=effective_decoder_dtype,
+        device=device,
+        strict=True,
+    )
+    model.compute_dtype = (
+        None
+        if effective_compute_dtype is None or effective_compute_dtype is torch.float32
+        else effective_compute_dtype
+    )
+    model.compute_dtype_name = "fp32" if model.compute_dtype is None else "bf16"
+    model.config.compute_dtype = model.compute_dtype_name
+    model.eval()
+    logger.info(
+        "Loaded MOSS-TTS Local streaming codec from %s on %s "
+        "(encoder_weights=0, decoder_dtype=%s, compute_dtype=%s, backend=%s)",
+        resolved_path,
+        device,
+        effective_decoder_dtype,
+        model.compute_dtype,
+        selected_backend,
+    )
+    return MossTTSLocalAudioVocoder(model, device=device)

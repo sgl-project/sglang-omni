@@ -10,24 +10,28 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-import sglang_omni_router.launcher.local as local_launcher
-import sglang_omni_router.serve as serve_module
-from sglang_omni_router.config import DEFAULT_CAPABILITIES, RouterConfig, WorkerConfig
-from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.launcher import LocalLauncher, LocalLauncherConfig
-from sglang_omni_router.launcher.config import load_launcher_config
-from sglang_omni_router.launcher.utils import build_gpu_assignments
-from sglang_omni_router.selector import (
+import sglang_omni_router.python.launcher.local as local_launcher
+import sglang_omni_router.python.serve as serve_module
+from sglang_omni_router.python.config import (
+    DEFAULT_CAPABILITIES,
+    RouterConfig,
+    WorkerConfig,
+)
+from sglang_omni_router.python.health import HealthChecker
+from sglang_omni_router.python.launcher import LocalLauncher, LocalLauncherConfig
+from sglang_omni_router.python.launcher.config import load_launcher_config
+from sglang_omni_router.python.launcher.utils import build_gpu_assignments
+from sglang_omni_router.python.selector import (
     NoEligibleWorkerError,
     WorkerSelector,
     require_eligible_worker,
 )
-from sglang_omni_router.serve import (
+from sglang_omni_router.python.serve import (
     build_config_from_args,
     build_parser,
     resolve_managed_worker_capabilities,
 )
-from sglang_omni_router.worker import build_workers
+from sglang_omni_router.python.worker import build_workers
 
 
 @pytest.mark.parametrize(
@@ -386,7 +390,7 @@ def test_launcher_gpu_assignment_groups_visible_devices(monkeypatch) -> None:
 def test_launcher_gpu_assignment_allows_default_process_visibility(monkeypatch) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.setattr(
-        "sglang_omni_router.launcher.utils.infer_available_cuda_devices",
+        "sglang_omni_router.python.launcher.utils.infer_available_cuda_devices",
         lambda: [],
     )
     config = LocalLauncherConfig(model_path="model", num_workers=1)
@@ -617,10 +621,21 @@ def test_router_config_rejects_hyphenated_policy_aliases() -> None:
         )
 
 
-def test_router_console_script_entrypoint_resolves() -> None:
+@pytest.mark.parametrize(
+    "manifest_name",
+    (
+        "pyproject.toml",
+        "pyproject_rocm.toml",
+        "pyproject_xpu.toml",
+        "pyproject_npu.toml",
+    ),
+)
+def test_python_router_console_script_entrypoint_resolves(
+    manifest_name: str,
+) -> None:
     script_target = None
     in_project_scripts = False
-    pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    pyproject = Path(__file__).resolve().parents[3] / manifest_name
     for line in pyproject.read_text().splitlines():
         stripped = line.strip()
         if stripped == "[project.scripts]":
@@ -628,11 +643,11 @@ def test_router_console_script_entrypoint_resolves() -> None:
             continue
         if in_project_scripts and stripped.startswith("["):
             break
-        if in_project_scripts and stripped.startswith("sgl-omni-router"):
+        if in_project_scripts and stripped.startswith("sgl-omni-router-py ="):
             script_target = stripped.split("=", 1)[1].strip().strip('"')
             break
 
-    assert script_target == "sglang_omni_router.serve:main"
+    assert script_target == "sglang_omni_router.python.serve:main"
     module_name, function_name = script_target.split(":")
     entrypoint = getattr(importlib.import_module(module_name), function_name)
     assert callable(entrypoint)
@@ -1110,7 +1125,7 @@ def test_nofile_check_warns_when_soft_limit_too_low(
         max_connections=512,
     )
 
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.serve"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.serve"):
         serve_module.check_file_descriptor_limit(config)
 
     assert "nofile soft limit 1024 is below 1088" in caplog.text
@@ -1130,7 +1145,7 @@ def test_nofile_check_silent_when_soft_limit_sufficient(
         max_connections=512,
     )
 
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.serve"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.serve"):
         serve_module.check_file_descriptor_limit(config)
 
     assert "nofile soft limit" not in caplog.text
@@ -1231,7 +1246,7 @@ def test_nofile_check_follows_the_upstream_pool_size(
         max_inflight=800,
     )
 
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.serve"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.serve"):
         serve_module.check_file_descriptor_limit(config)
 
     assert "nofile soft limit 1024 is below 1664" in caplog.text
@@ -1252,7 +1267,7 @@ def test_nofile_check_explicit_tie_recommends_both_flags(
         max_inflight=512,
     )
 
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.serve"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.serve"):
         serve_module.check_file_descriptor_limit(config)
 
     # Both flags are explicitly set to the value that binds max(512, 512), so
@@ -1273,7 +1288,7 @@ def test_nofile_check_derived_tie_recommends_max_connections(
         max_connections=512,
     )
 
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.serve"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.serve"):
         serve_module.check_file_descriptor_limit(config)
 
     assert "lower --max-connections" in caplog.text
@@ -1426,7 +1441,7 @@ def test_router_processes_multiprocess_runs_the_supervisor(
 def test_app_factory_rebuilds_config_from_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sglang_omni_router import app_factory
+    from sglang_omni_router.python import app_factory
 
     config = RouterConfig(
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
@@ -1447,8 +1462,8 @@ def test_app_factory_rebuilds_config_from_env(
 def test_app_factory_builds_the_same_app_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sglang_omni_router import app_factory
-    from sglang_omni_router.app import create_app
+    from sglang_omni_router.python import app_factory
+    from sglang_omni_router.python.app import create_app
 
     config = RouterConfig(workers=[WorkerConfig(url="http://127.0.0.1:8101")])
     config_path = tmp_path / "router_config.json"
@@ -1466,7 +1481,7 @@ def test_app_factory_builds_the_same_app_surface(
 def test_app_factory_requires_the_config_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sglang_omni_router import app_factory
+    from sglang_omni_router.python import app_factory
 
     monkeypatch.delenv(app_factory.CONFIG_FILE_ENV, raising=False)
     with pytest.raises(RuntimeError, match="SGLANG_OMNI_ROUTER_CONFIG_FILE"):

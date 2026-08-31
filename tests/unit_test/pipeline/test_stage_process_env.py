@@ -188,6 +188,8 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
         tp_rank=1,
         tp_size=2,
         gpu_id=1,
+        factory_kwargs={"gpu_id": 1},
+        typed_kwargs={"gpu_id": 1},
         factory_arg_defaults={"gpu_id": 1},
         comm_config={"gpu_id": 1},
     )
@@ -196,8 +198,12 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
 
     assert spec.gpu_id == 0
     assert spec.placement_gpu_id == 1
+    assert spec.typed_kwargs["gpu_id"] == 0
     assert spec.factory_arg_defaults["gpu_id"] == 0
     assert spec.comm_config["gpu_id"] == 0
+    # The pipeline author's own channel is not placement owned, so narrowing
+    # the device must leave it alone.
+    assert spec.factory_kwargs["gpu_id"] == 1
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
 
 

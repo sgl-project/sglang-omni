@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.16 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.18 stack remains
 in place:
 
 ```bash
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.16
+applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.18
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
@@ -91,8 +91,8 @@ enable_deterministic_inference: true
 
 When enabled, the same prompt, reference audio, and seed produce byte-identical
 PCM across runtime batch sizes. This mode reduces throughput because it
-serializes reference preprocessing and vocoder decoding and disables Talker
-compilation and the initial vocoder CUDA Graph, so it is disabled by default.
+serializes reference preprocessing and vocoder decoding and disables both the
+initial and follow-up vocoder CUDA Graphs, so it is disabled by default.
 
 ### Overload / admission policy
 

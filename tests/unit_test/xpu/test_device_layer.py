@@ -58,29 +58,29 @@ def test_the_availability_probe_is_gone():
     assert not hasattr(dev, "remap_accelerator_spec")
 
 
-def test_sglang_caps_xpu_free_memory_against_the_allocator() -> None:
-    """Omni relies on SGLang owning this (upstream #32044) instead of correcting it.
-
-    Sizing the KV pool from the driver's free memory alone over-allocates, so if this
-    cap ever disappears upstream the pool silently OOMs again.
+def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
+    """Omni sizes the KV pool from this number. SGLang derives it from the
+    allocator, total device memory minus what this process has allocated, not
+    from a driver free-memory query that can over-report.
     """
-    import inspect
+    from types import SimpleNamespace
 
     import torch
     from sglang.srt.utils.common import get_available_gpu_memory
 
-    source = inspect.getsource(get_available_gpu_memory)
-    xpu_branch = source.split('elif device == "xpu":', 1)
-    assert len(xpu_branch) == 2, "SGLang no longer has a dedicated XPU branch"
-    xpu_body = xpu_branch[1].split("elif device ==", 1)[0]
-    assert "mem_get_info" in xpu_body
-    assert "memory_allocated" in xpu_body, "the allocator cross-check is gone"
+    total_bytes = 64 << 30
+    allocated_bytes = 24 << 30
+    fake_xpu = SimpleNamespace(
+        device_count=lambda: 1,
+        current_device=lambda: 0,
+        memory_allocated=lambda gpu_id: allocated_bytes,
+        get_device_properties=lambda gpu_id: SimpleNamespace(total_memory=total_bytes),
+    )
+    monkeypatch.setattr(torch, "xpu", fake_xpu)
 
-    if not (hasattr(torch, "xpu") and torch.xpu.is_available()):
-        return
-    free_gb = get_available_gpu_memory("xpu", 0, empty_cache=False)
-    total_gb = torch.xpu.get_device_properties(0).total_memory / (1 << 30)
-    assert 0 <= free_gb <= total_gb
+    free_gb = get_available_gpu_memory("xpu", 0, distributed=False, empty_cache=False)
+
+    assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
 
 
 def test_an_explicit_device_keeps_its_platform_and_takes_the_placement_index():

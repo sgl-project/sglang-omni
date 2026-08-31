@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 # Intel XPU variant of pyproject.toml (see docs/get_started/installation_xpu.md).
 # Torch family pinned to +xpu; CUDA-only wheels dropped; deps scoped to the
-# XPU-supported models. sglang is verified against v0.5.16 but cannot be
+# XPU-supported models. sglang is verified against v0.5.18 but cannot be
 # pinned here -- every published wheel pulls CUDA torch.
 
 [project]
@@ -34,16 +34,15 @@ dependencies = [
     "typer>=0.9.0",
 
     # --- PyTorch XPU builds (from --extra-index-url .../whl/xpu) -------------
-    # Pins match SGLang's xpu.Dockerfile; mismatched minors are what the XPU
-    # channel ships.
-    "torch==2.12.0+xpu",
-    "torchvision==0.27.0+xpu",
+    # Pins match SGLang's pyproject_xpu.toml / xpu.Dockerfile.
+    "torch==2.13.0+xpu",
+    "torchvision==0.28.0+xpu",
     "torchaudio==2.11.0+xpu",
-    "torchcodec==0.12.0",
+    "torchcodec==0.13.0",
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
-    "transformers==5.12.1",        # Match SGLang 0.5.16, as the CUDA pyproject does
+    "transformers==5.12.1",
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
     "huggingface-hub>=0.36.0",
@@ -86,7 +85,7 @@ all = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
-sgl-omni-router = "sglang_omni_router.serve:main"
+sgl-omni-router-py = "sglang_omni_router.python.serve:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -98,7 +97,13 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sglang_omni*"]
+include = [
+    "sglang_omni",
+    "sglang_omni.*",
+    "sglang_omni_router.python",
+    "sglang_omni_router.python.*",
+]
+namespaces = true
 
 [tool.setuptools.dynamic]
 version = {attr = "sglang_omni.__version__"}
