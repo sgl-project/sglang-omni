@@ -175,7 +175,9 @@ tests/
     │   └── test_transcription_adapter.py
     ├── qwen3_tts/
     │   ├── test_pipeline.py
-    │   └── test_predictor_cuda_graph.py
+    │   ├── test_predictor_cuda_graph.py
+    │   ├── test_predictor_kernels.py
+    │   └── test_sampling_kernels.py
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py

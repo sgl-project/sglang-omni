@@ -103,24 +103,6 @@ def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _compile_qwen3_tts_backbone(model: Any) -> None:
-    """Compile decoder blocks while leaving decode-input staging eager."""
-
-    text_model = model.model
-    layers = text_model.layers
-
-    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
-
-    set_torch_compile_config()
-    compile_mode = os.environ.get(
-        "SGLANG_TORCH_COMPILE_MODE",
-        "max-autotune-no-cudagraphs",
-    )
-    text_model._compiled_decode_layers = [
-        torch.compile(layer, mode=compile_mode) for layer in layers
-    ]
-
-
 def create_preprocessing_executor(
     model_path: str,
     *,

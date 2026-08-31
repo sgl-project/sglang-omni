@@ -4212,7 +4212,6 @@ def test_qwen3_tts_decode_forward_rejects_invalid_feedback_row(
     torch.nn.Module.__init__(model)
     model.codec_embedding = torch.nn.Embedding(8, 4)
     model.layers = torch.nn.ModuleList([])
-    model._compiled_decode_layers = model.layers
     model.start_layer = 0
     model.end_layer = 0
     model.norm = torch.nn.Identity()
@@ -4472,106 +4471,30 @@ def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(
         )
 
 
-def test_qwen3_tts_compile_backbone_requires_text_layers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.stages import _compile_qwen3_tts_backbone
-
-    with pytest.raises(AttributeError):
-        _compile_qwen3_tts_backbone(SimpleNamespace())
-
-
-def test_qwen3_tts_compile_backbone_compiles_every_layer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts.stages import _compile_qwen3_tts_backbone
-
-    set_config_calls = []
-    compiled = []
-    cuda_graph_runner = types.ModuleType(
-        "sglang.srt.compilation.torch_compile_decoration"
-    )
-    cuda_graph_runner.set_torch_compile_config = lambda: set_config_calls.append(True)
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang.srt.compilation.torch_compile_decoration",
-        cuda_graph_runner,
-    )
-
-    def fake_compile(layer, *, mode):
-        compiled.append((layer, mode))
-        return f"compiled-{len(compiled)}"
-
-    monkeypatch.setattr(torch, "compile", fake_compile)
-    layers = [object(), object(), object()]
-    text_model = SimpleNamespace(layers=layers)
-    model = SimpleNamespace(model=text_model)
-
-    _compile_qwen3_tts_backbone(model)
-
-    assert set_config_calls == [True]
-    assert compiled == [(layer, "max-autotune-no-cudagraphs") for layer in layers]
-    assert text_model._compiled_decode_layers == [
-        "compiled-1",
-        "compiled-2",
-        "compiled-3",
-    ]
-
-
-def test_qwen3_tts_deterministic_inference_skips_private_compile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep deterministic inference out of the private compile path."""
+def test_qwen3_tts_engine_disables_torch_compile_by_default() -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
-    compiled = []
-    monkeypatch.setattr(
-        qwen3_stages,
-        "_compile_qwen3_tts_backbone",
-        lambda model: compiled.append(model),
-    )
-    server_args = SimpleNamespace(
-        enable_deterministic_inference=True,
-        enable_torch_compile=True,
-    )
+    defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
 
-    Qwen3TtsEngineBuilder().compile_model(object(), server_args)
-
-    assert compiled == []
-    assert server_args.enable_torch_compile is False
+    assert defaults["enable_torch_compile"] is False
 
 
-def test_qwen3_tts_rocm_disables_private_compile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
+@pytest.mark.parametrize("value", [True, 1, "1", "true", " yes ", "on"])
+def test_qwen3_tts_engine_rejects_torch_compile(value) -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
-    monkeypatch.setattr(
-        engine_builder_mod,
-        "current_platform",
-        SimpleNamespace(is_rocm=lambda: True),
-    )
-    builder = engine_builder_mod.Qwen3TtsEngineBuilder()
-    compiled = []
-    monkeypatch.setattr(
-        qwen3_stages,
-        "_compile_qwen3_tts_backbone",
-        lambda model: compiled.append(model),
-    )
-    server_args = SimpleNamespace(
-        enable_deterministic_inference=False,
-        enable_torch_compile=True,
-    )
-
-    builder.compile_model(object(), server_args)
-
-    assert compiled == []
-    assert server_args.enable_torch_compile is False
+    with pytest.raises(ValueError, match="Qwen3-TTS torch.compile is not supported"):
+        Qwen3TtsEngineBuilder().adjust_overrides({"enable_torch_compile": value})
 
 
-def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
+@pytest.mark.parametrize("value", [False, 0, "false", "no", "", None])
+def test_qwen3_tts_engine_accepts_disabled_torch_compile(value) -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    Qwen3TtsEngineBuilder().adjust_overrides({"enable_torch_compile": value})
+
+
+def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
@@ -4579,7 +4502,6 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
     from transformers.utils import generic
 
-    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
     from sglang_omni.models.qwen3_tts import model_runner as model_runner_mod
     from sglang_omni.models.qwen3_tts import request_builders as request_builders_mod
     from sglang_omni.models.qwen3_tts import stages
@@ -4589,12 +4511,6 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     from sglang_omni.scheduling import bootstrap as bootstrap_mod
     from sglang_omni.scheduling import omni_scheduler as scheduler_mod
     from sglang_omni.scheduling import sglang_backend
-
-    monkeypatch.setattr(
-        engine_builder_mod,
-        "current_platform",
-        SimpleNamespace(is_rocm=lambda: False),
-    )
 
     check_model_inputs_calls = []
     expected_cuda_graph_bs = [
@@ -4624,7 +4540,6 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     build_kwargs: dict = {}
     infrastructure_saw_deferred_capture: list[bool] = []
     init_graph_calls: list[bool] = []
-    compile_calls: list[bool] = []
 
     class FakeModel:
         def load_speech_tokenizer(self, tokenizer) -> None:
@@ -4710,11 +4625,6 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
             lambda request_id, data, output: [],
         ),
     )
-    monkeypatch.setattr(
-        stages,
-        "_compile_qwen3_tts_backbone",
-        lambda model: compile_calls.append(model),
-    )
 
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         del model_path, context_length
@@ -4795,7 +4705,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs
     assert build_kwargs["cuda_graph_max_bs"] == 64
-    assert build_kwargs["enable_torch_compile"] is True
+    assert build_kwargs["enable_torch_compile"] is False
     assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_running_requests"] == 64
@@ -4806,7 +4716,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
         "cuda_graph_max_bs": 64,
         "cuda_graph_bs": expected_cuda_graph_bs,
         "torch_compile_max_bs": 64,
-        "enable_torch_compile": True,
+        "enable_torch_compile": False,
     }
 
     def target():
@@ -4832,7 +4742,6 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_reenables_cuda_graph(
     )
 
     assert infrastructure_saw_deferred_capture == [True]
-    assert len(compile_calls) == 1
     assert init_graph_calls == [True]
     assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs
     assert scheduler.server_args.cuda_graph_max_bs == 64

@@ -91,8 +91,8 @@ enable_deterministic_inference: true
 
 When enabled, the same prompt, reference audio, and seed produce byte-identical
 PCM across runtime batch sizes. This mode reduces throughput because it
-serializes reference preprocessing and vocoder decoding and disables Talker
-compilation and the initial vocoder CUDA Graph, so it is disabled by default.
+serializes reference preprocessing and vocoder decoding and disables both the
+initial and follow-up vocoder CUDA Graphs, so it is disabled by default.
 
 ### Overload / admission policy
 
