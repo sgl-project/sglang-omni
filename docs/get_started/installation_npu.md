@@ -34,11 +34,12 @@ bash scripts/npu/install_npu.sh --check
 bash scripts/npu/install_npu.sh
 ```
 
-The precheck verifies the supported SGLang release. It accepts the stable
-release, local builds such as `0.5.18+ascend`, and traceable source builds from
-the same release line such as `0.5.18.dev7+g<git-sha>`. It also verifies the
-required Python packages, matching `torch` and `torch_npu` major-minor versions,
-NPU availability, and a small NPU matrix multiplication. Run
-`bash scripts/npu/install_npu.sh --help` for optional extras, non-editable
-installation, and environments where devices are intentionally not exposed
-during the build.
+The precheck accepts the SGLang `0.5.18` release line (`>=0.5.18,<0.5.19`).
+This includes development, pre-release, post-release, and local builds whose
+numeric release segment is `0.5.18`, such as `0.5.18.dev7+g<git-sha>`. It rejects
+all `0.5.19` builds. On a mismatch it reports both the supported range and the
+installed version. The precheck also verifies the required Python packages,
+matching `torch` and `torch_npu` major-minor versions, NPU availability, and a
+small NPU matrix multiplication. Run `bash scripts/npu/install_npu.sh --help`
+for optional extras, non-editable installation, and environments where devices
+are intentionally not exposed during the build.

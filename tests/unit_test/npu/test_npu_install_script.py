@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Safety and argument tests for the Ascend NPU install helper."""
+"""Test safety and argument handling for the Ascend NPU install helper."""
 
 from __future__ import annotations
 
@@ -30,6 +30,11 @@ def repo(tmp_path: Path) -> Path:
         'if [[ "$1" == "-c" && "$2" == *\'version("sglang")\'* ]]; then\n'
         '  [[ "${FAKE_SGLANG_INSTALLED:-1}" == "1" ]] || exit 1\n'
         "  printf '%s\\n' \"${FAKE_SGLANG_VERSION:-0.5.18}\"\n"
+        'elif [[ "$1" == "-" && $# -ge 2 ]]; then\n'
+        '  case "$2" in\n'
+        "    0.5.18|0.5.18.*|0.5.18+*|0.5.18a*|0.5.18b*|0.5.18rc*) exit 0 ;;\n"
+        "    *) exit 1 ;;\n"
+        "  esac\n"
         'elif [[ "$1" == "-c" ]]; then\n'
         "  printf '%s\\n' \"$0\"\n"
         "fi\n"
@@ -86,7 +91,14 @@ def test_install_uses_build_isolation_by_default(repo: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "installed", ["0.5.18", "0.5.18+ascend", "0.5.18.dev7+gec43c1f20"]
+    "installed",
+    [
+        "0.5.18.dev7+gec43c1f20",
+        "0.5.18rc1",
+        "0.5.18",
+        "0.5.18+ascend",
+        "0.5.18.post1",
+    ],
 )
 def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None:
     result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
@@ -97,13 +109,19 @@ def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None
 
 @pytest.mark.parametrize(
     "installed",
-    ["0.5.16", "0.5.18.dev7", "0.5.18rc1", "0.5.19.dev1+g1234567"],
+    [
+        "0.5.16",
+        "0.5.17.post1",
+        "0.5.19.dev1",
+        "0.5.19",
+    ],
 )
 def test_mismatched_sglang_version_is_rejected(repo: Path, installed: str) -> None:
     result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
 
     assert result.returncode != 0
-    assert f"sglang {installed} is installed, but 0.5.18 is required" in result.stderr
+    assert "supported: >=0.5.18,<0.5.19" in result.stderr
+    assert f"installed: {installed}" in result.stderr
     assert "would run" not in result.stdout
 
 
@@ -111,7 +129,8 @@ def test_missing_sglang_is_rejected(repo: Path) -> None:
     result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_INSTALLED": "0"})
 
     assert result.returncode != 0
-    assert "sglang 0.5.18 is required but is not installed" in result.stderr
+    assert "supported: >=0.5.18,<0.5.19" in result.stderr
+    assert "installed: not installed" in result.stderr
     assert "would run" not in result.stdout
 
 
