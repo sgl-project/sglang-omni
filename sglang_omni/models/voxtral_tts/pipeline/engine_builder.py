@@ -8,6 +8,7 @@ from typing import Any
 
 from sglang_omni.models.voxtral_tts import request_builders
 from sglang_omni.models.voxtral_tts.pipeline import stages as voxtral_stages
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
@@ -33,10 +34,10 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
         return {
             "max_running_requests": 16,
             "dtype": "bfloat16",
-            "disable_cuda_graph": False,
+            "disable_cuda_graph": current_platform.is_xpu(),
             "disable_overlap_schedule": True,
             "decrypted_config_file": self.decrypted_config_file,
-            "enable_torch_compile": True,
+            "enable_torch_compile": not current_platform.is_xpu(),
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
