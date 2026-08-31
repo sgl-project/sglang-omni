@@ -780,12 +780,6 @@ impl Config {
         let Some(owner_id) = self.router.voice_owner_worker_id.as_deref() else {
             return Ok(());
         };
-        if !self.server.listen.ip().is_loopback() {
-            return Err(ConfigError::invalid(
-                "server.listen",
-                "voice state requires a loopback listener",
-            ));
-        }
         if self.admission.control.is_none() {
             return Err(ConfigError::invalid(
                 "admission.control",

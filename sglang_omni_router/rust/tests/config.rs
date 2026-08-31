@@ -283,7 +283,6 @@ fn voice_state_has_one_exact_owner_without_fake_model_routes() {
             "service = \"voice_control\"",
             "service = \"realtime_websocket\"\nprotocols = [\"openai_realtime_v1\"]",
         ),
-        base.replace("listen = \"127.0.0.1:30000\"", "listen = \"0.0.0.0:30000\""),
     ] {
         assert!(load_bytes(invalid.as_bytes()).is_err());
     }
