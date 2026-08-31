@@ -243,6 +243,10 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.channels_closed = False
 
         @property
+        def process_specs(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(process_name=self.stage_name)] * len(self.processes)
+
+        @property
         def processes(self) -> list[FakeProcess]:
             return [self.process] if self.process is not None else []
 
@@ -376,7 +380,8 @@ async def test_mp_runner_stop_cleans_runtime_dir(
         def dead_summary(self) -> str:
             return "(none)"
 
-        async def shutdown(self) -> None:
+        async def shutdown(self, before_signal=None) -> None:
+            del before_signal
             self.shutdown_called = True
 
     group = FakeGroup()

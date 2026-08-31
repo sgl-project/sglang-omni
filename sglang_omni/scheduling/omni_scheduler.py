@@ -213,6 +213,7 @@ class OmniScheduler:
         self._shutdown_callback = shutdown_callback
         self._shutdown_lock = threading.Lock()
         self._request_admission_lock = threading.RLock()
+        self._prompt_cache_epoch = 0
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(server_args.tp_size) > 1:
             logger.warning(
@@ -1192,6 +1193,7 @@ class OmniScheduler:
                     len(self.waiting_queue),
                 )
                 return
+            self._apply_prompt_cache_epoch(req)
             _emit_event(
                 request_id=req_id,
                 stage=None,
@@ -1207,6 +1209,17 @@ class OmniScheduler:
         else:
             with self._request_admission_lock:
                 enqueue_if_live()
+
+    def _apply_prompt_cache_epoch(self, req: Any) -> None:
+        cache_key = getattr(req, "_omni_prompt_cache_key", None)
+        if cache_key is not None:
+            req.extra_key = f"{cache_key}:weights:{self._prompt_cache_epoch}"
+
+    def _advance_prompt_cache_epoch(self) -> None:
+        with self._request_admission_lock:
+            self._prompt_cache_epoch += 1
+            for req in self.waiting_queue:
+                self._apply_prompt_cache_epoch(req)
 
     @staticmethod
     def _normalize_req_token_arrays(req: Any) -> None:
@@ -1357,6 +1370,13 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
             return _FAILED_BATCH_RESULT
+
+    def process_batch_result(self, batch, result) -> None:
+        _Upstream.process_batch_result(self, batch, result)
+        # note (Richard Wang): cache prompt before blocking tail inserts
+        for req in batch.reqs:
+            if req.output_ids and getattr(req, "_omni_prompt_only_radix", False):
+                req.skip_radix_cache_insert = True
 
     def _stamp_batch_launch(self, batch) -> None:
         """Mirror upstream per-forward bookkeeping for custom runner paths."""
@@ -2015,6 +2035,8 @@ class OmniScheduler:
                     if keep_pause_on_failure:
                         keep_engine_paused = True
                     raise
+                if success:
+                    self._advance_prompt_cache_epoch()
                 flush_success: bool | None = None
                 if success and bool(payload.get("flush_cache", True)):
                     flush_success = self._flush_cache_after_update()
@@ -2050,16 +2072,14 @@ class OmniScheduler:
     def _admin_update_weights_from_tensor(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        with self._admin_lock:
-            success, message = self.model_worker.update_weights_from_tensor(payload)
-        return {
-            "success": bool(success),
-            "message": str(message),
-            "data": {
+        return self._run_weight_update_with_lifecycle(
+            payload,
+            self.model_worker.update_weights_from_tensor,
+            {
                 "metadata_only": payload.get("serialized_named_tensors") is None,
             },
-            "error": None if success else str(message),
-        }
+            keep_pause_on_failure=True,
+        )
 
     def _admin_update_weights_from_distributed(
         self, payload: dict[str, Any]

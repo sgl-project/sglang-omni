@@ -57,10 +57,14 @@ _AUDIO_START = "<|audio_start|>"
 _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_END = "<|audio_end|>"
 _ASR_TEXT = "<asr_text>"
+# Qwen3-ASR's checkpoint chat template emits this empty system turn even
+# when no caller-provided system context is present.
+_SYSTEM_PROMPT = "<|im_start|>system\n<|im_end|>\n"
 
 
 @dataclass
 class Qwen3ASRRequestData(SGLangARRequestData):
+    enforce_request_limits: bool = True
     prompt_token_ids: list[int] | None = None
     output_ids: list[int] | None = None
     audio_duration_s: float = 0.0
@@ -127,7 +131,7 @@ def make_qwen3_asr_scheduler_adapters(
 
     @lru_cache(maxsize=None)
     def _prompt_parts(language: str | None) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        prompt = (
+        prompt = _SYSTEM_PROMPT + (
             f"<|im_start|>user\n"
             f"{_AUDIO_START}{_AUDIO_PAD}{_AUDIO_END}"
             f"<|im_end|>\n"
@@ -407,6 +411,13 @@ def make_qwen3_asr_scheduler_adapters(
             label, separator, value = prefix.partition(" ")
             if separator and label.casefold() == "language":
                 detected_language = value.strip() or None
+                # The official parser treats this sentinel as unknown
+                # language (and leaves any transcript tail untouched).
+                if (
+                    detected_language is not None
+                    and detected_language.casefold() == "none"
+                ):
+                    detected_language = None
             elif prefix:
                 detected_language = prefix
         transcript_ids = (

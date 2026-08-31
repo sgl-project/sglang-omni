@@ -8,6 +8,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.stage.runtime import Stage
@@ -165,14 +167,33 @@ def test_omni_scheduler_weights_checker_compare_change_is_success() -> None:
     assert result["data"]["changed"] == ["weight"]
 
 
-def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
+@pytest.mark.parametrize(
+    ("admin_method", "worker_method", "payload"),
+    [
+        pytest.param(
+            "_admin_update_weights_from_disk",
+            "update_weights_from_disk",
+            {"model_path": "/tmp/new-model", "torch_empty_cache": True},
+            id="disk",
+        ),
+        pytest.param(
+            "_admin_update_weights_from_tensor",
+            "update_weights_from_tensor",
+            {"serialized_named_tensors": None, "torch_empty_cache": True},
+            id="tensor",
+        ),
+    ],
+)
+def test_omni_scheduler_weight_updates_flush_and_advance_epoch(
+    admin_method: str, worker_method: str, payload: dict
+) -> None:
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
     update_calls: list[dict] = []
     flush_calls = 0
     empty_cache_calls = 0
 
-    def update_weights_from_disk(payload: dict) -> tuple[bool, str]:
+    def update_weights(payload: dict) -> tuple[bool, str]:
         update_calls.append(dict(payload))
         return True, "ok"
 
@@ -186,32 +207,98 @@ def test_omni_scheduler_update_weights_flushes_cache_without_kwargs() -> None:
         empty_cache_calls += 1
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler.model_worker = SimpleNamespace(
-        update_weights_from_disk=update_weights_from_disk
-    )
+    scheduler.model_worker = SimpleNamespace(**{worker_method: update_weights})
     scheduler._admin_lock = threading.Lock()
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._prompt_cache_epoch = 0
+    scheduler.waiting_queue = []
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: []
     scheduler.flush_cache = flush_cache
     scheduler._empty_torch_cache = empty_torch_cache
 
-    result = OmniScheduler._admin_update_weights_from_disk(
-        scheduler,
-        {
-            "model_path": "/tmp/new-model",
-            "torch_empty_cache": True,
-        },
-    )
+    result = getattr(OmniScheduler, admin_method)(scheduler, payload)
 
     assert result["success"] is True
     assert result["data"]["flush_cache"] is True
     assert result["data"]["flush_success"] is True
-    assert update_calls == [{"model_path": "/tmp/new-model", "torch_empty_cache": True}]
+    assert update_calls == [payload]
     assert flush_calls == 1
     assert empty_cache_calls == 1
+    assert scheduler._prompt_cache_epoch == 1
+
+
+def test_weight_swap_isolates_prompt_cache_when_flush_fails() -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    cache_key = "qwen3_tts:prompt:v1"
+    retracted = SimpleNamespace(
+        extra_key=f"{cache_key}:weights:0",
+        _omni_prompt_cache_key=cache_key,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=lambda _: (True, "swapped")
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._engine_paused = True
+    scheduler._last_pause_mode = "retract"
+    scheduler._prompt_cache_epoch = 0
+    scheduler.waiting_queue = [retracted]
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: ["req-1"]
+    scheduler.flush_cache = lambda: False
+    scheduler._empty_torch_cache = lambda: None
+
+    result = OmniScheduler._admin_update_weights_from_disk(
+        scheduler, {"model_path": "/tmp/new-model"}
+    )
+
+    fresh = SimpleNamespace(extra_key=cache_key, _omni_prompt_cache_key=cache_key)
+    plain = SimpleNamespace(extra_key="plain")
+    scheduler._apply_prompt_cache_epoch(fresh)
+    scheduler._apply_prompt_cache_epoch(plain)
+    assert result["success"] is False
+    assert result["data"]["flush_success"] is False
+    assert result["data"]["engine_paused"] is True
+    assert retracted.extra_key == fresh.extra_key == f"{cache_key}:weights:1"
+    assert plain.extra_key == "plain"
+
+
+@pytest.mark.parametrize("failure_mode", ["return", "raise"])
+def test_tensor_update_failure_keeps_engine_paused(failure_mode: str) -> None:
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    def update_weights_from_tensor(payload: dict) -> tuple[bool, str]:
+        if failure_mode == "raise":
+            raise RuntimeError("partially updated")
+        return False, "partially updated"
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_tensor=update_weights_from_tensor
+    )
+    scheduler._admin_lock = threading.Lock()
+    scheduler._engine_paused = False
+    scheduler._last_pause_mode = None
+    scheduler._prompt_cache_epoch = 0
+    scheduler._resolve_pending_async = lambda: None
+    scheduler._active_request_ids = lambda: []
+
+    if failure_mode == "raise":
+        with pytest.raises(RuntimeError, match="partially updated"):
+            scheduler._admin_update_weights_from_tensor({})
+    else:
+        result = scheduler._admin_update_weights_from_tensor({})
+        assert result["success"] is False
+        assert result["data"]["engine_paused"] is True
+
+    assert scheduler._engine_paused is True
+    assert scheduler._prompt_cache_epoch == 0
 
 
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
@@ -340,6 +427,9 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
     scheduler._engine_paused = False
     scheduler._last_pause_mode = None
     scheduler._async_pending = None
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._prompt_cache_epoch = 0
+    scheduler.waiting_queue = []
     scheduler._resolve_pending_async = lambda: None
     scheduler._active_request_ids = lambda: ["req-1"]
     scheduler._abort_all_requests = abort_all_requests
@@ -366,6 +456,7 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
     assert abort_calls == 1
     assert flush_calls == 1
     assert empty_cache_calls == 1
+    assert scheduler._prompt_cache_epoch == 1
 
 
 def test_omni_scheduler_distributed_update_failure_keeps_engine_paused() -> None:

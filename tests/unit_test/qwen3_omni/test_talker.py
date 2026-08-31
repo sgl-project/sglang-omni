@@ -322,14 +322,19 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert queue[0].device.type == "meta"
 
 
-def test_pending_text_queue_rejects_unexpected_rank() -> None:
-    """Keeps queue shape handling explicit instead of flattening unknown ranks."""
+def test_pending_text_queue_rejects_invalid_shapes() -> None:
+    """Keeps queue shape validation explicit."""
     queue = PendingTextTensorQueue()
 
     with pytest.raises(ValueError, match="1D row tensor or a 2D row batch"):
         queue.append_rows(torch.zeros((1, 2, 3)))
     with pytest.raises(ValueError, match="non-empty hidden dimension"):
         queue.append_rows(torch.zeros((1, 0)))
+
+    queue = PendingTextTensorQueue.from_tensor(torch.zeros((2, 3)))
+    with pytest.raises(ValueError, match="hidden dimension must match"):
+        queue.append_rows(torch.zeros((1, 4)))
+    assert len(queue) == 2
 
 
 def test_pending_text_queue_rejects_non_tensor_input() -> None:
@@ -343,16 +348,98 @@ def test_pending_text_queue_rejects_non_tensor_input() -> None:
         coerce_pending_text_queue(object())
 
 
+def test_pending_text_queue_rejects_non_integer_indices() -> None:
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+
+    for idx in (slice(None), torch.tensor(0)):
+        with pytest.raises(
+            TypeError, match="PendingTextTensorQueue indices must be integers"
+        ):
+            queue.__getitem__(idx)
+
+
 def test_coerce_pending_text_queue_copies_cursor_state() -> None:
     """Avoids sharing mutable FIFO cursor state across request data objects."""
     queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    queue.append_rows(torch.tensor([[3.0], [4.0]]))
 
     copied = coerce_pending_text_queue(queue)
     copied.popleft()
+    copied.popleft()
 
     assert copied is not queue
-    assert len(copied) == 1
-    assert len(queue) == 2
+    assert [row.item() for row in copied] == [3.0, 4.0]
+    assert [row.item() for row in queue] == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_pending_text_queue_preserves_fifo_across_chunks() -> None:
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    queue.append_rows(torch.tensor([[3.0], [4.0]]))
+    queue.append(torch.tensor([5.0]))
+
+    assert len(queue) == 5
+    assert queue[0].item() == 1.0
+    assert queue[3].item() == 4.0
+    assert queue[-1].item() == 5.0
+    assert [queue.popleft().item() for _ in range(5)] == [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+    ]
+    assert not queue
+
+
+def test_pending_text_queue_appends_without_cat_after_partial_consumption(
+    monkeypatch,
+) -> None:
+    queue = PendingTextTensorQueue.from_tensor(
+        torch.tensor([[1.0], [2.0], [3.0]], dtype=torch.float32)
+    )
+
+    assert queue.popleft().item() == 1.0
+
+    def fail_cat(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("pending-text queue append must not invoke torch.cat")
+
+    monkeypatch.setattr(torch, "cat", fail_cat)
+    queue.append_rows(torch.tensor([[4.0], [5.0]], dtype=torch.float64))
+    queue.append(torch.tensor([6.0]))
+
+    assert [row.item() for row in queue] == [2.0, 3.0, 4.0, 5.0, 6.0]
+    assert all(row.dtype == torch.float32 for row in queue)
+
+
+def test_pending_text_queue_appends_after_exhausted_cursor() -> None:
+    queue = PendingTextTensorQueue(rows=torch.tensor([[1.0], [2.0]]), cursor=2)
+
+    assert len(queue) == 0
+    queue.append(torch.tensor([3.0]))
+
+    assert len(queue) == 1
+    assert queue.cursor == 0
+    assert queue[0].item() == 3.0
+
+
+def test_pending_text_queue_runtime_append_reuses_request_queue() -> None:
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._im_end_token_id = 99
+    builder.project_assistant_chunk = lambda chunk: torch.tensor([3.0])
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    req_data = SimpleNamespace(
+        thinker_chunks_done=False,
+        pending_text_queue=queue,
+        tts_eos_embed=torch.tensor([4.0]),
+    )
+
+    builder.append_text_chunk(req_data, SimpleNamespace(metadata={}))
+    assert req_data.pending_text_queue is queue
+
+    builder.mark_thinker_done(req_data)
+    assert req_data.pending_text_queue is queue
+    assert [row.item() for row in queue] == [1.0, 2.0, 3.0, 4.0]
 
 
 def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:

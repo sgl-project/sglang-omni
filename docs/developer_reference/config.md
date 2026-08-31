@@ -198,6 +198,7 @@ as the static superset because runtime prep derives stream receivers from it.
 | `entry_stage` | `str` or `None` | first stage | Declared by the config class when the first stage is not the entry. Not settable from a config file or the CLI. |
 | `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process. |
 | `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
+| `mps` | `off`, `on`, or `auto` | `off` | Native CUDA MPS policy for eligible same-GPU worker processes. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. |
 | `placement` | `PlacementConfig` | defaults | Placement planning limits, e.g. `max_total_gpu_memory_fraction_per_gpu`. |
 | `terminal_stages_fn` | `str` or `None` | `None` | Dotted function path for request-aware terminal-stage resolution. |
