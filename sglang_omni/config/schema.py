@@ -215,6 +215,42 @@ class ProcessConfig(BaseModel):
             raise ValueError("processes.num_replicas must be >= 1")
 
 
+class PDStagePlacement(BaseModel):
+    """Placement for one half of a PD-disaggregated stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpu: int | list[int] | None = None
+    process: str | None = None
+
+
+class PDConfig(BaseModel):
+    """Prefill/decode disaggregation request for a logical stage.
+
+    The compiler expands the logical stage into ``<stage>_prefill`` and
+    ``<stage>_decode``; this only supplies the per-half placement it cannot infer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
+    decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
+
+
+class PDExecution(BaseModel):
+    """Compiler-generated PD execution metadata for one physical half.
+
+    Set by the PD graph rewrite on generated prefill/decode halves. Kept as a
+    typed launch/runtime field (not in ``factory_args``) so it cannot leak into
+    factory constructors or break strict signatures.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["prefill", "decode"]
+    partner: str
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -300,6 +336,10 @@ class StageConfig(BaseModel):
 
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
+
+    pd_disaggregation: PDConfig | None = None
+    # Note (Yue Yin): Keep generated runtime identity out of user factory kwargs.
+    pd_execution: PDExecution | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
         if isinstance(self.gpu, int) and self.tp_size > 1:
@@ -501,6 +541,7 @@ class PipelineConfig(BaseModel):
     def model_post_init(self, __context: Any = None) -> None:
         self._validate_general()
         self._validate_processes()
+        self._validate_pd()
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
@@ -729,6 +770,47 @@ class PipelineConfig(BaseModel):
                 f"Declared process names: {sorted(members)}"
             )
 
+    def _validate_pd(self) -> None:
+        existing_names = {s.name for s in self.stages}
+
+        for s in self.stages:
+            pd = s.pd_disaggregation
+            if pd is None:
+                continue
+            p_gpu = pd.prefill.gpu
+            d_gpu = pd.decode.gpu
+            if p_gpu is None or d_gpu is None:
+                raise ValueError(
+                    f"Stage {s.name!r} pd_disaggregation requires explicit "
+                    "prefill.gpu and decode.gpu for real PD"
+                )
+            if _pd_gpu_set(p_gpu) & _pd_gpu_set(d_gpu):
+                raise ValueError(
+                    f"Stage {s.name!r} pd_disaggregation prefill and decode "
+                    "cannot share the same GPU"
+                )
+            for role, gpu in (("prefill", p_gpu), ("decode", d_gpu)):
+                if isinstance(gpu, list) and len(gpu) != s.tp_size:
+                    raise ValueError(
+                        f"Stage {s.name!r} pd_disaggregation {role}.gpu has "
+                        f"{len(gpu)} entries but tp_size={s.tp_size}"
+                    )
+            # Note (Yue Yin): Reject collisions before expansion to preserve
+            # user-declared stages instead of silently overwriting them.
+            for suffix in ("_prefill", "_decode"):
+                generated = f"{s.name}{suffix}"
+                if generated in existing_names:
+                    raise ValueError(
+                        f"Stage {s.name!r} pd_disaggregation would generate "
+                        f"{generated!r}, which collides with an existing stage"
+                    )
+
     @staticmethod
     def from_dict(data: dict[str, Any]) -> PipelineConfig:
         return PipelineConfig(**data)
+
+
+def _pd_gpu_set(gpu: int | list[int]) -> set[int]:
+    if isinstance(gpu, int):
+        return {gpu}
+    return {int(gpu_id) for gpu_id in gpu}

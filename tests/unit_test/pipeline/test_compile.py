@@ -6,13 +6,20 @@ from typing import Any
 
 import pytest
 
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig
+from sglang_omni.config.runtime import resolve_factory_signature_args
+from sglang_omni.config.schema import (
+    EndpointsConfig,
+    PDConfig,
+    PDStagePlacement,
+    PipelineConfig,
+)
 from sglang_omni.pipeline.mp_runner import (
     _build_stage_groups,
     _resolve_same_process_targets,
 )
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, fake_factory_path
 from tests.unit_test.pipeline.helpers import stage
 
@@ -517,3 +524,150 @@ def test_mp_runner_keeps_cpu_stage_without_gpu_identity(tmp_path) -> None:
 
     assert group.specs[0].gpu_id is None
     assert "gpu_id" not in group.specs[0].comm_config
+
+
+def _pd(prefill_gpu: int, decode_gpu: int) -> PDConfig:
+    return PDConfig(
+        prefill=PDStagePlacement(gpu=prefill_gpu),
+        decode=PDStagePlacement(gpu=decode_gpu),
+    )
+
+
+def _pd_pipeline(
+    tmp_path,
+    *,
+    factory_path: str = fake_factory_path("pd_capable_factory"),
+    terminal: bool = False,
+) -> PipelineConfig:
+    stages = [
+        stage("pre", next="thinker"),
+        stage(
+            "thinker",
+            factory_path=factory_path,
+            terminal=terminal,
+            next=None if terminal else "post",
+            pd_disaggregation=_pd(1, 2),
+        ),
+    ]
+    if not terminal:
+        stages.append(stage("post", terminal=True))
+    return PipelineConfig(
+        model_path="dummy",
+        name="pd",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        entry_stage="thinker",
+        stages=stages,
+    )
+
+
+def _pd_specs_by_name(config, prep):
+    groups = _build_stage_groups(
+        config,
+        ctx=FakeMpContext(),
+        stages_cfg=prep.stages_cfg,
+        name_map=prep.name_map,
+        endpoints=prep.endpoints,
+        placement_plan=prep.placement_plan,
+        process_plan=prep.process_plan,
+    )
+    return {spec.stage_name: spec for group in groups for spec in group.specs}
+
+
+def test_pd_runtime_prep_rewrites_entry_and_terminal_identity(tmp_path) -> None:
+    config = _pd_pipeline(tmp_path, terminal=True)
+    prep = prepare_pipeline_runtime(config)
+    with prep.runtime_dir:
+        assert config.terminal_stages == ["thinker"]
+        assert prep.entry_stage == "thinker_prefill"
+        assert prep.terminal_stages == ["thinker_decode"]
+        assert prep.terminal_name_map == {"thinker": "thinker_decode"}
+
+
+def test_pd_stage_specs_carry_typed_pd_execution_outside_factory_args(
+    tmp_path,
+) -> None:
+    config = _pd_pipeline(tmp_path)
+    prep = prepare_pipeline_runtime(config)
+    with prep.runtime_dir:
+        specs = _pd_specs_by_name(config, prep)
+
+    prefill, decode = specs["thinker_prefill"], specs["thinker_decode"]
+    assert (prefill.pd_execution.role, prefill.pd_execution.partner) == (
+        "prefill",
+        "thinker_decode",
+    )
+    assert (decode.pd_execution.role, decode.pd_execution.partner) == (
+        "decode",
+        "thinker_prefill",
+    )
+    assert "pd_role" not in prefill.factory_kwargs
+    assert "pd_partner" not in decode.factory_kwargs
+
+    assert prefill.name_map["thinker"] == "thinker_prefill"
+    assert prefill.name_map["post"] == "post"
+    assert prefill.name_map["thinker_prefill"] == "thinker_prefill"
+
+
+def test_pd_decode_launches_and_shares_abort_endpoint_without_inbound_edge(
+    tmp_path,
+) -> None:
+    config = _pd_pipeline(tmp_path)
+    prep = prepare_pipeline_runtime(config)
+    with prep.runtime_dir:
+        groups = _build_stage_groups(
+            config,
+            ctx=FakeMpContext(),
+            stages_cfg=prep.stages_cfg,
+            name_map=prep.name_map,
+            endpoints=prep.endpoints,
+            placement_plan=prep.placement_plan,
+            process_plan=prep.process_plan,
+        )
+    registered = {
+        stage_name for group in groups for stage_name in group.stage_control_endpoints
+    }
+    assert {"thinker_prefill", "thinker_decode"} <= registered
+    assert all(s.next != "thinker_decode" for s in prep.stages_cfg)
+
+    specs = _pd_specs_by_name(config, prep)
+    assert specs["thinker_prefill"].abort_endpoint == prep.endpoints["abort"]
+    assert specs["thinker_decode"].abort_endpoint == prep.endpoints["abort"]
+
+
+def test_pd_non_capable_factory_is_rejected_before_launch(tmp_path) -> None:
+    config = _pd_pipeline(tmp_path, factory_path=fake_factory_path("dummy_factory"))
+    with pytest.raises(ValueError, match="not PD-capable"):
+        prepare_pipeline_runtime(config)
+
+
+def test_pd_strict_factory_receives_no_pd_metadata(tmp_path) -> None:
+    config = _pd_pipeline(
+        tmp_path, factory_path=fake_factory_path("strict_pd_capable_factory")
+    )
+    prep = prepare_pipeline_runtime(config)
+    with prep.runtime_dir:
+        specs = _pd_specs_by_name(config, prep)
+
+    decode = specs["thinker_decode"]
+    factory = import_string(decode.factory)
+    resolved = resolve_factory_signature_args(
+        factory,
+        decode.factory_kwargs,
+        defaults=decode.factory_arg_defaults,
+    )
+    assert "pd_role" not in resolved
+    assert "pd_partner" not in resolved
+    assert factory(**resolved) == {"model_path": "dummy", "gpu_id": resolved["gpu_id"]}
+
+
+def test_non_pd_pipeline_is_unaffected_by_pd_capability_check(tmp_path) -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        name="plain",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+        stages=[stage("a", next="b"), stage("b", terminal=True)],
+    )
+    prep = prepare_pipeline_runtime(config)
+    with prep.runtime_dir:
+        specs = _pd_specs_by_name(config, prep)
+    assert all(spec.pd_execution is None for spec in specs.values())

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +20,7 @@ from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
 )
+from sglang_omni.config.schema import PDExecution
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
@@ -104,6 +106,13 @@ class StageLaunchConfig:
 
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
+
+    # Compiler identity maps
+    name_map: dict[str, str] = field(default_factory=dict)
+    source_name_map: dict[str, str] = field(default_factory=dict)
+
+    # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
+    pd_execution: PDExecution | None = None
 
     # Replica topology (logical stage name -> instance names)
     replica_topology: dict[str, list[str]] = field(default_factory=dict)
@@ -313,23 +322,14 @@ class StageGroup:
 
             while not event.is_set():
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    details = ""
-                    try:
-                        traceback_text = startup_error_channel.get_nowait()
-                    except queue.Empty:
-                        pass
-                    else:
-                        details = f"\nStartup failure detail:\n{traceback_text}"
-                    raise TimeoutError(
-                        f"Process {process_label} did not become ready "
-                        f"within {timeout:.0f}s{details}"
-                    )
+
+                # Note (Yue Yin): Surface early child death instead of masking it
+                # as a generic startup timeout.
                 if not proc.is_alive():
                     details = ""
                     try:
-                        traceback_text = startup_error_channel.get(timeout=0.2)
-                    except queue.Empty:
+                        traceback_text = startup_error_channel.get_nowait()
+                    except (queue.Empty, EOFError):
                         pass
                     else:
                         details = f"\nStartup failure detail:\n{traceback_text}"
@@ -337,6 +337,24 @@ class StageGroup:
                         f"Process {process_label} died during startup "
                         f"(exit code {proc.exitcode}){details}"
                     )
+
+                try:
+                    traceback_text = startup_error_channel.get_nowait()
+                except (queue.Empty, EOFError):
+                    traceback_text = None
+                if traceback_text is not None:
+                    details = f"\nStartup failure detail:\n{traceback_text}"
+                    raise RuntimeError(
+                        f"Process {process_label} failed during startup "
+                        f"(exit code {proc.exitcode}){details}"
+                    )
+
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Process {process_label} did not become ready "
+                        f"within {timeout:.0f}s"
+                    )
+
                 await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
 
             logger.info("Process %s ready", process_label)
@@ -437,6 +455,8 @@ def stage_process_main(
         )
         if startup_error_channel is not None:
             startup_error_channel.put(traceback_text)
+            startup_error_channel.close()
+            startup_error_channel.join_thread()
         sys.exit(1)
 
 
@@ -638,13 +658,23 @@ def _construct_stage(
             f"unsupported target value {targets!r}"
         )
 
+    def _map_target_list(targets: str | list[str] | None) -> list[str]:
+        return [spec.name_map.get(target, target) for target in _target_list(targets)]
+
     def _wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
         if sources is None:
             return None
         if isinstance(sources, str):
-            return [sources]
+            return [spec.source_name_map.get(sources, sources)]
         if isinstance(sources, Iterable):
-            return list(sources)
+            return [
+                (
+                    spec.source_name_map.get(source, source)
+                    if isinstance(source, str)
+                    else source
+                )
+                for source in sources
+            ]
         raise ValueError(
             f"wait_for_fn for stage {spec.stage_name!r} returned unsupported "
             f"source value {sources!r}"
@@ -657,29 +687,29 @@ def _construct_stage(
         allow_empty: bool,
         hook_name: str,
     ) -> str | list[str] | None:
-        returned_targets = _target_list(targets)
-        if not returned_targets:
+        mapped_targets = _map_target_list(targets)
+        if not mapped_targets:
             if allow_empty:
                 return None
             raise ValueError(
                 f"{hook_name} for stage {spec.stage_name!r} returned no targets; "
                 "dynamic route functions must return downstream stage(s)"
             )
-        unknown = set(returned_targets) - allowed_targets
+        unknown = set(mapped_targets) - allowed_targets
         if unknown:
             raise ValueError(
                 f"{hook_name} for stage {spec.stage_name!r} returned targets "
                 f"outside the static topology: {sorted(unknown)}. "
                 f"Allowed targets: {sorted(allowed_targets)}"
             )
-        return returned_targets[0] if isinstance(targets, str) else returned_targets
+        return mapped_targets[0] if isinstance(targets, str) else mapped_targets
 
     # --- Build routing ---
     if spec.is_terminal:
         get_next = lambda request_id, output: None
     elif spec.route_fn:
         route_fn = import_string(spec.route_fn)
-        allowed_route_targets = set(_target_list(spec.next_stages))
+        allowed_route_targets = set(_map_target_list(spec.next_stages))
 
         def get_next(request_id, output, _fn=route_fn):
             return _target_result(
@@ -692,15 +722,17 @@ def _construct_stage(
     else:
         target = spec.next_stages
         if isinstance(target, str):
-            get_next = lambda request_id, output, _t=target: _t
+            mapped = spec.name_map.get(target, target)
+            get_next = lambda request_id, output, _t=mapped: _t
         elif isinstance(target, list):
-            get_next = lambda request_id, output, _t=list(target): _t
+            mapped = [spec.name_map.get(item, item) for item in target]
+            get_next = lambda request_id, output, _t=mapped: _t
         else:
             get_next = lambda request_id, output: None
 
     if spec.stream_done_to_fn:
         stream_done_to_fn = import_string(spec.stream_done_to_fn)
-        allowed_stream_targets = set(spec.stream_targets)
+        allowed_stream_targets = set(_map_target_list(spec.stream_targets))
         get_stream_done_targets = (
             lambda request_id, output, _fn=stream_done_to_fn: _target_result(
                 _fn(request_id, output),
@@ -715,7 +747,7 @@ def _construct_stage(
     # --- Build input handler ---
     if spec.wait_for and spec.merge_fn:
         merge_fn = import_string(spec.merge_fn)
-        sources = set(spec.wait_for)
+        sources = {spec.source_name_map.get(n, n) for n in spec.wait_for}
         expected_sources_fn = None
         if spec.wait_for_fn:
             wait_for_fn = import_string(spec.wait_for_fn)
@@ -788,6 +820,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        pd_execution=spec.pd_execution,
         replica_topology=spec.replica_topology or None,
     )
 

@@ -5,6 +5,7 @@ The runner owns the single serving path. It can start one OS process containing
 multiple non-TP stages, multiple OS processes on the same GPU, and the existing
 one-process-per-rank TP topology.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -49,6 +50,7 @@ def resolve_coordinator_max_in_flight(
     config: PipelineConfig,
     *,
     logical_process_plan: LogicalProcessPlan,
+    stage_name_map: dict[str, str] | None = None,
 ) -> int | None:
     """Return total generation running+queued capacity across replicas."""
     config_cls = type(config)
@@ -73,7 +75,8 @@ def resolve_coordinator_max_in_flight(
         return None
     if running < 1 or queued < 0:
         return None
-    num_replicas = logical_process_plan.process_of(stage.name).num_replicas
+    compiled_stage_name = (stage_name_map or {}).get(stage.name, stage.name)
+    num_replicas = logical_process_plan.process_of(compiled_stage_name).num_replicas
     return (running + queued) * num_replicas
 
 
@@ -82,6 +85,8 @@ def _build_stage_groups(
     ctx: multiprocessing.context.BaseContext | None = None,
     *,
     stages_cfg: list[StageConfig],
+    name_map: dict[str, str] | None = None,
+    source_name_map: dict[str, str] | None = None,
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
@@ -94,6 +99,9 @@ def _build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
+    if name_map is None:
+        name_map = {stage.name: stage.name for stage in stages_cfg}
+    source_name_map = source_name_map or name_map
     if replica_topology is None:
         replica_topology = ReplicaTopology()
 
@@ -169,6 +177,10 @@ def _build_stage_groups(
             is_stream_receiver=stage_cfg.name in stream_receivers,
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
+            name_map=name_map,
+            source_name_map=source_name_map,
+            # Note (Yue Yin): Keep compiler metadata out of user factory kwargs.
+            pd_execution=stage_cfg.pd_execution,
             replica_topology=replica_topology.to_dict(),
         )
         if tp_size == 1:
@@ -505,6 +517,8 @@ class MultiProcessPipelineRunner:
                 self._config,
                 ctx,
                 stages_cfg=prep.stages_cfg,
+                name_map=prep.name_map,
+                source_name_map=prep.source_name_map,
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
@@ -519,13 +533,16 @@ class MultiProcessPipelineRunner:
             max_in_flight = resolve_coordinator_max_in_flight(
                 self._config,
                 logical_process_plan=prep.logical_process_plan,
+                stage_name_map=prep.name_map,
             )
             self._coordinator = Coordinator(
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
-                terminal_stages=self._config.terminal_stages or None,
+                # Note (Yue Yin): Decode, rather than the logical stage, reports completion.
+                terminal_stages=prep.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
+                terminal_name_map=prep.terminal_name_map,
                 replica_topology=prep.replica_topology,
                 logical_process_plan=prep.logical_process_plan,
                 max_in_flight=max_in_flight,

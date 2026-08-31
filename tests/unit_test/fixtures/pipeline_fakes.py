@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 import torch
 
+from sglang_omni.config.pd_capability import pd_disaggregation_capable
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
@@ -226,6 +227,17 @@ def make_scheduler(**_: Any) -> FakeScheduler:
 
 def dummy_factory(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
+
+
+@pd_disaggregation_capable
+def pd_capable_factory(**kwargs: Any) -> dict[str, Any]:
+    return dict(kwargs)
+
+
+@pd_disaggregation_capable
+def strict_pd_capable_factory(*, model_path: str, gpu_id: int) -> dict[str, Any]:
+    """PD-capable factory with a strict signature (no ``**kwargs``)."""
+    return {"model_path": model_path, "gpu_id": gpu_id}
 
 
 def runtime_factory(

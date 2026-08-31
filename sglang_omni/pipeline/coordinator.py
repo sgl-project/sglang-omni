@@ -66,6 +66,7 @@ class Coordinator:
         terminal_stages_resolver: (
             Callable[[OmniRequest], list[str] | None] | None
         ) = None,
+        terminal_name_map: dict[str, str] | None = None,
         replica_topology: ReplicaTopology | None = None,
         logical_process_plan: LogicalProcessPlan | None = None,
         binding_policy: BindingPolicy | None = None,
@@ -77,8 +78,11 @@ class Coordinator:
             completion_endpoint: ZMQ endpoint to receive completions
             abort_endpoint: ZMQ endpoint for abort broadcasts
             entry_stage: Logical name of the entry stage for new requests
-            terminal_stages: Terminal stage names. When multiple are given,
-                the coordinator waits for all to complete before resolving.
+            terminal_stages: Physical terminal stage names. The coordinator
+                waits for all to complete before resolving.
+            terminal_name_map: Logical -> physical terminal map. A model
+                resolver may return logical stage names; they are mapped to the
+                physical stage that reports completion (e.g. ``S`` -> ``S_decode``).
             replica_topology: Logical stage to expanded instance mapping.
             logical_process_plan: Compiled Process topology; the coordinator
                 selects one replica per replicated Process from it.
@@ -91,6 +95,8 @@ class Coordinator:
             set(terminal_stages) if terminal_stages else set()
         )
         self._terminal_stages_resolver = terminal_stages_resolver
+        # Note (Yue Yin): Resolver output can stay logical while Decode owns completion.
+        self._terminal_name_map: dict[str, str] = dict(terminal_name_map or {})
         self._partial_results: dict[str, dict[str, Any]] = {}
         self._replica_topology = replica_topology or ReplicaTopology()
         self._logical_process_plan = logical_process_plan or LogicalProcessPlan(
@@ -502,10 +508,8 @@ class Coordinator:
         request_id: str,
         exc: BaseException,
     ) -> None:
-        # Note: (Akazaakane) Non-streaming callers await the completion future,
-        # so errors must be propagated with set_exception(). Streaming callers
-        # receive errors through the stream queue and never await that future;
-        # cancel it instead to avoid "Future exception was never retrieved".
+        # Note (Yue Yin): Streaming callers observe queue errors, so cancelling
+        # avoids an unobserved exception on their unused completion future.
         future = self._completion_futures.get(request_id)
         if future is None or future.done():
             return
@@ -840,7 +844,11 @@ class Coordinator:
             raise ValueError(
                 "terminal_stages_resolver must return terminal stage names"
             )
-        resolved_stages = set(resolved)
+        # Note (Yue Yin): Normalize logical names because only physical stages
+        # can participate in completion accounting.
+        resolved_stages = {
+            self._terminal_name_map.get(stage, stage) for stage in resolved
+        }
         if not resolved_stages:
             raise ValueError("terminal_stages_resolver returned no terminal stages")
         unknown = resolved_stages - self._terminal_stages

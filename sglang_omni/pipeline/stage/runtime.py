@@ -110,10 +110,12 @@ class Stage:
         disable_direct_cuda_ipc_payload: bool = False,
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
+        pd_execution: Any = None,
         replica_topology: dict[str, list[str]] | None = None,
     ):
         self.name = name
         self.role = role
+        self.pd_execution = pd_execution
         self.get_next = get_next
         self.gpu_id = gpu_id
         self.endpoints = endpoints

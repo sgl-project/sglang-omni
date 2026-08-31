@@ -15,8 +15,14 @@ from fastapi.testclient import TestClient
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.profiler.event_recorder import get_recorder
-from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
+from sglang_omni.proto import CompleteMessage, OmniRequest
+from tests.unit_test.fixtures.pipeline_fakes import (
+    FakeMpContext,
+    FakeRelay,
+    RecordingCoordinatorControlPlane,
+)
 
 
 def noop_factory():
@@ -325,18 +331,22 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             entry_stage: str,
             terminal_stages: list[str] | None = None,
             terminal_stages_resolver=None,
+            terminal_name_map: dict[str, str] | None = None,
             replica_topology=None,
             logical_process_plan=None,
             max_in_flight=None,
+            **_kwargs,
         ) -> None:
             del (
                 abort_endpoint,
                 entry_stage,
                 terminal_stages,
                 terminal_stages_resolver,
+                terminal_name_map,
                 replica_topology,
                 logical_process_plan,
                 max_in_flight,
+                _kwargs,
             )
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
@@ -646,3 +656,59 @@ async def test_launcher_preserves_runner_start_error(
 
     with pytest.raises(RuntimeError, match="start failed"):
         await launcher._run_server(config, port=8000)
+
+
+@pytest.mark.asyncio
+async def test_pd_coordinator_ignores_prefill_completion_and_maps_logical_terminal() -> (
+    None
+):
+    """Completion belongs to the decode half; resolver output is mapped to the physical terminal."""
+
+    def resolver(request: OmniRequest) -> list[str]:
+        del request
+        return ["thinker"]
+
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="thinker_prefill",
+        terminal_stages=["thinker_decode"],
+        terminal_stages_resolver=resolver,
+        terminal_name_map={"thinker": "thinker_decode"},
+    )
+    coordinator.control_plane = RecordingCoordinatorControlPlane()
+    coordinator.register_stage("thinker_prefill", "inproc://prefill")
+    coordinator.register_stage("thinker_decode", "inproc://decode")
+
+    await coordinator._submit_request("req-1", OmniRequest(inputs="hi"))
+    future = coordinator._completion_futures["req-1"]
+
+    await coordinator._handle_completion(
+        CompleteMessage("req-1", "thinker_prefill", True, result={"stale": 1})
+    )
+    assert not future.done()
+    assert "req-1" in coordinator._requests
+
+    await coordinator._handle_completion(
+        CompleteMessage("req-1", "thinker_decode", True, result={"text": "ok"})
+    )
+    assert future.result() == {"text": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_pd_coordinator_abort_broadcasts_to_both_halves() -> None:
+    """Abort reaches all registered stage halves through the shared abort endpoint."""
+    coordinator = Coordinator(
+        "inproc://complete",
+        "inproc://abort",
+        entry_stage="thinker_prefill",
+        terminal_stages=["thinker_decode"],
+    )
+    control_plane = RecordingCoordinatorControlPlane()
+    coordinator.control_plane = control_plane
+    coordinator.register_stage("thinker_prefill", "inproc://prefill")
+    coordinator.register_stage("thinker_decode", "inproc://decode")
+
+    await coordinator._submit_request("req-1", OmniRequest(inputs="hi"))
+    assert await coordinator.abort("req-1") is True
+    assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
