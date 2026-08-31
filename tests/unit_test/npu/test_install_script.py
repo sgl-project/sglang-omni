@@ -85,7 +85,9 @@ def test_install_uses_build_isolation_by_default(repo: Path) -> None:
     assert "--no-build-isolation" not in result.stdout
 
 
-@pytest.mark.parametrize("installed", ["0.5.18", "0.5.18+ascend"])
+@pytest.mark.parametrize(
+    "installed", ["0.5.18", "0.5.18+ascend", "0.5.18.dev7+gec43c1f20"]
+)
 def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None:
     result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
 
@@ -93,11 +95,15 @@ def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None
     assert f"sglang:      {installed}" in result.stdout
 
 
-def test_mismatched_sglang_version_is_rejected(repo: Path) -> None:
-    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": "0.5.16"})
+@pytest.mark.parametrize(
+    "installed",
+    ["0.5.16", "0.5.18.dev7", "0.5.18rc1", "0.5.19.dev1+g1234567"],
+)
+def test_mismatched_sglang_version_is_rejected(repo: Path, installed: str) -> None:
+    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
 
     assert result.returncode != 0
-    assert "sglang 0.5.16 is installed, but 0.5.18 is required" in result.stderr
+    assert f"sglang {installed} is installed, but 0.5.18 is required" in result.stderr
     assert "would run" not in result.stdout
 
 

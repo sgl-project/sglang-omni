@@ -107,7 +107,9 @@ print_summary() {
 
 check_sglang_version() {
   local expected_version="${SGLANG_VERIFIED_VERSION#v}"
+  local expected_pattern
   local installed_version
+  local local_version=""
   local public_version
 
   if ! installed_version="$("${PYBIN}" -c 'from importlib.metadata import version; print(version("sglang"))' 2>/dev/null)"; then
@@ -117,10 +119,17 @@ check_sglang_version() {
     return 1
   fi
 
-  # Accept local build metadata such as 0.5.18+ascend while requiring the
-  # verified public release exactly. Pre/post releases remain mismatches.
+  # Accept the stable release (with optional local metadata) and traceable
+  # source builds from the same release line, e.g. 0.5.18.dev7+g<git-sha>.
   public_version="${installed_version%%+*}"
-  if [[ "${public_version}" != "${expected_version}" ]]; then
+  if [[ "${installed_version}" == *+* ]]; then
+    local_version="${installed_version#*+}"
+  fi
+  expected_pattern="${expected_version//./\.}"
+
+  if [[ "${public_version}" != "${expected_version}" ]] &&
+     ! [[ "${public_version}" =~ ^${expected_pattern}\.dev[0-9]+$ &&
+          "${local_version}" =~ ^g[0-9a-f]+$ ]]; then
     echo "ERROR: sglang ${installed_version} is installed, but ${expected_version} is required." >&2
     echo "Install the verified Ascend NPU release before installing sglang-omni:" >&2
     echo "  https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu" >&2
