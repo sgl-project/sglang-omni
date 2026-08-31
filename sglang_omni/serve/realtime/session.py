@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import WebSocket
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
-from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
+from sglang_omni.serve.realtime.audio_buffer import BufferOverflow, RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     ConversationItemTruncate,
     InputAudioBufferAppend,
@@ -49,6 +50,15 @@ HANDLERS: dict[type, str] = {
     ResponseCancel: "handle_response_cancel",
     ConversationItemTruncate: "handle_conversation_item_truncate",
 }
+
+
+def _describe(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        return "; ".join(
+            f"{'.'.join(str(part) for part in err['loc']) or '<root>'}: {err['msg']}"
+            for err in exc.errors()[:3]
+        )
+    return str(exc)
 
 
 def new_id(prefix: str) -> str:
@@ -156,14 +166,59 @@ class RealtimeSession:
                 break
             if message["type"] != "websocket.receive":
                 continue
-            raw = message["text"]
-            payload = json.loads(raw)
-            assert isinstance(payload, dict), "Top-level payload must be a JSON object"
-            await self.dispatch(payload)
+
+            # ASGI allows a binary frame to carry "text": None alongside
+            # "bytes", so test the value rather than the key.
+            if message.get("text") is None:
+                await self.send_error(
+                    "invalid_request_error",
+                    "invalid_payload",
+                    "Audio must be base64 in a text frame, not a binary frame.",
+                )
+                continue
+            try:
+                payload = json.loads(message["text"])
+            except json.JSONDecodeError as exc:
+                await self.send_error(
+                    "invalid_request_error",
+                    "invalid_payload",
+                    f"Each message must be valid JSON: {exc}.",
+                )
+                continue
+            if not isinstance(payload, dict):
+                await self.send_error(
+                    "invalid_request_error",
+                    "invalid_payload",
+                    "Each message must be a JSON object.",
+                )
+                continue
+            try:
+                await self.dispatch(payload)
+            except (ValidationError, BufferOverflow) as exc:
+                await self.send_error(
+                    "invalid_request_error",
+                    "invalid_payload",
+                    _describe(exc),
+                )
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
-        event = parse_client_event(payload)
-        assert event is not None, f"Unsupported event type: {payload.get('type')!r}"
+        try:
+            event = parse_client_event(payload)
+        except ValidationError as exc:
+            await self.send_error(
+                "invalid_request_error",
+                "invalid_payload",
+                f"Invalid {payload.get('type')!r} event: {_describe(exc)}",
+            )
+            return
+
+        if event is None:
+            await self.send_error(
+                "invalid_request_error",
+                "unsupported_event_type",
+                f"Unsupported event type: {payload.get('type')!r}.",
+            )
+            return
         method_name = HANDLERS[type(event)]
         await getattr(self, method_name)(event)
 
@@ -194,7 +249,18 @@ class RealtimeSession:
                 "Audio output is unavailable for this pipeline.",
             )
             return
-        assert candidate.input_audio_format == "pcm16", "Only pcm16 is supported"
+        # Note (Aryan Saini): input format is client-controlled and g711_ulaw /
+        # g711_alaw are accepted by the session schema, so an unsupported value is
+        # a protocol error, not an invariant. As an assert it either tore down the
+        # socket with no error event, or -- under python -O -- vanished, leaving
+        # session.updated granting a format the PCM16 buffer cannot decode.
+        if candidate.input_audio_format != "pcm16":
+            await self.send_error(
+                "invalid_request_error",
+                "unsupported_audio_format",
+                "Only PCM16 input audio is supported.",
+            )
+            return
         if "output_audio_format" in update and candidate.output_audio_format != "pcm16":
             await self.send_error(
                 "invalid_request_error",
