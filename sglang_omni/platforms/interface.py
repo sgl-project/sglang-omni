@@ -60,3 +60,11 @@ class OmniPlatform(DeviceMixin):
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
+
+    def is_pin_memory_available(self, device=None) -> bool:
+        """Preserve pinned staging on accelerator platforms.
+
+        Concrete Omni platforms can override this capability; CPU returns
+        ``False`` because there is no accelerator transfer to optimize.
+        """
+        return device is None or str(device) != "cpu"

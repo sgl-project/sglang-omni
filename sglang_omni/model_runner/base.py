@@ -168,8 +168,9 @@ class ModelRunner:
                 or bufs[0].dtype != dtype
             )
         if need_alloc:
+            pin = current_platform.is_pin_memory_available()
             bufs = [
-                torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
+                torch.empty(shape, dtype=dtype, device="cpu", pin_memory=pin)
                 for _ in range(2)
             ]
             setattr(self, bufs_attr, bufs)

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import Field
 
@@ -16,6 +16,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.models.qwen3_asr.audio_lengths import QWEN3_ASR_MAX_INPUT_SECONDS
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.qwen3_asr"
 
@@ -28,6 +29,7 @@ class Qwen3ASRFactoryArgs(FactoryArgs):
     pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)
     pre_lm_max_batch_size: int | None = Field(default=None, ge=1)
     pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
+    enable_encoder_cuda_graph: bool | None = None
 
 
 class Qwen3ASRStageConfig(EngineStageConfig):
@@ -83,6 +85,13 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             terminal=True,
         )
     ]
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        if stage_name == "asr":
+            return {
+                "enable_encoder_cuda_graph": not current_platform.is_cpu(),
+            }
+        return {}
 
 
 EntryClass = Qwen3ASRPipelineConfig
