@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from contextlib import nullcontext
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,6 +15,7 @@ import torch
 from sglang_omni.models.qwen3_omni.components import code2wav_cuda_graph
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
+    Code2WavNpuGraphRunner,
     GraphKey,
 )
 
@@ -229,6 +232,128 @@ def _codes(
     return backend.mark_cuda(tensor, device=device)
 
 
+def test_npu_runner_reuses_graph_lifecycle_and_reports_backend_mode() -> None:
+    try:
+        torch.device("npu:0")
+    except RuntimeError:
+        # CPU-only PyTorch does not register Ascend's PrivateUse1 name. This
+        # only provides a device descriptor; all graph operations stay fake.
+        torch.utils.rename_privateuse1_backend("npu")
+
+    backend = _FakeCudaBackend()
+    model = _FakeModel()
+    graph_keys = (GraphKey(batch_size=1, frames=10),)
+    runner = Code2WavNpuGraphRunner.build(
+        model,
+        device="npu:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=graph_keys,
+        npu_api=backend,
+    )
+    codes = _codes(backend, 1, 10, device="npu:0")
+
+    result = runner.run(codes)
+
+    assert runner.stats()["enabled"] is True
+    assert result.execution_mode == "npu_graph"
+    assert result.key == graph_keys[0]
+    assert torch.equal(result.output, model(codes))
+
+
+def test_graph_runner_logs_first_successful_replay_per_key(caplog) -> None:
+    runner, backend, _model = _build_runner()
+    codes = _codes(backend, 1, 10)
+
+    with caplog.at_level(logging.INFO, logger=code2wav_cuda_graph.__name__):
+        runner.run(codes)
+        runner.run(codes)
+
+    replay_records = [
+        record
+        for record in caplog.records
+        if "graph replay active" in record.getMessage()
+    ]
+    assert len(replay_records) == 1
+    assert "execution_mode=cuda_graph" in replay_records[0].getMessage()
+
+
+def test_graph_runner_logs_periodic_runtime_stats(caplog) -> None:
+    runner, backend, _model = _build_runner()
+    runner._RUNTIME_STATS_LOG_INTERVAL = 2
+    codes = _codes(backend, 1, 10)
+
+    with caplog.at_level(logging.INFO, logger=code2wav_cuda_graph.__name__):
+        runner.run(codes)
+        runner.run(codes)
+
+    runtime_records = [
+        record
+        for record in caplog.records
+        if "graph runtime stats" in record.getMessage()
+    ]
+    assert len(runtime_records) == 1
+    assert "graph_replays=2" in runtime_records[0].getMessage()
+    assert "replay_failures=0" in runtime_records[0].getMessage()
+    assert "fallback_counts={}" in runtime_records[0].getMessage()
+
+
+def test_graph_runner_logs_only_first_eager_fallback_per_reason(caplog) -> None:
+    runner, backend, _model = _build_runner()
+    codes = _codes(backend, 1, 10)
+
+    with caplog.at_level(logging.WARNING, logger=code2wav_cuda_graph.__name__):
+        runner.run(codes, eligible=False)
+        runner.run(codes, eligible=False)
+
+    fallback_records = [
+        record
+        for record in caplog.records
+        if "graph eager fallback" in record.getMessage()
+    ]
+    assert len(fallback_records) == 1
+    assert "reason=ineligible" in fallback_records[0].getMessage()
+    assert runner.stats()["runtime"]["fallback_counts"] == {"ineligible": 2}
+
+
+def test_npu_api_enables_auto_dispatch_during_capture(monkeypatch) -> None:
+    calls: dict[str, Any] = {}
+
+    class _Stream:
+        def wait_stream(self, other) -> None:
+            calls.setdefault("waited_for", []).append(other)
+
+    current_stream = _Stream()
+    capture_stream = _Stream()
+    graph = SimpleNamespace(replay=lambda: None)
+
+    def _graph_context(supplied_graph, **kwargs):
+        calls.update(graph=supplied_graph, **kwargs)
+        return nullcontext()
+
+    fake_npu = SimpleNamespace(
+        current_stream=lambda device: current_stream,
+        NPUGraph=lambda: graph,
+        graph=_graph_context,
+    )
+    monkeypatch.setattr(code2wav_cuda_graph.torch, "npu", fake_npu, raising=False)
+    static_input = torch.zeros((1, 16, 10), dtype=torch.long)
+
+    captured_graph, output = code2wav_cuda_graph._TorchNpuApi().capture(
+        lambda codes: codes + 1,
+        static_input,
+        pool="shared-pool",
+        stream=capture_stream,
+    )
+
+    assert captured_graph is graph
+    assert torch.equal(output, static_input + 1)
+    assert calls["pool"] == "shared-pool"
+    assert calls["stream"] is capture_stream
+    assert calls["capture_error_mode"] == "thread_local"
+    assert calls["auto_dispatch_capture"] is True
+
+
 def test_build_captures_only_the_explicit_graph_keys() -> None:
     graph_keys = tuple(GraphKey(batch_size=1, frames=frames) for frames in (20, 40, 45))
     backend = _FakeCudaBackend()
@@ -318,6 +443,7 @@ def test_stats_report_only_operational_state() -> None:
 
     stats = runner.stats()
     assert stats["binding"] == {
+        "backend": "cuda",
         "device": "cuda:0",
         "num_quantizers": 16,
         "input_dtype": "torch.long",

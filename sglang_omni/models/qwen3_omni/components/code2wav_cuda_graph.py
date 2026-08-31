@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exact-shape CUDA graphs for the Qwen3-Omni Code2Wav component."""
+"""Exact-shape accelerator graphs for the Qwen3-Omni Code2Wav component."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ class GraphKey:
 class Code2WavRunResult:
     """Result metadata for either an exact graph replay or eager fallback.
 
-    A ``cuda_graph`` output is a borrowed static buffer. Before the next replay,
+    A graph output is a borrowed static buffer. Before the next replay,
     the caller must either finish every read or enqueue every dependent read and
-    copy on the same CUDA stream so replay cannot overtake them. The tensor
+    copy on the same accelerator stream so replay cannot overtake them. The tensor
     itself must not be retained or consumed concurrently; asynchronous host
     transfer must retain its destination and completion event until
     materialization finishes. This runner deliberately does not clone the
@@ -140,10 +140,91 @@ class _TorchCudaApi:
         return tensor.device == device
 
 
-class Code2WavCudaGraphRunner:
-    """Exact-shape CUDA graph runner for ``[B, Q, T]`` long codes.
+class _TorchNpuApi:
+    """Small injectable boundary around torch_npu graph operations."""
 
-    One instance is permanently bound to one model, CUDA device, quantizer
+    def device_context(self, device: torch.device) -> AbstractContextManager[Any]:
+        return torch.npu.device(device)
+
+    def memory_stats(self, device: torch.device) -> dict[str, int]:
+        free_bytes, total_bytes = torch.npu.mem_get_info(device)
+        return {
+            "allocated_bytes": int(torch.npu.memory_allocated(device)),
+            "reserved_bytes": int(torch.npu.memory_reserved(device)),
+            "max_reserved_bytes": int(torch.npu.max_memory_reserved(device)),
+            "free_bytes": int(free_bytes),
+            "total_bytes": int(total_bytes),
+        }
+
+    def empty_cache(self) -> None:
+        torch.npu.empty_cache()
+
+    def new_static_input(
+        self, shape: tuple[int, int, int], *, device: torch.device
+    ) -> torch.Tensor:
+        return torch.zeros(shape, dtype=torch.long, device=device)
+
+    def new_stream(self, device: torch.device) -> Any:
+        return torch.npu.Stream(device=device)
+
+    def warmup(
+        self,
+        model: Any,
+        static_input: torch.Tensor,
+        *,
+        iterations: int,
+        device: torch.device,
+        stream: Any,
+    ) -> None:
+        current_stream = torch.npu.current_stream(device)
+        stream.wait_stream(current_stream)
+        with torch.npu.stream(stream), torch.inference_mode():
+            for _ in range(iterations):
+                model(static_input)
+        current_stream.wait_stream(stream)
+
+    def graph_pool_handle(self) -> Any:
+        return torch.npu.graph_pool_handle()
+
+    def capture(
+        self,
+        model: Any,
+        static_input: torch.Tensor,
+        *,
+        pool: Any,
+        stream: Any,
+    ) -> tuple[Any, torch.Tensor]:
+        current_stream = torch.npu.current_stream(static_input.device)
+        stream.wait_stream(current_stream)
+        graph = torch.npu.NPUGraph()
+        with torch.inference_mode():
+            with torch.npu.graph(
+                graph,
+                pool=pool,
+                stream=stream,
+                capture_error_mode="thread_local",
+                auto_dispatch_capture=True,
+            ):
+                static_output = model(static_input)
+        current_stream.wait_stream(stream)
+        return graph, static_output
+
+    def synchronize(self, device: torch.device) -> None:
+        torch.npu.synchronize(device)
+
+    def is_cuda_tensor(self, tensor: torch.Tensor) -> bool:
+        # Kept under the legacy protocol name so existing CUDA test backends
+        # and third-party runner construction remain source compatible.
+        return tensor.device.type == "npu"
+
+    def tensor_device_matches(self, tensor: torch.Tensor, device: torch.device) -> bool:
+        return tensor.device == device
+
+
+class Code2WavGraphRunner:
+    """Exact-shape accelerator graph runner for ``[B, Q, T]`` long codes.
+
+    One instance is permanently bound to one model, accelerator device, quantizer
     count, ``torch.long`` input dtype, and owner process. ``batch_size == 1``
     keys form an atomic tier with the original semantics: any failure there
     disables the complete runner and leaves no partial matrix published.
@@ -158,6 +239,10 @@ class Code2WavCudaGraphRunner:
     """
 
     _WARMUP_ITERATIONS = 3
+    _DEVICE_TYPES = ("cuda", "musa")
+    _EXECUTION_MODE = "cuda_graph"
+    _BACKEND_LABEL = "CUDA"
+    _RUNTIME_STATS_LOG_INTERVAL = 100
 
     def __init__(
         self,
@@ -170,11 +255,20 @@ class Code2WavCudaGraphRunner:
     ) -> None:
         self._model = model
         self._device = torch.device(device)
-        if self._device.type not in ("cuda", "musa") or self._device.index is None:
-            raise ValueError("Code2Wav CUDA graphs require a concrete CUDA/MUSA device")
+        if self._device.type not in self._DEVICE_TYPES or self._device.index is None:
+            supported = "/".join(
+                device_type.upper() for device_type in self._DEVICE_TYPES
+            )
+            raise ValueError(
+                f"Code2Wav {self._BACKEND_LABEL} graphs require a concrete "
+                f"{supported} device"
+            )
         self._num_quantizers = int(num_quantizers)
         if self._num_quantizers <= 0:
-            raise ValueError("Code2Wav CUDA graphs require a positive quantizer count")
+            raise ValueError(
+                f"Code2Wav {self._BACKEND_LABEL} graphs require a positive "
+                "quantizer count"
+            )
         self._graph_keys = graph_keys
         self._tier0_keys = tuple(k for k in graph_keys if k.batch_size == 1)
         self._tier1_keys = tuple(k for k in graph_keys if k.batch_size > 1)
@@ -197,6 +291,8 @@ class Code2WavCudaGraphRunner:
         self._fallback_counts: Counter[str] = Counter()
         self._graph_replays = 0
         self._replay_failures = 0
+        self._logged_replay_keys: set[GraphKey] = set()
+        self._logged_fallback_reasons: set[str] = set()
 
     @classmethod
     def build(
@@ -208,7 +304,7 @@ class Code2WavCudaGraphRunner:
         total_gpu_memory_fraction: float | None,
         graph_keys: tuple[GraphKey, ...],
         cuda_api: Any | None = None,
-    ) -> Code2WavCudaGraphRunner:
+    ) -> Code2WavGraphRunner:
         """Build the configured serving-reachable serial graphs."""
 
         runner = cls(
@@ -314,7 +410,8 @@ class Code2WavCudaGraphRunner:
                 )
         self._enabled = True
         logger.info(
-            "Code2Wav CUDA graph runner published %d exact graphs on %s",
+            "Code2Wav %s graph runner published %d exact graphs on %s",
+            self._BACKEND_LABEL,
             len(self._graphs),
             self._device,
         )
@@ -386,7 +483,7 @@ class Code2WavCudaGraphRunner:
                             pool=pool,
                             stream=capture_stream,
                         )
-                    # Capture, replay and equivalence checks enqueue CUDA
+                    # Capture, replay and equivalence checks enqueue accelerator
                     # work. Do not make the graph matrix visible until every
                     # key has completed on the bound device.
                     self._cuda.synchronize(self._device)
@@ -554,14 +651,16 @@ class Code2WavCudaGraphRunner:
                 self._cuda.synchronize(self._device)
             except Exception as synchronize_exc:
                 logger.warning(
-                    "Code2Wav CUDA graph rollback synchronize failed: %s",
+                    "Code2Wav %s graph rollback synchronize failed: %s",
+                    self._BACKEND_LABEL,
                     synchronize_exc,
                 )
             try:
                 self._memory_stats["after"] = self._cuda.memory_stats(self._device)
             except Exception as snapshot_exc:
                 logger.warning(
-                    "Code2Wav CUDA graph rollback snapshot failed: %s",
+                    "Code2Wav %s graph rollback snapshot failed: %s",
+                    self._BACKEND_LABEL,
                     snapshot_exc,
                 )
         self._graphs.clear()
@@ -580,10 +679,15 @@ class Code2WavCudaGraphRunner:
                 )
         except Exception as cleanup_exc:
             logger.warning(
-                "Code2Wav CUDA graph rollback cleanup failed: %s",
+                "Code2Wav %s graph rollback cleanup failed: %s",
+                self._BACKEND_LABEL,
                 cleanup_exc,
             )
-        logger.warning("Code2Wav CUDA graph runner disabled: %s", reason)
+        logger.warning(
+            "Code2Wav %s graph runner disabled: %s",
+            self._BACKEND_LABEL,
+            reason,
+        )
 
     def run(
         self,
@@ -600,7 +704,7 @@ class Code2WavCudaGraphRunner:
         current_pid = os.getpid()
         if current_pid != self._owner_pid:
             raise RuntimeError(
-                "Code2Wav CUDA graph runner/model belongs to PID "
+                f"Code2Wav {self._BACKEND_LABEL} graph runner/model belongs to PID "
                 f"{self._owner_pid}, but was used in PID {current_pid}; it must "
                 "be rebuilt in a spawned process before inference"
             )
@@ -629,16 +733,35 @@ class Code2WavCudaGraphRunner:
             self._disable_runtime(reason)
             raise
         self._graph_replays += 1
+        if key not in self._logged_replay_keys:
+            logger.info(
+                "Code2Wav %s graph replay active: execution_mode=%s key=%s",
+                self._BACKEND_LABEL,
+                self._EXECUTION_MODE,
+                key,
+            )
+            self._logged_replay_keys.add(key)
+        if self._graph_replays % self._RUNTIME_STATS_LOG_INTERVAL == 0:
+            logger.info(
+                "Code2Wav %s graph runtime stats: graph_replays=%d "
+                "replay_failures=%d fallback_counts=%s",
+                self._BACKEND_LABEL,
+                self._graph_replays,
+                self._replay_failures,
+                dict(sorted(self._fallback_counts.items())),
+            )
         return Code2WavRunResult(
             output=captured.static_output,
-            execution_mode="cuda_graph",
+            execution_mode=self._EXECUTION_MODE,
             key=key,
             fallback_reason=None,
         )
 
     def _validate_codes(self, codes: torch.Tensor) -> None:
         if not self._cuda.is_cuda_tensor(codes):
-            raise TypeError("Code2Wav graph input must be a CUDA tensor")
+            raise TypeError(
+                f"Code2Wav graph input must be a {self._BACKEND_LABEL} tensor"
+            )
         if codes.dtype != torch.long:
             raise TypeError("Code2Wav graph input must use torch.long")
         if not self._cuda.tensor_device_matches(codes, self._device):
@@ -658,6 +781,14 @@ class Code2WavCudaGraphRunner:
         reason: str,
     ) -> Code2WavRunResult:
         self._fallback_counts[reason] += 1
+        if reason not in self._logged_fallback_reasons:
+            logger.warning(
+                "Code2Wav %s graph eager fallback: reason=%s key=%s",
+                self._BACKEND_LABEL,
+                reason,
+                key,
+            )
+            self._logged_fallback_reasons.add(reason)
         with torch.inference_mode():
             output = self._model(codes)
         return Code2WavRunResult(
@@ -680,10 +811,13 @@ class Code2WavCudaGraphRunner:
                 self._cuda.empty_cache()
         except Exception as cleanup_exc:
             logger.warning(
-                "Code2Wav CUDA graph runtime cleanup failed: %s",
+                "Code2Wav %s graph runtime cleanup failed: %s",
+                self._BACKEND_LABEL,
                 cleanup_exc,
             )
-        logger.exception("Code2Wav CUDA graph replay disabled the runner")
+        logger.exception(
+            "Code2Wav %s graph replay disabled the runner", self._BACKEND_LABEL
+        )
 
     def stats(self) -> dict[str, Any]:
         """Return a strict JSON-safe snapshot of build and runtime state."""
@@ -692,6 +826,7 @@ class Code2WavCudaGraphRunner:
             "enabled": self._enabled,
             "disable_reason": self._disable_reason,
             "binding": {
+                "backend": self._device.type,
                 "device": str(self._device),
                 "num_quantizers": self._num_quantizers,
                 "input_dtype": "torch.long",
@@ -716,8 +851,43 @@ class Code2WavCudaGraphRunner:
         }
 
 
+class Code2WavCudaGraphRunner(Code2WavGraphRunner):
+    """CUDA specialization preserving the public runner API."""
+
+
+class Code2WavNpuGraphRunner(Code2WavGraphRunner):
+    """torch_npu NPUGraph specialization of the shared graph lifecycle."""
+
+    _DEVICE_TYPES = ("npu",)
+    _EXECUTION_MODE = "npu_graph"
+    _BACKEND_LABEL = "NPU"
+
+    @classmethod
+    def build(
+        cls,
+        model: Any,
+        *,
+        device: str | torch.device,
+        num_quantizers: int,
+        total_gpu_memory_fraction: float | None,
+        graph_keys: tuple[GraphKey, ...],
+        npu_api: Any | None = None,
+    ) -> Code2WavNpuGraphRunner:
+        runner = cls(
+            model,
+            device=device,
+            num_quantizers=num_quantizers,
+            graph_keys=graph_keys,
+            cuda_api=_TorchNpuApi() if npu_api is None else npu_api,
+        )
+        runner._build(total_gpu_memory_fraction)
+        return runner
+
+
 __all__ = [
     "Code2WavCudaGraphRunner",
+    "Code2WavGraphRunner",
+    "Code2WavNpuGraphRunner",
     "Code2WavRunResult",
     "GraphKey",
 ]

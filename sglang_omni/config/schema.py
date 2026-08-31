@@ -83,6 +83,7 @@ class EngineArgs(BaseModel):
     max_total_tokens: int | None = Field(default=None, ge=1)
     cuda_graph_max_bs: int | None = Field(default=None, ge=1)
     disable_cuda_graph: bool | None = None
+    disable_decode_cuda_graph: bool | None = None
     enable_torch_compile: bool | None = None
     torch_compile_max_bs: int | None = Field(default=None, ge=1)
     cpu_offload_gb: int | None = Field(default=None, ge=0)

@@ -147,21 +147,20 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     assert scheduler._cuda_graph_runner is None
 
 
-def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
-    """The runner is CUDA-only, and the platform owns that decision rather than the
-    factory re-deriving it from the device type. A platform inheriting the base True
-    would reach the CUDA-only runner, so every non-CUDA platform declares itself.
-    """
+def test_platforms_select_supported_code2wav_graph_backends() -> None:
+    """CUDA-compatible and NPU platforms enable their graph runners."""
     from sglang_omni.platforms.cpu import CPUOmniPlatform
     from sglang_omni.platforms.cuda import CUDAOmniPlatform
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
     from sglang_omni.platforms.npu import NPUOmniPlatform
     from sglang_omni.platforms.rocm import ROCMOmniPlatform
     from sglang_omni.platforms.xpu import XPUOmniPlatform
 
     assert XPUOmniPlatform().enable_code2wav_graph() is False
-    assert NPUOmniPlatform().enable_code2wav_graph() is False
+    assert NPUOmniPlatform().enable_code2wav_graph() is True
     assert CPUOmniPlatform().enable_code2wav_graph() is False
     assert CUDAOmniPlatform().enable_code2wav_graph() is True
+    assert MUSAOmniPlatform().enable_code2wav_graph() is True
     assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 

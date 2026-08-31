@@ -82,6 +82,15 @@ def resolve_stage_typed_kwargs(stage_cfg: StageConfig) -> dict[str, Any]:
     out.update(group.model_extra or {})
     if stage_cfg.engine is not None:
         server_args_overrides = stage_cfg.engine.overrides()
+        if "disable_cuda_graph" in server_args_overrides:
+            # SGLang's phase-specific decode switch can be inspected
+            # independently of the legacy all-phase switch. Keep canonical
+            # stage configuration authoritative for both unless the user set
+            # the decode switch explicitly.
+            server_args_overrides.setdefault(
+                "disable_decode_cuda_graph",
+                server_args_overrides["disable_cuda_graph"],
+            )
         if server_args_overrides:
             out["server_args_overrides"] = server_args_overrides
     return out
