@@ -8,8 +8,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_NPU="${REPO_ROOT}/pyproject_npu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 LOCK="${REPO_ROOT}/.pyproject.npu.lock"
-SGLANG_MIN_RELEASE="0.5.18"
-SGLANG_MAX_RELEASE="0.5.19"
+SGLANG_SUPPORTED_RELEASE="0.5.18"
 
 EDITABLE="-e"
 CHECK_ONLY=0
@@ -107,13 +106,13 @@ print_summary() {
 }
 
 check_sglang_version() {
-  local supported_range=">=${SGLANG_MIN_RELEASE},<${SGLANG_MAX_RELEASE}"
+  local supported_line="${SGLANG_SUPPORTED_RELEASE} release line"
   local installed_version="not installed"
 
   if ! installed_version="$("${PYBIN}" -c 'from importlib.metadata import version; print(version("sglang"))' 2>/dev/null)"; then
     {
       echo "ERROR: SGLang version check failed."
-      echo "  supported: ${supported_range}"
+      echo "  supported: ${supported_line}"
       echo "  installed: not installed"
       echo "Install a supported Ascend NPU release:"
       echo "  https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu"
@@ -122,9 +121,9 @@ check_sglang_version() {
   fi
 
   # Compare the numeric release segment rather than PEP 440 precedence. This
-  # deliberately treats dev, pre, final, post, and local builds on the 0.5.18
-  # release line as supported, while excluding every 0.5.19 build.
-  if ! "${PYBIN}" - "${installed_version}" "${SGLANG_MIN_RELEASE}" "${SGLANG_MAX_RELEASE}" <<'PY'
+  # treats dev, pre, final, post, and local builds on the configured release
+  # line as supported while excluding every other release line.
+  if ! "${PYBIN}" - "${installed_version}" "${SGLANG_SUPPORTED_RELEASE}" <<'PY'
 import sys
 
 try:
@@ -137,14 +136,13 @@ try:
 except InvalidVersion:
     raise SystemExit(1)
 
-minimum = Version(sys.argv[2]).release
-maximum = Version(sys.argv[3]).release
-raise SystemExit(0 if minimum <= installed < maximum else 1)
+supported = Version(sys.argv[2]).release
+raise SystemExit(0 if installed[: len(supported)] == supported else 1)
 PY
   then
     {
       echo "ERROR: SGLang version check failed."
-      echo "  supported: ${supported_range}"
+      echo "  supported: ${supported_line}"
       echo "  installed: ${installed_version}"
       echo "Install a supported Ascend NPU release:"
       echo "  https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu"
@@ -364,7 +362,7 @@ verify_install() {
     echo "  [ok] sglang is importable"
   else
     echo "  [warn] sglang is not installed. Follow the Ascend NPU guide for"
-    echo "         a supported SGLang source installation (${SGLANG_MIN_RELEASE} <= version < ${SGLANG_MAX_RELEASE}):"
+    echo "         a supported SGLang ${SGLANG_SUPPORTED_RELEASE} release-line installation:"
     echo "         https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu"
   fi
 

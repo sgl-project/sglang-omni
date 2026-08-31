@@ -98,6 +98,7 @@ def test_install_uses_build_isolation_by_default(repo: Path) -> None:
         "0.5.18",
         "0.5.18+ascend",
         "0.5.18.post1",
+        "0.5.18.1",
     ],
 )
 def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None:
@@ -120,7 +121,7 @@ def test_mismatched_sglang_version_is_rejected(repo: Path, installed: str) -> No
     result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
 
     assert result.returncode != 0
-    assert "supported: >=0.5.18,<0.5.19" in result.stderr
+    assert "supported: 0.5.18 release line" in result.stderr
     assert f"installed: {installed}" in result.stderr
     assert "would run" not in result.stdout
 
@@ -129,7 +130,7 @@ def test_missing_sglang_is_rejected(repo: Path) -> None:
     result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_INSTALLED": "0"})
 
     assert result.returncode != 0
-    assert "supported: >=0.5.18,<0.5.19" in result.stderr
+    assert "supported: 0.5.18 release line" in result.stderr
     assert "installed: not installed" in result.stderr
     assert "would run" not in result.stdout
 
