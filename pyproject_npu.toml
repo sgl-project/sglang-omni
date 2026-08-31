@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 # installed manually before pip-installing sglang-omni.
 #
 # CUDA-only wheels (flashinfer, nixl-cu13, mooncake, flash-attn-4, cache-dit …)
-# are dropped; sglang is verified against v0.5.16 but cannot be pinned here --
+# are dropped; sglang is verified against v0.5.18 but cannot be pinned here --
 # every published wheel pulls CUDA torch.
 
 [project]
@@ -55,7 +55,7 @@ dependencies = [
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
-    "transformers==5.12.1",        # Match SGLang 0.5.16, as the CUDA pyproject does
+    "transformers==5.12.1",        # Match the pinned SGLang stack
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
     "huggingface-hub[hf_xet]>=0.36.0",

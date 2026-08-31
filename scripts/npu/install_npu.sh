@@ -8,7 +8,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_NPU="${REPO_ROOT}/pyproject_npu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 LOCK="${REPO_ROOT}/.pyproject.npu.lock"
-SGLANG_VERIFIED_VERSION="v0.5.16"
+SGLANG_VERIFIED_VERSION="v0.5.18"
 
 EDITABLE="-e"
 CHECK_ONLY=0
