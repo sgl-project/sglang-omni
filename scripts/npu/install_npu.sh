@@ -105,7 +105,34 @@ print_summary() {
   echo "  editable:    $([[ -n "${EDITABLE}" ]] && echo yes || echo no)"
 }
 
+check_sglang_version() {
+  local expected_version="${SGLANG_VERIFIED_VERSION#v}"
+  local installed_version
+  local public_version
+
+  if ! installed_version="$("${PYBIN}" -c 'from importlib.metadata import version; print(version("sglang"))' 2>/dev/null)"; then
+    echo "ERROR: sglang ${expected_version} is required but is not installed." >&2
+    echo "Follow the Ascend NPU installation guide:" >&2
+    echo "  https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu" >&2
+    return 1
+  fi
+
+  # Accept local build metadata such as 0.5.18+ascend while requiring the
+  # verified public release exactly. Pre/post releases remain mismatches.
+  public_version="${installed_version%%+*}"
+  if [[ "${public_version}" != "${expected_version}" ]]; then
+    echo "ERROR: sglang ${installed_version} is installed, but ${expected_version} is required." >&2
+    echo "Install the verified Ascend NPU release before installing sglang-omni:" >&2
+    echo "  https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu" >&2
+    return 1
+  fi
+
+  echo "  sglang:      ${installed_version}"
+}
+
 precheck() {
+  check_sglang_version
+
   # These packages must be installed before running this script. Keep version
   # selection in the official compatibility guides rather than hard-coding an
   # example stack here.
@@ -205,7 +232,7 @@ if torch is not None and torch_npu is not None:
             errors.append(f"NPU health check failed: {exc}")
 
 if errors:
-    print("\nERROR: NPU prerequisites are missing.", file=sys.stderr)
+    print("\nERROR: NPU prerequisites are missing or incompatible.", file=sys.stderr)
     for error in errors:
         print(f"  - {error}", file=sys.stderr)
     print(

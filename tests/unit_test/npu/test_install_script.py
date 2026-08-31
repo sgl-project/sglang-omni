@@ -27,16 +27,24 @@ def repo(tmp_path: Path) -> Path:
     fake_python = root / "fake python"
     fake_python.write_text(
         "#!/usr/bin/env bash\n"
-        'if [[ "$1" == "-c" ]]; then printf \'%s\\n\' "$0"; fi\n'
+        'if [[ "$1" == "-c" && "$2" == *\'version("sglang")\'* ]]; then\n'
+        '  [[ "${FAKE_SGLANG_INSTALLED:-1}" == "1" ]] || exit 1\n'
+        "  printf '%s\\n' \"${FAKE_SGLANG_VERSION:-0.5.18}\"\n"
+        'elif [[ "$1" == "-c" ]]; then\n'
+        "  printf '%s\\n' \"$0\"\n"
+        "fi\n"
         "exit 0\n"
     )
     fake_python.chmod(0o755)
     return root
 
 
-def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    repo: Path, *args: str, env_overrides: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PYTHON"] = str(repo / "fake python")
+    env.update(env_overrides or {})
     return subprocess.run(
         ["bash", "scripts/npu/install_npu.sh", *args],
         cwd=repo,
@@ -75,6 +83,30 @@ def test_install_uses_build_isolation_by_default(repo: Path) -> None:
 
     assert result.returncode == 0
     assert "--no-build-isolation" not in result.stdout
+
+
+@pytest.mark.parametrize("installed", ["0.5.18", "0.5.18+ascend"])
+def test_matching_sglang_version_is_accepted(repo: Path, installed: str) -> None:
+    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": installed})
+
+    assert result.returncode == 0
+    assert f"sglang:      {installed}" in result.stdout
+
+
+def test_mismatched_sglang_version_is_rejected(repo: Path) -> None:
+    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_VERSION": "0.5.16"})
+
+    assert result.returncode != 0
+    assert "sglang 0.5.16 is installed, but 0.5.18 is required" in result.stderr
+    assert "would run" not in result.stdout
+
+
+def test_missing_sglang_is_rejected(repo: Path) -> None:
+    result = _run(repo, "--check", env_overrides={"FAKE_SGLANG_INSTALLED": "0"})
+
+    assert result.returncode != 0
+    assert "sglang 0.5.18 is required but is not installed" in result.stderr
+    assert "would run" not in result.stdout
 
 
 @pytest.mark.parametrize(

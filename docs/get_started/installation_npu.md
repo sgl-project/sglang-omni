@@ -34,8 +34,9 @@ bash scripts/npu/install_npu.sh --check
 bash scripts/npu/install_npu.sh
 ```
 
-The precheck verifies the required Python packages, matching `torch` and
-`torch_npu` major-minor versions, NPU availability, and a small NPU matrix
-multiplication. Run `bash scripts/npu/install_npu.sh --help` for optional extras,
-non-editable installation, and environments where devices are intentionally not
-exposed during the build.
+The precheck verifies the exact supported SGLang release (local build metadata
+such as `0.5.18+ascend` is accepted), the required Python packages, matching
+`torch` and `torch_npu` major-minor versions, NPU availability, and a small NPU
+matrix multiplication. Run `bash scripts/npu/install_npu.sh --help` for optional
+extras, non-editable installation, and environments where devices are
+intentionally not exposed during the build.
