@@ -249,11 +249,7 @@ class RealtimeSession:
                 "Audio output is unavailable for this pipeline.",
             )
             return
-        # Note (Aryan Saini): input format is client-controlled and g711_ulaw /
-        # g711_alaw are accepted by the session schema, so an unsupported value is
-        # a protocol error, not an invariant. As an assert it either tore down the
-        # socket with no error event, or -- under python -O -- vanished, leaving
-        # session.updated granting a format the PCM16 buffer cannot decode.
+
         if candidate.input_audio_format != "pcm16":
             await self.send_error(
                 "invalid_request_error",
