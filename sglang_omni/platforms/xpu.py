@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
+    from torch.nn.attention import SDPBackend
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 
@@ -52,6 +53,20 @@ class XPUOmniPlatform(OmniPlatform):
     def enable_thinker_decode_graph(self) -> bool:
         # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
+
+    def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
+        # XPU's default SDPA selection is not capturable: it records an event the
+        # graph did not create, and capture ends with "Graph nodes cannot depend
+        # on events from outside the graph". Naming a backend -- any backend --
+        # avoids that, so name them in preference order and let SDPA fall through
+        # for shapes or masks flash declines.
+        from torch.nn.attention import SDPBackend
+
+        return (
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.MATH,
+        )
 
     def get_decode_cuda_graph_backend(self) -> str | None:
         # SGLang leaves XPU decode capture opt-in and accepts only full.

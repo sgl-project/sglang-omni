@@ -93,7 +93,7 @@ def _compile_fun_asr_audio_encoder(
 def create_sglang_fun_asr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 64,
     max_new_tokens: int = 200,

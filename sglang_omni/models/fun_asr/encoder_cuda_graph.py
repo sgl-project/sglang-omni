@@ -18,15 +18,23 @@ pad up on replay:
 
 The SANM mask is derived from a static lengths tensor *inside* the capture,
 so a replay only needs ``copy_`` of the input features and lengths.
+
+Streams, events and pools reach the device through torch.get_device_module, so
+the only per-device knowledge left is the graph type and the capture arguments,
+which _graph_api spells out.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import List, Optional, Tuple
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any, List, Optional, Tuple
 
 import torch
+from torch.nn.attention import sdpa_kernel
+
+from sglang_omni.platforms import current_platform
 
 from .sglang_model import _sanm_mask_from_lengths
 
@@ -35,6 +43,36 @@ logger = logging.getLogger(__name__)
 _BATCH_BUCKETS = (1, 2, 4, 8)
 _T_BUCKET_STEP = 64
 _T_BUCKET_MAX = 512  # 30 s * (1000 ms / 60 ms per LFR frame) ~= 500 frames
+
+
+def _sdpa_capture_context() -> AbstractContextManager[None]:
+    """Pin the SDPA backends the platform says a capture may use.
+
+    An empty answer means this platform's default selection already captures,
+    and pinning there would only cost the capture kernels it could pick from.
+    """
+    backends = current_platform.get_graph_capture_sdpa_backends()
+    if not backends:
+        return nullcontext()
+    return sdpa_kernel(list(backends), set_priority=True)
+
+
+def _graph_api(device: torch.device) -> tuple[Any, dict[str, Any]]:
+    """Graph type and capture keywords for a device; (None, {}) if it cannot capture.
+
+    Named per device rather than probed off the device module, so a device that
+    grows graph support opts in here deliberately instead of being captured on
+    the strength of an attribute name.
+    """
+    if device.type == "cuda":  # rocm reports cuda as well
+        # note (wilsonzheng0327): thread_local error mode -- the LM scheduler
+        # thread keeps launching kernels concurrently and must not poison this
+        # thread's capture.
+        return torch.cuda.CUDAGraph, {"capture_error_mode": "thread_local"}
+    if device.type == "xpu":
+        # torch.xpu.graph accepts no error mode, so nothing to pass.
+        return torch.xpu.XPUGraph, {}
+    return None, {}
 
 
 def _bucket_batch(b: int, max_batch: int) -> int | None:
@@ -74,6 +112,14 @@ class FunASREncoderCudaGraphRunner:
         reference = next(audio_tower.parameters())
         self._device = reference.device
         self._dtype = reference.dtype
+        self._device_module = torch.get_device_module(self._device)
+        self._graph_cls, self._capture_kwargs = _graph_api(self._device)
+        if self._graph_cls is None:
+            logger.info(
+                "Fun-ASR encoder graphs are unavailable on %s; the encoder runs "
+                "eager",
+                self._device,
+            )
         self._max_batch = max(int(max_batch_size), 1)
         self._min_free_bytes = int(float(min_free_gb) * (1024**3))
         self._warmup_iters = int(warmup_iters)
@@ -85,7 +131,7 @@ class FunASREncoderCudaGraphRunner:
         # mutates the bucket's static buffers, and both the pre-LM worker and
         # the scheduler's inline prefill path can reach get_audio_feature.
         self._lock = threading.Lock()
-        self._done_event = torch.cuda.Event()
+        self._done_event = self._device_module.Event()
         self._event_recorded = False
 
     def _forward(self, xs: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
@@ -93,7 +139,12 @@ class FunASREncoderCudaGraphRunner:
         return self._projector(enc_out, mask)
 
     def _enough_free_vram(self) -> tuple[bool, int]:
-        free, _ = torch.cuda.mem_get_info(self._device)
+        free, total = self._device_module.mem_get_info(self._device)
+        # Some accelerator runtimes report the whole card as free no matter what
+        # is resident, so what this process already reserved is the ceiling on
+        # what is left. On CUDA mem_get_info is the tighter of the two and wins.
+        headroom = int(total) - int(self._device_module.memory_reserved(self._device))
+        free = min(int(free), max(headroom, 0))
         return free >= self._min_free_bytes, free
 
     def _capture(self, batch_bucket: int, t_bucket: int, feat_dim: int) -> tuple:
@@ -108,26 +159,27 @@ class FunASREncoderCudaGraphRunner:
             )
             return self._forward(static_xs, mask)
 
-        # note (wilsonzheng0327): warmup on a fresh stream so allocator state
-        # settles before capture.
-        stream = torch.cuda.Stream(device=self._device)
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(self._warmup_iters):
-                _masked_forward()
-        torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
+        # The warmup runs under the same attention backends the capture will
+        # record, so what is captured is what was exercised. Naming backends is
+        # process-global while held, hence scoped to this one capture.
+        with _sdpa_capture_context():
+            # note (wilsonzheng0327): warmup on a fresh stream so allocator state
+            # settles before capture.
+            stream = self._device_module.Stream(device=self._device)
+            stream.wait_stream(self._device_module.current_stream())
+            with self._device_module.stream(stream):
+                for _ in range(self._warmup_iters):
+                    _masked_forward()
+            self._device_module.current_stream().wait_stream(stream)
+            self._device_module.synchronize()
 
-        if self._pool is None:
-            self._pool = torch.cuda.graph_pool_handle()
-        graph = torch.cuda.CUDAGraph()
-        # note (wilsonzheng0327): thread_local error mode -- the LM scheduler
-        # thread keeps launching kernels concurrently and must not poison this
-        # thread's capture.
-        with torch.cuda.graph(
-            graph, pool=self._pool, capture_error_mode="thread_local"
-        ):
-            static_out = _masked_forward()
+            if self._pool is None:
+                self._pool = self._device_module.graph_pool_handle()
+            graph = self._graph_cls()
+            with self._device_module.graph(
+                graph, pool=self._pool, **self._capture_kwargs
+            ):
+                static_out = _masked_forward()
         logger.info(
             "Captured Fun-ASR encoder CUDA graph batch=%d t=%d -> out %s "
             "(%d cached)",
@@ -146,6 +198,8 @@ class FunASREncoderCudaGraphRunner:
         or None when no bucket fits / capture failed (caller falls back to
         the eager path).
         """
+        if self._graph_cls is None:
+            return None
         b, t, feat_dim = xs.shape
         batch_bucket = _bucket_batch(b, self._max_batch)
         t_bucket = _bucket_t(t)
@@ -171,15 +225,19 @@ class FunASREncoderCudaGraphRunner:
                     self._failed.add(key)
                     return None
                 try:
-                    with torch.cuda.device(self._device):
+                    with self._device_module.device(self._device):
                         entry = self._capture(batch_bucket, t_bucket, feat_dim)
                 except Exception as exc:
+                    # The traceback names the op that refused, which the message
+                    # alone does not; a bucket only fails once before it is
+                    # blacklisted, so this cannot repeat per request.
                     logger.warning(
                         "Fun-ASR encoder CUDA graph capture failed for "
                         "batch=%d t=%d: %s; using eager for this bucket",
                         batch_bucket,
                         t_bucket,
                         exc,
+                        exc_info=True,
                     )
                     self._failed.add(key)
                     return None
@@ -188,7 +246,7 @@ class FunASREncoderCudaGraphRunner:
             graph, static_xs, static_ilens, static_out = entry
             if static_xs.shape[-1] != feat_dim:
                 return None
-            stream = torch.cuda.current_stream(self._device)
+            stream = self._device_module.current_stream(self._device)
             # note (wilsonzheng0327): wait for previous caller's output copy
             # on some stream to finish before using shared resource
             if self._event_recorded:
