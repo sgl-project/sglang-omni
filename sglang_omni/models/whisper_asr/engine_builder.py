@@ -242,15 +242,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
         overrides["enable_custom_logit_processor"] = True
-        if overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED:
-            overrides.pop("cuda_graph_bs_prefill", None)
-            overrides.pop("cuda_graph_max_bs_prefill", None)
-            return
-        if "cuda_graph_bs_prefill" in overrides:
-            overrides.setdefault(
-                "cuda_graph_max_bs_prefill",
-                max(int(size) for size in overrides["cuda_graph_bs_prefill"]),
-            )
+        if (
+            overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED
+            or "cuda_graph_bs_prefill" in overrides
+        ):
             return
 
         cap = min(

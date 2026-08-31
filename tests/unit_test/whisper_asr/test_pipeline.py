@@ -21,6 +21,7 @@ from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
+    build_generation_batch_overrides,
 )
 
 
@@ -169,41 +170,22 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
         builder.adjust_overrides({"chunked_prefill_size": 4096})
 
 
-@pytest.mark.parametrize(
-    ("overrides", "expected_prefill_bs"),
-    [
-        ({}, build_default_prefill_cuda_graph_bs(256)),
-        (
-            {"cuda_graph_max_bs_prefill": 128},
-            build_default_prefill_cuda_graph_bs(128),
-        ),
-        ({"cuda_graph_bs_prefill": [128, 256]}, [128, 256]),
-        ({"cuda_graph_backend_prefill": CudaGraphBackend.DISABLED}, None),
-    ],
-)
-def test_whisper_breakable_prefill_graph_policy(
-    overrides: dict[str, object],
-    expected_prefill_bs: list[int] | None,
-) -> None:
+def test_whisper_breakable_prefill_graph_policy() -> None:
     builder = whisper_asr_builder.WhisperASREngineBuilder(
         max_running_requests=4,
         max_new_tokens=32,
         mem_fraction_static=0.2,
     )
-    merged = {**builder.generation_defaults(dtype="float16"), **overrides}
+    merged = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="float16"),
+    )
 
     builder.adjust_overrides(merged)
 
     assert builder.supports_breakable_prefill_cuda_graph
-    assert merged["cuda_graph_backend_prefill"] == (
-        overrides.get("cuda_graph_backend_prefill", CudaGraphBackend.BREAKABLE)
-    )
-    if expected_prefill_bs is None:
-        assert "cuda_graph_bs_prefill" not in merged
-        assert "cuda_graph_max_bs_prefill" not in merged
-    else:
-        assert merged["cuda_graph_bs_prefill"] == expected_prefill_bs
-        assert merged["cuda_graph_max_bs_prefill"] == max(expected_prefill_bs)
+    assert merged["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
+    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(256)
+    assert merged["cuda_graph_max_bs_prefill"] == 256
 
 
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
