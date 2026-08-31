@@ -39,6 +39,8 @@ def _encoder_graph_builder(**kwargs):
 def test_whisper_stage_defaults() -> None:
     signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
 
+    assert signature.parameters["device"].default is None
+    assert signature.parameters["gpu_id"].default is None
     assert signature.parameters["max_running_requests"].default == 64
     assert signature.parameters["enable_encoder_cuda_graph"].default is False
     assert signature.parameters["encoder_graph_batch_buckets"].default is None
@@ -215,7 +217,7 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert stage.factory_path.endswith("create_sglang_whisper_asr_executor")
     assert stage.engine.max_running_requests == 64
     factory = stage.factory
-    assert factory.device == "cuda:0"
+    assert factory.device is None
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True

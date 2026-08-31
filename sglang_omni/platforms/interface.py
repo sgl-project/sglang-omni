@@ -60,3 +60,8 @@ class OmniPlatform(DeviceMixin):
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
+
+    def cross_attention_backend(self) -> str | None:
+        """Attention backend for encoder-decoder cross attention, or None to keep
+        the engine's platform default."""
+        return None

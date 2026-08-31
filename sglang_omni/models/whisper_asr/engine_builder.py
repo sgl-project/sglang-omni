@@ -238,7 +238,9 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["enable_custom_logit_processor"] = True
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        return {
+        from sglang_omni.platforms import current_platform
+
+        defaults: dict[str, Any] = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
@@ -249,6 +251,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }
+        # The platform owns whether Whisper's encoder-decoder cross attention
+        # needs a specific backend (SGLang's default forces CUDA-only flashinfer).
+        cross_attn_backend = current_platform.cross_attention_backend()
+        if cross_attn_backend is not None:
+            defaults["attention_backend"] = cross_attn_backend
+        return defaults
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model

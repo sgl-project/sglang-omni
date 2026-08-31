@@ -207,6 +207,9 @@ class WhisperSGLangSelfAttention(nn.Module):
         key = key.view(-1, self.num_heads, self.head_dim)
         value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
+        # Flatten heads so out_proj sees [num_tokens, embed_dim] regardless of
+        # whether the attention backend returns 2D (flashinfer) or 3D (torch_native).
+        attn_output = attn_output.reshape(attn_output.shape[0], -1)
         return self.out_proj(attn_output)
 
 
@@ -252,6 +255,9 @@ class WhisperSGLangCrossAttention(nn.Module):
             key = key.view(-1, self.num_heads, self.head_dim)
             value = value.view(-1, self.num_heads, self.head_dim)
         attn_output = self.attn(query, key, value, forward_batch)
+        # Flatten heads so out_proj sees [num_tokens, embed_dim] regardless of
+        # whether the attention backend returns 2D (flashinfer) or 3D (torch_native).
+        attn_output = attn_output.reshape(attn_output.shape[0], -1)
         return self.out_proj(attn_output)
 
 
