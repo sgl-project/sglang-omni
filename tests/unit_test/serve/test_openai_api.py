@@ -319,6 +319,30 @@ class SuccessfulTranscriptionClient:
         )
 
 
+def test_chat_rejects_unknown_model_before_dispatch() -> None:
+    backend = SuccessfulTranscriptionClient()
+    client = TestClient(create_app(backend, model_name="served-model"))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "unknown/model",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "message": "The model 'unknown/model' does not exist.",
+            "type": "invalid_request_error",
+            "param": "model",
+            "code": "model_not_found",
+        }
+    }
+    assert backend.requests == []
+
+
 class ChunkRecordingTranscriptionClient:
     """Records (request_id, request) pairs; can fail one chunk by index.
 
@@ -1454,6 +1478,28 @@ def test_transcription_request_builds_asr_generate_request() -> None:
     assert gen_req.metadata == {"task": "asr"}
     assert gen_req.output_modalities == ["text"]
     assert gen_req.stream is False
+
+
+def test_transcription_rejects_unknown_model_before_dispatch() -> None:
+    backend = SuccessfulTranscriptionClient()
+    client = TestClient(create_app(backend, model_name="served-model"))
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "unknown/model"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "message": "The model 'unknown/model' does not exist.",
+            "type": "invalid_request_error",
+            "param": "model",
+            "code": "model_not_found",
+        }
+    }
+    assert backend.requests == []
 
 
 def test_transcription_request_preserves_explicit_empty_language() -> None:

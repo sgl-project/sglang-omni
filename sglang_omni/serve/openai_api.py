@@ -104,6 +104,7 @@ from sglang_omni.serve.speech_errors import (
     bad_request,
     internal_error,
     openai_error_payload,
+    resolve_served_model,
     speech_error_response,
     speech_generation_error,
 )
@@ -658,7 +659,10 @@ def _register_chat_completions(app: FastAPI) -> None:
         request_id = req.request_id or str(uuid.uuid4())
         response_id = f"chatcmpl-{request_id}"
         created = int(time.time())
-        model = req.model or default_model
+        try:
+            model = resolve_served_model(req.model, default_model)
+        except SpeechAPIError as exc:
+            return speech_error_response(exc)
 
         gen_req = _build_chat_generate_request(req)
 

@@ -75,6 +75,24 @@ def speech_error_response(error: SpeechAPIError) -> JSONResponse:
     )
 
 
+def resolve_served_model(
+    requested_model: str | None,
+    default_model: str,
+) -> str:
+    """Resolve the requested model or reject names this server does not serve."""
+
+    model = requested_model or default_model
+    if model != default_model:
+        raise SpeechAPIError(
+            message=f"The model {model!r} does not exist.",
+            status_code=404,
+            error_type="invalid_request_error",
+            param="model",
+            code="model_not_found",
+        )
+    return model
+
+
 def speech_websocket_error_payload(error: SpeechAPIError) -> dict[str, Any]:
     """Build the public error event used by speech WebSocket transports."""
     payload: dict[str, Any] = {

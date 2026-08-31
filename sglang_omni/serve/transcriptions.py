@@ -17,6 +17,11 @@ from sglang_omni.config import AudioChunkingConfig
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import TranscriptionResponse, TranscriptionUsage
+from sglang_omni.serve.speech_errors import (
+    SpeechAPIError,
+    resolve_served_model,
+    speech_error_response,
+)
 from sglang_omni.serve.transcription_adapters import TranscriptionAdapter
 from sglang_omni.serve.transcription_chunking import (
     ChunkPlan,
@@ -62,6 +67,10 @@ def register_transcriptions(app: FastAPI) -> None:
         client: Client = app.state.client
         default_model: str = app.state.model_name
         request_id = f"transcription-{uuid.uuid4()}"
+        try:
+            model = resolve_served_model(form.model, default_model)
+        except SpeechAPIError as exc:
+            return speech_error_response(exc)
 
         response_format = form.response_format.strip().lower()
         segment_timestamps = response_format in speech_to_text.SEGMENT_RESPONSE_FORMATS
@@ -112,7 +121,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 audio_bytes=audio_bytes,
                 filename=form.file.filename,
                 content_type=form.file.content_type,
-                model=form.model or default_model,
+                model=model,
                 language=form.language,
                 prompt=form.prompt,
                 temperature=form.temperature,
@@ -169,7 +178,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 audio_bytes=audio_bytes,
                 filename=form.file.filename,
                 content_type=form.file.content_type,
-                model=form.model or default_model,
+                model=model,
                 language=form.language,
                 prompt=form.prompt,
                 temperature=form.temperature,
@@ -204,7 +213,7 @@ def register_transcriptions(app: FastAPI) -> None:
                     client,
                     plan,
                     request_id=request_id,
-                    model=form.model or default_model,
+                    model=model,
                     filename=form.file.filename,
                     language=form.language,
                     prompt=form.prompt,
