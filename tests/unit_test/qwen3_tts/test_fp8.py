@@ -59,9 +59,7 @@ def test_qwen3_tts_fp8_is_routed_only_to_talker_mlp(monkeypatch) -> None:
     assert seen == {"attention": None, "mlp": quant_config}
 
 
-def test_qwen3_tts_talker_forwards_fp8_to_main_and_predictor_mlps(
-    monkeypatch,
-) -> None:
+def test_qwen3_tts_fp8_reaches_main_and_predictor_layers(monkeypatch) -> None:
     quant_config = object()
     seen: list[object] = []
 
@@ -72,7 +70,7 @@ def test_qwen3_tts_talker_forwards_fp8_to_main_and_predictor_mlps(
             seen.append(quant_config)
             self.self_attn = SimpleNamespace(num_kv_heads=1, head_dim=4)
 
-    class FakeLinear(nn.Module):
+    class FakeReplicatedLinear(nn.Module):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__()
 
@@ -95,8 +93,7 @@ def test_qwen3_tts_talker_forwards_fp8_to_main_and_predictor_mlps(
     monkeypatch.setattr(
         sglang_model, "Qwen3TTSTalkerDecoderLayer", RecordingDecoderLayer
     )
-    monkeypatch.setattr(sglang_model, "ResizeMLP", FakeLinear)
-    monkeypatch.setattr(sglang_model, "ReplicatedLinear", FakeLinear)
+    monkeypatch.setattr(sglang_model, "ReplicatedLinear", FakeReplicatedLinear)
     monkeypatch.setattr(
         sglang_model,
         "RMSNorm",
@@ -107,15 +104,8 @@ def test_qwen3_tts_talker_forwards_fp8_to_main_and_predictor_mlps(
         "get_global_server_args",
         lambda: SimpleNamespace(max_running_requests=1),
     )
-    monkeypatch.setattr(
-        sglang_model.Qwen3TTSTalker,
-        "_normalize_predictor_graph_batch_sizes",
-        lambda *args, **kwargs: (1,),
-    )
-    monkeypatch.setattr(
-        sglang_model, "_bind_default_weight_loaders", lambda model: None
-    )
 
-    sglang_model.Qwen3TTSTalker(config, quant_config=quant_config)
+    sglang_model.Qwen3TTSTalkerTextModel(config, quant_config=quant_config)
+    sglang_model.Qwen3TTSCodePredictor(config, quant_config=quant_config)
 
     assert seen == [quant_config, quant_config]
