@@ -555,12 +555,6 @@ impl Config {
                 "must enable speech or realtime",
             ));
         }
-        if !self.server.listen.ip().is_loopback() {
-            return Err(ConfigError::invalid(
-                "server.listen",
-                "WebSocket routes require a loopback listener",
-            ));
-        }
         for (field, value, maximum) in [
             (
                 "websocket.uri_max_bytes",
