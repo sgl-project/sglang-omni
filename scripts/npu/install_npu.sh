@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install sglang-omni against a pre-installed Huawei Ascend NPU stack.
+# Install sglang-omni against a pre-installed Ascend NPU stack.
 
 set -euo pipefail
 
@@ -98,7 +98,7 @@ configure_install() {
 }
 
 print_summary() {
-  echo "=== sglang-omni Huawei Ascend NPU install ==="
+  echo "=== sglang-omni Ascend NPU install ==="
   echo "  repo:        ${REPO_ROOT}"
   echo "  python:      $("${PYBIN}" -c 'import sys; print(sys.executable)')"
   echo "  target:      ${TARGET}"

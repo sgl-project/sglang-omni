@@ -4,7 +4,7 @@
 requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
-# Huawei Ascend NPU variant of pyproject.toml (see docs/get_started/installation_npu.md).
+# Ascend NPU variant of pyproject.toml (see docs/get_started/installation_npu.md).
 # Mirrors upstream SGLang's pyproject_npu.toml where srt_npu = [] — torch,
 # torch_npu, triton-ascend, and memfabric are NOT pinned here and must be
 # installed manually before pip-installing sglang-omni.
@@ -16,7 +16,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sglang-omni"
 dynamic = ["version"]
-description = "Multi-stage pipeline framework for omni models (Huawei Ascend NPU build)"
+description = "Multi-stage pipeline framework for omni models (Ascend NPU build)"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -42,8 +42,8 @@ dependencies = [
     # srt_npu = [].  These packages must be installed manually before
     # pip-installing sglang-omni, because:
     #   1. torch_npu wheels are arch-specific (aarch64/x86) and often hosted
-    #      on Huawei OBS rather than PyPI;
-    #   2. triton-ascend requires a Huawei cloud mirror index;
+    #      in Ascend repositories rather than PyPI;
+    #   2. triton-ascend requires an Ascend package index;
     #   3. versions are tightly coupled to the host CANN toolkit release.
     #
     # Refer to the SGLang Ascend NPU install guide for the component version
