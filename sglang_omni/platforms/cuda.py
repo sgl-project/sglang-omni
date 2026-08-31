@@ -47,6 +47,12 @@ def _is_fp8_cutlass_moe_supported() -> bool:
     )
 
 
+def _enable_triton_w8a8_fp8_kernel() -> None:
+    from sglang.srt.layers.quantization import fp8_utils
+
+    fp8_utils.use_triton_w8a8_fp8_kernel = True
+
+
 class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
     def get_stage_process_env(
         self,
@@ -166,6 +172,28 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             )
 
         fp8_gemm_backend = normalize_quantization(server_args.fp8_gemm_runner_backend)
+        if (
+            model_arch_override == "Qwen3TTSTalker"
+            and effective_quantization == "fp8"
+            and not server_args.disable_cuda_graph
+            and fp8_gemm_backend in (None, "auto")
+        ):
+            override_server_args(
+                server_args,
+                "sglang-omni-qwen3-tts-backend-policy",
+                fp8_gemm_runner_backend="triton",
+            )
+            fp8_gemm_backend = server_args.fp8_gemm_runner_backend
+
+        if (
+            model_arch_override == "Qwen3TTSTalker"
+            and effective_quantization == "fp8"
+            and fp8_gemm_backend == "triton"
+        ):
+            # SGLang 0.5.18's dynamic per-token/per-channel path still selects
+            # its dense GEMM through this compatibility switch.
+            _enable_triton_w8a8_fp8_kernel()
+
         if (
             model_arch_override == "Qwen3OmniTalker"
             and effective_quantization == "fp8"

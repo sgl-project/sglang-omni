@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from torch import nn
 
 from sglang_omni.models.qwen3_tts import sglang_model
+from sglang_omni.platforms import cuda
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
 
 
 def _decoder_config() -> SimpleNamespace:
@@ -109,3 +111,35 @@ def test_qwen3_tts_fp8_reaches_main_and_predictor_layers(monkeypatch) -> None:
     sglang_model.Qwen3TTSCodePredictor(config, quant_config=quant_config)
 
     assert seen == [quant_config, quant_config]
+
+
+def test_qwen3_tts_fp8_cuda_graph_uses_triton_gemm(monkeypatch) -> None:
+    enabled: list[bool] = []
+    server_args = SimpleNamespace(
+        quantization="fp8",
+        moe_runner_backend="auto",
+        fp8_gemm_runner_backend="auto",
+        fp4_gemm_runner_backend="auto",
+        disable_cuda_graph=False,
+        ep_size=1,
+    )
+    model_config = SimpleNamespace(
+        quantization=None,
+        hf_text_config=SimpleNamespace(),
+        hf_config=SimpleNamespace(quantization_config=None),
+    )
+    monkeypatch.setattr(
+        cuda,
+        "_enable_triton_w8a8_fp8_kernel",
+        lambda: enabled.append(True),
+    )
+
+    effective_quantization = CUDAOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        model_config,
+        "Qwen3TTSTalker",
+    )
+
+    assert effective_quantization == "fp8"
+    assert server_args.fp8_gemm_runner_backend == "triton"
+    assert enabled == [True]
