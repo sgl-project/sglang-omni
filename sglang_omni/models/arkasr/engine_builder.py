@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
@@ -15,6 +16,8 @@ from sglang_omni.models.arkasr.encoder_service import (
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
+
+logger = logging.getLogger(__name__)
 
 
 class ArkasrEngineBuilder(AsrEngineBuilder):
@@ -35,12 +38,17 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         mm_attention_backend: str | None,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        prefill_coalesce_requests: int,
+        prefill_coalesce_wait_ms: float,
+        prefill_coalesce_when_idle: bool,
+        prefill_coalesce_requires_pending_builds: bool,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_max_pending: int = 32,
+        enable_encoder_cuda_graph: bool = False,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -56,7 +64,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             )
         self.max_running_requests = max_running_requests
         self.encoder_max_batch_size = encoder_max_batch_size
-        self.max_new_tokens = int(max_new_tokens)
+        self.max_new_tokens = max_new_tokens
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.mem_fraction_static = mem_fraction_static
@@ -65,12 +73,19 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self.mm_attention_backend = mm_attention_backend
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
+        self.prefill_coalesce_requires_pending_builds = (
+            prefill_coalesce_requires_pending_builds
+        )
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
         self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
         self.pre_lm_cache_size_bytes = pre_lm_cache_size_bytes
         self.pre_lm_max_batch_size = pre_lm_max_batch_size
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.pre_lm_max_pending = pre_lm_max_pending
+        self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
         self.tokenizer: Any = None
         self.feature_extractor: Any = None
         self.merge_factor = 4
@@ -88,9 +103,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         hf_config = AutoConfig.from_pretrained(checkpoint_dir, trust_remote_code=True)
         self.merge_factor = int(getattr(hf_config, "merge_factor", 4))
         self.audio_token_id = int(getattr(hf_config, "audio_token_id", 151663))
-        encoder_token_count = int(
-            getattr(self.feature_extractor, "nb_max_frames", 3000) // 2
-        )
+        encoder_token_count = self.feature_extractor.nb_max_frames // 2
         self.context_length = encoder_token_count + self.max_new_tokens + 8
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
@@ -122,9 +135,25 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
     ) -> None:
         del generation_cuda_graph_enabled
         model.set_encoder_max_batch_size(self.encoder_max_batch_size)
+        if self.enable_encoder_cuda_graph:
+            from sglang_omni.models.arkasr.encoder_cuda_graph import (
+                ArkasrEncoderCudaGraphRunner,
+            )
+
+            runner = ArkasrEncoderCudaGraphRunner(
+                model.audio_encoder,
+                max_batch_size=self.encoder_max_batch_size,
+                max_mel_frames=self.feature_extractor.nb_max_frames,
+            )
+            runner.capture_working_set(self.feature_extractor.feature_size)
+            model.encoder_cuda_graph_runner = runner
+            logger.info(
+                "ARK-ASR encoder CUDA graphs enabled (working-set precapture, max_batch=%d)",
+                self.encoder_max_batch_size,
+            )
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_pre_lm_encoder:
-            # Note (Akazaakane): Constructed after generation CUDA graphs so the
+            # note (guozhihao-224): constructed after generation CUDA graphs so the
             # encoder's dedicated stream never interleaves with graph capture.
             self.audio_encoder_service = ArkasrPreLMEncoderService(
                 model,
@@ -170,4 +199,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
+            "prefill_coalesce_requires_pending_builds": (
+                self.prefill_coalesce_requires_pending_builds
+            ),
         }

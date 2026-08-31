@@ -858,6 +858,11 @@ class Qwen3OmniTalker(nn.Module):
             isinstance(layer.self_attn.rotary_emb, MRotaryEmbedding)
             for layer in self.model.layers
         )
+        # The prefill CUDA graph runner picks capture-time positions by probing
+        # this; if it disagrees with forward() below, MRotaryEmbedding takes its
+        # out-of-place path and the rebuilt q/k do not survive a graph-segment
+        # boundary, leaving attention to run on zeros.
+        self.is_mrope_enabled = self._uses_mrope
         self.codec_head = ReplicatedLinear(
             config.text_config.hidden_size,
             config.text_config.vocab_size,
@@ -1221,6 +1226,7 @@ class Qwen3OmniTalker(nn.Module):
         input_deepstack_embeds: Optional[torch.Tensor] = None,
         input_deepstack_mask: Optional[torch.Tensor] = None,
         input_embeds_are_projected: bool = False,
+        omni_prefill_rids: Optional[list[str] | tuple[str, ...]] = None,
     ):
         """Forward pass through the talker MoE backbone.
 
@@ -1236,10 +1242,13 @@ class Qwen3OmniTalker(nn.Module):
             input_deepstack_embeds: optional layer-N thinker hidden states
             input_deepstack_mask: positions that should use hidden_projection
             input_embeds_are_projected: whether `input_embeds` is already in talker space
+            omni_prefill_rids: request ids SGLModelRunner forwards alongside the
+                Omni prefill sidecar; the talker keys nothing off them
 
         Returns:
             LogitsProcessorOutput with codec logits
         """
+        del omni_prefill_rids
         if forward_batch.forward_mode.is_extend():
             self.invalidate_decode_buffers()
 
@@ -1360,7 +1369,7 @@ class Qwen3OmniTalker(nn.Module):
             # Keep sampler control flow static during graph capture while
             # preserving SGLang's actual sampling kernel semantics.
             is_all_greedy=False,
-            # Added by 0.5.16 as a required field. Only the dspark speculative
+            # A required field. Only the dspark speculative
             # verify path reads it (the regular sampler branches on
             # is_all_greedy alone), and this scheduler refuses speculative
             # decoding, so False is inert here -- it also matches what upstream
@@ -1372,12 +1381,7 @@ class Qwen3OmniTalker(nn.Module):
             need_min_p_sampling=False,
             vocab_size=self.config.text_config.vocab_size,
             grammars=[],
-            vocab_mask=None,
-            apply_mask_func=None,
             penalizer_orchestrator=None,
-            # Note:(Chenchen Hong) SGLang 0.5.12.post1 replaced the single
-            # acc_linear_penalties field with acc_additive_penalties /
-            # acc_scaling_penalties (both default None); leave them unset.
             has_custom_logit_processor=False,
             custom_params=None,
             custom_logit_processor=None,
@@ -1398,7 +1402,6 @@ class Qwen3OmniTalker(nn.Module):
         # The static-padded variant that used ForwardBatch.padded_static_len is
         # gone: only the EAGLE draft-extend graph runners ever set that field,
         # and the talker refuses speculative decoding, so it was always -1 here.
-        # sglang 0.5.16 removed the field and the matching upstream branch.
         seq_lens = extend_seq_lens.to(device=device)
         return torch.cumsum(seq_lens, dim=0) - 1
 

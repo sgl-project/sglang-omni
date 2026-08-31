@@ -9,7 +9,6 @@ _SPEECH_STAGE_ORDER = (
     "preprocessing",
     "image_encoder",
     "audio_encoder",
-    "mm_aggregate",
     "thinker",
     "decode",
     "talker_ar",
@@ -46,24 +45,41 @@ class Qwen3OmniPlacementPolicy:
             return
 
         if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
+            self._validate_colocated_qwen_replicas(plan)
             self._validate_colocated_qwen_parallelism(stage_map)
             self._validate_colocated_qwen_topology(plan)
             self._validate_colocated_qwen_runtime(stage_map)
             return
 
-        thinker = plan.stages.get("thinker")
-        talker = plan.stages.get("talker_ar")
-        if thinker is None or talker is None:
-            return
-        if thinker.tp_size != 1 or talker.tp_size != 1:
-            return
-        if not set(thinker.gpu_ids).intersection(talker.gpu_ids):
-            return
+        thinkers = plan.instances_of("thinker")
+        talkers = plan.instances_of("talker_ar")
+        has_replicated_ar_stage = len(thinkers) > 1 or len(talkers) > 1
+        for thinker in thinkers:
+            for talker in talkers:
+                if not has_replicated_ar_stage and (
+                    thinker.tp_size != 1 or talker.tp_size != 1
+                ):
+                    continue
+                if not set(thinker.gpu_ids).intersection(talker.gpu_ids):
+                    continue
+                raise ValueError(
+                    f"Qwen thinker and talker_ar ({talker.stage_name!r}) may "
+                    f"share a GPU only with {_COLOCATED_CONFIG_CLASS}"
+                )
 
-        raise ValueError(
-            "Qwen thinker and talker_ar may share a GPU only with "
-            f"{_COLOCATED_CONFIG_CLASS}"
+    def _validate_colocated_qwen_replicas(self, plan: StagePlacementPlan) -> None:
+        # Note (kaige): read the expanded plan rather than the pre-expansion
+        # stage config, because replica counts now live on the process.
+        replicated = sorted(
+            name
+            for name, instances in plan.replica_instances.items()
+            if len(instances) > 1
         )
+        if replicated:
+            raise ValueError(
+                "Qwen colocated speech does not support process replicas; "
+                f"got replicated stage(s) {replicated}"
+            )
 
     def _validate_colocated_qwen_parallelism(self, stage_map) -> None:
         for stage_name in _AR_STAGES:
@@ -79,7 +95,7 @@ class Qwen3OmniPlacementPolicy:
             missing = sorted(_SPEECH_STAGE_SET - names)
             extra = sorted(names - _SPEECH_STAGE_SET)
             raise ValueError(
-                "Qwen speech must use the eight configured stages; "
+                "Qwen speech must use the seven configured stages; "
                 f"missing={missing}, extra={extra}"
             )
 
@@ -107,26 +123,25 @@ class Qwen3OmniPlacementPolicy:
         missing_budgets = [
             stage_name
             for stage_name in sorted(_COLOCATED_BUDGET_STAGES)
-            if (
-                stage_map[stage_name].runtime.resources.total_gpu_memory_fraction
-                is None
-            )
+            if stage_map[stage_name].gpu_memory_fraction is None
         ]
         if missing_budgets:
             raise ValueError(
-                "Qwen colocated speech requires total_gpu_memory_fraction for "
+                "Qwen colocated speech requires gpu_memory_fraction for "
                 f"{missing_budgets}"
             )
 
         for stage_name in _AR_STAGES:
             stage = stage_map[stage_name]
-            total_fraction = stage.runtime.resources.total_gpu_memory_fraction
-            mem_fraction = stage.runtime.sglang_server_args.mem_fraction_static
+            total_fraction = stage.gpu_memory_fraction
+            mem_fraction = (
+                stage.engine.mem_fraction_static if stage.engine is not None else None
+            )
             if mem_fraction is None:
                 continue
             if abs(mem_fraction - total_fraction) > 1e-3:
                 raise ValueError(
                     f"Qwen colocated speech stage {stage_name} sets conflicting "
-                    "memory fractions: total_gpu_memory_fraction="
+                    "memory fractions: gpu_memory_fraction="
                     f"{total_fraction:.3f}, mem_fraction_static={mem_fraction:.3f}"
                 )

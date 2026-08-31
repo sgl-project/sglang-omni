@@ -23,7 +23,7 @@ jobs:
     name: unit-test
     runs-on: [self-hosted, h100]
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -43,8 +43,42 @@ jobs:
       - name: Run test
         timeout-minutes: 30
         shell: bash
+        env:
+          # note (Jingwen): Hide CUDA from the default unit-test process. Tests
+          # that need an accelerator belong in the unit-test-accelerator job below.
+          CUDA_VISIBLE_DEVICES: ""
         run: |
           source omni/bin/activate
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark" -x
+            pytest tests/ -v -m "not benchmark and not accelerator" -x
+
+  unit-test-accelerator:
+    name: unit-test-accelerator
+    runs-on: [self-hosted, h100]
+    container:
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run accelerator test
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/ -v -m "accelerator and not benchmark" -x

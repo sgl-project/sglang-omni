@@ -16,6 +16,7 @@ import torch
 from torch import Tensor
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -131,14 +132,16 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_residual_diff_threshold: float = 0.08,
         cache_dit_max_continuous_cached_steps: int = 1,
     ) -> None:
-        if not torch.cuda.is_available():
-            raise RuntimeError("MiniMax Music 3 acoustic inference requires CUDA")
+        if not (current_platform.is_cuda() or current_platform.is_musa()):
+            raise RuntimeError(
+                "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
+            )
         torch.backends.cudnn.enabled = False
         torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
-        if self.device.type != "cuda":
+        if self.device.type not in ("cuda", "musa"):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA device"
+                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA device"
             )
         self.dtype = _resolve_acoustic_dtype(dtype)
         if self.dtype is torch.float32:

@@ -66,7 +66,7 @@ def _make_config(base_path: Path) -> PipelineConfig:
             StageConfig(
                 name="preprocessing",
                 process="pipeline",
-                factory=f"{__name__}.noop_factory",
+                factory_path=f"{__name__}.noop_factory",
                 terminal=True,
             )
         ],
@@ -158,7 +158,6 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             config,
             FakeMpContext(),
             stages_cfg=prep_a.stages_cfg,
-            name_map=prep_a.name_map,
             endpoints=prep_a.endpoints,
             placement_plan=prep_a.placement_plan,
             process_plan=prep_a.process_plan,
@@ -167,7 +166,6 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             config,
             FakeMpContext(),
             stages_cfg=prep_b.stages_cfg,
-            name_map=prep_b.name_map,
             endpoints=prep_b.endpoints,
             placement_plan=prep_b.placement_plan,
             process_plan=prep_b.process_plan,
@@ -245,6 +243,10 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.channels_closed = False
 
         @property
+        def process_specs(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(process_name=self.stage_name)] * len(self.processes)
+
+        @property
         def processes(self) -> list[FakeProcess]:
             return [self.process] if self.process is not None else []
 
@@ -291,7 +293,7 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
             StageConfig(
                 name="preprocessing",
                 process="pipeline",
-                factory=f"{__name__}.failing_factory",
+                factory_path=f"{__name__}.failing_factory",
                 terminal=True,
             )
         ],
@@ -299,8 +301,11 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     )
     runner = mp_runner.MultiProcessPipelineRunner(config)
 
+    # A cold child can spend close to 10s importing torch before the factory
+    # even runs; the dead-process fail-fast branch needs the child to have
+    # exited, so give slow hosts room instead of racing the teardown.
     with pytest.raises(RuntimeError, match="factory boom"):
-        await runner.start(timeout=10.0)
+        await runner.start(timeout=30.0)
 
     assert list(tmp_path.iterdir()) == []
 
@@ -320,14 +325,18 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             entry_stage: str,
             terminal_stages: list[str] | None = None,
             terminal_stages_resolver=None,
-            **_kwargs,
+            replica_topology=None,
+            logical_process_plan=None,
+            max_in_flight=None,
         ) -> None:
             del (
                 abort_endpoint,
                 entry_stage,
                 terminal_stages,
                 terminal_stages_resolver,
-                _kwargs,
+                replica_topology,
+                logical_process_plan,
+                max_in_flight,
             )
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
@@ -371,7 +380,8 @@ async def test_mp_runner_stop_cleans_runtime_dir(
         def dead_summary(self) -> str:
             return "(none)"
 
-        async def shutdown(self) -> None:
+        async def shutdown(self, before_signal=None) -> None:
+            del before_signal
             self.shutdown_called = True
 
     group = FakeGroup()

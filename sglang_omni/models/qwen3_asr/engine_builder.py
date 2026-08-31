@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.utils import get_hip_version, is_gfx95_supported
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
 from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
@@ -18,10 +19,12 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
+    clamp_prefill_cuda_graph_max_bs,
     get_decode_cuda_graph_bs,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
@@ -54,11 +57,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
         prefill_coalesce_after_builds_during_decode: bool,
+        stream_emit_interval_s: float,
         enable_pre_lm_encoder: bool = True,
         pre_lm_cache_max_entries: int = 4096,
         pre_lm_cache_size_bytes: int = 2 * 1024**3,
         pre_lm_max_batch_size: int = 8,
         pre_lm_max_batch_wait_ms: int = 0,
+        enable_encoder_cuda_graph: bool = True,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -88,16 +93,19 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.prefill_coalesce_after_builds_during_decode = (
             prefill_coalesce_after_builds_during_decode
         )
+        self.stream_emit_interval_s = stream_emit_interval_s
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
         self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
         self.pre_lm_cache_size_bytes = pre_lm_cache_size_bytes
         self.pre_lm_max_batch_size = pre_lm_max_batch_size
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
+        self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
         self.tokenizer: Any = None
         self.feature_extractor: Any = None
         self.context_length = 0
         self.model_path: str | None = None
         self.audio_encoder_service: Any = None
+        self._should_wait_for_encode: Callable[[], bool] | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -130,6 +138,15 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+        # ROCm 7.2's AITER batch-prefill specialization is inaccurate for the
+        # Qwen3-ASR attention shape on gfx950. Keep decode on the selected
+        # backend, but use Triton for prefill until the affected stack is fixed.
+        if (
+            current_platform.is_rocm()
+            and is_gfx95_supported()
+            and get_hip_version()[:2] == (7, 2)
+        ):
+            defaults["prefill_attention_backend"] = "triton"
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
         else:
@@ -177,21 +194,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             return
         if "cuda_graph_bs_prefill" in overrides:
             return
-        # note(ratish): derived from the merged caps: a ladder past any of
-        # them fails startup or captures buckets that can never replay.
-        caps = [
-            overrides["max_prefill_tokens"],
-            overrides.get("cuda_graph_max_bs_prefill"),
-            overrides.get("max_total_tokens"),
-            self.context_length,
-        ]
-        if overrides["chunked_prefill_size"] > 0:
-            caps.append(overrides["chunked_prefill_size"])
-        ladder = build_default_prefill_cuda_graph_bs(
-            min(int(cap) for cap in caps if cap is not None)
+        cap = clamp_prefill_cuda_graph_max_bs(
+            overrides,
+            context_length=self.context_length,
         )
+        ladder = build_default_prefill_cuda_graph_bs(cap)
         overrides["cuda_graph_bs_prefill"] = ladder
-        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
 
     def customize_server_args(self, server_args: Any) -> None:
         self.context_length = int(server_args.context_length)
@@ -205,6 +213,19 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
     ) -> None:
         del generation_cuda_graph_enabled
         self._log_memory_checkpoint("post_cuda_graph_capture")
+        if self.enable_encoder_cuda_graph:
+            from sglang_omni.models.qwen3_asr.audio_lengths import (
+                qwen3_asr_num_audio_tokens,
+            )
+            from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+
+            clip_s = Qwen3ASRPipelineConfig.audio_chunking.max_audio_clip_s
+            max_tokens_per_clip = qwen3_asr_num_audio_tokens(int(clip_s * 100))
+            model.init_encoder_graphs(
+                max_batch_size=self.pre_lm_max_batch_size,
+                max_tokens_per_clip=max_tokens_per_clip,
+            )
+            self._log_memory_checkpoint("post_encoder_graph_capture")
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_pre_lm_encoder:
             # note (luojiaxuan): constructed after SGLang's generation CUDA
@@ -226,6 +247,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
             )
 
+    def should_wait_for_encode(self) -> bool:
+        return (
+            False
+            if self._should_wait_for_encode is None
+            else self._should_wait_for_encode()
+        )
+
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
         return request_builders.make_qwen3_asr_scheduler_adapters(
@@ -234,7 +262,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             max_new_tokens=self.max_new_tokens,
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
+            should_wait_for_encode=self.should_wait_for_encode,
         )
+
+    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+        del model_runner
+        self._should_wait_for_encode = scheduler.request_build_queue_fits_workers
 
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
         if self.audio_encoder_service is None:
@@ -248,6 +281,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
+            "stream_output_builder": request_builders.make_qwen3_asr_stream_output_builder(
+                tokenizer=self.tokenizer,
+                min_emit_interval_s=self.stream_emit_interval_s,
+            ),
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,

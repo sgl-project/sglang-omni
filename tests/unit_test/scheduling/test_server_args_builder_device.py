@@ -19,6 +19,7 @@ class _CapturedServerArgs:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.enable_dp_attention = False
+        self.startup_weight_load_mode = kwargs.get("startup_weight_load_mode", "serial")
 
 
 def _build(monkeypatch, **extra: Any) -> dict[str, Any]:
@@ -43,6 +44,16 @@ def test_caller_resolved_device_is_not_overwritten(monkeypatch) -> None:
     """A cpu stage on an accelerator host keeps cpu, index-free."""
     monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)
     assert _build(monkeypatch, device="cpu")["device"] == "cpu"
+
+
+def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
+    """Omni's bootstrap never calls finalize_startup_weight_load, so the
+    overlap mode would serve the staged sentinel weights.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="startup_weight_load_mode"):
+        _build(monkeypatch, startup_weight_load_mode="overlap")
 
 
 def _drive_build(monkeypatch, *, overrides, gpu_id=0):
@@ -116,3 +127,57 @@ def test_placement_supplies_the_device_when_no_override_is_given(monkeypatch) ->
     resolved = platforms.current_platform.device_type
 
     assert _drive_build(monkeypatch, overrides=None) == resolved
+
+
+def _with_decode_backend(monkeypatch, backend: str | None) -> None:
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_decode_cuda_graph_backend",
+        lambda: backend,
+    )
+
+
+def test_the_platform_decode_graph_backend_reaches_server_args(monkeypatch) -> None:
+    _with_decode_backend(monkeypatch, "full")
+    assert _build(monkeypatch)["cuda_graph_backend_decode"] == "full"
+
+
+def test_a_platform_with_no_preference_leaves_the_decode_backend_alone(
+    monkeypatch,
+) -> None:
+    """Byte-identical to the arguments built before these gates existed."""
+    _with_decode_backend(monkeypatch, None)
+    gated = _build(monkeypatch)
+
+    monkeypatch.setattr(
+        server_args_builder,
+        "_apply_platform_decode_cuda_graph_backend",
+        lambda kwargs: None,
+    )
+    ungated = _build(monkeypatch)
+
+    assert gated == ungated
+
+
+def test_a_stage_that_named_cpu_gets_no_accelerator_decode_backend(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)
+    _with_decode_backend(monkeypatch, "full")
+
+    kwargs = _build(monkeypatch, device="cpu")
+
+    assert kwargs["device"] == "cpu"
+    assert "cuda_graph_backend_decode" not in kwargs
+
+
+def test_an_engine_that_asked_for_eager_decode_keeps_it(monkeypatch) -> None:
+    _with_decode_backend(monkeypatch, "full")
+
+    for opt_out in ("disable_cuda_graph", "disable_decode_cuda_graph"):
+        kwargs = _build(monkeypatch, **{opt_out: True})
+        assert "cuda_graph_backend_decode" not in kwargs, opt_out
+
+    # An engine naming its own backend keeps that too.
+    pinned = _build(monkeypatch, cuda_graph_backend_decode="disabled")
+    assert pinned["cuda_graph_backend_decode"] == "disabled"

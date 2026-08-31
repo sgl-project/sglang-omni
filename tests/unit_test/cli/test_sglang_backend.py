@@ -20,7 +20,7 @@ class _DummyManager:
                 StageConfig(
                     name="stage",
                     process="pipeline",
-                    factory="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+                    factory_path="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
                     terminal=True,
                 )
             ],
@@ -30,7 +30,7 @@ class _DummyManager:
         assert args == []
         return {}
 
-    def merge_config(self, extra_args):
+    def merge_config(self, extra_args, *, extra_patches=None):
         assert extra_args == {}
         return self.config
 

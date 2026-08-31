@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the Qwen3-Omni real-streaming path."""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,9 +20,10 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
 )
+from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_stream_output_builder,
-    resolve_mm_aggregate_next_stages,
+    resolve_encoder_next_stages,
     resolve_terminal_stages,
     resolve_thinker_next_stages,
     resolve_thinker_stream_done_targets,
@@ -109,7 +111,7 @@ def _thinker_stage_payload(output_modalities: list[str] | None) -> StagePayload:
 def test_qwen_text_output_uses_text_only_active_subgraph():
     payload = _thinker_stage_payload(["text"])
 
-    assert resolve_mm_aggregate_next_stages("req-1", payload) == "thinker"
+    assert resolve_encoder_next_stages("req-1", payload) == "thinker"
     assert resolve_thinker_next_stages("req-1", payload) == "decode"
     assert resolve_thinker_stream_done_targets("req-1", payload) == ["decode"]
     assert resolve_terminal_stages(payload.request) == ["decode"]
@@ -118,7 +120,7 @@ def test_qwen_text_output_uses_text_only_active_subgraph():
 def test_qwen_audio_output_uses_speech_active_subgraph():
     payload = _thinker_stage_payload(["text", "audio"])
 
-    assert resolve_mm_aggregate_next_stages("req-1", payload) == [
+    assert resolve_encoder_next_stages("req-1", payload) == [
         "thinker",
         "talker_ar",
     ]
@@ -133,7 +135,7 @@ def test_qwen_audio_output_uses_speech_active_subgraph():
 def test_qwen_missing_output_modalities_uses_speech_active_subgraph():
     payload = _thinker_stage_payload(None)
 
-    assert resolve_mm_aggregate_next_stages("req-1", payload) == [
+    assert resolve_encoder_next_stages("req-1", payload) == [
         "thinker",
         "talker_ar",
     ]
@@ -193,6 +195,155 @@ def test_qwen_thinker_stream_builder_keeps_talker_when_modalities_missing():
     assert [msg.target for msg in messages] == ["decode", "talker_ar"]
 
 
+def test_qwen_thinker_stream_builder_prefers_embed_over_layer_hidden():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    embed = torch.tensor([[1.0, 2.0]])
+    layer_hidden = torch.tensor([[3.0, 4.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {"embed": embed, 24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+
+    talker_message = next(msg for msg in messages if msg.target == "talker_ar")
+    assert torch.equal(talker_message.data, embed[0])
+    assert talker_message.metadata == {"token_id": 11}
+
+
+def test_qwen_thinker_stream_builder_falls_back_to_layer_hidden():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    layer_hidden = torch.tensor([[3.0, 4.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+
+    talker_message = next(msg for msg in messages if msg.target == "talker_ar")
+    assert torch.equal(talker_message.data, layer_hidden[0])
+    assert talker_message.metadata == {"token_id": 11}
+
+
+def test_qwen_thinker_stream_embed_preserves_talker_prefill_contract():
+    builder = make_thinker_stream_output_builder()
+    req_data = SimpleNamespace(
+        req=SimpleNamespace(inflight_middle_chunks=0),
+        stage_payload=_thinker_stage_payload(["audio"]),
+    )
+    embed = torch.tensor([[7.0, 8.0]])
+    layer_hidden = torch.tensor([[70.0, 80.0]])
+    req_output = SimpleNamespace(
+        data=11,
+        extra={"hidden_states": {"embed": embed, 24: layer_hidden}},
+    )
+
+    messages = builder("req-1", req_data, req_output)
+    talker_chunk = next(msg for msg in messages if msg.target == "talker_ar")
+
+    class _TokenMetadataOnlyChunk:
+        metadata = talker_chunk.metadata
+
+        @property
+        def data(self):
+            raise AssertionError("prompt prefill must reconstruct assistant rows")
+
+    token_metadata_only_chunk = _TokenMetadataOnlyChunk()
+    legacy_chunk = SimpleNamespace(
+        data=embed[0],
+        metadata={"token_id": 11, "layer_hidden": layer_hidden[0]},
+    )
+
+    hidden_projection_calls: list[torch.Tensor] = []
+
+    def hidden_projection(tensor: torch.Tensor) -> torch.Tensor:
+        hidden_projection_calls.append(tensor.detach().clone())
+        return tensor + 100.0
+
+    prefill_builder = object.__new__(TalkerPrefillBuilder)
+    prefill_builder._model = SimpleNamespace(
+        text_projection=lambda tensor: tensor,
+        hidden_projection=hidden_projection,
+        get_input_embeddings=lambda: (
+            lambda token_ids: torch.zeros((token_ids.numel(), 2))
+        ),
+    )
+    prefill_builder._device = torch.device("cpu")
+    prefill_builder._dtype = torch.float32
+    prefill_builder._audio_token_id = 30
+    prefill_builder._image_token_id = None
+    prefill_builder._video_token_id = None
+    prefill_builder._im_start_token_id = 10
+    prefill_builder._im_end_token_id = 99
+    prefill_builder._system_token_id = 19
+    prefill_builder._user_token_id = 20
+    prefill_builder._assistant_token_id = 40
+    prefill_builder._codec_nothink_id = 1
+    prefill_builder._codec_think_bos_id = 2
+    prefill_builder._codec_think_eos_id = 3
+    prefill_builder._codec_pad_id = 4
+    prefill_builder._codec_bos_id = 5
+    prefill_builder._tts_pad_token_id = 6
+    prefill_builder._speaker_map = {}
+
+    prompt_ids = torch.tensor([10, 20, 30, 10, 40], dtype=torch.long)
+    prompt_embed = torch.arange(10, dtype=torch.float32).reshape(5, 2)
+    prompt_hidden = prompt_embed.clone()
+    prompt_hidden[2] = torch.tensor([5.0, 6.0])
+    prefill_builder._reconstruct_prompt_states = lambda _state: (
+        prompt_ids,
+        prompt_embed,
+        prompt_hidden,
+        {},
+    )
+    prefill_builder._load_prompt_token_embeddings = lambda _token_ids: embed
+    zero_special = torch.zeros((1, 2), dtype=torch.float32)
+    prefill_builder.get_tts_special_embeds = lambda: (
+        zero_special,
+        zero_special,
+        zero_special,
+    )
+
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs=[], params={}),
+        data={},
+    )
+    current = prefill_builder.build_prompt_prefill(
+        payload,
+        [token_metadata_only_chunk],
+        thinker_done=True,
+    )
+    current_projection_calls = list(hidden_projection_calls)
+    hidden_projection_calls.clear()
+    legacy = prefill_builder.build_prompt_prefill(
+        payload,
+        [legacy_chunk],
+        thinker_done=True,
+    )
+
+    assert torch.equal(talker_chunk.data, embed[0])
+    assert talker_chunk.metadata == {"token_id": 11}
+    assert torch.equal(current["input_embeds"], legacy["input_embeds"])
+    assert torch.equal(
+        current["pending_text_queue"].rows,
+        legacy["pending_text_queue"].rows,
+    )
+    assert len(current_projection_calls) == 1
+    assert len(hidden_projection_calls) == 1
+    assert torch.equal(current_projection_calls[0], prompt_hidden[2:3])
+    assert torch.equal(hidden_projection_calls[0], prompt_hidden[2:3])
+
+
 def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
@@ -242,6 +393,27 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     )
 
 
+def _static_aux_scheduler_output(
+    *lengths: int,
+    is_extend: bool,
+) -> SchedulerOutput:
+    reqs = [
+        (
+            SimpleNamespace(extend_range=SimpleNamespace(length=length))
+            if is_extend
+            else SimpleNamespace()
+        )
+        for length in lengths
+    ]
+    return SchedulerOutput(
+        requests=[SchedulerRequest(request_id=str(i)) for i in range(len(reqs))],
+        batch_data=SimpleNamespace(
+            forward_mode=SimpleNamespace(is_extend=lambda: is_extend),
+            reqs=reqs,
+        ),
+    )
+
+
 def test_qwen_static_aux_hidden_prefill_slices_only_logical_token_rows():
     static_embed = torch.arange(12, dtype=torch.float32).reshape(6, 2)
     static_layer = torch.arange(100, 112, dtype=torch.float32).reshape(6, 2)
@@ -250,7 +422,6 @@ def test_qwen_static_aux_hidden_prefill_slices_only_logical_token_rows():
         hook_handles=[],
         max_tokens=6,
     )
-    capture.rows_written = 3
     model = SimpleNamespace(_omni_aux_hidden_capture=capture)
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
@@ -291,6 +462,25 @@ def test_qwen_static_aux_hidden_prefill_slices_only_logical_token_rows():
     )
 
 
+def test_qwen_static_aux_hidden_prefill_keeps_token_major_ambiguous_shape():
+    scheduler_output = _static_aux_scheduler_output(2, 0, is_extend=True)
+    tensor = torch.arange(4, dtype=torch.float32).reshape(2, 2)
+
+    first = SGLangOutputProcessor._slice_static_aux_hidden_tensor(
+        tensor,
+        request_index=0,
+        scheduler_output=scheduler_output,
+    )
+    second = SGLangOutputProcessor._slice_static_aux_hidden_tensor(
+        tensor,
+        request_index=1,
+        scheduler_output=scheduler_output,
+    )
+
+    torch.testing.assert_close(first, tensor)
+    assert second.shape == (0, 2)
+
+
 def test_qwen_static_aux_hidden_decode_slices_only_request_rows():
     static_embed = torch.arange(12, dtype=torch.float32).reshape(6, 2)
     static_layer = torch.arange(100, 112, dtype=torch.float32).reshape(6, 2)
@@ -299,7 +489,6 @@ def test_qwen_static_aux_hidden_decode_slices_only_request_rows():
         hook_handles=[],
         max_tokens=6,
     )
-    capture.rows_written = 2
     model = SimpleNamespace(_omni_aux_hidden_capture=capture)
     output_processor = SGLangOutputProcessor(
         capture_hidden=True,
@@ -330,6 +519,35 @@ def test_qwen_static_aux_hidden_decode_slices_only_request_rows():
     assert outputs["text"].extra is None
     torch.testing.assert_close(audio_hidden["embed"], static_embed[1])
     torch.testing.assert_close(audio_hidden[24], static_layer[1])
+
+
+@pytest.mark.parametrize(
+    ("is_extend", "expected_rows", "actual_rows", "layout"),
+    [
+        (True, 2, 1, "token-major prefill"),
+        (False, 1, 2, "request-major decode"),
+    ],
+)
+def test_qwen_static_aux_hidden_rejects_wrong_row_count(
+    is_extend: bool,
+    expected_rows: int,
+    actual_rows: int,
+    layout: str,
+):
+    scheduler_output = _static_aux_scheduler_output(
+        expected_rows,
+        is_extend=is_extend,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"{layout}.*expected {expected_rows} rows, got {actual_rows}",
+    ):
+        SGLangOutputProcessor._slice_static_aux_hidden_tensor(
+            torch.zeros(actual_rows, 2),
+            request_index=0,
+            scheduler_output=scheduler_output,
+        )
 
 
 def test_qwen_static_aux_hidden_skips_capture_for_text_only_decode():
@@ -671,6 +889,7 @@ def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     s._owns_external_io = owns_io
     s._aborted = set()
     s._active_requests = set()
+    s._replica_bindings = {}
     s._stream_queue = None
     s._stream_chunk_counters = {}
     s._first_stream_chunk_seen = set()

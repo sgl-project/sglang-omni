@@ -10,10 +10,11 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
-import typer
 
-from sglang_omni.cli.serve import apply_mem_fraction_cli_overrides
-from sglang_omni.config.runtime import resolve_stage_static_factory_args
+from sglang_omni.cli.serve import patches_from_broadcast_flags
+from sglang_omni.config.resolver import ConfigResolver
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.config.sources import patches_from_shared_block
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts import utils as higgs_utils
@@ -40,7 +41,6 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.speaker_cache import get_speaker_artifact_cache
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
@@ -48,9 +48,9 @@ def test_higgs_streaming_pipeline_routes_chunks_to_vocoder() -> None:
     stages_by_name = {stage.name: stage for stage in config.stages}
 
     assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
-    assert "server_args_overrides" not in stages_by_name["tts_engine"].factory_args
+    assert stages_by_name["tts_engine"].engine.overrides() == {}
     assert stages_by_name["vocoder"].process == "pipeline"
-    assert stages_by_name["vocoder"].factory_args["compile_decode"] is False
+    assert config.stage_factory_kwargs("vocoder")["compile_decode"] is False
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
 
 
@@ -171,65 +171,31 @@ def test_higgs_prefill_embeddings_follow_radix_prefix_position() -> None:
     assert embeds.tolist() == [[20.0, 21.0], [30.0, 31.0]]
 
 
-def test_higgs_streaming_pipeline_shares_vocoder_stride_with_tts_engine() -> None:
-    raw_config = HiggsTtsPipelineConfig(model_path="fake-model").model_dump()
-    vocoder = next(
-        stage for stage in raw_config["stages"] if stage["name"] == "vocoder"
-    )
-    vocoder["factory_args"].update(
-        stream_stride=3,
-        stream_followup_stride=2,
-        initial_chunk_frames=1,
-    )
-
-    config = HiggsTtsPipelineConfig.model_validate(raw_config)
-    stages_by_name = {stage.name: stage for stage in config.stages}
-
-    assert stages_by_name["tts_engine"].factory_args["stream_stride"] == 3
-    assert stages_by_name["tts_engine"].factory_args["stream_followup_stride"] == 2
-    assert stages_by_name["tts_engine"].factory_args["initial_chunk_frames"] == 1
-
-
-def test_higgs_streaming_pipeline_shares_vocoder_runtime_stride_override() -> None:
-    config = HiggsTtsPipelineConfig(
-        model_path="fake-model",
-        runtime_overrides={
-            "vocoder": {
-                "stream_stride": 16,
-                "stream_followup_stride": 7,
-                "initial_chunk_frames": 0,
+def test_higgs_shared_share_the_stride_between_both_consumers() -> None:
+    """One shared entry writes the stride into both stages; the
+    resolved values reach both factories under the same names."""
+    config = HiggsTtsPipelineConfig(model_path="fake-model")
+    patches = patches_from_shared_block(
+        [
+            {
+                "select": {"stages": ["tts_engine", "vocoder"]},
+                "factory": {
+                    "stream_stride": 16,
+                    "stream_followup_stride": 7,
+                    "initial_chunk_frames": 0,
+                },
             }
-        },
+        ],
+        HiggsTtsPipelineConfig,
+        [stage.name for stage in config.stages],
     )
-    stages_by_name = {stage.name: stage for stage in config.stages}
+    resolved = ConfigResolver(config).resolve(patches).config
 
-    tts_engine_args = resolve_stage_static_factory_args(
-        stages_by_name["tts_engine"], config
-    )
-    vocoder_args = resolve_stage_static_factory_args(stages_by_name["vocoder"], config)
-
-    assert tts_engine_args["stream_stride"] == vocoder_args["stream_stride"] == 16
-    assert (
-        tts_engine_args["stream_followup_stride"]
-        == vocoder_args["stream_followup_stride"]
-        == 7
-    )
-    assert (
-        tts_engine_args["initial_chunk_frames"]
-        == vocoder_args["initial_chunk_frames"]
-        == 0
-    )
-
-
-def test_higgs_streaming_pipeline_rejects_conflicting_runtime_stride() -> None:
-    with pytest.raises(ValueError, match="must match between"):
-        HiggsTtsPipelineConfig(
-            model_path="fake-model",
-            runtime_overrides={
-                "tts_engine": {"stream_stride": 8},
-                "vocoder": {"stream_stride": 16},
-            },
-        )
+    for name in ("tts_engine", "vocoder"):
+        kwargs = resolve_stage_typed_kwargs(resolved.stage_named(name))
+        assert kwargs["stream_stride"] == 16
+        assert kwargs["stream_followup_stride"] == 7
+        assert kwargs["initial_chunk_frames"] == 0
 
 
 def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
@@ -246,7 +212,7 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
     captured: dict[str, object] = {}
     records = {
         "captured": captured,
-        "infrastructure_saw_graph_disabled": [],
+        "infrastructure_saw_deferred_capture": [],
         "init_graph_calls": [],
         "attest_calls": [],
     }
@@ -258,7 +224,7 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
             locked.add(("prefill", "bs"))
         if "cuda_graph_backend_prefill" in overrides:
             locked.add(("prefill", "backend"))
-        server_args = FakeServerArgs(
+        server_args = SimpleNamespace(
             disable_cuda_graph=overrides["disable_cuda_graph"],
             disable_overlap_schedule=False,
             enable_torch_compile=False,
@@ -296,8 +262,8 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
         captured["gpu_id"] = gpu_id
         captured["infra_kwargs"] = dict(kwargs)
-        records["infrastructure_saw_graph_disabled"].append(
-            bool(server_args.disable_cuda_graph)
+        records["infrastructure_saw_deferred_capture"].append(
+            bool(kwargs.get("defer_cuda_graph_capture"))
         )
         model = SimpleNamespace(
             backbone=SimpleNamespace(),
@@ -318,8 +284,6 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
                     kwargs.get("enable_prefill_input_embeds")
                 ),
             ),
-            object(),
-            object(),
             object(),
             object(),
             object(),
@@ -420,7 +384,7 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
     assert captured["server_args"].disable_overlap_schedule is True
     assert captured["server_args"].enable_torch_compile is False
     assert captured["server_args"].torch_compile_max_bs == 32
-    assert records["infrastructure_saw_graph_disabled"] == [True]
+    assert records["infrastructure_saw_deferred_capture"] == [True]
     assert records["init_graph_calls"] == [True]
     assert captured["adapter_kwargs"] == {
         "max_new_tokens_cap": 2048,
@@ -523,7 +487,7 @@ def test_higgs_tts_engine_prefill_backend_policy() -> None:
     assert defaults["cuda_graph_backend_prefill"] == "breakable"
     assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
 
-    server_args = FakeServerArgs(
+    server_args = SimpleNamespace(
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
     )
     builder.customize_server_args(server_args)
@@ -773,7 +737,7 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
 
     scheduler = stages.create_audio_encoder_executor(
         "ckpt",
-        device="cuda:0",
+        device="cpu",
         num_codebooks=2,
     )
     # Ignore the construction-time codec warm-up call added by #612.
@@ -850,7 +814,7 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
 
     scheduler = stages.create_audio_encoder_executor(
         "ckpt",
-        device="cuda:0",
+        device="cpu",
         num_codebooks=2,
     )
     fake_codec.calls = 0
@@ -2321,53 +2285,53 @@ def test_higgs_audio_codec_encode_batch_input_normalisation() -> None:
         ), f"input format {i} produced different codes than encode_reference"
 
 
-def test_higgs_mem_fraction_role_to_stage_targets_tts_engine() -> None:
-    assert HiggsTtsPipelineConfig.mem_fraction_role_to_stage() == {
-        "talker": "tts_engine"
-    }
-    assert HiggsTtsPipelineConfig.talker_sglang_role_to_stage() == {
-        "talker": "tts_engine"
-    }
+def test_higgs_engine_stage_is_the_tts_engine() -> None:
+    assert HiggsTtsPipelineConfig.stage_config_cls("tts_engine").engine_stage
+    assert not HiggsTtsPipelineConfig.stage_config_cls("vocoder").engine_stage
+
+
+def _resolve_mem_fraction_flag(config, value):
+    """Apply the broadcast --mem-fraction-static the way `sgl-omni serve` does."""
+    patches = patches_from_broadcast_flags(
+        config,
+        mem_fraction_static=value,
+    )
+    return ConfigResolver(config).resolve(patches).config
 
 
 def test_higgs_cli_mem_fraction_static_pins_tts_engine() -> None:
     config = HiggsTtsPipelineConfig(model_path="fake-model")
 
-    apply_mem_fraction_cli_overrides(
+    resolved = _resolve_mem_fraction_flag(config, 0.27)
+
+    tts_engine = resolved.stage_named("tts_engine")
+    assert tts_engine.engine.mem_fraction_static == 0.27
+
+
+def test_higgs_dotted_mem_fraction_beats_the_broadcast() -> None:
+    from sglang_omni.config.manager import ConfigManager
+
+    config = HiggsTtsPipelineConfig(model_path="fake-model")
+    patches = patches_from_broadcast_flags(
         config,
         mem_fraction_static=0.27,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=None,
     )
+    merged = ConfigManager(config).merge_config(
+        [("tts_engine.engine.mem_fraction_static", "0.3")],
+        extra_patches=patches,
+    )
+    assert merged.stage_named("tts_engine").engine.mem_fraction_static == 0.3
 
-    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
-    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.27
 
+def test_higgs_cli_rejects_out_of_range_mem_fraction() -> None:
+    from sglang_omni.config.manager import ConfigManager
 
-def test_higgs_cli_talker_mem_fraction_static_pins_tts_engine() -> None:
     config = HiggsTtsPipelineConfig(model_path="fake-model")
 
-    apply_mem_fraction_cli_overrides(
-        config,
-        mem_fraction_static=None,
-        thinker_mem_fraction_static=None,
-        talker_mem_fraction_static=0.3,
-    )
-
-    tts_engine = next(s for s in config.stages if s.name == "tts_engine")
-    assert tts_engine.runtime.sglang_server_args.mem_fraction_static == 0.3
-
-
-def test_higgs_cli_rejects_unsupported_thinker_mem_fraction() -> None:
-    config = HiggsTtsPipelineConfig(model_path="fake-model")
-
-    with pytest.raises(typer.BadParameter):
-        apply_mem_fraction_cli_overrides(
-            config,
-            mem_fraction_static=None,
-            thinker_mem_fraction_static=0.3,
-            talker_mem_fraction_static=None,
-        )
+    # Range is the schema's rule: the flag builds patches, resolution refuses.
+    patches = patches_from_broadcast_flags(config, mem_fraction_static=1.3)
+    with pytest.raises(ValueError, match="mem_fraction_static"):
+        ConfigManager(config).merge_config([], extra_patches=patches)
 
 
 def test_higgs_bounds_preprocessing_without_global_omp_default() -> None:
@@ -2376,7 +2340,7 @@ def test_higgs_bounds_preprocessing_without_global_omp_default() -> None:
         stage for stage in config.stages if stage.name == "preprocessing"
     )
 
-    assert preprocessing.factory_args["max_concurrency"] == 2
+    assert preprocessing.factory.max_concurrency == 2
     assert "OMP_NUM_THREADS" not in config.env_defaults
     assert int(preprocessing.env["OMP_NUM_THREADS"]) >= 1
     assert int(preprocessing.env["OMP_NUM_THREADS"]) <= 8

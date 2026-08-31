@@ -129,13 +129,15 @@ def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any
 
     summary: dict[str, Any] = {}
     for stage in pipeline_config.stages:
-        resources = stage.runtime.resources
-        mem_fraction = stage.runtime.sglang_server_args.mem_fraction_static
-        if stage.gpu is None and resources.total_gpu_memory_fraction is None:
+        fraction = stage.gpu_memory_fraction
+        mem_fraction = (
+            stage.engine.mem_fraction_static if stage.engine is not None else None
+        )
+        if stage.gpu is None and fraction is None:
             continue
         summary[stage.name] = {
             "gpu": stage.gpu,
-            "total_gpu_memory_fraction": resources.total_gpu_memory_fraction,
+            "total_gpu_memory_fraction": fraction,
             "mem_fraction_static": mem_fraction,
         }
     return summary
@@ -427,6 +429,9 @@ async def _run_server(
             ),
             speech_reference_text_required=(
                 pipeline_config.speech_reference_text_required
+            ),
+            speech_reference_text_excludes_instructions=(
+                pipeline_config.speech_reference_text_excludes_instructions
             ),
             additional_speech_languages=pipeline_config.additional_speech_languages,
             enable_realtime=enable_realtime,

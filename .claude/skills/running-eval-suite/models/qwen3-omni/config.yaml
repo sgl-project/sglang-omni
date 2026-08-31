@@ -111,7 +111,7 @@ server_profiles:
     model_name: qwen3-omni
     num_workers: 2
     num_gpus_per_worker: 1
-    worker_extra_args: "--config {repo_root}/examples/configs/qwen3_omni_colocated.yaml --colocate --stages.0.factory-args.thinker-max-seq-len 32768 --stages.4.factory-args.thinker-max-seq-len 32768"
+    worker_extra_args: "--config {repo_root}/examples/configs/qwen3_omni_colocated.yaml --colocate --stages.0.factory-args.thinker-max-seq-len 32768 --stages.thinker.factory-args.thinker-max-seq-len 32768"
     wait_timeout: 600
     server_boot_timeout_s: 660
     router_policy: least_request

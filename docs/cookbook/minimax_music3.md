@@ -393,14 +393,14 @@ What it does *not* change is the request contract or where the randomness comes 
 
 ## Concurrency
 
-The server batches continuously. Admission defaults to 16 concurrent requests (`max_running_requests=16`), which is **32 decode rows**, because guidance gives every request a second row. Raise admission at serve time with `--max-running-requests`; the row count, the decode CUDA graph and the RVQ depth graph are all derived from it:
+The server batches continuously. Admission defaults to 16 concurrent requests (`max_running_requests=16`), which is **32 decode rows**, because guidance gives every request a second row. Raise admission at serve time with `--minimax_music3_ar.engine.max_running_requests`; the row count, the decode CUDA graph and the RVQ depth graph are all derived from it:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \
-  --max-running-requests 32
+  --minimax_music3_ar.engine.max_running_requests 32
 ```
 
-That serves 32 concurrent requests as 64 rows. Do not pass `--cuda-graph-max-bs` here: this model computes the cap itself so the graphs always cover the doubled batch, and a value you supply is discarded rather than honoured.
+That serves 32 concurrent requests as 64 rows. Do not pass `engine.cuda_graph_max_bs` here: this model computes the cap itself so the graphs always cover the doubled batch, and a value you supply is discarded rather than honoured.
 
 Send clients in parallel rather than in sequence:
 
@@ -474,6 +474,6 @@ The request is refused rather than silently ignored, so a mistake is visible imm
 
 **Prompt sensitivity.** The prompt's token ids and the position of `<|audio_start|>` seed the backbone KV cache, so whitespace and tag rewrites are not cosmetic — they change the audio. If you need a result to be reproducible, keep the lyrics and caption byte-identical.
 
-**Memory.** `mem_fraction_static` defaults to `0.50` and budgets the SGLang backbone KV cache only; the acoustic stage's DIT and DAV weights sit outside that fraction. It is a share of total device memory, so the absolute KV pool shrinks on smaller cards automatically. Lowering it does not reliably help — measured at `0.35` the pipeline is about 6% slower. Budget against rows rather than requests: guidance means the pool has to hold two sequences per concurrent request, so raising `--max-running-requests` costs KV twice as fast as the number suggests.
+**Memory.** `mem_fraction_static` defaults to `0.50` and budgets the SGLang backbone KV cache only; the acoustic stage's DIT and DAV weights sit outside that fraction. It is a share of total device memory, so the absolute KV pool shrinks on smaller cards automatically. Lowering it does not reliably help — measured at `0.35` the pipeline is about 6% slower. Budget against rows rather than requests: guidance means the pool has to hold two sequences per concurrent request, so raising `max_running_requests` costs KV twice as fast as the number suggests.
 
-**Attention backends.** The DIT accepts `auto`, `torch_sdpa`, `fa` and `sage_attn` through `runtime_overrides`; `torch_sdpa` is the default and measured the fastest of them for these shapes. `cache_dit` is an approximate, default-off option that trades audio quality for speed, and reducing the solver's `dit_steps` below 30 is measurably a quality reduction rather than a free win.
+**Attention backends.** The DIT accepts `auto`, `torch_sdpa`, `fa` and `sage_attn` through the dit_dav stage's `factory` group; `torch_sdpa` is the default and measured the fastest of them for these shapes. `cache_dit` is an approximate, default-off option that trades audio quality for speed, and reducing the solver's `dit_steps` below 30 is measurably a quality reduction rather than a free win.

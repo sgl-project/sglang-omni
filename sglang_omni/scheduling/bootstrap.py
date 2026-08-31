@@ -10,7 +10,6 @@ from sglang_omni.utils.gpu_compat import (
     get_visible_gpu_sm_version,
     gpu_architecture_for_sm,
 )
-from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -67,23 +66,18 @@ def _hidden_capture_max_tokens(server_args: Any) -> int:
     configured CUDA graph bucket maximum, so the capture buffers are large
     enough for both eager forwards and graph replay.
     """
-    chunked_prefill_size = getattr(server_args, "chunked_prefill_size", None)
+    chunked_prefill_size = server_args.chunked_prefill_size
     candidates: list[Any] = []
     if chunked_prefill_size is not None and chunked_prefill_size > 0:
         candidates.append(chunked_prefill_size)
     else:
-        candidates.append(getattr(server_args, "max_prefill_tokens", None))
+        candidates.append(server_args.max_prefill_tokens)
         # Note(wenyao): Without chunking, SGLang always admits the first prefill request even
         # when it exceeds the batch token budget, up to the model context bound.
-        candidates.append(getattr(server_args, "context_length", None))
-    candidates.append(getattr(server_args, "max_running_requests", None))
-
-    cuda_graph_config = getattr(server_args, "cuda_graph_config", None)
-    if cuda_graph_config is not None:
-        for phase in ("decode", "prefill"):
-            phase_config = getattr(cuda_graph_config, phase, None)
-            if phase_config is not None:
-                candidates.append(getattr(phase_config, "max_bs", None))
+        candidates.append(server_args.context_length)
+    candidates.append(server_args.max_running_requests)
+    candidates.append(server_args.cuda_graph_config.decode.max_bs)
+    candidates.append(server_args.cuda_graph_config.prefill.max_bs)
 
     positive = [int(value) for value in candidates if value is not None and value > 0]
     if not positive:
@@ -108,13 +102,22 @@ def create_sglang_infrastructure(
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
 ):
-    """Create SGLang worker, memory pools, tree cache, and prefill/decode managers."""
+    """Create SGLang worker, memory pools, and tree cache."""
+    # ModelRunner.__init__ publishes server_args as the process-wide runtime
+    # context; publishing again would silently reconfigure whatever already runs
+    # here, so an engine is only built where the context is unpublished. A
+    # construction that failed after publishing is therefore not retried here.
+    from sglang.srt.runtime_context import get_context
+
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
-    from sglang_omni.scheduling.sglang_backend import (
-        DecodeManager,
-        PrefillManager,
-        create_tree_cache,
-    )
+    from sglang_omni.scheduling.sglang_backend import create_tree_cache
+
+    if get_context().is_config_namespace_published("model"):
+        raise RuntimeError(
+            "this process already holds a published SGLang runtime context; "
+            "an SGLang AR engine must own its OS process. Place SGLang AR "
+            "stages in separate processes."
+        )
 
     logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
 
@@ -143,11 +146,7 @@ def create_sglang_infrastructure(
             max_tokens=_hidden_capture_max_tokens(server_args),
         )
 
-    # SGLang 0.5.15 split model loading, KV-pool allocation, attention-backend
-    # (order re-verified against 0.5.16 Scheduler.init_model_worker)
-    # initialization, and CUDA-graph initialization into explicit phases. Keep
-    # the same order as upstream's Scheduler.init_model_worker(), while
-    # preserving Omni's pre-backend hidden-capture hook installation above.
+    # Phase order follows upstream Scheduler.init_model_worker().
     model_runner = model_worker.model_runner
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()
@@ -164,41 +163,20 @@ def create_sglang_infrastructure(
         server_args.page_size,
     )
 
-    enable_overlap = not server_args.disable_overlap_schedule
-
-    prefill_mgr = PrefillManager(
-        page_size=server_args.page_size,
-        chunked_prefill_size=server_args.chunked_prefill_size,
-        max_prefill_tokens=server_args.max_prefill_tokens,
-        req_to_token_pool=req_to_token_pool,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        tree_cache=tree_cache,
-        model_config=model_worker.model_config,
-        enable_overlap=enable_overlap,
-    )
-
-    decode_mgr = DecodeManager(
-        server_args=server_args,
-        token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        on_retract=lambda req: prefill_mgr.add_one_request(req),
-    )
-
     return (
         model_worker,
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_worker.model_config,
     )
 
 
-# note (luojiaxuan): Some Omni generation stages cannot let the generic SGLang
-# worker capture CUDA graphs immediately during infrastructure construction. At
-# that point the shared request pools exist, but stage-owned decode state may not:
-# speech tokenizers may still need to be attached, sampler or feedback buffers
-# may not be allocated, stage-local decode helpers may not be compiled, and the
+# note (luojiaxuan): Some Omni generation stages cannot capture CUDA graphs
+# immediately during infrastructure construction. At that point the shared
+# request pools exist, but stage-owned decode state may not: speech tokenizers
+# may still need to be attached, sampler or feedback buffers may not be
+# allocated, stage-local decode helpers may not be compiled, and the
 # model-specific buffer capacity may not yet have been checked against the
 # serving batch policy. Capturing before that work would freeze replay around an
 # incomplete decode path and can make later steady-state requests either miss the
@@ -208,10 +186,7 @@ def create_sglang_infrastructure(
 # and request-token slots, with all per-request model buffers already allocated.
 # One-time bootstrap work such as processor loading, cache construction, audio
 # decoder/vocoder setup, and other host-side staging should stay outside CUDA
-# graph coverage because graph replay will not amortize it. This helper therefore
-# disables worker-time capture only long enough to build the shared SGLang
-# infrastructure, restores the user's CUDA-graph setting, and tells the caller
-# whether it should call init_cuda_graphs() after its stage-specific setup.
+# graph coverage because graph replay will not amortize it.
 def create_sglang_infrastructure_defer_cuda_graph(
     server_args: Any,
     gpu_id: int,
@@ -223,24 +198,10 @@ def create_sglang_infrastructure_defer_cuda_graph(
     init_cuda_graphs() only when this returns that CUDA graphs were requested.
     """
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
-    if want_cuda_graph:
-        override_server_args(
-            server_args,
-            "sglang_omni.defer_cuda_graph_capture",
-            disable_cuda_graph=True,
-        )
-    try:
-        infrastructure = create_sglang_infrastructure(
-            server_args,
-            gpu_id,
-            defer_cuda_graph_capture=want_cuda_graph,
-            **kwargs,
-        )
-    finally:
-        if want_cuda_graph:
-            override_server_args(
-                server_args,
-                "sglang_omni.restore_cuda_graph_capture",
-                disable_cuda_graph=False,
-            )
+    infrastructure = create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        defer_cuda_graph_capture=want_cuda_graph,
+        **kwargs,
+    )
     return want_cuda_graph, infrastructure

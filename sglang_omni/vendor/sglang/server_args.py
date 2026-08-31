@@ -13,19 +13,13 @@ def get_global_server_args():
 
 
 def override_server_args(server_args: Any, source: str, **fields: Any) -> None:
-    """Apply an audited ServerArgs mutation across SGLang config APIs.
+    """Apply an audited ServerArgs mutation at the right lifecycle stage.
 
-    SGLang 0.5.16 exposes ``ServerArgs.override``. Newer SGLang releases split
-    mutation by lifecycle: unpublished configuration uses
-    ``declare_late_resolution`` and published configuration uses the runtime
-    context. Keep that version boundary in one vendor shim so Omni call sites
-    retain source-labelled mutation provenance.
+    A record that is not published yet is resolved in place through
+    declare_late_resolution, so every holder of the instance sees the value.
+    The published record is read-only and its resolved values live on the
+    config bags, so the mutation goes to get_context().override.
     """
-    legacy_override = getattr(server_args, "override", None)
-    if callable(legacy_override):
-        legacy_override(source, **fields)
-        return
-
     from sglang.srt.runtime_context import get_context
 
     context = get_context()

@@ -15,9 +15,9 @@ import time
 import httpx
 import pytest
 
-from sglang_omni_router.config import RouterConfig, WorkerConfig
-from sglang_omni_router.internal_channel import INTERNAL_TOKEN_HEADER
-from sglang_omni_router.supervisor import RouterSupervisor
+from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+from sglang_omni_router.python.internal_channel import INTERNAL_TOKEN_HEADER
+from sglang_omni_router.python.supervisor import RouterSupervisor
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux", reason="fd passing + UDS are Linux-only"

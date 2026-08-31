@@ -8,6 +8,96 @@ Same-GPU data parallelism runs several complete serving replicas on one GPU and 
 
 ![Multiple host chains plus CUDA MPS filling the idle GPU](../_static/image/same-gpu-dp-mps.svg)
 
+## Native runtime support (`--mps`)
+
+The runtime can manage MPS itself for the processes of **one pipeline**. When a
+pipeline colocates two or more single-GPU stage processes on one GPU (for
+example a frontend process next to the generation process, or process-level
+replicas), pass `--mps auto`:
+
+```bash
+sgl-omni serve --model-path <model> --mps auto
+```
+
+Modes (`--mps` on the CLI or `mps:` in the pipeline config; default `off`):
+
+* `off`: MPS is never touched.
+* `auto`: MPS is enabled on every GPU that hosts two or more single-GPU,
+  non-TP CUDA processes of this pipeline. GPUs with one process and TP groups
+  run without MPS.
+* `on`: a single eligible process is enough, and an MPS-incapable platform is
+  a hard error instead of a warning. Use `on` for same-GPU data parallelism:
+  every `serve --mps on` on one GPU joins the same daemon.
+
+Both `auto` and `on` reject startup before acquiring MPS state when one process's
+resolved placement spans more than one physical GPU; use `mps=off` for that
+placement. Factory CUDA devices use the narrowed worker's local namespace:
+`cuda:0` is compatible with any single-GPU placement, while a nonzero `cuda:N`
+is excluded because narrowing a worker to one UUID makes its only valid CUDA
+ordinal `cuda:0`.
+Pipeline-edge transport remains the responsibility of the existing router and
+relay layers; it does not participate in MPS eligibility.
+
+The daemon is shared per physical GPU (keyed by device UUID): MPS merges
+kernels only for clients of one server, so the first serve creates the
+daemon, later serves join it, and the last one to leave drains the clients
+and quits it. Logical GPU ordinals are resolved once against the parent
+process's CUDA visibility and then grouped by physical UUID; `auto` counts the
+combined client processes in each physical group. Pipeline or stage
+environment defaults must not override `CUDA_VISIBLE_DEVICES` or
+`CUDA_DEVICE_ORDER` while native MPS is enabled; set them on the parent command
+instead, or use `mps=off`. Same-GPU DP is therefore just N serve commands:
+
+```bash
+sgl-omni serve --model-path <model> --mps on --mem-fraction-static 0.35 --port 8807
+sgl-omni serve --model-path <model> --mps on --mem-fraction-static 0.35 --port 8808
+```
+
+Start replicas one after another and give each an explicit memory budget
+(`--mem-fraction-static` or the stage-qualified
+`--<engine-stage>.engine.max_total_tokens`), for the same KV-sizing
+reasons described under the script recipe below. Route traffic with the
+[Omni Router](omni_router.md).
+
+The runtime owns the full lifecycle. Every managed process is verified against
+the daemon's client list before serving starts, because a process that misses
+the pipe directory silently falls back to time slicing. A watchdog fails the
+pipeline if daemon identity or control access is lost mid-serving. Shutdown
+re-evaluates the current client list, drains this serve's clients, and quits the
+daemon only when no other serve still owns it.
+
+If a managed worker does not exit before the shutdown timeout, the runtime
+terminates that directly owned child process and reaps it before the launcher
+exits, even when that directly owned worker is also an MPS client. It sends no
+additional signal based on an MPS snapshot or client PID, and never
+automatically signals the daemon, an unknown descendant, or a GPU-wide process
+set. Process ownership and shared MPS state are handled independently: if
+daemon identity, client ownership, or control state cannot be proved after the
+workers are gone, the owner file is marked `retained`, its lock is released,
+and the state directory is preserved. The current command then exits with a
+detailed non-zero error instead of keeping a CLI owner alive.
+
+Dirty state is never repaired automatically. A join requires the native
+`nvidia-cuda-mps-control.pid` identity, a responsive control socket, and every
+published owner lease to still be held. After a hard kill (SIGKILL, OOM kill,
+node crash), even an idle daemon or one dead co-owner makes the next start
+preserve the state and fail with owner/client details and safe cleanup guidance.
+An unlocked or retained owner blocks every later start until an operator has
+inspected and cleaned the state. Existing healthy co-owners keep serving, but
+new owners cannot join and no process retries cleanup automatically. Clean up
+and start again. A normal shutdown leaves nothing behind.
+
+Operator notes: state lives under `/tmp/sglang-omni-mps-<user>/<gpu-uuid>/`
+(`SGLANG_OMNI_MPS_STATE_ROOT` overrides it). Serves that are meant to share
+one GPU must use the same state root, or they cannot discover each other's
+daemon and will run separate MPS servers that time-slice against each other.
+The state root is created with mode `0700`; an existing root must already be a
+non-symlink directory owned by the current user with that mode. Native MPS
+rejects `CUDA_MPS_PIPE_DIRECTORY` in the parent, pipeline, or stage environment
+instead of overwriting or joining an external daemon. It likewise rejects
+`SGLANG_OMNI_WEIGHT_SHARE` in those locations: CUDA IPC weight sharing remains
+the one deployment shape that still uses `examples/mps_dp/launch.sh` below.
+
 ## Deploy
 
 The steps below are one continuous flow. We provide `examples/mps_dp/launch.sh` to manage the private MPS daemon and serving replicas for one run. It records replica processes, ports, and logs, starts replicas sequentially, verifies their KV capacity and MPS attachment, and tears down only the run it recorded. Detailed instructions are as follows:
@@ -61,7 +151,7 @@ MPS should be verified carefully. Four things are easy to conflate: environment 
 
 5. **Route traffic.**
 
-For easy deployment, you can register each replica endpoint with the [Omni Router](omni_router.md). Keep the router's `--max-connections` at least as large as the total offered concurrency. The case study did not benchmark router scheduling policies, so confirm that the selected policy keeps every replica driven and meets your workload's latency and throughput requirements.
+For easy deployment, you can register each replica endpoint with the [Python Router](python_router.md). Keep the router's `--max-connections` at least as large as the total offered concurrency. The case study did not benchmark router scheduling policies, so confirm that the selected policy keeps every replica driven and meets your workload's latency and throughput requirements.
 
 6. **Tear down safely.**
 
@@ -89,7 +179,7 @@ The throughput results in the table and H100 case study are from an 80 GB H100 w
 
 By default every replica loads its own full copy of the AR backbone (7.60 GiB for Higgs 3-4B — about a third of a DP3 footprint). Since all replicas run the same read-only weights on the same GPU, the launcher can instead share **one** copy over CUDA IPC:
 
-**Scope and contract.** This is opt-in (`WEIGHT_SHARE=1`, default off) and gated to **validated architectures with tp=pp=1**; anything else is rejected before any resource is created, because a model that writes per-request state into a shared parameter would corrupt co-located replicas. An architecture audit alone does not enable sharing: a model is supported only after the documented launcher command passed end-to-end validation (shared N=2 boot under MPS, health, attach verification, concurrent-request correctness, clean teardown) at the current revision. `WEIGHT_SHARE=1` requires `CONFIG`, so the supported-config check runs in preflight, before the MPS daemon, state directory, or any replica exists. Each supported architecture carries a share policy: registered tensors the model writes at serving time (per-step decode staging scratch) are classified **replica-private** — every replica keeps its own storage for them and only the immutable weights alias one storage. Leader and follower derive the classification from the same policy and fail closed on any disagreement (it is part of the manifest). Sharing is a whole-group lifecycle: the leader must outlive followers, restart the whole run together (never a single replica), online weight updates are refused while sharing is active, and each follower requires an explicit `--max-total-tokens` (its dummy weights are freed before KV profiling, so KV sizing must be pinned). `autodp.sh` sizes a **maximum *estimated*** DP (boot-validated), not an absolute safe maximum; because its sizing assumes sharing, it defaults `WEIGHT_SHARE=1`, while `launch.sh` itself defaults off.
+**Scope and contract.** This is opt-in (`WEIGHT_SHARE=1`, default off) and gated to **validated architectures with tp=pp=1**; anything else is rejected before any resource is created, because a model that writes per-request state into a shared parameter would corrupt co-located replicas. An architecture audit alone does not enable sharing: a model is supported only after the documented launcher command passed end-to-end validation (shared N=2 boot under MPS, health, attach verification, concurrent-request correctness, clean teardown) at the current revision. `WEIGHT_SHARE=1` requires `CONFIG`, so the supported-config check runs in preflight, before the MPS daemon, state directory, or any replica exists. Each supported architecture carries a share policy: registered tensors the model writes at serving time (per-step decode staging scratch) are classified **replica-private** — every replica keeps its own storage for them and only the immutable weights alias one storage. Leader and follower derive the classification from the same policy and fail closed on any disagreement (it is part of the manifest). Sharing is a whole-group lifecycle: the leader must outlive followers, restart the whole run together (never a single replica), online weight updates are refused while sharing is active, and each follower requires an explicit `MAX_TOTAL_TOKENS` (its dummy weights are freed before KV profiling, so KV sizing must be pinned). `autodp.sh` sizes a **maximum *estimated*** DP (boot-validated), not an absolute safe maximum; because its sizing assumes sharing, it defaults `WEIGHT_SHARE=1`, while `launch.sh` itself defaults off.
 
 A model is either **supported** or **not supported**; there is no intermediate tier. Supported means all of the following passed at the current revision, with commands and logs recorded in the PR: the documented `launch.sh` command boots `N=2` with `WEIGHT_SHARE=1` under a private MPS daemon, every replica passes its health check and MPS attach verification, the follower attaches the leader's weights over CUDA IPC and holds no second resident copy of the shared weights after boot, concurrent requests across replicas return correct outputs (byte-identical audio to the single-replica baseline for TTS; word-identical transcripts for ASR, where timestamp fields may jitter under batching), and teardown leaves no replica process or MPS client behind. This is one-H100 end-to-end smoke validation — executable support evidence at the current revision, not a long-term stability or CI claim.
 
@@ -213,7 +303,7 @@ One H100 80 GB (driver 580.126.20 / CUDA 13), sglang-omni `a78de4cb`, sglang `0.
 
 The failures: one DP2 benchmark run hit `cudaErrorMpsRpcFailure`, and one DP2 and one DP3 replica failed to start, all coinciding with host-load spikes. One DP3 run completed every request but at 13.3 qps, so it is marked degraded rather than excluded. The core-pinned single stayed within a few percent across all runs, and DP3 was not clearly repeatably better than DP2.
 
-Note: the `--max-total-tokens` option makes per-replica KV sizing more explicit and comparable. It is not a direct fix for `cudaErrorMpsRpcFailure`, and the launch and runtime failure rate has not been re-measured with it in place; the failures in the table reflect the runs as recorded.
+Note: the `MAX_TOTAL_TOKENS` setting makes per-replica KV sizing more explicit and comparable. It is not a direct fix for `cudaErrorMpsRpcFailure`, and the launch and runtime failure rate has not been re-measured with it in place; the failures in the table reflect the runs as recorded.
 
 The #907 profiling, this repeated case study, and the reviewer verification below are three separate measurement series. They ran on different dates and load, and in some cases different software, so they should not be compared by absolute QPS; the differences between roughly 61, 21, and 29.9 qps are not attributed to a single cause.
 
@@ -233,7 +323,7 @@ Low SM activity at the tuned single replica's peak may indicate reclaimable head
 
 1. **Generality is not fully validated.** Beyond the pinned H100 Higgs case study, we also ran related experiments on H200 and used SGLang to serve Qwen3-4B directly; both lines of work largely confirmed the same-GPU DP gains. Space and time limit how completely we can present those results here, and the measurements are not yet as polished as we would like. We believe same-GPU DP is a promising direction for smaller models on GPUs with ample memory and compute headroom, but the experimental coverage is still incomplete.
 
-2. **KV sizing is hardware- and workload-specific.** The launcher enforces equal per-replica KV capacity through a common `--max-total-tokens`. A sizing procedure that generalizes across models, runtimes, and GPU configurations still requires further study.
+2. **KV sizing is hardware- and workload-specific.** The launcher enforces equal per-replica KV capacity through a common `MAX_TOTAL_TOKENS`. A sizing procedure that generalizes across models, runtimes, and GPU configurations still requires further study.
 
 3. **Router and scheduler still need a deeper dive.** Both the router and the SGLang Omni scheduler need further optimization. On the router side, better routing strategies for a colocated pool are clearly required. On the scheduler side, a more ambitious question is whether we can borrow the spirit of LLM prefill–decode (PD) disaggregation: keep one large shared KV cache and let multiple replicas share it. That direction is extremely challenging, and we believe the potential payoff is correspondingly large.
 

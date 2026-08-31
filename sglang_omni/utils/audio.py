@@ -18,6 +18,8 @@ import torch
 import torchaudio
 import xxhash
 
+from sglang_omni.platforms import current_platform
+
 _DEFAULT_REQUEST_TIMEOUT = 5
 
 
@@ -97,6 +99,20 @@ def _is_riff_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
+def _resample_with_scipy(
+    audio_np: np.ndarray, sample_rate: int, target_sample_rate: int
+) -> np.ndarray:
+    import scipy.signal
+
+    orig_freq = int(sample_rate)
+    new_freq = target_sample_rate
+    gcd = math.gcd(orig_freq, new_freq)
+    up = new_freq // gcd
+    down = orig_freq // gcd
+    resampled_np = scipy.signal.resample_poly(audio_np, up, down, axis=-1)
+    return resampled_np.astype(np.float32)
+
+
 def _try_fast_wav_decode(
     data: bytes,
     target_sample_rate: int,
@@ -116,13 +132,16 @@ def _try_fast_wav_decode(
     if sample_rate == target_sample_rate:
         return audio
 
-    resampled = _cached_resample(
-        torch.from_numpy(audio),
-        sample_rate,
-        target_sample_rate,
-        resample_kwargs,
-    )
-    return resampled.numpy()
+    if current_platform.supports_torchaudio_resample():
+        resampled = _cached_resample(
+            torch.from_numpy(audio),
+            sample_rate,
+            target_sample_rate,
+            resample_kwargs,
+        )
+        return resampled.numpy()
+    else:
+        return _resample_with_scipy(audio, sample_rate, target_sample_rate)
 
 
 @functools.lru_cache(maxsize=32)
@@ -242,12 +261,19 @@ def load_audio(
         trimmed, _ = librosa.effects.trim(audio.numpy(), top_db=trim_top_db)
         audio = torch.from_numpy(trimmed)
     if sample_rate != target_sample_rate:
-        audio = torchaudio.functional.resample(
-            audio,
-            int(sample_rate),
-            target_sample_rate,
-            **dict(resample_kwargs or {}),
-        )
+        if current_platform.supports_torchaudio_resample():
+            audio = torchaudio.functional.resample(
+                audio,
+                int(sample_rate),
+                target_sample_rate,
+                **dict(resample_kwargs or {}),
+            )
+        else:
+            waveform_np = audio.cpu().numpy()
+            resampled_np = _resample_with_scipy(
+                waveform_np, int(sample_rate), target_sample_rate
+            )
+            audio = torch.from_numpy(resampled_np).float()
     if mono:
         audio = audio.squeeze(0)
     return audio.cpu().numpy()
