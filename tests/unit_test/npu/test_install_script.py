@@ -84,7 +84,8 @@ def test_supported_extras_are_preserved_as_one_argument(repo: Path, extra: str) 
     result = _run(repo, "--check", "--extras", extra)
 
     assert result.returncode == 0
-    assert f".\\[{extra}\\]" in result.stdout
+    # Bash versions differ on whether printf %q escapes commas.
+    assert f".\\[{extra}\\]" in result.stdout.replace("\\,", ",")
 
 
 def test_unknown_extra_is_rejected(repo: Path) -> None:

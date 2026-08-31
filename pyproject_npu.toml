@@ -50,14 +50,8 @@ dependencies = [
     # mapping (CANN / torch / torch_npu / triton-ascend / memfabric):
     #   https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu
     #
-    # Example install sequence (CANN 9.0.0, see installation_npu.md for details):
-    #   pip install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
-    #       --index-url https://download.pytorch.org/whl/cpu
-    #   pip install torch_npu==2.10.0  # arch-specific wheel from gitcode.com/Ascend/pytorch
-    #   pip install triton-ascend==3.2.1.dev20260530 \
-    #       --extra-index-url=https://mirrors.huaweicloud.com/ascend/repos/pypi/nightly \
-    #       --trusted-host mirrors.huaweicloud.com
-    #   pip install memfabric-hybrid==1.0.8  # PD disaggregation only
+    # Select a mutually compatible stack from the official Ascend for PyTorch page:
+    #   https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
