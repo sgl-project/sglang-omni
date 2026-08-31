@@ -455,6 +455,7 @@ def test_voxtral_forward_returns_graph_compatible_logits() -> None:
 def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from sglang_omni import platforms
     from sglang_omni.models.voxtral_tts import model_runner as model_runner_mod
     from sglang_omni.models.voxtral_tts import request_builders
     from sglang_omni.models.voxtral_tts.pipeline import stages
@@ -466,6 +467,8 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     build_kwargs: dict = {}
     infrastructure_saw_deferred_capture: list[bool] = []
     init_graph_calls: list[bool] = []
+
+    monkeypatch.setattr(platforms.current_platform, "is_cpu", lambda: False)
 
     class FakeModel:
         pass

@@ -21,6 +21,7 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.utils.device import place_device_spec, resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,9 @@ def _enable_inductor_gemm_autotune() -> None:
 def create_generation_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    # None lets the shared engine builder resolve placement from the platform;
+    # an explicit device is honored as-is and never retargeted.
+    device: str | None = None,
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
     server_args_overrides: dict[str, Any] | None = None,
@@ -396,12 +399,17 @@ class _VoxtralTTSVocoder(BatchVocoderBase):
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
 ) -> SimpleScheduler:
     checkpoint_dir = _resolve_checkpoint(model_path)
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
+    # Preserve an explicit device type while placement owns its index. Resolve an
+    # unset type from the current platform.
+    device = (
+        resolve_device_spec(None, gpu_id)
+        if device is None
+        else place_device_spec(device, gpu_id)
+    )
 
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
     audio_tokenizer = _load_audio_tokenizer(checkpoint_dir, {}, device)

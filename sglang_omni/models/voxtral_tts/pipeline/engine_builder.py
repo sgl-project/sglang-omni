@@ -8,6 +8,7 @@ from typing import Any
 
 from sglang_omni.models.voxtral_tts import request_builders
 from sglang_omni.models.voxtral_tts.pipeline import stages as voxtral_stages
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
@@ -36,7 +37,14 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder):
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "decrypted_config_file": self.decrypted_config_file,
-            "enable_torch_compile": True,
+            # Off on CPU: inductor plans strides from the meta kernel of
+            # sgl_kernel.rotary_embedding_cpu, which disagrees with the real
+            # kernel (expected stride 4096, got 6144), so the compiled graph
+            # trips assert_size_stride during warmup. This is narrow — Qwen3-ASR
+            # compiles fine on CPU — so it stays a Voxtral default rather than a
+            # platform-wide claim that CPU cannot compile. Re-enable once the
+            # upstream meta kernel is fixed.
+            "enable_torch_compile": not current_platform.is_cpu(),
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
