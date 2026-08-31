@@ -1,10 +1,12 @@
-from copy import deepcopy
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-import yaml
 from transformers import AutoConfig
 
+from sglang_omni.config.patch import ConfigPatchSet
+from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_config_file
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.utils import (
     architecture_from_hf_config,
@@ -42,12 +44,16 @@ class ConfigManager:
     def __init__(self, config: PipelineConfig | None = None):
         self.config = config
 
-    def parse_extra_args(self, args: list[str]) -> dict[str, Any]:
-        """
-        Parse the CLI arguments and return the configuration.
+    def parse_extra_args(self, args: list[str]) -> list[tuple[str, str]]:
+        """Parse the CLI arguments into ordered ``(key, value)`` pairs.
+
+        Pairs, not a mapping: a flag written twice must survive parsing so the
+        resolver can rule on it -- two equal values are harmless, two
+        different ones are refused as a conflict. A dict here would keep
+        whichever came last and silently invent an argument-order rule.
         """
         # we expect the arguments to be key-values pairs
-        extra_args = {}
+        extra_args: list[tuple[str, str]] = []
         cur_key, cur_value = None, None
         for arg in args:
             if "=" in arg and cur_key is None and cur_value is None:
@@ -61,48 +67,38 @@ class ConfigManager:
                 raise ValueError(f"Invalid argument: {arg}")
 
             if cur_key is not None and cur_value is not None:
-                # remove the -- in front of the key
-                formatted_key = cur_key.lstrip("-").replace("-", "_")
-                extra_args[formatted_key] = cur_value
+                extra_args.append((_normalize_flag_key(cur_key), cur_value))
                 cur_key, cur_value = None, None
         if cur_key is not None and cur_value is None:
             raise ValueError(f"Missing value for argument: {cur_key}")
         return extra_args
 
-    def _convert_types(self, extra_args: dict[str, Any]) -> dict[str, Any]:
+    def merge_config(
+        self,
+        extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
+        *,
+        extra_patches: ConfigPatchSet | None = None,
+    ) -> PipelineConfig:
+        """Merge the configuration and the extra arguments.
+
+        The dotted keys are translated into canonical patches and applied by
+        :class:`~sglang_omni.config.resolver.ConfigResolver`, which is the only
+        code that writes into a configuration.
+
+        ``extra_patches`` carries patches a caller has already translated --
+        the ``--model-path`` flag in ``sgl-omni serve``, for instance.
+        Everything is resolved together, in one patch set, so that writing the
+        same path two ways is refused (or settled by declared specificity)
+        rather than by the order the translations happen to run in.
         """
-        Convert the configuration to the inferred data types.
-        """
-        return {key: _convert_scalar(value) for key, value in extra_args.items()}
-
-    def merge_config(self, extra_args: dict[str, Any]) -> PipelineConfig:
-        """
-        Merge the configuration and the extra arguments.
-        """
-        extra_args = self._convert_types(extra_args)
-        config_data = self.config.model_dump()
-        config_cls = type(self.config)
-
-        cfg_copy = deepcopy(config_data)
-        for key, value in extra_args.items():
-            current = cfg_copy
-            keys = key.split(".")
-            for k in keys[:-1]:
-                current = _resolve_child(current, k)
-
-            # update the value
-            last_key = keys[-1]
-            if isinstance(current, list):
-                current[_resolve_list_index(current, last_key)] = value
-            else:
-                current[last_key] = value
-
-        _sync_stage_parallelism_aliases(cfg_copy, set(extra_args))
-
-        # validate the configuration
-        merged_config = config_cls(**cfg_copy)
-        _validate_dotted_gpu_override_conflicts(merged_config, set(extra_args))
-        return merged_config
+        patches = patches_from_dotted_cli(extra_args, self.config)
+        if extra_patches is not None:
+            patches = patches.merge(extra_patches)
+        resolved = ConfigResolver(self.config).resolve(patches)
+        _validate_dotted_gpu_override_conflicts(
+            resolved.config, {patch.key for patch in patches.ordered()}
+        )
+        return resolved.config
 
     @staticmethod
     def from_model_path(model_path: str, variant: str | None = None) -> "ConfigManager":
@@ -128,106 +124,18 @@ class ConfigManager:
     def from_file(file_path: str) -> "ConfigManager":
         """
         Load the configuration from the file path.
+
+        The file's ``stages:`` mapping entries are folded into the
+        configuration that comes back, so callers holding a ``ConfigManager``
+        see one settled config rather than a config plus a pile of pending
+        overrides. ``sgl-omni config explain`` wants the opposite and calls
+        ``sources_from_config_file`` directly.
         """
-        with open(file_path, "r") as f:
-            data = yaml.safe_load(f)
-        if not isinstance(data, dict):
-            raise ValueError(f"Config file {file_path!r} must contain a mapping")
-
-        data = dict(data)
-        has_stage_overrides = "stage_overrides" in data
-        stage_overrides = data.pop("stage_overrides", {})
-        config_cls_str = data["config_cls"]
-        config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(config_cls_str)
-        config = config_cls(**data)
-        if has_stage_overrides:
-            config = _apply_stage_overrides(config, stage_overrides)
-        return ConfigManager(config)
-
-
-def _apply_stage_overrides(
-    config: PipelineConfig,
-    stage_overrides: dict[str, Any],
-) -> PipelineConfig:
-    """Apply compact file-level runtime overrides by stage name."""
-
-    if not isinstance(stage_overrides, dict):
-        raise ValueError(
-            "stage_overrides must be a mapping from stage name to overrides"
-        )
-
-    config_data = config.model_dump()
-    stages = config_data["stages"]
-    stage_by_name = {stage["name"]: stage for stage in stages}
-
-    for stage_name, override in stage_overrides.items():
-        if stage_name not in stage_by_name:
-            raise ValueError(f"stage_overrides references unknown stage {stage_name!r}")
-        if not isinstance(override, dict):
-            raise ValueError(f"stage_overrides.{stage_name} must be a mapping")
-
-        supported = {"runtime"}
-        unsupported = sorted(set(override) - supported)
-        if unsupported:
-            raise ValueError(
-                f"stage_overrides.{stage_name} supports only "
-                f"{sorted(supported)} overrides; got unsupported keys "
-                f"{unsupported}. Replica policy is declared per process under "
-                "the top-level 'processes' mapping"
-            )
-
-        stage = stage_by_name[stage_name]
-        if "runtime" not in override:
-            continue
-        runtime_override = override["runtime"]
-        if not isinstance(runtime_override, dict):
-            raise ValueError(f"stage_overrides.{stage_name}.runtime must be a mapping")
-        stage["runtime"] = _deep_merge_dict(
-            stage.get("runtime", {}),
-            runtime_override,
-        )
-
-    return type(config)(**config_data)
-
-
-def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = deepcopy(base)
-    for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge_dict(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _sync_stage_parallelism_aliases(
-    config_data: dict[str, Any],
-    override_keys: set[str],
-) -> None:
-    """Keep StageConfig.tp_size and parallelism.tp coherent for dotted CLI args."""
-    stages = config_data.get("stages")
-    if not isinstance(stages, list):
-        return
-
-    for index, stage in enumerate(stages):
-        if not isinstance(stage, dict):
-            continue
-        stage_keys = (str(index), stage["name"])
-        has_tp_size_override = any(
-            f"stages.{key}.tp_size" in override_keys for key in stage_keys
-        )
-        has_parallelism_override = any(
-            f"stages.{key}.parallelism.tp" in override_keys for key in stage_keys
-        )
-        if has_tp_size_override == has_parallelism_override:
-            continue
-
-        if has_tp_size_override:
-            parallelism = dict(stage.get("parallelism") or {})
-            parallelism["tp"] = stage["tp_size"]
-            stage["parallelism"] = parallelism
-        else:
-            stage["tp_size"] = stage["parallelism"]["tp"]
+        config, patches = sources_from_config_file(file_path)
+        if not patches:
+            return ConfigManager(config)
+        resolved = ConfigResolver(config).resolve(patches)
+        return ConfigManager(resolved.config)
 
 
 def _validate_dotted_gpu_override_conflicts(
@@ -235,17 +143,15 @@ def _validate_dotted_gpu_override_conflicts(
     override_keys: set[str],
 ) -> None:
     """Reject stage GPU overrides shadowed by process replica placement."""
+    stage_by_name = {stage.name: stage for stage in config.stages}
     for key in sorted(override_keys):
         parts = key.split(".")
         if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
             continue
 
-        stage_ref = parts[1]
-        stage_index = _resolve_list_index(
-            [stage.model_dump() for stage in config.stages],
-            stage_ref,
-        )
-        stage = config.stages[stage_index]
+        stage = stage_by_name.get(parts[1])
+        if stage is None:
+            continue
         process_name = stage.process or stage.name
         process_config = config.processes.get(process_name)
         if process_config is None or process_config.replica_devices is None:
@@ -258,54 +164,13 @@ def _validate_dotted_gpu_override_conflicts(
         )
 
 
-def _resolve_list_index(items: list[Any], key: str) -> int:
-    """Resolve a dotted-path segment to a list index.
+def _normalize_flag_key(key: str) -> str:
+    """Strip the leading dashes and normalize the flag's first segment.
 
-    Supports numeric indices (e.g. ``stages.4.tp_size``) as well as stage names
-    (e.g. ``stages.thinker.runtime``) when the list contains mappings with a
-    ``name`` field.
+    Only the first dotted segment gets its dashes rewritten to underscores:
+    later segments can be document keys -- ``--stages.thinker.env.MY-FLAG``
+    names an env var whose spelling must survive verbatim.
     """
-    if key.isdigit():
-        return int(key)
-
-    for index, item in enumerate(items):
-        if isinstance(item, dict) and item.get("name") == key:
-            return index
-
-    available = [
-        item["name"] for item in items if isinstance(item, dict) and "name" in item
-    ]
-    raise KeyError(
-        f"Could not resolve list element {key!r}; expected an integer index "
-        f"or one of the named entries {available}"
-    )
-
-
-def _resolve_child(current: Any, key: str) -> Any:
-    """Traverse one segment of a dotted config path."""
-    if isinstance(current, list):
-        return current[_resolve_list_index(current, key)]
-    return current[key]
-
-
-def _convert_scalar(value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-
-    lowered = value.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    if lowered == "none":
-        return None
-
-    try:
-        return int(value)
-    except ValueError:
-        pass
-
-    try:
-        return float(value)
-    except ValueError:
-        return value
+    key = key.lstrip("-")
+    head, separator, rest = key.partition(".")
+    return head.replace("-", "_") + separator + rest

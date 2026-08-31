@@ -16,21 +16,24 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
-from sglang_omni_router import proxy as proxy_module
-from sglang_omni_router import websocket_proxy as websocket_proxy_module
-from sglang_omni_router.app import _broadcast_admin_request, create_app
-from sglang_omni_router.config import (
+from sglang_omni_router.python import proxy as proxy_module
+from sglang_omni_router.python import websocket_proxy as websocket_proxy_module
+from sglang_omni_router.python.app import _broadcast_admin_request, create_app
+from sglang_omni_router.python.config import (
     DEFAULT_CAPABILITIES,
     Capability,
     RouterConfig,
     WorkerConfig,
 )
-from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.route_metadata import RouteKind
-from sglang_omni_router.selector import WorkerSelector
-from sglang_omni_router.update_journal import JournalUnwritableError, UpdateJournal
-from sglang_omni_router.voice_routing import VoiceRoutingState
-from sglang_omni_router.worker import build_workers, worker_id_from_url
+from sglang_omni_router.python.health import HealthChecker
+from sglang_omni_router.python.route_metadata import RouteKind
+from sglang_omni_router.python.selector import WorkerSelector
+from sglang_omni_router.python.update_journal import (
+    JournalUnwritableError,
+    UpdateJournal,
+)
+from sglang_omni_router.python.voice_routing import VoiceRoutingState
+from sglang_omni_router.python.worker import build_workers, worker_id_from_url
 
 
 def _request_netloc(request: httpx.Request) -> str:
@@ -1220,7 +1223,7 @@ def test_buffered_route_completion_log_includes_selection_context(
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     app = create_app(_router_config(), client=async_client)
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni_router.proxy"):
+    with caplog.at_level(logging.INFO, logger="sglang_omni_router.python.proxy"):
         with TestClient(app) as client:
             response = client.post(
                 "/v1/chat/completions",
@@ -2103,7 +2106,7 @@ def test_relayed_500_outcome_labeled_upstream_5xx(
         client=async_client,
     )
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni_router.proxy"):
+    with caplog.at_level(logging.INFO, logger="sglang_omni_router.python.proxy"):
         with TestClient(app) as client:
             response = client.post(
                 "/v1/chat/completions",
@@ -2972,7 +2975,7 @@ def test_streaming_route_completion_log_includes_stream_lifetime(
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     app = create_app(_router_config(), client=async_client)
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni_router.proxy"):
+    with caplog.at_level(logging.INFO, logger="sglang_omni_router.python.proxy"):
         with TestClient(app) as client:
             with client.stream(
                 "POST",
@@ -3327,7 +3330,7 @@ def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
             lock = app.state.admin_update_lock
             await lock.acquire()
             monkeypatch.setattr(
-                "sglang_omni_router.app._ADMIN_UPDATE_LOCK_TIMEOUT_S",
+                "sglang_omni_router.python.app._ADMIN_UPDATE_LOCK_TIMEOUT_S",
                 0.05,
             )
             try:
@@ -3385,7 +3388,7 @@ def test_max_connections_explicit_value_is_preserved() -> None:
 def test_max_connections_explicit_below_worker_budget_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.config"):
         config = _router_config(max_connections=100)
     assert config.max_connections == 100
     assert any("under-feed" in record.getMessage() for record in caplog.records)
@@ -3395,7 +3398,7 @@ def test_max_connections_auto_at_cap_still_warns_when_pool_outgrows_it(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     workers = [WorkerConfig(url=f"http://worker-{i}:8101") for i in range(70)]
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.config"):
         config = RouterConfig(workers=workers)
     assert config.max_connections == 4096
     assert any("under-feed" in record.getMessage() for record in caplog.records)
@@ -3445,7 +3448,7 @@ async def test_lifespan_unwinds_all_resources_when_voice_stop_fails(
 
 
 def test_route_registration_split_exposes_exact_route_sets() -> None:
-    from sglang_omni_router.app import (
+    from sglang_omni_router.python.app import (
         register_admin_routes,
         register_data_routes,
         register_health_routes,
@@ -3517,6 +3520,7 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
         "/v1/chat/completions",
         "/v1/audio/speech",
         "/v1/audio/transcriptions",
+        "/v1/audio/translations",
     }
     assert _paths(lambda app: register_tts_routes(app, proxy, websocket_proxy)) == {
         "/v1/audio/speech/batch",
@@ -3524,6 +3528,247 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
         "/v1/audio/voices",
         "/v1/audio/voices/{name}",
     }
+
+
+# Note (Jeffro): Worker /v1/ routes that the router does not forward on purpose. Every other
+# /v1/ route on the worker must also exist on the router; if you add a worker
+# endpoint and forget the router, test_router_exposes_every_worker_v1_route
+# fails and points you here.
+_WORKER_ROUTES_NOT_PROXIED = {
+    "/v1/realtime",  # the router has no websocket proxy for it yet
+}
+
+
+def test_router_exposes_every_worker_v1_route() -> None:
+    from sglang_omni.serve import create_app as create_worker_app
+
+    class _NoopClient:
+        pass
+
+    worker_app = create_worker_app(
+        _NoopClient(),
+        model_name="worker",
+        enable_realtime=True,
+        supports_audio_translation=True,
+    )
+    router_app = create_app(_router_config())
+
+    def _v1_routes(app: FastAPI) -> dict[str, frozenset[str]]:
+        routes: dict[str, set[str]] = {}
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            if not path.startswith("/v1/"):
+                continue
+            methods = getattr(route, "methods", None) or {"WEBSOCKET"}
+            routes.setdefault(path, set()).update(methods - {"HEAD"})
+        return {path: frozenset(methods) for path, methods in routes.items()}
+
+    worker_routes = _v1_routes(worker_app)
+    router_routes = _v1_routes(router_app)
+
+    assert _WORKER_ROUTES_NOT_PROXIED <= set(
+        worker_routes
+    ), "stale entry in _WORKER_ROUTES_NOT_PROXIED"
+    missing = {
+        path: methods
+        for path, methods in worker_routes.items()
+        if path not in _WORKER_ROUTES_NOT_PROXIED
+        and not methods <= router_routes.get(path, frozenset())
+    }
+    assert not missing, (
+        f"worker routes missing from the router: {missing}; add a forward in "
+        "sglang_omni_router/python/app.py and a classify_route branch in "
+        "sglang_omni_router/python/route_metadata.py"
+    )
+
+
+@pytest.mark.parametrize("path", ["/v1/audio/transcriptions", "/v1/audio/translations"])
+def test_speech_to_text_routes_select_audio_input_workers(path: str) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        seen.append((_request_netloc(request), request.url.path))
+        return httpx.Response(200, json={"text": "hi"}, request=request)
+
+    worker_configs = [
+        WorkerConfig(url="http://worker-a:8101", capabilities={"chat", "speech"}),
+        WorkerConfig(url="http://worker-b:8102", capabilities={"audio_input"}),
+    ]
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            path,
+            files={"file": ("a.wav", b"RIFF....WAVE", "audio/wav")},
+            data={"model": "whisper"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert seen == [("worker-b:8102", path)]
+    workers = client.get("/workers").json()["workers"]
+    by_url = {worker["url"]: worker for worker in workers}
+    assert by_url["http://worker-b:8102"]["routed_requests_by_class"] == {
+        "transcription": 1
+    }
+
+
+_ASR_BOUNDARY = "omni-test-boundary"
+
+
+def _speech_to_text_multipart(
+    model: str | None,
+    *,
+    model_first: bool = True,
+    stream: str | None = None,
+) -> tuple[bytes, dict[str, str]]:
+    """Build a raw multipart body so tests control the field order."""
+
+    def _field(name: str, value: str) -> bytes:
+        return (
+            f"--{_ASR_BOUNDARY}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n"
+        ).encode()
+
+    file_part = (
+        f"--{_ASR_BOUNDARY}\r\n"
+        'Content-Disposition: form-data; name="file"; filename="a.wav"\r\n'
+        "Content-Type: audio/wav\r\n\r\n"
+    ).encode() + b"RIFF....WAVE\r\n"
+    parts = [file_part]
+    if model is not None:
+        model_part = _field("model", model)
+        parts = [model_part, file_part] if model_first else [file_part, model_part]
+    if stream is not None:
+        parts.append(_field("stream", stream))
+    body = b"".join(parts) + f"--{_ASR_BOUNDARY}--\r\n".encode()
+    headers = {"content-type": f"multipart/form-data; boundary={_ASR_BOUNDARY}"}
+    return body, headers
+
+
+def _mixed_asr_pool_app(seen_workers: list[str]) -> FastAPI:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        seen_workers.append(_request_netloc(request))
+        return httpx.Response(200, json={"text": "hi"}, request=request)
+
+    worker_configs = [
+        WorkerConfig(
+            url="http://qwen3-asr:8101", model="qwen3-asr", capabilities={"audio_input"}
+        ),
+        WorkerConfig(
+            url="http://whisper:8102", model="whisper", capabilities={"audio_input"}
+        ),
+    ]
+    return create_app(
+        _router_config(worker_configs=worker_configs),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+
+@pytest.mark.parametrize("path", ["/v1/audio/transcriptions", "/v1/audio/translations"])
+@pytest.mark.parametrize("model_first", [True, False])
+def test_multipart_form_model_selects_matching_worker(
+    path: str, model_first: bool
+) -> None:
+    # The model field must route correctly whether it comes before or after
+    # the file part — after means the scan has to skip the file bytes.
+    seen_workers: list[str] = []
+    app = _mixed_asr_pool_app(seen_workers)
+    body, headers = _speech_to_text_multipart("whisper", model_first=model_first)
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            response = client.post(path, content=body, headers=headers)
+            assert response.status_code == 200, response.text
+
+    assert seen_workers == ["whisper:8102"] * 4
+
+
+def test_multipart_form_model_conflicting_route_header_is_rejected() -> None:
+    seen_workers: list[str] = []
+    app = _mixed_asr_pool_app(seen_workers)
+    body, headers = _speech_to_text_multipart("whisper")
+    headers["x-sglang-omni-route-model"] = "qwen3-asr"
+
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/translations", content=body, headers=headers)
+
+    assert response.status_code == 400, response.text
+    assert "conflicts with the multipart form model" in response.text
+    assert seen_workers == []
+
+
+def test_multipart_body_router_cannot_parse_falls_back_to_route_header() -> None:
+    # The worker's form parser is authoritative: a body our scan cannot read
+    # must still be forwarded (here pinned by the header), never rejected.
+    seen_workers: list[str] = []
+    app = _mixed_asr_pool_app(seen_workers)
+    headers = {
+        "content-type": f"multipart/form-data; boundary={_ASR_BOUNDARY}",
+        "x-sglang-omni-route-model": "whisper",
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/audio/translations",
+            content=b"not really multipart",
+            headers=headers,
+        )
+
+    assert response.status_code == 200, response.text
+    assert seen_workers == ["whisper:8102"]
+
+
+def test_multipart_form_stream_requires_streaming_capability() -> None:
+    seen_workers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "healthy"}, request=request)
+        seen_workers.append(_request_netloc(request))
+        return httpx.Response(200, json={"text": "hi"}, request=request)
+
+    worker_configs = [
+        WorkerConfig(url="http://batch-asr:8101", capabilities={"audio_input"}),
+        WorkerConfig(
+            url="http://sse-asr:8102", capabilities={"audio_input", "streaming"}
+        ),
+    ]
+    app = create_app(
+        _router_config(worker_configs=worker_configs),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    body, headers = _speech_to_text_multipart("whisper", stream="true")
+
+    with TestClient(app) as client:
+        for _ in range(4):
+            response = client.post(
+                "/v1/audio/translations", content=body, headers=headers
+            )
+            assert response.status_code == 200, response.text
+
+    assert seen_workers == ["sse-asr:8102"] * 4
+
+
+def test_multipart_form_stream_conflicting_route_header_is_rejected() -> None:
+    seen_workers: list[str] = []
+    app = _mixed_asr_pool_app(seen_workers)
+    body, headers = _speech_to_text_multipart("whisper", stream="true")
+    headers["x-sglang-omni-route-stream"] = "false"
+
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/translations", content=body, headers=headers)
+
+    assert response.status_code == 400, response.text
+    assert "conflicts with the multipart form stream" in response.text
+    assert seen_workers == []
 
 
 def test_worker_crud_stays_unauthenticated_even_with_admin_key() -> None:
@@ -3767,7 +4012,7 @@ async def test_registry_lock_rejects_while_an_update_is_queued() -> None:
     # update it never saw.
     from fastapi import FastAPI as _FastAPI
 
-    from sglang_omni_router.app import _registry_lock_or_reject
+    from sglang_omni_router.python.app import _registry_lock_or_reject
 
     app = _FastAPI()
     app.state.admin_update_lock = asyncio.Lock()
@@ -3840,7 +4085,7 @@ async def test_a_cancelled_upstream_send_returns_the_active_gauge() -> None:
     # Note (Jiaxin Deng): a client disconnect cancels the send await, and
     # neither httpx handler sees it; a leaked gauge keeps the worker looking
     # busy and stops a retiring incarnation from ever draining.
-    from sglang_omni_router.route_metadata import RouteMetadata
+    from sglang_omni_router.python.route_metadata import RouteMetadata
 
     config = _router_config()
     workers = build_workers(config.workers)

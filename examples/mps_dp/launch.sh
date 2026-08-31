@@ -336,6 +336,7 @@ up() {
   local serve_cmd=(sgl-omni serve) source_args=() model_name_args=()
   local extra_args=() mem_args=()
   local expected_max_total_tokens=${MAX_TOTAL_TOKENS:-}
+  local engine_stage=""
   local model_path_manifest=$model
   if [ -n "$config" ]; then
     [ -z "${MODEL:-}" ] || die "MODEL cannot be combined with CONFIG"
@@ -357,9 +358,12 @@ up() {
     if [ "$weight_share" = 1 ]; then
       config_resolver_args+=(--weight-share)
     fi
-    expected_max_total_tokens=$("$PYTHON_BIN" "$SCRIPT_DIR/config.py" \
-      "${config_resolver_args[@]}") \
+    local resolved_stage_and_tokens
+    resolved_stage_and_tokens=$("$PYTHON_BIN" "$SCRIPT_DIR/config.py" \
+      --print-stage "${config_resolver_args[@]}") \
       || die "could not resolve max_total_tokens from $config"
+    engine_stage=${resolved_stage_and_tokens%% *}
+    expected_max_total_tokens=${resolved_stage_and_tokens##* }
   else
     # Note (Jiaxin Deng): without a pipeline config the supported-model check
     # cannot run until engine startup, which is after the MPS daemon and state
@@ -370,6 +374,10 @@ up() {
     source_args=(--model-path "$model")
     model_name=${MODEL_NAME:-higgs}
     model_name_args=(--model-name "$model_name")
+    # Model-path launches default to the Higgs pipeline; its generation
+    # engine stage is tts_engine. Other models need CONFIG, which resolves
+    # the stage name from the pipeline itself.
+    engine_stage=${ENGINE_STAGE:-tts_engine}
   fi
   if [ "$n" -gt 1 ] && [ -z "$expected_max_total_tokens" ]; then
     die "MAX_TOTAL_TOKENS is required for N=$n so every replica has the same KV capacity"
@@ -379,11 +387,12 @@ up() {
       || die "max_total_tokens must be a positive integer, got '$expected_max_total_tokens'"
   fi
   if [ -n "${MAX_TOTAL_TOKENS:-}" ]; then
-    extra_args+=(--max-total-tokens "$expected_max_total_tokens")
+    # The per-stage KV cap is a dotted engine setting on the generation stage.
+    extra_args+=("--${engine_stage}.engine.max_total_tokens" "$expected_max_total_tokens")
   fi
   if [ -n "${SERVE_EXTRA_ARGS:-}" ]; then
     # Extra sgl-omni serve flags, word-split intentionally (e.g.
-    # "--max-running-requests 32"). Applied identically to every replica.
+    # "--tts_engine.engine.max_running_requests 32"). Applied identically to every replica.
     # shellcheck disable=SC2206
     extra_args+=($SERVE_EXTRA_ARGS)
   fi

@@ -157,9 +157,11 @@ class MossTTSDelaySamplingCudaGraphRunner:
         self._warmup_stream = None
         self._capture_stream = None
         gc.collect()
-        if self.model.device.type == "cuda" and torch.cuda.is_available():
-            with torch.cuda.device(self.model.device):
-                torch.cuda.empty_cache()
+        if self.model.device.type in ("cuda", "musa"):
+            device_module = torch.get_device_module(self.model.device)
+            if device_module.is_available():
+                with device_module.device(self.model.device):
+                    device_module.empty_cache()
 
     def _make_static_inputs(self, max_bs: int) -> _StaticSamplingInputs:
         device = self.model.device

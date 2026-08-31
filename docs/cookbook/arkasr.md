@@ -25,7 +25,7 @@ hf download AutoArk-AI/ARK-ASR-3B
 ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default.
 Async decode is enabled by default for decode batches of at least two requests,
 allowing the shared one-step-lookahead path to overlap host-side result
-processing with the next GPU decode forward. Use `--decode-mode sync` to disable
+processing with the next GPU decode forward. Use `--asr.factory.enable_async_decode false` to disable
 it, or tune the crossover with `--async-lookahead-min-batch-size`.
 Request concurrency and audio-encoder batching are controlled separately:
 
@@ -65,9 +65,27 @@ To force synchronous decode while comparing modes, use:
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
-  --decode-mode sync \
+  --asr.factory.enable_async_decode false \
   --port 8000
 ```
+
+### Prefill Coalescing
+
+ARK-ASR holds newly built requests briefly by default so the scheduler can
+admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --prefill-coalesce-requests 16 \
+  --prefill-coalesce-wait-ms 32 \
+  --port 8000
+```
+
+Admission is released after either the request threshold or wait deadline is
+reached; it can release earlier when pending request-build work drains. Set
+`--prefill-coalesce-requests 0` to disable coalescing. Tune these values for the
+target request distribution and latency requirements.
 
 ## Transcribe Audio
 
@@ -208,6 +226,32 @@ not change peak encoder activation memory.
 `request_build_max_pending` to **16**. These workers only perform CPU request
 construction; encoder concurrency and backpressure are owned by the separate
 pre-LM queue.
+
+## Encoder CUDA Graph
+
+The audio encoder CUDA Graph is enabled by default. At startup it captures
+batch buckets derived from `encoder_max_batch_size` (powers of two, plus the
+limit itself; the default of 8 yields `1/2/4/8`) and mel-frame buckets in
+64-frame steps up to about 10 s (1024 frames). Longer clips, any uncaptured
+bucket, and a failed capture or replay use the eager encoder; requests never
+trigger capture.
+
+The graphs are captured after SGLang's generation CUDA graphs and before the
+pre-LM encoder service. To profile eager encoder execution:
+
+```bash
+sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.factory.enable_encoder_cuda_graph false
+```
+
+Or in a pipeline config:
+
+```yaml
+stages:
+  asr:
+    factory:
+      enable_encoder_cuda_graph: false
+```
 
 ## Benchmarking
 

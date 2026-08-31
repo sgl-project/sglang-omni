@@ -1,20 +1,20 @@
-# SPDX-License-Identifier: Apache-2.0
-# Author:
-# chenyang zhao: https://github.com/zhaochenyang20
-# PoTaTo-Mika: https://github.com/PoTaTo-Mika
 """ASR concurrency benchmark on SeedTTS reference audio (issue #646).
 
 This script transcribes SeedTTS reference clips directly through a running ASR
 router and reports WER, request throughput, RTFx, RTF, latency, and worker
-routing balance. It supports both Qwen3-ASR and Fun-ASR-Nano through
-``--model-path``.
+routing balance.
+
+Author:
+
+    Chenyang Zhao https://github.com/zhaochenyang20
+    PoTaTo-Mika https://github.com/PoTaTo-Mika
 
 Usage:
 
-    # Download the test set once:
+    1. Download the test set once:
     python -m benchmarks.dataset.prepare --dataset seedtts
 
-    # Pin and launch Qwen3-ASR:
+    2. Pin and launch Qwen3-ASR:
     MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B \
         --revision 7278e1e70fe206f11671096ffdd38061171dd6e5)
     sgl-omni serve \
@@ -131,8 +131,11 @@ def _parse_concurrencies(value: str) -> list[int]:
     return [_positive_int(token) for token in tokens]
 
 
-def _evaluation_input_sha256(samples: list[SampleInput]) -> str:
-    digest = hashlib.sha256(b"seedtts-evaluation-input-v1\0")
+def _evaluation_input_sha256(
+    samples: list[SampleInput], *, namespace: str = "seedtts"
+) -> str:
+    """Fingerprint the exact evaluation input: ids, texts, and audio bytes."""
+    digest = hashlib.sha256(f"{namespace}-evaluation-input-v1\0".encode())
     for sample in samples:
         for value in (sample.sample_id, sample.ref_text, sample.target_text):
             encoded = value.encode()
@@ -459,26 +462,16 @@ def _print_table(aggregates: list[dict]) -> None:
         print(row)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_common_args(
+    parser: argparse.ArgumentParser, *, default_output: str
+) -> argparse.ArgumentParser:
+    """Add the router, sweep, provenance, monitoring, and output options."""
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--port",
         type=int,
         required=True,
         help="Port of the running ASR SGLang Omni router.",
-    )
-    parser.add_argument(
-        "--meta",
-        default=DATASETS["seedtts"],
-        help="SeedTTS source (HF repo id or local meta.lst).",
-    )
-    parser.add_argument("--lang", default="en", choices=["en", "zh"])
-    parser.add_argument(
-        "--max-samples",
-        type=int,
-        default=0,
-        help="Limit samples (0 = full SeedTTS set; 1088 for EN).",
     )
     parser.add_argument(
         "--concurrencies",
@@ -598,7 +591,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="asr_seedtts_results.json",
+        default=default_output,
         help="Where to write the full JSON results.",
     )
     parser.add_argument(
@@ -660,10 +653,32 @@ def parse_args() -> argparse.Namespace:
             "output JSON."
         ),
     )
-    args = parser.parse_args()
+    return parser
+
+
+def finalize_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill defaults that depend on other parsed arguments."""
     if not args.profile_urls:
         args.profile_urls = f"http://{args.host}:{args.port}"
     return args
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--meta",
+        default=DATASETS["seedtts"],
+        help="SeedTTS source (HF repo id or local meta.lst).",
+    )
+    parser.add_argument("--lang", default="en", choices=["en", "zh"])
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=0,
+        help="Limit samples (0 = full SeedTTS set; 1088 for EN).",
+    )
+    add_common_args(parser, default_output="asr_seedtts_results.json")
+    return finalize_args(parser.parse_args())
 
 
 async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:

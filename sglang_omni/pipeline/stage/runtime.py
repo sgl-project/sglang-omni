@@ -648,6 +648,45 @@ class Stage:
             await self._route_stream_item_or_fail(request_id, item)
             return
 
+        if stage_io.is_inline_stream_chunk_ref(msg.data_ref):
+            try:
+                data, metadata = stage_io.deserialize_inline_stream_chunk(msg.data_ref)
+            except Exception as exc:
+                logger.error(
+                    "Stage %s: inline stream chunk deserialize failed for %s: %s",
+                    self.name,
+                    request_id,
+                    exc,
+                )
+                await self._wait_for_receive_predecessor(predecessor)
+                await self._queue_stream_error(request_id, msg.from_stage, exc)
+                return
+            await self._wait_for_receive_predecessor(predecessor)
+            if request_id in self._aborted:
+                return
+            item = StreamItem(
+                chunk_id=msg.chunk_id,
+                data=data,
+                from_stage=msg.from_stage,
+                metadata=metadata,
+            )
+            self._emit_stream_chunk_received(
+                request_id=msg.request_id,
+                from_stage=msg.from_stage,
+                chunk_id=msg.chunk_id,
+            )
+            _comm_trace(
+                "comm_stream_read",
+                request_id=msg.request_id,
+                from_stage=msg.from_stage,
+                to_stage=self.name,
+                chunk_id=msg.chunk_id,
+                transport="inline",
+                bytes=data.nbytes,
+            )
+            await self._route_stream_item_or_fail(request_id, item)
+            return
+
         data_ref = self._data_ref_from_message(msg)
         relay = self._comm.relay(data_ref.transport)
         try:
@@ -815,6 +854,8 @@ class Stage:
             imported = stage_io.deserialize_direct_cuda_ipc_stream_chunk(msg.data_ref)
             del imported
             return
+        if stage_io.is_inline_stream_chunk_ref(msg.data_ref):
+            return
         if msg.chunk_id is None:
             raise ValueError("stream chunk discard requires chunk_id")
         data_ref = self._data_ref_from_message(msg)
@@ -907,6 +948,8 @@ class Stage:
 
     async def _execute(self, payload: Any) -> None:
         request_id = payload.request_id
+        if request_id in self._aborted:
+            return
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -918,9 +961,12 @@ class Stage:
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
             self._tp_fanout.fanout_work(payload)
-        self.scheduler.inbox.put(
-            IncomingMessage(request_id=request_id, type="new_request", data=payload)
-        )
+        msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
+        enqueue = getattr(self.scheduler, "enqueue", None)
+        if enqueue is not None:
+            enqueue(msg)
+        else:
+            self.scheduler.inbox.put(msg)
 
     async def _on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
@@ -1491,6 +1537,42 @@ class Stage:
                     from_stage=self.name,
                     to_stage=target,
                     data_ref=direct_ref,
+                    chunk_id=chunk_id,
+                    replica_bindings=self._replica_bindings.get(request_id),
+                ),
+            )
+            return
+        inline_ref = stage_io.serialize_inline_stream_chunk(data, metadata)
+        if inline_ref is not None:
+            _emit_event(
+                request_id=request_id,
+                stage=self.name,
+                event_name="stage_stream_chunk_sent",
+                metadata={
+                    "to_stage": target,
+                    "chunk_id": chunk_id,
+                    "modality": chunk_modality,
+                    "transport": "inline",
+                },
+            )
+            self._comm.router.note_transport_choice("stream", target, "inline")
+            _comm_trace(
+                "comm_stream_send",
+                request_id=request_id,
+                from_stage=self.name,
+                to_stage=target,
+                chunk_id=chunk_id,
+                transport="inline",
+                bytes=data.nbytes,
+            )
+            await self.control_plane.send_to_stage(
+                target,
+                endpoint,
+                DataReadyMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    to_stage=target,
+                    data_ref=inline_ref,
                     chunk_id=chunk_id,
                     replica_bindings=self._replica_bindings.get(request_id),
                 ),

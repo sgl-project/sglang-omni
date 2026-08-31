@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from safetensors.torch import load_file
 
+from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import (
     load_dots_tts_state,
     store_dots_tts_state,
@@ -43,6 +44,7 @@ class DotsAudioCodec:
     """Model-only AudioVAE/speaker bundle shared by reference and vocoder stages."""
 
     def __init__(self, checkpoint: str, *, device: str) -> None:
+        import_dots_tts()
         from dots_tts.models.dots_tts.config import ModelConfig
         from dots_tts.modules.speaker.encoder import SpeakerXVectorFeatures
         from dots_tts.modules.vocoder.bigvgan import AudioVAE

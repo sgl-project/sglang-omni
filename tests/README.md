@@ -49,9 +49,8 @@ tests/
     ├── sampling/
     │   └── test_seed.py
     ├── vendor/
-    │   ├── test_sglang_parallel_state.py
-    │   ├── test_sglang_server_args.py
-    │   └── test_sglang_signature.py
+    │   ├── test_sglang_layers_patch.py
+    │   └── test_sglang_server_args.py
     ├── xpu/
     │   ├── test_device_layer.py
     │   └── test_install_script.py
@@ -156,7 +155,15 @@ tests/
     │   ├── test_request_builders.py
     │   ├── test_stream_output_builder.py
     │   └── test_streaming_client.py
+    ├── fun_cosyvoice3/
+    │   ├── test_flow_batch.py
+    │   ├── test_model_runner.py
+    │   ├── test_pipeline.py
+    │   ├── test_request_builders.py
+    │   ├── test_utils.py
+    │   └── test_vocoder.py
     ├── arkasr/
+    │   ├── test_encoder_cuda_graph.py
     │   ├── test_encoder_service.py
     │   └── test_pipeline.py
     ├── moss_transcribe_diarize/
@@ -197,11 +204,13 @@ tests/
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
     │   ├── test_speech_to_text.py
+    │   ├── test_subtitles.py
     │   ├── test_translation_capability.py
     │   └── test_translations.py
     ├── scheduling/
     │   ├── test_deferred_admission.py
     │   ├── test_engine_factory.py
+    │   ├── test_evict_heap_radix_cache.py
     │   ├── test_pipeline_state.py
     │   ├── test_reference_encoder.py
     │   ├── test_stage_cache.py
@@ -215,7 +224,9 @@ tests/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_encoder_service.py
     │   ├── test_pipeline.py
-    │   └── test_request_builders.py
+    │   ├── test_request_builders.py
+    │   ├── test_timestamp_logit_processor.py
+    │   └── test_transcription_adapter.py
     └── voxtral_tts/
         └── test_pipeline.py
 ```
@@ -456,6 +467,11 @@ that happened to contain an older version of the test.
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation.
+  - pinned CUDA staging primitives (`cuda_staging`): exact-size growth that
+    keeps the old storage on allocation failure, allocation outside inference
+    mode, one reusable completion event per transfer slot, and record/sync
+    error propagation with same-device stream checks, using CPU stand-ins
+    where no GPU is present.
 - `unit_test/model_runner/`: Shared model-runner contract tests:
   - graph-safe hidden-state capture: stable registered buffers refreshed by
     decoder-layer pre-hooks, capacity validation, graph-replay row reads, and
@@ -467,6 +483,9 @@ that happened to contain an older version of the test.
   - static TTS `ModelCapabilities` declarations, registry lookup, aliases, and
     launcher startup logging.
 - `unit_test/scheduling/`: Shared scheduling-service unit tests:
+  - `EvictHeapRadixCache` eviction-order equivalence against upstream
+    `RadixCache` on randomized traces, heap boundedness and recovery after a
+    full drain, and reset-then-reuse behavior.
   - deferred request admission completion, abort, and dependency-failure
     semantics.
   - breakable prefill CUDA Graph policy: backend/cap/bucket validation, shared
@@ -481,7 +500,7 @@ that happened to contain an older version of the test.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory `max_running_requests=64` default,
     async-decode default,
-    and `--decode-mode async|sync` CLI overrides
+    and the dotted `factory.enable_async_decode` CLI override
   - RTX 4090 profile config resolution, SM-specific multimodal-attention
     defaults, and resolved decode CUDA Graph bucket diagnostics
   - single-source audio token length formula used by both processor and
@@ -499,15 +518,23 @@ that happened to contain an older version of the test.
 - `unit_test/arkasr/`: ARK-ASR-3B unit tests:
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
-  - pipeline config, stage factory concurrency defaults, deferred CUDA-graph
-    capture, async-decode default, and `--decode-mode async|sync` CLI overrides
+  - pipeline config, stage factory concurrency defaults, encoder CUDA-graph
+    working-set precapture, async-decode default, and the dotted `factory.enable_async_decode` CLI override
+  - encoder CUDA graph runner: 2-D `(batch, T)` buckets aligned to
+    `merge_factor`, batch buckets derived from `encoder_max_batch_size`,
+    startup working-set precapture (no request-path capture), eager
+    fallback for uncaptured shapes, and a CUDA-only graph-vs-eager
+    parity check
   - audio-token count formula, audio-tower forward shape, marker-token
     suppression, and the fp16 encoder residual clamp.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
-  - pipeline config and stage factory: single `asr` stage, `max_running_requests=32`,
+  - pipeline config and stage factory: single `asr` stage, `max_running_requests=64`,
     auto static KV budget, pre-LM encoder/cache defaults, scheduler-owned
     shutdown, disabled multimodal embedding cache and torch.compile, and
     `FunAsrNanoForConditionalGeneration` registry wiring
+  - pending-build-aware prefill coalescing: pipeline config and stage factory
+    defaults agree on coalesce batch size, wait window, idle admission, and
+    the pending-build and decode-phase gates
   - pre-LM encoder service: bounded batching, complete-embedding validation,
     single-flight deduplication, stale cache races, CPU LRU budgets, failure
     isolation, stream-synchronized state commits, request-scoped OOM recovery,
@@ -520,6 +547,13 @@ that happened to contain an older version of the test.
   - streaming output: request-contract validation, chunked-prefill gating,
     rate-limited and terminal flushes, UTF-8 boundaries, per-request state,
     and direct-client aggregation without repeating the terminal transcript.
+- `unit_test/fun_cosyvoice3/`: Fun-CosyVoice3 unit tests:
+  - pipeline configuration and stage/registry contracts
+  - request preprocessing, model-runner, and utility behavior
+  - batched Flow inference with variable prompt/target lengths, CFG
+    conditioning, bucketed admission, and serial-parity invariants
+  - vocoder batching, conditioning handoff, output payload construction, and
+    abort/error handling
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio
@@ -629,6 +663,10 @@ that happened to contain an older version of the test.
   - request mapping for `ref_audio` / `ref_text` and `references`
   - incremental codec-to-vocoder ordering, priority batching, fallback parity,
     CUDA stream handoff, and abort/failure cleanup
+  - streaming vocoder decode slots: per-thread pinned staging with one reused
+    completion event, bad rows raised from `resolve()`, pageable fallback after
+    pinned allocation failure, and slot retirement or process-lifetime
+    retention when a launch or event wait fails (with a real CUDA reuse case)
   - model-owned default preservation for language and sampling parameters
   - Base, CustomVoice, and VoiceDesign request validation
   - voice-clone reference validation
@@ -643,7 +681,7 @@ that happened to contain an older version of the test.
   - request builder sampling normalization and server-side token caps
   - model slot cleanup and engine timing in scheduler result adapters
   - async-decode one-step-lookahead parity with the synchronous collect path
-  - async-decode default-on config + `--decode-mode async|sync` CLI override.
+  - async-decode default-on config + the dotted `factory.enable_async_decode` CLI override.
 
 - `unit_test/moss_tts/`: MOSS-TTS unit tests:
   - pipeline config and registry contracts
@@ -762,11 +800,12 @@ that happened to contain an older version of the test.
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
 
-- `unit_test/vendor/`: Compatibility boundaries for supported SGLang parallel
-  state layouts, server-argument publication, and version-dependent call
-  signatures.
+- `unit_test/vendor/`: Server-argument publication boundaries and the vendor
+  RMSNorm patch staying on the fused-op dispatch path (dtype fallback,
+  zero-token contract, kwargs passthrough).
 
-- `unit_test/whisper_asr/`: Whisper pipeline configuration, encoder CUDA Graph
+- `unit_test/whisper_asr/`: Whisper pipeline configuration, encoder CUDA Graph,
+  decoder LayerNorm fast-path placement, and PyTorch fallback behavior
   policy, pre-LM encoder batching and caching, prompt budgeting, concurrent
   tokenizer access, and request construction. These tests use fakes and run on
   CPU despite validating CUDA Graph policy.

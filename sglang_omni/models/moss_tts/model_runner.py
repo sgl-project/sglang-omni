@@ -247,9 +247,11 @@ class MossTTSModelRunner(ModelRunner):
             dtype=torch.long,
             device=device,
         )
-        audio_logits = torch.stack(
-            [logits.to(torch.float32) for logits in channel_logits[1:]], dim=1
-        )
+        audio_logits = getattr(channel_logits, "fused_audio", None)
+        if audio_logits is None:
+            audio_logits = torch.stack(
+                [logits.to(torch.float32) for logits in channel_logits[1:]], dim=1
+            )
         if tuple(audio_logits.shape[:2]) != (batch_size, n_vq):
             raise RuntimeError(
                 "MOSS-TTS Delay sampling graph audio-logits shape mismatch: "
@@ -469,9 +471,11 @@ class MossTTSModelRunner(ModelRunner):
         post_audio = post_audio | (delayed == _INT64_MAX).unsqueeze(1)
         sampling_audio_mask = pre_audio & post_audio
         if bool(sampling_audio_mask.any()):
-            audio_logits = torch.stack(
-                [cl.to(torch.float32) for cl in channel_logits[1:]], dim=1
-            )  # [batch, n_vq, vocab_audio]
+            audio_logits = getattr(channel_logits, "fused_audio", None)
+            if audio_logits is None:
+                audio_logits = torch.stack(
+                    [cl.to(torch.float32) for cl in channel_logits[1:]], dim=1
+                )  # [batch, n_vq, vocab_audio]
             if 0 <= audio_pad_code < audio_logits.shape[-1]:
                 audio_logits[..., audio_pad_code:] = _NEG_INF
             if bool((audio_rep != 1.0).any()):
@@ -707,7 +711,11 @@ class MossTTSModelRunner(ModelRunner):
         active = (top_p_row > 0.0) & (top_p_row < 1.0)
         if not skip_inactive_check and not bool(active.any()):
             return scores
-        sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
+        # Note (Jiaxin Deng): input order on ties is the one contract the graphed,
+        # branchless and eager paths share; an unstable sort breaks it per backend.
+        sorted_scores, sorted_indices = torch.sort(
+            scores, descending=True, dim=-1, stable=True
+        )
         probs = torch.softmax(sorted_scores, dim=-1)
         cumulative = torch.cumsum(probs, dim=-1)
         remove = cumulative > top_p_row.unsqueeze(1)

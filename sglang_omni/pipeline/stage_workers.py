@@ -10,12 +10,15 @@ import os
 import queue
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
-from sglang_omni.config.runtime import resolve_factory_signature_args
+from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
+    resolve_factory_signature_args,
+)
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
@@ -57,7 +60,11 @@ class StageLaunchConfig:
 
     # Factory
     factory: str = ""
-    factory_args: dict[str, Any] = field(default_factory=dict)
+    # Constructor kwargs from PipelineConfig.stage_factory_kwargs (plus TP
+    # wiring). Typed group kwargs are overlaid against the factory's
+    # signature in the child, which imports the factory anyway.
+    factory_kwargs: dict[str, Any] = field(default_factory=dict)
+    typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
@@ -151,7 +158,10 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
 
 
 @contextmanager
-def _patched_spawn_env(spec: StageWorkerProcessSpec):
+def _patched_spawn_env(
+    spec: StageWorkerProcessSpec,
+    extra_env: Mapping[str, str] | None = None,
+):
     env_default_updates: dict[str, str] = {}
     for stage_spec in spec.stage_specs:
         for key, value in stage_spec.env_defaults.items():
@@ -177,6 +187,7 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
         **compat_env_defaults,
         **worker_process_env,
         "SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(current_platform),
+        **(extra_env or {}),
     }
     backup = {key: os.environ.get(key) for key in updates}
     try:
@@ -208,6 +219,7 @@ class StageGroup:
         self._processes: list[multiprocessing.Process] = []
         self._ready_events: list[multiprocessing.Event] = []
         self._startup_error_channels: list[object] = []
+        self._process_start_attempts: set[str] = set()
 
     @property
     def process_count(self) -> int:
@@ -245,7 +257,15 @@ class StageGroup:
     def processes(self) -> list[multiprocessing.Process]:
         return list(self._processes)
 
-    def spawn(self, ctx: multiprocessing.context.SpawnContext) -> None:
+    def process_start_attempts(self) -> set[str]:
+        """Return process names whose ``Process.start()`` was called."""
+        return set(self._process_start_attempts)
+
+    def spawn(
+        self,
+        ctx: multiprocessing.context.SpawnContext,
+        process_env_overrides: Mapping[str, Mapping[str, str]] | None = None,
+    ) -> None:
         """Spawn the OS process(es) owned by this group."""
         for spec in self.process_specs:
             event = ctx.Event()
@@ -258,7 +278,13 @@ class StageGroup:
                 daemon=True,
             )
             try:
-                with _patched_spawn_env(spec):
+                extra_env = (
+                    process_env_overrides.get(spec.process_name)
+                    if process_env_overrides is not None
+                    else None
+                )
+                with _patched_spawn_env(spec, extra_env=extra_env):
+                    self._process_start_attempts.add(spec.process_name)
                     proc.start()
             except Exception:
                 _close_queue(startup_error_channel)
@@ -341,9 +367,13 @@ class StageGroup:
             ):
                 _close_queue(q)
 
-    async def shutdown(self, join_timeout: float = 30.0) -> None:
+    async def shutdown(
+        self,
+        join_timeout: float = 30.0,
+        before_signal: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         try:
-            for p in self._processes:
+            for spec, p in zip(self.process_specs, self._processes):
                 p.join(timeout=join_timeout)
                 if p.is_alive():
                     logger.warning(
@@ -351,6 +381,8 @@ class StageGroup:
                         p.name,
                         p.pid,
                     )
+                    if before_signal is not None:
+                        await before_signal(spec.process_name)
                     p.terminate()
                     p.join(timeout=5)
                     if p.is_alive():
@@ -773,9 +805,15 @@ def _construct_scheduler(
     """Build a scheduler, serializing GPU factory work per visible device."""
 
     factory = import_string(spec.factory)
+    factory_args = apply_typed_stage_kwargs(
+        factory,
+        spec.factory_kwargs,
+        spec.typed_kwargs,
+        stage_name=spec.stage_name,
+    )
     factory_args = resolve_factory_signature_args(
         factory,
-        spec.factory_args,
+        factory_args,
         defaults=spec.factory_arg_defaults,
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,
@@ -802,6 +840,10 @@ def _prepare_accelerator_environment(
         current_platform.is_cuda_alike()
         and os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true"
     ):
+        if spec.gpu_id is None:
+            # A CPU stage colocated in a GPU-narrowed process keeps its
+            # identity; normalizing it would bind it to the local device.
+            return
         mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
@@ -842,10 +884,13 @@ def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     if spec.placement_gpu_id is None:
         spec.placement_gpu_id = spec.gpu_id
     spec.gpu_id = 0
-    if "gpu_id" in spec.factory_arg_defaults:
-        spec.factory_arg_defaults["gpu_id"] = 0
-    if "gpu_id" in spec.comm_config:
-        spec.comm_config["gpu_id"] = 0
+    for kwargs in (
+        spec.typed_kwargs,
+        spec.factory_arg_defaults,
+        spec.comm_config,
+    ):
+        if kwargs.get("gpu_id") is not None:
+            kwargs["gpu_id"] = 0
 
 
 def _process_name(spec: StageWorkerProcessSpec) -> str:

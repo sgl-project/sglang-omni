@@ -284,22 +284,33 @@ def test_base_lookahead_eligible_gates_output_history_sampling():
         params.update(overrides)
         return types.SimpleNamespace(**params)
 
-    def _batch(*sampling_params):
+    def _req(*, custom_logit_processor=None, **sampling_overrides):
         return types.SimpleNamespace(
-            reqs=[types.SimpleNamespace(sampling_params=sp) for sp in sampling_params]
+            sampling_params=_sp(**sampling_overrides),
+            custom_logit_processor=custom_logit_processor,
         )
 
-    r = _StubRunner()
+    def _batch(*reqs):
+        return types.SimpleNamespace(reqs=list(reqs))
+
+    runner = _StubRunner()
+    history_free = _req(custom_logit_processor=None)
+    history_dependent = _req(custom_logit_processor="processor")
+
     # Empty batch and all-history-free rows are eligible.
-    assert r.lookahead_eligible(_batch()) is True
-    assert r.lookahead_eligible(_batch(_sp(), _sp())) is True
+    assert runner.lookahead_eligible(_batch()) is True
+    assert runner.lookahead_eligible(_batch(history_free)) is True
     # Any output-history-dependent term on any row forces sync.
-    assert r.lookahead_eligible(_batch(_sp(repetition_penalty=1.05))) is False
-    assert r.lookahead_eligible(_batch(_sp(frequency_penalty=0.5))) is False
-    assert r.lookahead_eligible(_batch(_sp(presence_penalty=0.5))) is False
-    assert r.lookahead_eligible(_batch(_sp(min_new_tokens=4))) is False
+    assert runner.lookahead_eligible(_batch(_req(repetition_penalty=1.05))) is False
+    assert runner.lookahead_eligible(_batch(_req(frequency_penalty=0.5))) is False
+    assert runner.lookahead_eligible(_batch(_req(presence_penalty=0.5))) is False
+    assert runner.lookahead_eligible(_batch(_req(min_new_tokens=4))) is False
+    assert runner.lookahead_eligible(_batch(history_dependent)) is False
     # A single tainted row taints the whole batch.
-    assert r.lookahead_eligible(_batch(_sp(), _sp(frequency_penalty=0.1))) is False
+    assert (
+        runner.lookahead_eligible(_batch(_req(), _req(frequency_penalty=0.1))) is False
+    )
+    assert runner.lookahead_eligible(_batch(history_free, history_dependent)) is False
 
 
 def test_finalize_skips_overrun_bookkeeping_and_extras():
@@ -516,6 +527,48 @@ def _commit_step_slot(allocator, req_to_token_pool, req):
     return int(slot[0])
 
 
+def test_prompt_only_radix_reuses_prompt_without_caching_tail():
+    from sglang.srt.managers.schedule_batch import Req
+    from sglang.srt.mem_cache.common import maybe_cache_unfinished_req, release_kv_cache
+    from sglang.srt.mem_cache.radix_cache import MatchPrefixParams, RadixKey
+    from sglang.srt.runtime_context import get_context
+    from sglang.srt.sampling.sampling_params import SamplingParams
+
+    with get_context().override_server_args(page_size=1):
+        allocator, req_to_token_pool, cache = _real_radix_pools()
+        total = allocator.available_size()
+        prompt = [1, 2, 3]
+        first = _decoding_req(allocator, req_to_token_pool, "first", prompt, [20])
+        first.extra_key = "qwen3_tts:prompt:v1"
+        first.init_next_round_input(cache)
+        first.set_extend_range(0, len(prompt))
+        maybe_cache_unfinished_req(first, cache)
+
+        first.skip_radix_cache_insert = True
+        _commit_step_slot(allocator, req_to_token_pool, first)
+        first.output_ids.append(21)
+        release_kv_cache(first, cache)
+
+        second = Req(
+            "second",
+            "",
+            prompt,
+            SamplingParams(max_new_tokens=8),
+            extra_key="qwen3_tts:prompt:v1",
+        )
+        second.output_ids = []
+        second.init_next_round_input(cache)
+        tail_match = cache.match_prefix(
+            MatchPrefixParams(
+                key=RadixKey(prompt + [20], extra_key="qwen3_tts:prompt:v1")
+            )
+        )
+
+        assert len(second.prefix_indices) == len(prompt) - 1
+        assert len(tail_match.device_indices) == cache.total_size() == len(prompt)
+        assert allocator.available_size() + cache.evictable_size() == total
+
+
 class _StaleDecodeBatch:
     def __init__(self, reqs, out_cache_loc):
         from sglang.srt.model_executor.forward_batch_info import ForwardMode
@@ -632,7 +685,17 @@ class _FakeBatch:
     def __init__(self, n):
         # real ScheduleBatch.reqs are Reqs with .finished(); none finish here
         self.reqs = [
-            types.SimpleNamespace(finished=lambda: False, is_retracted=False)
+            types.SimpleNamespace(
+                finished=lambda: False,
+                is_retracted=False,
+                sampling_params=types.SimpleNamespace(
+                    repetition_penalty=1.0,
+                    frequency_penalty=0.0,
+                    presence_penalty=0.0,
+                    min_new_tokens=0,
+                ),
+                custom_logit_processor=None,
+            )
             for _ in range(n)
         ]
         self.out_cache_loc = torch.arange(n)
@@ -741,6 +804,44 @@ def test_fast_path_threshold_four_routes_bs1_to_3_sync():
     # empty step drains the bs=4 launch.
     events, _ = _drive_loop([3, 4, None], min_bs=4)
     assert events == ["sync", "launch", "resolve", "idle"]
+
+
+def test_custom_logit_processor_transitions_async_sync_async():
+    events = []
+    s = _scaffold_async_loop()
+    s._model_runner = _StubRunner()
+    launch_events = iter(("launch async N", "launch async N+2"))
+
+    def launch_async(batch):
+        events.append(next(launch_events))
+        return "sched_output", "pending_step"
+
+    s._run_batch_launch = launch_async
+    s._resolve_and_process = lambda *args: events.append("resolve N")
+    s.run_batch = lambda batch: events.append("run sync N+1") or object()
+    s.process_batch_result = lambda batch, result: None
+
+    timestamp_batch = _FakeBatch(2)
+    timestamp_batch.reqs[1].custom_logit_processor = "processor"
+    batches = [_FakeBatch(2), timestamp_batch, _FakeBatch(2)]
+    state = {"i": 0}
+
+    def get_next_batch_to_run():
+        i = state["i"]
+        state["i"] += 1
+        if i == len(batches) - 1:
+            s._running = False
+        return batches[i]
+
+    s.get_next_batch_to_run = get_next_batch_to_run
+    s._event_loop_async_decode()
+
+    assert events == [
+        "launch async N",
+        "resolve N",
+        "run sync N+1",
+        "launch async N+2",
+    ]
 
 
 @pytest.mark.parametrize(
