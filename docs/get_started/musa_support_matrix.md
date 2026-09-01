@@ -15,17 +15,17 @@ Legend:
 
 | Model | CUDA | XPU | NPU | ROCm | MUSA | CPU |
 | --- | --- | --- | --- | --- | --- | --- |
-| Audar-TTS V1 Turbo | ✅ | ❌ | ❌ | ❌ | ✅ | 🟡 |
-| dots.tts | ✅ | ❌ | ❌ | ❌ | ✅ | 🟡 |
-| Fish Audio S2-Pro | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Fun-CosyVoice3 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Higgs Audio v3 TTS | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Ming-Omni-TTS | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| MOSS-TTS | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| MOSS-TTS Local | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Qwen3-TTS | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Voxtral TTS | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| ZONOS2 | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Audar-TTS V1 Turbo | ✅ | 🟡 | 🟡 | 🟡 | ✅ | 🟡 |
+| dots.tts | ✅ | 🟡 | 🟡 | 🟡 | ✅ | 🟡 |
+| Fish Audio S2-Pro | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| Fun-CosyVoice3 | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| Higgs Audio v3 TTS | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| Ming-Omni-TTS | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| MOSS-TTS | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| MOSS-TTS Local | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| Qwen3-TTS | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| Voxtral TTS | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
+| ZONOS2 | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
 
 ## Cookbooks And Evidence
 
