@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING
 
 from sglang.srt.platforms.device_mixin import DeviceMixin
@@ -11,6 +12,7 @@ from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
     import torch
+    from torch.nn.attention import SDPBackend
 
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
@@ -91,3 +93,22 @@ class OmniPlatform(DeviceMixin):
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
         return True
+
+    def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
+        """SDPA backends to pin while capturing a graph, in preference order.
+
+        Empty leaves dispatch alone: pinning on a platform that does not need it
+        would only narrow what the capture may choose from.
+        """
+        return ()
+
+    def graph_capture_attention(self) -> AbstractContextManager[None]:
+        """Hold the pin over a capture, and over the warmup before it: warming
+        one kernel and recording another wastes the warmup."""
+        backends = self.get_graph_capture_sdpa_backends()
+        if not backends:
+            return nullcontext()
+
+        from torch.nn.attention import sdpa_kernel
+
+        return sdpa_kernel(list(backends))

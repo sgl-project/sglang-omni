@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -194,8 +195,14 @@ def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
     assert CPUOmniPlatform().get_decode_cuda_graph_backend() is None
 
 
-def test_xpu_keeps_the_qwen3_omni_talker_decode_eager() -> None:
-    assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is False
+def test_xpu_captures_the_qwen3_omni_talker_decode() -> None:
+    """Capturable once the AR capture boundary pins SDPA.
+
+    The talker's own dispatch is what used to end the capture with "Graph nodes
+    cannot depend on events from outside the graph", so this gate and the SDPA
+    pin in SGLangModelRunner.init_cuda_graphs move together.
+    """
+    assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is True
     assert OmniPlatform().enable_talker_graph() is True
     assert CPUOmniPlatform().enable_talker_graph() is True
 
@@ -247,3 +254,68 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     assert platform.get_device_graph_backend(torch.device("xpu", 0)) is None
     assert platform.get_device_graph_backend(torch.device("meta")) is None
     assert platform.get_device_graph_backend(torch.device("cpu")) is None
+
+
+def test_xpu_names_the_sdpa_backends_a_graph_capture_can_use() -> None:
+    """XPU's default SDPA selection is not capturable; naming any backend is."""
+    from torch.nn.attention import SDPBackend
+
+    backends = xpu_platform.XPUOmniPlatform().get_graph_capture_sdpa_backends()
+
+    assert backends[0] is SDPBackend.FLASH_ATTENTION
+    assert SDPBackend.MATH in backends, "no fallback for shapes flash declines"
+    assert all(isinstance(backend, SDPBackend) for backend in backends)
+    # Platforms whose default dispatch captures keep it: pinning would only
+    # narrow the kernels the capture may choose from.
+    for platform in (OmniPlatform(), CPUOmniPlatform(), CUDAOmniPlatform()):
+        assert platform.get_graph_capture_sdpa_backends() == ()
+
+
+def test_a_platform_that_names_no_sdpa_backend_never_pins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A platform naming nothing must not touch dispatch at all."""
+    import torch.nn.attention as attention
+
+    calls: list[object] = []
+
+    def recording_pin(backends):
+        calls.append(backends)
+        return nullcontext()
+
+    monkeypatch.setattr(attention, "sdpa_kernel", recording_pin)
+
+    with OmniPlatform().graph_capture_attention():
+        pass
+
+    assert calls == []
+
+
+def test_the_pin_receives_exactly_the_backends_the_hook_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Assert the contract rather than torch's resulting global state.
+
+    Reading the pinned set back would mean either torch.backends.cuda.* flags,
+    which say nothing on a build without CUDA, or the private
+    _cur_sdpa_kernel_backends. Whether torch honours sdpa_kernel is torch's test;
+    ours is that every backend the hook names reaches it, in order.
+    """
+    import torch.nn.attention as attention
+    from torch.nn.attention import SDPBackend
+
+    calls: list[list[SDPBackend]] = []
+
+    def recording_pin(backends):
+        calls.append(list(backends))
+        return nullcontext()
+
+    monkeypatch.setattr(attention, "sdpa_kernel", recording_pin)
+    platform = xpu_platform.XPUOmniPlatform()
+
+    with platform.graph_capture_attention():
+        pass
+
+    assert calls == [list(platform.get_graph_capture_sdpa_backends())]
+    # The regression this guards: a named backend silently dropped by the pin.
+    assert SDPBackend.EFFICIENT_ATTENTION in calls[0]

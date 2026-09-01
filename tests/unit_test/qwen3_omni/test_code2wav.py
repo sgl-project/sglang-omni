@@ -131,7 +131,7 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     )
 
     def _unexpected_build(*args, **kwargs):
-        raise AssertionError("disabled default must not build CUDA graphs")
+        raise AssertionError("disabled default must not build device graphs")
 
     monkeypatch.setattr(
         code2wav_scheduler.Code2WavCudaGraphRunner,
@@ -147,10 +147,11 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     assert scheduler._cuda_graph_runner is None
 
 
-def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
-    """The runner is CUDA-only, and the platform owns that decision rather than the
-    factory re-deriving it from the device type. A platform inheriting the base True
-    would reach the CUDA-only runner, so every non-CUDA platform declares itself.
+def test_only_graph_capable_platforms_enable_the_code2wav_graph() -> None:
+    """The platform owns this decision rather than the factory re-deriving it from
+    the device type. The runner reaches streams, allocator counters and the graph
+    type through the device module, so a platform that has all three can answer
+    yes; one that does not has to declare itself, since the base answers True.
     """
     from sglang_omni.platforms.cpu import CPUOmniPlatform
     from sglang_omni.platforms.cuda import CUDAOmniPlatform
@@ -158,10 +159,11 @@ def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
     from sglang_omni.platforms.rocm import ROCMOmniPlatform
     from sglang_omni.platforms.xpu import XPUOmniPlatform
 
-    assert XPUOmniPlatform().enable_code2wav_graph() is False
+    # Captured live on Arc Pro B60.
+    assert XPUOmniPlatform().enable_code2wav_graph() is True
+    assert CUDAOmniPlatform().enable_code2wav_graph() is True
     assert NPUOmniPlatform().enable_code2wav_graph() is False
     assert CPUOmniPlatform().enable_code2wav_graph() is False
-    assert CUDAOmniPlatform().enable_code2wav_graph() is True
     assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
@@ -421,7 +423,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     stats_record = next(
         record
         for record in caplog.records
-        if "CUDA graph startup stats=" in record.message
+        if "device graph startup stats=" in record.message
     )
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == runner.stats()
 
@@ -469,7 +471,7 @@ def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
     stats_record = next(
         record
         for record in caplog.records
-        if "CUDA graph startup stats=" in record.message
+        if "device graph startup stats=" in record.message
     )
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == {
         "disable_reason": "capture_failed: RuntimeError: capture failed",
