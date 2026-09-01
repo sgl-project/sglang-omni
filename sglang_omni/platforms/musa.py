@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
-from sglang_omni.platforms.interface import OmniPlatform
 
 if TYPE_CHECKING:
     import torch
@@ -66,6 +65,6 @@ class MUSAOmniPlatform(CUDAOmniPlatform):
         model_config: ModelConfig,
         model_arch_override: str | None,
     ) -> str | None:
-        return OmniPlatform.apply_model_worker_backend_policy(
-            self, server_args, model_config, model_arch_override
+        return super().apply_model_worker_backend_policy(
+            server_args, model_config, model_arch_override
         )

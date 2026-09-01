@@ -7,9 +7,13 @@ not available.
 
 from __future__ import annotations
 
+import io
+import wave
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import torch
 
 from . import compliance, functional, transforms
@@ -26,17 +30,53 @@ class AudioMetaData:
     encoding: str = "PCM_S"
 
 
-def load(uri, *_, **__) -> tuple[torch.Tensor, int]:
-    from sglang_omni.preprocessing.audio import _decode_audio_bytes_av
-    from sglang_omni.preprocessing.audio import _parse_wav_bytes
-
+def _read_audio_source(uri: Any) -> bytes:
+    if isinstance(uri, (bytes, bytearray, memoryview)):
+        return bytes(uri)
+    if hasattr(uri, "read"):
+        data = uri.read()
+        return bytes(data)
     with open(Path(uri).expanduser(), "rb") as f:
-        data = f.read()
+        return f.read()
+
+
+def _load_wav_bytes(data: bytes) -> tuple[torch.Tensor, int]:
+    with wave.open(io.BytesIO(data), "rb") as wav_file:
+        sample_rate = int(wav_file.getframerate())
+        num_channels = int(wav_file.getnchannels())
+        sample_width = int(wav_file.getsampwidth())
+        frames = wav_file.readframes(wav_file.getnframes())
+
+    if sample_width == 1:
+        audio = torch.from_numpy(np.frombuffer(frames, dtype=np.uint8).copy())
+        audio = audio.to(torch.float32)
+        audio = (audio - 128.0) / 128.0
+    elif sample_width == 2:
+        audio = torch.from_numpy(np.frombuffer(frames, dtype="<i2").copy())
+        audio = audio.to(torch.float32)
+        audio = audio / 32768.0
+    else:
+        raise ValueError("unsupported WAV sample width")
+
+    if num_channels > 1:
+        audio = audio.reshape(-1, num_channels).transpose(0, 1).contiguous()
+    else:
+        audio = audio.reshape(1, -1)
+    return audio, sample_rate
+
+
+def load(uri, *_, **__) -> tuple[torch.Tensor, int]:
+    data = _read_audio_source(uri)
     try:
-        audio, sample_rate = _parse_wav_bytes(data, source=str(uri))
-    except ValueError:
-        audio, sample_rate = _decode_audio_bytes_av(data)
-    return torch.as_tensor(audio, dtype=torch.float32).reshape(1, -1), int(sample_rate)
+        audio, sample_rate = _load_wav_bytes(data)
+    except Exception:
+        try:
+            import soundfile as sf
+        except Exception as exc:
+            raise ValueError("torchaudio shim only supports WAV input without soundfile") from exc
+        audio_np, sample_rate = sf.read(io.BytesIO(data), always_2d=True, dtype="float32")
+        audio = torch.from_numpy(audio_np).transpose(0, 1).contiguous()
+    return audio.to(dtype=torch.float32), int(sample_rate)
 
 
 def info(uri, *_, **__) -> AudioMetaData:
