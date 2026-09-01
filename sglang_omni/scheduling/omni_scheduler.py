@@ -14,12 +14,13 @@ inheriting from ``SGLangScheduler``.
 from __future__ import annotations
 
 import logging
+import inspect
 import queue as _queue_mod
 import threading
 import time
 import types
 from array import array
-from collections import deque
+from collections import defaultdict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import islice
 from typing import Any, Callable
@@ -28,12 +29,21 @@ import torch
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.managers.io_struct import AbortReq
-from sglang.srt.managers.schedule_batch import (
-    FINISH_ABORT,
-    NextBatchPlan,
-    ScheduleBatch,
-    retract_all,
-)
+try:
+    from sglang.srt.managers.schedule_batch import NextBatchPlan
+except ImportError:
+
+    class NextBatchPlan:
+        def __init__(self, batch_to_run: Any, running_batch: Any) -> None:
+            self.batch_to_run = batch_to_run
+            self.running_batch = running_batch
+
+try:
+    from sglang.srt.managers.schedule_batch import retract_all
+except ImportError:
+    retract_all = None
+
+from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
@@ -78,6 +88,13 @@ _ABORTED_REQUEST_ID_RETAINED = 5000
 _COMPLETED_REQUEST_ID_LIMIT = 10000
 _PENDING_STREAM_REQUEST_LIMIT = 10000
 _PENDING_STREAM_REQUEST_RETAINED = 5000
+
+
+def _method_accepts_extra_args(method: Callable[..., Any], count: int) -> bool:
+    parameters = list(inspect.signature(method).parameters.values())
+    if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in parameters):
+        return True
+    return len(parameters) > count
 
 
 class _PendingStreamIngress:
@@ -322,7 +339,9 @@ class OmniScheduler:
         self.max_prefill_tokens = server_args.max_prefill_tokens
         self.max_running_requests = mr.max_running_requests
         self.max_queued_requests = server_args.max_queued_requests
-        effective_max_total_num_tokens = mr.effective_max_total_num_tokens
+        effective_max_total_num_tokens = getattr(
+            mr, "effective_max_total_num_tokens", mr.max_total_num_tokens
+        )
         self.max_req_len = min(
             server_args.context_length - 1,
             effective_max_total_num_tokens - 1,
@@ -413,13 +432,54 @@ class OmniScheduler:
         self.schedule_low_priority_values_first = (
             server_args.schedule_low_priority_values_first
         )
-        from sglang.srt.managers.scheduler_components.new_token_ratio_tracker import (
-            NewTokenRatioTracker,
-        )
+        try:
+            from sglang.srt.managers.scheduler_components.new_token_ratio_tracker import (
+                NewTokenRatioTracker,
+            )
 
-        self.new_token_ratio_tracker = NewTokenRatioTracker.from_server_args(
-            server_args
+            self.new_token_ratio_tracker = NewTokenRatioTracker.from_server_args(
+                server_args
+            )
+        except ModuleNotFoundError:
+            class _NoOpNewTokenRatioTracker:
+                def reset(self) -> None:
+                    return None
+
+            self.new_token_ratio_tracker = _NoOpNewTokenRatioTracker()
+        init_new_token_ratio_env = getattr(envs, "SGLANG_INIT_NEW_TOKEN_RATIO", None)
+        min_new_token_ratio_factor_env = getattr(
+            envs, "SGLANG_MIN_NEW_TOKEN_RATIO_FACTOR", None
         )
+        new_token_ratio_decay_steps_env = getattr(
+            envs, "SGLANG_NEW_TOKEN_RATIO_DECAY_STEPS", None
+        )
+        init_new_token_ratio = (
+            init_new_token_ratio_env.get()
+            if init_new_token_ratio_env is not None
+            else 0.7
+        )
+        min_new_token_ratio_factor = (
+            min_new_token_ratio_factor_env.get()
+            if min_new_token_ratio_factor_env is not None
+            else 0.14
+        )
+        new_token_ratio_decay_steps = (
+            new_token_ratio_decay_steps_env.get()
+            if new_token_ratio_decay_steps_env is not None
+            else 1
+        )
+        self.init_new_token_ratio = min(
+            init_new_token_ratio * server_args.schedule_conservativeness,
+            1.0,
+        )
+        self.min_new_token_ratio = min(
+            self.init_new_token_ratio * min_new_token_ratio_factor,
+            1.0,
+        )
+        self.new_token_ratio_decay = (
+            self.init_new_token_ratio - self.min_new_token_ratio
+        ) / new_token_ratio_decay_steps
+        self.new_token_ratio = self.init_new_token_ratio
         self.prefill_delayer = None
         self.lora_drainer = None
 
@@ -494,8 +554,10 @@ class OmniScheduler:
 
         self._init_parallel_state(tp_worker)
         self.ipc_channels = _OmniIpcChannels(self)
-        self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
-        self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        if hasattr(_Upstream, "init_metrics_collector"):
+            self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
+        if hasattr(_Upstream, "init_metrics_reporter"):
+            self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
         self._init_upstream_scheduler_components()
 
         self._running = False
@@ -562,19 +624,27 @@ class OmniScheduler:
         # borrow upstream methods rather than inheriting, so anything they read
         # off ``self`` has to be mirrored here or __getattr__ raises.
         # init_req_max_new_tokens() clamps against this one.
-        self.max_new_tokens_limit = envs.SGLANG_MAX_NEW_TOKENS_LIMIT.get()
+        max_new_tokens_limit_env = getattr(envs, "SGLANG_MAX_NEW_TOKENS_LIMIT", None)
+        self.max_new_tokens_limit = (
+            max_new_tokens_limit_env.get()
+            if max_new_tokens_limit_env is not None
+            else None
+        )
         self.cur_batch_for_debug = None
         # get_next_batch_to_run() calls prepare_for_forward() on this
         # unconditionally, so it must be a real manager, not None. Upstream
         # takes it from the model runner; no Omni model uses ngram embedding
         # (see use_ngram_embedding above), so a disabled passthrough is correct.
-        from sglang.srt.model_executor.model_runner_components.ngram_embedding_manager import (  # noqa: E501
-            NgramEmbeddingManager,
-        )
+        try:
+            from sglang.srt.model_executor.model_runner_components.ngram_embedding_manager import (  # noqa: E501
+                NgramEmbeddingManager,
+            )
 
-        self.ngram_embedding_manager = NgramEmbeddingManager(
-            enabled=False, table=None, n=0, k=0
-        )
+            self.ngram_embedding_manager = NgramEmbeddingManager(
+                enabled=False, table=None, n=0, k=0
+            )
+        except ModuleNotFoundError:
+            self.ngram_embedding_manager = None
         # Upstream pool_stats_observer.streaming_session_count iterates
         # self.session_controller.sessions.values() during decode stats
         # reporting. We don't host SGLang's interactive-session feature, so a
@@ -589,24 +659,65 @@ class OmniScheduler:
             publish_kv_events=lambda: None,
         )
         self.device_module = torch.get_device_module(self.device)
+        self.forward_ct_decode = 0
+        self.num_generated_tokens = 0
+        self.is_stats_logging_rank = getattr(self, "attn_tp_rank", 0) == 0
+        self.current_scheduler_metrics_enabled = self.enable_metrics and (
+            self.is_stats_logging_rank
+            or getattr(self.server_args, "enable_metrics_for_all_schedulers", False)
+        )
+        self.enable_mfu_metrics = False
+        self.last_prefill_stats_tic = time.perf_counter()
+        self.last_decode_stats_tic = time.perf_counter()
+        self.last_gen_throughput = 0.0
+        self.last_input_throughput = 0.0
+        self.step_time_dict = defaultdict(list)
+        self.spec_num_accept_tokens = 0
+        self.spec_num_forward_ct = 0
+        self.spec_total_num_accept_tokens = 0
+        self.spec_total_num_forward_ct = 0
+        self.kv_transfer_speed_gb_s = 0.0
+        self.kv_transfer_latency_ms = 0.0
+        self.fwd_occupancy = float("nan")
+        self._graph_backend_label = "cuda graph"
+        if not hasattr(self, "stats"):
+            try:
+                from sglang.srt.observability.metrics_collector import SchedulerStats
+
+                self.stats = SchedulerStats()
+            except (ImportError, TypeError):
+                self.stats = SimpleNamespace()
 
     def _init_upstream_scheduler_components(self) -> None:
         """Install the scheduler components required by upstream hot paths."""
-        from sglang.srt.managers.scheduler_components.batch_result_processor import (
-            SchedulerBatchResultProcessor,
-        )
-        from sglang.srt.managers.scheduler_components.dp_attn import (
-            SchedulerDPAttnAdapter,
-        )
-        from sglang.srt.managers.scheduler_components.load_inquirer import (
-            SchedulerLoadInquirer,
-        )
-        from sglang.srt.managers.scheduler_components.logprob_result_processor import (
-            SchedulerLogprobResultProcessor,
-        )
-        from sglang.srt.managers.scheduler_components.pool_stats_observer import (
-            SchedulerPoolStatsObserver,
-        )
+        try:
+            from sglang.srt.managers.scheduler_components.batch_result_processor import (
+                SchedulerBatchResultProcessor,
+            )
+            from sglang.srt.managers.scheduler_components.dp_attn import (
+                SchedulerDPAttnAdapter,
+            )
+            from sglang.srt.managers.scheduler_components.load_inquirer import (
+                SchedulerLoadInquirer,
+            )
+            from sglang.srt.managers.scheduler_components.logprob_result_processor import (
+                SchedulerLogprobResultProcessor,
+            )
+            from sglang.srt.managers.scheduler_components.pool_stats_observer import (
+                SchedulerPoolStatsObserver,
+            )
+        except ModuleNotFoundError:
+            self.dp_attn_adapter = None
+            self.pool_stats_observer = None
+            self.scheduler_batch_result_processor = None
+            self.scheduler_logprob_result_processor = None
+            self.load_inquirer = None
+            self.total_prefill_uncached_tokens = 0
+            self.total_prefill_busy_us = 0
+            self.decode_moment_totals = [0.0] * 6
+            self._prev_step = None
+            self._sched_idled = False
+            return
 
         dp_attn_kwargs = dict(
             tp_group=self.tp_group,
@@ -761,18 +872,25 @@ class OmniScheduler:
 
     def _init_parallel_state(self, tp_worker: Any) -> None:
         enable_dp_attention = self.server_args.enable_dp_attention
-        (
-            self.attn_tp_rank,
-            self.attn_tp_size,
-            self.attn_dp_rank,
-            self.attn_dp_size,
-        ) = compute_dp_attention_world_info(
+        dp_attention_world_info = compute_dp_attention_world_info(
             enable_dp_attention,
             self.tp_rank,
             self.tp_size,
             self.dp_size,
             self.attn_cp_size,
         )
+        if len(dp_attention_world_info) == 4:
+            (
+                self.attn_tp_rank,
+                self.attn_tp_size,
+                self.attn_dp_rank,
+                self.attn_dp_size,
+            ) = dp_attention_world_info
+        else:
+            self.attn_tp_rank, self.attn_tp_size, self.attn_dp_rank = (
+                dp_attention_world_info
+            )
+            self.attn_dp_size = 1
 
         self.tp_group = tp_worker.get_tp_group()
         self.tp_cpu_group = self.tp_group.cpu_group
@@ -791,13 +909,19 @@ class OmniScheduler:
         self.pad_input_ids_func = tp_worker.get_pad_input_ids_func()
 
         self.current_scheduler_metrics_enabled = (
-            self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
+            self.enable_metrics
+            and self.metrics_collector is not None
+            and (self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers)
         )
         self._refresh_upstream_parallel_state()
 
     def _refresh_upstream_parallel_state(self) -> None:
         """Build the rank container expected by upstream scheduler methods."""
-        from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+        try:
+            from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+        except ModuleNotFoundError:
+            self.ps = None
+            return
 
         self.ps = create_parallel_state(
             ParallelState,
@@ -1251,6 +1375,9 @@ class OmniScheduler:
         elif not isinstance(unpadded, array):
             req.origin_input_ids_unpadded = array("q", unpadded)
 
+        if not isinstance(req.output_ids, array):
+            req.output_ids = array("q", req.output_ids)
+
     def _prepare_request_limits(self, req_data: Any) -> str | None:
         req = req_data.req
         self.init_req_max_new_tokens(req)
@@ -1339,23 +1466,29 @@ class OmniScheduler:
         own that state, so feed it in and write the (possibly rebuilt) running
         batch back before handing the runnable batch to the caller.
         """
-        plan = _Upstream.get_next_batch_to_run(
-            self, self.running_batch, self.last_batch
-        )
+        if not _method_accepts_extra_args(_Upstream.get_next_batch_to_run, 1):
+            return _Upstream.get_next_batch_to_run(self)
+
+        plan = _Upstream.get_next_batch_to_run(self, self.running_batch, self.last_batch)
         self.running_batch = plan.running_batch
         return plan.batch_to_run
 
-    def get_new_batch_prefill(self, running_batch):
+    def get_new_batch_prefill(self, running_batch=None):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
         #
         # 0.5.16 passes ``running_batch`` in and expects a ``NextBatchPlan`` back,
         # so the coalesce hold-off returns an empty plan rather than None.
+        running_batch = self.running_batch if running_batch is None else running_batch
+        get_new_batch_prefill = _Upstream.get_new_batch_prefill
+        if not _method_accepts_extra_args(get_new_batch_prefill, 1):
+            return get_new_batch_prefill(self)
+
         if self.prefill_coalesce_requests <= 1 or self.chunked_req is not None:
-            return _Upstream.get_new_batch_prefill(self, running_batch)
+            return get_new_batch_prefill(self, running_batch)
         decode_is_idle = running_batch is None or running_batch.is_empty()
         if not self.prefill_coalesce_when_idle and decode_is_idle:
-            return _Upstream.get_new_batch_prefill(self, running_batch)
+            return get_new_batch_prefill(self, running_batch)
         if self.prefill_coalesce_requires_pending_builds:
             with self._request_admission_lock:
                 build_work_pending = bool(
@@ -1366,10 +1499,10 @@ class OmniScheduler:
             if not build_work_pending and not (
                 self.prefill_coalesce_after_builds_during_decode and not decode_is_idle
             ):
-                return _Upstream.get_new_batch_prefill(self, running_batch)
+                return get_new_batch_prefill(self, running_batch)
         waiting = self.waiting_queue
         if not waiting or len(waiting) >= self.prefill_coalesce_requests:
-            return _Upstream.get_new_batch_prefill(self, running_batch)
+            return get_new_batch_prefill(self, running_batch)
         now = time.perf_counter()
         oldest = now
         for req in waiting:
@@ -1378,7 +1511,7 @@ class OmniScheduler:
                 t = req._coalesce_enqueue_t = now
             oldest = min(oldest, t)
         if now - oldest >= self.prefill_coalesce_wait_s:
-            return _Upstream.get_new_batch_prefill(self, running_batch)
+            return get_new_batch_prefill(self, running_batch)
         return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
 
     def run_batch(self, batch, pp_proxy_tensors=None):
@@ -2238,14 +2371,17 @@ class OmniScheduler:
         # function returns None and leaves batch.reqs in place, so snapshot the
         # requests and clear the batch here (what the old method did for us).
         retracted_reqs = list(batch.reqs)
-        retract_all(
-            reqs=batch.reqs,
-            server_args=self.server_args,
-            req_to_token_pool=batch.req_to_token_pool,
-            token_to_kv_pool_allocator=batch.token_to_kv_pool_allocator,
-            tree_cache=batch.tree_cache,
-            hisparse_coordinator=batch.hisparse_coordinator,
-        )
+        if retract_all is None:
+            batch.retract_all(self.server_args)
+        else:
+            retract_all(
+                reqs=batch.reqs,
+                server_args=self.server_args,
+                req_to_token_pool=batch.req_to_token_pool,
+                token_to_kv_pool_allocator=batch.token_to_kv_pool_allocator,
+                tree_cache=batch.tree_cache,
+                hisparse_coordinator=batch.hisparse_coordinator,
+            )
         batch.reqs = []
         for req in retracted_reqs:
             self._add_request_to_queue(req)

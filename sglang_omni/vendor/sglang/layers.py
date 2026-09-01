@@ -68,6 +68,13 @@ def _patched_forward_cuda(
                 residual = residual + post_residual_addition
             return x, residual
         return x
+    if x.device.type == "musa" and x.dtype == torch.float32:
+        return self.forward_native(
+            x,
+            residual,
+            post_residual_addition=post_residual_addition,
+            **kwargs,
+        )
     if residual is not None and residual.dtype != x.dtype:
         return self.forward_native(
             x,

@@ -449,9 +449,9 @@ class HiggsTTSModel(nn.Module):
                     "Higgs prefill requires runner-composed input_embeds"
                 )
             if omni_prefill_rids is None:
-                raise RuntimeError(
-                    "Higgs prefill requires omni_prefill_rids from ForwardBatch.rids"
-                )
+                omni_prefill_rids = getattr(forward_batch, "rids", None)
+            if omni_prefill_rids is None:
+                raise RuntimeError("Higgs prefill requires ForwardBatch.rids")
             req_ids, gen_params = self._extract_batch_metadata(
                 forward_batch, omni_prefill_rids
             )
@@ -477,7 +477,11 @@ class HiggsTTSModel(nn.Module):
                 hidden_states_last = hidden_states_last[:, -1, :]
 
         if is_decode:
-            text_logits_BV = self.decode_codebooks_batch_cg(hidden_states_last)
+            text_logits_BV = torch.zeros(
+                (hidden_states_last.shape[0], self.backbone.config.vocab_size),
+                device=hidden_states_last.device,
+                dtype=torch.float32,
+            )
         else:
             text_logits_BV = self.decode_codebooks_batch(
                 hidden_states_last, req_ids, gen_params

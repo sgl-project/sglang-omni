@@ -38,6 +38,7 @@ from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
     get_speaker_artifact_cache,
 )
+from sglang_omni.utils import device_graph
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
@@ -580,24 +581,27 @@ class _Qwen3TTSAdhocReferenceInput:
     x_vector_only_mode: bool
 
 
-def _new_cuda_encode_stream(device: Any) -> torch.cuda.Stream | None:
-    if device is None or not torch.cuda.is_available():
+def _new_device_encode_stream(device: Any) -> Any | None:
+    if device is None:
         return None
     try:
         resolved = torch.device(device)
     except (TypeError, ValueError, RuntimeError):
         return None
-    if resolved.type != "cuda":
+    if resolved.type not in {"cuda", "musa"}:
         return None
-    return torch.cuda.Stream(device=resolved)
+    return device_graph.new_stream(resolved)
 
 
 def _record_ref_code_consumer_stream(ref_code: Any) -> Any:
     # note (luojiaxuan): reference codes may be allocated on the batcher's
     # private stream; register the consumer stream with the caching allocator
     # so a later batch cannot recycle the block while reads are still queued.
-    if isinstance(ref_code, torch.Tensor) and ref_code.is_cuda:
-        ref_code.record_stream(torch.cuda.current_stream(ref_code.device))
+    if (
+        isinstance(ref_code, torch.Tensor)
+        and ref_code.device.type in {"cuda", "musa"}
+    ):
+        ref_code.record_stream(device_graph.current_stream(ref_code.device))
     return ref_code
 
 
@@ -613,7 +617,7 @@ class _Qwen3TTSRefCodeBatcher:
         self._speech_tokenizer = speech_tokenizer
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self._encode_stream = _new_cuda_encode_stream(device)
+        self._encode_stream = _new_device_encode_stream(device)
         self._queue: queue.Queue[object] = queue.Queue()
         self._thread = threading.Thread(
             target=self._run,
@@ -671,17 +675,17 @@ class _Qwen3TTSRefCodeBatcher:
         # fallback keeps the historical current-stream synchronize for
         # tokenizers whose device could not be resolved up front.
         if self._encode_stream is not None:
-            handoff = torch.cuda.Event()
-            handoff.record(self._encode_stream)
-            handoff.synchronize()
+            self._encode_stream.synchronize()
             return
-        cuda_devices = {
+        accelerator_devices = {
             outcome.device
             for outcome in outcomes.values()
-            if not isinstance(outcome, Exception) and getattr(outcome, "is_cuda", False)
+            if not isinstance(outcome, Exception)
+            and getattr(outcome, "device", None) is not None
+            and outcome.device.type in {"cuda", "musa"}
         }
-        for device in cuda_devices:
-            torch.cuda.current_stream(device).synchronize()
+        for device in accelerator_devices:
+            device_graph.current_stream(device).synchronize()
 
     def _run(self) -> None:
         while True:
@@ -696,7 +700,7 @@ class _Qwen3TTSRefCodeBatcher:
                 groups.setdefault(sample_rate, []).append((index, waveform))
             outcomes: dict[int, torch.Tensor | Exception] = {}
             encode_stream_ctx = (
-                torch.cuda.stream(self._encode_stream)
+                device_graph.stream(self._encode_stream)
                 if self._encode_stream is not None
                 else contextlib.nullcontext()
             )

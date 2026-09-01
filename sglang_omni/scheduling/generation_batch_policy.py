@@ -8,8 +8,17 @@ from collections.abc import Iterable, Mapping
 from numbers import Integral
 from typing import Any
 
-from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
-from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
+try:
+    from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
+    from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
+except ModuleNotFoundError:
+
+    class CudaGraphBackend:
+        DISABLED = "disabled"
+        BREAKABLE = "breakable"
+
+    class CudaGraphConfig:
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +31,26 @@ _PREFILL_PADDING_FACTOR = 2
 
 def get_decode_cuda_graph_max_bs(server_args: Any) -> Any:
     """Read the resolved SGLang decode CUDA Graph batch cap."""
-    return server_args.cuda_graph_config.decode.max_bs
+    cuda_graph_config = getattr(server_args, "cuda_graph_config", None)
+    if cuda_graph_config is not None:
+        return cuda_graph_config.decode.max_bs
+    return getattr(server_args, "cuda_graph_max_bs", None)
 
 
 def get_decode_cuda_graph_bs(server_args: Any) -> Any:
     """Read the resolved SGLang decode CUDA Graph batch buckets."""
-    return server_args.cuda_graph_config.decode.bs
+    cuda_graph_config = getattr(server_args, "cuda_graph_config", None)
+    if cuda_graph_config is not None:
+        return cuda_graph_config.decode.bs
+    return getattr(server_args, "cuda_graph_bs", None)
 
 
 def get_prefill_cuda_graph_backend(server_args: Any) -> str:
     """Read the resolved SGLang prefill CUDA graph backend."""
-    return server_args.cuda_graph_config.prefill.backend
+    cuda_graph_config = getattr(server_args, "cuda_graph_config", None)
+    if cuda_graph_config is not None:
+        return cuda_graph_config.prefill.backend
+    return getattr(server_args, "cuda_graph_backend_prefill", CudaGraphBackend.DISABLED)
 
 
 def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
@@ -319,7 +337,8 @@ def _validate_prefill_graph_policy(
                 "set cuda_graph_backend_prefill='disabled'"
             )
 
-    if ("prefill", "bs") not in server_args._cuda_graph_config_locked:
+    locked = getattr(server_args, "_cuda_graph_config_locked", set())
+    if ("prefill", "bs") not in locked:
         errors.append(
             "breakable prefill CUDA graphs require explicit "
             "cuda_graph_bs_prefill buckets (sglang's generated ladder is "

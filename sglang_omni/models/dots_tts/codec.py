@@ -27,7 +27,6 @@ from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
     ReferenceEncodeService,
 )
-from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -35,8 +34,15 @@ logger = logging.getLogger(__name__)
 
 def _load_module(module: torch.nn.Module, path: Path) -> None:
     mismatch = module.load_state_dict(load_file(path, device="cpu"), strict=False)
-    if mismatch.missing_keys or mismatch.unexpected_keys:
+    unexpected = list(mismatch.unexpected_keys)
+    ignored = []
+    if path.name == "speaker_encoder.safetensors":
+        ignored = [key for key in unexpected if key == "resample.kernel"]
+        unexpected = [key for key in unexpected if key != "resample.kernel"]
+    if mismatch.missing_keys or unexpected:
         raise RuntimeError(f"Failed to load {path}: {mismatch}")
+    if ignored:
+        logger.warning("Ignored compatible extra keys in %s: %s", path, ignored)
 
 
 class DotsAudioCodec:
@@ -76,18 +82,18 @@ class DotsAudioCodec:
         return max(1, min(int(count), 8))
 
     def _load_reference_waveform(self, path: str) -> torch.Tensor:
-        waveform = load_audio(
-            path,
-            source_name="dots.tts reference",
-            target_sample_rate=self.sample_rate,
-            mono=True,
-            trim_top_db=30,
-            resample_kwargs={
-                "lowpass_filter_width": 64,
-                "rolloff": 0.95,
-                "resampling_method": "sinc_interp_kaiser",
-            },
-        )
+        from sglang_omni.preprocessing.audio import AudioMediaIO
+
+        audio_io = AudioMediaIO(target_sr=self.sample_rate)
+        waveform, _sample_rate = audio_io.load_file(Path(path).expanduser())
+        if waveform.ndim > 1:
+            waveform = waveform.mean(axis=0)
+        try:
+            import librosa
+
+            waveform, _ = librosa.effects.trim(waveform, top_db=30)
+        except ImportError:
+            pass
         audio = torch.as_tensor(waveform, dtype=torch.float32).reshape(1, -1)
         samples_per_patch = self.patch_size * self.hop_size
         target = math.ceil(audio.shape[-1] / samples_per_patch) * samples_per_patch

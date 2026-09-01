@@ -36,6 +36,7 @@ from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+from sglang_omni.utils import device_graph
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +303,9 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             else:
                 input_embeds = None
 
+        if input_embeds is not None:
+            input_embeds = input_embeds.to(dtype=self._first_embedding_weight().dtype)
+
         hidden_states = self.model(
             input_ids=None,
             positions=positions,
@@ -361,10 +365,13 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
     def _ensure_frame_compile_config(self) -> None:
         if self._frame_compile_configured:
             return
-        from sglang.srt.compilation.torch_compile_decoration import (
-            set_torch_compile_config,
-        )
-
+        try:
+            from sglang.srt.compilation.torch_compile_decoration import (
+                set_torch_compile_config,
+            )
+        except ModuleNotFoundError:
+            self._frame_compile_configured = True
+            return
         set_torch_compile_config()
         self._frame_compile_configured = True
 
@@ -499,16 +506,17 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 "seeds": torch.zeros(bucket, device=device, dtype=torch.long),
                 "base_positions": torch.zeros(bucket, device=device, dtype=torch.long),
             }
-            warmup_stream = torch.cuda.Stream()
-            warmup_stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(warmup_stream):
+            current_stream = device_graph.current_stream(device)
+            warmup_stream = device_graph.new_stream(device)
+            warmup_stream.wait_stream(current_stream)
+            with device_graph.stream(warmup_stream):
                 for _ in range(2):
                     frame_decode(**static_inputs)
-            torch.cuda.current_stream().wait_stream(warmup_stream)
-            torch.cuda.synchronize()
+            current_stream.wait_stream(warmup_stream)
+            device_graph.synchronize(device)
 
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            graph = device_graph.new_graph(device)
+            with device_graph.graph(graph, device=device):
                 stop_choice, codes, feedback = frame_decode(**static_inputs)
             self._frame_graphs[bucket] = (
                 graph,
@@ -708,7 +716,19 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             else:
                 logger.warning(f"MOSS-TTS Local parameter {original_name} not found")
 
+        self._align_linear_bias_dtypes()
         self._zero_audio_pad_rows()
+
+    def _align_linear_bias_dtypes(self) -> None:
+        with torch.no_grad():
+            for module in self.modules():
+                if not isinstance(module, torch.nn.Linear):
+                    continue
+                if module.bias is None or module.bias.dtype == module.weight.dtype:
+                    continue
+                module.bias.data = module.bias.data.to(
+                    device=module.weight.device, dtype=module.weight.dtype
+                )
 
     def _zero_audio_pad_rows(self) -> None:
         """Zero rows >= audio_vocab_size so pad codes embed to exactly zero."""

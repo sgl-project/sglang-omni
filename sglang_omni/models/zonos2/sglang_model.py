@@ -21,6 +21,7 @@ from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
 from sglang_omni.models.zonos2.radix_hash import poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
+from sglang_omni.utils import device_graph
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     RadixAttention,
@@ -260,10 +261,10 @@ class Zonos2SGLangModel(nn.Module):
             False
         )  # inference-only; sglang in-place ops reject grad tensors
 
-        # Opt-in tail CUDA graph (ZONOS2_FRAME_GRAPH): captures the launch-heavy
-        # per-frame tail (head GEMM + per-request sample + embed + radix hash) into
-        # one replay per decode bucket, cutting host dispatch in the host-bound
-        # decode loop. Built by capture_tail_graphs; empty -> eager runner path.
+        # Opt-in tail CUDA graph (ZONOS2_FRAME_GRAPH): captures the deterministic
+        # per-frame head GEMM into one replay per decode bucket. Random sampling
+        # runs after graph replay because torch.multinomial is not capture-safe
+        # on MUSA. Built by capture_tail_graphs; empty -> eager runner path.
         self._tail_buckets: list[int] = []
         self._tail_graphs: dict[int, Any] = {}
         self._tail_params: Optional[TTSSamplingParams] = None
@@ -350,31 +351,11 @@ class Zonos2SGLangModel(nn.Module):
 
     @torch.no_grad()
     def _tail_compute(self, bs: int) -> None:
-        """Graph-capturable per-frame tail over the first ``bs`` static rows: head
-        GEMM -> break-mask -> per-request sample (torch.multinomial, capturable)
-        -> embed -> radix hash. Reads/writes the ``_cg`` buffers in place."""
+        """Graph-capturable deterministic tail over the first ``bs`` rows."""
         cg = self._cg
         logits = self.compute_logits(cg["hidden"][:bs]).float()
         logits[:, 0].add_(cg["break_mask"][:bs])
-        codes = sample_tts(
-            logits,
-            temperature=cg["temperature"][:bs],
-            top_k=cg["top_k"][:bs],
-            top_p=cg["top_p"][:bs],
-            min_p=cg["min_p"][:bs],
-            repetition_penalty=cg["rep_pen"][:bs],
-            top_k_max=self._tail_top_k_max,
-            rep_token_ids=cg["rep_ids"][:bs],
-            any_top_p=self._tail_any_top_p,
-            any_min_p=self._tail_any_min_p,
-        )
-        text_col = torch.full(
-            (bs, 1), self.config.text_vocab, device=codes.device, dtype=torch.long
-        )
-        rows = torch.cat([codes, text_col], dim=1)
-        cg["codes"][:bs].copy_(codes)
-        cg["feedback"][:bs].copy_(self.embed_frames(rows))
-        cg["keys"][:bs].copy_(poly_row_hash(rows))
+        cg["logits"][:bs].copy_(logits)
 
     @torch.no_grad()
     def capture_tail_graphs(
@@ -398,6 +379,7 @@ class Zonos2SGLangModel(nn.Module):
             ),
             "rep_ids": torch.full((mb, n, W), -1, device=dev, dtype=i64),
             "break_mask": torch.zeros(mb, V, device=dev, dtype=f32),
+            "logits": torch.zeros(mb, n, V, device=dev, dtype=f32),
             "codes": torch.zeros(mb, n, device=dev, dtype=i64),
             "keys": torch.zeros(mb, device=dev, dtype=i64),
             "feedback": torch.zeros(mb, dim, device=dev, dtype=dt),
@@ -408,20 +390,21 @@ class Zonos2SGLangModel(nn.Module):
         self._tail_any_min_p = params.min_p > 0.0
         self._tail_buckets = sorted(buckets)
         self._tail_graphs = {}
-        s = torch.cuda.Stream()
-        s.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(s):
+        current_stream = device_graph.current_stream(dev)
+        s = device_graph.new_stream(dev)
+        s.wait_stream(current_stream)
+        with device_graph.stream(s):
             for bs in self._tail_buckets:
                 for _ in range(3):
                     self._tail_compute(bs)
-        torch.cuda.current_stream().wait_stream(s)
-        torch.cuda.synchronize()
+        current_stream.wait_stream(s)
+        device_graph.synchronize(dev)
         for bs in self._tail_buckets:
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g):
+            g = device_graph.new_graph(dev)
+            with device_graph.graph(g, device=dev):
                 self._tail_compute(bs)
             self._tail_graphs[bs] = g
-        torch.cuda.synchronize()
+        device_graph.synchronize(dev)
 
     @torch.no_grad()
     def run_tail_graph(
@@ -429,7 +412,7 @@ class Zonos2SGLangModel(nn.Module):
     ):
         """Stage inputs into the static buffers, replay the bs-bucket graph (padded
         up to the next bucket; extra rows compute on stale data and are ignored),
-        and return views of (codes [bs,n], keys [bs], feedback [bs,dim])."""
+        and return logits [bs,n,V]."""
         bs = hidden.shape[0]
         bucket = next(g for g in self._tail_buckets if g >= bs)
         cg = self._cg
@@ -442,7 +425,7 @@ class Zonos2SGLangModel(nn.Module):
         cg["rep_ids"][:bs].copy_(rep_ids)
         cg["break_mask"][:bs].copy_(break_mask)
         self._tail_graphs[bucket].replay()
-        return cg["codes"][:bs], cg["keys"][:bs], cg["feedback"][:bs]
+        return cg["logits"][:bs]
 
     @torch.no_grad()
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:

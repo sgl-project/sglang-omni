@@ -21,9 +21,13 @@ from typing import Any, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torchaudio
+try:
+    import torchaudio
+except ImportError:
+    torchaudio = None  # type: ignore[assignment]
 from transformers import Qwen2Config, Qwen2Model, StaticCache
 
+from sglang_omni.utils.audio import _cached_resample
 from sglang_omni.utils.audio_features import cached_fbank
 
 from .configuration_bailing_talker import MingOmniTalkerConfig
@@ -37,6 +41,25 @@ from .talker_module.dit import DiT
 logger = logging.getLogger(__name__)
 
 _TOKEN_DONE = object()
+
+
+def _load_prompt_audio(path: str) -> tuple[torch.Tensor, int]:
+    if torchaudio is not None:
+        return torchaudio.load(path, backend="soundfile")
+    import soundfile as sf
+
+    audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+    return torch.from_numpy(audio.T.copy()), int(sample_rate)
+
+
+def _resample_prompt_audio(
+    speech: torch.Tensor, sample_rate: int, target_sample_rate: int
+) -> torch.Tensor:
+    if sample_rate == target_sample_rate:
+        return speech
+    if torchaudio is not None:
+        return torchaudio.transforms.Resample(sample_rate, target_sample_rate)(speech)
+    return _cached_resample(speech, sample_rate, target_sample_rate, None)
 
 # ---------- Optional: onnxruntime for speaker embedding ----------
 try:
@@ -998,19 +1021,17 @@ class MingOmniTalker(nn.Module):
         speech_parts = []
         spk_emb_list = []
         for x in prompt_wav_path:
-            speech_tmp, sample_rate = torchaudio.load(x, backend="soundfile")
+            speech_tmp, sample_rate = _load_prompt_audio(x)
             speech_tmp1 = speech_tmp.clone()
-            if sample_rate != audio_detokenizer.config.sample_rate:
-                speech_tmp = torchaudio.transforms.Resample(
-                    sample_rate, audio_detokenizer.config.sample_rate
-                )(speech_tmp)
+            speech_tmp = _resample_prompt_audio(
+                speech_tmp,
+                sample_rate,
+                audio_detokenizer.config.sample_rate,
+            )
             speech_parts.append(speech_tmp)
 
             if self.spkemb_extractor is not None:
-                if sample_rate != 16000:
-                    speech_tmp1 = torchaudio.transforms.Resample(
-                        orig_freq=sample_rate, new_freq=16000
-                    )(speech_tmp1)
+                speech_tmp1 = _resample_prompt_audio(speech_tmp1, sample_rate, 16000)
                 se = self.spkemb_extractor(speech_tmp1)
                 se = self.spk_head(se.to(device=self.device, dtype=self.dtype))
                 spk_emb_list.append(se)

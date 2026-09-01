@@ -102,6 +102,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             return
         if bool(server_args.enable_torch_compile):
             qwen3_stages._compile_qwen3_tts_backbone(model)
+            qwen3_stages._warmup_qwen3_tts_sampling_compile(model)
             override_server_args(
                 server_args,
                 "sglang_omni.qwen3_tts.compile_complete",

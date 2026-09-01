@@ -5,6 +5,8 @@ Current stable release: **v0.1.3** on [PyPI](https://pypi.org/project/sglang-omn
 Two install paths. Docker is recommended — UCX, flash-attn, sglang, and CUDA are prebuilt.
 
 > **Intel GPU (XPU)?** This page targets **NVIDIA CUDA**. For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
+>
+> **Moore Threads MUSA cloud image?** See [Installation - Moore Threads MUSA (Cloud, no SDK)](./installation_musa_cloud.md) for a public-package-only setup that keeps the MUSA SDK out of the install step.
 
 ## 🐳 Option A: Docker (recommended)
 

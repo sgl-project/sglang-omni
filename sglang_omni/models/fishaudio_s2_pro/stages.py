@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -57,12 +58,21 @@ def _configure_preprocessing_threads(worker_count: int) -> int:
 
 def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
-    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
-
     if max_batch_size < 1:
         raise ValueError("max_batch_size must be >= 1")
 
-    set_torch_compile_config()
+    try:
+        from sglang.srt.compilation.torch_compile_decoration import (
+            set_torch_compile_config,
+        )
+    except ModuleNotFoundError:
+        logger.info(
+            "SGLang torch_compile_decoration is unavailable; using torch.compile "
+            "without SGLang-specific compile config."
+        )
+    else:
+        set_torch_compile_config()
+
     compile_mode = os.environ.get(
         "SGLANG_TORCH_COMPILE_MODE",
         "max-autotune-no-cudagraphs",
@@ -168,10 +178,12 @@ class _FishReferenceEncodeHook(TensorReferenceEncodeHook[_FishReferenceInput]):
 
     def encode_one(self, item: _FishReferenceInput) -> torch.Tensor:
         if item.source_kind == "path":
-            import torchaudio
+            from sglang_omni.preprocessing.audio import AudioMediaIO
 
-            audio, sr = torchaudio.load(str(item.source))
-            return self._encode_reference_waveform(audio, int(sr))
+            audio_io = AudioMediaIO(target_sr=self._codec.sample_rate)
+            audio, sr = audio_io.load_file(Path(item.source).expanduser())
+            audio_tensor = torch.from_numpy(audio).float().reshape(1, -1)
+            return self._encode_reference_waveform(audio_tensor, int(sr))
         if item.source_kind in ("bytes", "base64"):
             from sglang_omni.preprocessing.audio import AudioMediaIO
 
@@ -201,11 +213,12 @@ class _FishReferenceEncodeHook(TensorReferenceEncodeHook[_FishReferenceInput]):
         return None
 
     def _encode_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
-        import torchaudio
-
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
-        audio = torchaudio.functional.resample(audio, sr, self._codec.sample_rate)
+        if int(sr) != int(self._codec.sample_rate):
+            from sglang_omni.utils.audio import _cached_resample
+
+            audio = _cached_resample(audio, int(sr), int(self._codec.sample_rate), None)
         audios = audio.squeeze(0).unsqueeze(0)
         audio_lengths = torch.tensor([audios.shape[1]], dtype=torch.long)
         with torch.no_grad():

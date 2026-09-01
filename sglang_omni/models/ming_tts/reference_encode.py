@@ -8,8 +8,12 @@ from typing import Any
 
 import onnxruntime
 import torch
-import torchaudio
-import torchaudio.functional as F
+try:
+    import torchaudio
+    import torchaudio.functional as F
+except ImportError:
+    torchaudio = None  # type: ignore[assignment]
+    F = None  # type: ignore[assignment]
 
 from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
 from sglang_omni.models.ming_tts.audio_decode import MingAudioDecoder
@@ -26,7 +30,25 @@ from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
     ReferenceEncodeService,
 )
+from sglang_omni.utils.audio import _cached_resample
 from sglang_omni.utils.audio_features import cached_fbank
+
+
+def _load_audio(path: str) -> tuple[torch.Tensor, int]:
+    if torchaudio is not None:
+        return torchaudio.load(path)
+    import soundfile as sf
+
+    audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+    return torch.from_numpy(audio.T.copy()), int(sample_rate)
+
+
+def _resample_audio(waveform: torch.Tensor, orig_freq: int, new_freq: int) -> torch.Tensor:
+    if int(orig_freq) == int(new_freq):
+        return waveform
+    if F is not None:
+        return F.resample(waveform, orig_freq=int(orig_freq), new_freq=int(new_freq))
+    return _cached_resample(waveform, int(orig_freq), int(new_freq), None)
 
 
 class MingSpeakerEmbeddingExtractor:
@@ -232,7 +254,7 @@ class MingTTSReferenceEncoder:
         return store_ming_tts_state(payload, state)
 
     def _load_reference_waveform(self, path: str) -> tuple[Any, Any]:
-        waveform, sample_rate = torchaudio.load(path)
+        waveform, sample_rate = _load_audio(path)
         if waveform.ndim != 2 or int(waveform.shape[0]) != 1:
             raise ValueError(
                 "Ming-Omni-TTS currently supports only mono reference audio, "
@@ -240,13 +262,13 @@ class MingTTSReferenceEncoder:
             )
         speaker_waveform = waveform
         if int(sample_rate) != self.sample_rate:
-            waveform = F.resample(
+            waveform = _resample_audio(
                 waveform,
                 orig_freq=int(sample_rate),
                 new_freq=self.sample_rate,
             )
         if int(sample_rate) != self.speaker_encoder.target_sr:
-            speaker_waveform = F.resample(
+            speaker_waveform = _resample_audio(
                 speaker_waveform,
                 orig_freq=int(sample_rate),
                 new_freq=self.speaker_encoder.target_sr,

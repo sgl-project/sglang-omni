@@ -18,6 +18,21 @@ from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
 
+def _request_extend_length(req: Any) -> int:
+    if hasattr(req, "extend_input_len"):
+        return int(req.extend_input_len)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        prefix_indices = getattr(req, "prefix_indices", None)
+        prefix_len = len(prefix_indices) if prefix_indices is not None else 0
+        return max(0, len(fill_ids) - prefix_len)
+    origin_ids = getattr(req, "origin_input_ids", None)
+    return len(origin_ids) if origin_ids is not None else 0
+
+
 class MossTTSLocalModelRunner(ModelRunner):
     """Drives the per-frame local-transformer decode and feedback embeddings.
 
@@ -169,8 +184,9 @@ class MossTTSLocalModelRunner(ModelRunner):
             rows = data.prompt_rows
             if rows is None:
                 raise RuntimeError("MOSS-TTS Local prefill requires prompt_rows")
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = _request_extend_length(req)
+            prefix_indices = getattr(req, "prefix_indices", None)
+            prefix_len = len(prefix_indices) if prefix_indices is not None else 0
             pool = self.model._state_pool
             if data.output_rows:
                 # KV-pressure retraction re-prefills with an extend region

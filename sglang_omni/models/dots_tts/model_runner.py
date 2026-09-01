@@ -23,6 +23,24 @@ class _DotsFlowLaunchBuf:
     batched: bool
 
 
+def _request_extend_length(req: Any) -> int:
+    value = getattr(req, "extend_input_len", None)
+    if value is not None:
+        return int(value)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None:
+        length = getattr(extend_range, "length", None)
+        if length is not None:
+            return int(length)
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        return len(fill_ids) - len(getattr(req, "prefix_indices", []) or [])
+    origin_input_ids = getattr(req, "origin_input_ids", None)
+    if origin_input_ids is not None:
+        return len(origin_input_ids) - len(getattr(req, "prefix_indices", []) or [])
+    raise AttributeError("Req does not expose an extend length")
+
+
 class DotsTTSModelRunner(ModelRunner):
     """Use the shared SGLang forward path and own only latent recurrence."""
 
@@ -80,7 +98,7 @@ class DotsTTSModelRunner(ModelRunner):
                         prompt_embeddings.to(device=device, dtype=embeddings.dtype)
                     )
                 prefix_len = len(data.req.prefix_indices)
-                req_len = int(data.req.extend_range.length)
+                req_len = _request_extend_length(data.req)
                 assert prefix_len == 0, "dots.tts radix prefix reuse is disabled"
                 prompt_len = embeddings.size(1)
                 generated_count = req_len - prompt_len
@@ -178,7 +196,7 @@ class DotsTTSModelRunner(ModelRunner):
         last_hidden = []
         for request in requests:
             data = request.data
-            length = int(data.req.extend_range.length)
+            length = _request_extend_length(data.req)
             request_hidden = hidden[offset : offset + length].unsqueeze(0)
             if request_hidden.size(1) != length:
                 raise RuntimeError("dots.tts prefill hidden rows are incomplete")

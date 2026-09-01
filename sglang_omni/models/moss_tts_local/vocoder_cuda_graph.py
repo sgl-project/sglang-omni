@@ -10,6 +10,9 @@ from typing import NamedTuple
 
 import torch
 
+from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoderDecoder
+from sglang_omni.utils import device_graph
+
 logger = logging.getLogger(__name__)
 
 _ATTN_ORIGINAL_UPDATE_CACHE_ATTR = "_sglang_omni_original_update_streaming_cache"
@@ -18,7 +21,7 @@ _ATTN_ORIGINAL_UPDATE_CACHE_ATTR = "_sglang_omni_original_update_streaming_cache
 class _CapturedVocoderGraph(NamedTuple):
     """One captured per-T graph and its static replay buffers (named to avoid positional unpack)."""
 
-    graph: torch.cuda.CUDAGraph
+    graph: object
     static_codes: torch.Tensor
     static_lengths: torch.Tensor
     static_audio: torch.Tensor
@@ -82,6 +85,13 @@ def patch_codec_attention_cache_for_cuda_graph(codec) -> None:
         )
 
 
+def _decoder_length_override(codec, lengths: list[int]):
+    decoder = getattr(codec, "decoder", None)
+    if isinstance(decoder, MossAudioTokenizerVocoderDecoder):
+        return decoder.input_lengths_cpu_override(lengths)
+    return None
+
+
 class MossVocoderCudaGraphRunner:
     """Warmup-captured, sealed replay of exact-T CUDA graphs for the MOSS codec decode (B fixed)."""
 
@@ -118,7 +128,7 @@ class MossVocoderCudaGraphRunner:
         return 1 <= frame_count <= self._max_frames
 
     def _enough_free_vram(self) -> tuple[bool, int]:
-        free, _ = torch.cuda.mem_get_info(self._device)
+        free, _ = device_graph.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
     @torch.no_grad()
@@ -140,30 +150,44 @@ class MossVocoderCudaGraphRunner:
         static_codes = torch.zeros(n, b, frame_count, dtype=torch.long, device=device)
         # Capture all-active; the live exec_mask at replay decides which slots advance.
         static_lengths = torch.full((b,), frame_count, dtype=torch.long, device=device)
+        static_lengths_cpu = [frame_count] * b
         exec_mask = torch.ones(b, dtype=torch.bool, device=device)
         self._codec._set_streaming_exec_mask(exec_mask)
         # Note: (Jiaxin Deng) side-stream warmup forces lazy allocs (conv algo / workspaces) out of the capture.
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(self._warmup_iters):
-                self._codec._decode_frame(static_codes, static_lengths)
-        torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
+        current_stream = device_graph.current_stream(device)
+        stream = device_graph.new_stream(device)
+        stream.wait_stream(current_stream)
+        with device_graph.stream(stream):
+            override = _decoder_length_override(self._codec, static_lengths_cpu)
+            if override is None:
+                for _ in range(self._warmup_iters):
+                    self._codec._decode_frame(static_codes, static_lengths)
+            else:
+                with override:
+                    for _ in range(self._warmup_iters):
+                        self._codec._decode_frame(static_codes, static_lengths)
+        current_stream.wait_stream(stream)
+        device_graph.synchronize(device)
         # Note: (Jiaxin Deng) reset to offset 0 AFTER warmup, BEFORE capture -- capturing at the
         # warmup-advanced offset bakes a wrong start state (~0.4 PCM error). reset re-activates all slots.
         self._reset_state()
         self._codec._set_streaming_exec_mask(exec_mask)
         # Shared mempool across the T graphs to bound memory (large B=16 intermediates); capture order in warmup.
         if self._pool is None:
-            self._pool = torch.cuda.graph_pool_handle()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(
-            graph, pool=self._pool, capture_error_mode="thread_local"
-        ):
-            result = self._codec._decode_frame(static_codes, static_lengths)
-            static_audio = result.audio
-            static_audio_lengths = result.audio_lengths
+            self._pool = device_graph.graph_pool_handle(device)
+        graph = device_graph.new_graph(device)
+        override = _decoder_length_override(self._codec, static_lengths_cpu)
+        if override is None:
+            with device_graph.graph(graph, device=device, pool=self._pool):
+                result = self._codec._decode_frame(static_codes, static_lengths)
+                static_audio = result.audio
+                static_audio_lengths = result.audio_lengths
+        else:
+            with override:
+                with device_graph.graph(graph, device=device, pool=self._pool):
+                    result = self._codec._decode_frame(static_codes, static_lengths)
+                    static_audio = result.audio
+                    static_audio_lengths = result.audio_lengths
         self._graphs[frame_count] = _CapturedVocoderGraph(
             graph=graph,
             static_codes=static_codes,
@@ -190,7 +214,7 @@ class MossVocoderCudaGraphRunner:
             return
         # Bind capture to the codec's device: the stream/pool/graph use the current device, and
         # factory-time capture can precede the stage device switch (split puts the codec off cuda:0).
-        with torch.cuda.device(self._device):
+        with device_graph.device_context(self._device):
             # Note: (Jiaxin Deng) capture LARGEST T first -- the graphs share one mempool; capturing a larger
             # graph after a smaller one grows the pool and invalidates earlier graphs' addresses (replay segfaults).
             for t in sorted(dict.fromkeys(int(x) for x in frames), reverse=True):
@@ -251,7 +275,7 @@ class MossVocoderCudaGraphRunner:
         Per-slot lengths are not needed: every captured graph decodes the full T for all slots and
         ``exec_mask`` gates which outputs are valid (the eager fallback still uses lengths).
         """
-        if not codes_step.is_cuda:
+        if codes_step.device.type not in {"cuda", "musa"}:
             return None
         n, b, t = codes_step.shape
         if b != self._batch_size or n != self._n_vq:

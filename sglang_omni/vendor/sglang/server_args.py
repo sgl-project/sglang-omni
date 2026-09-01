@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 
+def _assign_fields(server_args: Any, **fields: Any) -> None:
+    for name, value in fields.items():
+        setattr(server_args, name, value)
+
+
 def get_global_server_args():
     """Return SGLang's process-global server args through a lazy import."""
     from sglang.srt.server_args import get_global_server_args as _get_global_server_args
@@ -26,7 +31,11 @@ def override_server_args(server_args: Any, source: str, **fields: Any) -> None:
         legacy_override(source, **fields)
         return
 
-    from sglang.srt.runtime_context import get_context
+    try:
+        from sglang.srt.runtime_context import get_context
+    except ModuleNotFoundError:
+        _assign_fields(server_args, **fields)
+        return
 
     context = get_context()
     try:

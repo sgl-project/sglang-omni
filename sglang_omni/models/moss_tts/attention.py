@@ -63,11 +63,15 @@ def _preferred_attention_backend(
 
 def _packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
     device = torch.device(device)
-    if device.type != "cuda":
-        return f"device type {device.type!r} is not CUDA"
-    if not torch.cuda.is_available():
+    if device.type not in {"cuda", "musa"}:
+        return f"device type {device.type!r} is not CUDA/MUSA"
+    if device.type == "cuda" and not torch.cuda.is_available():
         return "the CUDA runtime is unavailable"
-    if not _is_fa3_supported():
+    if device.type == "musa":
+        musa_mod = getattr(torch, "musa", None)
+        if musa_mod is None or not musa_mod.is_available():
+            return "the MUSA runtime is unavailable"
+    if device.type == "cuda" and not _is_fa3_supported():
         return "SGLang packed FlashAttention (FA3) is unavailable"
     return None
 
@@ -75,6 +79,8 @@ def _packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
 @cache
 def _packed_flash_requires_query_chunks(device: torch.device) -> bool:
     device = torch.device(device)
+    if device.type == "musa":
+        return True
     if device.type != "cuda" or not torch.cuda.is_available():
         return True
     major, minor = torch.cuda.get_device_capability(device)
@@ -665,6 +671,9 @@ class MossAudioTokenizerAttention(nn.Module):
         self._packed_rope_cache = packed_rope_cache or MossPackedRopeCache(
             max_period=max_period
         )
+        self._local_flash_plan_cache: dict[
+            tuple[str, int | None, int | None, tuple[int, ...]], _LocalCausalFlashPlan
+        ] = {}
 
     @classmethod
     def from_module(
@@ -745,7 +754,14 @@ class MossAudioTokenizerAttention(nn.Module):
     @staticmethod
     def get_backend_dtype(x: torch.Tensor) -> torch.dtype:
         backend_dtype = x.dtype
-        if x.device.type != "cuda":
+        if x.device.type not in {"cuda", "musa"}:
+            return backend_dtype
+        if x.device.type == "musa":
+            try:
+                if torch.is_autocast_enabled("musa"):
+                    return torch.get_autocast_dtype("musa")
+            except (AttributeError, TypeError):
+                pass
             return backend_dtype
         try:
             autocast_enabled = torch.is_autocast_enabled("cuda")
@@ -772,6 +788,24 @@ class MossAudioTokenizerAttention(nn.Module):
             or max_seqlen <= _LOCAL_CAUSAL_FLASH_QUERY_CHUNK_SIZE
         ):
             return None
+        if sequence_lengths is not None:
+            lengths_key = tuple(int(length) for length in sequence_lengths)
+            cache_key = (
+                cu_seqlens.device.type,
+                cu_seqlens.device.index,
+                int(self.context),
+                lengths_key,
+            )
+            cached = self._local_flash_plan_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            plan = _build_local_causal_flash_plan(
+                cu_seqlens,
+                context=int(self.context),
+                sequence_lengths=lengths_key,
+            )
+            self._local_flash_plan_cache[cache_key] = plan
+            return plan
         return _build_local_causal_flash_plan(
             cu_seqlens,
             context=int(self.context),

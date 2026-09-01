@@ -104,7 +104,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         return {
             "max_running_requests": 8,
             "dtype": dtype,
-            "disable_cuda_graph": True,
+            "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -186,13 +186,19 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         return int(model._decode_input_embedding.num_embeddings)
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
-        del server_args
         # Note (yzxiao): Only the acoustic owner captures tail graphs because
         # follower ranks run the backbone graph without latent sampling.
         if self.tp_rank != 0:
             return
+        runner = self._model_worker.model_runner
+        graph_runner = getattr(runner, "decode_cuda_graph_runner", None)
+        if graph_runner is None:
+            graph_runner = getattr(runner, "piecewise_cuda_graph_runner", None)
+        capture_bs = getattr(graph_runner, "capture_bs", None)
+        if capture_bs is None:
+            capture_bs = get_decode_cuda_graph_bs(server_args)
         model.init_tail_graphs(
-            list(self._model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
+            list(capture_bs)
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:

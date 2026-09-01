@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import subprocess
 import threading
 import wave
@@ -20,15 +21,100 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchaudio
+try:
+    import torchaudio
+except ImportError:
+    torchaudio = None  # type: ignore[assignment]
 from transformers import AutoModel
 
 from sglang_omni.scheduling.reference_encoder import (
     ReferenceEncodeService,
     TensorReferenceEncodeHook,
 )
+from sglang_omni.utils.audio import _cached_resample
 
 SPEAKER_EMBEDDING_DIM = 2048
+
+
+class _TorchMelSpectrogram(nn.Module):
+    def __init__(
+        self,
+        *,
+        sample_rate: int,
+        n_fft: int,
+        win_length: int,
+        hop_length: int,
+        f_min: float,
+        f_max: float,
+        n_mels: int,
+    ) -> None:
+        super().__init__()
+        self.sample_rate = float(sample_rate)
+        self.n_fft = int(n_fft)
+        self.win_length = int(win_length)
+        self.hop_length = int(hop_length)
+        self.register_buffer(
+            "window",
+            torch.hann_window(self.win_length, periodic=True),
+            persistent=False,
+        )
+        self.register_buffer(
+            "mel_fb",
+            self._build_mel_fb(
+                n_fft=self.n_fft,
+                n_mels=int(n_mels),
+                sample_rate=float(sample_rate),
+                f_min=float(f_min),
+                f_max=float(f_max),
+            ),
+            persistent=False,
+        )
+
+    @staticmethod
+    def _hz_to_mel(freq: torch.Tensor) -> torch.Tensor:
+        return 2595.0 * torch.log10(1.0 + freq / 700.0)
+
+    @staticmethod
+    def _mel_to_hz(mel: torch.Tensor) -> torch.Tensor:
+        return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+
+    @classmethod
+    def _build_mel_fb(
+        cls,
+        *,
+        n_fft: int,
+        n_mels: int,
+        sample_rate: float,
+        f_min: float,
+        f_max: float,
+    ) -> torch.Tensor:
+        freqs = torch.linspace(0.0, sample_rate / 2.0, n_fft // 2 + 1)
+        mel_min = cls._hz_to_mel(torch.tensor(float(f_min)))
+        mel_max = cls._hz_to_mel(torch.tensor(float(f_max)))
+        mels = torch.linspace(mel_min, mel_max, n_mels + 2)
+        hz = cls._mel_to_hz(mels)
+        lower = hz[:-2].unsqueeze(1)
+        center = hz[1:-1].unsqueeze(1)
+        upper = hz[2:].unsqueeze(1)
+        left = (freqs - lower) / torch.clamp(center - lower, min=1e-6)
+        right = (upper - freqs) / torch.clamp(upper - center, min=1e-6)
+        return torch.clamp(torch.minimum(left, right), min=0.0)
+
+    def forward(self, wav: torch.Tensor) -> torch.Tensor:
+        spectrum = torch.stft(
+            wav,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            window=self.window.to(device=wav.device, dtype=wav.dtype),
+            center=False,
+            return_complex=True,
+        ).abs()
+        mel = torch.matmul(
+            self.mel_fb.to(device=wav.device, dtype=spectrum.dtype),
+            spectrum,
+        )
+        return mel
 
 
 class Qwen3SpeakerEmbedding(nn.Module):
@@ -53,25 +139,36 @@ class Qwen3SpeakerEmbedding(nn.Module):
         self._compile_forward = compile_forward
         self._compiled = None
         self.model = AutoModel.from_pretrained(
-            self.MODEL_NAME,
+            os.getenv("ZONOS2_SPEAKER_EMBEDDING_PATH", self.MODEL_NAME),
             trust_remote_code=True,
         )
         self.model.to(device)
         self.model.eval()
 
-        self.mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=self.TARGET_SAMPLE_RATE,
-            n_fft=self.N_FFT,
-            win_length=self.WIN_LENGTH,
-            hop_length=self.HOP_LENGTH,
-            f_min=self.F_MIN,
-            f_max=self.F_MAX,
-            n_mels=self.N_MELS,
-            power=1.0,
-            center=False,
-            norm="slaney",
-            mel_scale="slaney",
-        ).to(device)
+        if torchaudio is not None:
+            self.mel_transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=self.TARGET_SAMPLE_RATE,
+                n_fft=self.N_FFT,
+                win_length=self.WIN_LENGTH,
+                hop_length=self.HOP_LENGTH,
+                f_min=self.F_MIN,
+                f_max=self.F_MAX,
+                n_mels=self.N_MELS,
+                power=1.0,
+                center=False,
+                norm="slaney",
+                mel_scale="slaney",
+            ).to(device)
+        else:
+            self.mel_transform = _TorchMelSpectrogram(
+                sample_rate=self.TARGET_SAMPLE_RATE,
+                n_fft=self.N_FFT,
+                win_length=self.WIN_LENGTH,
+                hop_length=self.HOP_LENGTH,
+                f_min=self.F_MIN,
+                f_max=self.F_MAX,
+                n_mels=self.N_MELS,
+            ).to(device)
 
         self.requires_grad_(False).eval()
 
@@ -81,6 +178,8 @@ class Qwen3SpeakerEmbedding(nn.Module):
 
     @cache
     def _get_resampler(self, orig_sample_rate: int):
+        if torchaudio is None:
+            return None
         return torchaudio.transforms.Resample(
             orig_sample_rate, self.TARGET_SAMPLE_RATE
         ).to(self.device)
@@ -91,7 +190,12 @@ class Qwen3SpeakerEmbedding(nn.Module):
             wav = wav.mean(0, keepdim=True)
         wav = wav.to(self.device, torch.float32)
         if sample_rate != self.TARGET_SAMPLE_RATE:
-            wav = self._get_resampler(sample_rate)(wav)
+            resampler = self._get_resampler(sample_rate)
+            if resampler is not None:
+                wav = resampler(wav)
+            else:
+                wav = _cached_resample(wav, sample_rate, self.TARGET_SAMPLE_RATE, None)
+                wav = wav.to(self.device, torch.float32)
         return wav
 
     def _make_mel(self, wav: torch.Tensor) -> torch.Tensor:
@@ -161,6 +265,10 @@ def _transcode_audio_bytes_to_wav(audio_bytes: bytes) -> bytes:
             "Reference file must contain an audio stream supported by ffmpeg." + suffix
         )
     return proc.stdout
+
+
+def _is_wav_container(audio_bytes: bytes) -> bool:
+    return audio_bytes.startswith(b"RIFF") and audio_bytes[8:12] == b"WAVE"
 
 
 def _decode_wav_bytes(wav_bytes: bytes) -> tuple[torch.Tensor, int]:
@@ -333,7 +441,12 @@ class SpeakerEncoder(TensorReferenceEncodeHook[_Zonos2RefInput]):
 
     def encode_one(self, item: _Zonos2RefInput) -> torch.Tensor:
         if item.kind == "raw":
-            wav, sr = _decode_wav_bytes(_transcode_audio_bytes_to_wav(item.raw))
+            wav_bytes = (
+                item.raw
+                if _is_wav_container(item.raw)
+                else _transcode_audio_bytes_to_wav(item.raw)
+            )
+            wav, sr = _decode_wav_bytes(wav_bytes)
         else:
             wav, sr = item.wav, item.sr
         embedder = self._get_embedder()

@@ -13,7 +13,10 @@ from typing import Any, Iterable, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.runtime_context import get_forward
+try:
+    from sglang.srt.runtime_context import get_forward
+except ModuleNotFoundError:
+    get_forward = None
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
@@ -66,6 +69,7 @@ from sglang_omni.vendor.sglang.models import (
 )
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import add_prefix
+from sglang_omni.utils import device_graph
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +96,7 @@ class _MingTTSTailGraph:
     def __init__(self, model: Any, batch_size: int) -> None:
         self.model = model
         self.batch_size = int(batch_size)
-        self.graph: torch.cuda.CUDAGraph | None = None
+        self.graph: Any | None = None
         self.inputs: MingTTSTailInputs | None = None
         self.noise: torch.Tensor | None = None
         self.timesteps: torch.Tensor | None = None
@@ -137,9 +141,10 @@ class _MingTTSTailGraph:
             else nullcontext()
         )
         with context:
-            warmup_stream = torch.cuda.Stream(device=device)
-            warmup_stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(warmup_stream):
+            current_stream = device_graph.current_stream(device)
+            warmup_stream = device_graph.new_stream(device)
+            warmup_stream.wait_stream(current_stream)
+            with device_graph.stream(warmup_stream):
                 for _ in range(2):
                     self.model._compute_tail_step(
                         self.inputs,
@@ -147,11 +152,11 @@ class _MingTTSTailGraph:
                         timesteps=self.timesteps,
                         sde_random=self.sde_random,
                     )
-            torch.cuda.current_stream(device).wait_stream(warmup_stream)
-            torch.cuda.synchronize(device=device)
+            current_stream.wait_stream(warmup_stream)
+            device_graph.synchronize(device)
 
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            graph = device_graph.new_graph(device)
+            with device_graph.graph(graph, device=device):
                 self.outputs = self.model._compute_tail_step(
                     self.inputs,
                     noise=self.noise,
@@ -591,10 +596,15 @@ class MingBailingMoeDecoderLayer(nn.Module):
         mlp_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
             forward_batch
         )
-        with get_forward().scoped(
-            fuse_mlp_allreduce=fuse_mlp_allreduce,
-            mlp_reduce_scatter=mlp_reduce_scatter,
-        ):
+        forward_ctx = (
+            get_forward().scoped(
+                fuse_mlp_allreduce=fuse_mlp_allreduce,
+                mlp_reduce_scatter=mlp_reduce_scatter,
+            )
+            if get_forward is not None
+            else nullcontext()
+        )
+        with forward_ctx:
             hidden_states = self.mlp(hidden_states, forward_batch)
 
         if fuse_mlp_allreduce:
@@ -881,9 +891,12 @@ class MingTTSSGLangModel(nn.Module):
         timesteps: torch.Tensor,
         sde_random: torch.Tensor,
     ) -> MingTTSTailOutputs:
+        tail_dtype = _module_param_dtype(self.flowloss)
+        hidden_states = inputs.hidden_states.to(dtype=tail_dtype)
+        latent_history = inputs.latent_history.to(dtype=tail_dtype)
         sampled = self.flowloss.sample(
-            z=inputs.hidden_states,
-            latent_history=inputs.latent_history,
+            z=hidden_states,
+            latent_history=latent_history,
             noise=noise,
             cfg=inputs.cfg,
             sigma=inputs.sigma,
@@ -892,10 +905,10 @@ class MingTTSSGLangModel(nn.Module):
             sde_random=sde_random,
         )
         feedback = self.linear_proj_audio(sampled).reshape(
-            int(inputs.hidden_states.shape[0]),
+            int(hidden_states.shape[0]),
             -1,
         )
-        stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
+        stop_prob = self.stop_head(hidden_states).softmax(dim=-1)[:, 0, 1]
         return MingTTSTailOutputs(
             sampled=sampled,
             feedback_embeddings=feedback,
@@ -1135,8 +1148,25 @@ class MingTTSSGLangModel(nn.Module):
             report.missing["model_params"] = missing_params
 
         assert_ming_tts_weight_coverage(report)
+        _align_linear_bias_dtype(self)
         self._weight_load_report = report
         logger.info("%s", report.summary())
 
 
 EntryClass = MingTTSSGLangModel
+
+
+def _align_linear_bias_dtype(module: nn.Module) -> None:
+    for submodule in module.modules():
+        if isinstance(submodule, nn.Linear) and submodule.bias is not None:
+            weight = submodule.weight
+            if submodule.bias.dtype != weight.dtype or submodule.bias.device != weight.device:
+                submodule.bias.data = submodule.bias.data.to(
+                    device=weight.device, dtype=weight.dtype
+                )
+
+
+def _module_param_dtype(module: nn.Module) -> torch.dtype:
+    for param in module.parameters():
+        return param.dtype
+    return torch.float32

@@ -32,6 +32,7 @@ from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
+from sglang_omni.utils import device_graph
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class _PredictorDecodeGraph:
             batch_size, dtype=torch.long, device=device
         )
         self.identity_rows = torch.arange(batch_size, dtype=torch.long, device=device)
-        self.graph = torch.cuda.CUDAGraph()
+        self.graph = device_graph.new_graph(device)
         self.result_codes: torch.Tensor | None = None
         self.summed_embeddings: torch.Tensor | None = None
         try:
@@ -114,13 +115,13 @@ class _PredictorDecodeGraph:
         model = self.model
         device = self.layer0_codes.device
         with (
-            torch.cuda.device(device),
+            device_graph.device_context(device),
             model._predictor_graph_capture_state(self.batch_size, self.signature),
         ):
-            current_stream = torch.cuda.current_stream(device=device)
-            warmup_stream = torch.cuda.Stream(device=device)
+            current_stream = device_graph.current_stream(device)
+            warmup_stream = device_graph.new_stream(device)
             warmup_stream.wait_stream(current_stream)
-            with torch.cuda.stream(warmup_stream):
+            with device_graph.stream(warmup_stream):
                 for _ in range(2):
                     model._code_predictor_forward_incremental(
                         self.layer0_codes,
@@ -129,13 +130,13 @@ class _PredictorDecodeGraph:
                     )
             current_stream.wait_stream(warmup_stream)
 
-            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream = device_graph.new_stream(device)
             capture_stream.wait_stream(current_stream)
-            with torch.cuda.graph(
+            with device_graph.graph(
                 self.graph,
+                device=device,
                 pool=model._predictor_graph_memory_pool(),
                 stream=capture_stream,
-                capture_error_mode="thread_local",
             ):
                 self.result_codes, self.summed_embeddings = (
                     model._code_predictor_forward_incremental(
@@ -162,7 +163,7 @@ class _PredictorDecodeGraph:
                 "Qwen3-TTS predictor CUDA graph bucket is too small: "
                 f"bucket={self.batch_size}, live={live}"
             )
-        with torch.cuda.device(self.layer0_codes.device):
+        with device_graph.device_context(self.layer0_codes.device):
             self.layer0_codes[:live].copy_(layer0_codes)
             self.talker_hidden[:live].copy_(talker_hidden)
             if semantic_positions is None:
@@ -1186,7 +1187,7 @@ class Qwen3TTSTalker(nn.Module):
         semantic_positions: torch.Tensor | None,
     ) -> tuple | None:
         if semantic_positions is not None:
-            if not semantic_positions.is_cuda:
+            if semantic_positions.device.type not in {"cuda", "musa"}:
                 return None
             if (
                 semantic_positions.ndim not in (1, 2)
@@ -1258,7 +1259,8 @@ class Qwen3TTSTalker(nn.Module):
         # Note: (Jiaxin Deng) one shared pool across keys; private per-graph
         # pools would retain intermediates per key and scale with diversity.
         if self._predictor_graph_pool is None:
-            self._predictor_graph_pool = torch.cuda.graph_pool_handle()
+            device = self._predictor_input_buffer.device
+            self._predictor_graph_pool = device_graph.graph_pool_handle(device)
         return self._predictor_graph_pool
 
     def _resolve_predictor_graph_enabled(self) -> bool:
@@ -1286,11 +1288,14 @@ class Qwen3TTSTalker(nn.Module):
             return None
         if layer0_codes.dtype not in (torch.int, torch.long):
             return None
-        if not layer0_codes.is_cuda or not talker_hidden.is_cuda:
+        if (
+            layer0_codes.device.type not in {"cuda", "musa"}
+            or talker_hidden.device.type not in {"cuda", "musa"}
+        ):
             return None
         if batch_size != self._sub_batch_size:
             return None
-        if torch.cuda.is_current_stream_capturing():
+        if device_graph.is_current_stream_capturing(layer0_codes.device):
             return None
         signature = self._predictor_graph_signature(batch_size, semantic_positions)
         if signature is None:

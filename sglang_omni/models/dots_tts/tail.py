@@ -10,6 +10,8 @@ from functools import partial
 from typing import Any
 
 import torch
+
+from sglang_omni.utils import device_graph
 import torch.nn as nn
 import torch.nn.functional as F
 from dots_tts.modules.backbone.dit_inference import FusedAdaLNDiT
@@ -91,7 +93,7 @@ class _AutocastFusedDiT(FusedAdaLNDiT):
     ) -> torch.Tensor:
         dtype = self.fused_adaln[-1].weight.dtype
         device_type = timesteps.device.type
-        autocast = device_type == "cuda" and dtype in {
+        autocast = device_type in {"cuda", "musa"} and dtype in {
             torch.float16,
             torch.bfloat16,
         }
@@ -343,7 +345,7 @@ def validate_acoustic_pool_memory(
 
 @dataclass
 class _CapturedTailGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: Any
     inputs: dict[str, torch.Tensor]
     output: torch.Tensor
 
@@ -436,7 +438,7 @@ class DotsTtsAcousticTail:
         self._graph_replays: Counter[str] = Counter()
         self._graph_misses: Counter[str] = Counter()
         self._dit_contiguous_view_steps = 0
-        if optimize and device.type == "cuda":
+        if optimize and device.type in {"cuda", "musa"}:
             self._capture_cuda_graphs()
 
     def _pool_tensors(self) -> tuple[torch.Tensor, ...]:
@@ -481,8 +483,8 @@ class DotsTtsAcousticTail:
         spec = self.spec
         estimate = self._pool_memory_estimate(mods_width)
         free_bytes = total_bytes = None
-        if self.device.type == "cuda":
-            free_bytes, total_bytes = torch.cuda.mem_get_info(self.device)
+        if self.device.type in {"cuda", "musa"}:
+            free_bytes, total_bytes = device_graph.mem_get_info(self.device)
         logger.info(
             "dots.tts acoustic pools (estimate): slots=%d nfe=%d patch_capacity=%d "
             "dtype=%s total=%.2f GiB "
@@ -1071,11 +1073,11 @@ class DotsTtsAcousticTail:
         if not batch_buckets or not context_buckets:
             return
 
-        current_stream = torch.cuda.current_stream(self.device)
-        self._capture_stream = torch.cuda.Stream(device=self.device)
+        current_stream = device_graph.current_stream(self.device)
+        self._capture_stream = device_graph.new_stream(self.device)
         self._capture_stream.wait_stream(current_stream)
-        self._graph_pool = torch.cuda.graph_pool_handle()
-        with torch.cuda.stream(self._capture_stream):
+        self._graph_pool = device_graph.graph_pool_handle(self.device)
+        with device_graph.stream(self._capture_stream):
             for batch_size in reversed(batch_buckets):
                 for patches in reversed(context_buckets):
                     self._capture_graph(
@@ -1091,7 +1093,7 @@ class DotsTtsAcousticTail:
                         kind="semantic_encoder",
                     )
         current_stream.wait_stream(self._capture_stream)
-        torch.cuda.synchronize(self.device)
+        device_graph.synchronize(self.device)
         logger.info(
             "dots.tts acoustic-tail CUDA graphs: meanflow=%d semantic_encoder=%d "
             "batch_buckets=%s context_patch_buckets=%s",
@@ -1159,16 +1161,16 @@ class DotsTtsAcousticTail:
                 inputs["latent"],
             )
 
-        graph = torch.cuda.CUDAGraph()
+        graph = device_graph.new_graph(self.device)
         try:
             for _ in range(2):
                 run()
             self._capture_stream.synchronize()
-            with torch.cuda.graph(
+            with device_graph.graph(
                 graph,
+                device=self.device,
                 pool=self._graph_pool,
                 stream=self._capture_stream,
-                capture_error_mode="thread_local",
             ):
                 output = run()
             destination[key] = _CapturedTailGraph(graph, inputs, output)

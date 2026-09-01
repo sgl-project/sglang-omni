@@ -551,7 +551,7 @@ class DotsTTSFlowHead(nn.Module):
             torch.autocast(
                 device_type=device_type,
                 dtype=dtype,
-                enabled=device_type == "cuda"
+                enabled=device_type in {"cuda", "musa"}
                 and dtype in {torch.float16, torch.bfloat16},
             ),
         ):

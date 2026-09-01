@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from typing import Any, Protocol
 
 from sglang_omni.utils.gpu_compat import (
@@ -42,22 +43,67 @@ def _describe_sglang_runtime_configuration(
 
 def init_sglang_cuda_graphs(model_worker: Any) -> None:
     """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
-    if not model_worker.enable_prefill_input_embeds:
-        # Required even when graphs are disabled: SGLang installs its eager
-        # phase runner from init_cuda_graphs().
-        model_worker.model_runner.init_cuda_graphs()
+    server_args = getattr(model_worker, "server_args", None)
+    if bool(getattr(server_args, "disable_cuda_graph", False)):
+        logger.info("Skipping SGLang CUDA graph initialization: disable_cuda_graph=True")
+        return
+    model_runner = model_worker.model_runner
+    init_graphs = getattr(model_runner, "init_cuda_graphs", None)
+    if not callable(init_graphs):
+        init_graphs = getattr(model_runner, "init_device_graphs", None)
+    if not callable(init_graphs):
+        logger.info(
+            "SGLang ModelRunner has no graph initialization API; reusing eager "
+            "initialization completed during construction."
+        )
         return
 
-    model_config = model_worker.model_config
-    original_is_multimodal = model_config.is_multimodal
-    # Attention backends have already captured the model's real modality.
-    # Only the prefill graph runner needs this temporary view so it allocates
-    # the upstream input_embeds replay buffer.
-    model_config.is_multimodal = True
+    with _musa_relaxed_graph_capture(model_runner):
+        if not model_worker.enable_prefill_input_embeds:
+            # Required when graphs are enabled: SGLang installs its eager phase
+            # runner from init_cuda_graphs().
+            init_graphs()
+            return
+
+        model_config = model_worker.model_config
+        original_is_multimodal = model_config.is_multimodal
+        # Attention backends have already captured the model's real modality.
+        # Only the prefill graph runner needs this temporary view so it allocates
+        # the upstream input_embeds replay buffer.
+        model_config.is_multimodal = True
+        try:
+            init_graphs()
+        finally:
+            model_config.is_multimodal = original_is_multimodal
+
+
+@contextmanager
+def _musa_relaxed_graph_capture(model_runner: Any):
+    """Use MUSA's relaxed capture mode while SGLang builds device graphs."""
+    if getattr(model_runner, "device", None) != "musa":
+        yield
+        return
+
     try:
-        model_worker.model_runner.init_cuda_graphs()
+        import torch
+    except Exception:
+        yield
+        return
+
+    graph = getattr(getattr(torch, "musa", None), "graph", None)
+    if not callable(graph):
+        yield
+        return
+
+    def relaxed_graph(*args: Any, **kwargs: Any):
+        kwargs.setdefault("capture_error_mode", "relaxed")
+        return graph(*args, **kwargs)
+
+    torch.musa.graph = relaxed_graph
+    try:
+        yield
     finally:
-        model_config.is_multimodal = original_is_multimodal
+        torch.musa.graph = graph
 
 
 def _hidden_capture_max_tokens(server_args: Any) -> int:
@@ -149,10 +195,22 @@ def create_sglang_infrastructure(
     # the same order as upstream's Scheduler.init_model_worker(), while
     # preserving Omni's pre-backend hidden-capture hook installation above.
     model_runner = model_worker.model_runner
-    model_runner.alloc_memory_pool()
-    model_runner.init_attention_backends()
+    alloc_memory_pool = getattr(model_runner, "alloc_memory_pool", None)
+    init_attention_backends = getattr(model_runner, "init_attention_backends", None)
+    if callable(alloc_memory_pool) and callable(init_attention_backends):
+        alloc_memory_pool()
+        init_attention_backends()
+    else:
+        logger.info(
+            "SGLang ModelRunner has no split initialization API; reusing "
+            "initialization completed during construction."
+        )
 
-    if not defer_cuda_graph_capture:
+    if (
+        not defer_cuda_graph_capture
+        and not bool(server_args.disable_cuda_graph)
+        and callable(getattr(model_worker.model_runner, "init_cuda_graphs", None))
+    ):
         init_sglang_cuda_graphs(model_worker)
 
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()

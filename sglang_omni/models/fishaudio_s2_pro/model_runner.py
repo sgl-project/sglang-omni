@@ -8,8 +8,23 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
 from sglang_omni.sampling.seed import resolve_row_seed
+
+
+def _request_extend_length(req: Any) -> int:
+    if hasattr(req, "extend_input_len"):
+        return int(req.extend_input_len)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    prefix_len = len(getattr(req, "prefix_indices", []) or [])
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        return max(len(fill_ids) - prefix_len, 0)
+    origin_input_ids = getattr(req, "origin_input_ids", None)
+    if origin_input_ids is not None:
+        return max(len(origin_input_ids) - prefix_len, 0)
+    raise AttributeError("request has no extend length field")
 
 
 def collect_s2pro_step_outputs(
@@ -30,7 +45,7 @@ def collect_s2pro_step_outputs(
 
     for row_idx, sched_req in enumerate(requests):
         data = sched_req.data
-        if data.req.inflight_middle_chunks > 0:
+        if int(getattr(data.req, "inflight_middle_chunks", 0)) > 0:
             continue
 
         semantic_token = semantic_tokens[row_idx]
@@ -134,9 +149,7 @@ class FishS2ProModelRunner(ModelRunner):
         self.model._sampling_rep_penalty[row_idx] = data.repetition_penalty
         self.model._ras_temperature[row_idx] = data.ras_temperature
         self.model._ras_top_p[row_idx] = data.ras_top_p
-        self.model._sampling_seeds[row_idx] = (
-            _NO_SEED if data.seed is None else resolve_row_seed(data.seed)
-        )
+        self.model._sampling_seeds[row_idx] = resolve_row_seed(data.seed)
         # semantic_history_count is the uncapped per-request AR step (pre-step).
         self.model._step_count[row_idx] = int(data.semantic_history_count)
 
@@ -172,7 +185,7 @@ class FishS2ProModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
+            req_len = _request_extend_length(req)
 
             if (
                 data.vq_mask_tokens is None

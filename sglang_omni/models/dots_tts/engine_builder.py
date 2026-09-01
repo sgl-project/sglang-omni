@@ -52,7 +52,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
-            "disable_cuda_graph": True,
+            "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,

@@ -15,8 +15,16 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from sglang.srt.environ import envs
+
+from sglang_omni.utils import device_graph
 
 logger = logging.getLogger(__name__)
+
+
+def _linear_output(value: Any) -> torch.Tensor:
+    """Normalize SGLang linear return conventions across versions."""
+    return value[0] if isinstance(value, tuple) else value
 
 
 def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
@@ -50,9 +58,10 @@ def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
 
 @dataclass
 class _CapturedGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: Any
     hidden_states: torch.Tensor  # [bucket, hidden] static input
     cu_seqlens: torch.Tensor  # [max_windows + 1] static window boundaries
+    seq_lens: torch.Tensor  # [max_windows] static window lengths
     output: torch.Tensor  # [bucket, output_dim] static result
 
 
@@ -88,6 +97,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self._buckets = buckets[:-1] + (top + self._max_windows_for(top),)
         self._graphs: dict[int, _CapturedGraph] = {}  # bucket size -> recorded graph
         self._failed: set[int] = set()
+        self._replayed: set[int] = set()
 
     @property
     def tokens_per_window(self) -> int:
@@ -110,15 +120,26 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                 self._failed.add(bucket_size)
 
     def _layer_stack(
-        self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor | list[Any],
+        output_workspaces: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         """The computation we capture: 24 layers + ln_post + proj chain."""
         tower = self._tower
         h = hidden_states
-        for layer in tower.layers:
+        for layer_index, layer in enumerate(tower.layers):
             residual = h
             h = layer.self_attn_layer_norm(h)
-            h = layer.self_attn(x=h, cu_seqlens=cu_seqlens, max_seqlen=self._max_seqlen)
+            kwargs = {}
+            if output_workspaces is not None:
+                kwargs["output_ws"] = output_workspaces[layer_index]
+            h = layer.self_attn(
+                x=h,
+                cu_seqlens=cu_seqlens,
+                max_seqlen=self._max_seqlen,
+                **kwargs,
+            )
             h = residual + h
             residual = h
             h = layer.final_layer_norm(h)
@@ -127,9 +148,9 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             h, _ = layer.fc2(h)
             h = residual + h
         h = tower.ln_post(h)
-        h = tower.proj1(h)[0]
+        h = _linear_output(tower.proj1(h))
         h = tower.act(h)
-        return tower.proj2(h)[0]
+        return _linear_output(tower.proj2(h))
 
     def _capture(self, bucket_size: int) -> _CapturedGraph:
         """Record one graph for a bucket-sized packed input."""
@@ -149,17 +170,34 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             with torch.no_grad():
                 return self._layer_stack(static_hs, static_cu)
 
-        side = torch.cuda.Stream(device)
-        side.wait_stream(torch.cuda.current_stream(device))
-        with torch.cuda.stream(side):
+        side = device_graph.new_stream(device)
+        side.wait_stream(device_graph.current_stream(device))
+        with device_graph.stream(side):
             for _ in range(3):
                 run_once()
-        torch.cuda.current_stream(device).wait_stream(side)
-        torch.cuda.synchronize(device)
+        device_graph.current_stream(device).wait_stream(side)
+        device_graph.synchronize(device)
 
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
-            static_out = run_once()
+        graph = device_graph.new_graph(device)
+        seq_lens = static_cu[1:] - static_cu[:-1]
+        graph_cu = [static_cu, self._max_seqlen, seq_lens]
+        output_workspaces = [
+            torch.empty(
+                bucket_size,
+                layer.self_attn.num_attention_heads_per_partition,
+                layer.self_attn.head_size,
+                device=device,
+                dtype=dtype,
+            )
+            for layer in self._tower.layers
+        ]
+        with envs.SGLANG_VIT_ENABLE_CUDA_GRAPH.override(True):
+            with device_graph.graph(graph, device=device):
+                static_out = self._layer_stack(
+                    static_hs,
+                    graph_cu,
+                    output_workspaces,
+                )
         logger.info(
             "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",
             bucket_size,
@@ -170,6 +208,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             graph=graph,
             hidden_states=static_hs,
             cu_seqlens=static_cu,
+            seq_lens=seq_lens,
             output=static_out,
         )
 
@@ -212,7 +251,16 @@ class Qwen3ASREncoderLayerStackGraphRunner:
 
         entry.hidden_states[:total].copy_(hidden_states)
         entry.cu_seqlens.copy_(cu, non_blocking=True)
+        entry.seq_lens.copy_(entry.cu_seqlens[1:] - entry.cu_seqlens[:-1])
         entry.graph.replay()
+        if bucket_size not in self._replayed:
+            logger.info(
+                "[qwen3-asr] replayed encoder layer-stack graph bucket=%d "
+                "request_tokens=%d",
+                bucket_size,
+                total,
+            )
+            self._replayed.add(bucket_size)
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]
             out = out.squeeze(0)
@@ -295,12 +343,25 @@ def eager_preamble(
     b, c, f, t = padded_embed.size()
     padded_embed = tower.conv_out(
         padded_embed.permute(0, 3, 1, 2).contiguous().view(b, t, c * f)
-    )[0]
-    positional_embedding = (
-        tower.positional_embedding.positional_embedding[: padded_embed.shape[1], :]
-        .unsqueeze(0)
-        .to(padded_embed.dtype)
     )
+    positional_embedding = tower.positional_embedding.positional_embedding
+    raw_positional_embedding_shape = tuple(positional_embedding.shape)
+    if positional_embedding.dim() == 3 and positional_embedding.shape[0] == 1:
+        positional_embedding = positional_embedding[:, : padded_embed.shape[1], :]
+    else:
+        positional_embedding = positional_embedding[: padded_embed.shape[1], :].unsqueeze(
+            0
+        )
+    logger.debug(
+        "[qwen3-asr] eager preamble shapes padded_embed=%s "
+        "positional_embedding_raw=%s positional_embedding_sliced=%s "
+        "feature_lens_after_cnn=%s",
+        tuple(padded_embed.shape),
+        raw_positional_embedding_shape,
+        tuple(positional_embedding.shape),
+        feature_lens_after_cnn.detach().cpu().tolist(),
+    )
+    positional_embedding = positional_embedding.to(padded_embed.dtype)
     padded_embed = padded_embed + positional_embedding
     return padded_embed[padded_mask_after_cnn]
 

@@ -21,6 +21,22 @@ from sglang_omni.models.zonos2.sampler import sample_tts
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.utils import device_graph
+
+
+def _request_extend_length(req: Any) -> int:
+    if hasattr(req, "extend_input_len"):
+        return int(req.extend_input_len)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        prefix_indices = getattr(req, "prefix_indices", None)
+        prefix_len = len(prefix_indices) if prefix_indices is not None else 0
+        return max(0, len(fill_ids) - prefix_len)
+    origin_ids = getattr(req, "origin_input_ids", None)
+    return len(origin_ids) if origin_ids is not None else 0
 
 
 class Zonos2ModelRunner(ModelRunner):
@@ -99,8 +115,9 @@ class Zonos2ModelRunner(ModelRunner):
         for sr in requests:
             data = sr.data
             req = data.req
-            prefix_len = len(req.prefix_indices)
-            req_len = int(req.extend_range.length)
+            prefix_indices = getattr(req, "prefix_indices", None)
+            prefix_len = len(prefix_indices) if prefix_indices is not None else 0
+            req_len = _request_extend_length(req)
             rows = data.prompt_rows[prefix_len : prefix_len + req_len].to(model.device)
             emb = model.embed_frames(rows)
             if data.speaker_emb is not None:
@@ -182,10 +199,16 @@ class Zonos2ModelRunner(ModelRunner):
         params = requests[0].data.params
         p = [sr.data.params for sr in requests]
         dev = hidden.device
+        top_k_max = max(
+            (x.top_k for x in p if 0 < x.top_k < model.audio_vocab), default=0
+        )
+        any_top_p = any(0.0 < x.top_p < 1.0 for x in p)
+        any_min_p = any(x.min_p > 0.0 for x in p)
 
-        # Compose with the tail CUDA-graph (ZONOS2_FRAME_GRAPH): when armed, run
-        # head+sample+embed+hash as one captured replay, with rep_ids/break_mask
-        # fed from the ON-DEVICE ring (not host-built) so no host work re-enters.
+        # Compose with the tail CUDA-graph (ZONOS2_FRAME_GRAPH): when armed,
+        # replay the deterministic head logits graph with rep_ids/break_mask fed
+        # from the on-device ring. Sampling stays on the normal GPU launch path
+        # because torch.multinomial is not MUSA-graph-capture safe.
         use_graph = (
             self._frame_graph
             and not is_prefill
@@ -198,7 +221,7 @@ class Zonos2ModelRunner(ModelRunner):
                 row_t, n, int(params.repetition_window), cb_size, dev
             )
             break_mask = self._break_mask_ring(row_t, model.audio_vocab, dev)
-            codes, keys, feedback = model.run_tail_graph(
+            logits = model.run_tail_graph(
                 hidden,
                 torch.tensor([x.temperature for x in p], device=dev),
                 torch.tensor([x.top_k for x in p], device=dev),
@@ -212,31 +235,24 @@ class Zonos2ModelRunner(ModelRunner):
             logits = model.compute_logits(hidden).float()  # [B, 9, 1026]
             rep_ids = self._rep_window(row_t, n, cb_size, params)
             self._break_frame_loops(logits, row_t)
-            top_k_max = max(
-                (x.top_k for x in p if 0 < x.top_k < model.audio_vocab), default=0
-            )
-            any_top_p = any(0.0 < x.top_p < 1.0 for x in p)
-            any_min_p = any(x.min_p > 0.0 for x in p)
-            codes = self._sampler(
-                logits,
-                temperature=torch.tensor([x.temperature for x in p], device=dev),
-                top_k=torch.tensor([x.top_k for x in p], device=dev),
-                top_p=torch.tensor([x.top_p for x in p], device=dev),
-                min_p=torch.tensor([x.min_p for x in p], device=dev),
-                repetition_penalty=torch.tensor(
-                    [x.repetition_penalty for x in p], device=dev
-                ),
-                top_k_max=top_k_max,
-                rep_token_ids=rep_ids,
-                any_top_p=any_top_p,
-                any_min_p=any_min_p,
-            )  # [B, 9]
-            text_col = torch.full(
-                (b, 1), text_pad, device=codes.device, dtype=torch.long
-            )
-            rows = torch.cat([codes, text_col], dim=1)
-            feedback = model.embed_frames(rows)  # [B, dim]
-            keys = poly_row_hash(rows)  # [B] (< RADIX_HASH_SPACE)
+        codes = self._sampler(
+            logits,
+            temperature=torch.tensor([x.temperature for x in p], device=dev),
+            top_k=torch.tensor([x.top_k for x in p], device=dev),
+            top_p=torch.tensor([x.top_p for x in p], device=dev),
+            min_p=torch.tensor([x.min_p for x in p], device=dev),
+            repetition_penalty=torch.tensor(
+                [x.repetition_penalty for x in p], device=dev
+            ),
+            top_k_max=top_k_max,
+            rep_token_ids=rep_ids,
+            any_top_p=any_top_p,
+            any_min_p=any_min_p,
+        )  # [B, 9]
+        text_col = torch.full((b, 1), text_pad, device=codes.device, dtype=torch.long)
+        rows = torch.cat([codes, text_col], dim=1)
+        feedback = model.embed_frames(rows)  # [B, dim]
+        keys = poly_row_hash(rows)  # [B] (< RADIX_HASH_SPACE)
 
         # Stage next-step feedback into the on-device pool row (one batched scatter).
         pool.feedback_embeds[row_t] = feedback.detach()
@@ -290,7 +306,7 @@ class Zonos2ModelRunner(ModelRunner):
             dim=1,
         )
         packed = torch.cat((codes, meta), dim=1)  # [B, n+2] int64
-        ev = torch.cuda.Event()
+        ev = device_graph.new_event(packed.device)
         ev.record()
         return (requests, packed, n, next_ids.clone(), ev)
 
@@ -310,9 +326,9 @@ class Zonos2ModelRunner(ModelRunner):
         # and runs on a separate stream, so this no longer whole-stream-syncs on
         # forward(N+1). One D2H of the packed [B, n+2] snapshot.
         if self._copy_stream is None:
-            self._copy_stream = torch.cuda.Stream(device=packed.device)
+            self._copy_stream = device_graph.new_stream(packed.device)
         self._copy_stream.wait_event(ev)
-        with torch.cuda.stream(self._copy_stream):
+        with device_graph.stream(self._copy_stream):
             packed_cpu = packed.to("cpu", non_blocking=True)
         self._copy_stream.synchronize()
         codes_cpu = packed_cpu[:, :n]

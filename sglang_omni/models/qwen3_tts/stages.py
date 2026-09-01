@@ -109,9 +109,17 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     text_model = model.model
     layers = text_model.layers
 
-    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
-
-    set_torch_compile_config()
+    try:
+        from sglang.srt.compilation.torch_compile_decoration import (
+            set_torch_compile_config,
+        )
+    except ModuleNotFoundError:
+        logger.info(
+            "SGLang torch_compile_decoration is unavailable; using Qwen3-TTS "
+            "torch.compile defaults"
+        )
+    else:
+        set_torch_compile_config()
     compile_mode = os.environ.get(
         "SGLANG_TORCH_COMPILE_MODE",
         "max-autotune-no-cudagraphs",
@@ -119,6 +127,28 @@ def _compile_qwen3_tts_backbone(model: Any) -> None:
     text_model._compiled_decode_layers = [
         torch.compile(layer, mode=compile_mode) for layer in layers
     ]
+
+
+def _warmup_qwen3_tts_sampling_compile(model: Any) -> None:
+    """Compile SGLang sampling penalty kernels before graph capture starts."""
+
+    try:
+        from sglang.srt.sampling.penaltylib.repetition_penalty import (
+            apply_scaling_penalties,
+        )
+    except ModuleNotFoundError:
+        return
+
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        return
+    if device.type not in {"cuda", "musa"}:
+        return
+
+    logits = torch.ones((1, 8), dtype=torch.float32, device=device)
+    penalties = torch.ones_like(logits)
+    apply_scaling_penalties(logits, penalties)
 
 
 def create_preprocessing_executor(

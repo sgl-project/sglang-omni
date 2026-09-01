@@ -14,6 +14,21 @@ from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRun
 from sglang_omni.scheduling.types import RequestOutput
 
 
+def _request_extend_length(req: Any) -> int:
+    if hasattr(req, "extend_input_len"):
+        return int(req.extend_input_len)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        prefix_indices = getattr(req, "prefix_indices", None)
+        prefix_len = len(prefix_indices) if prefix_indices is not None else 0
+        return max(0, len(fill_ids) - prefix_len)
+    origin_ids = getattr(req, "origin_input_ids", None)
+    return len(origin_ids) if origin_ids is not None else 0
+
+
 class Qwen3TTSModelRunner(ModelRunner):
     """Runs Qwen3-TTS AR steps and stores generated codec frames per request."""
 
@@ -401,8 +416,9 @@ class Qwen3TTSModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = _request_extend_length(req)
+            prefix_indices = getattr(req, "prefix_indices", None)
+            prefix_len = len(prefix_indices) if prefix_indices is not None else 0
             if data.prefill_input_embeds is None:
                 data.prefill_input_embeds = data.prompt_input_embeds
             if data.prefill_input_embeds is None:

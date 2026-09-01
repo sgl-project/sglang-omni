@@ -25,6 +25,7 @@ from sglang_omni.scheduling.types import (
     SchedulerRequest,
     sampled_logprobs_to_list,
 )
+from sglang_omni.vendor.sglang.signature import supported_kwargs
 
 
 def _current_sglang_sampling_backend() -> str | None:
@@ -411,15 +412,36 @@ class ModelRunner:
         )
         if capture_hidden_mode is None and self.output_processor._capture_hidden:
             capture_hidden_mode = CaptureHiddenMode.LAST
+        if capture_hidden_mode is None:
+            capture_hidden_mode = CaptureHiddenMode.NULL
 
-        # sglang 0.5.16 dropped ScheduleBatch.capture_hidden_mode: init_new no
-        # longer reads it off the batch, so setting it there is a dead write.
-        # Pass the per-forward override explicitly (None lets upstream derive it).
+        # Newer SGLang accepts capture_hidden_mode as an init_new kwarg; older
+        # versions read the same setting from the ScheduleBatch instance.
+        schedule_batch.capture_hidden_mode = capture_hidden_mode
+        if not hasattr(schedule_batch, "lora_ids"):
+            schedule_batch.lora_ids = None
+        if not hasattr(schedule_batch, "return_hidden_states_before_norm"):
+            schedule_batch.return_hidden_states_before_norm = False
+        if not hasattr(schedule_batch, "return_pooled_hidden_states"):
+            schedule_batch.return_pooled_hidden_states = False
+        if not hasattr(schedule_batch, "is_beam_search"):
+            schedule_batch.is_beam_search = False
+        if not hasattr(schedule_batch, "extend_seq_lens") and hasattr(
+            schedule_batch, "extend_lens"
+        ):
+            schedule_batch.extend_seq_lens = schedule_batch.extend_lens
+        if not hasattr(schedule_batch, "extend_prefix_lens") and hasattr(
+            schedule_batch, "prefix_lens"
+        ):
+            schedule_batch.extend_prefix_lens = schedule_batch.prefix_lens
         forward_batch = ForwardBatch.init_new(
             schedule_batch,
             self.tp_worker.model_runner,
-            capture_hidden_mode=capture_hidden_mode,
-            return_hidden_states_before_norm=False,
+            **supported_kwargs(
+                ForwardBatch.init_new,
+                capture_hidden_mode=capture_hidden_mode,
+                return_hidden_states_before_norm=False,
+            ),
         )
         return forward_batch, schedule_batch, is_prefill
 

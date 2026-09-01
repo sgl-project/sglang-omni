@@ -49,6 +49,32 @@ def _syncfree_launch_enabled() -> bool:
     )
 
 
+def _request_extend_length(req: Any) -> int:
+    if hasattr(req, "extend_input_len"):
+        return int(req.extend_input_len)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        prefix_len = int(getattr(req, "prefix_indices", []) is not None and len(getattr(req, "prefix_indices", [])))
+        return max(0, len(fill_ids) - prefix_len)
+    origin_ids = getattr(req, "origin_input_ids", None)
+    return len(origin_ids) if origin_ids is not None else 0
+
+
+def _request_extend_start(req: Any) -> int:
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "start"):
+        return int(extend_range.start)
+    prefix_indices = getattr(req, "prefix_indices", None)
+    return len(prefix_indices) if prefix_indices is not None else 0
+
+
+def _request_inflight_middle_chunks(req: Any) -> int:
+    return int(getattr(req, "inflight_middle_chunks", 0))
+
+
 class HiggsTTSModelRunner(ModelRunner):
     """ModelRunner for :class:`HiggsTTSModel`."""
 
@@ -87,12 +113,13 @@ class HiggsTTSModelRunner(ModelRunner):
             self.model.set_request_seed(
                 req.request_id, req.data.req.sampling_params.sampling_seed
             )
-        attach_omni_prefill_inputs(
-            forward_batch,
-            OmniPrefillInputs(
-                input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
-            ),
+        prefill_inputs = OmniPrefillInputs(
+            input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
         )
+        attach_omni_prefill_inputs(forward_batch, prefill_inputs)
+        # Older SGLang runners do not call Omni's _extend_forward_kwargs hook;
+        # direct prefill embeds keep the graph-enabled path compatible.
+        forward_batch.input_embeds = prefill_inputs.input_embeds
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         del schedule_batch
@@ -111,6 +138,7 @@ class HiggsTTSModelRunner(ModelRunner):
 
     def post_decode(self, result, forward_batch, schedule_batch, requests):
         del schedule_batch
+        self._sample_decode_codes(result, forward_batch)
         self._collect_step_outputs_cg(result, forward_batch, requests)
 
     def post_decode_launch(self, result, forward_batch, requests):
@@ -127,6 +155,7 @@ class HiggsTTSModelRunner(ModelRunner):
             raise ValueError(
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
+        self._sample_decode_codes(result, forward_batch)
         staging = self._decode_pack_gpu(n_real)
         collect_staging = self.model._cg_collect_staging
         host_buf = self._next_host_staging(collect_staging.shape, collect_staging.dtype)
@@ -164,6 +193,20 @@ class HiggsTTSModelRunner(ModelRunner):
         if n_real == 0:
             return None
         return self.model._cg_codes_BN[:n_real, 0].clamp_min(0).to(torch.long)
+
+    def _sample_decode_codes(self, result: Any, forward_batch: Any) -> None:
+        """Run Higgs' random multi-codebook sampler after graph replay.
+
+        SGLang's decode CUDA/MUSA graph owns the deterministic backbone forward.
+        ``torch.multinomial`` is not capture-safe on MUSA, so graph replay
+        returns hidden states and the runner performs sampling on the normal
+        GPU launch path before packaging outputs and next-token ids.
+        """
+        hidden_states = result.logits_output.hidden_states
+        if hidden_states.ndim == 3:
+            hidden_states = hidden_states[:, -1, :]
+        bs = int(forward_batch.batch_size)
+        self.model.decode_codebooks_batch_cg(hidden_states[:bs])
 
     def post_decode_resolve(
         self, host_buf, result, forward_batch, schedule_batch, requests
@@ -378,7 +421,7 @@ class HiggsTTSModelRunner(ModelRunner):
         for b, sched_req in enumerate(requests):
             data = sched_req.data
             req = data.req
-            if req.inflight_middle_chunks > 0:
+            if _request_inflight_middle_chunks(req) > 0:
                 cb0_per_row.append(0)
                 continue
             # Already finished in an earlier step? Skip its append. Under async
@@ -426,7 +469,7 @@ class HiggsTTSModelRunner(ModelRunner):
         offset = 0
         for sched_req in requests:
             data = sched_req.data
-            end = offset + int(data.req.extend_range.length)
+            end = offset + _request_extend_length(data.req)
             codes_rows = data.reference_codes_delayed
             if not codes_rows:
                 offset = end
@@ -444,7 +487,7 @@ class HiggsTTSModelRunner(ModelRunner):
             # absolute prompt position instead of request-local progress.
             consumed = sum(
                 token == AUDIO_PLACEHOLDER_ID
-                for token in data.req.origin_input_ids[: data.req.extend_range.start]
+                for token in data.req.origin_input_ids[: _request_extend_start(data.req)]
             )
             if consumed + n_placeholders > len(codes_rows):
                 raise RuntimeError(
@@ -483,7 +526,7 @@ class HiggsTTSModelRunner(ModelRunner):
             row = model._rid_to_row.get(rid)
             codes_log = model._output_codes.get(rid)
             if (
-                req.inflight_middle_chunks > 0
+                _request_inflight_middle_chunks(req) > 0
                 or row is None
                 or not codes_log
                 or req.finished()

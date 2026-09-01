@@ -80,6 +80,7 @@ class Aggregator(nn.Module):
         t: (N,) tensor of diffusion timesteps
         y: (N,) tensor of class labels
         """
+        x = x.to(dtype=self.x_embedder.weight.dtype)
         x = self.x_embedder(x)
         cls_embed = self.word_embedder(
             torch.zeros((x.shape[0], 1), dtype=torch.long, device=x.device)

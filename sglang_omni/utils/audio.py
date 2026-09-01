@@ -15,8 +15,12 @@ import httpx
 import numpy as np
 import pybase64
 import torch
-import torchaudio
 import xxhash
+
+try:
+    import torchaudio
+except (ImportError, OSError):
+    torchaudio = None
 
 _DEFAULT_REQUEST_TIMEOUT = 5
 
@@ -26,6 +30,8 @@ class AudioDecodeError(ValueError):
 
 
 def _ensure_torchaudio_decoder_ready() -> None:
+    if torchaudio is None:
+        raise ImportError("torchaudio is required for this audio decode path")
     from torchcodec.decoders import AudioDecoder
 
     del AudioDecoder
@@ -81,6 +87,10 @@ def _is_invalid_audio_source(source: bytes | str) -> bool:
 def _load_with_torchaudio(
     source: bytes | str, *, source_name: str
 ) -> tuple[torch.Tensor, int]:
+    if torchaudio is None:
+        raise ImportError(
+            f"torchaudio is required to decode non-WAV {source_name} audio input"
+        )
     _ensure_torchaudio_decoder_ready()
     decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
     try:
@@ -152,6 +162,20 @@ def _cached_resample(
     new_freq: int,
     resample_kwargs: Mapping[str, Any] | None,
 ) -> torch.Tensor:
+    if torchaudio is None:
+        from scipy import signal
+
+        if resample_kwargs:
+            unsupported = ", ".join(sorted(resample_kwargs))
+            raise ImportError(
+                "torchaudio is required for resample options: " + unsupported
+            )
+        gcd = math.gcd(int(orig_freq), int(new_freq))
+        up = int(new_freq) // gcd
+        down = int(orig_freq) // gcd
+        resampled = signal.resample_poly(waveform.cpu().numpy(), up, down, axis=-1)
+        return torch.from_numpy(np.ascontiguousarray(resampled, dtype=np.float32))
+
     kwargs = dict(resample_kwargs or {})
     orig_freq, new_freq = int(orig_freq), int(new_freq)
     try:
@@ -225,6 +249,21 @@ def load_audio(
                 return fast
         audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     elif isinstance(source, str):
+        if mono and trim_top_db is None:
+            try:
+                with open(source, "rb") as f:
+                    head = f.read(12)
+                    if _is_riff_wav(head):
+                        f.seek(0)
+                        fast = _try_fast_wav_decode(
+                            f.read(),
+                            target_sample_rate,
+                            resample_kwargs=resample_kwargs,
+                        )
+                        if fast is not None:
+                            return fast
+            except OSError:
+                pass
         audio, sample_rate = _load_with_torchaudio(source, source_name=source_name)
     else:
         raise ValueError(
@@ -242,12 +281,7 @@ def load_audio(
         trimmed, _ = librosa.effects.trim(audio.numpy(), top_db=trim_top_db)
         audio = torch.from_numpy(trimmed)
     if sample_rate != target_sample_rate:
-        audio = torchaudio.functional.resample(
-            audio,
-            int(sample_rate),
-            target_sample_rate,
-            **dict(resample_kwargs or {}),
-        )
+        audio = _cached_resample(audio, int(sample_rate), target_sample_rate, resample_kwargs)
     if mono:
         audio = audio.squeeze(0)
     return audio.cpu().numpy()

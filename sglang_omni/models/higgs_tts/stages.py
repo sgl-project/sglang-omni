@@ -29,7 +29,10 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import torchaudio.functional as F_audio
+try:
+    import torchaudio.functional as F_audio
+except ImportError:
+    F_audio = None  # type: ignore[assignment]
 from tokenizers import Tokenizer
 from transformers import PreTrainedTokenizerFast
 
@@ -68,6 +71,7 @@ from sglang_omni.scheduling.speaker_cache import (
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.utils.audio import _cached_resample
 from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
@@ -303,7 +307,10 @@ def create_preprocessing_executor(
                 waveform_np, sample_rate = load_audio_to_24k(reference_audio)
                 wav = torch.from_numpy(waveform_np)
                 if sample_rate != 24000:
-                    wav = F_audio.resample(wav, sample_rate, 24000)
+                    if F_audio is not None:
+                        wav = F_audio.resample(wav, sample_rate, 24000)
+                    else:
+                        wav = _cached_resample(wav, sample_rate, 24000, None)
                 if wav.shape[-1] > _MAX_REF_AUDIO_SEC * 24000:
                     raise ValueError(
                         f"reference_audio is too long "

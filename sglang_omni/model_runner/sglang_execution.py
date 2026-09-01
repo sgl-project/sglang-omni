@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -38,11 +39,14 @@ def attn_forward_context(attn_backend: Any):
     _forward_raw, so each wrapper enters the context itself when no
     caller has.
     """
-    from sglang.srt.model_executor.forward_context import (
-        ForwardContext,
-        forward_context,
-        has_forward_context,
-    )
+    try:
+        from sglang.srt.model_executor.forward_context import (
+            ForwardContext,
+            forward_context,
+            has_forward_context,
+        )
+    except ModuleNotFoundError:
+        return contextlib.nullcontext()
 
     if has_forward_context():
         return contextlib.nullcontext()
@@ -60,7 +64,10 @@ class SGLangExecutionBridge:
         req_to_token_pool: Any,
         spec_algorithm: Any,
     ) -> None:
-        from sglang.srt.managers.overlap_utils import RelayPayload
+        try:
+            from sglang.srt.managers.overlap_utils import RelayPayload
+        except ImportError:
+            RelayPayload = None
 
         if not spec_algorithm.is_none():
             raise NotImplementedError(
@@ -70,12 +77,26 @@ class SGLangExecutionBridge:
         self.worker = worker
         self.runner = worker.model_runner
         self.device_module = torch.get_device_module(device)
-        self.future_map = spec_algorithm.create_future_map(
-            device,
-            req_to_token_pool,
-            needs_cpu_seq_lens=True,
-        )
+        if hasattr(spec_algorithm, "create_future_map"):
+            self.future_map = spec_algorithm.create_future_map(
+                device,
+                req_to_token_pool,
+                needs_cpu_seq_lens=True,
+            )
+        else:
+            from sglang.srt.managers.overlap_utils import FutureMap
+
+            server_args = self.runner.server_args
+            model_config = self.runner.model_config
+            self.future_map = FutureMap(
+                server_args.max_running_requests,
+                server_args.chunked_prefill_size,
+                model_config.context_len,
+                device,
+                spec_algorithm,
+            )
         self._relay_payload_type = RelayPayload
+        self._legacy_future_indices: Any | None = None
 
     @contextlib.contextmanager
     def forward_context(
@@ -85,9 +106,15 @@ class SGLangExecutionBridge:
         isolate_sampling: bool = False,
     ) -> Iterator[None]:
         """Resolve inputs and optionally isolate lookahead sampling state."""
-        from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+        try:
+            from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+        except ImportError:
+            resolve_forward_inputs = None
 
-        resolve_forward_inputs(batch, self.future_map)
+        if resolve_forward_inputs is not None:
+            resolve_forward_inputs(batch, self.future_map)
+        elif not batch.is_prefill_only:
+            self.future_map.resolve_future(batch)
 
         scheduler_sampling_info = batch.sampling_info
         if isolate_sampling and scheduler_sampling_info is not None:
@@ -109,10 +136,19 @@ class SGLangExecutionBridge:
         if next_token_ids.device != self.device:
             next_token_ids = next_token_ids.to(self.device, non_blocking=True)
         indices = batch.req_pool_indices
-        self.future_map.stash(
-            indices,
-            self._relay_payload_type(bonus_tokens=next_token_ids),
-        )
+        if hasattr(self.future_map, "stash") and self._relay_payload_type is not None:
+            self.future_map.stash(
+                indices,
+                self._relay_payload_type(bonus_tokens=next_token_ids),
+            )
+        else:
+            future_indices = self.future_map.alloc_future_indices(len(indices))
+            self.future_map.store_to_map(
+                future_indices,
+                SimpleNamespace(next_token_ids=next_token_ids, next_draft_input=None),
+            )
+            batch.output_ids = -future_indices.indices
+            self._legacy_future_indices = future_indices
         # No new_seq_lens publish: its only reader (resolve_seq_lens_cpu) is
         # spec_v2-gated and this bridge refuses speculative decoding. Upstream's
         # non-overlap non-spec run_batch likewise stashes without publishing.

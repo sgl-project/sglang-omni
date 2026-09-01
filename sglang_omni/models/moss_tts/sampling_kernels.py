@@ -6,9 +6,38 @@ from __future__ import annotations
 import torch
 import triton
 import triton.language as tl
-from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix, murmur_hash32
-from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
+
+try:
+    from sglang.kernels.ops.sampling.murmur_hash import (
+        fmix32,
+        murmur3_mix,
+        murmur_hash32,
+    )
+except ModuleNotFoundError:
+    fmix32 = None
+    murmur3_mix = None
+    murmur_hash32 = None
+
+try:
+    from sglang.srt.layers.sampler import multinomial_with_seed
+except (ImportError, ModuleNotFoundError):
+
+    def multinomial_with_seed(
+        probs: torch.Tensor, seeds: torch.Tensor, positions: torch.Tensor
+    ) -> torch.Tensor:
+        del positions
+        outputs = []
+        for row, seed in zip(probs, seeds):
+            generator = torch.Generator(device=row.device)
+            generator.manual_seed(int(seed.item()))
+            row = row.to(torch.float32)
+            row = torch.nan_to_num(row, nan=0.0, posinf=0.0, neginf=0.0)
+            if row.sum() <= 0:
+                outputs.append(torch.argmax(row).view(1))
+            else:
+                outputs.append(torch.multinomial(row, 1, generator=generator))
+        return torch.cat(outputs)
 
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
 
@@ -136,6 +165,9 @@ def multinomial_with_seed_and_token_ids(
 ) -> torch.Tensor:
     """Seeded Gumbel-max using original vocabulary ids as RNG columns."""
 
+    if murmur_hash32 is None:
+        probs = torch.softmax(logprobs, dim=-1)
+        return multinomial_with_seed(probs, seed, positions)
     seed = seed.to(torch.uint64)
     hashed = murmur_hash32(seed, positions, token_ids)
     noise = hashed.to(torch.float64) / torch.iinfo(torch.uint32).max

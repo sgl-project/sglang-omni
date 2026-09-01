@@ -2,12 +2,16 @@
 """Shared ServerArgs construction for SGLang AR engines."""
 from __future__ import annotations
 
+import inspect
+import logging
 from typing import Any
 
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+logger = logging.getLogger(__name__)
 
 _DECODE_CUDA_GRAPH_ALIASES = {
     "cuda_graph_max_bs": "cuda_graph_max_bs_decode",
@@ -33,6 +37,26 @@ def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
                 f"{legacy_value!r} != {kwargs[decode_name]!r}"
             )
         kwargs[decode_name] = legacy_value
+
+
+def _filter_supported_server_args_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Drop kwargs unsupported by the installed SGLang ``ServerArgs``."""
+    try:
+        parameters = inspect.signature(ServerArgs).parameters
+    except (TypeError, ValueError):
+        return kwargs
+
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()):
+        return kwargs
+
+    supported = set(parameters)
+    unsupported = sorted(key for key in kwargs if key not in supported)
+    if unsupported:
+        logger.warning(
+            "Dropping unsupported SGLang ServerArgs kwargs for installed version: %s",
+            unsupported,
+        )
+    return {key: value for key, value in kwargs.items() if key in supported}
 
 
 def build_sglang_server_args(
@@ -68,6 +92,7 @@ def build_sglang_server_args(
     if kwargs.get("mem_fraction_static") is None:
         kwargs.pop("mem_fraction_static", None)
     kwargs.setdefault("device", _platform_device_type())
+    kwargs = _filter_supported_server_args_kwargs(kwargs)
     server_args = ServerArgs(**kwargs)
     # DP attention is unsupported; reject at configuration time. Mixed
     # chunked prefill stays allowed (the bridge handles it natively).

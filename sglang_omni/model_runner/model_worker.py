@@ -187,8 +187,10 @@ class ModelWorker:
 
     def get_worker_info(self):
         max_total_num_tokens = self.model_runner.max_total_num_tokens
-        effective_max_total_num_tokens = (
-            self.model_runner.effective_max_total_num_tokens
+        effective_max_total_num_tokens = getattr(
+            self.model_runner,
+            "effective_max_total_num_tokens",
+            max_total_num_tokens,
         )
         max_req_len = min(
             self.server_args.context_length - 1,

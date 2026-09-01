@@ -944,6 +944,57 @@ def test_s2pro_engine_compile_default_follows_validation_scope(
     assert result.init_graph_calls == [True]
 
 
+def test_s2pro_fast_ar_policy_uses_musa_backend_without_cuda_sm_probe() -> None:
+    from sglang_omni.models.fishaudio_s2_pro.fast_ar_backends import (
+        resolve_fast_ar_backend_plan,
+    )
+
+    def fail_sm_probe(_gpu_id: int) -> int | None:
+        raise AssertionError("MUSA Fast-AR policy must not probe CUDA SM")
+
+    plan = resolve_fast_ar_backend_plan(
+        gpu_id=0,
+        device_type="musa",
+        sm_resolver=fail_sm_probe,
+    )
+
+    assert plan.backend == "fa3"
+    assert plan.enable_torch_compile is True
+    assert plan.enable_cuda_graph is True
+    assert plan.device_type == "musa"
+
+
+@pytest.mark.parametrize(
+    ("sm_version", "expected_backend", "expected_compile"),
+    [
+        (89, "flashinfer", False),
+        (90, "fa3", True),
+        (100, "flashinfer", False),
+        (120, "flashinfer", False),
+    ],
+)
+def test_s2pro_fast_ar_policy_keeps_cuda_backend_table(
+    sm_version: int,
+    expected_backend: str,
+    expected_compile: bool,
+) -> None:
+    from sglang_omni.models.fishaudio_s2_pro.fast_ar_backends import (
+        resolve_fast_ar_backend_plan,
+    )
+
+    plan = resolve_fast_ar_backend_plan(
+        gpu_id=0,
+        device_type="cuda",
+        sm_resolver=lambda _gpu_id: sm_version,
+        flashinfer_available=lambda: True,
+    )
+
+    assert plan.backend == expected_backend
+    assert plan.enable_torch_compile is expected_compile
+    assert plan.enable_cuda_graph is True
+    assert plan.device_type == "cuda"
+
+
 @pytest.mark.parametrize(
     ("sm_version", "expected_error"),
     [

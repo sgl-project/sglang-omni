@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from types import MethodType
 from typing import Any
 
 import torch
 
+from sglang_omni.models.moss_tts.attention import PACKED_FLASH_ATTENTION_BACKEND
+from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoderDecoder
 from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
 
 logger = logging.getLogger(__name__)
@@ -143,6 +147,7 @@ def load_moss_tts_local_audio_tokenizer(
     device: str = "cuda:0",
 ) -> MossTTSLocalAudioTokenizer:
     logger.info(f"Loading MOSS-TTS Local audio tokenizer from {model_path} on {device}")
+    device_type = torch.device(device).type
     try:
         from transformers import AutoModel
 
@@ -158,7 +163,57 @@ def load_moss_tts_local_audio_tokenizer(
         ) from exc
     model.eval()
     model.to(device)
+    if device_type == "musa":
+        _patch_musa_codec_autocast(model)
+        _patch_musa_codec_attention(model)
     return MossTTSLocalAudioTokenizer(
         model,
         device=device,
+    )
+
+
+def _patch_musa_codec_attention(model: Any) -> None:
+    """Replace remote decoder attention with Omni's packed flash wrapper."""
+
+    decoder = getattr(model, "decoder", None)
+    if decoder is None:
+        raise RuntimeError(
+            "MOSS-TTS Local MUSA path requires a decoder that can be patched "
+            "to packed flash attention"
+        )
+    if isinstance(decoder, MossAudioTokenizerVocoderDecoder):
+        return
+    try:
+        model.decoder = MossAudioTokenizerVocoderDecoder(
+            decoder,
+            attention_backend=PACKED_FLASH_ATTENTION_BACKEND,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to patch MOSS-TTS Local codec decoder to packed flash "
+            "attention on MUSA"
+        ) from exc
+
+
+def _patch_musa_codec_autocast(model: Any) -> None:
+    """Mirror the remote codec's CUDA autocast branch for MUSA devices."""
+
+    @contextmanager
+    def _musa_codec_inference_autocast(self: Any):
+        param = next(self.parameters())
+        compute_dtype = getattr(self, "compute_dtype", None)
+        if param.device.type == "musa" and compute_dtype is not None:
+            with torch.autocast(device_type="musa", dtype=compute_dtype):
+                yield
+        else:
+            original = getattr(self, "_sglang_omni_original_codec_inference_autocast")
+            with original():
+                yield
+
+    if not hasattr(model, "_sglang_omni_original_codec_inference_autocast"):
+        model._sglang_omni_original_codec_inference_autocast = (  # type: ignore[attr-defined]
+            model._codec_inference_autocast
+        )
+    model._codec_inference_autocast = MethodType(  # type: ignore[method-assign]
+        _musa_codec_inference_autocast, model
     )

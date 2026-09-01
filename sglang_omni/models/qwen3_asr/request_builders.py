@@ -474,7 +474,7 @@ def make_qwen3_asr_stream_output_builder(
         request_id: str, req_data: Any, req_output: Any
     ) -> list[OutgoingMessage]:
         req = req_data.req
-        if req is None or req.inflight_middle_chunks > 0:
+        if req is None or getattr(req, "inflight_middle_chunks", 0) > 0:
             return token_stream_builder(request_id, req_data, req_output)
         stage_payload = req_data.stage_payload
         if stage_payload is None or not (stage_payload.request.params or {}).get(

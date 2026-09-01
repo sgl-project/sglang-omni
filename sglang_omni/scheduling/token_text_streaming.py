@@ -34,7 +34,7 @@ def make_token_text_stream_output_builder(
             return []
 
         # note (guozhihao): suppress while chunked prefill is still on prompt tokens.
-        if req.inflight_middle_chunks > 0:
+        if getattr(req, "inflight_middle_chunks", 0) > 0:
             return []
 
         stage_payload = req_data.stage_payload

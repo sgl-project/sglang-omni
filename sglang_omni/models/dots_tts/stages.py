@@ -25,6 +25,7 @@ from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 _DEFAULT_CONTEXT_LENGTH = 2048
+logger = logging.getLogger(__name__)
 
 
 def _device(device: str | None, gpu_id: int | None) -> str:
@@ -40,9 +41,18 @@ def _configure_optimized_kernels() -> None:
     shared-module FX for its one-shot prefill and recurrent decode modules.
     """
     from dots_tts.modules.backbone import dit_inference, inference_utils
-    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
-    set_torch_compile_config()
+    try:
+        from sglang.srt.compilation.torch_compile_decoration import (
+            set_torch_compile_config,
+        )
+    except ModuleNotFoundError:
+        logger.info(
+            "SGLang torch_compile_decoration is unavailable; "
+            "using dots.tts DiT torch.compile defaults"
+        )
+    else:
+        set_torch_compile_config()
     inference_utils._COMPILE_OPTIONS["mode"] = os.environ.get(
         "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
     )

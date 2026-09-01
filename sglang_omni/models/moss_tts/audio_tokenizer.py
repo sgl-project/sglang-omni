@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 import torch
-import torchaudio
+try:
+    import torchaudio
+except ImportError:
+    torchaudio = None  # type: ignore[assignment]
 from torch import nn
 from transformers import AutoModel
 
@@ -30,6 +33,8 @@ from sglang_omni.models.moss_tts.attention import (
     validate_attention_backend,
 )
 from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
+from sglang_omni.utils.audio import _cached_resample
+from sglang_omni.utils import device_graph
 
 logger = logging.getLogger(__name__)
 
@@ -260,14 +265,20 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
         ).backend
         if backend == PACKED_FLASH_ATTENTION_BACKEND:
             batch_size, max_seqlen, _ = x.shape
+            plan_lengths_cpu = input_lengths_cpu
             if input_lengths_cpu is not None:
                 if len(input_lengths_cpu) != batch_size:
                     raise ValueError(
                         "input_lengths_cpu must match the decoder batch size"
                     )
                 max_valid_seqlen = max(map(int, input_lengths_cpu), default=0)
+            elif device_graph.is_current_stream_capturing(x.device):
+                max_valid_seqlen = max_seqlen
+                plan_lengths_cpu = [max_seqlen] * batch_size
             else:
                 max_valid_seqlen = int(input_lengths.max().item()) if max_seqlen else 0
+                if x.device.type == "musa" and max_valid_seqlen == max_seqlen:
+                    plan_lengths_cpu = [max_seqlen] * batch_size
             if max_valid_seqlen == 0:
                 x = x.new_zeros(x.shape)
             else:
@@ -297,7 +308,7 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
                 local_flash_plan = first_attention.build_local_causal_flash_plan(
                     cu_seqlens,
                     max_seqlen=max_valid_seqlen,
-                    sequence_lengths=input_lengths_cpu,
+                    sequence_lengths=plan_lengths_cpu,
                 )
                 packed_x = self.transformer(
                     packed_x,
@@ -356,6 +367,7 @@ class MossAudioTokenizerVocoderDecoder(nn.Module):
         ), "MOSS-Audio-Tokenizer vocoder decoder must be a non-empty stage list"
         self.attention_backend = validate_attention_backend(attention_backend)
         self.stages = nn.ModuleList([self._wrap_stage(stage) for stage in stages])
+        self._input_lengths_cpu_override: list[int] | None = None
 
     def _wrap_stage(self, stage: nn.Module) -> nn.Module:
         module_type = stage.module_type
@@ -418,6 +430,15 @@ class MossAudioTokenizerVocoderDecoder(nn.Module):
             output_lengths = self._update_cpu_lengths(stage, output_lengths)
         return output_lengths
 
+    @contextmanager
+    def input_lengths_cpu_override(self, input_lengths: Sequence[int]):
+        previous = self._input_lengths_cpu_override
+        self._input_lengths_cpu_override = list(map(int, input_lengths))
+        try:
+            yield
+        finally:
+            self._input_lengths_cpu_override = previous
+
     def forward(
         self,
         x: torch.Tensor,
@@ -425,9 +446,10 @@ class MossAudioTokenizerVocoderDecoder(nn.Module):
         *,
         input_lengths_cpu: Sequence[int] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        cpu_lengths = (
-            None if input_lengths_cpu is None else list(map(int, input_lengths_cpu))
-        )
+        if input_lengths_cpu is None:
+            cpu_lengths = self._input_lengths_cpu_override
+        else:
+            cpu_lengths = list(map(int, input_lengths_cpu))
         for stage in self.stages:
             if isinstance(stage, MossAudioTokenizerProjectedTransformer):
                 x, input_lengths = stage(
@@ -569,11 +591,14 @@ class MossTTSAudioTokenizer:
         if int(wav.shape[0]) > 1:
             wav = torch.mean(wav, dim=0, keepdim=True)
         if int(sample_rate) != self.sample_rate:
-            wav = torchaudio.functional.resample(
-                waveform=wav,
-                orig_freq=int(sample_rate),
-                new_freq=self.sample_rate,
-            )
+            if torchaudio is not None:
+                wav = torchaudio.functional.resample(
+                    waveform=wav,
+                    orig_freq=int(sample_rate),
+                    new_freq=self.sample_rate,
+                )
+            else:
+                wav = _cached_resample(wav, int(sample_rate), self.sample_rate, None)
         wav = self._loudness_normalize(wav.squeeze(0))
         return wav.to(device=self.device, dtype=torch.float32)
 

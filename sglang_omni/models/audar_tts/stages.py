@@ -52,10 +52,52 @@ class _ReferenceInput:
 def _load_codec(model: str, revision: str, device: str) -> Any:
     try:
         from neucodec import NeuCodec
+        import neucodec.model as neucodec_model
     except ImportError as exc:
         raise RuntimeError(
             "Audar-TTS requires the 'audar-tts' optional dependencies"
         ) from exc
+    path = Path(model).expanduser()
+    if path.is_dir():
+        ckpt_path = path / "pytorch_model.bin"
+        w2v_path = path.parent / "facebook_w2v_bert_2_0"
+        if not ckpt_path.is_file():
+            raise FileNotFoundError(f"Audar-TTS NeuCodec checkpoint not found: {ckpt_path}")
+        if not w2v_path.is_dir():
+            raise FileNotFoundError(
+                f"Audar-TTS local Wav2Vec2-BERT checkpoint not found: {w2v_path}"
+            )
+        orig_w2v_from_pretrained = neucodec_model.Wav2Vec2BertModel.from_pretrained
+        orig_feature_from_pretrained = neucodec_model.AutoFeatureExtractor.from_pretrained
+
+        def local_w2v_from_pretrained(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "facebook/w2v-bert-2.0":
+                name = str(w2v_path)
+                kwargs["local_files_only"] = True
+            return orig_w2v_from_pretrained(name, *args, **kwargs)
+
+        def local_feature_from_pretrained(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "facebook/w2v-bert-2.0":
+                name = str(w2v_path)
+                kwargs["local_files_only"] = True
+            return orig_feature_from_pretrained(name, *args, **kwargs)
+
+        neucodec_model.Wav2Vec2BertModel.from_pretrained = local_w2v_from_pretrained
+        neucodec_model.AutoFeatureExtractor.from_pretrained = local_feature_from_pretrained
+        try:
+            codec = NeuCodec(OUTPUT_SAMPLE_RATE, 480)
+        finally:
+            neucodec_model.Wav2Vec2BertModel.from_pretrained = orig_w2v_from_pretrained
+            neucodec_model.AutoFeatureExtractor.from_pretrained = orig_feature_from_pretrained
+        state_dict = torch.load(ckpt_path, map_location="cpu")
+        ignore_keys = ("fc_post_s", "SemanticDecoder")
+        state_dict = {
+            key: value
+            for key, value in state_dict.items()
+            if not any(ignored in key for ignored in ignore_keys)
+        }
+        codec.load_state_dict(state_dict, strict=False)
+        return codec.eval().to(device)
     return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
 
 
@@ -65,7 +107,11 @@ def _codec_lock(model: str, revision: str, device: str) -> threading.Lock:
 
 
 def _device(gpu_id: int | None) -> str:
-    return f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
+    if gpu_id is None:
+        return "cpu"
+    if hasattr(torch, "musa") and torch.musa.is_available():
+        return f"musa:{gpu_id}"
+    return f"cuda:{gpu_id}"
 
 
 def _normalize_reference(raw_input: Any) -> _ReferenceInput:

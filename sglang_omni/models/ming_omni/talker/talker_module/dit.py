@@ -48,7 +48,7 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, timestep):
         time_hidden = self.time_embed(timestep)
-        time_hidden = time_hidden.to(timestep.dtype)
+        time_hidden = time_hidden.to(dtype=self.time_mlp[0].weight.dtype)
         time = self.time_mlp(time_hidden)  # b d
         return time
 
@@ -85,7 +85,7 @@ class CondEmbedder(nn.Module):
         if train and use_dropout:
             llm_cond = self.cond_drop(llm_cond)
 
-        llm_cond = self.cond_embedder(llm_cond)
+        llm_cond = self.cond_embedder(llm_cond.to(dtype=self.cond_embedder.weight.dtype))
 
         return llm_cond
 
@@ -170,6 +170,7 @@ class DiT(nn.Module):
         y: (N,) tensor of class labels
         """
         x = torch.cat([latent_history, x], dim=1)
+        x = x.to(dtype=self.x_embedder.weight.dtype)
         x = self.x_embedder(x)
         t = self.t_embedder(t).unsqueeze(1)  # (N, D)
         c = self.c_embedder(c, self.training)  # (N, 1, 896) -> (N, 1, D)
@@ -178,6 +179,7 @@ class DiT(nn.Module):
             assert self.spk_embedder is None
             x = torch.cat([y, x], dim=1)  # # (N, 1 + patch_size *2, D)
         else:
+            spk_emb = spk_emb.to(dtype=self.spk_embedder.weight.dtype)
             x = torch.cat([self.spk_embedder(spk_emb), y, x], dim=1)
         rope = self.rotary_embed.forward_from_seq_len(x.shape[1])
 

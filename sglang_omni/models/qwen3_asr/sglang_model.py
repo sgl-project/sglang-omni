@@ -1,6 +1,7 @@
 """Qwen3-ASR model compatible with HuggingFace weights"""
 
 import logging
+import inspect
 from types import MethodType
 from typing import Any, Iterable, List, Optional, Tuple
 
@@ -39,6 +40,27 @@ fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 _MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
 
+def _call_unfused_forward_prepare_native(
+    attention: Any,
+    positions: torch.Tensor,
+    hidden_states: torch.Tensor,
+    forward_batch: ForwardBatch | None,
+):
+    if current_platform.device_type == "musa" and positions.dtype != torch.int64:
+        positions = positions.to(torch.int64)
+    kwargs: dict[str, Any] = {}
+    params = inspect.signature(
+        attention._asr_unfused_forward_prepare_native
+    ).parameters
+    if "forward_batch" in params:
+        kwargs["forward_batch"] = forward_batch
+    return attention._asr_unfused_forward_prepare_native(
+        positions,
+        hidden_states,
+        **kwargs,
+    )
+
+
 def _normalize_asr_text_rope(text_config: Any) -> None:
     # note (luojiaxuan): ASR has no spatial axes: all three MRoPE position
     # rows are identical, so ordinary text RoPE is numerically equivalent and
@@ -62,21 +84,27 @@ def _fused_asr_forward_prepare_native(
     attention: Any,
     positions: torch.Tensor,
     hidden_states: torch.Tensor,
+    forward_batch: ForwardBatch | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if hidden_states.dtype != torch.bfloat16:
-        return attention._asr_unfused_forward_prepare_native(
+        return _call_unfused_forward_prepare_native(
+            attention,
             positions,
             hidden_states,
+            forward_batch,
+        )
+    if fused_qk_norm_rope is None:
+        return _call_unfused_forward_prepare_native(
+            attention,
+            positions,
+            hidden_states,
+            forward_batch,
         )
     if positions.dtype != torch.int32:
         # note(ratish): the prefill CUDA graph bypasses forward()'s int32
-        # cast; the kernel rejects int64 positions.
+        # cast; the Omni fused kernel rejects int64 positions. Keep the upstream
+        # MUSA fallback above on its original dtype.
         positions = positions.to(torch.int32)
-    if fused_qk_norm_rope is None:
-        return attention._asr_unfused_forward_prepare_native(
-            positions,
-            hidden_states,
-        )
     qkv, _ = attention.qkv_proj(hidden_states)
     fused_qk_norm_rope(
         qkv,

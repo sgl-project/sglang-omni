@@ -195,7 +195,7 @@ class MingTTSModelRunner(ModelRunner):
             request_state = self._request_states[sched_req.request_id]
             req = data.req
             prefix_len = len(req.prefix_indices)
-            extend_len = int(req.extend_range.length)
+            extend_len = _req_extend_len(req)
             end = prefix_len + extend_len
             prompt_ids = data.input_ids
             prompt_len = int(prompt_ids.shape[0])
@@ -529,3 +529,10 @@ class MingTTSModelRunner(ModelRunner):
             return getter()
         model_runner = getattr(self.tp_worker, "model_runner", None)
         return getattr(model_runner, "tp_group", None)
+
+
+def _req_extend_len(req: Any) -> int:
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    return int(getattr(req, "extend_input_len"))

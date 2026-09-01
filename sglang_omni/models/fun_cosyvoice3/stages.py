@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import types
 from typing import Any
 
 import torch
@@ -33,6 +34,39 @@ _COSYVOICE_INSTALL_HINT = (
 )
 
 
+def _is_musa_device(device: str) -> bool:
+    return str(device).startswith("musa")
+
+
+def _prepare_hift_for_musa(hift: Any) -> None:
+    """Keep CosyVoice HiFiGAN on MUSA-supported convolution dtypes."""
+    hift.float()
+    modules = [hift]
+    named_modules = getattr(hift, "named_modules", None)
+    if callable(named_modules):
+        modules.extend(module for _, module in named_modules())
+
+    for module in modules:
+        predictor = getattr(module, "f0_predictor", None)
+        if predictor is None or getattr(predictor, "_sglang_omni_musa_float32", False):
+            continue
+        predictor.float()
+        original_forward = predictor.forward
+
+        def _forward_float32(
+            self: Any,
+            x: torch.Tensor,
+            *args: Any,
+            _original_forward: Any = original_forward,
+            **kwargs: Any,
+        ) -> Any:
+            self.float()
+            return _original_forward(x.float(), *args, **kwargs)
+
+        predictor.forward = types.MethodType(_forward_float32, predictor)
+        predictor._sglang_omni_musa_float32 = True
+
+
 def load_state(payload: StagePayload) -> FunCosyVoice3State:
     return _load_pipeline_state(payload, FunCosyVoice3State)
 
@@ -56,6 +90,8 @@ def _load_cosyvoice3_flow_hift(
     hift = cv.model.hift
     flow.to(device).eval()
     hift.to(device).eval()
+    if _is_musa_device(device):
+        _prepare_hift_for_musa(hift)
     del cv.model.llm
     return flow, hift
 

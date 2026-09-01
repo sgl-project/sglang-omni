@@ -5,7 +5,17 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from sglang.srt.platforms.cuda import CudaDeviceMixin
+from sglang.srt.platforms.device_mixin import PlatformEnum
+
+try:
+    from sglang.srt.platforms.cuda import CudaDeviceMixin
+except ModuleNotFoundError:
+    from sglang.srt.platforms.interface import SRTPlatform
+
+    class CudaDeviceMixin(SRTPlatform):
+        _enum = PlatformEnum.CUDA
+        device_name = "cuda"
+        device_type = "cuda"
 
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.quantization import resolve_quant_config

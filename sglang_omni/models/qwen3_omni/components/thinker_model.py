@@ -4,9 +4,16 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sglang.srt.runtime_context import get_stream
 from torch import nn
 from transformers import PretrainedConfig
+
+try:
+    from sglang.srt.runtime_context import get_stream
+except ModuleNotFoundError:
+
+    def get_stream(name: str):
+        del name
+        return None
 
 from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
 from sglang_omni.models.weight_loader import default_weight_loader

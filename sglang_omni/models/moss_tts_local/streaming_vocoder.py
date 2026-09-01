@@ -661,7 +661,7 @@ class MossTTSLocalStreamingVocoderScheduler(
 
     def _codec_on_cuda(self) -> bool:
         try:
-            return next(self._codec.parameters()).device.type == "cuda"
+            return next(self._codec.parameters()).device.type in {"cuda", "musa"}
         except StopIteration:
             return False
 

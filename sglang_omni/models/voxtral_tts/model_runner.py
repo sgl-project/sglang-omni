@@ -12,6 +12,21 @@ from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialToke
 from sglang_omni.scheduling.types import RequestOutput
 
 
+def _request_extend_length(req: Any) -> int:
+    if hasattr(req, "extend_input_len"):
+        return int(req.extend_input_len)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        prefix_indices = getattr(req, "prefix_indices", None)
+        prefix_len = len(prefix_indices) if prefix_indices is not None else 0
+        return max(0, len(fill_ids) - prefix_len)
+    origin_ids = getattr(req, "origin_input_ids", None)
+    return len(origin_ids) if origin_ids is not None else 0
+
+
 class VoxtralTTSModelRunner(ModelRunner):
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
@@ -90,7 +105,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
+            req_len = _request_extend_length(req)
             prefix_len = len(req.prefix_indices)
             full_ids = data.input_ids
             current_ids = full_ids[prefix_len : prefix_len + req_len]

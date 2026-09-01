@@ -14,6 +14,25 @@ from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from .sglang_model import VOCAB_SIZE
 
 
+def _request_extend_length(req: Any) -> int:
+    value = getattr(req, "extend_input_len", None)
+    if value is not None:
+        return int(value)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None:
+        length = getattr(extend_range, "length", None)
+        if length is not None:
+            return int(length)
+    prefix_len = len(getattr(req, "prefix_indices", []) or [])
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        return max(len(fill_ids) - prefix_len, 0)
+    origin_input_ids = getattr(req, "origin_input_ids", None)
+    if origin_input_ids is not None:
+        return max(len(origin_input_ids) - prefix_len, 0)
+    raise AttributeError("Req does not expose an extend length")
+
+
 class FunCosyVoice3ModelRunner(ModelRunner):
     """Runs Fun-CosyVoice3 AR steps and collects generated speech tokens."""
 
@@ -99,7 +118,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
+            req_len = _request_extend_length(req)
             prefix_len = len(req.prefix_indices)
             prompt_embeds = data.prompt_input_embeds
             if prompt_embeds is None:

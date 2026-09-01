@@ -14,6 +14,9 @@ from torch import Tensor
 from torch.nn import functional as F
 from transformers import PreTrainedModel
 
+from sglang_omni.models.fishaudio_s2_pro.fast_ar_backends import (
+    cuda_fast_ar_uses_fa3,
+)
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
     FishQwen3AudioDecoderConfig,
 )
@@ -31,15 +34,9 @@ FISH_BATCH_INVARIANT = os.getenv("FISH_BATCH_INVARIANT", "false").lower() in (
 
 @cache
 def _fast_ar_uses_fa3(device_index: int) -> bool:
-    major, minor = torch.cuda.get_device_capability(device_index)
-    sm_version = major * 10 + minor
-    if sm_version == 90:
-        return True
-    if sm_version in (89, 100, 120):
-        return False
-    raise RuntimeError(
-        f"FishAudio S2-Pro Fast-AR does not support SM{sm_version}; "
-        "supported architectures: SM89, SM90, SM100, SM120."
+    return cuda_fast_ar_uses_fa3(
+        device_index=device_index,
+        capability_resolver=torch.cuda.get_device_capability,
     )
 
 
@@ -81,6 +78,85 @@ def _flashinfer_kvcache_attention(
     return torch.stack(outputs, dim=0)
 
 
+def _torch_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    causal: bool,
+    cache_position: int,
+) -> torch.Tensor:
+    if k is None or v is None:
+        raise ValueError("Torch Fast-AR attention requires k and v")
+    if cache_position < 0:
+        raise ValueError("Torch Fast-AR attention requires cache_position")
+
+    cache_end = cache_position + int(k.shape[1])
+    k_cache[:, cache_position:cache_end].copy_(k)
+    v_cache[:, cache_position:cache_end].copy_(v)
+    k_full = k_cache[:, :cache_end]
+    v_full = v_cache[:, :cache_end]
+
+    if q.shape[2] != k_full.shape[2]:
+        if q.shape[2] % k_full.shape[2] != 0:
+            raise RuntimeError(
+                "Fast-AR q heads must be a multiple of kv heads for torch attention"
+            )
+        repeat = q.shape[2] // k_full.shape[2]
+        k_full = k_full.repeat_interleave(repeat, dim=2)
+        v_full = v_full.repeat_interleave(repeat, dim=2)
+
+    q_t = q.transpose(1, 2)
+    k_t = k_full.transpose(1, 2)
+    v_t = v_full.transpose(1, 2)
+    attn_mask = None
+    if causal:
+        q_pos = torch.arange(q.shape[1], device=q.device) + cache_position
+        k_pos = torch.arange(cache_end, device=q.device)
+        attn_mask = k_pos.unsqueeze(0) <= q_pos.unsqueeze(1)
+    out = F.scaled_dot_product_attention(
+        q_t,
+        k_t,
+        v_t,
+        attn_mask=attn_mask,
+        dropout_p=0.0,
+        is_causal=False,
+    )
+    return out.transpose(1, 2)
+
+
+def _mate_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_seqlens: torch.Tensor | None,
+    causal: bool,
+    num_splits: int,
+) -> torch.Tensor:
+    if k is None or v is None:
+        raise ValueError("MATE Fast-AR attention requires k and v")
+
+    from mate import flash_attn_with_kvcache
+
+    return flash_attn_with_kvcache(
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        k=k,
+        v=v,
+        cache_seqlens=(
+            cache_seqlens.contiguous() if cache_seqlens is not None else None
+        ),
+        causal=causal,
+        num_splits=num_splits,
+    )
+
+
 @torch.library.custom_op(
     "mylib::flash_attn_kvcache", mutates_args=("k_cache", "v_cache")
 )
@@ -95,8 +171,19 @@ def flash_attn_kvcache_op(
     num_splits: int = 0,
     cache_position: int = -1,
 ) -> torch.Tensor:
+    if q.device.type == "musa":
+        return _mate_kvcache_attention(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=cache_seqlens,
+            causal=causal,
+            num_splits=num_splits,
+        )
     if q.device.type != "cuda" or q.device.index is None:
-        raise RuntimeError("FishAudio S2-Pro Fast-AR attention requires CUDA")
+        raise RuntimeError("FishAudio S2-Pro Fast-AR attention requires CUDA or MUSA")
     if _fast_ar_uses_fa3(q.device.index):
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
 

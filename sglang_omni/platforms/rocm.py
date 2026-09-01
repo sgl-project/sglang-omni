@@ -4,7 +4,17 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from sglang.srt.platforms.rocm import RocmDeviceMixin
+from sglang.srt.platforms.device_mixin import PlatformEnum
+
+try:
+    from sglang.srt.platforms.rocm import RocmDeviceMixin
+except ModuleNotFoundError:
+    from sglang.srt.platforms.interface import SRTPlatform
+
+    class RocmDeviceMixin(SRTPlatform):
+        _enum = PlatformEnum.ROCM
+        device_name = "rocm"
+        device_type = "cuda"
 
 from sglang_omni.platforms.interface import OmniPlatform
 
