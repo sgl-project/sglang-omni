@@ -2,7 +2,7 @@
 """Validate Qwen3-Omni Code2Wav NPUGraph capture and replay on one NPU.
 
 Usage:
-    python tests/manual_cases/npu/validate_qwen3_omni_code2wav_graph.py \
+    python tests/test_model/validate_qwen3_omni_code2wav_graph.py \
         --model-path /path/to/Qwen3-Omni-checkpoint \
         --device npu:0 \
         --iterations 20
