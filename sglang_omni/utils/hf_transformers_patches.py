@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
-_NPU_CAPTURE_PATCH_MARKER = "_sglang_omni_accelerator_capture_aware"
+_patched_is_tracing: Callable[[Any | None], bool] | None = None
 
 
 def _is_accelerator_stream_capturing(tensor: Any | None) -> bool:
@@ -18,13 +19,12 @@ def _is_accelerator_stream_capturing(tensor: Any | None) -> bool:
         if tensor is None:
             device_module = torch.get_device_module()
         else:
-            device = getattr(tensor, "device", None)
-            if device is None or getattr(device, "type", None) == "cpu":
+            device = tensor.device
+            if device.type == "cpu":
                 return False
             device_module = torch.get_device_module(device)
-        query = getattr(device_module, "is_current_stream_capturing", None)
-        return bool(query is not None and query())
-    except Exception:
+        return bool(device_module.is_current_stream_capturing())
+    except (AttributeError, RuntimeError, ValueError):
         # Match Transformers' probing behavior: unavailable accelerator APIs
         # are not evidence that tracing is active.
         return False
@@ -41,21 +41,20 @@ def patch_transformers_stream_capture_detection() -> None:
 
     from transformers.utils import import_utils
 
-    original: Callable[[Any | None], bool] = import_utils.is_tracing
-    if getattr(original, _NPU_CAPTURE_PATCH_MARKER, False):
+    global _patched_is_tracing
+
+    current: Callable[[Any | None], bool] = import_utils.is_tracing
+    if current is _patched_is_tracing:
         return
 
     def accelerator_capture_aware_is_tracing(tensor: Any | None = None) -> bool:
-        return bool(original(tensor) or _is_accelerator_stream_capturing(tensor))
+        return bool(current(tensor) or _is_accelerator_stream_capturing(tensor))
 
-    setattr(accelerator_capture_aware_is_tracing, _NPU_CAPTURE_PATCH_MARKER, True)
+    _patched_is_tracing = accelerator_capture_aware_is_tracing
     import_utils.is_tracing = accelerator_capture_aware_is_tracing
 
     masking_utils = sys.modules.get("transformers.masking_utils")
-    if (
-        masking_utils is not None
-        and getattr(masking_utils, "is_tracing", None) is original
-    ):
+    if masking_utils is not None and masking_utils.is_tracing is current:
         masking_utils.is_tracing = accelerator_capture_aware_is_tracing
 
 

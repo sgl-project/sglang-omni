@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.utils.hf_transformers_patches import (
@@ -12,7 +13,7 @@ from sglang_omni.utils.hf_transformers_patches import (
 
 
 def test_patch_detects_capture_through_tensor_device_module(monkeypatch) -> None:
-    import transformers.masking_utils as masking_utils
+    from transformers import masking_utils
     from transformers.utils import import_utils
 
     def original(tensor=None):
@@ -73,3 +74,33 @@ def test_patch_leaves_cpu_tensor_on_upstream_path(monkeypatch) -> None:
 
     tensor = SimpleNamespace(device=SimpleNamespace(type="cpu"))
     assert import_utils.is_tracing(tensor) is False
+
+
+def test_patch_treats_missing_capture_api_as_not_capturing(monkeypatch) -> None:
+    from transformers.utils import import_utils
+
+    monkeypatch.setattr(import_utils, "is_tracing", lambda tensor=None: False)
+    monkeypatch.setattr(torch, "get_device_module", lambda device: SimpleNamespace())
+    patch_transformers_stream_capture_detection()
+
+    tensor = SimpleNamespace(device=SimpleNamespace(type="npu"))
+    assert import_utils.is_tracing(tensor) is False
+
+
+def test_patch_does_not_hide_unexpected_capture_errors(monkeypatch) -> None:
+    from transformers.utils import import_utils
+
+    monkeypatch.setattr(import_utils, "is_tracing", lambda tensor=None: False)
+
+    def fail_capture_query() -> bool:
+        raise AssertionError("unexpected capture failure")
+
+    device_module = SimpleNamespace(
+        is_current_stream_capturing=fail_capture_query,
+    )
+    monkeypatch.setattr(torch, "get_device_module", lambda device: device_module)
+    patch_transformers_stream_capture_detection()
+
+    tensor = SimpleNamespace(device=SimpleNamespace(type="npu"))
+    with pytest.raises(AssertionError, match="unexpected capture failure"):
+        import_utils.is_tracing(tensor)
