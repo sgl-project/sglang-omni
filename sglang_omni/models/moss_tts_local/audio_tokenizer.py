@@ -71,7 +71,17 @@ class MossTTSLocalAudioTokenizer:
 
         waveforms = []
         for path in paths:
-            wav, sample_rate = torchaudio.load(path)
+            try:
+                wav, sample_rate = torchaudio.load(path)
+            except ImportError:
+                import soundfile as sf
+
+                samples, sample_rate = sf.read(
+                    path,
+                    dtype="float32",
+                    always_2d=True,
+                )
+                wav = torch.from_numpy(samples.transpose().copy())
             if int(sample_rate) != self.sample_rate:
                 wav = torchaudio.functional.resample(
                     waveform=wav,

@@ -313,6 +313,38 @@ def test_audio_tokenizer_path_resamples_before_channel_fold(monkeypatch):
     torch.testing.assert_close(model.calls[0][0][0], expected)
 
 
+def test_audio_tokenizer_load_paths_falls_back_without_torchcodec(
+    monkeypatch, tmp_path
+):
+    sf = pytest.importorskip("soundfile")
+    import torchaudio
+
+    model = _FakeAudioTokenizerModel()
+    tokenizer = MossTTSLocalAudioTokenizer(model, device="cpu")
+    samples = np.stack(
+        [
+            np.linspace(-0.5, 0.5, 16, dtype=np.float32),
+            np.linspace(0.25, -0.25, 16, dtype=np.float32),
+        ],
+        axis=1,
+    )
+    path = tmp_path / "reference.wav"
+    sf.write(path, samples, 48000, subtype="FLOAT")
+
+    def missing_torchcodec(_path):
+        raise ImportError("TorchCodec is required for load_with_torchcodec")
+
+    monkeypatch.setattr(torchaudio, "load", missing_torchcodec)
+
+    loaded = tokenizer.load_paths([str(path)])
+
+    assert len(loaded) == 1
+    wav, sample_rate = loaded[0]
+    assert sample_rate == 48000
+    assert tuple(wav.shape) == (2, 16)
+    torch.testing.assert_close(wav, torch.from_numpy(samples.transpose().copy()))
+
+
 def test_audio_tokenizer_matches_processor_waveform_prep_for_stereo():
     model = _FakeAudioTokenizerModel()
     tokenizer = MossTTSLocalAudioTokenizer(model, device="cpu")
