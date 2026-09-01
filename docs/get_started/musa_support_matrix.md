@@ -29,10 +29,12 @@ Legend:
 
 ## Cookbooks And Evidence
 
-Each row below links the model to the primary cookbook or install page and to
-the MUSA record that captured the smoke and bench evidence.
+Each row below points to the primary cookbook or install page when that page is
+present in the current checkout. If a cookbook page is not available here, keep
+the model row and point to the closest evidence note instead of leaving a dead
+link.
 
-| Model | Cookbook / install guide | MUSA evidence |
+| Model | Primary guide or evidence note | MUSA evidence |
 | --- | --- | --- |
 | Audar-TTS V1 Turbo | `docs/get_started/installation_musa_cloud.md` | `musa_cloud_offline_install/tts_models_musa_adaptation_20260827/README.md` |
 | dots.tts | `docs/cookbook/dots_tts.md` | `musa_cloud_offline_install/tts_models_musa_adaptation_20260827/README.md` |
@@ -53,3 +55,5 @@ the MUSA record that captured the smoke and bench evidence.
 - The install guide covers the shared cloud workflow and points to the
   verified MUSA offline path.
 - The cookbook pages remain the canonical launch and request examples.
+- When a cookbook page is missing from a branch or checkout, replace it with
+  the nearest evidence note so the support matrix stays readable and link-safe.
