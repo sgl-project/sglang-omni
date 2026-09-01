@@ -25,6 +25,11 @@ QWEN3_ASR_AUDIO_CHUNKING = AudioChunkingConfig(
     max_audio_clip_s=30.0,
 )
 
+# The Torch MPS path is qualified only through this duration. Keep this
+# backend limit separate from the operator's chunk size: the latter defaults
+# to 30s for scheduling, while a stream can safely use the qualified 60s cap.
+QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS = 60.0
+
 
 class Qwen3ASRFactoryArgs(FactoryArgs):
     """Qwen3-ASR's own constructor knobs, typed like the shared ones."""
@@ -98,13 +103,27 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         if not current_platform.is_mps() or use_mlx():
             return policy
 
+        if policy.max_audio_clip_s > QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS:
+            raise ValueError(
+                "Qwen3-ASR Torch MPS supports "
+                "audio_chunking.max_audio_clip_s up to "
+                f"{QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS:g}s"
+            )
+
         # note (yexiaodong): Torch MPS currently uses one clip shape for the
-        # encoder path, so keep its native and whole-upload limits aligned with
-        # the operator-selected chunk length. MLX retains the model-native cap.
+        # encoder path. Keep its native and whole-upload limits within the
+        # qualified cap, while retaining the independently configurable chunk
+        # size for non-streaming scheduling. MLX retains the model-native cap.
+        max_total_audio_s = policy.max_total_audio_s
+        if (
+            max_total_audio_s is None
+            or max_total_audio_s > QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS
+        ):
+            max_total_audio_s = QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS
         return replace(
             policy,
-            max_native_clip_s=policy.max_audio_clip_s,
-            max_total_audio_s=policy.max_audio_clip_s,
+            max_native_clip_s=QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS,
+            max_total_audio_s=max_total_audio_s,
         )
 
 

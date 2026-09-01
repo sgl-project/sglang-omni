@@ -100,9 +100,11 @@ sgl-omni serve \
   --port 8000
 ```
 
-The initial Torch MPS profile is bounded to a 2,048-token KV budget and accepts
-audio up to 60 seconds. Use the MLX path for long audio and the larger native
-context limit.
+The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses
+`audio_chunking.max_audio_clip_s` for non-streaming chunks (30 seconds by
+default), and caps native/whole-upload requests at 60 seconds. Values above
+that qualified limit are rejected. Use the MLX path for long audio and the
+larger native context limit.
 
 ## Server Configuration
 
@@ -264,7 +266,7 @@ configuration path reaches them:
 | Name | Value | Meaning |
 |---|---|---|
 | `allow_audio_chunking` | `true` | Qwen3-ASR transcribes an isolated chunk correctly, so chunking is on. |
-| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff. |
+| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff; the Torch MPS compatibility path resolves it to its qualified 60-second cap. |
 | `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length. |
 
 Note: Raising `audio_chunking.max_audio_clip_s` also resizes the encoder CUDA-graph bucket
@@ -281,9 +283,10 @@ Behavior notes:
 - A few unusual audio formats may not expose a readable duration; we fall
   back to the non-chunked path for those uploads.
 - Streamed responses (`stream=true`) do not support chunking yet; a stream
-  request runs as one engine request, so it takes audio up to
-  `max_native_clip_s` (1,200s) and gets HTTP 400 above that -- use
-  `stream=false` for longer uploads.
+  request runs as one engine request. MLX and CUDA accept audio up to the
+  model-native `max_native_clip_s` (1,200s), while Torch MPS accepts up to its
+  qualified 60-second cap and returns HTTP 400 above that -- use `stream=false`
+  for longer uploads.
 
 ## Benchmarking
 
@@ -384,6 +387,7 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 - The endpoint accepts one uploaded file per request.
 - Non-streaming uploads up to `max_total_audio_s` (default one hour) are
   transcribed in full via chunking; see Long Audio above. Streaming requests
-  are limited to `max_native_clip_s` (1,200s).
+  are limited to `max_native_clip_s` (1,200s) on MLX/CUDA; Torch MPS caps both
+  native and whole-upload requests at 60 seconds.
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

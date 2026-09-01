@@ -82,7 +82,13 @@ def test_pipeline_config_leaves_chunking_off_by_default() -> None:
     assert config.resolved_audio_chunking.allow_audio_chunking is False
 
 
-def test_qwen3_asr_pipeline_declaresResolvedAudioChunking() -> None:
+def test_qwen3_asr_pipeline_declaresResolvedAudioChunking(monkeypatch) -> None:
+    from sglang_omni.platforms import current_platform
+
+    # Keep this declaration test independent of the host backend. The Qwen
+    # Torch-MPS override is covered explicitly below.
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 
     declared = Qwen3ASRPipelineConfig(model_path="dummy").resolved_audio_chunking
@@ -110,8 +116,24 @@ def test_qwen3_asr_torch_mps_limits_runtime_audio_policy(monkeypatch) -> None:
     ).resolved_audio_chunking
 
     assert resolved.max_audio_clip_s == 30.0
-    assert resolved.max_native_clip_s == 30.0
-    assert resolved.max_total_audio_s == 30.0
+    assert resolved.max_native_clip_s == 60.0
+    assert resolved.max_total_audio_s == 60.0
+
+
+def test_qwen3_asr_torch_mps_rejects_unsafe_chunk_length(monkeypatch) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: True)
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+
+    with pytest.raises(ValueError, match="up to 60s"):
+        Qwen3ASRPipelineConfig(
+            model_path="Qwen/Qwen3-ASR-0.6B",
+            audio_chunking=AudioChunkingConfig(max_audio_clip_s=60.1),
+        ).resolved_audio_chunking
 
 
 @pytest.mark.parametrize(("is_mps", "use_mlx"), [(False, False), (True, True)])
