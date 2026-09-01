@@ -1386,7 +1386,7 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
     assert scheduler.create_stream_state("request").initial_chunk_frames == 8
     assert scheduler._stream_left_context_frames == 16
     assert scheduler._stream_followup_stride == 8
-    assert scheduler._stream_initial_followup_stride == 8
+    assert scheduler._followup_stride_ramp == (8,)
     assert scheduler._initial_max_batch_size == 32
     assert scheduler._initial_batch_wait_s == pytest.approx(0.002)
     assert scheduler._followup_max_batch_size == 8
@@ -2623,6 +2623,286 @@ def test_qwen3_tts_streaming_vocoder_uses_steady_followup_stride() -> None:
     )
     assert state.next_decode_generated_frames == initial_frames + 16
     assert len(scheduler._decoder.decode_inputs) == 2
+
+
+def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_chunk_ramp=(2, 4, 8),
+    )
+    payload = make_payload(inputs="target", params={"stream": True})
+    scheduler._on_streaming_new_request(payload.request_id, payload)
+
+    emitted_frames: list[int] = []
+    chunk_id = 0
+
+    def feed(frames: int) -> None:
+        nonlocal chunk_id
+        scheduler._on_chunk(
+            payload.request_id,
+            _qwen3_tts_stream_item(
+                torch.ones((frames, 2), dtype=torch.long),
+                chunk_id=chunk_id,
+                ref_code_len=0 if chunk_id == 0 else None,
+            ),
+        )
+        chunk_id += 1
+        while not scheduler.outbox.empty():
+            message = scheduler.outbox.get_nowait()
+            emitted_frames.append(len(message.data["audio_waveform"]) // (4 * 4))
+
+    # note (Junnan Li): each schedule point is locked behaviorally by feeding
+    # one frame short of it (must not emit) and then the last frame (must).
+    feed(1)
+    assert emitted_frames == []
+    feed(1)
+    assert emitted_frames == [2]
+    feed(3)
+    assert emitted_frames == [2]
+    feed(1)
+    assert emitted_frames == [2, 4]
+    feed(7)
+    assert emitted_frames == [2, 4]
+    feed(1)
+    assert emitted_frames == [2, 4, 8]
+    feed(8)
+    assert emitted_frames == [2, 4, 8, 8], "past the ramp the steady stride rules"
+
+
+def test_qwen3_tts_streaming_vocoder_chunk_ramp_covers_graph_shapes() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_chunk_ramp=(2, 4, 8),
+    )
+    left = scheduler._stream_left_context_frames
+    assert scheduler._initial_decode_graphs._input_frames == (left + 2,)
+    assert scheduler._followup_decode_graphs._input_frames == (left + 4, left + 8)
+
+    payload = make_payload(inputs="target", params={"stream": True})
+    scheduler._on_streaming_new_request(payload.request_id, payload)
+    covered = (
+        scheduler._initial_decode_graphs._input_frames
+        + scheduler._followup_decode_graphs._input_frames
+    )
+    scheduler._on_chunk(
+        payload.request_id,
+        _qwen3_tts_stream_item(
+            torch.ones((left + 2, 2), dtype=torch.long),
+            chunk_id=0,
+            ref_code_len=left,
+        ),
+    )
+    for chunk_id, frames in enumerate((4, 8, 8), start=1):
+        scheduler._on_chunk(
+            payload.request_id,
+            _qwen3_tts_stream_item(
+                torch.ones((frames, 2), dtype=torch.long), chunk_id=chunk_id
+            ),
+        )
+    decode_shapes = [int(codes.shape[-1]) for codes in scheduler._decoder.decode_inputs]
+    assert len(decode_shapes) == 4
+    assert all(shape in covered for shape in decode_shapes), decode_shapes
+
+
+def test_qwen3_tts_streaming_vocoder_chunk_ramp_splits_backlogged_first_decode() -> (
+    None
+):
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_chunk_ramp=(2, 4, 8),
+    )
+    payload = make_payload(inputs="target", params={"stream": True})
+    scheduler._on_streaming_new_request(payload.request_id, payload)
+
+    scheduler._on_chunk(
+        payload.request_id,
+        _qwen3_tts_stream_item(
+            torch.ones((20, 2), dtype=torch.long),
+            chunk_id=0,
+            ref_code_len=0,
+        ),
+    )
+    emitted_frames = []
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        emitted_frames.append(len(message.data["audio_waveform"]) // (4 * 4))
+    assert emitted_frames == [2, 4, 8, 6]
+
+    scheduler._on_chunk(
+        payload.request_id,
+        _qwen3_tts_stream_item(torch.ones((4, 2), dtype=torch.long), chunk_id=1),
+    )
+    assert scheduler.outbox.qsize() == 0
+    scheduler._on_chunk(
+        payload.request_id,
+        _qwen3_tts_stream_item(torch.ones((4, 2), dtype=torch.long), chunk_id=2),
+    )
+    steady = scheduler.outbox.get_nowait()
+    assert len(steady.data["audio_waveform"]) == 8 * 4 * 4
+
+
+def test_qwen3_tts_streaming_vocoder_request_override_resizes_only_first_chunk() -> (
+    None
+):
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_chunk_ramp=(2, 4, 8),
+    )
+    payload = make_payload(
+        inputs="target",
+        params={"stream": True, "initial_codec_chunk_frames": 1},
+    )
+    scheduler._on_streaming_new_request(payload.request_id, payload)
+    emitted_frames: list[int] = []
+    for chunk_id, frames in enumerate((1, 4, 8)):
+        scheduler._on_chunk(
+            payload.request_id,
+            _qwen3_tts_stream_item(
+                torch.ones((frames, 2), dtype=torch.long),
+                chunk_id=chunk_id,
+                ref_code_len=0 if chunk_id == 0 else None,
+            ),
+        )
+        while not scheduler.outbox.empty():
+            message = scheduler.outbox.get_nowait()
+            emitted_frames.append(len(message.data["audio_waveform"]) // (4 * 4))
+    assert emitted_frames == [1, 4, 8], "override resizes only the first chunk"
+
+
+def test_qwen3_tts_streaming_vocoder_zero_override_with_ramp() -> None:
+    # note (Junnan Li): a zero override disables the early chunk (legacy
+    # semantics), so the first decode waits for the steady stride; the ramp
+    # tail still schedules the following chunks.
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_chunk_ramp=(2, 4, 8),
+    )
+    payload = make_payload(
+        inputs="target",
+        params={"stream": True, "initial_codec_chunk_frames": 0},
+    )
+    scheduler._on_streaming_new_request(payload.request_id, payload)
+    emitted_frames: list[int] = []
+    for chunk_id, frames in enumerate((16, 4, 8)):
+        scheduler._on_chunk(
+            payload.request_id,
+            _qwen3_tts_stream_item(
+                torch.ones((frames, 2), dtype=torch.long),
+                chunk_id=chunk_id,
+                ref_code_len=0 if chunk_id == 0 else None,
+            ),
+        )
+        while not scheduler.outbox.empty():
+            message = scheduler.outbox.get_nowait()
+            emitted_frames.append(len(message.data["audio_waveform"]) // (4 * 4))
+    assert emitted_frames == [16, 4, 8]
+
+
+def test_qwen3_tts_streaming_vocoder_singleton_ramp_goes_straight_to_steady() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_chunk_ramp=(2,),
+    )
+    payload = make_payload(inputs="target", params={"stream": True})
+    scheduler._on_streaming_new_request(payload.request_id, payload)
+    emitted_frames: list[int] = []
+    for chunk_id, frames in enumerate((2, 8, 8)):
+        scheduler._on_chunk(
+            payload.request_id,
+            _qwen3_tts_stream_item(
+                torch.ones((frames, 2), dtype=torch.long),
+                chunk_id=chunk_id,
+                ref_code_len=0 if chunk_id == 0 else None,
+            ),
+        )
+        while not scheduler.outbox.empty():
+            message = scheduler.outbox.get_nowait()
+            emitted_frames.append(len(message.data["audio_waveform"]) // (4 * 4))
+    assert emitted_frames == [2, 8, 8]
+
+
+def test_qwen3_tts_vocoder_factory_forwards_chunk_ramp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.qwen3_tts import stages
+
+    monkeypatch.setattr(
+        stages,
+        "_load_qwen3_tts_tokenizer",
+        lambda *args, **kwargs: _FakeQwen3TTSTokenizer(),
+    )
+    monkeypatch.setattr(
+        Qwen3TTSStreamingVocoderScheduler, "warmup_now", lambda scheduler: None
+    )
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cpu",
+        stream_chunk_ramp=[2, 4, 8],
+    )
+    payload = make_payload(inputs="target", params={"stream": True})
+    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler._on_chunk(
+        payload.request_id,
+        _qwen3_tts_stream_item(
+            torch.ones((2, 2), dtype=torch.long), chunk_id=0, ref_code_len=0
+        ),
+    )
+    first = scheduler.outbox.get_nowait()
+    assert len(first.data["audio_waveform"]) == 2 * 4 * 4
+
+
+def test_qwen3_tts_streaming_vocoder_chunk_ramp_rejects_mixed_config() -> None:
+    with pytest.raises(ValueError, match="set only one form"):
+        Qwen3TTSStreamingVocoderScheduler(
+            _FakeQwen3TTSTokenizer(),
+            device="cpu",
+            stream_chunk_ramp=(2, 4, 8),
+            stream_initial_followup_stride=4,
+        )
+    # note (Junnan Li): an explicit legacy value is refused even at its
+    # default: None is the only "not set" spelling.
+    for legacy_frames in (4, 8):
+        with pytest.raises(ValueError, match="set only one form"):
+            Qwen3TTSStreamingVocoderScheduler(
+                _FakeQwen3TTSTokenizer(),
+                device="cpu",
+                stream_chunk_ramp=(2, 4, 8),
+                initial_chunk_frames=legacy_frames,
+            )
+    with pytest.raises(ValueError, match="must be <= stream_stride"):
+        Qwen3TTSStreamingVocoderScheduler(
+            _FakeQwen3TTSTokenizer(),
+            device="cpu",
+            stream_stride=16,
+            stream_chunk_ramp=(20, 4),
+        )
+    with pytest.raises(ValueError, match="at least one entry"):
+        Qwen3TTSStreamingVocoderScheduler(
+            _FakeQwen3TTSTokenizer(),
+            device="cpu",
+            stream_chunk_ramp=(),
+        )
+    for bad_ramp in ((0, 4), (2, -4)):
+        with pytest.raises(ValueError, match="stream_chunk_ramp entries must be > 0"):
+            Qwen3TTSStreamingVocoderScheduler(
+                _FakeQwen3TTSTokenizer(),
+                device="cpu",
+                stream_chunk_ramp=bad_ramp,
+            )
+    for non_int_ramp in ("248", 8, (2, 4.0), (True, 4), (2, "4")):
+        with pytest.raises(TypeError):
+            Qwen3TTSStreamingVocoderScheduler(
+                _FakeQwen3TTSTokenizer(),
+                device="cpu",
+                stream_chunk_ramp=non_int_ramp,
+            )
 
 
 def test_qwen3_tts_streaming_vocoder_zero_initial_chunk_uses_steady_stride() -> None:

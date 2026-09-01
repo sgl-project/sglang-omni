@@ -17,7 +17,6 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     preprocess_qwen3_tts_payload,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
-    DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES,
     DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
@@ -157,7 +156,8 @@ def create_vocoder_executor(
     stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     stream_initial_followup_stride: int | None = None,
-    initial_chunk_frames: int = DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES,
+    initial_chunk_frames: int | None = None,
+    stream_chunk_ramp: tuple[int, ...] | list[int] | None = None,
     stream_left_context_frames: int = DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     initial_max_batch_size: int = 32,
     initial_batch_wait_ms: int = 2,
@@ -182,6 +182,7 @@ def create_vocoder_executor(
         stream_followup_stride=stream_followup_stride,
         stream_initial_followup_stride=stream_initial_followup_stride,
         initial_chunk_frames=initial_chunk_frames,
+        stream_chunk_ramp=stream_chunk_ramp,
         stream_left_context_frames=stream_left_context_frames,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
