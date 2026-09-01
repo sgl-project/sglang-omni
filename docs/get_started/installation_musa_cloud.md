@@ -37,20 +37,14 @@ pip install -e "python[dev_musa]"
 That path pulls the public MUSA packages declared by SGLang itself, including `torch_musa`,
 `torchada`, `flash_attn_3`, `deep-gemm`, and `mate`.
 
-For the cloud wheelhouse workflow used in testing, see the offline install
-guide in `musa_cloud_offline_install/`. It records the scripts, requirements,
-logs, and pitfalls for the verified MUSA smoke path.
-
 For the model-by-model view, see the
 [`MUSA Hardware / Backend / Model Support Matrix`](musa_support_matrix.md).
-That page links each adapted model to its cookbook and MUSA evidence record.
+That page summarizes the model coverage and bench evidence in a self-contained
+table.
 
-After that, install the shared runtime and model-support packages from
-[`requirements-smoke.in`](../../musa_cloud_offline_install/requirements-smoke.in):
-
-```bash
-python -m pip install -r musa_cloud_offline_install/requirements-smoke.in
-```
+After that, install the shared runtime and model-support packages required by
+your smoke path. Keep any wheelhouse-specific pins aligned with the MUSA stack
+already present in the cloud image.
 
 Keep model/test extras out of the base smoke install. Add them only for a
 specific model test after confirming they do not pull generic CUDA `torch`,

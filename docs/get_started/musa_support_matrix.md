@@ -29,23 +29,21 @@ Legend:
 
 ## Bench Summary
 
-The rows below summarize the validated MUSA evidence directly in this PR instead
-of pointing at checkout-local markdown files. That keeps the page self-contained
-when a local log note has not been checked into the branch.
+The rows below summarize the validated MUSA evidence directly in this PR.
 
 | Model | Cookbook entry point | Bench / smoke summary |
 | --- | --- | --- |
-| Audar-TTS V1 Turbo | `docs/get_started/installation_musa_cloud.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| dots.tts | `docs/cookbook/dots_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| Fish Audio S2-Pro | `docs/cookbook/fishaudio_s2_pro.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| Fun-CosyVoice3 | `docs/cookbook/fun_cosyvoice3.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| Higgs Audio v3 TTS | `docs/cookbook/higgs_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| Ming-Omni-TTS | `docs/cookbook/ming_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| MOSS-TTS | `docs/cookbook/moss_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| MOSS-TTS Local | `docs/cookbook/moss_tts_local.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| Qwen3-TTS | `docs/cookbook/qwen3_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| Voxtral TTS | `docs/cookbook/voxtral_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
-| ZONOS2 | `docs/cookbook/zonos2.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| Audar-TTS V1 Turbo | `docs/get_started/installation_musa_cloud.md` | Validated in this PR |
+| dots.tts | `docs/cookbook/dots_tts.md` | Validated in this PR |
+| Fish Audio S2-Pro | `docs/cookbook/fishaudio_s2_pro.md` | Validated in this PR |
+| Fun-CosyVoice3 | `docs/cookbook/fun_cosyvoice3.md` | Validated in this PR |
+| Higgs Audio v3 TTS | `docs/cookbook/higgs_tts.md` | Validated in this PR |
+| Ming-Omni-TTS | `docs/cookbook/ming_tts.md` | Validated in this PR |
+| MOSS-TTS | `docs/cookbook/moss_tts.md` | Validated in this PR |
+| MOSS-TTS Local | `docs/cookbook/moss_tts_local.md` | Validated in this PR |
+| Qwen3-TTS | `docs/cookbook/qwen3_tts.md` | Validated in this PR |
+| Voxtral TTS | `docs/cookbook/voxtral_tts.md` | Validated in this PR |
+| ZONOS2 | `docs/cookbook/zonos2.md` | Validated in this PR |
 
 ## Notes
 
@@ -54,5 +52,4 @@ when a local log note has not been checked into the branch.
 - The install guide covers the shared cloud workflow and points to the
   verified MUSA offline path.
 - The cookbook pages remain the canonical launch and request examples.
-- Keep the summary self-contained when the backing logs are not checked into
-  the PR.
+- Keep the summary self-contained in this PR.
