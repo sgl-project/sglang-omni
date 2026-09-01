@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import torch
 
 from sglang_omni.comm.data_ref import DataRef, TransportKind
-from sglang_omni.comm.engine import CommEngine
+from sglang_omni.comm.engine import (
+    CommEngine,
+    _PendingTransfer,
+    _pending_transfer_bytes,
+)
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.proto import DataAckMessage, DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -43,6 +48,30 @@ class _AckedOp:
             raise self.failed
         if not self.acked:
             raise RuntimeError("waited before receiver ack")
+
+
+@pytest.mark.parametrize(
+    ("op_metadata", "expected"),
+    [
+        ([], 0),
+        ([{"transfer_info": {"size": 3}}, {"transfer_info": {"size": 5}}], 8),
+        ([{}], -1),
+        ([{"transfer_info": {}}], -1),
+        ([{"transfer_info": {"size": -1}}], -1),
+        ([{"transfer_info": {"size": True}}], -1),
+        ([{"transfer_info": {"size": 1.5}}], -1),
+    ],
+)
+def test_pending_transfer_bytes(
+    op_metadata: list[dict[str, Any]],
+    expected: int,
+) -> None:
+    pending = _PendingTransfer(
+        ops=[_AckedOp(metadata) for metadata in op_metadata],
+        ack=Mock(),
+    )
+
+    assert _pending_transfer_bytes(pending) == expected
 
 
 class _AckedRelay:
