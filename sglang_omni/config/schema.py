@@ -215,6 +215,64 @@ class ProcessConfig(BaseModel):
             raise ValueError("processes.num_replicas must be >= 1")
 
 
+class PDStagePlacement(BaseModel):
+    """Placement for one physical half of a disaggregated AR stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gpu: int | list[int] | None = None
+    process: str | None = None
+    # Note (Audrey Zheng): this half's share of its card, as a fraction of
+    # total physical memory. Required when the halves share a GPU, because
+    # `gpu_memory_fraction` on the logical stage describes one occupant and
+    # copying it to both would have each half size itself against the whole
+    # card. Unlike `mem_fraction_static` it does not depend on which half wins
+    # the startup lock.
+    memory_fraction: float | None = Field(default=None, gt=0.0, le=1.0)
+    # Note (Audrey Zheng): engine arguments for this half alone. The two halves
+    # want different settings -- Prefill sizes batches for one forward, Decode
+    # for many steps -- and without this they share the logical stage's.
+    engine: dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context: Any = None) -> None:
+        if self.process is not None:
+            self.process = self.process.strip()
+            if not self.process:
+                raise ValueError("PD process must not be empty")
+        if self.gpu is None:
+            return
+        gpu_ids = [self.gpu] if isinstance(self.gpu, int) else self.gpu
+        if not gpu_ids or any(gpu_id < 0 for gpu_id in gpu_ids):
+            raise ValueError("PD GPU ids must be non-empty and >= 0")
+        if len(set(gpu_ids)) != len(gpu_ids):
+            raise ValueError("PD GPU ids must be unique")
+
+
+class PDConfig(BaseModel):
+    """Compile one logical AR stage into independently placed PD halves."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefill: PDStagePlacement = Field(default_factory=PDStagePlacement)
+    decode: PDStagePlacement = Field(default_factory=PDStagePlacement)
+
+
+class PDExecution(BaseModel):
+    """Compiler-owned identity for one physical PD scheduler."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["prefill", "decode"]
+    partner: str = Field(min_length=1)
+    # Note (Audrey Zheng): the Decode halves this Prefill may hand off to. One
+    # entry today, and `partner` stays the name a 1:1 reader expects. Carrying
+    # a sequence means a second Decode half does not migrate this schema or
+    # change `OmniPrefillScheduler`'s signature, and the choice of which one
+    # receives a given request can move to admission without touching the send
+    # path. Empty means "just `partner`".
+    decode_targets: tuple[str, ...] = ()
+
+
 class StageConfig(BaseModel):
     """Single pipeline stage configuration.
 
@@ -300,6 +358,9 @@ class StageConfig(BaseModel):
 
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
+
+    pd_disaggregation: PDConfig | None = None
+    pd_execution: PDExecution | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
         if isinstance(self.gpu, int) and self.tp_size > 1:
@@ -501,6 +562,7 @@ class PipelineConfig(BaseModel):
     def model_post_init(self, __context: Any = None) -> None:
         self._validate_general()
         self._validate_processes()
+        self._validate_pd()
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
@@ -729,6 +791,65 @@ class PipelineConfig(BaseModel):
                 f"Declared process names: {sorted(members)}"
             )
 
+    def _validate_pd(self) -> None:
+        existing_names = {stage.name for stage in self.stages}
+        for stage in self.stages:
+            pd = stage.pd_disaggregation
+            if pd is None:
+                continue
+            if pd.prefill.gpu is None or pd.decode.gpu is None:
+                raise ValueError(
+                    f"Stage {stage.name!r} pd_disaggregation requires explicit "
+                    "prefill.gpu and decode.gpu"
+                )
+            # Note (Audrey Zheng): the halves may share a card. What PD needs
+            # is the process split, and that happens either way -- the prefill
+            # step leaves the decode scheduler thread whichever card it runs
+            # on. Sharing also makes PD runnable on a one-GPU box, which is
+            # what CI has, and it is the only shape in which the two halves can
+            # share one copy of the weights.
+            #
+            # It is only safe with explicit budgets. `_validate_memory_budgets`
+            # caps the sum of *declared* fractions, and `_build_gpu_placement`
+            # skips a None, so two undeclared halves on one card each size
+            # themselves against the whole of it: whichever wins the startup
+            # lock takes the memory and the other fails to start. Require both.
+            if _pd_gpu_set(pd.prefill.gpu) & _pd_gpu_set(pd.decode.gpu):
+                undeclared = [
+                    role
+                    for role, placement in (
+                        ("prefill", pd.prefill),
+                        ("decode", pd.decode),
+                    )
+                    if placement.memory_fraction is None
+                ]
+                if undeclared:
+                    raise ValueError(
+                        f"Stage {stage.name!r} pd_disaggregation puts both "
+                        f"halves on one GPU, so {' and '.join(undeclared)} "
+                        "must declare memory_fraction"
+                    )
+            for role, placement in (("prefill", pd.prefill), ("decode", pd.decode)):
+                if (
+                    isinstance(placement.gpu, list)
+                    and len(placement.gpu) != stage.tp_size
+                ):
+                    raise ValueError(
+                        f"Stage {stage.name!r} pd_disaggregation {role}.gpu has "
+                        f"{len(placement.gpu)} entries but tp_size={stage.tp_size}"
+                    )
+            for suffix in ("_prefill", "_decode"):
+                generated = f"{stage.name}{suffix}"
+                if generated in existing_names:
+                    raise ValueError(
+                        f"Stage {stage.name!r} pd_disaggregation would generate "
+                        f"{generated!r}, which collides with an existing stage"
+                    )
+
     @staticmethod
     def from_dict(data: dict[str, Any]) -> PipelineConfig:
         return PipelineConfig(**data)
+
+
+def _pd_gpu_set(gpu: int | list[int]) -> set[int]:
+    return {gpu} if isinstance(gpu, int) else set(gpu)

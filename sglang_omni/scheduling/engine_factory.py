@@ -51,6 +51,8 @@ class SGLangGenerationEngineBuilder(ABC):
         gpu_id: int | None = None,
         dtype: str = "bfloat16",
         server_args_overrides: dict[str, Any] | None = None,
+        scheduler_cls: type | None = None,
+        scheduler_kwargs: dict[str, Any] | None = None,
     ) -> Any:
         import torch
 
@@ -172,6 +174,12 @@ class SGLangGenerationEngineBuilder(ABC):
                 model=model,
             )
             self.setup_runtime_resources(model, server_args)
+            scheduler_construction = {}
+            if scheduler_cls is not None or scheduler_kwargs is not None:
+                scheduler_construction = {
+                    "scheduler_cls": scheduler_cls,
+                    "scheduler_construction_kwargs": scheduler_kwargs,
+                }
             scheduler, model_runner = self._build_runtime(
                 model_worker=model_worker,
                 model=model,
@@ -181,6 +189,7 @@ class SGLangGenerationEngineBuilder(ABC):
                 token_to_kv_pool_allocator=token_to_kv_pool_allocator,
                 server_args=server_args,
                 model_config=model_config,
+                **scheduler_construction,
             )
             self.post_scheduler_setup(scheduler, model_runner)
             return scheduler
@@ -271,9 +280,11 @@ class SGLangGenerationEngineBuilder(ABC):
         token_to_kv_pool_allocator: Any,
         server_args: Any,
         model_config: Any,
+        scheduler_cls: type | None = None,
+        scheduler_construction_kwargs: dict[str, Any] | None = None,
     ) -> tuple[Any, Any]:
         request_builder, result_adapter = self.make_adapters(model)
-        scheduler_kwargs = self.extra_scheduler_kwargs()
+        extra_scheduler_kwargs = self.extra_scheduler_kwargs()
         model_runner = self.make_model_runner(model_worker, output_proc)
         scheduler = self._make_scheduler(
             model_worker=model_worker,
@@ -285,7 +296,9 @@ class SGLangGenerationEngineBuilder(ABC):
             model_runner=model_runner,
             request_builder=request_builder,
             result_adapter=result_adapter,
-            extra_scheduler_kwargs=scheduler_kwargs,
+            extra_scheduler_kwargs=extra_scheduler_kwargs,
+            scheduler_cls=scheduler_cls,
+            scheduler_construction_kwargs=scheduler_construction_kwargs,
         )
         return scheduler, model_runner
 
@@ -317,6 +330,8 @@ class SGLangGenerationEngineBuilder(ABC):
         request_builder: Any,
         result_adapter: Any,
         extra_scheduler_kwargs: dict[str, Any],
+        scheduler_cls: type | None = None,
+        scheduler_construction_kwargs: dict[str, Any] | None = None,
     ) -> Any:
         from sglang_omni.scheduling import omni_scheduler
 
@@ -335,7 +350,9 @@ class SGLangGenerationEngineBuilder(ABC):
         }
         scheduler_kwargs.update(self.extra_scheduler_callbacks())
         scheduler_kwargs.update(extra_scheduler_kwargs)
-        return omni_scheduler.OmniScheduler(**scheduler_kwargs)
+        scheduler_cls = scheduler_cls or omni_scheduler.OmniScheduler
+        scheduler_kwargs.update(scheduler_construction_kwargs or {})
+        return scheduler_cls(**scheduler_kwargs)
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del scheduler, model_runner

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+from sglang_omni.config.pd_capability import pd_disaggregation_capable
+from sglang_omni.config.pd_rewrite import PDExpansion, expand_pd_stages
 from sglang_omni.config.placement import (
     GpuPlacement,
     StagePlacement,
@@ -16,6 +18,9 @@ from sglang_omni.config.schema import (
     EngineArgs,
     EngineStageConfig,
     FactoryArgs,
+    PDConfig,
+    PDExecution,
+    PDStagePlacement,
     PipelineConfig,
     PlacementConfig,
     ProcessConfig,
@@ -52,6 +57,12 @@ __all__ = [
     "compile_logical_processes",
     "PipelineConfig",
     "ProcessConfig",
+    "PDConfig",
+    "PDExecution",
+    "PDStagePlacement",
+    "PDExpansion",
+    "expand_pd_stages",
+    "pd_disaggregation_capable",
     "StageConfig",
     "EngineStageConfig",
     "EngineArgs",

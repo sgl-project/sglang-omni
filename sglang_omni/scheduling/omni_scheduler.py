@@ -200,6 +200,7 @@ class OmniScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = False
+        self.kv_registrations = ()
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self._request_builder = request_builder
@@ -450,9 +451,7 @@ class OmniScheduler:
         self.abort_on_priority_when_disabled = False
 
         # Disaggregation / hybrid (disabled)
-        from sglang.srt.disaggregation.utils import DisaggregationMode
-
-        self.disaggregation_mode = DisaggregationMode.NULL
+        self.disaggregation_mode = self._initial_disaggregation_mode()
         self.is_hybrid_swa = False
         self.is_hybrid_ssm = False
         self.offload_tags: set = set()
@@ -499,6 +498,11 @@ class OmniScheduler:
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
         self._prefill_end_done: set[str] = set()
+
+    def _initial_disaggregation_mode(self):
+        from sglang.srt.disaggregation.utils import DisaggregationMode
+
+        return DisaggregationMode.NULL
 
     def bind_model_runner(self, model_runner: Any) -> None:
         """Attach a custom runner and its SGLang execution-contract bridge.
@@ -664,8 +668,8 @@ class OmniScheduler:
         )
         self.output_streamer = types.SimpleNamespace(
             stream_output=self.stream_output,
-            _stream_output_generation=lambda reqs, return_logprob, **_kwargs: self.stream_output(
-                reqs, return_logprob
+            _stream_output_generation=lambda reqs, return_logprob, **_kwargs: (
+                self.stream_output(reqs, return_logprob)
             ),
         )
         self.batch_result_processor = SchedulerBatchResultProcessor(
@@ -1799,6 +1803,11 @@ class OmniScheduler:
             waiting_queue = []
             for req in self.waiting_queue:
                 if req.rid == request_id:
+                    if (
+                        getattr(req, "req_pool_idx", None) is not None
+                        or getattr(req, "mamba_pool_idx", None) is not None
+                    ):
+                        self._release_request_kv_cache(req)
                     _detach_request_data(req)
                 else:
                     waiting_queue.append(req)
@@ -2438,8 +2447,7 @@ class OmniScheduler:
             prefill_input_ids_cpu = batch.prefill_input_ids_cpu
             if input_ids is None and prefill_input_ids_cpu is None:
                 raise RuntimeError(
-                    "extend batch carries neither input_ids nor "
-                    "prefill_input_ids_cpu"
+                    "extend batch carries neither input_ids nor prefill_input_ids_cpu"
                 )
             prefix_lens = batch.prefix_lens
             extend_logprob_start_lens = batch.extend_logprob_start_lens

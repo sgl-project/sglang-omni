@@ -12,6 +12,8 @@ from pathlib import Path
 
 import zmq
 
+from sglang_omni.config.pd_capability import validate_pd_engine_args
+from sglang_omni.config.pd_rewrite import expand_pd_stages
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import (
@@ -78,6 +80,8 @@ class PipelineRuntimePrep:
     """Prepared stage, endpoint, placement, and topology state."""
 
     stages_cfg: list[StageConfig]
+    name_map: dict[str, str]
+    source_name_map: dict[str, str]
     entry_stage: str
     endpoints: dict[str, str]
     placement_plan: StagePlacementPlan
@@ -86,6 +90,8 @@ class PipelineRuntimePrep:
     runtime_dir_created_here: bool
     replica_topology: ReplicaTopology
     logical_process_plan: LogicalProcessPlan
+    terminal_stages: list[str]
+    terminal_name_map: dict[str, str]
 
 
 def create_ipc_runtime_dir(
@@ -117,11 +123,22 @@ def prepare_pipeline_runtime(
     *,
     ipc_runtime_dir: IpcRuntimeDir | None = None,
 ) -> PipelineRuntimePrep:
-    """Compile the process topology, expand replicas, and allocate endpoints."""
-    logical_plan, stages_cfg = compile_logical_processes(config)
+    """Compile PD/process topology, expand replicas, and allocate endpoints."""
+    source_stages = [stage.model_copy(deep=True) for stage in config.stages]
     entry_stage = config.resolved_entry_stage
+    expansion = expand_pd_stages(source_stages, entry_stage=entry_stage)
+    entry_stage = expansion.entry_stage
+    validate_pd_engine_args(expansion.stages)
+    terminal_stages = [stage.name for stage in expansion.stages if stage.terminal]
+    expanded_config = config.model_copy(
+        update={"stages": expansion.stages, "entry_stage": entry_stage}
+    )
+    logical_plan, stages_cfg = compile_logical_processes(expanded_config)
     stages_cfg, replica_topology = expand_replica_stages(stages_cfg, logical_plan)
     validate_device_assignment(stages_cfg, device_count=_visible_device_count())
+    identity = {stage.name: stage.name for stage in source_stages}
+    name_map = _compose_name_map(identity, expansion.routing_map, stages_cfg)
+    source_name_map = _compose_name_map(identity, expansion.output_map, stages_cfg)
     runtime_dir = ipc_runtime_dir
     if runtime_dir is None:
         runtime_dir = create_ipc_runtime_dir(config, stages=stages_cfg)
@@ -151,6 +168,8 @@ def prepare_pipeline_runtime(
 
     return PipelineRuntimePrep(
         stages_cfg=stages_cfg,
+        name_map=name_map,
+        source_name_map=source_name_map,
         entry_stage=entry_stage,
         endpoints=endpoints,
         placement_plan=placement_plan,
@@ -159,7 +178,20 @@ def prepare_pipeline_runtime(
         runtime_dir_created_here=runtime_dir_created_here,
         replica_topology=replica_topology,
         logical_process_plan=logical_plan,
+        terminal_stages=terminal_stages,
+        terminal_name_map=expansion.output_map,
     )
+
+
+def _compose_name_map(
+    base: dict[str, str],
+    pd_map: dict[str, str],
+    stages: list[StageConfig],
+) -> dict[str, str]:
+    result = {raw: pd_map.get(name, name) for raw, name in base.items()}
+    for stage in stages:
+        result.setdefault(stage.name, stage.name)
+    return result
 
 
 def build_comm_config(

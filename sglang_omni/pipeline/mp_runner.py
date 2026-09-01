@@ -49,6 +49,7 @@ def resolve_coordinator_max_in_flight(
     config: PipelineConfig,
     *,
     logical_process_plan: LogicalProcessPlan,
+    stage_name_map: dict[str, str] | None = None,
 ) -> int | None:
     """Return total generation running+queued capacity across replicas."""
     config_cls = type(config)
@@ -73,7 +74,8 @@ def resolve_coordinator_max_in_flight(
         return None
     if running < 1 or queued < 0:
         return None
-    num_replicas = logical_process_plan.process_of(stage.name).num_replicas
+    runtime_name = (stage_name_map or {}).get(stage.name, stage.name)
+    num_replicas = logical_process_plan.process_of(runtime_name).num_replicas
     return (running + queued) * num_replicas
 
 
@@ -85,6 +87,8 @@ def _build_stage_groups(
     endpoints: dict[str, str],
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
+    name_map: dict[str, str] | None = None,
+    source_name_map: dict[str, str] | None = None,
     replica_topology: ReplicaTopology | None = None,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
@@ -96,6 +100,8 @@ def _build_stage_groups(
         ctx = multiprocessing.get_context("spawn")
     if replica_topology is None:
         replica_topology = ReplicaTopology()
+    name_map = name_map or {}
+    source_name_map = source_name_map or {}
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
     rank_endpoints = {
@@ -138,7 +144,18 @@ def _build_stage_groups(
         # overlays the typed group kwargs against the factory signature and
         # injects signature-dependent args after importing the factory it
         # must construct anyway.
-        base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
+        factory_config_stage = stage_cfg
+        if stage_cfg.pd_execution is not None:
+            suffix = f"_{stage_cfg.pd_execution.role}"
+            if not stage_cfg.name.endswith(suffix):
+                raise ValueError(
+                    f"PD stage {stage_cfg.name!r} does not match role "
+                    f"{stage_cfg.pd_execution.role!r}"
+                )
+            factory_config_stage = stage_cfg.model_copy(
+                update={"name": stage_cfg.name[: -len(suffix)]}
+            )
+        base_factory_kwargs = resolve_stage_factory_kwargs(factory_config_stage, config)
         typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
 
         stage_kwargs = dict(
@@ -170,6 +187,9 @@ def _build_stage_groups(
             can_accept_stream_before_payload=stage_cfg.can_accept_stream_before_payload,
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             replica_topology=replica_topology.to_dict(),
+            name_map=name_map,
+            source_name_map=source_name_map,
+            pd_execution=stage_cfg.pd_execution,
         )
         if tp_size == 1:
             single_stage_specs[stage_cfg.name] = _build_single_stage_spec(
@@ -508,23 +528,31 @@ class MultiProcessPipelineRunner:
                 endpoints=prep.endpoints,
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
+                name_map=prep.name_map,
+                source_name_map=prep.source_name_map,
                 replica_topology=prep.replica_topology,
             )
 
-            terminal_stages_resolver = (
-                import_string(self._config.terminal_stages_fn)
-                if self._config.terminal_stages_fn
-                else None
-            )
+            terminal_stages_resolver = None
+            if self._config.terminal_stages_fn:
+                logical_terminal_resolver = import_string(
+                    self._config.terminal_stages_fn
+                )
+
+                def terminal_stages_resolver(request):
+                    resolved = logical_terminal_resolver(request)
+                    return [prep.terminal_name_map.get(name, name) for name in resolved]
+
             max_in_flight = resolve_coordinator_max_in_flight(
                 self._config,
                 logical_process_plan=prep.logical_process_plan,
+                stage_name_map=prep.name_map,
             )
             self._coordinator = Coordinator(
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,
-                terminal_stages=self._config.terminal_stages or None,
+                terminal_stages=prep.terminal_stages or None,
                 terminal_stages_resolver=terminal_stages_resolver,
                 replica_topology=prep.replica_topology,
                 logical_process_plan=prep.logical_process_plan,

@@ -15,10 +15,12 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
+from sglang_omni.config.pd_capability import PD_CAPABLE_MARKER
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
 )
+from sglang_omni.config.schema import PDExecution
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
@@ -107,6 +109,9 @@ class StageLaunchConfig:
 
     # Replica topology (logical stage name -> instance names)
     replica_topology: dict[str, list[str]] = field(default_factory=dict)
+    name_map: dict[str, str] = field(default_factory=dict)
+    source_name_map: dict[str, str] = field(default_factory=dict)
+    pd_execution: PDExecution | None = None
 
     # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
@@ -625,6 +630,7 @@ def _construct_stage(
     )
 
     scheduler = _construct_scheduler(spec, gpu_id, log)
+    kv_registrations = scheduler.kv_registrations
 
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
@@ -642,9 +648,16 @@ def _construct_stage(
         if sources is None:
             return None
         if isinstance(sources, str):
-            return [sources]
+            return [spec.source_name_map.get(sources, sources)]
         if isinstance(sources, Iterable):
-            return list(sources)
+            return [
+                (
+                    spec.source_name_map.get(source, source)
+                    if isinstance(source, str)
+                    else source
+                )
+                for source in sources
+            ]
         raise ValueError(
             f"wait_for_fn for stage {spec.stage_name!r} returned unsupported "
             f"source value {sources!r}"
@@ -657,7 +670,9 @@ def _construct_stage(
         allow_empty: bool,
         hook_name: str,
     ) -> str | list[str] | None:
-        returned_targets = _target_list(targets)
+        returned_targets = [
+            spec.name_map.get(target, target) for target in _target_list(targets)
+        ]
         if not returned_targets:
             if allow_empty:
                 return None
@@ -679,7 +694,10 @@ def _construct_stage(
         get_next = lambda request_id, output: None
     elif spec.route_fn:
         route_fn = import_string(spec.route_fn)
-        allowed_route_targets = set(_target_list(spec.next_stages))
+        allowed_route_targets = {
+            spec.name_map.get(target, target)
+            for target in _target_list(spec.next_stages)
+        }
 
         def get_next(request_id, output, _fn=route_fn):
             return _target_result(
@@ -692,15 +710,19 @@ def _construct_stage(
     else:
         target = spec.next_stages
         if isinstance(target, str):
-            get_next = lambda request_id, output, _t=target: _t
+            mapped = spec.name_map.get(target, target)
+            get_next = lambda request_id, output, _t=mapped: _t
         elif isinstance(target, list):
-            get_next = lambda request_id, output, _t=list(target): _t
+            mapped = [spec.name_map.get(item, item) for item in target]
+            get_next = lambda request_id, output, _t=mapped: _t
         else:
             get_next = lambda request_id, output: None
 
     if spec.stream_done_to_fn:
         stream_done_to_fn = import_string(spec.stream_done_to_fn)
-        allowed_stream_targets = set(spec.stream_targets)
+        allowed_stream_targets = {
+            spec.name_map.get(target, target) for target in spec.stream_targets
+        }
         get_stream_done_targets = (
             lambda request_id, output, _fn=stream_done_to_fn: _target_result(
                 _fn(request_id, output),
@@ -715,7 +737,7 @@ def _construct_stage(
     # --- Build input handler ---
     if spec.wait_for and spec.merge_fn:
         merge_fn = import_string(spec.merge_fn)
-        sources = set(spec.wait_for)
+        sources = {spec.source_name_map.get(source, source) for source in spec.wait_for}
         expected_sources_fn = None
         if spec.wait_for_fn:
             wait_for_fn = import_string(spec.wait_for_fn)
@@ -789,6 +811,7 @@ def _construct_stage(
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
         replica_topology=spec.replica_topology or None,
+        kv_registrations=kv_registrations,
     )
 
     if spec.is_stream_receiver:
@@ -818,12 +841,65 @@ def _construct_scheduler(
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,
     )
+
+    expected_scheduler_cls = None
+    if spec.pd_execution is not None:
+        # Note (Audrey Zheng): checked here rather than at config time. The
+        # marker lives on the model's factory, and reading it in the launcher
+        # meant importing a model module -- and whatever it pulls in -- just
+        # to look at a boolean. This process is about to import that factory
+        # anyway, so the check costs nothing here and the compiler stops
+        # reaching into model code.
+        if not getattr(factory, PD_CAPABLE_MARKER, False):
+            raise ValueError(
+                f"Stage {spec.stage_name!r} is PD-disaggregated, but factory "
+                f"{spec.factory!r} has not declared PD support"
+            )
+        import inspect
+
+        from sglang_omni.scheduling.pd_scheduler import scheduler_class_for_role
+
+        expected_scheduler_cls = scheduler_class_for_role(spec.pd_execution.role)
+        parameters = inspect.signature(factory).parameters
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        missing = {
+            name
+            for name in ("scheduler_cls", "scheduler_kwargs")
+            if name not in parameters and not accepts_kwargs
+        }
+        if missing:
+            raise TypeError(
+                f"PD factory {spec.factory!r} for {spec.stage_name!r} must accept "
+                f"compiler arguments {sorted(missing)}"
+            )
+        factory_args["scheduler_cls"] = expected_scheduler_cls
+        factory_args["scheduler_kwargs"] = {
+            "stage_name": spec.stage_name,
+            "partner_stage": spec.pd_execution.partner,
+            "decode_targets": spec.pd_execution.decode_targets,
+        }
+
+    def construct() -> Any:
+        scheduler = factory(**factory_args)
+        if expected_scheduler_cls is not None and not isinstance(
+            scheduler, expected_scheduler_cls
+        ):
+            raise TypeError(
+                f"PD stage {spec.stage_name!r} factory returned "
+                f"{type(scheduler).__name__}; expected "
+                f"{expected_scheduler_cls.__name__}"
+            )
+        return scheduler
+
     if gpu_id is None:
-        return factory(**factory_args)
+        return construct()
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return factory(**factory_args)
+        return construct()
 
 
 def _prepare_accelerator_environment(

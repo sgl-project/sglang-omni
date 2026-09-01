@@ -560,3 +560,52 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
     assert captured_kwargs["tp_worker"] == "worker"
     assert captured_kwargs["request_builder"] == "request_builder"
     assert captured_kwargs["result_adapter"] == "result_adapter"
+
+
+def test_base_builder_exposes_concrete_scheduler_to_post_setup() -> None:
+    from sglang_omni.scheduling.engine_factory import SGLangGenerationEngineBuilder
+
+    observed: list[type] = []
+
+    class ConcreteScheduler:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class Builder(SGLangGenerationEngineBuilder):
+        model_name = "test"
+        context_length = 1
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            del dtype
+            return {}
+
+        def make_adapters(self, model: Any) -> tuple[Any, Any]:
+            del model
+            return "request-builder", "result-adapter"
+
+        def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+            return (model_worker, output_proc)
+
+        def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+            del model_runner
+            observed.append(type(scheduler))
+
+    builder = Builder()
+    scheduler, model_runner = builder._build_runtime(
+        model_worker="worker",
+        model="model",
+        output_proc="output",
+        tree_cache="tree",
+        req_to_token_pool="request-pool",
+        token_to_kv_pool_allocator="kv-pool",
+        server_args="server-args",
+        model_config="model-config",
+        scheduler_cls=ConcreteScheduler,
+        scheduler_construction_kwargs={"stage_name": "thinker_prefill"},
+    )
+    builder.post_scheduler_setup(scheduler, model_runner)
+
+    assert observed == [ConcreteScheduler]
+    assert scheduler.kwargs["stage_name"] == "thinker_prefill"
+    assert scheduler.kwargs["request_builder"] == "request-builder"
+    assert scheduler.kwargs["result_adapter"] == "result-adapter"

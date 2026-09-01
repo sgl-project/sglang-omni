@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 import torch
 
+from sglang_omni.config.pd_capability import pd_disaggregation_capable
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
@@ -133,6 +134,7 @@ class FakeScheduler:
         self.started = False
         self.stopped = False
         self.aborted: list[str] = []
+        self.kv_registrations = ()
 
     def start(self) -> None:
         self.started = True
@@ -224,6 +226,23 @@ def make_scheduler(**_: Any) -> FakeScheduler:
     return FakeScheduler()
 
 
+@pd_disaggregation_capable
+def make_pd_scheduler(*, scheduler_cls, scheduler_kwargs, **kwargs):
+    """Exercise the real worker factory contract without initializing SGLang."""
+
+    scheduler = object.__new__(scheduler_cls)
+    scheduler.kv_registrations = ()
+    scheduler.factory_observed_type = type(scheduler)
+    scheduler.factory_kwargs = {**kwargs, **scheduler_kwargs}
+    return scheduler
+
+
+@pd_disaggregation_capable
+def make_wrong_pd_scheduler(*, scheduler_cls, scheduler_kwargs, **kwargs):
+    del scheduler_cls, scheduler_kwargs, kwargs
+    return FakeScheduler()
+
+
 def dummy_factory(**kwargs: Any) -> dict[str, Any]:
     return dict(kwargs)
 
@@ -290,6 +309,7 @@ class ReplicaProcessProbeScheduler:
     def __init__(self, marker: str, *, emit_stream: bool = False) -> None:
         self.inbox: queue.Queue[IncomingMessage] = queue.Queue()
         self.outbox: queue.Queue[OutgoingMessage] = queue.Queue()
+        self.kv_registrations = ()
         self.requires_tp_work_fanout = True
         self._marker = marker
         self._emit_stream = emit_stream
