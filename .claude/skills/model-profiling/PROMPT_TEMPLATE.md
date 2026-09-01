@@ -17,16 +17,34 @@ Output doc (new or resume): {OUTPUT_DOC_PATH}
 Methodology docs to fold generalizable findings into: {METHODOLOGY_DOC_PATHS}
 
 Scope for this run: {LAYERS_IN_SCOPE}
-  (e.g. "Layer 1, 3, 2, 4 fresh; Layer 5 only if Layer 4 changes a default")
+  (e.g. "Layer 1, 3, 2 — discovery only, no confirmed Layer 4 hypothesis yet"
+  or "Layer 4 on <specific hypothesis>, then Layer 5 — discovery was already
+  approved in a prior message")
 
 Do:
 1. Follow docs/profiling_methodology.md §1's pre-check checklist yourself —
-   confirm the GPU pool is actually free (report any busy PID you can't
-   attribute via `ps`, don't assume it's safe to ignore), record a baseline
-   environment fingerprint, clean up any orphaned processes from prior runs.
-2. Work through the layers in scope, in the methodology's documented order
-   (Layer 1 -> Layer 3 -> Layer 2 -> Layer 4 -> Layer 5), stopping to record
-   evidence at each layer rather than jumping straight to a conclusion.
+   confirm the GPU pool is actually free. If a process from a prior run is
+   still holding a GPU you need, do NOT kill it yourself (see "Do not"
+   below) — report its PID, command line, and how you verified it with
+   `ps`, and stop for explicit confirmation before anyone kills it. Once
+   the pool is confirmed clear, record a baseline environment fingerprint.
+2. Layer 1 first, always. Then branch per docs/profiling_methodology.md
+   §2's own routing rule — 1 -> 3 -> 2 -> 4 -> 5 is NOT a fixed sequence:
+   - Busy ratio well below saturation (CPU/orchestration-bound): go to
+     Layer 2 next, then Layer 3 (concurrency scan), then Layer 4 (A/B on
+     what Layer 2 found), then Layer 5 only if Layer 4 actually changed a
+     default.
+   - Busy ratio already near saturation (GPU-kernel-bound): per the
+     methodology, Layer 2-4's CPU-side digging is low-ROI — skip it, note
+     why in the report, and move toward kernel-level analysis instead; only
+     run Layer 5 if you actually changed something.
+   Record evidence at each layer you do enter rather than jumping straight
+   to a conclusion.
+2a. If your scope is discovery only (no confirmed Layer 4 hypothesis yet):
+   stop once Layer 2 (or the saturation branch above) is done. Report the
+   candidate hypothesis/hypotheses — do not pick one and run Layer 4 on
+   your own judgment. Wait for a follow-up message confirming which one (if
+   any) to A/B before touching Layer 4.
 3. Before trusting any aggregate throughput/latency number, check the max
    latency and the raw per-sample distribution, not just percentiles/means —
    a single pathological sample can dominate wall-clock and look like a
@@ -65,12 +83,16 @@ Do:
     can't recover.
 
 Do not:
-- Kill any process you didn't start yourself.
+- Kill any process you didn't start yourself, including orphans left over
+  from a prior run — report and wait for confirmation instead.
 - Guess at or report a specific PID/process attribution you haven't
   verified with `ps`/`nvidia-smi --query-compute-apps`.
 - Put this model's specific numbers into the pure methodology docs.
 - Decide on your own which doc an ambiguous generalizable-vs-model-specific
   finding belongs in — flag it in your report instead of picking one.
+- Run Layer 4 right after Layer 2 on your own judgment when your scope was
+  discovery-only — stop and report the candidate hypothesis, then wait for
+  a follow-up message before A/B-ing anything.
 ```
 
 ## Placeholder reference
@@ -82,4 +104,4 @@ Do not:
 | `{GPU_POOL}` | Candidate free GPU id(s), from the skill's own pre-check |
 | `{OUTPUT_DOC_PATH}` | `docs/developer_reference/<model>_profile.md` |
 | `{METHODOLOGY_DOC_PATHS}` | `docs/profiling_methodology.md` and `docs/profiling_methodology_en.md` |
-| `{LAYERS_IN_SCOPE}` | Which of Layer 1/2/3/4/5 this run covers (fresh vs. resume) |
+| `{LAYERS_IN_SCOPE}` | Which of Layer 1/2/3/4/5 this run covers. A fresh run without an existing `<model>_profile.md` must scope to discovery only (Layer 1, 3, 2) — Layer 4/5 get filled in and confirmed separately once Layer 2 surfaces a concrete hypothesis. A resume run may cover Layer 4/5 directly if the hypothesis was already confirmed. |

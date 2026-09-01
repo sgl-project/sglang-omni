@@ -66,6 +66,10 @@ skill or into the generated prompt; reference section names instead.
 
 Unlike `running-eval-suite`, this skill **does** pause for a human decision
 before the GPU-touching step — that pause is the point, not an oversight.
+A fresh run (no prior Layer 2 evidence) pauses **twice**: once before any
+GPU work starts, and again after Layer 2 surfaces a candidate Layer 4
+hypothesis, since no one — human or agent — can pick an A/B variable before
+that evidence exists.
 
 ## Steps I follow
 
@@ -75,34 +79,53 @@ before the GPU-touching step — that pause is the point, not an oversight.
    myself (`nvidia-smi` free-GPU check, `py-spy --version`); leave the
    expensive/stateful checks (baseline env fingerprint, orphan cleanup) for
    the executing agent to do and record.
-3. Fill `PROMPT_TEMPLATE.md`'s placeholders for this model and print the
-   resulting prompt plus a short plan summary.
-4. **Stop.** Wait for the user to confirm, edit, or reject the plan.
-5. On confirmation, launch a background agent (via the `Agent` tool, a
+3. Check whether a concrete Layer 4 hypothesis already exists — from an
+   existing `<model>_profile.md`'s Layer 2 findings, or from something
+   already established earlier in this conversation. If not, this run
+   cannot pick a Layer 4 A/B variable yet: scope the plan to **discovery
+   only** (Layer 1, then 3 and/or 2 per `docs/profiling_methodology.md`
+   §2's routing rule, not a fixed order — see Method reference above) and
+   leave Layer 4/5 for a second confirmation later.
+4. Fill `PROMPT_TEMPLATE.md`'s placeholders for this model — discovery-only
+   scope, or the full scope if a hypothesis is already confirmed — and
+   print the resulting prompt plus a short plan summary.
+5. **Stop.** Wait for the user to confirm, edit, or reject the plan.
+6. On confirmation, launch a background agent (via the `Agent` tool, a
    fresh general-purpose agent — not a context-inheriting fork, since this
    skill must work the same way with or without prior conversation) with
    the confirmed prompt.
-6. When a completion notification arrives, do not trust the `status`
+7. When a completion notification arrives, do not trust the `status`
    label alone — read the agent's own `result` text. If it describes
    unfinished work despite `status: completed`, resume it with
    `SendMessage` to the same agent and explicit continuation instructions,
    rather than assuming it will pick back up on its own.
-7. Once genuinely done, independently verify before reporting: check the
-   new/updated doc's section headers (`grep "^## "`) and
-   `git status --short docs/` — don't just relay the agent's self-summary.
-8. Route findings:
-   - Model-specific numbers and tables → new or updated
-     `docs/developer_reference/<model>_profile.md`, following the section
-     shape of the most complete prior example (currently
-     `moss_transcribe_diarize_profile.md`: baseline env, Layer 1/3, Layer 2,
-     Layer 4, Layer 5, a findings-evidence-recommendation table, cleanup).
-   - Cross-model, generalizable lessons (sampling bias, outlier fragility,
-     tooling gotchas) → both `docs/profiling_methodology.md` **and**
-     `docs/profiling_methodology_en.md`, kept in sync.
-   - Anything ambiguous between the two → ask the user, don't decide alone.
-9. **Do not auto-commit.** Print `git status --short docs/` and let the
-   user review and commit themselves — unlike `running-eval-suite`'s
-   auto-commit, these docs carry judgment calls a human should sign off on.
+8. **Second confirmation, discovery-only runs**: once Layer 2 (or the
+   saturation branch that skips it) genuinely finishes, stop again before
+   any Layer 4 work happens. Present the agent's candidate hypothesis to
+   the user and wait for confirmation of which one, if any, to A/B — a
+   fresh run has no basis to pick a Layer 4 variable until this evidence
+   exists, so the agent is instructed to stop here too rather than deciding
+   on its own. Only after confirmation, resume the same agent
+   (`SendMessage`) with the approved Layer 4 (and Layer 5, if applicable)
+   scope. Skip this step when the hypothesis was already confirmed before
+   step 5 (e.g. a resume run).
+9. Once genuinely done — discovery, and the approved experiment if one ran
+   — independently verify before reporting: check the new/updated doc's
+   section headers (`grep "^## "`) and `git status --short docs/` — don't
+   just relay the agent's self-summary.
+10. Route findings:
+    - Model-specific numbers and tables → new or updated
+      `docs/developer_reference/<model>_profile.md`, following the section
+      shape of the most complete prior example (currently
+      `moss_transcribe_diarize_profile.md`: baseline env, Layer 1/3, Layer 2,
+      Layer 4, Layer 5, a findings-evidence-recommendation table, cleanup).
+    - Cross-model, generalizable lessons (sampling bias, outlier fragility,
+      tooling gotchas) → both `docs/profiling_methodology.md` **and**
+      `docs/profiling_methodology_en.md`, kept in sync.
+    - Anything ambiguous between the two → ask the user, don't decide alone.
+11. **Do not auto-commit.** Print `git status --short docs/` and let the
+    user review and commit themselves — unlike `running-eval-suite`'s
+    auto-commit, these docs carry judgment calls a human should sign off on.
 
 ## What I do not do
 
@@ -119,6 +142,8 @@ before the GPU-touching step — that pause is the point, not an oversight.
   silently dropping them.
 - Decide ambiguous output-routing calls (methodology doc vs. per-model doc)
   on my own — ask when it's not clear-cut.
+- Let a discovery-only run proceed into Layer 4 without a second, explicit
+  confirmation of the concrete hypothesis Layer 2 turned up.
 
 ## Files
 
@@ -136,5 +161,5 @@ before the GPU-touching step — that pause is the point, not an oversight.
    invocation instead of reading a per-model registry, since Layer 2/4
    choices are model-specific judgment calls anyway.
 3. After a model's first full run, its `docs/developer_reference/<model>_profile.md`
-   becomes the new best example for Step 8's section shape if it's more
+   becomes the new best example for Step 10's section shape if it's more
    complete than the current reference example.
