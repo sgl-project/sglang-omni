@@ -84,7 +84,7 @@ audar-tts = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
-sgl-omni-router = "sglang_omni_router.serve:main"
+sgl-omni-router-py = "sglang_omni_router.python.serve:main"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
@@ -104,7 +104,13 @@ markers = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["sglang_omni*"]
+include = [
+    "sglang_omni",
+    "sglang_omni.*",
+    "sglang_omni_router.python",
+    "sglang_omni_router.python.*",
+]
+namespaces = true
 
 [tool.setuptools.dynamic]
 version = {attr = "sglang_omni.__version__"}

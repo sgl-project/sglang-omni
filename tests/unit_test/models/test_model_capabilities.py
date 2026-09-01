@@ -45,7 +45,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_batch_vocoder=True,
         supports_streaming_vocoder=True,
         supports_cuda_graph=True,
-        supports_torch_compile=True,
+        supports_torch_compile=False,
         supports_breakable_prefill_cuda_graph=False,
     ),
     "HiggsMultimodalQwen3ForConditionalGeneration": ModelCapabilities(
@@ -230,7 +230,7 @@ def test_launcher_model_capabilities_log_summary() -> None:
         "batch_vocoder": True,
         "streaming_vocoder": True,
         "cuda_graph": True,
-        "torch_compile": True,
+        "torch_compile": False,
         "breakable_prefill_cuda_graph": False,
     }
 

@@ -1,0 +1,49 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "sglang-omni-router"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Standalone Rust router process for SGLang-Omni"
+license = "Apache-2.0"
+repository = "https://github.com/sgl-project/sglang-omni"
+publish = false
+
+[lib]
+name = "sgl_omni_router"
+
+[[bin]]
+name = "sgl-omni-router"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "=1.51.4", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
+hyper = { version = "=1.10.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["service", "tokio"] }
+clap = { version = "=4.6.2", default-features = false, features = ["derive", "error-context", "help", "std", "usage"] }
+serde = { version = "=1.0.228", default-features = false, features = ["derive", "std"] }
+toml = { version = "=1.1.3", default-features = false, features = ["parse", "serde", "std"] }
+thiserror = { version = "=2.0.18", default-features = false, features = ["std"] }
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["env-filter", "fmt", "json", "std"] }
+
+[target.'cfg(unix)'.dependencies]
+rlimit = { version = "=0.11.0", default-features = false }
+
+[lints.rust]
+unreachable_pub = "deny"
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+await_holding_lock = "deny"
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"

@@ -76,6 +76,8 @@ process-local module state). Splitting such an edge fails at serving time
 rather than at config validation — keep those stages in one process as the
 shipped configs do.
 
+Ming-Omni-TTS carries preprocessing fields in `StagePayload.data` and serializes the reference encoder's `spk_emb` and `prompt_latent` tensors with the `typed_tensor` wire codec. Both `preprocessing -> reference_encode` and `reference_encode -> tts_engine` can therefore cross process boundaries.
+
 ## Resource and Performance Trade-offs
 
 Splitting a stage out creates another OS process and usually another CUDA

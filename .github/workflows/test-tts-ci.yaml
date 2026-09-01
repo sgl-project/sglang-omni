@@ -8,8 +8,14 @@ on:
         default: higgs
       tts_mps_config:
         description: >-
-          MPS-DP config for stage 5. Empty for models gated as a single
-          instance, which skips that stage.
+          MPS-DP config for stage 5. Empty skips that stage.
+        type: string
+        required: false
+        default: ""
+      tts_mps_model:
+        description: >-
+          Model the stage 5 pool runs. Differs from tts_ci_model when the
+          selected model is gated as a single instance and borrows a pool.
         type: string
         required: false
         default: ""
@@ -276,9 +282,9 @@ jobs:
   stage-5-mps:
     name: stage 5 - MPS
     needs: stage-4-serving
-    # Note: (Jiaxin Deng) Qwen3-TTS is gated as a single instance: the tuned
-    # single instance beats the same-card pool there, so colocation is not the
-    # recommended topology and there is no MPS config to run.
+    # Note (Jiaxin Deng): the pool model is resolved in preflight and can
+    # differ from the rotation model, so every stage 5 reference below reads
+    # tts_mps_model rather than tts_ci_model.
     if: always() && !cancelled() && inputs.tts_mps_config != ''
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
@@ -331,7 +337,7 @@ jobs:
             --exact-sha "${{ inputs.exact_sha }}" \
             --run-id "${TTS_MPS_RUN_ID}" \
             --run-attempt "${GITHUB_RUN_ATTEMPT}" \
-            --selected-model "${{ inputs.tts_ci_model }}"
+            --selected-model "${{ inputs.tts_mps_model }}"
 
       - name: Run TTS MPS non-streaming validation
         shell: bash
@@ -343,7 +349,7 @@ jobs:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SEEDTTS_SIM_CACHE_DIR: /github/home/seedtts-wavlm-sim
-          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
+          TTS_CI_MODEL: ${{ inputs.tts_mps_model }}
           TTS_MPS_CONFIG: ${{ inputs.tts_mps_config }}
           TTS_MPS_EXACT_SHA: ${{ inputs.exact_sha }}
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor

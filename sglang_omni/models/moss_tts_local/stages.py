@@ -26,6 +26,7 @@ from sglang_omni.models.moss_tts_local.audio_tokenizer import (
     load_moss_tts_local_audio_tokenizer,
     load_moss_tts_local_audio_vocoder,
 )
+from sglang_omni.models.moss_tts_local.config import resolve_vocoder_cuda_graph
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
@@ -664,10 +665,11 @@ def create_vocoder_executor(
     stream_chunk_frames: int = 25,
     initial_chunk_frames: int = 5,
     coalesce_floor_frames: int = 5,
-    cuda_graph: bool = True,
+    cuda_graph: bool | None = None,
     cuda_graph_frames: list[int] | None = None,
     cuda_graph_min_free_gb: float = 3.0,
 ) -> MossTTSLocalStreamingVocoderScheduler:
+    cuda_graph = resolve_vocoder_cuda_graph(cuda_graph)
     device = _resolve_codec_device(device, gpu_id)
     processor = _load_moss_tts_local_processor(model_path)
     decoder_dtype = resolve_moss_audio_dtype(

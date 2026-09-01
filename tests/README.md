@@ -155,6 +155,13 @@ tests/
     │   ├── test_request_builders.py
     │   ├── test_stream_output_builder.py
     │   └── test_streaming_client.py
+    ├── fun_cosyvoice3/
+    │   ├── test_flow_batch.py
+    │   ├── test_model_runner.py
+    │   ├── test_pipeline.py
+    │   ├── test_request_builders.py
+    │   ├── test_utils.py
+    │   └── test_vocoder.py
     ├── arkasr/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_encoder_service.py
@@ -168,7 +175,9 @@ tests/
     │   └── test_transcription_adapter.py
     ├── qwen3_tts/
     │   ├── test_pipeline.py
-    │   └── test_predictor_cuda_graph.py
+    │   ├── test_predictor_cuda_graph.py
+    │   ├── test_predictor_kernels.py
+    │   └── test_sampling_kernels.py
     ├── higgs_tts/
     │   ├── test_async_decode_runner.py
     │   ├── test_batched_step.py
@@ -203,6 +212,7 @@ tests/
     ├── scheduling/
     │   ├── test_deferred_admission.py
     │   ├── test_engine_factory.py
+    │   ├── test_evict_heap_radix_cache.py
     │   ├── test_pipeline_state.py
     │   ├── test_reference_encoder.py
     │   ├── test_stage_cache.py
@@ -475,6 +485,9 @@ that happened to contain an older version of the test.
   - static TTS `ModelCapabilities` declarations, registry lookup, aliases, and
     launcher startup logging.
 - `unit_test/scheduling/`: Shared scheduling-service unit tests:
+  - `EvictHeapRadixCache` eviction-order equivalence against upstream
+    `RadixCache` on randomized traces, heap boundedness and recovery after a
+    full drain, and reset-then-reuse behavior.
   - deferred request admission completion, abort, and dependency-failure
     semantics.
   - breakable prefill CUDA Graph policy: backend/cap/bucket validation, shared
@@ -536,6 +549,13 @@ that happened to contain an older version of the test.
   - streaming output: request-contract validation, chunked-prefill gating,
     rate-limited and terminal flushes, UTF-8 boundaries, per-request state,
     and direct-client aggregation without repeating the terminal transcript.
+- `unit_test/fun_cosyvoice3/`: Fun-CosyVoice3 unit tests:
+  - pipeline configuration and stage/registry contracts
+  - request preprocessing, model-runner, and utility behavior
+  - batched Flow inference with variable prompt/target lengths, CFG
+    conditioning, bucketed admission, and serial-parity invariants
+  - vocoder batching, conditioning handoff, output payload construction, and
+    abort/error handling
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio

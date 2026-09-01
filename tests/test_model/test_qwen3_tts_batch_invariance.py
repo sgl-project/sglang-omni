@@ -107,7 +107,7 @@ async def _generate_batch(
     return outputs
 
 
-def _payload(sample) -> dict:
+def _payload(sample, *, subtalker_dosample: bool | None = None) -> dict:
     return {
         "model": MODEL_PATH,
         "input": sample.target_text,
@@ -116,6 +116,7 @@ def _payload(sample) -> dict:
         "response_format": "wav",
         "seed": SEED,
         "max_new_tokens": 2048,
+        "stage_params": {"tts_engine": {"subtalker_dosample": subtalker_dosample}},
     }
 
 
@@ -183,6 +184,42 @@ def test_qwen3_tts_deterministic_batch_invariance(
         payload["input"] = " ".join([sample.target_text] * 3)
         payloads.append(payload)
     assert len({payload["ref_text"] for payload in payloads}) == 8
+
+    payload = payloads[0]
+    with _qwen3_tts_server(tmp_path_factory, "b1") as server:
+        b1 = asyncio.run(_generate_serial(server.base_url, payloads))
+        repeated_b1 = asyncio.run(_generate_serial(server.base_url, [payload] * 2))
+        _assert_uncached_reference_encode(server.log_file)
+
+    with _qwen3_tts_server(tmp_path_factory, "b8") as server:
+        mixed_b8 = asyncio.run(_generate_batch(server.base_url, payloads))
+        _assert_uncached_reference_encode(server.log_file)
+        repeated_b8 = asyncio.run(_generate_batch(server.base_url, [payload] * 8))
+
+    assert mixed_b8 == b1
+    assert all(pcm == b1[0] for pcm in repeated_b1)
+    assert all(pcm == b1[0] for pcm in repeated_b8)
+
+
+@pytest.mark.benchmark
+def test_qwen3_tts_mixed_sampled_argmax_batch_invariance(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("Qwen3-TTS batch invariance requires CUDA")
+    if not Path(DATASET).exists():
+        download_dataset(DATASET, quiet=True)
+
+    payloads = []
+    for index, sample in enumerate(load_seedtts_samples(DATASET, 8, split="en")):
+        payload = _payload(sample, subtalker_dosample=index % 2 == 0)
+        payload["input"] = " ".join([sample.target_text] * 3)
+        payloads.append(payload)
+    assert len({payload["ref_text"] for payload in payloads}) == 8
+    assert {
+        payload["stage_params"]["tts_engine"]["subtalker_dosample"]
+        for payload in payloads
+    } == {False, True}
 
     payload = payloads[0]
     with _qwen3_tts_server(tmp_path_factory, "b1") as server:

@@ -350,6 +350,11 @@ class SGLModelRunner(ModelRunner):
                 private_names=policy.private_tensor_names,
             )
         )
+        # Note (Jiaxin Deng): a model that folds several tensors into one buffer
+        # must re-derive that view here, or replicas diverge on the kernel path.
+        attached_hook = getattr(self.model, "on_weight_share_attached", None)
+        if callable(attached_hook):
+            attached_hook()
         # Note (Jiaxin Deng): return the dropped dummy-weight blocks to the
         # driver so KV-pool profiling and later replicas see the freed memory.
         torch.cuda.empty_cache()

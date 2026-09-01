@@ -13,18 +13,18 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 from starlette.datastructures import URL
 
-from sglang_omni_router import proxy as proxy_module
-from sglang_omni_router import websocket_proxy as websocket_proxy_module
-from sglang_omni_router.app import create_app
-from sglang_omni_router.config import RouterConfig, WorkerConfig
-from sglang_omni_router.route_metadata import ROUTE_HEADER_NAMES
-from sglang_omni_router.selector import WorkerSelector
-from sglang_omni_router.voice_routing import (
+from sglang_omni_router.python import proxy as proxy_module
+from sglang_omni_router.python import websocket_proxy as websocket_proxy_module
+from sglang_omni_router.python.app import create_app
+from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+from sglang_omni_router.python.route_metadata import ROUTE_HEADER_NAMES
+from sglang_omni_router.python.selector import WorkerSelector
+from sglang_omni_router.python.voice_routing import (
     MAX_VOICE_REGISTRY_RESPONSE_BYTES,
     VoiceMutation,
     VoiceRoutingState,
 )
-from sglang_omni_router.worker import Worker, build_workers, worker_id_from_url
+from sglang_omni_router.python.worker import Worker, build_workers, worker_id_from_url
 
 
 def _request_netloc(request: httpx.Request) -> str:
@@ -1427,7 +1427,9 @@ def test_tts_websocket_is_pinned_and_counted_on_one_worker(
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     app = create_app(_router_config(max_payload_size=1024), client=async_client)
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni_router.websocket_proxy"):
+    with caplog.at_level(
+        logging.INFO, logger="sglang_omni_router.python.websocket_proxy"
+    ):
         with TestClient(app) as client:
             with client.websocket_connect(
                 "/v1/audio/speech/stream",
@@ -1493,7 +1495,7 @@ async def test_tts_websocket_cancellation_emits_one_terminal_log(
         )
         with caplog.at_level(
             logging.INFO,
-            logger="sglang_omni_router.websocket_proxy",
+            logger="sglang_omni_router.python.websocket_proxy",
         ):
             with pytest.raises(asyncio.CancelledError):
                 await proxy.forward(CancellingWebSocket())
@@ -1526,7 +1528,7 @@ def test_tts_websocket_overload_records_a_terminal_log(
         assert app.state.proxy.admission.try_acquire()
         with caplog.at_level(
             logging.WARNING,
-            logger="sglang_omni_router.websocket_proxy",
+            logger="sglang_omni_router.python.websocket_proxy",
         ):
             with client.websocket_connect("/v1/audio/speech/stream") as websocket:
                 error = websocket.receive_json()
