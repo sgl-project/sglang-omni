@@ -12,7 +12,8 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
+Core deps cover the qualified models (Qwen3-ASR / TTS / Omni), the unverified
+MiniMax Music 3 enablement baseline, and the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
 
@@ -127,6 +128,32 @@ build reports `fatal error: sycl/sycl.hpp: No such file or directory`, point the
 ```bash
 export CPATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
 ```
+
+### MiniMax Music 3 (text-to-music, one or two XPUs)
+
+MiniMax Music 3 automatically colocates its AR and acoustic stages on one visible
+XPU, or places the acoustic stage on the second device when two or more are visible.
+The XPU baseline uses eager execution and native `torch_sdpa`; CUDA-specific graphs
+and acoustic compilation are disabled by default. This path is **unverified**, not
+supported, until it passes real-XPU operator, numerical, memory, cancellation, and
+multi-process lifecycle validation on the pinned runtime profile.
+
+```bash
+sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --host 0.0.0.0 --port 8000
+
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "MiniMaxAI/MiniMax-Music3",
+    "input": "[Verse]\nWalking under neon skies\n[Chorus]\nWe sing into the night",
+    "instructions": "An uplifting synth-pop song at 118 BPM with bright analog synths",
+    "seed": 42,
+    "max_new_tokens": 250
+  }' --output minimax_music3_xpu.wav
+```
+
+Start with the 250-frame (about 10-second) request above for remote validation
+before increasing the generation length.
 
 ### Qwen3-ASR (speech-to-text, single XPU)
 

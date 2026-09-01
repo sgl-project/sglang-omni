@@ -74,6 +74,15 @@ RUN git clone --branch ${SGLANG_XPU_BRANCH} --single-branch ${SGLANG_XPU_REPO} s
     && grep -q "sgl-kernel-xpu.git@${SGL_KERNEL_XPU_REF}\"" pyproject.toml \
     && pip install --no-cache-dir . --extra-index-url ${TORCH_XPU_INDEX}
 
+# MiniMax Music 3 imports SGLang's diffusion runtime eagerly. Keep these pins
+# explicit so the XPU image contains the complete import chain before Omni starts.
+RUN pip install --no-cache-dir \
+        addict==2.4.0 \
+        cache-dit==1.3.0 \
+        diffusers==0.37.0 \
+        imageio==2.36.0 \
+        imageio-ffmpeg==0.5.1
+
 # --no-build-isolation installs no build requirement, so setuptools is pinned here:
 # below 77 it rejects the PEP 639 license metadata in pyproject_xpu.toml.
 COPY . /workspace/sglang-omni

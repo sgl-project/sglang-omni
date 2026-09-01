@@ -403,7 +403,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
     ) -> None:
         chunk = ar_state.frames.concatenate(window.start, window.end)
         self._dump_chunk(chunk, ar_state.seed, window)
-        torch.cuda.current_stream(chunk.device).synchronize()
+        torch.get_device_module(chunk.device).current_stream(chunk.device).synchronize()
         ar_state.pending_chunks.append(
             (
                 chunk,

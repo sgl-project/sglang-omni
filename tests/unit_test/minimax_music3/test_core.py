@@ -11,6 +11,7 @@ from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_c
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 from torch.nn import functional as F
 
+from sglang_omni import platforms
 from sglang_omni.models.minimax_music3.acoustic import (
     MiniMaxMusic3AcousticScheduler,
     _resolve_acoustic_dtype,
@@ -168,25 +169,32 @@ def test_minimax_music3_explicit_placements_ignore_the_machine(
     two-GPU has to stay two-GPU even on a one-GPU box, or the file would not be
     describing anything.
     """
-    for visible in ("6", "6,7"):
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
-        dual = MiniMaxMusic3DualGPUPipelineConfig(model_path="/models/minimax")
-        single = MiniMaxMusic3SingleGPUPipelineConfig(model_path="/models/minimax")
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(platforms.current_platform, "is_musa", lambda: False)
+    monkeypatch.setattr(platforms.current_platform, "is_xpu", lambda: False)
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda _device: pytest.fail("explicit topology queried the machine"),
+    )
 
-        dual_stages = {stage.name: stage for stage in dual.stages}
-        single_stages = {stage.name: stage for stage in single.stages}
-        assert dual_stages["minimax_music3_ar"].gpu == 0
-        assert dual_stages["minimax_music3_ar"].factory.max_concurrency == 16
-        assert dual_stages["dit_dav"].gpu == 1
-        assert dual_stages["dit_dav"].factory.dtype == "float32"
-        assert dual_stages["dit_dav"].factory.breakable_cuda_graph is False
-        assert dual.placement.require_memory_fraction_for_colocation
-        assert single_stages["minimax_music3_ar"].gpu == 0
-        assert single_stages["minimax_music3_ar"].factory.max_concurrency == 16
-        assert single_stages["dit_dav"].gpu == 0
-        assert single_stages["dit_dav"].factory.dtype == "float32"
-        assert single_stages["dit_dav"].factory.breakable_cuda_graph is False
-        assert not single.placement.require_memory_fraction_for_colocation
+    dual = MiniMaxMusic3DualGPUPipelineConfig(model_path="/models/minimax")
+    single = MiniMaxMusic3SingleGPUPipelineConfig(model_path="/models/minimax")
+
+    dual_stages = {stage.name: stage for stage in dual.stages}
+    single_stages = {stage.name: stage for stage in single.stages}
+    assert dual_stages["minimax_music3_ar"].gpu == 0
+    assert dual_stages["minimax_music3_ar"].factory.max_concurrency == 16
+    assert dual_stages["dit_dav"].gpu == 1
+    assert dual_stages["dit_dav"].factory.dtype == "float32"
+    assert dual_stages["dit_dav"].factory.breakable_cuda_graph is False
+    assert dual.placement.require_memory_fraction_for_colocation
+    assert single_stages["minimax_music3_ar"].gpu == 0
+    assert single_stages["minimax_music3_ar"].factory.max_concurrency == 16
+    assert single_stages["dit_dav"].gpu == 0
+    assert single_stages["dit_dav"].factory.dtype == "float32"
+    assert single_stages["dit_dav"].factory.breakable_cuda_graph is False
+    assert not single.placement.require_memory_fraction_for_colocation
 
 
 @pytest.mark.parametrize(
@@ -213,7 +221,17 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     every single-GPU user to pass a config file to say so. The default now
     matches the machine, which is the topology this model is usually served in.
     """
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    visible_count = len(visible.split(","))
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(platforms.current_platform, "is_musa", lambda: False)
+    monkeypatch.setattr(platforms.current_platform, "is_xpu", lambda: False)
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda _device: type(
+            "_FakeAccelerator", (), {"device_count": lambda: visible_count}
+        ),
+    )
     config = MiniMaxMusic3PipelineConfig(model_path="/models/minimax")
 
     stages = {stage.name: stage for stage in config.stages}

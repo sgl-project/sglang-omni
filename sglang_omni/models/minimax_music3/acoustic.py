@@ -16,12 +16,12 @@ import torch
 from torch import Tensor
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import resolve_device_spec
 
 from .checkpoint import load_torch_state, resolve_checkpoint
 from .chunking import ChunkWindow, crop_sample_bounds, overlap_mel_length
@@ -38,6 +38,7 @@ from .constants import (
 from .dav import MiniMaxMusic3DAV, remove_weight_norm, select_decoder_state
 from .dit import MiniMaxMusic3DIT
 from .payload_types import MiniMaxMusic3State
+from .platform_policy import get_minimax_music3_platform_policy
 
 logger = logging.getLogger(__name__)
 
@@ -117,13 +118,13 @@ class MiniMaxMusic3AcousticDecoder:
         self,
         model_path: str,
         *,
-        device: str = "cuda:1",
+        device: str | None = None,
         dtype: str | torch.dtype = "float32",
         dit_steps: int = DEFAULT_DIT_STEPS,
         dit_cfg_scale: float = DEFAULT_DIT_CFG_SCALE,
         attention_backend: str = "torch_sdpa",
         cache_dit: bool = False,
-        compile_acoustic: bool = True,
+        compile_acoustic: bool | None = None,
         breakable_cuda_graph: bool = False,
         breakable_cuda_graph_min_free_gb: float | None = None,
         cache_dit_fn_compute_blocks: int = 2,
@@ -132,19 +133,19 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_residual_diff_threshold: float = 0.08,
         cache_dit_max_continuous_cached_steps: int = 1,
     ) -> None:
-        if not (current_platform.is_cuda() or current_platform.is_musa()):
+        policy = get_minimax_music3_platform_policy()
+        policy.require_runnable()
+        if policy.configure_cuda_backends:
+            torch.backends.cudnn.enabled = False
+            torch.backends.cuda.enable_cudnn_sdp(False)
+        self.device = torch.device(resolve_device_spec(device))
+        if self.device.type != policy.device_type:
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
-            )
-        torch.backends.cudnn.enabled = False
-        torch.backends.cuda.enable_cudnn_sdp(False)
-        self.device = torch.device(device)
-        if self.device.type not in ("cuda", "musa"):
-            raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA device"
+                "MiniMax Music 3 acoustic device does not match the resolved "
+                f"platform: device={self.device}, platform={policy.device_type}"
             )
         self.dtype = _resolve_acoustic_dtype(dtype)
-        if self.dtype is torch.float32:
+        if self.dtype is torch.float32 and policy.configure_cuda_backends:
             # note (chenyang): TF32 keeps float32's range with a 10-bit mantissa
             # and measures 0.22% from the true float32 DIT solve while running
             # 4.4x faster, which is what makes float32 affordable enough to be
@@ -157,10 +158,17 @@ class MiniMaxMusic3AcousticDecoder:
         self.dit_cfg_scale = _non_negative_number("dit_cfg_scale", dit_cfg_scale)
         self.attention_backend = attention_backend.strip().lower()
         self.cache_dit = _boolean("cache_dit", cache_dit)
+        if compile_acoustic is None:
+            compile_acoustic = policy.acoustic_compile
         self.compile_acoustic = _boolean("compile_acoustic", compile_acoustic)
         self.breakable_cuda_graph_requested = _boolean(
             "breakable_cuda_graph", breakable_cuda_graph
         )
+        if self.breakable_cuda_graph_requested and not policy.breakable_cuda_graph:
+            raise ValueError(
+                "MiniMax Music 3 breakable_cuda_graph is unavailable on "
+                f"{policy.device_type}: {policy.reason}"
+            )
         self.breakable_cuda_graph = False
         if self.cache_dit and self.breakable_cuda_graph_requested:
             raise ValueError(

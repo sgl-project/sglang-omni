@@ -9,18 +9,42 @@ from typing import Any
 
 import torch
 
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.utils.device import resolve_device_spec
 
 from .acoustic import MiniMaxMusic3AcousticDecoder, MiniMaxMusic3AcousticScheduler
 from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS, OUTPUT_SAMPLE_RATE
+from .platform_policy import (
+    MiniMaxMusic3PlatformPolicy,
+    Qualification,
+    get_minimax_music3_platform_policy,
+)
 from .request_builders import build_ttm_state
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_AR_CONCURRENCY = int(os.environ.get("MINIMAX_MUSIC3_AR_CONCURRENCY", "16"))
+
+
+def _require_supported_accelerator() -> MiniMaxMusic3PlatformPolicy:
+    policy = get_minimax_music3_platform_policy()
+    policy.require_runnable()
+    if policy.qualification is Qualification.UNVERIFIED:
+        logger.warning(
+            "MiniMax Music 3 platform=%s qualification=%s: %s",
+            policy.device_type,
+            policy.qualification.value,
+            policy.reason,
+        )
+    return policy
+
+
+def _configure_cuda_backends(policy: MiniMaxMusic3PlatformPolicy) -> None:
+    if policy.configure_cuda_backends:
+        torch.backends.cudnn.enabled = False
+        torch.backends.cuda.enable_cudnn_sdp(False)
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
@@ -44,14 +68,9 @@ def create_ar_executor(
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
 ):
-    if device is None:
-        if gpu_id is None or not (
-            current_platform.is_cuda() or current_platform.is_musa()
-        ):
-            raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA backend")
-        device = f"cuda:{gpu_id}"
-    torch.backends.cudnn.enabled = False
-    torch.backends.cuda.enable_cudnn_sdp(False)
+    policy = _require_supported_accelerator()
+    device = resolve_device_spec(device, gpu_id)
+    _configure_cuda_backends(policy)
 
     from .engine_builder import MiniMaxMusic3EngineBuilder
 
@@ -85,7 +104,7 @@ def create_dit_dav_executor(
     dit_cfg_scale: float = DEFAULT_DIT_CFG_SCALE,
     attention_backend: str = "torch_sdpa",
     cache_dit: bool = False,
-    compile_acoustic: bool = True,
+    compile_acoustic: bool | None = None,
     breakable_cuda_graph: bool = False,
     breakable_cuda_graph_min_free_gb: float | None = None,
     cache_dit_fn_compute_blocks: int = 2,
@@ -94,14 +113,11 @@ def create_dit_dav_executor(
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
 ) -> MiniMaxMusic3AcousticScheduler:
-    if device is None:
-        if gpu_id is None or not (
-            current_platform.is_cuda() or current_platform.is_musa()
-        ):
-            raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
-            )
-        device = f"cuda:{gpu_id}"
+    policy = _require_supported_accelerator()
+    device = resolve_device_spec(device, gpu_id)
+    _configure_cuda_backends(policy)
+    if compile_acoustic is None:
+        compile_acoustic = policy.acoustic_compile
     decoder = MiniMaxMusic3AcousticDecoder(
         model_path,
         device=device,

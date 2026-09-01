@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import ClassVar
 
 from pydantic import Field
@@ -21,15 +20,15 @@ from .constants import DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 _PKG = "sglang_omni.models.minimax_music3"
 
 
-def _visible_gpu_count() -> int:
-    """GPUs this process could place a stage on, without initializing CUDA."""
-    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if visible is not None:
-        entries = [entry.strip() for entry in visible.split(",")]
-        return len([entry for entry in entries if entry and entry != "-1"])
+def _visible_accelerator_count() -> int:
+    """Accelerators this process could place a stage on, without initializing it."""
     import torch
 
-    return torch.cuda.device_count()
+    from sglang_omni.platforms import current_platform
+
+    device_module = torch.get_device_module(current_platform.device_type)
+    device_count = getattr(device_module, "device_count", None)
+    return int(device_count()) if device_count is not None else 0
 
 
 class DitDavFactoryArgs(FactoryArgs):
@@ -48,6 +47,10 @@ class DitDavStageConfig(StageConfig):
 
 
 def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
+    from .platform_policy import get_minimax_music3_platform_policy
+
+    policy = get_minimax_music3_platform_policy()
+
     return [
         StageConfig(
             name="preprocessing",
@@ -74,7 +77,7 @@ def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
                 dit_cfg_scale=DEFAULT_DIT_CFG_SCALE,
                 attention_backend="torch_sdpa",
                 cache_dit=False,
-                compile_acoustic=True,
+                compile_acoustic=policy.acoustic_compile,
                 breakable_cuda_graph=False,
             ),
             gpu=acoustic_gpu,
@@ -109,12 +112,16 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: (
-            _two_gpu_stages() if _visible_gpu_count() >= 2 else _colocated_stages()
+            _two_gpu_stages()
+            if _visible_accelerator_count() >= 2
+            else _colocated_stages()
         )
     )
     placement: PlacementConfig = Field(
         default_factory=lambda: (
-            PlacementConfig() if _visible_gpu_count() >= 2 else _colocated_placement()
+            PlacementConfig()
+            if _visible_accelerator_count() >= 2
+            else _colocated_placement()
         )
     )
 

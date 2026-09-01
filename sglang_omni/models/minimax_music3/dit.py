@@ -11,12 +11,9 @@ import logging
 import math
 from collections.abc import Callable
 from types import MethodType
+from typing import TYPE_CHECKING
 
 import torch
-from cache_dit import BlockAdapter, DBCacheConfig, ForwardPattern, enable_cache
-from sglang.multimodal_gen.runtime.breakable_cuda_graph.runner import (
-    DiffusionBreakableCudaGraphRunner,
-)
 from sglang.multimodal_gen.runtime.layers.attention import LocalAttention
 from sglang.multimodal_gen.runtime.layers.attention.selector import (
     component_attn_backend_context_manager,
@@ -27,6 +24,11 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from .constants import AR_HIDDEN_SIZE, DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
+
+if TYPE_CHECKING:
+    from sglang.multimodal_gen.runtime.breakable_cuda_graph.runner import (
+        DiffusionBreakableCudaGraphRunner,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +338,8 @@ class MiniMaxMusic3DIT(nn.Module):
         residual_diff_threshold: float,
         max_continuous_cached_steps: int,
     ) -> None:
+        from cache_dit import BlockAdapter, DBCacheConfig, ForwardPattern, enable_cache
+
         adapter = BlockAdapter(
             transformer=self.diffusion_transformer.transformer,
             blocks=self.diffusion_transformer.transformer.layers,
@@ -374,6 +378,10 @@ class MiniMaxMusic3DIT(nn.Module):
         min_free_gb: float,
     ) -> bool:
         """Capture the fixed full-window DiT step, falling back on failure."""
+        from sglang.multimodal_gen.runtime.breakable_cuda_graph.runner import (
+            DiffusionBreakableCudaGraphRunner,
+        )
+
         device = next(self.parameters()).device
         free_bytes, _ = torch.cuda.mem_get_info(device)
         free_gb = free_bytes / 2**30

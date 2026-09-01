@@ -50,8 +50,11 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         self._filter_audio_weights()
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        from .platform_policy import get_minimax_music3_platform_policy
+
+        policy = get_minimax_music3_platform_policy()
         return {
-            "disable_cuda_graph": False,
+            "disable_cuda_graph": not policy.generation_cuda_graph,
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -113,6 +116,16 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         self, model: Any, server_args: Any, *, generation_cuda_graph_enabled: bool
     ) -> None:
         del generation_cuda_graph_enabled
+        from .platform_policy import get_minimax_music3_platform_policy
+
+        policy = get_minimax_music3_platform_policy()
+        if not policy.rvq_cuda_graph:
+            logger.info(
+                "MiniMax Music 3 RVQ depth CUDA graph disabled on %s (%s); using eager execution",
+                policy.device_type,
+                policy.reason,
+            )
+            return
         from .sglang_model import enable_rvq_depth_cuda_graph
 
         del server_args
