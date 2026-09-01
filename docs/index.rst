@@ -87,6 +87,8 @@ Supported Models
 
    get_started/installation.md
    get_started/installation_xpu.md
+   get_started/installation_musa_cloud.md
+   get_started/musa_support_matrix.md
 
 
 .. toctree::
