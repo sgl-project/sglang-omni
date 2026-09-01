@@ -6,15 +6,16 @@ reference section names only, the agent has its own access to the repo.
 
 ```
 You are profiling {MODEL_NAME} following the methodology in
-docs/profiling_methodology.md (and its English mirror
-docs/profiling_methodology_en.md). Read the current version of that doc
-first — it gets corrected as new models are profiled, do not rely on any
-summary of it from elsewhere.
+.claude/skills/model-profiling/METHODOLOGY.md. Read the current version of
+that doc first — it gets corrected as new models are profiled, do not rely
+on any summary of it from elsewhere. It is English-only; ignore any local
+docs/profiling_methodology_zh.md you may see — that's an untracked draft,
+not part of this skill.
 
 Benchmark entrypoint: {BENCHMARK_ENTRYPOINT}
 Candidate GPU pool: {GPU_POOL}
 Output doc (new or resume): {OUTPUT_DOC_PATH}
-Methodology docs to fold generalizable findings into: {METHODOLOGY_DOC_PATHS}
+Methodology doc to fold generalizable findings into: {METHODOLOGY_DOC_PATH}
 
 Scope for this run: {LAYERS_IN_SCOPE}
   (e.g. "Layer 1, 3, 2 — discovery only, no confirmed Layer 4 hypothesis yet"
@@ -22,14 +23,15 @@ Scope for this run: {LAYERS_IN_SCOPE}
   approved in a prior message")
 
 Do:
-1. Follow docs/profiling_methodology.md §1's pre-check checklist yourself —
+1. Follow .claude/skills/model-profiling/METHODOLOGY.md §1's pre-check checklist yourself —
    confirm the GPU pool is actually free. If a process from a prior run is
    still holding a GPU you need, do NOT kill it yourself (see "Do not"
    below) — report its PID, command line, and how you verified it with
    `ps`, and stop for explicit confirmation before anyone kills it. Once
    the pool is confirmed clear, record a baseline environment fingerprint.
-2. Layer 1 first, always. Then branch per docs/profiling_methodology.md
-   §2's own routing rule — 1 -> 3 -> 2 -> 4 -> 5 is NOT a fixed sequence:
+2. Layer 1 first, always. Then branch per
+   .claude/skills/model-profiling/METHODOLOGY.md §2's own routing rule —
+   1 -> 3 -> 2 -> 4 -> 5 is NOT a fixed sequence:
    - Busy ratio well below saturation (CPU/orchestration-bound): go to
      Layer 2 next, then Layer 3 (concurrency scan), then Layer 4 (A/B on
      what Layer 2 found), then Layer 5 only if Layer 4 actually changed a
@@ -55,7 +57,8 @@ Do:
 4a. If the model has distinct short-form and long-form workload shapes (check
    for a second eval entrypoint, e.g. a `*_longform.py` sibling of the main
    benchmark script), run Layer 1 and Layer 3 on each shape separately —
-   see docs/profiling_methodology.md's Layer 3 dataset-shape note. If only
+   see .claude/skills/model-profiling/METHODOLOGY.md's Layer 3 dataset-shape
+   note. If only
    one shape is actually in scope for this model, say so explicitly in the
    output doc rather than silently testing one and calling it complete.
 5. Before starting a server and running a benchmark client separately,
@@ -71,8 +74,7 @@ Do:
    environment, per-layer sections with evidence, a
    findings-evidence-recommendation table, and a cleanup section.
 8. Fold only the cross-model, generalizable lessons (not this model's
-   specific numbers) into BOTH {METHODOLOGY_DOC_PATHS}, kept in sync with
-   each other.
+   specific numbers) into {METHODOLOGY_DOC_PATH}.
 9. Clean up every process and GPU allocation you started before finishing.
    Confirm cleanup with nvidia-smi / ps, don't just assume your own
    teardown code worked.
@@ -87,7 +89,7 @@ Do not:
   from a prior run — report and wait for confirmation instead.
 - Guess at or report a specific PID/process attribution you haven't
   verified with `ps`/`nvidia-smi --query-compute-apps`.
-- Put this model's specific numbers into the pure methodology docs.
+- Put this model's specific numbers into the pure methodology doc.
 - Decide on your own which doc an ambiguous generalizable-vs-model-specific
   finding belongs in — flag it in your report instead of picking one.
 - Run Layer 4 right after Layer 2 on your own judgment when your scope was
@@ -103,5 +105,5 @@ Do not:
 | `{BENCHMARK_ENTRYPOINT}` | Path(s) to the benchmark script/config to drive the run — list more than one if the model has separate short-form/long-form eval entrypoints |
 | `{GPU_POOL}` | Candidate free GPU id(s), from the skill's own pre-check |
 | `{OUTPUT_DOC_PATH}` | `docs/developer_reference/<model>_profile.md` |
-| `{METHODOLOGY_DOC_PATHS}` | `docs/profiling_methodology.md` and `docs/profiling_methodology_en.md` |
+| `{METHODOLOGY_DOC_PATH}` | `.claude/skills/model-profiling/METHODOLOGY.md` |
 | `{LAYERS_IN_SCOPE}` | Which of Layer 1/2/3/4/5 this run covers. A fresh run without an existing `<model>_profile.md` must scope to discovery only (Layer 1, 3, 2) — Layer 4/5 get filled in and confirmed separately once Layer 2 surfaces a concrete hypothesis. A resume run may cover Layer 4/5 directly if the hypothesis was already confirmed. |

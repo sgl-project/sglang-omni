@@ -1,6 +1,6 @@
 ---
 name: model-profiling
-description: Generate a bounded task plan (and the agent prompt for it) that runs the 5-layer profiling methodology in docs/profiling_methodology.md against one model, stops for human confirmation before any GPU work starts, then delegates the actual run to a background agent, verifies its completion claim, and folds findings into docs/developer_reference/<model>_profile.md plus the two methodology docs.
+description: Generate a bounded task plan (and the agent prompt for it) that runs the 5-layer profiling methodology in .claude/skills/model-profiling/METHODOLOGY.md against one model, stops for human confirmation before any GPU work starts, then delegates the actual run to a background agent, verifies its completion claim, and folds findings into docs/developer_reference/<model>_profile.md plus the methodology doc.
 ---
 
 # model-profiling
@@ -27,8 +27,8 @@ actually been executed by hand on all three models so far.
 
 ## Method reference
 
-The 5-layer methodology itself lives in `docs/profiling_methodology.md`
-(mirrored in `docs/profiling_methodology_en.md`) and is **not duplicated
+The 5-layer methodology itself lives in
+`.claude/skills/model-profiling/METHODOLOGY.md` and is **not duplicated
 here**:
 
 - `§1` — environment / pre-check checklist (GPU selection, baseline env
@@ -37,9 +37,14 @@ here**:
 - `§3` — checklist for the next executor / expected output shape.
 - `§4` — tool and script index (py-spy, CPU pinning, nvidia-smi, DCGM, nsys).
 
-Both methodology docs get corrected as new models are profiled. Always read
+This is currently English-only — no Chinese translation is tracked yet.
+`docs/profiling_methodology_zh.md` exists locally as an untranslated draft
+and is not part of this skill; if it's ever added to the repo, treat it as
+a second document to keep in sync, not a replacement for the path above.
+
+The methodology doc gets corrected as new models are profiled. Always read
 the current version at invocation time — never assume the section numbers
-or findings above are still accurate, and never copy their prose into this
+or findings above are still accurate, and never copy its prose into this
 skill or into the generated prompt; reference section names instead.
 
 ## Prerequisites (the skill verifies, it does not create)
@@ -75,7 +80,8 @@ that evidence exists.
 
 1. Locate the model's benchmark entrypoint and any existing
    `docs/developer_reference/<model>_profile.md`. Decide fresh vs. resume.
-2. Run the cheap parts of the `docs/profiling_methodology.md` §1 checklist
+2. Run the cheap parts of the
+   `.claude/skills/model-profiling/METHODOLOGY.md` §1 checklist
    myself (`nvidia-smi` free-GPU check, `py-spy --version`); leave the
    expensive/stateful checks (baseline env fingerprint, orphan cleanup) for
    the executing agent to do and record.
@@ -83,8 +89,9 @@ that evidence exists.
    existing `<model>_profile.md`'s Layer 2 findings, or from something
    already established earlier in this conversation. If not, this run
    cannot pick a Layer 4 A/B variable yet: scope the plan to **discovery
-   only** (Layer 1, then 3 and/or 2 per `docs/profiling_methodology.md`
-   §2's routing rule, not a fixed order — see Method reference above) and
+   only** (Layer 1, then 3 and/or 2 per
+   `.claude/skills/model-profiling/METHODOLOGY.md` §2's routing rule, not a
+   fixed order — see Method reference above) and
    leave Layer 4/5 for a second confirmation later.
 4. Fill `PROMPT_TEMPLATE.md`'s placeholders for this model — discovery-only
    scope, or the full scope if a hypothesis is already confirmed — and
@@ -120,8 +127,7 @@ that evidence exists.
       `moss_transcribe_diarize_profile.md`: baseline env, Layer 1/3, Layer 2,
       Layer 4, Layer 5, a findings-evidence-recommendation table, cleanup).
     - Cross-model, generalizable lessons (sampling bias, outlier fragility,
-      tooling gotchas) → both `docs/profiling_methodology.md` **and**
-      `docs/profiling_methodology_en.md`, kept in sync.
+      tooling gotchas) → `.claude/skills/model-profiling/METHODOLOGY.md`.
     - Anything ambiguous between the two → ask the user, don't decide alone.
 11. **Do not auto-commit.** Print `git status --short docs/` and let the
     user review and commit themselves — unlike `running-eval-suite`'s
@@ -130,8 +136,8 @@ that evidence exists.
 ## What I do not do
 
 - Start GPU work without an explicit human confirmation of the plan.
-- Duplicate the methodology's prose — reference `docs/profiling_methodology.md`
-  section names only.
+- Duplicate the methodology's prose — reference
+  `.claude/skills/model-profiling/METHODOLOGY.md` section names only.
 - Auto-commit or push.
 - Kill another user's processes, or assume an unattributable PID means no
   one else is using a GPU.
@@ -150,6 +156,7 @@ that evidence exists.
 ```
 .claude/skills/model-profiling/
 ├── SKILL.md
+├── METHODOLOGY.md                   # the 5-layer methodology itself (English only)
 └── PROMPT_TEMPLATE.md               # placeholder agent prompt filled in per model
 ```
 
