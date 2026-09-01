@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
+    FUN_ASR_MODEL_REVISION,
     OMNI_WHISPER_MODEL_PATH,
     QWEN3_ASR_MODEL_PATH,
 )
@@ -50,6 +51,15 @@ class AsrCiPreset:
     # note (Jeffro): False means threshold assertions are skipped while a
     # newly onboarded model awaits calibration;
     gate_thresholds: bool = True
+    revision: str | None = None
+
+    def resolved_model_path(self) -> str:
+        """The weights path to serve: a pinned local snapshot, or the repo id."""
+        if self.revision is None:
+            return self.model_path
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(self.model_path, revision=self.revision)
 
 
 # Slack factors applied to worst-of-N reference values to derive CI gates.
@@ -171,6 +181,7 @@ WHISPER_ASR_RTF_P95_THRESHOLD = round(
 ASR_CI_PRESETS: dict[str, AsrCiPreset] = {
     "fun": AsrCiPreset(
         model_path=FUN_ASR_MODEL_PATH,
+        revision=FUN_ASR_MODEL_REVISION,
         display_name="Fun-ASR",
         thresholds=AsrCiThresholdPreset(
             en_corpus_wer_max=FUN_ASR_EN_CORPUS_WER_THRESHOLD,
