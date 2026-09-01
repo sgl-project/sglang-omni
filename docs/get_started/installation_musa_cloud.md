@@ -1,6 +1,6 @@
-# musa-sgalang-omni 安装教程
+# musa-sglang-omni Installation Guide
 
-This note points to the verified `musa-sgalang-omni` cloud install workflow.
+This note points to the verified `musa-sglang-omni` cloud install workflow.
 For the MUSA SDK itself, follow the official Moore Threads installation guide:
 
 ```text
@@ -37,10 +37,9 @@ pip install -e "python[dev_musa]"
 That path pulls the public MUSA packages declared by SGLang itself, including `torch_musa`,
 `torchada`, `flash_attn_3`, `deep-gemm`, and `mate`.
 
-For the cloud wheelhouse workflow used in testing, see the Chinese
-[`musa-sgalang-omni 安装教程`](../../musa_cloud_offline_install/musa-sgalang-omni-install.md). It
-records the scripts, requirements, logs, and pitfalls for the verified MUSA
-smoke path.
+For the cloud wheelhouse workflow used in testing, see the offline install
+guide in `musa_cloud_offline_install/`. It records the scripts, requirements,
+logs, and pitfalls for the verified MUSA smoke path.
 
 For the model-by-model view, see the
 [`MUSA Hardware / Backend / Model Support Matrix`](musa_support_matrix.md).
