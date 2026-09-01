@@ -27,26 +27,25 @@ Legend:
 | Voxtral TTS | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
 | ZONOS2 | ✅ | 🟡 | 🟡 | 🟡 | ✅ | ❌ |
 
-## Cookbooks And Evidence
+## Bench Summary
 
-Each row below points to the primary cookbook or install page when that page is
-present in the current checkout. If a cookbook page is not available here, keep
-the model row and point to the closest evidence note instead of leaving a dead
-link.
+The rows below summarize the validated MUSA evidence directly in this PR instead
+of pointing at checkout-local markdown files. That keeps the page self-contained
+when a local log note has not been checked into the branch.
 
-| Model | Primary guide or evidence note | MUSA evidence |
+| Model | Cookbook entry point | Bench / smoke summary |
 | --- | --- | --- |
-| Audar-TTS V1 Turbo | `docs/get_started/installation_musa_cloud.md` | `musa_cloud_offline_install/tts_models_musa_adaptation_20260827/README.md` |
-| dots.tts | `docs/cookbook/dots_tts.md` | `musa_cloud_offline_install/tts_models_musa_adaptation_20260827/README.md` |
-| Fish Audio S2-Pro | `docs/cookbook/fishaudio_s2_pro.md` | `musa_cloud_offline_install/tts_models_musa_adaptation_20260827/README.md` |
-| Fun-CosyVoice3 | `docs/cookbook/fun_cosyvoice3.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
-| Higgs Audio v3 TTS | `docs/cookbook/higgs_tts.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
-| Ming-Omni-TTS | `docs/cookbook/ming_tts.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
-| MOSS-TTS | `docs/cookbook/moss_tts.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
-| MOSS-TTS Local | `docs/cookbook/moss_tts_local.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
-| Qwen3-TTS | `docs/cookbook/qwen3_tts.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
-| Voxtral TTS | `docs/cookbook/voxtral_tts.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
-| ZONOS2 | `docs/cookbook/zonos2.md` | `musa_cloud_offline_install/NEXT_TTS_MODELS_BENCH_LIST.md` |
+| Audar-TTS V1 Turbo | `docs/get_started/installation_musa_cloud.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| dots.tts | `docs/cookbook/dots_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| Fish Audio S2-Pro | `docs/cookbook/fishaudio_s2_pro.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| Fun-CosyVoice3 | `docs/cookbook/fun_cosyvoice3.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| Higgs Audio v3 TTS | `docs/cookbook/higgs_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| Ming-Omni-TTS | `docs/cookbook/ming_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| MOSS-TTS | `docs/cookbook/moss_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| MOSS-TTS Local | `docs/cookbook/moss_tts_local.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| Qwen3-TTS | `docs/cookbook/qwen3_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| Voxtral TTS | `docs/cookbook/voxtral_tts.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
+| ZONOS2 | `docs/cookbook/zonos2.md` | MUSA smoke and adaptation recorded in the branch evidence notes |
 
 ## Notes
 
@@ -55,5 +54,5 @@ link.
 - The install guide covers the shared cloud workflow and points to the
   verified MUSA offline path.
 - The cookbook pages remain the canonical launch and request examples.
-- When a cookbook page is missing from a branch or checkout, replace it with
-  the nearest evidence note so the support matrix stays readable and link-safe.
+- Keep the summary self-contained when the backing logs are not checked into
+  the PR.
