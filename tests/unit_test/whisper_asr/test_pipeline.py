@@ -176,6 +176,7 @@ def test_whisper_breakable_prefill_graph_policy() -> None:
         max_new_tokens=32,
         mem_fraction_static=0.2,
     )
+    builder.context_length = 1764
     merged = build_generation_batch_overrides(
         **builder.generation_defaults(dtype="float16"),
     )
@@ -184,8 +185,8 @@ def test_whisper_breakable_prefill_graph_policy() -> None:
 
     assert builder.supports_breakable_prefill_cuda_graph
     assert merged["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
-    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(256)
-    assert merged["cuda_graph_max_bs_prefill"] == 256
+    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(1764)
+    assert merged["cuda_graph_max_bs_prefill"] == 1764
 
 
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:

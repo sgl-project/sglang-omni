@@ -41,9 +41,20 @@ The graph is captured after SGLang's generation graphs. With pre-LM off, raise `
 
 The decoder body uses SGLang's breakable prefill CUDA Graph backend by default.
 Whisper encoder states and cross-attention K/V are prepared outside the captured
-decoder body, while decoder-prefill token counts through 256 use the default
-capture ladder. Startup logs report the capture cost and confirm the active
-buckets with `prefill CUDA graphs attested`.
+decoder body. The default capture ladder is bounded by the effective prefill,
+total-token, and model-context limits. Startup logs report the capture cost and
+confirm the active buckets with `prefill CUDA graphs attested`.
+
+The current benchmark results were collected with
+`cuda_graph_max_bs_prefill=256`. To reproduce that capture profile and limit
+startup time and GPU memory, set the prefill graph cap explicitly:
+
+```yaml
+runtime_overrides:
+  asr:
+    server_args_overrides:
+      cuda_graph_max_bs_prefill: 256
+```
 
 To disable only the prefill graph while keeping decode and encoder CUDA Graphs
 enabled, override the ASR stage:

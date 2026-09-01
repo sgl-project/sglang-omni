@@ -19,7 +19,36 @@ from sglang_omni.scheduling.generation_batch_policy import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
-_WHISPER_PREFILL_GRAPH_MAX_TOKENS = 256
+
+
+def _clamp_prefill_cuda_graph_max_bs(
+    overrides: dict[str, Any], *, context_length: int | None
+) -> int | None:
+    """Clamp the prefill graph budget to the reachable token limits.
+
+    Whisper admits its encoder prefix atomically (``chunked_prefill_size=0``),
+    so the shared policy has no chunk to derive a cap from; bound the ladder by
+    the effective prefill, total-token, and model-context limits instead.
+    Returns ``None`` when no limit is known yet (before model setup), leaving
+    the ladder to SGLang's own derivation.
+    """
+    if context_length is None or int(context_length) <= 0:
+        context_length = overrides.get("context_length")
+    caps = [
+        int(value)
+        for value in (
+            overrides.get("cuda_graph_max_bs_prefill"),
+            overrides.get("max_prefill_tokens"),
+            overrides.get("max_total_tokens"),
+            context_length,
+        )
+        if value is not None and int(value) > 0
+    ]
+    if not caps:
+        return None
+    cap = min(caps)
+    overrides["cuda_graph_max_bs_prefill"] = cap
+    return cap
 
 
 def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
@@ -248,19 +277,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         ):
             return
 
-        cap = min(
-            int(value)
-            for value in (
-                _WHISPER_PREFILL_GRAPH_MAX_TOKENS,
-                overrides.get("max_prefill_tokens"),
-                overrides.get("cuda_graph_max_bs_prefill"),
-                overrides.get("max_total_tokens"),
-            )
-            if value is not None
+        cap = _clamp_prefill_cuda_graph_max_bs(
+            overrides, context_length=self.context_length
         )
-        ladder = build_default_prefill_cuda_graph_bs(cap)
-        overrides["cuda_graph_bs_prefill"] = ladder
-        overrides["cuda_graph_max_bs_prefill"] = max(ladder)
+        if cap is None:
+            return
+        overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
