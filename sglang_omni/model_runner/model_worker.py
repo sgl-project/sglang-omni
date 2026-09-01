@@ -109,6 +109,20 @@ class ModelWorker:
             )
 
             register_dots_tts_hf_config()
+        if self.model_arch_override == "MossTTSNanoSGLangModel":
+            from sglang_omni.models.moss_tts_nano.hf_config import (
+                MOSS_TTS_NANO_MODEL_CONFIG_PARSER,
+                register_moss_tts_nano_model_config_parser,
+            )
+
+            selected_parser = self.server_args.model_config_parser
+            if selected_parser != MOSS_TTS_NANO_MODEL_CONFIG_PARSER:
+                raise ValueError(
+                    "MOSS-TTS-Nano requires model_config_parser="
+                    f"{MOSS_TTS_NANO_MODEL_CONFIG_PARSER!r}; got "
+                    f"{selected_parser!r}"
+                )
+            register_moss_tts_nano_model_config_parser()
 
         from sglang.srt.configs.model_config import ModelConfig
 
@@ -137,6 +151,18 @@ class ModelWorker:
             model_config.num_attention_layers = int(cfg.decoder_layers) * 2
             model_config.vocab_size = int(cfg.vocab_size)
             model_config.head_dim = int(cfg.d_model) // int(cfg.decoder_attention_heads)
+            model_config.v_head_dim = model_config.head_dim
+            return
+        if arch == "MossTTSNanoSGLangModel":
+            cfg = model_config.hf_config.gpt2_config
+            model_config.hf_text_config = cfg
+            model_config.num_attention_heads = int(cfg.num_attention_heads)
+            model_config.num_key_value_heads = int(cfg.num_attention_heads)
+            model_config.hidden_size = int(cfg.hidden_size)
+            model_config.num_hidden_layers = int(cfg.num_hidden_layers)
+            model_config.num_attention_layers = int(cfg.num_hidden_layers)
+            model_config.vocab_size = int(cfg.vocab_size)
+            model_config.head_dim = int(cfg.hidden_size) // int(cfg.num_attention_heads)
             model_config.v_head_dim = model_config.head_dim
             return
         entry = _ARCH_CONFIG_MAP.get(arch)
@@ -516,8 +542,7 @@ def _apply_model_worker_backend_common_policy(
     )
     if is_qwen3_omni_arch and server_args.ep_size != 1:
         raise ValueError(
-            "Qwen3-Omni ModelWorker does not support expert parallelism; "
-            "use ep_size=1."
+            "Qwen3-Omni ModelWorker does not support expert parallelism; use ep_size=1."
         )
 
 

@@ -93,6 +93,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
+    from sglang_omni.models.moss_tts_nano.payload_types import MossTTSNanoState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
     from sglang_omni.models.zonos2.payload_types import Zonos2State
@@ -106,6 +107,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         MingTTSState,
         MossTTSState,
         MossTTSLocalState,
+        MossTTSNanoState,
         Qwen3TTSState,
         VoxtralTTSState,
         Zonos2State,
@@ -190,6 +192,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
+    from sglang_omni.models.moss_tts_nano.payload_types import MossTTSNanoState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
     from sglang_omni.models.zonos2.payload_types import Zonos2State
@@ -333,6 +336,18 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 instructions="bright",
                 token_count=5,
                 generation_kwargs={"top_p": 0.8},
+                audio_codes=torch.tensor([[1, 2, 3], [4, 5, 6]]),
+                prompt_tokens=5,
+                completion_tokens=7,
+                engine_time_s=0.5,
+            ),
+            {},
+        ),
+        (
+            MossTTSNanoState(
+                text="hello",
+                ref_audio={"path": "ref.wav"},
+                generation_kwargs={"audio_top_p": 0.95},
                 audio_codes=torch.tensor([[1, 2, 3], [4, 5, 6]]),
                 prompt_tokens=5,
                 completion_tokens=7,

@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local / Nano, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -43,6 +43,9 @@ Supported Models
    * - `OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5>`_
      - TTS
      - Local-transformer MOSS-TTS; 48 kHz stereo, streaming
+   * - `OpenMOSS-Team/MOSS-TTS-Nano <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Nano>`_
+     - TTS
+     - 0.1B multilingual TTS; voice cloning, 48 kHz stereo WAV, mono PCM streaming
    * - `inclusionAI/Ming-omni-tts-16.8B-A3B <https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B>`_
      - TTS
      - Text-to-speech and zero-shot voice cloning
@@ -101,6 +104,7 @@ Supported Models
    cookbook/ming_tts.md
    cookbook/moss_tts.md
    cookbook/moss_tts_local.md
+   cookbook/moss_tts_nano.md
    cookbook/dots_tts.md
    cookbook/minimax_music3.md
    cookbook/zonos2.md
