@@ -49,10 +49,14 @@ def test_rotation_offers_every_registered_preset() -> None:
         ), f"dispatch override does not accept {model}"
 
 
-def test_single_instance_models_skip_the_mps_stage() -> None:
-    """A model without an MPS config must not drag the MPS stage along."""
+def test_every_rotation_model_resolves_an_mps_pool() -> None:
+    """A model without a pool of its own must borrow one, not drop stage 5.
+
+    Skipping left the MPS path unexercised on a third of the runs.
+    """
     script = _select_step_script()
-    assert 'resolved_config=""' in script, "no single-instance branch in preflight"
+    assert 'resolved_config=""' not in script, "a rotation model still skips stage 5"
+    assert 'mps_model="moss"' in script, "no fallback pool in preflight"
 
     mps = _workflow(TTS_WORKFLOW)["jobs"]["stage-5-mps"]
     condition = mps["if"]

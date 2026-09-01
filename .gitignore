@@ -49,6 +49,8 @@ asr_seedtts_results.json
 .claude/*
 !.claude/skills/
 /core
+# Rust build artifacts
+target/
 
 /task.md
 /test_minimax_music3.py

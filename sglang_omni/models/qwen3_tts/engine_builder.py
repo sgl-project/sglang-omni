@@ -8,9 +8,17 @@ from typing import Any
 
 from sglang_omni.models.qwen3_tts import request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
-from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-from sglang_omni.vendor.sglang.server_args import override_server_args
+
+
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
 
 
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
@@ -49,7 +57,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": True,
+            "enable_torch_compile": False,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
@@ -93,28 +101,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             wrapper=self.wrapper,
         )
 
-    def compile_model(self, model: Any, server_args: Any) -> None:
-        if current_platform.is_rocm():
-            override_server_args(
-                server_args,
-                "sglang_omni.qwen3_tts.rocm",
-                enable_torch_compile=False,
-            )
-            return
-        if server_args.enable_deterministic_inference:
-            override_server_args(
-                server_args,
-                "sglang_omni.qwen3_tts.deterministic_inference",
-                enable_torch_compile=False,
-            )
-            return
-        if bool(server_args.enable_torch_compile):
-            qwen3_stages._compile_qwen3_tts_backbone(model)
-            override_server_args(
-                server_args,
-                "sglang_omni.qwen3_tts.compile_complete",
-                enable_torch_compile=False,
-            )
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if _is_truthy(overrides.get("enable_torch_compile", False)):
+            raise ValueError("Qwen3-TTS torch.compile is not supported")
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

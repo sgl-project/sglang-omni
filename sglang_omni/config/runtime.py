@@ -52,11 +52,12 @@ def resolve_stage_factory_kwargs(
 ) -> dict[str, Any]:
     """Return the pipeline author's constructor kwargs for one stage."""
 
-    kwargs = dict(global_cfg.stage_factory_kwargs(stage_cfg.name) or {})
+    logical_stage_name, _ = parse_replica_instance_name(stage_cfg.name)
+    kwargs = dict(global_cfg.stage_factory_kwargs(logical_stage_name) or {})
     reserved = _PLACEMENT_OWNED_KWARGS & kwargs.keys()
     if reserved:
         raise ValueError(
-            f"stage_factory_kwargs({stage_cfg.name!r}) returns "
+            f"stage_factory_kwargs({logical_stage_name!r}) returns "
             f"{sorted(reserved)}; these kwargs are owned by placement and are "
             "injected from stage.gpu_memory_fraction and stage.gpu"
         )

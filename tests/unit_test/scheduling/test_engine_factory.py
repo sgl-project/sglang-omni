@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 import sglang_omni.platforms as platforms
-from tests.unit_test.fakes import FakeServerArgs
 
 TEST_MAX_TOTAL_TOKENS = 82000
 
@@ -98,7 +97,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
     init_graph_calls: list[bool] = []
 
     class FakeModel:
@@ -127,7 +125,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> Any:
         events.append("build_server_args")
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             checkpoint_dir=checkpoint_dir,
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
@@ -157,14 +155,11 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             "defer_cuda_graph_capture": True,
             "model_arch_override": "TestArch",
         }
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
         return (
             FakeWorker(server_args),
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 
@@ -274,8 +269,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             token_to_kv_pool_allocator: Any,
             server_args: Any,
             model_config: Any,
-            prefill_manager: Any,
-            decode_manager: Any,
             model_runner: Any,
             request_builder: Any,
             result_adapter: Any,
@@ -292,8 +285,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
                     "token_to_kv_pool_allocator": token_to_kv_pool_allocator,
                     "server_args": server_args,
                     "model_config": model_config,
-                    "prefill_manager": prefill_manager,
-                    "decode_manager": decode_manager,
                     "model_runner": model_runner,
                 },
             )
@@ -340,7 +331,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert build_kwargs["torch_compile_max_bs"] == 8
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
-    assert infrastructure_saw_graph_disabled == [True]
     assert init_graph_calls == [True]
     assert scheduler.kwargs["server_args"].disable_cuda_graph is False
     assert scheduler.kwargs["model_runner"].outbox == "outbox"
@@ -390,8 +380,6 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 
@@ -560,8 +548,6 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
         token_to_kv_pool_allocator="kv_pool",
         server_args="server_args",
         model_config="model_config",
-        prefill_manager="prefill",
-        decode_manager="decode",
         model_runner="runner",
         request_builder="request_builder",
         result_adapter="result_adapter",

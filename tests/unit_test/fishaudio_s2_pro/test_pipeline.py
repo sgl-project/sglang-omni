@@ -31,7 +31,6 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     S2ProTokenizerAdapter,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
-from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
     make_s2pro_payload,
@@ -626,7 +625,7 @@ def _run_s2pro_engine_with_fake_buffers(
     )
 
     build_kwargs: dict[str, object] = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
+    infrastructure_saw_deferred_capture: list[bool] = []
     compile_calls: list[tuple[object, int]] = []
     init_graph_calls: list[bool] = []
 
@@ -675,10 +674,10 @@ def _run_s2pro_engine_with_fake_buffers(
         model_path: str,
         context_length: int,
         **kwargs: object,
-    ) -> FakeServerArgs:
+    ) -> SimpleNamespace:
         del model_path
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
@@ -702,13 +701,13 @@ def _run_s2pro_engine_with_fake_buffers(
     def fake_create_sglang_infrastructure(
         server_args: SimpleNamespace,
         gpu_id: int,
-    ) -> tuple[object, object, object, object, object, object, object]:
+        *,
+        defer_cuda_graph_capture: bool = False,
+    ) -> tuple[object, object, object, object, object]:
         assert gpu_id == 0
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        infrastructure_saw_deferred_capture.append(defer_cuda_graph_capture)
         return (
             _FakeWorker(server_args),
-            object(),
-            object(),
             object(),
             object(),
             object(),
@@ -724,13 +723,11 @@ def _run_s2pro_engine_with_fake_buffers(
     def fake_create_sglang_infrastructure_defer_cuda_graph(
         server_args: SimpleNamespace,
         gpu_id: int,
-    ) -> tuple[bool, tuple[object, object, object, object, object, object, object]]:
+    ) -> tuple[bool, tuple[object, object, object, object, object]]:
         want_cuda_graph = not bool(server_args.disable_cuda_graph)
-        if want_cuda_graph:
-            server_args.disable_cuda_graph = True
-        infrastructure = fake_create_sglang_infrastructure(server_args, gpu_id)
-        if want_cuda_graph:
-            server_args.disable_cuda_graph = False
+        infrastructure = fake_create_sglang_infrastructure(
+            server_args, gpu_id, defer_cuda_graph_capture=want_cuda_graph
+        )
         return want_cuda_graph, infrastructure
 
     monkeypatch.setattr(
@@ -782,7 +779,7 @@ def _run_s2pro_engine_with_fake_buffers(
     return SimpleNamespace(
         scheduler=scheduler,
         build_kwargs=build_kwargs,
-        infrastructure_saw_graph_disabled=infrastructure_saw_graph_disabled,
+        infrastructure_saw_deferred_capture=infrastructure_saw_deferred_capture,
         compile_calls=compile_calls,
         init_graph_calls=init_graph_calls,
     )
@@ -817,7 +814,7 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
         64,
     ]
     assert build_kwargs["torch_compile_max_bs"] == 64
-    assert result.infrastructure_saw_graph_disabled == [True]
+    assert result.infrastructure_saw_deferred_capture == [True]
     assert result.compile_calls == [
         (scheduler.model_runner.args[0].model_runner.model, 64)
     ]

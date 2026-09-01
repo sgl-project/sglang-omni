@@ -227,6 +227,32 @@ not change peak encoder activation memory.
 construction; encoder concurrency and backpressure are owned by the separate
 pre-LM queue.
 
+## Encoder CUDA Graph
+
+The audio encoder CUDA Graph is enabled by default. At startup it captures
+batch buckets derived from `encoder_max_batch_size` (powers of two, plus the
+limit itself; the default of 8 yields `1/2/4/8`) and mel-frame buckets in
+64-frame steps up to about 10 s (1024 frames). Longer clips, any uncaptured
+bucket, and a failed capture or replay use the eager encoder; requests never
+trigger capture.
+
+The graphs are captured after SGLang's generation CUDA graphs and before the
+pre-LM encoder service. To profile eager encoder execution:
+
+```bash
+sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.factory.enable_encoder_cuda_graph false
+```
+
+Or in a pipeline config:
+
+```yaml
+stages:
+  asr:
+    factory:
+      enable_encoder_cuda_graph: false
+```
+
 ## Benchmarking
 
 Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on

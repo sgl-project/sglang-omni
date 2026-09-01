@@ -78,7 +78,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.mmmu import load_mmmu_samples
 from benchmarks.metrics.mmmu import compute_mmmu_metrics, print_mmmu_accuracy_summary
@@ -111,7 +111,7 @@ class MMMUEvalConfig:
     temperature: float = 0.0
     output_dir: str | None = None
     max_concurrency: int = 1
-    warmup: int = 0
+    warmup: int | None = None
     request_rate: float = float("inf")
     disable_tqdm: bool = False
     enable_audio: bool = False
@@ -185,7 +185,8 @@ async def run_mmmu_eval(
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
         "max_concurrency": config.max_concurrency,
-        "warmup": config.warmup,
+        "warmup": resolve_warmup(config.warmup, config.max_concurrency),
+        "request_rate": config.request_rate,
         "enable_audio": config.enable_audio,
         "asr_concurrency": config.asr_concurrency,
     }
@@ -270,7 +271,12 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--warmup", type=int, default=0)
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Warmup requests; defaults to the configured concurrency.",
+    )
     parser.add_argument(
         "--max-concurrency",
         type=int,

@@ -29,6 +29,13 @@ from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.utils import audio as audio_utils
 from sglang_omni.utils.audio import AudioDecodeError
 
+_EXPECTED_QWEN3_ASR_PROMPT_PREFIX = (
+    "<|im_start|>system\n<|im_end|>\n"
+    "<|im_start|>user\n"
+    "<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n"
+    "<|im_start|>assistant\n"
+)
+
 
 def _unwrap_built(
     result: Qwen3ASRRequestData | DeferredAdmission,
@@ -83,6 +90,7 @@ class _FakeTokenizer:
         )
         pieces = {
             10: "language English",
+            30: "language None",
             100: "<asr_text>",
             101: "",
             20: " leading",
@@ -153,6 +161,21 @@ def test_qwen3_asr_short_audio_keeps_the_floor_budget(monkeypatch) -> None:
     data = request_builder(payload)
 
     assert data.max_new_tokens == 128
+
+
+def test_qwen3_asr_request_builder_enforces_scheduler_request_limits(
+    monkeypatch,
+) -> None:
+    request_builder = _budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-request-limits",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.enforce_request_limits is True
 
 
 def test_qwen3_asr_long_audio_scales_the_budget(monkeypatch) -> None:
@@ -258,7 +281,9 @@ def test_qwen3_asr_request_builder_uses_canonical_language_prompt(
 
     data = request_builder(payload)
 
-    assert tokenizer.call_texts[-1].endswith(f"language {expected_name}<asr_text>")
+    assert tokenizer.call_texts[-1] == (
+        _EXPECTED_QWEN3_ASR_PROMPT_PREFIX + f"language {expected_name}<asr_text>"
+    )
     assert data.language == expected_language
 
 
@@ -288,8 +313,7 @@ def test_qwen3_asr_request_builder_omits_language_prompt_for_auto_detection(
 
     data = request_builder(payload)
 
-    assert tokenizer.call_texts[-1].startswith("<|im_start|>user\n")
-    assert tokenizer.call_texts[-1].endswith("<|im_start|>assistant\n")
+    assert tokenizer.call_texts[-1] == _EXPECTED_QWEN3_ASR_PROMPT_PREFIX
     assert "<asr_text>" not in tokenizer.call_texts[-1]
     assert data.language is None
     assert data.req.vocab_size == len(tokenizer)
@@ -798,6 +822,38 @@ def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
         "skip_special_tokens": True,
         "clean_up_tokenization_spaces": False,
     }
+
+
+@pytest.mark.parametrize(
+    ("output_ids", "expected_text"),
+    [
+        ([30, 100, 101], ""),
+        ([30, 100, 101, 20], " leading"),
+    ],
+)
+def test_qwen3_asr_result_adapter_normalizes_none_language(
+    output_ids: list[int], expected_text: str
+) -> None:
+    tokenizer = _FakeTokenizer()
+    _, result_adapter = make_qwen3_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    payload = StagePayload(
+        request_id="req-asr-none-language",
+        request=OmniRequest(inputs={}),
+        data={},
+    )
+    data = Qwen3ASRRequestData(
+        output_ids=output_ids,
+        stage_payload=payload,
+    )
+
+    result = result_adapter(data)
+
+    assert result.data["text"] == expected_text
+    assert result.data["language"] is None
 
 
 def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(

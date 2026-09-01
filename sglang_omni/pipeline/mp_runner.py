@@ -26,6 +26,7 @@ from sglang_omni.config.runtime import (
 )
 from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.topology import LogicalProcessPlan, ProcessTopologyPlan
+from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
 from sglang_omni.pipeline import Coordinator
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.runtime_config import (
@@ -426,6 +427,28 @@ class _NcclPortAllocator:
                 continue
 
 
+async def _finish_despite_cancellation(coro) -> None:
+    """Run *coro* to completion, then re-raise any cancellation it absorbed."""
+
+    task = asyncio.ensure_future(coro)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+        except BaseException:
+            break
+    try:
+        task.result()
+    except BaseException as error:
+        if cancelled is not None and not isinstance(error, asyncio.CancelledError):
+            raise cancelled from error
+        raise
+    if cancelled is not None:
+        raise cancelled
+
+
 class MultiProcessPipelineRunner:
 
     def __init__(self, config: PipelineConfig):
@@ -439,6 +462,7 @@ class MultiProcessPipelineRunner:
         self._fatal_error: BaseException | None = None
         self._prep: PipelineRuntimePrep | None = None
         self._started = False
+        self._mps: MpsPipelineRuntime | None = None
 
     @property
     def coordinator(self) -> Coordinator:
@@ -520,8 +544,33 @@ class MultiProcessPipelineRunner:
             if self._config.env_defaults:
                 env_names = ", ".join(sorted(self._config.env_defaults))
                 logger.info(f"Configured stage process env defaults: {env_names}")
+
+            # Note (Jiaxin Deng): daemons must predate the first CUDA init and
+            # ride the same spawn-time env patching; off must touch nothing.
+            mps_env_by_process = None
+            if self._config.mps != "off":
+                all_process_specs = [
+                    spec for group in groups for spec in group.process_specs
+                ]
+                self._mps = create_for_pipeline(
+                    self._config.mps,
+                    all_process_specs,
+                )
+            if self._mps is not None:
+                await self._mps.start()
+                mps_env_by_process = {
+                    spec.process_name: env
+                    for spec in all_process_specs
+                    if (env := self._mps.env_for_process(spec.process_name))
+                }
             for group in self._groups:
-                group.spawn(ctx)
+                if mps_env_by_process is None:
+                    group.spawn(ctx)
+                else:
+                    group.spawn(
+                        ctx,
+                        process_env_overrides=mps_env_by_process,
+                    )
 
             await asyncio.gather(*(g.wait_ready(timeout) for g in self._groups))
 
@@ -531,6 +580,9 @@ class MultiProcessPipelineRunner:
                         f"Stage process(es) died during startup: "
                         f"{group.dead_summary()}"
                     )
+
+            if self._mps is not None:
+                await self._mps.verify()
 
             for group in self._groups:
                 for stage_name, endpoint in group.stage_control_endpoints.items():
@@ -549,9 +601,41 @@ class MultiProcessPipelineRunner:
                 total_procs,
             )
 
-        except Exception:
-            await self._cleanup_on_failure()
+        except Exception as startup_error:
+            process_start_attempts: set[str] | None = None
+            if self._mps is not None:
+                process_start_attempts = self._process_start_attempts()
+            try:
+                await self._cleanup_on_failure()
+            finally:
+                if self._mps is not None:
+                    try:
+                        await self._close_mps(
+                            process_start_attempts=process_start_attempts
+                        )
+                    except BaseException as cleanup_error:
+                        raise startup_error from cleanup_error
             raise
+        except BaseException as startup_error:
+            if self._mps is not None:
+                process_start_attempts = self._process_start_attempts()
+                try:
+                    await self._cleanup_on_failure()
+                finally:
+                    try:
+                        await self._close_mps(
+                            process_start_attempts=process_start_attempts
+                        )
+                    except BaseException as cleanup_error:
+                        raise startup_error from cleanup_error
+            raise
+
+    def _process_start_attempts(self) -> set[str]:
+        return {
+            process_name
+            for group in self._groups
+            for process_name in group.process_start_attempts()
+        }
 
     async def _monitor_children(self) -> None:
         while self._started:
@@ -563,15 +647,34 @@ class MultiProcessPipelineRunner:
                     logger.error("%s", error)
                     await self._fail_runtime(error)
                     return
+            if self._mps is not None:
+                probe_failures = await self._mps.probe_failures()
+                if probe_failures:
+                    details = "; ".join(
+                        f"{gpu_uuid}: {reason}"
+                        for gpu_uuid, reason in sorted(probe_failures.items())
+                    )
+                    error = RuntimeError(
+                        f"MPS health check failed on physical GPU(s) ({details}); "
+                        "failing the pipeline instead of serving degraded"
+                    )
+                    logger.error("%s", error)
+                    await self._fail_runtime(error)
+                    return
             await asyncio.sleep(5.0)
 
     async def _fail_runtime(self, error: BaseException) -> None:
         self._fatal_error = error
         if self._coordinator is not None:
             await self._coordinator.fail_pending_requests(error)
+        if self._mps is None:
+            if self._fatal_event is not None:
+                self._fatal_event.set()
+            await self.stop()
+            return
+
         if self._fatal_event is not None:
             self._fatal_event.set()
-        await self.stop()
 
     async def wait_failed(self) -> None:
         if self._fatal_event is None:
@@ -608,6 +711,12 @@ class MultiProcessPipelineRunner:
                 self._monitor_task.cancel()
             self._monitor_task = None
 
+        # Note (Jiaxin Deng): _started is already false, so a cancellation that
+        # lands mid teardown would make every later stop() a no-op and strand
+        # the MPS lease, its flock and the state dir for the next serve.
+        await _finish_despite_cancellation(self._teardown())
+
+    async def _teardown(self) -> None:
         # Send shutdown to stages via coordinator
         try:
             await self._coordinator.shutdown_stages()
@@ -615,10 +724,19 @@ class MultiProcessPipelineRunner:
             logger.warning("shutdown_stages error: %s", e)
 
         # Shutdown all groups
+        before_signal = self._retire_mps_clients if self._mps is not None else None
         await asyncio.gather(
-            *(g.shutdown() for g in self._groups),
+            *(g.shutdown(before_signal=before_signal) for g in self._groups),
             return_exceptions=True,
         )
+
+        mps_error: BaseException | None = None
+        if self._mps is not None:
+            try:
+                await self._close_mps()
+            except BaseException as exc:
+                logger.error("MPS teardown incomplete: %s", exc)
+                mps_error = exc
 
         await self._cancel_completion_task()
 
@@ -627,12 +745,19 @@ class MultiProcessPipelineRunner:
         self._coordinator = None
 
         self._close_runtime_dir()
+        if mps_error is not None:
+            if isinstance(mps_error, Exception) and self._fatal_error is not None:
+                self._fatal_error.__cause__ = mps_error
+                return
+            raise mps_error
 
     async def _cleanup_on_failure(self) -> None:
         """Best-effort cleanup after a failed start()."""
         for group in self._groups:
-            for p in group.processes:
+            for spec, p in zip(group.process_specs, group.processes):
                 if p.is_alive():
+                    if self._mps is not None:
+                        await self._retire_mps_clients(spec.process_name)
                     p.terminate()
             for p in group.processes:
                 p.join(timeout=5)
@@ -652,3 +777,39 @@ class MultiProcessPipelineRunner:
             self._coordinator = None
 
         self._close_runtime_dir()
+
+    async def _retire_mps_clients(self, process_name: str) -> None:
+        """Destroy a stuck process's CUDA contexts before any OS signal."""
+
+        if self._mps is None:
+            return
+        try:
+            retired = await self._mps.retire_process_clients(process_name)
+        except Exception as exc:
+            logger.error(
+                "Could not retire MPS clients for %s before signalling it; a "
+                "colocated serve sharing this daemon may be affected: %s",
+                process_name,
+                exc,
+            )
+            return
+        if retired:
+            logger.warning(
+                "Retired MPS clients %s for stuck process %s before signalling it",
+                sorted(retired),
+                process_name,
+            )
+
+    async def _close_mps(
+        self,
+        *,
+        process_start_attempts: set[str] | None = None,
+    ) -> None:
+        if self._mps is None:
+            return
+        runtime = self._mps
+        try:
+            await runtime.close(process_start_attempts=process_start_attempts)
+        finally:
+            if not runtime.has_leases:
+                self._mps = None

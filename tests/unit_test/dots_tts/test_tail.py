@@ -8,6 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+
+from sglang_omni.models.dots_tts.compat import import_dots_tts
+
+import_dots_tts()
+
 from dots_tts.models.dots_tts.config import _DiTConfig, _EncoderConfig
 from dots_tts.modules.backbone.dit import DiT
 from dots_tts.modules.backbone.encoder import VAESemanticEncoder

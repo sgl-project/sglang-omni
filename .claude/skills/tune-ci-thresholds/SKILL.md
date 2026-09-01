@@ -273,12 +273,19 @@ never runs unpinned.
   `precheck.json` / the fingerprint. Fix the host (stop CI / other jobs) and
   re-run precheck.
 - **During `run` (must not stop the calibration):** a live foreign-load
-  monitor watches the reserved cores. If intrusion exceeds two foreign cores,
-  `tune.py` aborts **only that stage attempt**, reports the peak, wipes its
-  basetemp artifacts so contaminated metrics never enter `run{k}.json` or the
-  report, waits until the cpuset is idle **and** the owned GPUs are free, then
-  retries the same stage. Contention retries are unbounded; only ordinary
-  infra failures (OOM/crash/…) consume `_MAX_RUN_ATTEMPTS`.
+  monitor watches the reserved cores on 5-second windows. If intrusion holds
+  above two foreign cores for three consecutive windows, `tune.py` aborts
+  **only that stage attempt**, records the peak and mean it measured, wipes
+  its basetemp artifacts so contaminated metrics never enter `run{k}.json` or
+  the report, waits until the cpuset is idle **and** the owned GPUs are free,
+  then retries the same stage. A single window over the line is a scheduling
+  blip, not a lane takeover, and does not discard the attempt. Contention
+  retries are unbounded; only ordinary infra failures (OOM/crash/…) consume
+  `_MAX_RUN_ATTEMPTS`.
+- The `[cpuset-contention]` line the pytest session prints at teardown is
+  **advisory context, never a gate**. That sampler roots its process tree at
+  the pytest pid, so the servers a stage double-forks are charged as foreign
+  load; only the driver's monitor, rooted at the container init, decides.
 - **Tab C** (`watch_calibration_cpuset.sh <gpu-group>`) is the
   operator-visible supervisor for **that process's** lane — start one Tab C
   per concurrent `TUNE_GPU_INCLUDE` (e.g. `2,3` watches `16-31,80-95`).

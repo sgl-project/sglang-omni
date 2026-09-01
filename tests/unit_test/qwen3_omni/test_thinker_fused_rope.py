@@ -92,8 +92,10 @@ def test_upstream_builds_identical_rows_for_a_text_only_batch(
 
     monkeypatch.setattr(
         forward_batch_info,
-        "get_server_args",
-        lambda: SimpleNamespace(rl_on_policy_target=None),
+        "get_exec",
+        lambda: SimpleNamespace(
+            deterministic=SimpleNamespace(rl_on_policy_target=None)
+        ),
     )
     tokens = 6
     batch = SimpleNamespace(
@@ -103,14 +105,10 @@ def test_upstream_builds_identical_rows_for_a_text_only_batch(
     )
     forward_batch = SimpleNamespace(
         seq_lens_cpu=torch.tensor([tokens]),
-        forward_mode=SimpleNamespace(
-            is_decode=lambda: False,
-            is_extend=lambda **kwargs: True,
-        ),
         mrope_positions=None,
     )
 
-    ForwardBatch._compute_mrope_positions(
+    ForwardBatch._compute_mrope_positions_extend(
         forward_batch, SimpleNamespace(device="cpu"), batch
     )
 

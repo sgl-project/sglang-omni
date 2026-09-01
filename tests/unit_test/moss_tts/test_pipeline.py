@@ -38,7 +38,6 @@ from sglang_omni.models.moss_tts.request_builders import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -373,7 +372,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         captured["model_path"] = model_path
         captured["context_length"] = context_length
         captured["build_kwargs"].append(dict(kwargs))
-        return FakeServerArgs(
+        return SimpleNamespace(
             disable_cuda_graph=kwargs["disable_cuda_graph"],
             disable_overlap_schedule=False,
             max_running_requests=kwargs["max_running_requests"],
@@ -426,8 +425,6 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         )
         return (
             model_worker,
-            object(),
-            object(),
             object(),
             object(),
             object(),
@@ -1203,26 +1200,60 @@ def _build_moss_sglang_request(*, request_id: str = "req-moss"):
         clear_moss_tts_preprocessing_context()
 
 
-def test_moss_request_lifetime_extra_key_is_unique_and_survives_retract() -> None:
-    # note (Richard Wang): same rid can recur so extra_key must differ
+def test_moss_prompt_key_and_tail_guard_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.scheduling import omni_scheduler as scheduler_module
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
     first = _build_moss_sglang_request(request_id="shared-moss-id")
     second = _build_moss_sglang_request(request_id="shared-moss-id")
 
     assert first.req.rid == second.req.rid == "shared-moss-id"
-    assert first.req.extra_key
-    assert second.req.extra_key
-    assert first.req.extra_key.startswith("moss_tts:")
-    assert second.req.extra_key.startswith("moss_tts:")
-    assert first.req.extra_key != second.req.extra_key
     assert list(first.req.origin_input_ids) == list(second.req.origin_input_ids)
+    assert first.req.extra_key == second.req.extra_key == "moss_tts:prompt:v1"
+    assert first.req._omni_prompt_cache_key == second.req._omni_prompt_cache_key
 
-    kept = first.req.extra_key
+    seen = []
+    emit = iter([False, True, True])
+
+    def process_result(_, batch, __):
+        seen.append(
+            [getattr(req, "skip_radix_cache_insert", False) for req in batch.reqs]
+        )
+        if next(emit):
+            for req in batch.reqs:
+                req.output_ids.append(7)
+
+    monkeypatch.setattr(
+        scheduler_module._Upstream, "process_batch_result", process_result
+    )
+    scheduler = object.__new__(OmniScheduler)
+    plain = SimpleNamespace(output_ids=[])
+    batch = SimpleNamespace(reqs=[first.req, second.req, plain])
+    scheduler.process_batch_result(batch, None)
+    assert seen == [[False, False, False]]
+    assert not any(getattr(req, "skip_radix_cache_insert", False) for req in batch.reqs)
+    scheduler.process_batch_result(batch, None)
+    assert [getattr(req, "skip_radix_cache_insert", False) for req in batch.reqs] == [
+        True,
+        True,
+        False,
+    ]
+    scheduler.process_batch_result(batch, None)
+
+    assert seen == [
+        [False, False, False],
+        [False, False, False],
+        [True, True, False],
+    ]
+
     first.req.reset_for_retract()
-    assert first.req.extra_key == kept
+    assert first.req.extra_key == "moss_tts:prompt:v1"
+    assert first.req.skip_radix_cache_insert
 
 
-def test_moss_lifetime_extra_key_isolates_delay_slot_generated_prefix() -> None:
-    # note (Richard Wang): text channel keys can match while RVQ differs
+def test_moss_tail_guard_is_required_for_hidden_rvq() -> None:
     from array import array
 
     from sglang.srt.mem_cache.radix_cache import RadixKey
@@ -1243,10 +1274,11 @@ def test_moss_lifetime_extra_key_isolates_delay_slot_generated_prefix() -> None:
     colliding = RadixKey(fill_a, extra_key=None)
     assert colliding.match(RadixKey(fill_b, extra_key=None)) == len(fill_a)
 
-    with pytest.raises(ValueError, match="matching extra_key"):
-        RadixKey(fill_a, first.req.extra_key).match(
-            RadixKey(fill_b, second.req.extra_key)
-        )
+    assert RadixKey(fill_a, first.req.extra_key).match(
+        RadixKey(fill_b, second.req.extra_key)
+    ) == len(fill_a)
+    assert first.req._omni_prompt_only_radix
+    assert second.req._omni_prompt_only_radix
 
 
 def test_moss_delay_runner_samples_audio_and_appends_feedback() -> None:
@@ -1824,6 +1856,7 @@ def test_moss_text_control_logits_select_from_full_processor_output() -> None:
     audio_logits = torch.tensor([[1.0, 2.0, 3.0]])
     model = SimpleNamespace(
         _text_control_token_ids=torch.tensor([12, 13], dtype=torch.long),
+        _fused_audio_heads_ready=lambda: False,
         compute_channel_outputs=lambda hidden_states, forward_batch: [
             SimpleNamespace(next_token_logits=full_text_logits),
             SimpleNamespace(next_token_logits=audio_logits),

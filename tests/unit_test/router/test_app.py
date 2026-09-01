@@ -16,21 +16,24 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
-from sglang_omni_router import proxy as proxy_module
-from sglang_omni_router import websocket_proxy as websocket_proxy_module
-from sglang_omni_router.app import _broadcast_admin_request, create_app
-from sglang_omni_router.config import (
+from sglang_omni_router.python import proxy as proxy_module
+from sglang_omni_router.python import websocket_proxy as websocket_proxy_module
+from sglang_omni_router.python.app import _broadcast_admin_request, create_app
+from sglang_omni_router.python.config import (
     DEFAULT_CAPABILITIES,
     Capability,
     RouterConfig,
     WorkerConfig,
 )
-from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.route_metadata import RouteKind
-from sglang_omni_router.selector import WorkerSelector
-from sglang_omni_router.update_journal import JournalUnwritableError, UpdateJournal
-from sglang_omni_router.voice_routing import VoiceRoutingState
-from sglang_omni_router.worker import build_workers, worker_id_from_url
+from sglang_omni_router.python.health import HealthChecker
+from sglang_omni_router.python.route_metadata import RouteKind
+from sglang_omni_router.python.selector import WorkerSelector
+from sglang_omni_router.python.update_journal import (
+    JournalUnwritableError,
+    UpdateJournal,
+)
+from sglang_omni_router.python.voice_routing import VoiceRoutingState
+from sglang_omni_router.python.worker import build_workers, worker_id_from_url
 
 
 def _request_netloc(request: httpx.Request) -> str:
@@ -1220,7 +1223,7 @@ def test_buffered_route_completion_log_includes_selection_context(
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     app = create_app(_router_config(), client=async_client)
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni_router.proxy"):
+    with caplog.at_level(logging.INFO, logger="sglang_omni_router.python.proxy"):
         with TestClient(app) as client:
             response = client.post(
                 "/v1/chat/completions",
@@ -2103,7 +2106,7 @@ def test_relayed_500_outcome_labeled_upstream_5xx(
         client=async_client,
     )
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni_router.proxy"):
+    with caplog.at_level(logging.INFO, logger="sglang_omni_router.python.proxy"):
         with TestClient(app) as client:
             response = client.post(
                 "/v1/chat/completions",
@@ -2972,7 +2975,7 @@ def test_streaming_route_completion_log_includes_stream_lifetime(
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     app = create_app(_router_config(), client=async_client)
 
-    with caplog.at_level(logging.INFO, logger="sglang_omni_router.proxy"):
+    with caplog.at_level(logging.INFO, logger="sglang_omni_router.python.proxy"):
         with TestClient(app) as client:
             with client.stream(
                 "POST",
@@ -3327,7 +3330,7 @@ def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
             lock = app.state.admin_update_lock
             await lock.acquire()
             monkeypatch.setattr(
-                "sglang_omni_router.app._ADMIN_UPDATE_LOCK_TIMEOUT_S",
+                "sglang_omni_router.python.app._ADMIN_UPDATE_LOCK_TIMEOUT_S",
                 0.05,
             )
             try:
@@ -3385,7 +3388,7 @@ def test_max_connections_explicit_value_is_preserved() -> None:
 def test_max_connections_explicit_below_worker_budget_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.config"):
         config = _router_config(max_connections=100)
     assert config.max_connections == 100
     assert any("under-feed" in record.getMessage() for record in caplog.records)
@@ -3395,7 +3398,7 @@ def test_max_connections_auto_at_cap_still_warns_when_pool_outgrows_it(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     workers = [WorkerConfig(url=f"http://worker-{i}:8101") for i in range(70)]
-    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.config"):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni_router.python.config"):
         config = RouterConfig(workers=workers)
     assert config.max_connections == 4096
     assert any("under-feed" in record.getMessage() for record in caplog.records)
@@ -3445,7 +3448,7 @@ async def test_lifespan_unwinds_all_resources_when_voice_stop_fails(
 
 
 def test_route_registration_split_exposes_exact_route_sets() -> None:
-    from sglang_omni_router.app import (
+    from sglang_omni_router.python.app import (
         register_admin_routes,
         register_data_routes,
         register_health_routes,
@@ -3574,8 +3577,8 @@ def test_router_exposes_every_worker_v1_route() -> None:
     }
     assert not missing, (
         f"worker routes missing from the router: {missing}; add a forward in "
-        "sglang_omni_router/app.py and a classify_route branch in "
-        "sglang_omni_router/route_metadata.py"
+        "sglang_omni_router/python/app.py and a classify_route branch in "
+        "sglang_omni_router/python/route_metadata.py"
     )
 
 
@@ -4009,7 +4012,7 @@ async def test_registry_lock_rejects_while_an_update_is_queued() -> None:
     # update it never saw.
     from fastapi import FastAPI as _FastAPI
 
-    from sglang_omni_router.app import _registry_lock_or_reject
+    from sglang_omni_router.python.app import _registry_lock_or_reject
 
     app = _FastAPI()
     app.state.admin_update_lock = asyncio.Lock()
@@ -4082,7 +4085,7 @@ async def test_a_cancelled_upstream_send_returns_the_active_gauge() -> None:
     # Note (Jiaxin Deng): a client disconnect cancels the send await, and
     # neither httpx handler sees it; a leaked gauge keeps the worker looking
     # busy and stops a retiring incarnation from ever draining.
-    from sglang_omni_router.route_metadata import RouteMetadata
+    from sglang_omni_router.python.route_metadata import RouteMetadata
 
     config = _router_config()
     workers = build_workers(config.workers)

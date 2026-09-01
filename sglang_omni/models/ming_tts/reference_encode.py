@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import onnxruntime
@@ -11,8 +10,7 @@ import torch
 import torchaudio
 import torchaudio.functional as F
 
-from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
-from sglang_omni.models.ming_tts.audio_decode import MingAudioDecoder
+from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
 from sglang_omni.models.ming_tts.payload_types import (
     MING_TTS_SAMPLE_RATE,
     load_ming_tts_state,
@@ -97,7 +95,7 @@ class MingTTSReferenceEncoder:
 
     def __init__(
         self,
-        decoder: MingAudioDecoder,
+        audio_vae: AudioVAE,
         speaker_encoder: MingSpeakerEmbeddingExtractor,
         *,
         patch_size: int,
@@ -105,10 +103,11 @@ class MingTTSReferenceEncoder:
         cache_max_items: int | None = 256,
         cache_max_bytes: int | None = 64 * 1024 * 1024,
     ) -> None:
-        self.audio_vae = decoder.audio_vae
-        self.sample_rate = int(decoder.sample_rate)
-        self.device = decoder.device
-        self.dtype = decoder.dtype
+        self._audio_vae = audio_vae
+        self.sample_rate = int(audio_vae.config.sample_rate)
+        first_parameter = next(audio_vae.parameters())
+        self.device = first_parameter.device
+        self.dtype = first_parameter.dtype
         self.patch_size = int(patch_size)
         self.speaker_encoder = speaker_encoder
         if self.sample_rate != MING_TTS_SAMPLE_RATE:
@@ -129,33 +128,6 @@ class MingTTSReferenceEncoder:
                 log_prefix="Ming-Omni-TTS ref cache",
             )
 
-    @classmethod
-    def from_config(
-        cls,
-        audio_config: AudioVAEconfig,
-        *,
-        checkpoint_dir: str,
-        device: str = "cuda:0",
-        dtype: str = "bfloat16",
-        patch_size: int,
-        ref_audio_cache: bool = True,
-        ref_audio_cache_max_items: int = 256,
-        ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
-    ) -> "MingTTSReferenceEncoder":
-        decoder = MingAudioDecoder.from_config(
-            audio_config,
-            device=device,
-            dtype=dtype,
-        )
-        return cls(
-            decoder,
-            MingSpeakerEmbeddingExtractor(str(Path(checkpoint_dir) / "campplus.onnx")),
-            patch_size=patch_size,
-            cache_model_identity=str(checkpoint_dir) if ref_audio_cache else None,
-            cache_max_items=ref_audio_cache_max_items,
-            cache_max_bytes=ref_audio_cache_max_bytes,
-        )
-
     def _encode_reference(self, ref_audio: str) -> dict:
         """Text-independent conditioning bundle for one reference audio."""
 
@@ -169,7 +141,7 @@ class MingTTSReferenceEncoder:
                 device=self.device,
             )
             prompt_waveform = self._prepare_audio_vae_waveform(prompt_waveform)
-            prompt_latent, _prompt_latent_length = self.audio_vae.encode_latent(
+            prompt_latent, _prompt_latent_length = self._audio_vae.encode_latent(
                 prompt_waveform,
                 waveform_length,
             )

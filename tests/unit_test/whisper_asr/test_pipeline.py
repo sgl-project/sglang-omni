@@ -16,7 +16,6 @@ import sglang_omni.scheduling.sglang_backend as sglang_backend
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def _encoder_graph_builder(**kwargs):
@@ -309,7 +308,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     def _fake_server_args_builder(model_path, context_length, **overrides):
         build_kwargs["context_length"] = context_length
         build_kwargs.update(overrides)
-        server_args = FakeServerArgs(**overrides)
+        server_args = SimpleNamespace(**overrides)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
@@ -323,8 +322,6 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
         return False, (
             model_worker,
-            object(),
-            object(),
             object(),
             object(),
             object(),
