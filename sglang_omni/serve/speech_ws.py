@@ -26,7 +26,7 @@ from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionC
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
-    internal_error,
+    speech_generation_error,
     speech_websocket_error_payload,
 )
 from sglang_omni.serve.speech_limits import (
@@ -304,11 +304,15 @@ class SpeechWebSocketSession:
         except Exception as exc:
             failed = True
             await self._abort_request(request_id)
-            if isinstance(exc, SpeechAPIError):
-                error = exc
-            else:
-                error = internal_error(str(exc))
+            error = speech_generation_error(exc)
+            if error.status_code == 500:
                 logger.exception("TTS WebSocket sentence failed: %s", request_id)
+            else:
+                logger.warning(
+                    "Rejecting TTS WebSocket sentence %s: %s",
+                    request_id,
+                    error.message,
+                )
             await self._send_error(error)
         finally:
             if self.active_request_id == request_id:

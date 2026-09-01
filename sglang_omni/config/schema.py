@@ -39,6 +39,8 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 logger = logging.getLogger(__name__)
 
+MAX_SPEECH_INPUT_CHARS: int = 4096
+
 
 class CommConfig(BaseModel):
     """Per-stage communication buffer and Mooncake options.
@@ -459,6 +461,7 @@ class PipelineConfig(BaseModel):
     condition_on_previous_text: ClassVar[bool] = (
         False  # Whether the model can condition on the previous text.
     )
+    max_speech_input_chars: ClassVar[int | None] = MAX_SPEECH_INPUT_CHARS
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {}
     """Stage name -> ``StageConfig`` subclass for this pipeline's stage types.

@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any
+from numbers import Integral
+from typing import Any, ClassVar
 
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -27,6 +28,19 @@ def _operator_selected_prefill_graph_backend(
     return "backend" in nested_prefill_overrides(server_args_overrides)
 
 
+def _normalize_context_length(value: Any, *, model_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(
+            f"{model_name} context length must be a positive integer, got {value!r}"
+        )
+    context_length = int(value)
+    if context_length <= 0:
+        raise ValueError(
+            f"{model_name} resolved an invalid context length: {context_length}"
+        )
+    return context_length
+
+
 class SGLangGenerationEngineBuilder(ABC):
     """Build the model-neutral parts of a SGLang AR engine stage.
 
@@ -39,6 +53,7 @@ class SGLangGenerationEngineBuilder(ABC):
     model_name: str
     context_length: int
     model_arch_override: str | None = None
+    supports_context_length_override: ClassVar[bool] = False
     # Set True only by builders whose model has adopted the breakable prefill
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
@@ -72,6 +87,26 @@ class SGLangGenerationEngineBuilder(ABC):
 
         self.pre_infra_setup(checkpoint_dir)
 
+        requested_context_length = (
+            server_args_overrides.get("context_length")
+            if server_args_overrides is not None
+            else None
+        )
+        if (
+            requested_context_length is not None
+            and self.supports_context_length_override
+        ):
+            context_length = requested_context_length
+        else:
+            context_length = self.resolve_context_length(
+                checkpoint_dir,
+                server_args_overrides=server_args_overrides,
+            )
+        self.context_length = _normalize_context_length(
+            context_length,
+            model_name=self.model_name,
+        )
+
         operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
             server_args_overrides
         )
@@ -80,6 +115,12 @@ class SGLangGenerationEngineBuilder(ABC):
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
+        if "context_length" in overrides:
+            if not self.supports_context_length_override:
+                raise ValueError(
+                    f"{self.model_name} does not support a context_length override"
+                )
+            overrides.pop("context_length")
         # Left unset, SGLang re-detects off a CUDA-first ladder that can contradict
         # placement. It owns the type, not the index.
         resolved_type = torch.device(device).type
@@ -203,6 +244,15 @@ class SGLangGenerationEngineBuilder(ABC):
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
+
+    def resolve_context_length(
+        self,
+        checkpoint_dir: str,
+        *,
+        server_args_overrides: Mapping[str, Any] | None = None,
+    ) -> int:
+        del checkpoint_dir, server_args_overrides
+        return self.context_length
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
         del server_args

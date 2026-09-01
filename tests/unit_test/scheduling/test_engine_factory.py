@@ -83,6 +83,55 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
     adjust_overrides_signature = inspect.signature(TtsEngineBuilder.adjust_overrides)
     assert list(adjust_overrides_signature.parameters) == ["self", "overrides"]
 
+    resolve_context_length_signature = inspect.signature(
+        TtsEngineBuilder.resolve_context_length
+    )
+    assert list(resolve_context_length_signature.parameters) == [
+        "self",
+        "checkpoint_dir",
+        "server_args_overrides",
+    ]
+
+
+def test_context_length_override_is_capability_gated() -> None:
+    from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
+    from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    assert TtsEngineBuilder.supports_context_length_override is False
+    assert ArkasrEngineBuilder.supports_context_length_override is False
+    assert MossTtsEngineBuilder.supports_context_length_override is True
+    assert MossTtsLocalEngineBuilder.supports_context_length_override is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, False, 1.5, 3.0, float("inf"), float("-inf"), float("nan"), "8192", None],
+)
+def test_normalize_context_length_rejects_non_integral_values(value: Any) -> None:
+    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+
+    with pytest.raises(ValueError, match="context length must be a positive integer"):
+        _normalize_context_length(value, model_name="MOSS-TTS")
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_normalize_context_length_rejects_non_positive_values(value: int) -> None:
+    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+
+    with pytest.raises(ValueError, match="resolved an invalid context length"):
+        _normalize_context_length(value, model_name="MOSS-TTS")
+
+
+@pytest.mark.parametrize("value", [1, 8192])
+def test_normalize_context_length_preserves_integral_values(value: int) -> None:
+    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+
+    assert _normalize_context_length(value, model_name="MOSS-TTS") == value
+
 
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
@@ -195,6 +244,32 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             events.append("pre_infra_setup")
             assert checkpoint_dir == "model-resolved"
 
+        def resolve_context_length(
+            self,
+            checkpoint_dir: str,
+            *,
+            server_args_overrides: dict[str, Any] | None = None,
+        ) -> int:
+            events.append("resolve_context_length")
+            assert checkpoint_dir == "model-resolved"
+            assert server_args_overrides == {
+                "cuda_graph_max_bs": 8,
+                "torch_compile_max_bs": 8,
+                "mem_fraction_static": 0.7,
+                "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
+                "max_running_requests": 2,
+                "trust_remote_code": False,
+                "model_config_parser": "hf",
+                "json_model_override_args": (
+                    '{"language_config": {"max_position_embeddings": 4096}}'
+                ),
+                "decrypted_config_file": "/tmp/override.json",
+            }
+            return super().resolve_context_length(
+                checkpoint_dir,
+                server_args_overrides=server_args_overrides,
+            )
+
         def generation_defaults(
             self,
             *,
@@ -303,12 +378,19 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             "mem_fraction_static": 0.7,
             "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
             "max_running_requests": 2,
+            "trust_remote_code": False,
+            "model_config_parser": "hf",
+            "json_model_override_args": (
+                '{"language_config": {"max_position_embeddings": 4096}}'
+            ),
+            "decrypted_config_file": "/tmp/override.json",
         },
     )
 
     assert events == [
         "resolve_checkpoint",
         "pre_infra_setup",
+        "resolve_context_length",
         "generation_defaults",
         "adjust_overrides",
         "build_server_args",
@@ -331,6 +413,12 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert build_kwargs["torch_compile_max_bs"] == 8
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
+    assert build_kwargs["trust_remote_code"] is False
+    assert build_kwargs["model_config_parser"] == "hf"
+    assert build_kwargs["json_model_override_args"] == (
+        '{"language_config": {"max_position_embeddings": 4096}}'
+    )
+    assert build_kwargs["decrypted_config_file"] == "/tmp/override.json"
     assert init_graph_calls == [True]
     assert scheduler.kwargs["server_args"].disable_cuda_graph is False
     assert scheduler.kwargs["model_runner"].outbox == "outbox"

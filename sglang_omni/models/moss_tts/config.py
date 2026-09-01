@@ -49,6 +49,7 @@ class MossTTSPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTTSDelayModel"
     requires_model_capabilities: ClassVar[bool] = True
+    max_speech_input_chars: ClassVar[int | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "MossTTSDelay",
         "MossTTSDelayForConditionalGeneration",
