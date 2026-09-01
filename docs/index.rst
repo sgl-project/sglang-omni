@@ -80,6 +80,74 @@ Supported Models
      - Multimodal
      - Text + image understanding and generation
 
+MUSA Support Matrix
+-------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 10 10 10 10 10 10
+
+   * - Model
+     - CUDA
+     - MUSA
+     - CPU
+     - Notes
+   * - Audar-TTS V1 Turbo
+     - ✅
+     - ✅
+     - ❌
+     - MUSA + CPU vocoder path
+   * - dots.tts
+     - ✅
+     - ✅
+     - ❌
+     - MUSA + CPU vocoder path
+   * - Fish Audio S2-Pro
+     - ✅
+     - ✅
+     - ❌
+     - MUSA end-to-end
+   * - Fun-CosyVoice3
+     - ✅
+     - ✅
+     - ❌
+     - MUSA end-to-end
+   * - Higgs Audio v3 TTS
+     - ✅
+     - ✅
+     - ❌
+     - MUSA end-to-end
+   * - Ming-Omni-TTS
+     - ✅
+     - ✅
+     - ❌
+     - MUSA end-to-end
+   * - MOSS-TTS
+     - ✅
+     - 🟡
+     - ❌
+     - Conditional MUSA path
+   * - MOSS-TTS Local
+     - ✅
+     - ✅
+     - ❌
+     - Full-MUSA vocoder validated
+   * - Qwen3-TTS
+     - ✅
+     - ✅
+     - ❌
+     - MUSA end-to-end
+   * - Voxtral TTS
+     - ✅
+     - ✅
+     - ❌
+     - MUSA end-to-end
+   * - ZONOS2
+     - ✅
+     - ✅
+     - ❌
+     - MUSA end-to-end
+
 
 .. toctree::
    :maxdepth: 1
