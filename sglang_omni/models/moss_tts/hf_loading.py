@@ -32,6 +32,11 @@ def _validate_context_length_metadata(text_config: Any) -> bool:
                 f"MOSS-TTS context metadata {key} must be an integer, got {value!r}"
             )
         context_value = int(value)
+        if context_value <= 0:
+            raise ValueError(
+                f"MOSS-TTS context metadata {key} must be a positive integer, "
+                f"got {value!r}"
+            )
         break
     if context_value is None:
         return False
@@ -78,6 +83,11 @@ def _validate_context_length_metadata(text_config: Any) -> bool:
         raise ValueError(
             "MOSS-TTS context metadata rope_scaling.factor must produce an "
             f"integer context length, got {factor!r} * {context_value!r}"
+        )
+    if scaled_integer <= 0:
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling.factor must produce a "
+            f"positive context length, got {factor!r} * {context_value!r}"
         )
     return True
 

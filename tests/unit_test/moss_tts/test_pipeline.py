@@ -460,7 +460,7 @@ def test_moss_tts_context_probe_uses_model_default_without_metadata(
     )
 
 
-@pytest.mark.parametrize("value", [True, 1.5, float("inf"), "4096"])
+@pytest.mark.parametrize("value", [True, 1.5, float("inf"), "4096", 0, -1])
 def test_moss_tts_context_probe_rejects_invalid_metadata(
     monkeypatch: pytest.MonkeyPatch,
     value: object,
@@ -488,6 +488,14 @@ def test_moss_tts_context_probe_rejects_invalid_metadata(
         ({"factor": "2"}, "rope_scaling.factor must be a finite number"),
         ({"factor": float("inf")}, "rope_scaling.factor must be a finite number"),
         ({"factor": 1.1}, "rope_scaling.factor must produce an integer"),
+        (
+            {"factor": 0},
+            "rope_scaling.factor must produce a positive context length",
+        ),
+        (
+            {"factor": -1},
+            "rope_scaling.factor must produce a positive context length",
+        ),
     ],
 )
 def test_moss_tts_context_probe_rejects_invalid_rope_scaling(
