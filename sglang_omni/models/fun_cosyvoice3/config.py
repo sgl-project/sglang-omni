@@ -25,13 +25,13 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     required_speech_reference_count: ClassVar[int | None] = 1
     speech_reference_text_excludes_instructions: ClassVar[bool] = True
 
-    @classmethod
-    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
-        return frozenset({("preprocessing", "tts_engine")})
-
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": EngineStageConfig,
     }
+
+    @classmethod
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        return frozenset({("preprocessing", "tts_engine")})
 
     stages: list[StageConfig] = [
         StageConfig(
@@ -58,7 +58,6 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 flow_batch_admission_frames=2000,
                 # Opt-in; off by default (one-time startup compile cost).
                 enable_dit_torch_compile=False,
-                enable_flow_npugraph=True,
             ),
             gpu=0,
             terminal=True,

@@ -24,7 +24,6 @@ _MODELS = sorted(
 # Every stage that relies on device=None. Adding one means adding a test below that
 # proves the factory resolves it.
 _NONE_DEVICE_STAGES = {
-    ("fun_cosyvoice3", "tts_engine"),
     ("qwen3_asr", "asr"),
     ("qwen3_omni", "audio_encoder"),
     ("qwen3_omni", "code2wav"),
@@ -143,26 +142,3 @@ def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
     # Placement injects gpu_id only when the signature declares it. Without it the
     # builder resolved a bare accelerator and told SGLang card 0.
     assert seen["gpu_id"] == 1
-
-
-def test_fun_cosyvoice3_tts_stage_forwards_none_to_the_shared_builder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang_omni.models.fun_cosyvoice3 import stages
-    from sglang_omni.scheduling import engine_factory
-
-    seen: dict[str, object] = {}
-
-    def spy_build(self, model_path, **kwargs):
-        del self, model_path
-        seen.update(kwargs)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(
-        engine_factory.SGLangGenerationEngineBuilder, "build", spy_build
-    )
-
-    stages.create_sglang_tts_engine_executor("unused", device=None, gpu_id=2)
-
-    assert seen["device"] is None
-    assert seen["gpu_id"] == 2
