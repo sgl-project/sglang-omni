@@ -1834,6 +1834,21 @@ def test_qwen3_tts_vocoder_normalizes_batch_limits_before_graph_pruning() -> Non
     assert scheduler._followup_decode_graphs._batch_sizes == (1, 2)
 
 
+@pytest.mark.parametrize(
+    "batch_limit",
+    ["initial_max_batch_size", "followup_max_batch_size"],
+)
+def test_qwen3_tts_vocoder_rejects_batch_limits_that_normalize_to_zero(
+    batch_limit: str,
+) -> None:
+    with pytest.raises(ValueError, match="async batch sizes must be > 0"):
+        Qwen3TTSStreamingVocoderScheduler(
+            _FakeQwen3TTSTokenizer(),
+            device="cpu",
+            **{batch_limit: 0.1},
+        )
+
+
 def test_qwen3_tts_vocoder_warms_graphs_before_serving_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

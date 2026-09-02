@@ -436,6 +436,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             )
         if stream_left_context_frames < 0:
             raise ValueError("stream_left_context_frames must be >= 0")
+        initial_max_batch_size = int(initial_max_batch_size)
+        followup_max_batch_size = int(followup_max_batch_size)
         if initial_max_batch_size <= 0 or followup_max_batch_size <= 0:
             raise ValueError("async batch sizes must be > 0")
         if initial_batch_wait_ms < 0 or followup_batch_wait_ms < 0:
@@ -461,7 +463,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             batch_sizes=(
                 (1,)
                 if self._deterministic_inference
-                else _decode_graph_batch_sizes(int(initial_max_batch_size))
+                else _decode_graph_batch_sizes(initial_max_batch_size)
             ),
             enabled=bool(
                 initial_cuda_graph
@@ -484,7 +486,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             batch_sizes=(
                 (1,)
                 if self._deterministic_inference
-                else _decode_graph_batch_sizes(int(followup_max_batch_size))
+                else _decode_graph_batch_sizes(followup_max_batch_size)
             ),
             enabled=bool(
                 followup_cuda_graph
@@ -501,9 +503,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             int(stride) for stride in followup_stride_ramp
         )
         self._chunk_ramp_configured = stream_chunk_ramp is not None
-        self._initial_max_batch_size = int(initial_max_batch_size)
+        self._initial_max_batch_size = initial_max_batch_size
         self._initial_batch_wait_s = float(initial_batch_wait_ms) / 1000.0
-        self._followup_max_batch_size = int(followup_max_batch_size)
+        self._followup_max_batch_size = followup_max_batch_size
         self._followup_batch_wait_s = float(followup_batch_wait_ms) / 1000.0
         self._default_initial_chunk_frames = int(initial_chunk_frames)
         self._stream_left_context_frames = int(stream_left_context_frames)
