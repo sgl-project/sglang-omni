@@ -58,6 +58,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         intel-igc-core-2 intel-igc-opencl-2 \
     && rm -rf /var/lib/apt/lists/*
 
+# note(wenyao): The Intel base image does not provide pip on PATH. Bootstrap
+# Python 3.12 in a virtual environment, with tools to build native dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12-dev python3.12-venv build-essential \
+    && rm -rf /var/lib/apt/lists/*
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3.12 -m venv ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+RUN python --version && python -m pip --version && pip --version
+
 # Minors differ on purpose: the XPU channel ships no torchaudio newer than 2.11+xpu.
 RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
         torch==2.13.0+xpu \
