@@ -862,8 +862,11 @@ impl ServiceProfile {
                     && response_format.is_none_or(|format| response_formats.contains(&format))
                     && stream_modes.contains(stream_mode)
                     && task.is_none_or(|task| tasks.contains(&task))
-                    && contains_all(reference_forms, required_references)
-                    && managed_voice == required_voice
+                    && if *required_voice {
+                        *managed_voice
+                    } else {
+                        contains_all(reference_forms, required_references)
+                    }
             }
             (Self::RealtimeWebsocket, ProfileRequirement::RealtimeWebsocket) => true,
             _ => false,
@@ -1425,5 +1428,31 @@ mod tests {
             reference_forms.retain(|form| *form != ReferenceForm::None);
         }
         assert!(!row.matches(&requirement, Some("tts")));
+    }
+
+    #[test]
+    fn managed_voice_websocket_matches_stored_or_explicit_reference() {
+        let row = ServiceProfile::SpeechWebsocket {
+            model_ids: vec![String::from("tts")],
+            response_formats: vec![SpeechResponseFormat::Pcm],
+            stream_modes: vec![StreamMode::Streaming],
+            tasks: vec![SpeechTask::TextToSpeech],
+            reference_forms: vec![ReferenceForm::Direct],
+            managed_voice: true,
+        };
+        let requirement = |reference_forms, managed_voice| ProfileRequirement::SpeechWebsocket {
+            model: ModelSelection::Explicit(String::from("tts")),
+            response_format: Some(SpeechResponseFormat::Pcm),
+            stream_mode: StreamMode::Streaming,
+            task: None,
+            reference_forms,
+            managed_voice,
+        };
+        assert!(row.matches(&requirement(vec![ReferenceForm::None], true), Some("tts")));
+        assert!(row.matches(
+            &requirement(vec![ReferenceForm::Direct], false),
+            Some("tts")
+        ));
+        assert!(!row.matches(&requirement(vec![ReferenceForm::None], false), Some("tts")));
     }
 }
