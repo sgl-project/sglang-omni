@@ -412,12 +412,11 @@ def compute_video_cache_key(
 
 def _check_if_video_has_audio(video_path: str | Path) -> bool:
     try:
-        container = av.open(str(video_path))
-        audio_streams = [
-            stream for stream in container.streams if stream.type == "audio"
-        ]
-        container.close()
-        return len(audio_streams) > 0
+        with av.open(str(video_path)) as container:
+            audio_streams = [
+                stream for stream in container.streams if stream.type == "audio"
+            ]
+            return len(audio_streams) > 0
     except Exception as e:
         logger.debug(f"Failed to check audio in video {video_path}: {e}")
         return False
