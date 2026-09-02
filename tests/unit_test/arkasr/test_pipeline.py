@@ -28,9 +28,6 @@ from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_i
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
-)
 
 
 def _tiny_config():
@@ -174,40 +171,12 @@ def test_arkasr_stage_default_enables_async_decode():
     assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
-def test_arkasr_prefill_graph_allows_unset_chunked_prefill_size() -> None:
-    builder = arkasr_builder.ArkasrEngineBuilder(
-        max_running_requests=32,
-        encoder_max_batch_size=8,
-        max_new_tokens=256,
-        enable_async_decode=True,
-        async_decode_min_batch_size=2,
-        mem_fraction_static=None,
-        mm_embedding_cache_size_bytes=0,
-        enable_torch_compile=False,
-        mm_attention_backend="fa3",
-        request_build_max_workers=8,
-        request_build_max_pending=32,
-        prefill_coalesce_requests=16,
-        prefill_coalesce_wait_ms=32.0,
-        prefill_coalesce_when_idle=True,
-        prefill_coalesce_requires_pending_builds=True,
-    )
-    overrides = build_generation_batch_overrides(
-        server_args_overrides={"chunked_prefill_size": None},
-        **builder.generation_defaults(dtype="bfloat16"),
-    )
-
-    builder.adjust_overrides(overrides)
-
-    assert overrides["cuda_graph_backend_prefill"] == "breakable"
-    assert overrides["cuda_graph_bs_prefill"][-1] == overrides["max_prefill_tokens"]
-
-
 def _stub_arkasr_engine_build(
     monkeypatch: pytest.MonkeyPatch,
     *,
     want_cuda_graph: bool,
     encoder_service: object,
+    resolved_chunked_prefill_size: int | None = None,
 ) -> SimpleNamespace:
     """Stub every out-of-process dependency of ArkasrEngineBuilder.build().
 
@@ -275,14 +244,44 @@ def _stub_arkasr_engine_build(
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
-        server_args = SimpleNamespace(context_length=context_length, **overrides)
+        flat = dict(overrides)
+        if resolved_chunked_prefill_size is not None:
+            flat["chunked_prefill_size"] = resolved_chunked_prefill_size
+        for name, default in (
+            ("attn_cp_size", 1),
+            ("dcp_size", 1),
+            ("lora_paths", None),
+            ("enable_lora", None),
+            ("moe_a2a_backend", "none"),
+        ):
+            flat.setdefault(name, default)
+        server_args = SimpleNamespace(context_length=context_length, **flat)
+        prefill_backend = (
+            overrides.get("cuda_graph_backend_prefill", "disabled")
+            if resolved_chunked_prefill_size is not None
+            else "disabled"
+        )
+        prefill_bs = overrides.get("cuda_graph_bs_prefill")
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
             ),
-            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            prefill=SimpleNamespace(
+                backend=prefill_backend,
+                bs=prefill_bs,
+                max_bs=overrides.get("cuda_graph_max_bs_prefill"),
+            ),
         )
+        server_args._cuda_graph_config_locked = {
+            ("prefill", field)
+            for field, key in (
+                ("backend", "cuda_graph_backend_prefill"),
+                ("bs", "cuda_graph_bs_prefill"),
+                ("max_bs", "cuda_graph_max_bs_prefill"),
+            )
+            if key in overrides
+        }
         return server_args
 
     monkeypatch.setattr(
@@ -319,6 +318,27 @@ def _stub_arkasr_engine_build(
         encoder_batch_sizes=encoder_batch_sizes,
         model_worker=model_worker,
     )
+
+
+def test_arkasr_prefill_graph_uses_resolved_auto_chunk_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub = _stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+        resolved_chunked_prefill_size=2048,
+    )
+
+    scheduler = create_sglang_arkasr_executor(
+        "AutoArk-AI/ARK-ASR-3B",
+        server_args_overrides={"chunked_prefill_size": None},
+    )
+
+    prefill = scheduler.server_args.cuda_graph_config.prefill
+    assert max(prefill.bs) == 2048
+    assert prefill.max_bs == 2048
+    assert stub.infra_kwargs_seen["enable_prefill_input_embeds"] is True
 
 
 @pytest.mark.parametrize("want_cuda_graph", [True, False])

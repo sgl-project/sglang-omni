@@ -70,6 +70,58 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     return values
 
 
+def finalize_prefill_cuda_graph_buckets(
+    server_args: Any,
+    *,
+    default_buckets: Iterable[int] | None,
+    default_max_bs: int | None,
+) -> None:
+    """Materialize framework-owned buckets from resolved token limits."""
+    prefill = server_args.cuda_graph_config.prefill
+    if prefill.backend != CudaGraphBackend.BREAKABLE:
+        return
+
+    caps = [
+        default_max_bs,
+        prefill.max_bs,
+        getattr(server_args, "chunked_prefill_size", None),
+        getattr(server_args, "max_prefill_tokens", None),
+        getattr(server_args, "max_total_tokens", None),
+    ]
+    positive_caps = [
+        int(value) for value in caps if value is not None and int(value) > 0
+    ]
+    if not positive_caps:
+        raise ValueError(
+            "breakable prefill CUDA graphs require a resolved positive token cap"
+        )
+    cap = min(positive_caps)
+
+    if default_buckets is None:
+        buckets = build_default_prefill_cuda_graph_bs(cap)
+    else:
+        buckets = [int(value) for value in default_buckets if int(value) <= cap]
+        if not buckets or buckets[-1] != cap:
+            buckets.append(cap)
+
+    # ServerArgs has already parsed the phase config at this point. Keep its
+    # convenience fields and resolved config bag in sync for serialization and
+    # all downstream readers.
+    from sglang_omni.vendor.sglang.server_args import override_server_args
+
+    override_server_args(
+        server_args,
+        "sglang_omni.prefill_cuda_graph_buckets",
+        cuda_graph_bs_prefill=buckets,
+        cuda_graph_max_bs_prefill=cap,
+    )
+    prefill.bs = buckets
+    prefill.max_bs = cap
+    locked = set(server_args._cuda_graph_config_locked)
+    locked.update({("prefill", "bs"), ("prefill", "max_bs")})
+    object.__setattr__(server_args, "_cuda_graph_config_locked", locked)
+
+
 def clamp_prefill_cuda_graph_max_bs(
     overrides: dict[str, Any],
     *,

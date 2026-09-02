@@ -23,7 +23,6 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
-    build_default_prefill_cuda_graph_bs,
     clamp_prefill_cuda_graph_max_bs,
     get_decode_cuda_graph_bs,
 )
@@ -314,12 +313,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             return
         if "cuda_graph_bs_prefill" in overrides:
             return
-        cap = clamp_prefill_cuda_graph_max_bs(
+        clamp_prefill_cuda_graph_max_bs(
             overrides,
             context_length=self.context_length,
         )
-        ladder = build_default_prefill_cuda_graph_bs(cap)
-        overrides["cuda_graph_bs_prefill"] = ladder
 
     def customize_server_args(self, server_args: Any) -> None:
         self.context_length = int(server_args.context_length)

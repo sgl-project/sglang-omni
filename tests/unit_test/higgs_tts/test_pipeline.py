@@ -372,10 +372,11 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
     assert captured["overrides"]["max_running_requests"] == 64
     assert "cuda_graph_config" not in captured["overrides"]
     assert captured["overrides"]["cuda_graph_backend_prefill"] == "breakable"
-    assert captured["overrides"][
-        "cuda_graph_bs_prefill"
-    ] == build_default_prefill_cuda_graph_bs(512)
+    assert "cuda_graph_bs_prefill" not in captured["overrides"]
     assert captured["server_args"].cuda_graph_config.prefill.backend == "breakable"
+    assert captured[
+        "server_args"
+    ].cuda_graph_config.prefill.bs == build_default_prefill_cuda_graph_bs(512)
     assert ("prefill", "backend") not in captured[
         "server_args"
     ]._cuda_graph_config_locked

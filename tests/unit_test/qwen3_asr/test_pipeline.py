@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,7 +24,6 @@ from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
-    validate_generation_batch_policy,
 )
 
 
@@ -55,6 +53,8 @@ def _fake_server_args_builder(build_kwargs: dict[str, object]):
             ("moe_a2a_backend", "none"),
         ):
             flat.setdefault(name, default)
+        if flat.get("chunked_prefill_size") is None:
+            flat["chunked_prefill_size"] = 2048
         server_args = SimpleNamespace(context_length=context_length, **flat)
         prefill_bs = overrides.get("cuda_graph_bs_prefill")
         server_args.cuda_graph_config = SimpleNamespace(
@@ -574,45 +574,6 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("context_length", "expected_cap"),
-    [
-        (1636, 1636),
-        (512, 512),
-        (8192, 4096),
-    ],
-)
-def test_prefill_ladder_never_exceeds_the_context_length(
-    context_length: int, expected_cap: int
-) -> None:
-    builder = _make_engine_builder(
-        mm_attention_backend="fa3", context_length=context_length
-    )
-    overrides = build_generation_batch_overrides(
-        **builder.generation_defaults(dtype="bfloat16")
-    )
-
-    builder.adjust_overrides(overrides)
-
-    assert max(overrides["cuda_graph_bs_prefill"]) == expected_cap
-
-
-def test_qwen3_asr_prefill_ladder_is_accepted_by_the_shared_policy(caplog) -> None:
-    builder = _make_engine_builder(mm_attention_backend="fa3")
-    overrides = build_generation_batch_overrides(
-        **builder.generation_defaults(dtype="bfloat16")
-    )
-    builder.adjust_overrides(overrides)
-    server_args = _fake_server_args_builder({})("dummy", 1636, **overrides)
-
-    with caplog.at_level(logging.WARNING):
-        validate_generation_batch_policy(
-            model_name="Qwen3-ASR", server_args=server_args
-        )
-
-    assert not any("padding factor" in record.message for record in caplog.records)
-
-
 def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> None:
     recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
 
@@ -628,6 +589,7 @@ def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> 
     [
         ({"context_length": 1000}, 1000),
         ({"chunked_prefill_size": 512}, 512),
+        ({"chunked_prefill_size": None}, 2048),
         ({"chunked_prefill_size": 0}, 4096),
         ({"max_prefill_tokens": 768}, 768),
         ({"cuda_graph_max_bs_prefill": 512}, 512),
@@ -636,7 +598,7 @@ def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> 
 )
 def test_qwen3_asr_ladder_respects_deployment_cap_overrides(
     monkeypatch: pytest.MonkeyPatch,
-    cap_override: dict[str, int],
+    cap_override: dict[str, int | None],
     expected_cap: int,
 ) -> None:
     recorded = _patch_engine_dependencies(monkeypatch, want_cuda_graph=True)

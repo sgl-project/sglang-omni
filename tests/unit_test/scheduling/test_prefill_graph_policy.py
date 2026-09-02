@@ -12,6 +12,7 @@ import pytest
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
+    finalize_prefill_cuda_graph_buckets,
     validate_generation_batch_policy,
 )
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -170,6 +171,49 @@ def test_breakable_rejects_buckets_above_max_prefill_tokens() -> None:
                 max_prefill_tokens=16384,
             )
         )
+
+
+def test_framework_buckets_use_resolved_auto_chunk_size() -> None:
+    server_args = _server_args(
+        prefill_backend="breakable",
+        prefill_bs=build_default_prefill_cuda_graph_bs(4096),
+        prefill_max_bs=4096,
+        locked=frozenset({("prefill", "backend")}),
+        chunked_prefill_size=2048,
+        max_prefill_tokens=4096,
+    )
+
+    finalize_prefill_cuda_graph_buckets(
+        server_args,
+        default_buckets=None,
+        default_max_bs=4096,
+    )
+
+    assert max(server_args.cuda_graph_config.prefill.bs) == 2048
+    assert server_args.cuda_graph_config.prefill.max_bs == 2048
+    assert ("prefill", "bs") in server_args._cuda_graph_config_locked
+    _validate(server_args)
+
+
+def test_framework_bucket_template_is_trimmed_after_resolution() -> None:
+    server_args = _server_args(
+        prefill_backend="breakable",
+        prefill_bs=build_default_prefill_cuda_graph_bs(4096),
+        prefill_max_bs=4096,
+        locked=frozenset({("prefill", "backend")}),
+        chunked_prefill_size=2048,
+        max_prefill_tokens=4096,
+    )
+
+    finalize_prefill_cuda_graph_buckets(
+        server_args,
+        default_buckets=[1, 2, *build_default_prefill_cuda_graph_bs(4096)],
+        default_max_bs=4096,
+    )
+
+    assert server_args.cuda_graph_config.prefill.bs[:2] == [1, 2]
+    assert max(server_args.cuda_graph_config.prefill.bs) == 2048
+    _validate(server_args)
 
 
 @pytest.mark.parametrize(

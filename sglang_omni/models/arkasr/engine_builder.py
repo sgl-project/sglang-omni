@@ -17,7 +17,6 @@ from sglang_omni.models.arkasr.encoder_service import (
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
-    build_default_prefill_cuda_graph_bs,
     clamp_prefill_cuda_graph_max_bs,
 )
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
@@ -140,9 +139,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         ):
             return
 
-        overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(
-            clamp_prefill_cuda_graph_max_bs(overrides)
-        )
+        clamp_prefill_cuda_graph_max_bs(overrides)
 
     def setup_model_resources(
         self,

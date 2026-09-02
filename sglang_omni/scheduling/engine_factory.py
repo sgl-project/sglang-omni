@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
+    finalize_prefill_cuda_graph_buckets,
     get_prefill_cuda_graph_backend,
     nested_prefill_overrides,
     validate_generation_batch_policy,
@@ -21,14 +22,16 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 logger = logging.getLogger(__name__)
 
 
-def _operator_selected_prefill_graph_backend(
+def _operator_selected_prefill_graph_field(
     server_args_overrides: Mapping[str, Any] | None,
+    flat_name: str,
+    nested_name: str,
 ) -> bool:
     if not server_args_overrides:
         return False
-    if "cuda_graph_backend_prefill" in server_args_overrides:
+    if flat_name in server_args_overrides:
         return True
-    return "backend" in nested_prefill_overrides(server_args_overrides)
+    return nested_name in nested_prefill_overrides(server_args_overrides)
 
 
 def _normalize_context_length(value: Any, *, model_name: str) -> int:
@@ -117,14 +120,36 @@ class SGLangGenerationEngineBuilder(ABC):
             model_name=self.model_name,
         )
 
-        operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
-            server_args_overrides
+        operator_selected_prefill_backend = _operator_selected_prefill_graph_field(
+            server_args_overrides,
+            "cuda_graph_backend_prefill",
+            "backend",
+        )
+        operator_selected_prefill_buckets = _operator_selected_prefill_graph_field(
+            server_args_overrides,
+            "cuda_graph_bs_prefill",
+            "bs",
+        )
+        operator_selected_prefill_max_bs = _operator_selected_prefill_graph_field(
+            server_args_overrides,
+            "cuda_graph_max_bs_prefill",
+            "max_bs",
         )
         overrides = build_generation_batch_overrides(
             server_args_overrides=server_args_overrides,
             **self.generation_defaults(dtype=dtype),
         )
         self.adjust_overrides(overrides)
+        # Framework ladders are templates until ServerArgs resolves hardware-
+        # dependent token caps. Operator buckets remain explicit and immutable.
+        default_prefill_buckets = None
+        default_prefill_max_bs = None
+        if not operator_selected_prefill_buckets:
+            default_prefill_buckets = overrides.pop("cuda_graph_bs_prefill", None)
+            if not operator_selected_prefill_max_bs:
+                default_prefill_max_bs = overrides.pop(
+                    "cuda_graph_max_bs_prefill", None
+                )
         if "context_length" in overrides:
             if not self.supports_context_length_override:
                 raise ValueError(
@@ -161,6 +186,12 @@ class SGLangGenerationEngineBuilder(ABC):
             **overrides,
         )
         self.customize_server_args(server_args)
+        if not operator_selected_prefill_buckets:
+            finalize_prefill_cuda_graph_buckets(
+                server_args,
+                default_buckets=default_prefill_buckets,
+                default_max_bs=default_prefill_max_bs,
+            )
         self.validate_before_infrastructure(server_args)
 
         infra_kwargs = dict(self.infra_kwargs())
