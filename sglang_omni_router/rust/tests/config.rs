@@ -98,7 +98,7 @@ fn websocket_only_config(route: &str) -> String {
         (
             "realtime_websocket = 4",
             "realtime_websocket = 2",
-            "service = \"realtime_websocket\"\nprotocols = [\"openai_realtime_v1\"]",
+            "service = \"realtime_websocket\"",
         )
     };
     format!(

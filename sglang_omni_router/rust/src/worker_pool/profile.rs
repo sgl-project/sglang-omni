@@ -227,12 +227,6 @@ pub(crate) enum TranscriptionResponseFormat {
     Sse,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum RealtimeProtocol {
-    OpenaiRealtimeV1,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "service", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ServiceProfile {
@@ -275,9 +269,7 @@ pub(crate) enum ServiceProfile {
         reference_forms: Vec<ReferenceForm>,
         managed_voice: bool,
     },
-    RealtimeWebsocket {
-        protocols: Vec<RealtimeProtocol>,
-    },
+    RealtimeWebsocket,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -328,10 +320,7 @@ pub(crate) enum ProfileRequirement {
         reference_forms: Vec<ReferenceForm>,
         managed_voice: bool,
     },
-    RealtimeWebsocket {
-        protocol: RealtimeProtocol,
-        expected_default_model_id: String,
-    },
+    RealtimeWebsocket,
 }
 
 /// Preserves whether the caller selected a model or relied on a worker default.
@@ -415,7 +404,7 @@ impl ProfileRequirement {
             Self::SpeechBatch { .. } => ServiceClass::SpeechBatch,
             Self::TranscriptionHttp { .. } => ServiceClass::TranscriptionHttp,
             Self::SpeechWebsocket { .. } => ServiceClass::SpeechWebsocket,
-            Self::RealtimeWebsocket { .. } => ServiceClass::RealtimeWebsocket,
+            Self::RealtimeWebsocket => ServiceClass::RealtimeWebsocket,
         }
     }
 
@@ -604,9 +593,7 @@ impl ServiceProfile {
                 }
                 Ok(())
             }
-            Self::RealtimeWebsocket { protocols } => {
-                validate_set(protocols, "workers.service_profiles.protocols", false)
-            }
+            Self::RealtimeWebsocket => Ok(()),
         }
     }
 
@@ -729,10 +716,7 @@ impl ServiceProfile {
                     && set_eq(at, bt)
                     && set_eq(ar, br)
             }
-            (
-                Self::RealtimeWebsocket { protocols: a },
-                Self::RealtimeWebsocket { protocols: b },
-            ) => set_eq(a, b),
+            (Self::RealtimeWebsocket, Self::RealtimeWebsocket) => true,
             _ => false,
         }
     }
@@ -881,17 +865,7 @@ impl ServiceProfile {
                     && contains_all(reference_forms, required_references)
                     && managed_voice == required_voice
             }
-            (
-                Self::RealtimeWebsocket { protocols },
-                ProfileRequirement::RealtimeWebsocket {
-                    protocol,
-                    expected_default_model_id,
-                },
-            ) => {
-                valid_model_id(expected_default_model_id)
-                    && worker_default == Some(expected_default_model_id.as_str())
-                    && protocols.contains(protocol)
-            }
+            (Self::RealtimeWebsocket, ProfileRequirement::RealtimeWebsocket) => true,
             _ => false,
         }
     }
@@ -903,7 +877,7 @@ impl ServiceProfile {
             | Self::SpeechBatch { model_ids, .. }
             | Self::TranscriptionHttp { model_ids, .. }
             | Self::SpeechWebsocket { model_ids, .. } => model_ids.iter().any(|item| item == model),
-            Self::RealtimeWebsocket { .. } => true,
+            Self::RealtimeWebsocket => true,
         }
     }
 
@@ -914,7 +888,7 @@ impl ServiceProfile {
             Self::SpeechBatch { .. } => ServiceClass::SpeechBatch,
             Self::TranscriptionHttp { .. } => ServiceClass::TranscriptionHttp,
             Self::SpeechWebsocket { .. } => ServiceClass::SpeechWebsocket,
-            Self::RealtimeWebsocket { .. } => ServiceClass::RealtimeWebsocket,
+            Self::RealtimeWebsocket => ServiceClass::RealtimeWebsocket,
         }
     }
 
@@ -1020,17 +994,6 @@ pub(crate) fn validate_workers(workers: &[WorkerConfig]) -> Result<(), ConfigErr
                     "contains a duplicate correlated row",
                 ));
             }
-        }
-        if worker
-            .service_profiles
-            .iter()
-            .any(|profile| matches!(profile, ServiceProfile::RealtimeWebsocket { .. }))
-            && worker.default_model_id.is_none()
-        {
-            return Err(ConfigError::invalid(
-                "workers.default_model_id",
-                "is required for realtime WebSocket workers",
-            ));
         }
         for profile in &worker.service_profiles {
             let configured = match profile.service_class() {

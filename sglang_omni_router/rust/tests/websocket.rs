@@ -341,7 +341,6 @@ managed_voice = false
 
 [[workers.service_profiles]]
 service = "realtime_websocket"
-protocols = ["openai_realtime_v1"]
 "#
     )
 }
@@ -447,27 +446,6 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
     let mut child = ChildGuard(child);
 
     wait_ready(router_address).await;
-
-    for query in ["model=", "model=a&model=b"] {
-        assert_eq!(
-            rejected_websocket_status(format!("ws://{router_address}/v1/realtime?{query}")).await,
-            StatusCode::BAD_REQUEST,
-            "query must be rejected before upstream connect: {query}"
-        );
-    }
-    assert_eq!(
-        rejected_websocket_status(format!("ws://{router_address}/v1/realtime?model=%")).await,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        rejected_websocket_status(format!("ws://{router_address}/v1/realtime?model=%FF")).await,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        rejected_websocket_status(format!("ws://{router_address}/v1/realtime?model=unknown")).await,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert!(state.realtime_path.lock().await.is_none());
 
     let speech_url = format!("ws://{router_address}/v1/audio/speech/stream");
     let mut rejected_speech = connect_with_retry(&speech_url).await;
@@ -914,7 +892,6 @@ realtime_websocket = 1
 
 [[workers.service_profiles]]
 service = "realtime_websocket"
-protocols = ["openai_realtime_v1"]
 "#
         )
     };
@@ -954,7 +931,7 @@ trust_domain = "local"
 }
 
 #[tokio::test]
-async fn explicit_realtime_model_selects_and_pins_one_heterogeneous_worker() {
+async fn realtime_model_prefers_an_exact_worker_and_falls_back_within_the_domain() {
     let alpha_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind alpha worker");
@@ -1023,13 +1000,25 @@ async fn explicit_realtime_model_selects_and_pins_one_heterogeneous_worker() {
         rejected_websocket_status(format!("ws://{router_address}/v1/audio/speech/stream")).await,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(
-        rejected_websocket_status(format!("ws://{router_address}/v1/realtime")).await,
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(handshakes.load(Ordering::Relaxed), 0);
+    let (mut unspecified, _) = connect_async(format!("ws://{router_address}/v1/realtime"))
+        .await
+        .expect("select a realtime worker without a model preference");
+    let created = unspecified
+        .next()
+        .await
+        .expect("unscoped session.created")
+        .expect("valid unscoped event")
+        .into_text()
+        .expect("unscoped event text");
+    assert!(created.contains(r#""model":"omni-alpha""#));
+    unspecified
+        .close(None)
+        .await
+        .expect("close unscoped session");
+    let _closed = unspecified.next().await;
+    drop(unspecified);
 
-    let beta_path = "/v1/realtime?trace=first&model=omni%2Dbeta&trace=second%2fvalue&flag";
+    let beta_path = "/v1/realtime?trace=first&model=omni%2Dbeta&trace=second%2fvalue";
     let (mut beta, _) = connect_async(format!("ws://{router_address}{beta_path}"))
         .await
         .expect("select beta worker");
@@ -1054,11 +1043,32 @@ async fn explicit_realtime_model_selects_and_pins_one_heterogeneous_worker() {
         .into_text()
         .expect("pinned response text");
     assert!(pinned.contains(r#""model":"omni-beta""#));
-    assert!(alpha_paths.lock().await.is_empty());
+    assert_eq!(alpha_paths.lock().await.as_slice(), ["/v1/realtime"]);
     assert_eq!(beta_paths.lock().await.as_slice(), [beta_path]);
     beta.close(None).await.expect("close beta session");
+    let _closed = beta.next().await;
     drop(beta);
-    assert_eq!(handshakes.load(Ordering::Relaxed), 1);
+
+    let fallback_path = "/v1/realtime?model=unknown";
+    let (mut fallback, _) = connect_async(format!("ws://{router_address}{fallback_path}"))
+        .await
+        .expect("fall back when no worker default matches the preference");
+    let created = fallback
+        .next()
+        .await
+        .expect("fallback session.created")
+        .expect("valid fallback event")
+        .into_text()
+        .expect("fallback event text");
+    assert!(created.contains(r#""model":"omni-alpha""#));
+    assert_eq!(
+        alpha_paths.lock().await.as_slice(),
+        ["/v1/realtime", fallback_path]
+    );
+    fallback.close(None).await.expect("close fallback session");
+    let _closed = fallback.next().await;
+    drop(fallback);
+    assert_eq!(handshakes.load(Ordering::Relaxed), 3);
 
     alpha_task.abort();
     beta_task.abort();

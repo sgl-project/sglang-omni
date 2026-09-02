@@ -26,8 +26,8 @@ use crate::speech_facts::{
 };
 use crate::worker_pool::{
     AdmissionError, CapacityClass, DefaultModelResolution, DispatchError, ModelSelection,
-    ProfileRequirement, RealtimeProtocol, RouteRequirement, ServiceClass, SpeechResponseFormat,
-    StreamMode, TrustDomain, WorkerPool, valid_model_id,
+    ProfileRequirement, RouteRequirement, ServiceClass, SpeechResponseFormat, StreamMode,
+    TrustDomain, WorkerPool,
 };
 
 mod session;
@@ -438,11 +438,7 @@ pub(crate) async fn realtime(
     };
     let origin = headers.get(ORIGIN).cloned();
     let upstream_headers = upstream::HandshakeHeaders::new(request_id.into_header_value(), origin);
-    let model = match realtime_model(&uri, || {
-        gateway
-            .pool
-            .resolve_default_model_id(&trust, ServiceClass::RealtimeWebsocket, None)
-    }) {
+    let model = match realtime_model(&uri) {
         Ok(model) => model,
         Err(fault) => return fault.into_response(),
     };
@@ -454,20 +450,18 @@ pub(crate) async fn realtime(
         return HttpFault::RouterUnavailable.into_response();
     };
     let mut drain = registration.drain_receiver();
-    let requirement = RouteRequirement::new(
-        ProfileRequirement::RealtimeWebsocket {
-            protocol: RealtimeProtocol::OpenaiRealtimeV1,
-            expected_default_model_id: model,
-        },
-        trust,
-    );
-    let lease = match gateway.pool.dispatch_session(admission, &requirement) {
-        Ok(lease) => lease,
-        Err(error) => {
-            drop(registration);
-            return dispatch_fault(error).into_response();
-        }
-    };
+    let requirement = RouteRequirement::new(ProfileRequirement::RealtimeWebsocket, trust);
+    let lease =
+        match gateway
+            .pool
+            .dispatch_realtime_session(admission, &requirement, model.as_deref())
+        {
+            Ok(lease) => lease,
+            Err(error) => {
+                drop(registration);
+                return dispatch_fault(error).into_response();
+            }
+        };
     let connect_deadline = Instant::now() + gateway.policy.connect_timeout();
     let connected = setup_until(
         &mut drain,
@@ -1009,21 +1003,10 @@ where
     Ok(())
 }
 
-fn realtime_model<'a>(
-    uri: &Uri,
-    resolve_default: impl FnOnce() -> DefaultModelResolution<'a>,
-) -> Result<String, HttpFault> {
+fn realtime_model(uri: &Uri) -> Result<Option<String>, HttpFault> {
     let Query(query) =
         Query::<RealtimeQuery>::try_from_uri(uri).map_err(|_| HttpFault::MalformedRequest)?;
-    match query.model {
-        Some(model) if valid_model_id(&model) => Ok(model),
-        Some(_) => Err(HttpFault::MalformedRequest),
-        None => match resolve_default() {
-            DefaultModelResolution::Unique(model) => Ok(model.to_owned()),
-            DefaultModelResolution::Ambiguous => Err(HttpFault::AmbiguousModel),
-            DefaultModelResolution::NoService => Err(HttpFault::RouterUnavailable),
-        },
-    }
+    Ok(query.model.filter(|model| !model.is_empty()))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1095,10 +1078,9 @@ mod tests {
     use axum::http::Uri;
     use tokio::sync::watch;
 
-    use crate::error::HttpFault;
     use crate::worker_pool::{
-        DefaultModelResolution, ModelSelection, ProfileRequirement, ReferenceForm,
-        SpeechResponseFormat, SpeechTask, StreamMode, TrustDomain,
+        ModelSelection, ProfileRequirement, ReferenceForm, SpeechResponseFormat, SpeechTask,
+        StreamMode, TrustDomain,
     };
 
     use super::{
@@ -1285,30 +1267,26 @@ mod tests {
     }
 
     #[test]
-    fn realtime_query_is_strict_and_default_aware() {
+    fn realtime_query_is_an_optional_worker_preference() {
         let explicit = |query: &str| {
             let uri: Uri = format!("/v1/realtime?{query}")
                 .parse()
                 .expect("valid test URI");
-            realtime_model(&uri, || DefaultModelResolution::NoService)
+            realtime_model(&uri)
         };
-        assert_eq!(explicit("model=omni"), Ok(String::from("omni")));
+        assert_eq!(explicit("model=omni"), Ok(Some(String::from("omni"))));
         assert_eq!(
             explicit("unknown=first&mo%64el=qwen%2FOmni"),
-            Ok(String::from("qwen/Omni"))
+            Ok(Some(String::from("qwen/Omni")))
         );
         let absent: Uri = "/v1/realtime?unknown=retained"
             .parse()
             .expect("valid absent-model URI");
-        assert_eq!(
-            realtime_model(&absent, || DefaultModelResolution::Unique("common")),
-            Ok(String::from("common"))
-        );
-        assert_eq!(explicit("model=%"), Ok(String::from("%")));
-        assert_eq!(explicit("model=%FF"), Ok(String::from("�")));
-        for query in ["model=a&model=b", "model="] {
-            assert_eq!(explicit(query), Err(HttpFault::MalformedRequest));
-        }
+        assert_eq!(realtime_model(&absent), Ok(None));
+        assert_eq!(explicit("model=%"), Ok(Some(String::from("%"))));
+        assert_eq!(explicit("model=%FF"), Ok(Some(String::from("�"))));
+        assert_eq!(explicit("model="), Ok(None));
+        assert!(explicit("model=a&model=b").is_err());
     }
 
     #[test]

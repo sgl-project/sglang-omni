@@ -17,9 +17,8 @@ pub(crate) use admission::{
 pub(crate) use health::{HealthSupervisor, WorkerHealth};
 pub(crate) use profile::{
     CapacityClass, ChatAudioFormat, MediaPlacement, MessageContentForm, ModelSelection,
-    ProfileRequirement, RealtimeProtocol, ReferenceForm, RouteRequirement, ServiceClass,
-    SpeechResponseFormat, SpeechTask, SpeechToTextTask, StreamMode, TranscriptionResponseFormat,
-    TrustDomain, valid_model_id,
+    ProfileRequirement, ReferenceForm, RouteRequirement, ServiceClass, SpeechResponseFormat,
+    SpeechTask, SpeechToTextTask, StreamMode, TranscriptionResponseFormat, TrustDomain,
 };
 pub(crate) use resolver::ResolvedTarget;
 
@@ -272,6 +271,29 @@ impl WorkerPool {
         admission: AdmissionLease,
         requirement: &RouteRequirement,
     ) -> Result<RequestLease, DispatchError> {
+        self.dispatch_session_preferred(admission, requirement, None)
+    }
+
+    pub(crate) fn dispatch_realtime_session(
+        &self,
+        admission: AdmissionLease,
+        requirement: &RouteRequirement,
+        preferred_model: Option<&str>,
+    ) -> Result<RequestLease, DispatchError> {
+        if admission.class() != CapacityClass::RealtimeWebsocket
+            || requirement.capacity_class() != CapacityClass::RealtimeWebsocket
+        {
+            return Err(DispatchError::Internal);
+        }
+        self.dispatch_session_preferred(admission, requirement, preferred_model)
+    }
+
+    fn dispatch_session_preferred(
+        &self,
+        admission: AdmissionLease,
+        requirement: &RouteRequirement,
+        preferred_model: Option<&str>,
+    ) -> Result<RequestLease, DispatchError> {
         let class = admission.class();
         if class != requirement.capacity_class() || session_capacity_index(class).is_none() {
             return Err(DispatchError::Internal);
@@ -281,6 +303,8 @@ impl WorkerPool {
         let mut healthy_found = false;
         let mut eligible = [0; MAX_WORKERS];
         let mut eligible_count = 0;
+        let mut preferred = [0; MAX_WORKERS];
+        let mut preferred_count = 0;
         let policy = self.selector.least_requests_guard();
         let selection = self
             .session_selection
@@ -301,8 +325,15 @@ impl WorkerPool {
                 .session_capacity(class)
                 .is_some_and(|capacity| capacity.semaphore.available_permits() != 0)
             {
-                eligible[eligible_count] = record.registration_id.startup_ordinal();
+                let index = record.registration_id.startup_ordinal();
+                eligible[eligible_count] = index;
                 eligible_count += 1;
+                if preferred_model
+                    .is_some_and(|model| record.default_model_id.as_deref() == Some(model))
+                {
+                    preferred[preferred_count] = index;
+                    preferred_count += 1;
+                }
             }
         }
         if !profile_found {
@@ -315,10 +346,14 @@ impl WorkerPool {
             return Err(DispatchError::Overloaded);
         }
 
-        let eligible = &eligible[..eligible_count];
+        let eligible = if preferred_count == 0 {
+            &eligible[..eligible_count]
+        } else {
+            &preferred[..preferred_count]
+        };
         let selected = match self.selector.strategy() {
             RoutingStrategy::RoundRobin => {
-                Arc::clone(&self.records[eligible[self.selector.start(eligible_count)]])
+                Arc::clone(&self.records[eligible[self.selector.start(eligible.len())]])
             }
             RoutingStrategy::LeastRequests => self.select_least_requests(eligible),
         };
@@ -1248,14 +1283,7 @@ mod tests {
 
     #[test]
     fn websocket_sessions_hold_exact_worker_capacity_and_active_load() {
-        let mut record = record_with_profile(
-            0,
-            "local",
-            "omni",
-            ServiceProfile::RealtimeWebsocket {
-                protocols: vec![RealtimeProtocol::OpenaiRealtimeV1],
-            },
-        );
+        let mut record = record_with_profile(0, "local", "omni", ServiceProfile::RealtimeWebsocket);
         Arc::get_mut(&mut record)
             .expect("new test record is uniquely owned")
             .session_capacity[1] = Some(SessionCapacity {
@@ -1264,10 +1292,7 @@ mod tests {
         let mut pool = pool(RoutingStrategy::LeastRequests, vec![Arc::clone(&record)], 2);
         pool.admission = AdmissionController::new(2, [None, None, None, None, None, Some(2)]);
         let requirement = RouteRequirement::new(
-            ProfileRequirement::RealtimeWebsocket {
-                protocol: RealtimeProtocol::OpenaiRealtimeV1,
-                expected_default_model_id: String::from("omni"),
-            },
+            ProfileRequirement::RealtimeWebsocket,
             TrustDomain::new(String::from("local")),
         );
 
@@ -1299,6 +1324,54 @@ mod tests {
         assert_eq!(record.load(), 1);
         drop(reused);
         assert_eq!(record.load(), 0);
+    }
+
+    #[test]
+    fn realtime_preference_falls_back_when_the_preferred_worker_is_full() {
+        let build_record = |ordinal, model| {
+            let mut record =
+                record_with_profile(ordinal, "local", model, ServiceProfile::RealtimeWebsocket);
+            Arc::get_mut(&mut record)
+                .expect("new test record is uniquely owned")
+                .session_capacity[1] = Some(SessionCapacity {
+                semaphore: Arc::new(Semaphore::new(1)),
+            });
+            record
+        };
+        let alpha = build_record(0, "omni-alpha");
+        let beta = build_record(1, "omni-beta");
+        let mut pool = pool(
+            RoutingStrategy::RoundRobin,
+            vec![Arc::clone(&alpha), Arc::clone(&beta)],
+            2,
+        );
+        pool.admission = AdmissionController::new(2, [None, None, None, None, None, Some(2)]);
+        let requirement = RouteRequirement::new(
+            ProfileRequirement::RealtimeWebsocket,
+            TrustDomain::new(String::from("local")),
+        );
+
+        let preferred = pool
+            .dispatch_realtime_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("preferred admission"),
+                &requirement,
+                Some("omni-beta"),
+            )
+            .expect("select preferred worker");
+        assert_eq!(preferred.registration_ordinal(), 1);
+
+        let fallback = pool
+            .dispatch_realtime_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("fallback admission"),
+                &requirement,
+                Some("omni-beta"),
+            )
+            .expect("fall back to an available worker");
+        assert_eq!(fallback.registration_ordinal(), 0);
+        drop((preferred, fallback));
+        assert_eq!((alpha.load(), beta.load()), (0, 0));
     }
 
     #[test]
