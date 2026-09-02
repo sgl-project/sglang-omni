@@ -12,6 +12,7 @@ the ``text_eos`` and ``audio_bos`` embeddings; speaker embeddings are empty.
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 import torch.nn as nn
@@ -19,6 +20,7 @@ import torch.nn.functional as F
 from transformers import AutoConfig
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
+from sglang_omni.models.minicpm_o.components.talker_decode import TalkerDecodeLoop
 from sglang_omni.models.weight_loader import (
     load_module,
     resolve_dtype,
@@ -26,6 +28,13 @@ from sglang_omni.models.weight_loader import (
 )
 
 logger = logging.getLogger(__name__)
+
+MINICPMO_TALKER_FAST_ENV = "SGLANG_OMNI_MINICPMO_TALKER_FAST"
+
+
+def _fast_decode_enabled() -> bool:
+    value = os.environ.get(MINICPMO_TALKER_FAST_ENV, "1").strip().lower()
+    return value not in ("0", "false", "off", "no")
 
 
 class MiniCPMOTalker(nn.Module):
@@ -81,6 +90,13 @@ class MiniCPMOTalker(nn.Module):
         cfg = self.tts.config
         self.codec_eos_id = int(cfg.num_audio_tokens) - 1
 
+        self._decode_loop: TalkerDecodeLoop | None = None
+        if _fast_decode_enabled():
+            gen_logits_fn = get_class_from_dynamic_module(
+                "modeling_minicpmo.gen_logits", model_dir
+            )
+            self._decode_loop = TalkerDecodeLoop(self.tts, gen_logits_fn=gen_logits_fn)
+
     def _build_condition(
         self, tts_token_ids: torch.Tensor, tts_hidden: torch.Tensor
     ) -> torch.Tensor:
@@ -135,17 +151,27 @@ class MiniCPMOTalker(nn.Module):
 
         inputs_embeds = self._build_condition(tts_token_ids, tts_hidden)
         sampling_params = self._sampling_params_cls(**(sampling_overrides or {}))
-        outputs = self.tts.generate(
-            inputs_embeds=inputs_embeds,
-            eos_token=torch.tensor(
-                [self.codec_eos_id], dtype=torch.long, device=self._device
-            ),
-            min_new_token=min_new_token,
-            max_new_token=max_new_token,
-            show_tqdm=False,
-            sampling_params=sampling_params,
+        eos_token = torch.tensor(
+            [self.codec_eos_id], dtype=torch.long, device=self._device
         )
-        # new_ids: (1, N, num_vq=1); the remote generate already excludes the
-        # EOS step from new_ids.
-        codec = outputs.new_ids.squeeze(0).squeeze(-1).to("cpu", dtype=torch.long)
+        if self._decode_loop is not None:
+            new_ids = self._decode_loop.generate(
+                inputs_embeds,
+                eos_token,
+                min_new_token=min_new_token,
+                max_new_token=max_new_token,
+                sampling_params=sampling_params,
+            )
+        else:
+            outputs = self.tts.generate(
+                inputs_embeds=inputs_embeds,
+                eos_token=eos_token,
+                min_new_token=min_new_token,
+                max_new_token=max_new_token,
+                show_tqdm=False,
+                sampling_params=sampling_params,
+            )
+            new_ids = outputs.new_ids
+        # new_ids: (1, N, num_vq=1); both paths exclude the EOS step.
+        codec = new_ids.squeeze(0).squeeze(-1).to("cpu", dtype=torch.long)
         return {"codec_tokens": codec}

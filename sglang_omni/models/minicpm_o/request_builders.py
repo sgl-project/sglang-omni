@@ -132,9 +132,7 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return _payload_with_state(payload, projected)
 
 
-def resolve_thinker_next_stages(
-    request_id: str, output: StagePayload
-) -> list[str]:
+def resolve_thinker_next_stages(request_id: str, output: StagePayload) -> list[str]:
     del request_id
     if should_generate_audio_output(output):
         return [DECODE_STAGE, TALKER_STAGE]
@@ -519,12 +517,8 @@ def build_talker_request(
     full_sequence = [int(t) for t in prompt_ids] + output_ids
     prompt_len = len(prompt_ids)
 
-    tts_bos_indices = [
-        i for i, t in enumerate(full_sequence) if t == tts_bos_token_id
-    ]
-    tts_eos_indices = [
-        i for i, t in enumerate(full_sequence) if t == tts_eos_token_id
-    ]
+    tts_bos_indices = [i for i, t in enumerate(full_sequence) if t == tts_bos_token_id]
+    tts_eos_indices = [i for i, t in enumerate(full_sequence) if t == tts_eos_token_id]
     if not tts_bos_indices:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
@@ -543,9 +537,7 @@ def build_talker_request(
         return {"tts_token_ids": empty, "tts_hidden": empty}
 
     tokens = torch.tensor(full_sequence[start:end], dtype=torch.long)
-    hidden = torch.stack(
-        [hidden_seq[i - hidden_base] for i in range(start, end)]
-    )
+    hidden = torch.stack([hidden_seq[i - hidden_base] for i in range(start, end)])
     return {"tts_token_ids": tokens, "tts_hidden": hidden}
 
 

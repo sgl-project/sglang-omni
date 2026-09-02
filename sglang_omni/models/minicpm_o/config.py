@@ -183,9 +183,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     (stepaudio2 Token2wav). Audio output arrives non-streaming, one wav per
     request."""
 
-    terminal_stages_fn: str | None = (
-        f"{_PKG}.request_builders.resolve_terminal_stages"
-    )
+    terminal_stages_fn: str | None = f"{_PKG}.request_builders.resolve_terminal_stages"
     stages: list[StageConfig] = Field(default_factory=_speech_stages)
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:

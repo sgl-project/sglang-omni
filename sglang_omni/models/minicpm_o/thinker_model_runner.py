@@ -83,7 +83,5 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             if hidden is None:
                 continue
             hidden = hidden.reshape(-1, hidden.shape[-1])[-1]
-            seq = sched_req.data.extra_model_outputs.setdefault(
-                "hidden_states_seq", []
-            )
+            seq = sched_req.data.extra_model_outputs.setdefault("hidden_states_seq", [])
             seq.append(hidden.detach().to("cpu"))

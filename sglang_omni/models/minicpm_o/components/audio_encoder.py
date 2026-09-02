@@ -109,9 +109,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         self.audio_chunk_length = float(config.audio_chunk_length)
         self.audio_encoder_layer = -1
 
-    def _feature_lens_after_pooling(
-        self, input_lengths: torch.Tensor
-    ) -> torch.Tensor:
+    def _feature_lens_after_pooling(self, input_lengths: torch.Tensor) -> torch.Tensor:
         after_cnn = (input_lengths - 1) // 2 + 1
         after_pool = (after_cnn - self.audio_pool_step) // self.audio_pool_step + 1
         return after_pool.to(dtype=torch.int32)
@@ -147,9 +145,7 @@ class MiniCPMOAudioEncoder(nn.Module):
             .unsqueeze(0)
             .expand(batch_size, max_seq_len)
         )
-        lengths_expand = audio_feature_lens.unsqueeze(1).expand(
-            batch_size, max_seq_len
-        )
+        lengths_expand = audio_feature_lens.unsqueeze(1).expand(batch_size, max_seq_len)
         padding_mask = seq_range >= lengths_expand
         mask_bool = padding_mask.view(batch_size, 1, 1, max_seq_len).expand(
             batch_size, 1, max_seq_len, max_seq_len
@@ -158,9 +154,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         # Generate path uses chunked attention (audio_chunk_length seconds,
         # 50 frames/sec after the conv downsample).
         chunk_num_frame = int(self.audio_chunk_length * 50)
-        chunk_mask = _subsequent_chunk_mask(
-            max_seq_len, chunk_num_frame, self._device
-        )
+        chunk_mask = _subsequent_chunk_mask(max_seq_len, chunk_num_frame, self._device)
         mask_bool = torch.logical_or(mask_bool, torch.logical_not(chunk_mask))
 
         audio_attention_mask = torch.zeros(
