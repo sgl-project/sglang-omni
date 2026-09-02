@@ -145,6 +145,8 @@ markers = [
     "benchmark: performance benchmark tests (may require GPU and long runtime)",
     "tts_stage(name): select an in-file TTS benchmark CI stage",
     "accelerator: requires accelerator hardware",
+    "comm_invariant: comm-layer property that must always hold; a change here is a correctness regression, not a design decision",
+    "comm_characterization: comm-layer behaviour as it stands today, expected to change; a pull request that flips one should say why",
 ]
 
 [tool.setuptools.packages.find]

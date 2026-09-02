@@ -568,3 +568,110 @@ def make_noop_projector(marker: str) -> Callable[[StagePayload], StagePayload]:
         )
 
     return _project
+
+
+class AckedOp:
+    """Relay op modeling the ACK-gated release contract of CudaIpcPutOperation:
+    the release callback fires only on the successful ``wait_for_completion``
+    path (mirroring ``_release_cb``); the failure path never releases.
+    ``completion_gate`` lets a test hold ``wait_for_completion`` open to
+    control interleaving with the engine's failure-drain path.
+    """
+
+    def __init__(
+        self,
+        metadata: dict[str, Any],
+        *,
+        on_release: Callable[[AckedOp], None] | None = None,
+        completion_gate: asyncio.Event | None = None,
+    ) -> None:
+        self._metadata = metadata
+        self.acked = False
+        self.waited = False
+        self.failed: BaseException | None = None
+        self.release_calls = 0
+        self._on_release = on_release
+        self._completion_gate = completion_gate
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return self._metadata
+
+    def mark_receiver_done(self) -> None:
+        self.acked = True
+
+    def mark_receiver_failed(self, exc: BaseException) -> None:
+        self.failed = exc
+
+    async def wait_for_completion(self, timeout: float = 30.0) -> None:
+        del timeout
+        if self._completion_gate is not None:
+            await self._completion_gate.wait()
+        self.waited = True
+        if self.failed is not None:
+            raise self.failed
+        if not self.acked:
+            raise RuntimeError("waited before receiver ack")
+        self.release_calls += 1
+        if self._on_release is not None:
+            self._on_release(self)
+
+
+class AckedRelay:
+    device = "cpu"
+
+    def __init__(
+        self,
+        *,
+        on_release: Callable[[AckedOp], None] | None = None,
+        completion_gate: asyncio.Event | None = None,
+    ) -> None:
+        self.storage: dict[str, torch.Tensor] = {}
+        self.ops: list[AckedOp] = []
+        self.receiver_ids: list[str | None] = []
+        self.on_release = on_release
+        self.completion_gate = completion_gate
+
+    async def put_async(
+        self,
+        tensor: torch.Tensor,
+        request_id: str | None = None,
+        dst_rank: int | None = None,
+        receiver_id: str | None = None,
+    ) -> AckedOp:
+        del dst_rank
+        self.receiver_ids.append(receiver_id)
+        key = str(request_id)
+        self.storage[key] = tensor.detach().clone()
+        op = AckedOp(
+            {"transfer_info": {"size": int(tensor.numel())}, "key": key},
+            on_release=self.on_release,
+            completion_gate=self.completion_gate,
+        )
+        self.ops.append(op)
+        return op
+
+    async def get_async(
+        self,
+        metadata: dict[str, Any],
+        dest_tensor: torch.Tensor,
+        request_id: str | None = None,
+    ) -> AckedOp:
+        key = str(metadata.get("key", request_id))
+        stored = self.storage[key]
+        dest_tensor.reshape(-1)[: stored.numel()].copy_(stored.reshape(-1))
+        return AckedOp(metadata)
+
+    def cleanup(self, request_id: str) -> None:
+        del request_id
+
+    def close(self) -> None:
+        pass
+
+
+async def wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise TimeoutError("condition was not met")
+        await asyncio.sleep(0)
