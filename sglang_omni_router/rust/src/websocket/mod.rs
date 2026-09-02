@@ -17,7 +17,6 @@ use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tokio_tungstenite::tungstenite::error::CapacityError;
 use tracing::error;
 
-use crate::classification;
 use crate::config::{Config, WebsocketConfig};
 use crate::error::HttpFault;
 use crate::request_id::CanonicalRequestId;
@@ -192,7 +191,7 @@ async fn run_speech(
     let classified = setup_until(
         &mut drain,
         setup_deadline,
-        classification::run(move || {
+        classify_blocking(move || {
             let requirement =
                 classify_speech(config_text.as_bytes(), &classify_pool, &classify_trust);
             (config_text, requirement)
@@ -252,7 +251,7 @@ async fn run_speech(
         }
     };
     let (registration, admission) = pending.into_admitted();
-    let lease = match gateway.pool.dispatch(admission, &requirement) {
+    let lease = match gateway.pool.dispatch_session(admission, &requirement) {
         Ok(lease) => lease,
         Err(error) => {
             drop(registration);
@@ -470,7 +469,7 @@ pub(crate) async fn realtime(
         },
         trust,
     );
-    let lease = match gateway.pool.dispatch(admission, &requirement) {
+    let lease = match gateway.pool.dispatch_session(admission, &requirement) {
         Ok(lease) => lease,
         Err(error) => {
             drop(registration);
@@ -753,6 +752,15 @@ fn dispatch_close(error: DispatchError) -> Message {
         DispatchError::NoEligibleProfile => close_message(1008, "no compatible worker"),
         DispatchError::Internal => close_message(1011, "internal setup failure"),
     }
+}
+
+async fn classify_blocking<T>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, tokio::task::JoinError>
+where
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(operation).await
 }
 
 fn classify_speech(
@@ -1062,13 +1070,11 @@ where
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use axum::http::Uri;
-    use tokio::sync::{Semaphore, watch};
+    use tokio::sync::watch;
 
-    use crate::classification;
     use crate::error::HttpFault;
     use crate::worker_pool::{
         DefaultModelResolution, ModelSelection, ProfileRequirement, ReferenceForm,
@@ -1076,8 +1082,8 @@ mod tests {
     };
 
     use super::{
-        DrainState, EventKind, SetupTermination, is_speech_setup_event, parse_event_kind,
-        parse_speech_config, realtime_model, setup_until, speech_requirement,
+        DrainState, EventKind, SetupTermination, classify_blocking, is_speech_setup_event,
+        parse_event_kind, parse_speech_config, realtime_model, setup_until, speech_requirement,
         websocket_message_too_large,
     };
 
@@ -1091,7 +1097,7 @@ mod tests {
         let result = setup_until(
             &mut drain,
             deadline,
-            classification::run(move || {
+            classify_blocking(move || {
                 entered_tx.send(()).expect("classifier started");
                 release_rx.recv().expect("release classifier");
             }),

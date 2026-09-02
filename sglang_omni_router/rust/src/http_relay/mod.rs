@@ -356,7 +356,7 @@ pub(crate) const fn map_dispatch(error: DispatchError) -> HttpFault {
         DispatchError::AmbiguousModel => HttpFault::AmbiguousModel,
         DispatchError::NoEligibleProfile => HttpFault::NoCompatibleWorker,
         DispatchError::Unavailable => HttpFault::RouterUnavailable,
-        DispatchError::Internal => HttpFault::InternalError,
+        DispatchError::Overloaded | DispatchError::Internal => HttpFault::InternalError,
     }
 }
 

@@ -22,6 +22,8 @@ pub(crate) enum DispatchError {
     NoEligibleProfile,
     #[error("matching workers are unavailable")]
     Unavailable,
+    #[error("matching worker session capacity is full")]
+    Overloaded,
     #[error("router dispatch invariant failed")]
     Internal,
 }
@@ -69,6 +71,7 @@ impl Drop for WorkerLoadGuard {
 /// Admission and weighted worker load retained through response termination.
 pub(crate) struct RequestLease {
     _admission: AdmissionLease,
+    _capacity: Option<OwnedSemaphorePermit>,
     load: WorkerLoadGuard,
 }
 
@@ -77,6 +80,20 @@ impl RequestLease {
         let weight = admission.credits;
         Self {
             _admission: admission,
+            _capacity: None,
+            load: WorkerLoadGuard::new(registration, weight),
+        }
+    }
+
+    pub(super) fn new_session(
+        admission: AdmissionLease,
+        capacity: OwnedSemaphorePermit,
+        registration: Arc<WorkerRecord>,
+    ) -> Self {
+        let weight = admission.credits;
+        Self {
+            _admission: admission,
+            _capacity: Some(capacity),
             load: WorkerLoadGuard::new(registration, weight),
         }
     }
