@@ -272,9 +272,9 @@ Speech configuration is replayed byte-for-byte; the router extracts routing
 facts while the worker owns protocol-value validation.
 
 Uploaded voices have one explicit owner configured by
-`router.voice_owner_worker_id`. Voice CRUD and requests that depend on a stored
-voice are pinned to that worker. Stateless speech continues to use normal
-worker selection. The router does not store, replicate, or reconcile
+`router.voice_owner_worker_id`. Voice CRUD and uploaded-name requests are
+pinned to that worker. Preset names and explicit references continue to use
+normal worker selection. The router does not store, replicate, or reconcile
 worker-local voice data. `voice_name_policy = "preset"` declares names provided
 by the serving model. `voice_name_policy = "uploaded"` declares names resolved
 from worker-local voice state; hybrid pipelines should use `uploaded` so named

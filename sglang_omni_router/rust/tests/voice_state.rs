@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 static SOCKET_LOCK: Mutex<()> = Mutex::new(());
 const DEADLINE: Duration = Duration::from_secs(10);
+const VOICE_UPLOAD_BODY_MAX_BYTES: usize = 10 * 1024 * 1024 + 64 * 1024;
 
 #[derive(Clone, Debug)]
 struct Captured {
@@ -306,7 +307,7 @@ fn exact_owner_voice_crud_preserves_contract_and_upload_ordering() {
 
     let prefix = b"--voice-boundary\r\nContent-Disposition: form-data; name=\"audio_sample\"; filename=\"sample.wav\"\r\nContent-Type: audio/wav\r\n\r\n";
     let suffix = b"\r\n--voice-boundary--\r\n";
-    let mut body = vec![b'x'; 10_551_296];
+    let mut body = vec![b'x'; VOICE_UPLOAD_BODY_MAX_BYTES];
     body[..prefix.len()].copy_from_slice(prefix);
     let suffix_start = body.len() - suffix.len();
     body[suffix_start..].copy_from_slice(suffix);
@@ -384,9 +385,13 @@ fn exact_owner_voice_crud_preserves_contract_and_upload_ordering() {
     assert!(chat.starts_with(b"HTTP/1.1 404"));
 
     let before_rejections = owner.captures().len();
-    let oversized =
-        request_with_declared_length(router.address, "/v1/audio/voices", 10_551_297, b"")
-            .expect("oversized voice response");
+    let oversized = request_with_declared_length(
+        router.address,
+        "/v1/audio/voices",
+        VOICE_UPLOAD_BODY_MAX_BYTES + 1,
+        b"",
+    )
+    .expect("oversized voice response");
     assert!(oversized.starts_with(b"HTTP/1.1 413"));
     assert_eq!(owner.captures().len(), before_rejections);
 

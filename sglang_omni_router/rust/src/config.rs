@@ -17,7 +17,8 @@ const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 8;
-pub(crate) const VOICE_UPLOAD_BODY_MAX_BYTES: u64 = 10_551_296;
+// Match the worker's 10 MiB audio limit plus its 64 KiB multipart allowance.
+pub(crate) const VOICE_UPLOAD_BODY_MAX_BYTES: u64 = 10 * 1024 * 1024 + 64 * 1024;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 30_000;
 const SCHEMA_VERSION: u32 = 1;
