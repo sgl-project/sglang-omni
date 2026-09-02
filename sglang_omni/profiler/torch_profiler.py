@@ -110,6 +110,7 @@ class TorchProfiler(ProfilerBase):
             # No ``schedule``: record continuously between start/stop.
             # Expensive flags are env-var opt-in (default off keeps the
             # trace tens of MB; all on can hit multi-GB).
+            with_stack_enabled = os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1"
             cls._profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 on_trace_ready=trace_handler,
@@ -117,9 +118,15 @@ class TorchProfiler(ProfilerBase):
                 == "1",
                 profile_memory=os.environ.get("SGLANG_TORCH_PROFILER_PROFILE_MEMORY")
                 == "1",
-                with_stack=os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1",
+                with_stack=with_stack_enabled,
                 with_flops=os.environ.get("SGLANG_TORCH_PROFILER_WITH_FLOPS") == "1",
             )
+            if with_stack_enabled:
+                logger.warning(
+                    "SGLANG_TORCH_PROFILER_WITH_STACK=1 is enabled. "
+                    "Note: with_stack can cause deadlocks under high concurrency "
+                    "(see issue #1779). Consider using with_stack=0 for serving workloads."
+                )
 
             # 5. Start profiling
             cls._profiler.start()
