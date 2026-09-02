@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -17,6 +18,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     preprocess_qwen3_tts_payload,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
+    DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
@@ -167,6 +169,10 @@ def create_vocoder_executor(
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
     enable_stateful_codec_decoder: bool = False,
+    codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
+    incremental_codec_cuda_graph: bool = False,
+    incremental_codec_cuda_graph_cold_frames: Sequence[int] = (),
+    incremental_codec_cuda_graph_min_free_gb: float = 3.0,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
     tokenizer = _load_qwen3_tts_tokenizer(
@@ -195,6 +201,14 @@ def create_vocoder_executor(
         enable_deterministic_inference=enable_deterministic_inference,
         followup_cuda_graph=followup_cuda_graph,
         enable_stateful_codec_decoder=enable_stateful_codec_decoder,
+        codec_state_slots=codec_state_slots,
+        incremental_codec_cuda_graph=incremental_codec_cuda_graph,
+        incremental_codec_cuda_graph_cold_frames=(
+            incremental_codec_cuda_graph_cold_frames
+        ),
+        incremental_codec_cuda_graph_min_free_gb=(
+            incremental_codec_cuda_graph_min_free_gb
+        ),
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work
