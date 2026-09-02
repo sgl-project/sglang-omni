@@ -152,11 +152,8 @@ class ModelWorker:
         model_config.num_key_value_heads = text_cfg.num_key_value_heads
         model_config.hidden_size = text_cfg.hidden_size
         model_config.num_hidden_layers = text_cfg.num_hidden_layers
-        # SGLang set num_attention_layers from the root text config at
-        # construction and sizes the KV pool from the larger of it and
-        # num_hidden_layers, so a sub model with fewer layers than the root
-        # (the Qwen3-Omni talker, 20 against the thinker's 48) would otherwise
-        # get a pool of cells for layers it never writes.
+        # SGLang sizes the KV pool from the larger of these two and set the
+        # second from the root text config at construction.
         model_config.num_attention_layers = text_cfg.num_hidden_layers
         if arch == "MingTTSSGLangModel":
             model_config.head_dim = int(text_cfg.head_dim)
