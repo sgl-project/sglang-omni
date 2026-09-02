@@ -284,7 +284,6 @@ pub(crate) struct AdmissionConfig {
     pub(crate) transcription_http: Option<u32>,
     pub(crate) speech_websocket: Option<u32>,
     pub(crate) realtime_websocket: Option<u32>,
-    pub(crate) control: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -759,7 +758,6 @@ impl Config {
             self.admission.transcription_http,
             self.admission.speech_websocket,
             self.admission.realtime_websocket,
-            self.admission.control,
         ]
         .into_iter()
         .flatten()
@@ -780,18 +778,6 @@ impl Config {
         let Some(owner_id) = self.router.voice_owner_worker_id.as_deref() else {
             return Ok(());
         };
-        if self.admission.control.is_none() {
-            return Err(ConfigError::invalid(
-                "admission.control",
-                "is required while voice state is enabled",
-            ));
-        }
-        if self.http.buffered_request_total_bytes < VOICE_UPLOAD_BODY_MAX_BYTES {
-            return Err(ConfigError::invalid(
-                "http.buffered_request_total_bytes",
-                "must contain the complete voice upload bound while voice state is enabled",
-            ));
-        }
         let owner = self
             .workers
             .iter()
@@ -802,37 +788,25 @@ impl Config {
                     "must name a configured worker",
                 )
             })?;
-        if owner.capacity.control.is_none()
-            || !owner
-                .service_profiles
-                .iter()
-                .any(|profile| matches!(profile, ServiceProfile::VoiceControl))
-        {
+        let supports_managed_voice = |profile: &ServiceProfile| match profile {
+            ServiceProfile::SpeechHttp { managed_voice, .. }
+            | ServiceProfile::SpeechBatch { managed_voice, .. }
+            | ServiceProfile::SpeechWebsocket { managed_voice, .. } => *managed_voice,
+            ServiceProfile::GenerationHttp { .. }
+            | ServiceProfile::TranscriptionHttp { .. }
+            | ServiceProfile::RealtimeWebsocket => false,
+        };
+        if !owner.service_profiles.iter().any(supports_managed_voice) {
             return Err(ConfigError::invalid(
                 "router.voice_owner_worker_id",
-                "owner must advertise voice_control with control capacity",
+                "owner must advertise a managed-voice service profile",
             ));
         }
 
         let owner_has_managed = |service, trust: &str| {
             owner.trust_domain == trust
-                && owner.service_profiles.iter().any(|profile| match profile {
-                    ServiceProfile::SpeechHttp { managed_voice, .. }
-                        if service == ServiceClass::SpeechHttp =>
-                    {
-                        *managed_voice
-                    }
-                    ServiceProfile::SpeechBatch { managed_voice, .. }
-                        if service == ServiceClass::SpeechBatch =>
-                    {
-                        *managed_voice
-                    }
-                    ServiceProfile::SpeechWebsocket { managed_voice, .. }
-                        if service == ServiceClass::SpeechWebsocket =>
-                    {
-                        *managed_voice
-                    }
-                    _ => false,
+                && owner.service_profiles.iter().any(|profile| {
+                    profile.service_class() == service && supports_managed_voice(profile)
                 })
         };
         if let Some(media) = self.http_media.as_ref() {

@@ -231,12 +231,13 @@ impl Drop for RouterProcess {
 
 fn config(address: SocketAddr, owner: &Worker, non_owner: &Worker) -> String {
     let mut output = format!(
-        "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 32\n\n[shutdown]\ndrain_timeout_ms = 5000\n\n[logging]\nformat = \"json\"\nfilter = \"error\"\n\n[router]\nstrategy = \"least_requests\"\nvoice_owner_worker_id = \"owner\"\n\n[admission]\nglobal = 8\ncontrol = 4\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 16777216\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n"
+        "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 32\n\n[shutdown]\ndrain_timeout_ms = 5000\n\n[logging]\nformat = \"json\"\nfilter = \"error\"\n\n[router]\nstrategy = \"least_requests\"\nvoice_owner_worker_id = \"owner\"\n\n[admission]\nglobal = 8\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 16777216\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n"
     );
     for (id, worker) in [("owner", owner), ("non-owner", non_owner)] {
+        let managed_voice = id == "owner";
         output.push_str(&format!(
-            "\n[[workers]]\nworker_id = \"{id}\"\nbase_url = \"http://{}\"\ntrust_domain = \"local\"\nhealth_path = \"/health\"\n\n[workers.capacity]\ncontrol = 1\n\n[[workers.service_profiles]]\nservice = \"voice_control\"\n",
-            worker.address
+            "\n[[workers]]\nworker_id = \"{id}\"\nbase_url = \"http://{}\"\ntrust_domain = \"local\"\nhealth_path = \"/health\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"wav\"]\nstream_modes = [\"non_streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nmanaged_voice = {managed_voice}\n",
+            worker.address,
         ));
     }
     output

@@ -757,7 +757,7 @@ fn speech_requirement(
     fields: SpeechFields,
     model: ModelSelection,
     trust: &TrustDomain,
-    voice_state_enabled: bool,
+    _voice_state_enabled: bool,
 ) -> Result<RouteRequirement, ()> {
     let mut format = classify_response_format(
         fields
