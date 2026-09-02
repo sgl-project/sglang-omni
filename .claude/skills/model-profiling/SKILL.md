@@ -56,12 +56,21 @@ so if the tracking issue ever moves, update only this section.
   edit.
 - **Durable record**: a sub-issue under GitHub issue **#1798** — the only
   place results survive an environment reset. A run is not durably
-  recorded until its sub-issue exists.
-- **Sub-issue summary shape**: baseline fingerprint (including the repo
-  commit SHA), per-layer conclusions with evidence strength graded by
-  METHODOLOGY.md §3 item 8's rubric, the findings-evidence-recommendation
-  table, and a note naming the host/directory where the raw artifacts
-  live, since they are local-only.
+  recorded until its sub-issue exists. #1798 is the **tracking index
+  only**: METHODOLOGY.md stays canonical for the methodology itself, and
+  any methodology copy in the issue body is a historical snapshot.
+- **Sub-issue summary shape** — self-contained enough that the main
+  conclusions can be re-checked without access to the original host,
+  because the local artifacts will not survive an environment reset:
+  baseline fingerprint (including the repo commit SHA), per-layer
+  conclusions with evidence strength graded by METHODOLOGY.md §3 item 8's
+  rubric, the findings-evidence-recommendation table **inlined in full**
+  along with each layer's headline numbers, and small raw artifacts
+  (py-spy summaries, benchmark result JSON/logs up to a few MB) **attached
+  to the sub-issue** rather than merely referenced. Only bulky artifacts
+  (e.g. full server logs) stay local-only — name the host/directory they
+  lived in so a reader knows what existed, but never let a conclusion rest
+  solely on an artifact that only exists there.
 
 ## Prerequisites (the skill verifies, it does not create)
 
@@ -114,10 +123,10 @@ that evidence exists.
    from something
    already established earlier in this conversation. If not, this run
    cannot pick a Layer 4 A/B variable yet: scope the plan to **discovery
-   only** (Layer 1, then 3 and/or 2 per
-   `.claude/skills/model-profiling/METHODOLOGY.md` §2's routing rule, not a
-   fixed order — see Method reference above) and
-   leave Layer 4/5 for a second confirmation later.
+   only** (Layer 1 first, then branch per
+   `.claude/skills/model-profiling/METHODOLOGY.md` §2's routing rule — see
+   Method reference above) and leave Layer 4/5 for a second confirmation
+   later.
 4. Fill `PROMPT_TEMPLATE.md`'s placeholders for this model — discovery-only
    scope, or the full scope if a hypothesis is already confirmed — and
    print the resulting prompt plus a short plan summary.

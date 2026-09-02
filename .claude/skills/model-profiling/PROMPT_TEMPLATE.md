@@ -19,9 +19,9 @@ Output doc (new or resume): {OUTPUT_DOC_PATH}
 Methodology doc to fold generalizable findings into: {METHODOLOGY_DOC_PATH}
 
 Scope for this run: {LAYERS_IN_SCOPE}
-  (e.g. "Layer 1, 3, 2 — discovery only, no confirmed Layer 4 hypothesis yet"
-  or "Layer 4 on <specific hypothesis>, then Layer 5 — discovery was already
-  approved in a prior message")
+  (e.g. "discovery only — Layer 1 first, then branch per §2; no confirmed
+  Layer 4 hypothesis yet" or "Layer 4 on <specific hypothesis>, then Layer 5
+  — discovery was already approved in a prior message")
 
 Do:
 1. Follow .claude/skills/model-profiling/METHODOLOGY.md §1's pre-check checklist yourself —
@@ -124,4 +124,4 @@ Do not:
 | `{GPU_POOL}` | Candidate free GPU id(s), from the skill's own pre-check |
 | `{OUTPUT_DOC_PATH}` | `.profiling-runs/<model>/profile.md` — gitignored working artifact; raw evidence artifacts live in the same `.profiling-runs/<model>/` directory. The durable record of results is a sub-issue under the tracking issue (see SKILL.md "Result tracking"), not a committed doc |
 | `{METHODOLOGY_DOC_PATH}` | `.claude/skills/model-profiling/METHODOLOGY.md` |
-| `{LAYERS_IN_SCOPE}` | Which of Layer 1/2/3/4/5 this run covers. A fresh run without an existing `.profiling-runs/<model>/profile.md` must scope to discovery only (Layer 1, 3, 2) — Layer 4/5 get filled in and confirmed separately once Layer 2 surfaces a concrete hypothesis. A resume run may cover Layer 4/5 directly if the hypothesis was already confirmed. |
+| `{LAYERS_IN_SCOPE}` | Which of Layer 1/2/3/4/5 this run covers. A fresh run without an existing `.profiling-runs/<model>/profile.md` must scope to discovery only (Layer 1 first, then branch per METHODOLOGY.md §2's routing rule) — Layer 4/5 get filled in and confirmed separately once Layer 2 surfaces a concrete hypothesis. A resume run may cover Layer 4/5 directly if the hypothesis was already confirmed. |
