@@ -784,7 +784,7 @@ fn build_session_capacity(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -1857,7 +1857,20 @@ mod tests {
     fn voice_owner_dispatch_is_exact_and_mixed_speech_requires_classification() {
         for strategy in [RoutingStrategy::RoundRobin, RoutingStrategy::LeastRequests] {
             let owner = voice_speech_record(0);
-            let non_owner = voice_speech_record(1);
+            let mut non_owner = voice_speech_record(1);
+            let non_owner_record =
+                Arc::get_mut(&mut non_owner).expect("new test record is uniquely owned");
+            non_owner_record.default_model_id = Some(String::from("other"));
+            for profile in &mut non_owner_record.profiles {
+                match profile {
+                    ServiceProfile::SpeechHttp { model_ids, .. }
+                    | ServiceProfile::SpeechBatch { model_ids, .. }
+                    | ServiceProfile::SpeechWebsocket { model_ids, .. } => {
+                        model_ids.push(String::from("other"));
+                    }
+                    _ => panic!("voice fixture contains only speech profiles"),
+                }
+            }
             let mut pool = media_pool(vec![Arc::clone(&owner), Arc::clone(&non_owner)]);
             pool.selector = Selector::new(strategy, pool.records.len());
             pool.voice_owner = Some(Arc::clone(&owner));
@@ -1874,6 +1887,21 @@ mod tests {
                 )
                 .is_none()
             );
+
+            let mut omitted_http = speech_requirement(true);
+            let ProfileRequirement::SpeechHttp { model, .. } = &mut omitted_http.profile else {
+                panic!("speech requirement")
+            };
+            *model = ModelSelection::UnresolvedDefault;
+            let omitted_http = pool
+                .dispatch(
+                    pool.try_admit(CapacityClass::SpeechHttp, 1)
+                        .expect("owner-bound default admission"),
+                    &omitted_http,
+                )
+                .expect("owner default is deterministic");
+            assert_eq!(omitted_http.registration_ordinal(), 0);
+            drop(omitted_http);
 
             for (class, named, stateless) in [
                 (
@@ -1917,6 +1945,22 @@ mod tests {
                     &websocket,
                 )
                 .expect("named voice session dispatch");
+            assert_eq!(session.registration_ordinal(), 0);
+            drop(session);
+
+            let mut omitted_websocket = speech_websocket_requirement(true);
+            let ProfileRequirement::SpeechWebsocket { model, .. } = &mut omitted_websocket.profile
+            else {
+                panic!("speech websocket requirement")
+            };
+            *model = ModelSelection::UnresolvedDefault;
+            let session = pool
+                .dispatch_session(
+                    pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                        .expect("owner-bound session admission"),
+                    &omitted_websocket,
+                )
+                .expect("owner session default is deterministic");
             assert_eq!(session.registration_ordinal(), 0);
             drop(session);
 

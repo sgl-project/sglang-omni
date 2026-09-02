@@ -33,6 +33,7 @@ struct Captured {
 struct Worker {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
+    healthy: Arc<AtomicBool>,
     captured: Arc<Mutex<Vec<Captured>>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -42,8 +43,10 @@ impl Worker {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind voice worker");
         let address = listener.local_addr().expect("read voice worker address");
         let stop = Arc::new(AtomicBool::new(false));
+        let healthy = Arc::new(AtomicBool::new(true));
         let captured = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
+        let thread_healthy = Arc::clone(&healthy);
         let thread_captured = Arc::clone(&captured);
         let thread = thread::spawn(move || {
             let mut connections = Vec::new();
@@ -53,7 +56,10 @@ impl Worker {
                     break;
                 }
                 let captured = Arc::clone(&thread_captured);
-                connections.push(thread::spawn(move || handle_connection(stream, captured)));
+                let healthy = Arc::clone(&thread_healthy);
+                connections.push(thread::spawn(move || {
+                    handle_connection(stream, healthy, captured)
+                }));
             }
             for connection in connections {
                 connection.join().expect("join voice worker connection");
@@ -62,6 +68,7 @@ impl Worker {
         Self {
             address,
             stop,
+            healthy,
             captured,
             thread: Some(thread),
         }
@@ -69,6 +76,10 @@ impl Worker {
 
     fn captures(&self) -> Vec<Captured> {
         self.captured.lock().expect("read voice captures").clone()
+    }
+
+    fn set_healthy(&self, healthy: bool) {
+        self.healthy.store(healthy, Ordering::Release);
     }
 }
 
@@ -82,7 +93,11 @@ impl Drop for Worker {
     }
 }
 
-fn handle_connection(mut stream: TcpStream, captured: Arc<Mutex<Vec<Captured>>>) {
+fn handle_connection(
+    mut stream: TcpStream,
+    healthy: Arc<AtomicBool>,
+    captured: Arc<Mutex<Vec<Captured>>>,
+) {
     stream
         .set_read_timeout(Some(DEADLINE))
         .expect("bound voice worker read");
@@ -94,7 +109,12 @@ fn handle_connection(mut stream: TcpStream, captured: Arc<Mutex<Vec<Captured>>>)
     };
     let request_line = head.lines().next().unwrap_or_default();
     if request_line.starts_with("GET /health ") {
-        write_response(&mut stream, "200 OK", &[], b"");
+        let status = if healthy.load(Ordering::Acquire) {
+            "200 OK"
+        } else {
+            "503 Service Unavailable"
+        };
+        write_response(&mut stream, status, &[], b"");
         return;
     }
     let mut parts = request_line.split_ascii_whitespace();
@@ -126,26 +146,34 @@ fn handle_connection(mut stream: TcpStream, captured: Arc<Mutex<Vec<Captured>>>)
             custom: header_value(&head, "x-custom-downstream").map(str::to_owned),
             body,
         });
-    let response = match (method.as_str(), path.as_str()) {
-        ("GET", "/v1/audio/voices?names_only=true") => {
-            br#"{"uploaded_voice_names":["sample"]}"#.as_slice()
-        }
-        ("POST", "/v1/audio/voices") => br#"{"name":"sample","success":true}"#.as_slice(),
-        ("DELETE", "/v1/audio/voices/name%20one") => {
-            br#"{"success":true,"message":"deleted"}"#.as_slice()
-        }
-        _ => br#"{"error":"not found"}"#.as_slice(),
-    };
-    let status = if response == br#"{"error":"not found"}"# {
-        "404 Not Found"
-    } else {
-        "200 OK"
+    let (status, content_type, response) = match (method.as_str(), path.as_str()) {
+        ("GET", "/v1/audio/voices?names_only=true") => (
+            "200 OK",
+            "application/json",
+            br#"{"uploaded_voice_names":["sample"]}"#.as_slice(),
+        ),
+        ("POST", "/v1/audio/voices") => (
+            "200 OK",
+            "application/json",
+            br#"{"name":"sample","consent":"yes","created_at":1,"file_size":3,"mime_type":"audio/wav"}"#.as_slice(),
+        ),
+        ("DELETE", "/v1/audio/voices/name%20one") => (
+            "200 OK",
+            "application/json",
+            br#"{"success":true,"message":"deleted"}"#.as_slice(),
+        ),
+        ("POST", "/v1/audio/speech") => ("200 OK", "audio/wav", b"WAVE".as_slice()),
+        _ => (
+            "404 Not Found",
+            "application/json",
+            br#"{"error":"not found"}"#.as_slice(),
+        ),
     };
     write_response(
         &mut stream,
         status,
         &[
-            ("Content-Type", "application/json"),
+            ("Content-Type", content_type),
             ("X-Request-Id", "worker-must-not-win"),
         ],
         response,
@@ -208,16 +236,20 @@ impl RouterProcess {
     }
 
     fn wait_ready(&self) {
+        self.wait_status("/ready", b"HTTP/1.1 200");
+    }
+
+    fn wait_status(&self, path: &str, status: &[u8]) {
         let deadline = Instant::now() + DEADLINE;
         while Instant::now() < deadline {
-            if let Ok(response) = request(self.address, "GET", "/ready", &[], b"")
-                && response.starts_with(b"HTTP/1.1 200")
+            if let Ok(response) = request(self.address, "GET", path, &[], b"")
+                && response.starts_with(status)
             {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
         }
-        panic!("voice router did not become ready");
+        panic!("router did not return the expected status for {path}");
     }
 }
 
@@ -231,7 +263,7 @@ impl Drop for RouterProcess {
 
 fn config(address: SocketAddr, owner: &Worker, non_owner: &Worker) -> String {
     let mut output = format!(
-        "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 32\n\n[shutdown]\ndrain_timeout_ms = 5000\n\n[logging]\nformat = \"json\"\nfilter = \"error\"\n\n[router]\nstrategy = \"least_requests\"\nvoice_owner_worker_id = \"owner\"\n\n[admission]\nglobal = 8\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 16777216\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n"
+        "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 32\n\n[shutdown]\ndrain_timeout_ms = 5000\n\n[logging]\nformat = \"json\"\nfilter = \"error\"\n\n[router]\nstrategy = \"least_requests\"\nvoice_owner_worker_id = \"owner\"\n\n[admission]\nglobal = 8\nspeech_http = 8\n\n[health]\ninterval_ms = 100\ntimeout_ms = 50\nsuccess_threshold = 1\nfailure_threshold = 1\n\n[http]\nbuffered_request_total_bytes = 16777216\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[http_media]\nroutes = [\"speech\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
     );
     for (id, worker) in [("owner", owner), ("non-owner", non_owner)] {
         let managed_voice = id == "owner";
@@ -297,6 +329,9 @@ fn exact_owner_voice_crud_preserves_contract_and_upload_ordering() {
     .expect("upload voice response");
     assert!(upload.starts_with(b"HTTP/1.1 200"));
     assert_eq!(response_header(&upload, "x-request-id"), Some("upload-id"));
+    assert!(upload.ends_with(
+        br#"{"name":"sample","consent":"yes","created_at":1,"file_size":3,"mime_type":"audio/wav"}"#
+    ));
 
     let delete = request(
         router.address,
@@ -397,6 +432,75 @@ fn exact_owner_voice_crud_preserves_contract_and_upload_ordering() {
     assert_eq!(captures[2].path, "/v1/audio/voices/name%20one");
     assert_eq!(captures[3].request_id.as_deref(), Some("parallel-id"));
     assert!(non_owner.captures().is_empty());
+}
+
+#[test]
+fn managed_voice_affinity_and_owner_readiness_are_exact() {
+    let _guard = SOCKET_LOCK.lock().expect("serialize socket test");
+    let owner = Worker::start();
+    let non_owner = Worker::start();
+    let router = RouterProcess::start(&owner, &non_owner);
+    let headers = [("Content-Type", "application/json")];
+
+    let named = request(
+        router.address,
+        "POST",
+        "/v1/audio/speech",
+        &headers,
+        br#"{"model":"tts","input":"hello","voice":"sample","response_format":"wav"}"#,
+    )
+    .expect("managed voice response");
+    assert!(named.starts_with(b"HTTP/1.1 200"));
+    assert!(
+        owner
+            .captures()
+            .iter()
+            .any(|capture| capture.path == "/v1/audio/speech")
+    );
+    assert!(non_owner.captures().is_empty());
+
+    for _ in 0..2 {
+        let stateless = request(
+            router.address,
+            "POST",
+            "/v1/audio/speech",
+            &headers,
+            br#"{"model":"tts","input":"hello","voice":"default","response_format":"wav"}"#,
+        )
+        .expect("stateless speech response");
+        assert!(stateless.starts_with(b"HTTP/1.1 200"));
+    }
+    assert!(
+        non_owner
+            .captures()
+            .iter()
+            .any(|capture| capture.path == "/v1/audio/speech")
+    );
+
+    owner.set_healthy(false);
+    router.wait_status("/ready", b"HTTP/1.1 503");
+
+    let unavailable = request(
+        router.address,
+        "POST",
+        "/v1/audio/speech",
+        &headers,
+        br#"{"model":"tts","input":"hello","voice":"sample","response_format":"wav"}"#,
+    )
+    .expect("unavailable owner response");
+    assert!(unavailable.starts_with(b"HTTP/1.1 503"));
+
+    let before = non_owner.captures().len();
+    let stateless = request(
+        router.address,
+        "POST",
+        "/v1/audio/speech",
+        &headers,
+        br#"{"model":"tts","input":"hello","voice":"default","response_format":"wav"}"#,
+    )
+    .expect("stateless speech while owner is unavailable");
+    assert!(stateless.starts_with(b"HTTP/1.1 200"));
+    assert_eq!(non_owner.captures().len(), before + 1);
 }
 
 fn request(
