@@ -701,6 +701,38 @@ stream_modes = ["non_streaming", "streaming"]
     }
 
     #[test]
+    fn speech_facts_are_tolerant_last_wins_and_payload_bounded() {
+        let pool = pool();
+        let trust = TrustDomain::new(String::from("local"));
+        let audio = "A".repeat(7 * 1_024 * 1_024);
+        let body = format!(
+            r#"{{"model":7,"model":"tts","response_format":"pcm","stream":{{}},"stream":"true","ref_audio":5,"ref_audio":"{audio}","input":"x"}}"#
+        );
+        let classified = speech(body.as_bytes(), &pool, &trust)
+            .expect("final valid routing facts replace malformed earlier values");
+        let ProfileRequirement::SpeechHttp {
+            model,
+            stream_mode,
+            reference_forms,
+            ..
+        } = classified.requirement.profile()
+        else {
+            panic!("speech requirement")
+        };
+        assert!(matches!(model, ModelSelection::Explicit(_)));
+        assert_eq!(*stream_mode, StreamMode::Streaming);
+        assert_eq!(reference_forms, &[ReferenceForm::Direct]);
+
+        let final_invalid = speech(br#"{"model":"tts","model":7,"input":"x"}"#, &pool, &trust)
+            .expect("invalid final worker-owned value becomes an absent routing fact");
+        let ProfileRequirement::SpeechHttp { model, .. } = final_invalid.requirement.profile()
+        else {
+            panic!("speech requirement")
+        };
+        assert!(matches!(model, ModelSelection::UnresolvedDefault));
+    }
+
+    #[test]
     fn top_level_routing_fields_use_the_final_json_occurrence() {
         let pool = pool();
         let trust = TrustDomain::new(String::from("local"));
@@ -735,14 +767,6 @@ stream_modes = ["non_streaming", "streaming"]
         assert_eq!(*stream_mode, StreamMode::Streaming);
         assert_eq!(*task, Some(SpeechTask::VoiceClone));
         assert!(*named_voice);
-
-        let final_invalid = speech(br#"{"model":"tts","model":7,"input":"x"}"#, &pool, &trust)
-            .expect("invalid final worker-owned value becomes an absent routing fact");
-        let ProfileRequirement::SpeechHttp { model, .. } = final_invalid.requirement.profile()
-        else {
-            panic!("speech requirement")
-        };
-        assert!(matches!(model, ModelSelection::UnresolvedDefault));
 
         let batch = batch(
             br#"{

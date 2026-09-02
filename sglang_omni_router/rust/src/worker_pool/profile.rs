@@ -314,9 +314,9 @@ pub(crate) enum ProfileRequirement {
     },
     SpeechWebsocket {
         model: ModelSelection,
-        response_format: SpeechResponseFormat,
+        response_format: Option<SpeechResponseFormat>,
         stream_mode: StreamMode,
-        task: SpeechTask,
+        task: Option<SpeechTask>,
         reference_forms: Vec<ReferenceForm>,
         managed_voice: bool,
     },
@@ -859,9 +859,9 @@ impl ServiceProfile {
                     && model_ids
                         .iter()
                         .any(|candidate| candidate == model.model_id())
-                    && response_formats.contains(response_format)
+                    && response_format.is_none_or(|format| response_formats.contains(&format))
                     && stream_modes.contains(stream_mode)
-                    && tasks.contains(task)
+                    && task.is_none_or(|task| tasks.contains(&task))
                     && contains_all(reference_forms, required_references)
                     && managed_voice == required_voice
             }

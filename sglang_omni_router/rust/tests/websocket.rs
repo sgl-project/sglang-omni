@@ -102,10 +102,16 @@ async fn speech_worker(
     upgrade.on_upgrade(move |mut socket| async move {
         if let Some(Ok(Message::Text(text))) = socket.next().await {
             *state.speech_config.lock().await = Some(text.to_string());
+            let setup_event = if !text.contains(r#""type":"session.config""#)
+                || text.contains(r#""response_format":"future""#)
+                || text.contains(r#""task_type":"future""#)
+            {
+                r#"{"type":"error","message":"invalid worker configuration"}"#
+            } else {
+                r#"{"type":"session.configured","worker":"pinned"}"#
+            };
             let _sent = socket
-                .send(Message::Text(
-                    r#"{"type":"session.configured","worker":"pinned"}"#.into(),
-                ))
+                .send(Message::Text(setup_event.into()))
                 .await;
             if text.contains(r#""active":true"#) {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -455,10 +461,19 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
         ))
         .await
         .expect("send invalid initial speech event");
-    assert!(matches!(
-        rejected_speech.next().await,
-        Some(Ok(ClientMessage::Close(Some(frame)))) if u16::from(frame.code) == 1008
-    ));
+    let worker_error = rejected_speech
+        .next()
+        .await
+        .expect("worker validation event")
+        .expect("valid worker validation event")
+        .into_text()
+        .expect("worker validation text");
+    assert!(worker_error.contains("invalid worker configuration"));
+    rejected_speech
+        .close(None)
+        .await
+        .expect("close rejected speech session");
+    let _closed = rejected_speech.next().await;
     drop(rejected_speech);
 
     let mut speech_request = speech_url
@@ -528,15 +543,44 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
 
     let mut next_speech = connect_with_retry(&speech_url).await;
     next_speech
+        .send(ClientMessage::Ping(vec![1, 2, 3].into()))
+        .await
+        .expect("send hop-local control frame before configuration");
+    next_speech
         .send(ClientMessage::Text(exact.into()))
         .await
         .expect("send configuration after prior permit release");
-    assert!(matches!(
-        next_speech.next().await,
-        Some(Ok(ClientMessage::Text(_)))
-    ));
+    loop {
+        match next_speech.next().await {
+            Some(Ok(ClientMessage::Ping(_) | ClientMessage::Pong(_))) => {}
+            Some(Ok(ClientMessage::Text(_))) => break,
+            other => panic!("expected configured event after control frame, got {other:?}"),
+        }
+    }
     let _closed = next_speech.close(None).await;
     drop(next_speech);
+
+    let mut worker_validated = connect_with_retry(&speech_url).await;
+    worker_validated
+        .send(ClientMessage::Text(
+            r#"{"type":"session.config","model":"omni","response_format":"future","task_type":"future"}"#.into(),
+        ))
+        .await
+        .expect("send worker-owned configuration values");
+    let worker_error = worker_validated
+        .next()
+        .await
+        .expect("worker-owned validation event")
+        .expect("valid worker-owned validation event")
+        .into_text()
+        .expect("worker-owned validation text");
+    assert!(worker_error.contains("invalid worker configuration"));
+    worker_validated
+        .close(None)
+        .await
+        .expect("close worker-validated session");
+    let _closed = worker_validated.next().await;
+    drop(worker_validated);
 
     let mut active_speech = connect_with_retry(&speech_url).await;
     let active = r#"{"type":"session.config","model":"omni","active":true}"#;

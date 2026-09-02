@@ -9,7 +9,7 @@ use axum::http::header::ORIGIN;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
-use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, Visitor};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer as _};
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -21,8 +21,9 @@ use crate::config::{Config, WebsocketConfig};
 use crate::error::HttpFault;
 use crate::request_id::CanonicalRequestId;
 use crate::speech_facts::{
-    SpeechFields, managed_voice as classify_managed_voice, read_field as read_shared_speech_field,
-    reference_forms, response_format as classify_response_format, task as classify_task,
+    ScalarFactSeed, SpeechFields, managed_voice as classify_managed_voice,
+    read_field as read_shared_speech_field, read_stream as read_speech_stream, reference_forms,
+    response_format as classify_response_format, task as classify_task,
 };
 use crate::worker_pool::{
     AdmissionError, CapacityClass, DefaultModelResolution, DispatchError, ModelSelection,
@@ -705,13 +706,18 @@ async fn send_setup_close(
 async fn receive_speech_config(
     downstream: &mut WebSocket,
 ) -> Result<axum::extract::ws::Utf8Bytes, Message> {
-    match downstream.next().await {
-        Some(Ok(Message::Text(text))) => Ok(text),
-        Some(Ok(Message::Binary(_))) => Err(close_message(1008, "invalid session.config")),
-        Some(Err(error)) if websocket_message_too_large(&error) => {
-            Err(close_message(1009, "session.config too large"))
+    loop {
+        match downstream.next().await {
+            Some(Ok(Message::Text(text))) => return Ok(text),
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+            Some(Ok(Message::Binary(_) | Message::Close(_))) => {
+                return Err(close_message(1008, "invalid session.config"));
+            }
+            Some(Err(error)) if websocket_message_too_large(&error) => {
+                return Err(close_message(1009, "session.config too large"));
+            }
+            Some(Err(_)) | None => return Err(close_message(1008, "invalid session.config")),
         }
-        _ => Err(close_message(1008, "invalid session.config")),
     }
 }
 
@@ -804,22 +810,21 @@ fn speech_requirement(
     model: ModelSelection,
     trust: &TrustDomain,
 ) -> Result<RouteRequirement, ()> {
-    let format = classify_response_format(
+    let mut format = classify_response_format(
         fields
             .response_format
             .as_ref()
             .and_then(Option::as_deref)
             .unwrap_or("pcm"),
-    )
-    .ok_or(())?;
+    );
     let stream_mode = if fields
         .stream
         .as_ref()
         .and_then(|value| *value)
         .unwrap_or(false)
     {
-        if format != SpeechResponseFormat::Pcm {
-            return Err(());
+        if format != Some(SpeechResponseFormat::Pcm) {
+            format = None;
         }
         StreamMode::Streaming
     } else {
@@ -831,8 +836,7 @@ fn speech_requirement(
             .as_ref()
             .and_then(Option::as_deref)
             .unwrap_or("Base"),
-    )
-    .ok_or(())?;
+    );
     let references = reference_forms(&fields);
     let managed_voice = classify_managed_voice(&fields, &references);
     Ok(RouteRequirement::new(
@@ -849,62 +853,30 @@ fn speech_requirement(
 }
 
 fn parse_speech_config(bytes: &[u8]) -> Result<SpeechFields, ()> {
-    let source = select_speech_config_source(bytes)?;
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let parsed = ConfigEnvelopeSeed(source)
+    let parsed = ConfigEnvelopeSeed
         .deserialize(&mut deserializer)
         .map_err(|_| ())?;
     deserializer.end().map_err(|_| ())?;
-    parsed
+    Ok(parsed)
 }
 
-#[derive(Clone, Copy)]
-enum SpeechConfigSource {
-    Flat,
-    Nested,
-}
-
-fn select_speech_config_source(bytes: &[u8]) -> Result<SpeechConfigSource, ()> {
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let envelope = <ConfigSourceEnvelope as serde::Deserialize>::deserialize(&mut deserializer)
-        .map_err(|_| ())?;
-    deserializer.end().map_err(|_| ())?;
-    if envelope.message_type.as_deref() != Some("session.config") {
-        return Err(());
-    }
-    Ok(if envelope.session.is_some() {
-        SpeechConfigSource::Nested
-    } else {
-        SpeechConfigSource::Flat
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct ConfigSourceEnvelope {
-    #[serde(rename = "type")]
-    message_type: Option<String>,
-    session: Option<IgnoredSessionObject>,
-}
-
-#[derive(serde::Deserialize)]
-struct IgnoredSessionObject {}
-
-struct ConfigEnvelopeSeed(SpeechConfigSource);
+struct ConfigEnvelopeSeed;
 
 impl<'de> DeserializeSeed<'de> for ConfigEnvelopeSeed {
-    type Value = Result<SpeechFields, ()>;
+    type Value = SpeechFields;
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(ConfigEnvelopeVisitor(self.0))
+        deserializer.deserialize_map(ConfigEnvelopeVisitor)
     }
 }
 
-struct ConfigEnvelopeVisitor(SpeechConfigSource);
+struct ConfigEnvelopeVisitor;
 
 impl<'de> Visitor<'de> for ConfigEnvelopeVisitor {
-    type Value = Result<SpeechFields, ()>;
+    type Value = SpeechFields;
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("a session.config object")
     }
@@ -912,26 +884,21 @@ impl<'de> Visitor<'de> for ConfigEnvelopeVisitor {
     where
         A: MapAccess<'de>,
     {
+        let mut nested_seen = false;
         let mut nested = None;
         let mut flat = SpeechFields::default();
         while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "session" => set_once(
-                    &mut nested,
-                    map.next_value_seed(NullableSpeechFieldsSeed)?,
-                    "session",
-                )?,
-                _ if matches!(self.0, SpeechConfigSource::Flat) => {
-                    read_speech_field(&key, &mut map, &mut flat)?;
-                }
-                _ => {
-                    let _ignored = map.next_value::<IgnoredAny>()?;
-                }
+            if key == "session" {
+                nested_seen = true;
+                nested = map.next_value_seed(NullableSpeechFieldsSeed)?;
+            } else {
+                read_speech_field(&key, &mut map, &mut flat)?;
             }
         }
-        match self.0 {
-            SpeechConfigSource::Flat => Ok(Ok(flat)),
-            SpeechConfigSource::Nested => Ok(nested.flatten().ok_or(())),
+        if nested_seen {
+            Ok(nested.unwrap_or(flat))
+        } else {
+            Ok(flat)
         }
     }
 }
@@ -940,30 +907,65 @@ struct NullableSpeechFieldsSeed;
 
 impl<'de> DeserializeSeed<'de> for NullableSpeechFieldsSeed {
     type Value = Option<SpeechFields>;
+
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        struct OptionalVisitor;
-        impl<'de> Visitor<'de> for OptionalVisitor {
+        struct NullableSpeechFieldsVisitor;
+
+        impl<'de> Visitor<'de> for NullableSpeechFieldsVisitor {
             type Value = Option<SpeechFields>;
+
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("null or a session object")
+                formatter.write_str("a speech session object or worker-owned value")
             }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                SpeechFieldsVisitor.visit_map(map).map(Some)
+            }
+
             fn visit_none<E>(self) -> Result<Self::Value, E> {
                 Ok(None)
             }
+
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
                 Ok(None)
             }
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+
+            fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
             where
-                D: serde::Deserializer<'de>,
+                A: SeqAccess<'de>,
             {
-                deserializer.deserialize_map(SpeechFieldsVisitor).map(Some)
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(None)
             }
         }
-        deserializer.deserialize_option(OptionalVisitor)
+
+        deserializer.deserialize_any(NullableSpeechFieldsVisitor)
     }
 }
 
@@ -995,7 +997,7 @@ where
     A: MapAccess<'de>,
 {
     if key == "stream_audio" {
-        return set_once(&mut fields.stream, map.next_value()?, "stream_audio");
+        return read_speech_stream(map, fields);
     }
     if !read_shared_speech_field(key, map, fields)? {
         let _ignored = map.next_value::<IgnoredAny>()?;
@@ -1031,19 +1033,20 @@ fn parse_event_kind(bytes: &[u8]) -> Option<EventKind> {
             let mut event_type = None;
             while let Some(key) = map.next_key::<String>()? {
                 if key == "type" {
-                    set_once(&mut event_type, map.next_value::<Option<String>>()?, "type")?;
+                    event_type = map.next_value_seed(ScalarFactSeed)?.into_string();
                 } else {
                     let _ignored = map.next_value::<IgnoredAny>()?;
                 }
             }
-            Ok(event_type
-                .flatten()
-                .map(|event_type| match event_type.as_str() {
-                    "session.created" => EventKind::SessionCreated,
-                    "session.configured" => EventKind::SessionConfigured,
-                    "error" => EventKind::Error,
-                    _ => EventKind::Other,
-                }))
+            let Some(event_type) = event_type else {
+                return Ok(None);
+            };
+            Ok(Some(match event_type.as_str() {
+                "session.created" => EventKind::SessionCreated,
+                "session.configured" => EventKind::SessionConfigured,
+                "error" => EventKind::Error,
+                _ => EventKind::Other,
+            }))
         }
     }
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
@@ -1057,17 +1060,6 @@ fn is_speech_setup_event(bytes: &[u8]) -> bool {
         parse_event_kind(bytes),
         Some(EventKind::SessionConfigured | EventKind::Error)
     )
-}
-
-fn set_once<E, T>(slot: &mut Option<T>, value: T, field: &'static str) -> Result<(), E>
-where
-    E: de::Error,
-{
-    if slot.is_some() {
-        return Err(E::duplicate_field(field));
-    }
-    *slot = Some(value);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1084,9 +1076,9 @@ mod tests {
     };
 
     use super::{
-        DrainState, EventKind, SetupTermination, classify_blocking, is_speech_setup_event,
-        parse_event_kind, parse_speech_config, realtime_model, setup_until, speech_requirement,
-        websocket_message_too_large,
+        DrainState, EventKind, MAX_MESSAGE_BYTES, SetupTermination, classify_blocking,
+        is_speech_setup_event, parse_event_kind, parse_speech_config, realtime_model,
+        reference_forms, setup_until, speech_requirement, websocket_message_too_large,
     };
 
     #[tokio::test]
@@ -1126,7 +1118,7 @@ mod tests {
                 .as_deref(),
             Some("b")
         );
-        assert!(parse_speech_config(br#"{"type":"input.text"}"#).is_err());
+        assert!(parse_speech_config(br#"{"type":"input.text"}"#).is_ok());
     }
 
     #[test]
@@ -1146,10 +1138,11 @@ mod tests {
     }
 
     #[test]
-    fn null_session_keeps_flat_fallback_strict_and_last_wins() {
-        assert!(
-            parse_speech_config(br#"{"type":"session.config","model":7,"session":null}"#).is_err()
-        );
+    fn absent_nested_facts_keep_tolerant_flat_fallback_and_last_wins() {
+        let invalid_model =
+            parse_speech_config(br#"{"type":"session.config","model":7,"session":null}"#)
+                .expect("worker-owned invalid model remains routable");
+        assert_eq!(invalid_model.model, Some(None));
         let fields = parse_speech_config(
             br#"{"type":"session.config","session":null,"model":"a","model":"b"}"#,
         );
@@ -1164,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_session_retains_envelope_and_active_field_validation() {
+    fn duplicate_session_and_event_fields_use_the_last_value() {
         let fields = parse_speech_config(
             br#"{"type":"session.config","session":{"model":"a","model":"b"}}"#,
         );
@@ -1176,18 +1169,54 @@ mod tests {
                 .as_deref(),
             Some("b")
         );
+        let duplicate_session = parse_speech_config(
+            br#"{"type":"session.config","session":{},"session":{"model":"last"}}"#,
+        );
+        assert_eq!(
+            duplicate_session
+                .expect("last session object is authoritative")
+                .model
+                .flatten()
+                .as_deref(),
+            Some("last")
+        );
+        let malformed_then_valid = parse_speech_config(
+            br#"{"type":"session.config","session":"invalid","session":{"model":7,"model":"last"}}"#,
+        );
+        assert_eq!(
+            malformed_then_valid
+                .expect("only the last session and nested routing value is authoritative")
+                .model
+                .flatten()
+                .as_deref(),
+            Some("last")
+        );
         assert!(
-            parse_speech_config(br#"{"type":"session.config","session":{},"session":{}}"#).is_err()
+            parse_speech_config(br#"{"type":"input.text","type":"session.config","session":{}}"#)
+                .is_ok()
         );
         assert!(
             parse_speech_config(
-                br#"{"type":"session.config","type":"session.config","session":{}}"#
+                br#"{"type":"session.config","model":"flat","session":"not-an-object"}"#
             )
-            .is_err()
+            .is_ok()
         );
-        assert!(
-            parse_speech_config(br#"{"type":"session.config","session":"not-an-object"}"#).is_err()
+    }
+
+    #[test]
+    fn near_limit_reference_audio_retains_only_routing_facts() {
+        let audio = "A".repeat(MAX_MESSAGE_BYTES - 1_024);
+        let direct = format!(
+            r#"{{"type":"session.config","session":{{"model":"tts","ref_audio":"{audio}"}}}}"#
         );
+        let direct = parse_speech_config(direct.as_bytes()).expect("near-limit direct reference");
+        assert_eq!(reference_forms(&direct), &[ReferenceForm::Direct]);
+
+        let listed = format!(
+            r#"{{"type":"session.config","session":{{"model":"tts","references":[{{"audio":"{audio}"}}]}}}}"#
+        );
+        let listed = parse_speech_config(listed.as_bytes()).expect("near-limit list reference");
+        assert_eq!(reference_forms(&listed), &[ReferenceForm::List]);
     }
 
     #[test]
@@ -1215,9 +1244,9 @@ mod tests {
             panic!("speech websocket requirement")
         };
         assert_eq!(model.model_id(), "tts");
-        assert_eq!(*response_format, SpeechResponseFormat::Pcm);
+        assert_eq!(*response_format, Some(SpeechResponseFormat::Pcm));
         assert_eq!(*stream_mode, StreamMode::Streaming);
-        assert_eq!(*task, SpeechTask::VoiceClone);
+        assert_eq!(*task, Some(SpeechTask::VoiceClone));
         assert_eq!(
             reference_forms,
             &[
@@ -1235,14 +1264,42 @@ mod tests {
             br#"{"type":"session.config","response_format":"mp3","stream_audio":true}"#,
         )
         .expect("routing fields parse before relationship validation");
-        assert!(
-            speech_requirement(
-                encoded_stream,
-                ModelSelection::Explicit(String::from("tts")),
-                &TrustDomain::new(String::from("local")),
-            )
-            .is_err()
-        );
+        let encoded_stream = speech_requirement(
+            encoded_stream,
+            ModelSelection::Explicit(String::from("tts")),
+            &TrustDomain::new(String::from("local")),
+        )
+        .expect("worker owns unsupported response validation");
+        let ProfileRequirement::SpeechWebsocket {
+            response_format,
+            task,
+            ..
+        } = encoded_stream.profile()
+        else {
+            panic!("speech websocket requirement")
+        };
+        assert_eq!(*response_format, None);
+        assert_eq!(*task, Some(SpeechTask::TextToSpeech));
+
+        let unknown = parse_speech_config(
+            br#"{"type":"session.config","response_format":"future","task_type":"future"}"#,
+        )
+        .expect("unknown worker-owned values remain routable");
+        let unknown = speech_requirement(
+            unknown,
+            ModelSelection::Explicit(String::from("tts")),
+            &TrustDomain::new(String::from("local")),
+        )
+        .expect("worker owns unknown enum validation");
+        let ProfileRequirement::SpeechWebsocket {
+            response_format,
+            task,
+            ..
+        } = unknown.profile()
+        else {
+            panic!("speech websocket requirement")
+        };
+        assert_eq!((*response_format, *task), (None, None));
     }
 
     #[test]
@@ -1297,6 +1354,14 @@ mod tests {
         );
         assert_eq!(
             parse_event_kind(br#"{"type":"session.created","type":"other"}"#),
+            Some(EventKind::Other)
+        );
+        assert_eq!(
+            parse_event_kind(br#"{"type":7,"type":"session.created"}"#),
+            Some(EventKind::SessionCreated)
+        );
+        assert_eq!(
+            parse_event_kind(br#"{"type":"session.created","type":7}"#),
             None
         );
         assert_eq!(
