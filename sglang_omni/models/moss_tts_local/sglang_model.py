@@ -289,9 +289,14 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
+        omni_prefill_rids: list[str] | None = None,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
         input_embeds_are_projected: bool = False,
     ) -> LogitsProcessorOutput:
+        # Request IDs are transport metadata used by the shared runner while
+        # late-binding sidecar inputs; this model only consumes the embeddings
+        # that the runner has already bound for eager execution or graph replay.
+        del omni_prefill_rids
         del input_embeds_are_projected
         if input_embeds is None:
             forward_mode = getattr(forward_batch, "forward_mode", None)

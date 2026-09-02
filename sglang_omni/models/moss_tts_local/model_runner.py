@@ -8,6 +8,10 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts_local.radix_hash import gpu_radix_row_hash
 from sglang_omni.models.moss_tts_local.request_builders import (
@@ -84,8 +88,14 @@ class MossTTSLocalModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
-            forward_batch, requests
+        # Keep request-scoped embeddings in Omni's sidecar until the shared
+        # runner selects eager execution or refreshes the graph's static input.
+        # Writing ForwardBatch.input_embeds here would bypass that late binding.
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
+            ),
         )
         return None
 
