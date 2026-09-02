@@ -1,45 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Two-GPU process-replica coverage used by CI:
-#   GPU 0: thinker + code2wav@r0
+#   GPU 0: image_encoder + audio_encoder + thinker + code2wav@r0
 #   GPU 1: talker_ar + code2wav@r1
 
 config_cls: Qwen3OmniSpeechPipelineConfig
 name: qwen3-omni-speech-code2wav-replica2-ci
 model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
 
+stages:
+  image_encoder:
+    gpu_memory_fraction: 0.02
+
+  audio_encoder:
+    gpu_memory_fraction: 0.02
+
+  thinker:
+    gpu_memory_fraction: 0.78
+
+  talker_ar:
+    gpu_memory_fraction: 0.10
+
+  code2wav:
+    gpu_memory_fraction: 0.02
+
 processes:
   code2wav:
     num_replicas: 2
     replica_devices: [0, 1]
-
-stage_overrides:
-  image_encoder:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.02
-
-  audio_encoder:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.02
-
-  mm_aggregate:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.02
-
-  thinker:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.78
-
-  talker_ar:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.10
-
-  code2wav:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.02

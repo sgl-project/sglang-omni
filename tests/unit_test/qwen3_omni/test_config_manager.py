@@ -10,6 +10,7 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
+    Qwen3OmniSpeechPipelineConfig,
 )
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
@@ -147,6 +148,51 @@ def test_qwen3_omni_mmsu_example_config_uses_text_pipeline() -> None:
     assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.8)
     assert thinker_args["total_gpu_memory_fraction"] == pytest.approx(0.75)
     assert thinker_args["server_args_overrides"]["max_running_requests"] == 4
+
+
+@pytest.mark.parametrize(
+    ("config_name", "expected_fractions", "expected_replica_devices"),
+    [
+        (
+            "qwen3_omni_speech_replica2.yaml",
+            {"talker_ar": 0.123, "code2wav": 0.014},
+            {"talker_ar": [1, 2], "code2wav": [1, 2]},
+        ),
+        (
+            "qwen3_omni_speech_code2wav_replica2_ci.yaml",
+            {
+                "image_encoder": 0.02,
+                "audio_encoder": 0.02,
+                "thinker": 0.78,
+                "talker_ar": 0.10,
+                "code2wav": 0.02,
+            },
+            {"code2wav": [0, 1]},
+        ),
+    ],
+)
+def test_qwen3_omni_process_replica_example_configs_load_and_plan(
+    config_name: str,
+    expected_fractions: dict[str, float],
+    expected_replica_devices: dict[str, list[int]],
+) -> None:
+    config_path = _REPO_ROOT / "examples" / "configs" / config_name
+
+    config = ConfigManager.from_file(str(config_path)).config
+    topology = build_compiled_process_topology(config)
+    groups = {group.name: group for group in topology.groups}
+
+    assert isinstance(config, Qwen3OmniSpeechPipelineConfig)
+    for stage_name, expected_fraction in expected_fractions.items():
+        assert _stage(config, stage_name).gpu_memory_fraction == pytest.approx(
+            expected_fraction
+        )
+    for process_name, expected_devices in expected_replica_devices.items():
+        process = config.processes[process_name]
+        assert process.num_replicas == len(expected_devices)
+        assert process.replica_devices == expected_devices
+        for replica_id, expected_device in enumerate(expected_devices):
+            assert groups[f"{process_name}@r{replica_id}"].gpu_id == expected_device
 
 
 def test_qwen_preprocessing_model_video_fps_resolves_to_factory_arg() -> None:

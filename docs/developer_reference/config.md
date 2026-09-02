@@ -170,7 +170,7 @@ overrode. Both run the same merge as `serve`.
 | `route_fn` | `str` or `None` | `None` | Dotted function path for request-aware result routing. The function receives `(request_id, stage_output)` and returns a downstream stage name or list of stage names. |
 | `gpu` | `int`, `list[int]`, or `None` | `None` | GPU id for the stage. `None` means CPU placement. A list is used for tensor parallel ranks. |
 | `tp_size` | `int` | `1` | Number of tensor-parallel ranks. Must match `len(gpu)` when `gpu` is a list. |
-| `gpu_memory_fraction` | `float` or `None` | `None` | Per-stage-rank budget as a fraction of total physical GPU memory. Required per stage when multiple processes share one GPU. |
+| `gpu_memory_fraction` | `float` or `None` | `None` | Per-stage-rank budget as a fraction of total physical GPU memory. Required according to the GPU-colocation rules below. |
 | `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; every non-TP stage must declare one explicitly. For TP stages, `process` is optional and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. |
 | `env` | `dict[str, str]` | `{}` | Per-stage env defaults applied in this stage's worker process at spawn; never overrides `os.environ`. |
 | `wait_for` | `list[str]` or `None` | `None` | Upstream stages required before this stage can execute a request. |
@@ -196,7 +196,7 @@ as the static superset because runtime prep derives stream receivers from it.
 | `stages` | `list[StageConfig]` | required | Stage definitions. Config files override fields on them by name and cannot add or remove stages. |
 | `name` | `str` or `None` | `model_path` | Pipeline name. Used for reporting and runtime identification. |
 | `entry_stage` | `str` or `None` | first stage | Declared by the config class when the first stage is not the entry. Not settable from a config file or the CLI. |
-| `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process. |
+| `processes` | `dict[str, ProcessConfig]` | `{}` | Sparse whole-process replica policy, keyed by an existing logical Process Name. |
 | `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
 | `mps` | `off`, `on`, or `auto` | `off` | Native CUDA MPS policy for eligible same-GPU worker processes. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. |
@@ -219,13 +219,58 @@ Class-level hooks a model config may declare:
 Derived values are computed from stages, not manually maintained:
 `resolved_entry_stage`, `terminal_stages`, `gpu_placement`.
 
-### Stage Fusion
+### Logical Processes and Replicas
 
-`fused_stages` is a framework-level colocation hint. It keeps every listed
-logical stage as a normal `Stage`; it does not create a synthetic scheduler.
-At runtime prep, each fused group adds a process-colocation constraint, and
-ordinary Stage routing can then use process-local dispatch for eligible hops.
-A group must be adjacent, linear, non-TP, and fit on at most one GPU.
+`StageConfig.process` declares process membership. Non-TP stages with the same
+value share one OS process; different values isolate them. A TP stage always
+owns its process and may omit `process`, in which case its Stage Name supplies
+the logical Process Name.
+
+The top-level `processes` mapping adds a sparse replica policy to those logical
+Processes. It does not define membership and cannot name a Process that the
+stages do not declare.
+
+| `ProcessConfig` field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `num_replicas` | `int >= 1` | `1` | Number of whole-Process instances. |
+| `replica_devices` | `int`, `list[int]`, comma-separated `str`, or `None` | `None` | GPU ids for every replica, including replica 0. A non-TP Process needs one id per replica; a TP Process needs `num_replicas * tp_size` ids. |
+
+For example, this copies the complete `tail` Process. Each replica contains
+both its GPU `generate` Stage and its CPU `decode` Stage:
+
+```yaml
+stages:
+  generate:
+    process: tail
+    gpu_memory_fraction: 0.4
+  decode:
+    process: tail
+
+processes:
+  tail:
+    num_replicas: 2
+    replica_devices: [1, 2]
+```
+
+With `num_replicas: N`, member Stage instances use the reserved `@rN` suffix.
+`replica_devices` overrides the GPU placement of GPU members and leaves CPU
+members on the host. A GPU Process with more than one replica must declare it;
+at `num_replicas: 1` it may be omitted, or supplied as an explicit placement
+override.
+
+Final replica placement participates in the normal GPU-colocation validation.
+When multiple Process groups share a GPU and the general colocation requirement
+is enabled, every affected GPU Stage needs `gpu_memory_fraction`. Sharing
+introduced by `replica_devices` always requires those fractions, even if the
+general requirement is disabled. Declared fractions must fit
+`placement.max_total_gpu_memory_fraction_per_gpu`.
+
+At admission, the coordinator selects one replica for each replicated Process
+and keeps that binding for the request lifetime. The default policy is
+thread-safe round robin per Process. Equal-size Processes happen to remain
+same-index aligned under that policy, but cross-Process affinity is not part of
+the binding contract. Replica counts and placement are resolved at startup;
+the config does not provide live scaling.
 
 ## How Values Reach a Factory
 

@@ -8,9 +8,12 @@ removed and are not auto-migrated.
 
 | Removed entry | Replacement |
 | --- | --- |
-| `--isolate-stage vocoder` | `--stages.vocoder.process vocoder` |
-| `--stage-process preprocessing=frontend` | `--stages.preprocessing.process frontend` |
+| `--isolate-stage vocoder` | `--vocoder.process vocoder` |
+| `--stage-process preprocessing=frontend` | `--preprocessing.process frontend` |
 | `fused_stages: [[a, b]]` | Set the same `process` value on stages `a` and `b`. |
+
+The CLI already implies the `stages.` prefix. An explicit flag such as
+`--stages.vocoder.process` is rejected.
 
 ## Migrating `fused_stages`
 
@@ -25,16 +28,18 @@ After:
 
 ```yaml
 stages:
-  - name: preprocessing
+  preprocessing:
     process: frontend
-  - name: audio_encoder
+  audio_encoder:
     process: frontend
 ```
 
 Keep all existing factory, routing, runtime, and placement fields when updating
-a complete config. Every non-TP stage must declare `process`; equal names share
-one OS process and different names isolate stages. A TP stage owns its process
-exclusively.
+a complete config. Use the actual Stage Names declared by the model config;
+legacy isolation-role aliases are not translated. Re-check edge transport and
+memory budgets when a handoff changes from local to cross-process. Every non-TP
+stage must declare `process`; equal names share one OS process and different
+names isolate stages. A TP stage owns its process exclusively.
 
 The top-level `processes` mapping only configures replicas for process names
 already declared by stages. See the
