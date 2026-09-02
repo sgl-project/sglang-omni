@@ -145,6 +145,7 @@ impl PendingSession {
     }
 }
 
+/// Holds session ownership until relay or bounded setup close work is complete.
 pub(super) struct SessionSupervisor {
     registration: SessionRegistration,
     lease: RequestLease,

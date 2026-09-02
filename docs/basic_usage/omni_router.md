@@ -165,7 +165,7 @@ limits, and timeouts from the expected workload and worker topology.
 | `POST` | `/v1/audio/transcriptions` | Multipart transcription |
 | `POST` | `/v1/audio/translations` | Multipart translation |
 | `GET` | `/v1/audio/speech/stream` | Speech WebSocket |
-| `GET` | `/v1/realtime?model=<id>` | OpenAI-compatible realtime WebSocket |
+| `GET` | `/v1/realtime[?model=<id>]` | OpenAI-compatible realtime WebSocket |
 | `GET`, `POST` | `/v1/audio/voices` | List or upload worker-local voices |
 | `DELETE` | `/v1/audio/voices/{name}` | Delete a worker-local voice |
 | `GET` | `/v1/models` | Static model inventory |
@@ -261,8 +261,12 @@ transcode, or regenerate audio.
 Speech and realtime WebSockets terminate both handshakes and pin one worker for
 the complete session. Each frame awaits its destination send, preserving frame
 type and order without relay tasks or application queues. Both links use a 16
-MiB message bound. Setup, initial speech configuration, and close convergence
-use explicit deadlines. Application-level idle behavior remains worker-owned.
+MiB message bound. Speech configuration, upstream transport setup, the first
+worker event, and close convergence use separate deadlines. Application-level
+idle behavior remains worker-owned. A realtime `model` query prefers a matching
+worker default and falls back to any compatible worker in the trust domain.
+Speech configuration is replayed byte-for-byte; the router extracts routing
+facts while the worker owns protocol-value validation.
 
 Uploaded voices have one explicit owner configured by
 `router.voice_owner_worker_id`. Voice CRUD and requests that depend on a stored
