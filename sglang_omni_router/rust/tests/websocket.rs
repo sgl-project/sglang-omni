@@ -268,7 +268,6 @@ filter = "error"
 
 [router]
 strategy = "round_robin"
-max_concurrent_classifications = 2
 
 [admission]
 global = 8
@@ -417,13 +416,21 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
 
     wait_ready(router_address).await;
 
-    for query in ["model=", "model=a&model=b", "model=%", "model=%FF"] {
+    for query in ["model=", "model=a&model=b"] {
         assert_eq!(
             rejected_websocket_status(format!("ws://{router_address}/v1/realtime?{query}")).await,
             StatusCode::BAD_REQUEST,
             "query must be rejected before upstream connect: {query}"
         );
     }
+    assert_eq!(
+        rejected_websocket_status(format!("ws://{router_address}/v1/realtime?model=%")).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        rejected_websocket_status(format!("ws://{router_address}/v1/realtime?model=%FF")).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     assert_eq!(
         rejected_websocket_status(format!("ws://{router_address}/v1/realtime?model=unknown")).await,
         StatusCode::UNPROCESSABLE_ENTITY

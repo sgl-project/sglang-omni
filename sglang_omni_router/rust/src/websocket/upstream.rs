@@ -6,7 +6,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConfig;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 
-use crate::config::WebsocketConfig;
 use crate::request_id::REQUEST_ID_HEADER;
 use crate::worker_pool::ResolvedTarget;
 
@@ -33,7 +32,6 @@ impl HandshakeHeaders {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ConnectError {
     InvalidRequest,
-    ConnectTimeout,
     Connect,
     SetupTimeout,
     Handshake,
@@ -45,7 +43,6 @@ pub(super) async fn connect(
     path: &str,
     query: Option<&str>,
     headers: &HandshakeHeaders,
-    policy: &WebsocketConfig,
     setup_deadline: Instant,
 ) -> Result<UpstreamSocket, ConnectError> {
     let uri = target
@@ -57,24 +54,16 @@ pub(super) async fn connect(
         .map_err(|_source| ConnectError::InvalidRequest)?;
     headers.apply(request.headers_mut());
 
-    let connect_deadline = Instant::now() + policy.connect_timeout();
-    let (connect_deadline, connect_timeout) = if setup_deadline <= connect_deadline {
-        (setup_deadline, ConnectError::SetupTimeout)
-    } else {
-        (connect_deadline, ConnectError::ConnectTimeout)
-    };
     let authority = target
         .connect_authority()
         .ok_or(ConnectError::InvalidRequest)?;
-    let tcp = tokio::time::timeout_at(connect_deadline, TcpStream::connect(authority))
+    let tcp = tokio::time::timeout_at(setup_deadline, TcpStream::connect(authority))
         .await
-        .map_err(|_elapsed| connect_timeout)?
+        .map_err(|_elapsed| ConnectError::SetupTimeout)?
         .map_err(|_source| ConnectError::Connect)?;
     tcp.set_nodelay(true)
         .map_err(|_source| ConnectError::Connect)?;
-    let config = TungsteniteConfig::default()
-        .max_frame_size(Some(policy.frame_max_bytes))
-        .max_message_size(Some(policy.worker_message_max_bytes));
+    let config = TungsteniteConfig::default().max_message_size(Some(super::MAX_MESSAGE_BYTES));
     let (mut socket, response) = tokio::time::timeout_at(
         setup_deadline,
         client_async_tls_with_config(request, tcp, Some(config), None),
@@ -191,7 +180,6 @@ mod tests {
             "/v1/realtime",
             Some("model=%69gnored"),
             &headers,
-            &policy,
             setup_deadline,
         )
         .await

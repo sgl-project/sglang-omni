@@ -175,13 +175,6 @@ pub(super) enum RelayProtocol {
 }
 
 impl RelayProtocol {
-    fn client_message_limit(self, policy: &WebsocketConfig) -> usize {
-        match self {
-            Self::Speech => policy.speech_message_max_bytes,
-            Self::Realtime => policy.realtime_message_max_bytes,
-        }
-    }
-
     const fn accepts_client_binary(self) -> bool {
         matches!(self, Self::Speech)
     }
@@ -246,7 +239,7 @@ impl SessionSupervisor {
             RelayTerminal::Draining
         } else {
             let client_to_worker =
-                client_to_worker(&mut downstream_stream, &mut upstream_sink, policy, protocol);
+                client_to_worker(&mut downstream_stream, &mut upstream_sink, protocol);
             let worker_to_client =
                 worker_to_client(&mut upstream_stream, &mut downstream_sink, protocol);
             tokio::pin!(client_to_worker, worker_to_client);
@@ -361,18 +354,11 @@ impl SessionSupervisor {
 async fn client_to_worker(
     downstream: &mut DownstreamStream,
     upstream: &mut UpstreamSink,
-    policy: &WebsocketConfig,
     protocol: RelayProtocol,
 ) -> RelayTerminal {
     loop {
         match downstream.next().await {
             Some(Ok(DownstreamMessage::Text(text))) => {
-                if text.len() > protocol.client_message_limit(policy) {
-                    return RelayTerminal::ClientViolation {
-                        code: 1009,
-                        reason: "message too large",
-                    };
-                }
                 let Ok(text) = super::downstream_text_to_upstream(text) else {
                     return RelayTerminal::ClientViolation {
                         code: 1007,
@@ -384,12 +370,6 @@ async fn client_to_worker(
                 }
             }
             Some(Ok(DownstreamMessage::Binary(bytes))) if protocol.accepts_client_binary() => {
-                if bytes.len() > protocol.client_message_limit(policy) {
-                    return RelayTerminal::ClientViolation {
-                        code: 1009,
-                        reason: "message too large",
-                    };
-                }
                 if upstream.send(UpstreamMessage::Binary(bytes)).await.is_err() {
                     return RelayTerminal::WorkerGone;
                 }

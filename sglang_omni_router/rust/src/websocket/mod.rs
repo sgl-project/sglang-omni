@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Query, State};
-use axum::http::header::{CONNECTION, UPGRADE};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version};
+use axum::http::header::ORIGIN;
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, Visitor};
@@ -39,6 +39,7 @@ use session::{DrainState, PendingSession, RelayProtocol, SessionSupervisor, clos
 
 pub(crate) const SPEECH_PATH: &str = "/v1/audio/speech/stream";
 pub(crate) const REALTIME_PATH: &str = "/v1/realtime";
+const MAX_MESSAGE_BYTES: usize = 16 * 1_024 * 1_024;
 
 #[derive(Deserialize)]
 struct RealtimeQuery {
@@ -112,7 +113,6 @@ impl WebsocketGateway {
 pub(crate) async fn speech(
     State(gateway): State<Arc<WebsocketGateway>>,
     Extension(request_id): Extension<CanonicalRequestId>,
-    version: Version,
     uri: Uri,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
@@ -120,10 +120,7 @@ pub(crate) async fn speech(
     let Some(trust) = gateway.speech.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let origin = match validate_upgrade(version, &uri, &headers, SPEECH_PATH, &gateway.policy) {
-        Ok(origin) => origin,
-        Err(()) => return HttpFault::MalformedRequest.into_response(),
-    };
+    let origin = headers.get(ORIGIN).cloned();
     let upstream_headers = upstream::HandshakeHeaders::new(request_id.into_header_value(), origin);
     let admission = match gateway.pool.try_admit(CapacityClass::SpeechWebsocket, 1) {
         Ok(admission) => admission,
@@ -136,8 +133,7 @@ pub(crate) async fn speech(
     let upstream_path = uri.path().to_owned();
     let upstream_query = uri.query().map(str::to_owned);
     upgrade
-        .max_frame_size(gateway.policy.frame_max_bytes)
-        .max_message_size(gateway.policy.speech_config_max_bytes)
+        .max_message_size(MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             run_speech(
                 socket,
@@ -167,7 +163,7 @@ async fn run_speech(
     let config_text = match setup_until(
         &mut drain,
         config_deadline,
-        receive_speech_config(&mut downstream, &gateway.policy),
+        receive_speech_config(&mut downstream),
     )
     .await
     {
@@ -278,7 +274,6 @@ async fn run_speech(
             &upstream_path,
             upstream_query.as_deref(),
             &upstream_headers,
-            &gateway.policy,
             setup_deadline,
         ),
     )
@@ -442,7 +437,6 @@ async fn run_speech(
 pub(crate) async fn realtime(
     State(gateway): State<Arc<WebsocketGateway>>,
     Extension(request_id): Extension<CanonicalRequestId>,
-    version: Version,
     uri: Uri,
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
@@ -450,10 +444,7 @@ pub(crate) async fn realtime(
     let Some(trust) = gateway.realtime.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let origin = match validate_upgrade(version, &uri, &headers, REALTIME_PATH, &gateway.policy) {
-        Ok(origin) => origin,
-        Err(()) => return HttpFault::MalformedRequest.into_response(),
-    };
+    let origin = headers.get(ORIGIN).cloned();
     let upstream_headers = upstream::HandshakeHeaders::new(request_id.into_header_value(), origin);
     let model = match realtime_model(&uri, || {
         gateway
@@ -494,7 +485,6 @@ pub(crate) async fn realtime(
             uri.path(),
             uri.query(),
             &upstream_headers,
-            &gateway.policy,
             setup_deadline,
         ),
     )
@@ -518,8 +508,7 @@ pub(crate) async fn realtime(
     };
     let supervisor = SessionSupervisor::from_admitted(registration, lease, upstream);
     upgrade
-        .max_frame_size(gateway.policy.frame_max_bytes)
-        .max_message_size(gateway.policy.realtime_message_max_bytes)
+        .max_message_size(MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             run_realtime(socket, gateway, supervisor, setup_deadline).await;
         })
@@ -544,8 +533,7 @@ async fn run_realtime(
     };
     let text = match first {
         Ok(Some(Ok(UpstreamMessage::Text(text))))
-            if text.len() <= gateway.policy.worker_message_max_bytes
-                && parse_event_kind(text.as_bytes()) == Some(EventKind::SessionCreated) =>
+            if parse_event_kind(text.as_bytes()) == Some(EventKind::SessionCreated) =>
         {
             text
         }
@@ -703,14 +691,9 @@ async fn send_setup_close(
 
 async fn receive_speech_config(
     downstream: &mut WebSocket,
-    policy: &WebsocketConfig,
 ) -> Result<axum::extract::ws::Utf8Bytes, Message> {
     match downstream.next().await {
-        Some(Ok(Message::Text(text))) if text.len() <= policy.speech_config_max_bytes => Ok(text),
-        Some(Ok(Message::Text(_))) => Err(close_message(1009, "session.config too large")),
-        Some(Ok(Message::Binary(bytes))) if bytes.len() > policy.speech_config_max_bytes => {
-            Err(close_message(1009, "session.config too large"))
-        }
+        Some(Ok(Message::Text(text))) => Ok(text),
         Some(Ok(Message::Binary(_))) => Err(close_message(1008, "invalid session.config")),
         Some(Err(error)) if websocket_message_too_large(&error) => {
             Err(close_message(1009, "session.config too large"))
@@ -744,89 +727,6 @@ async fn next_worker_application(
             other => return other,
         }
     }
-}
-
-fn validate_upgrade(
-    version: Version,
-    uri: &Uri,
-    headers: &HeaderMap,
-    path: &str,
-    policy: &WebsocketConfig,
-) -> Result<Option<HeaderValue>, ()> {
-    let path_and_query = uri.path_and_query().ok_or(())?;
-    if version != Version::HTTP_11
-        || uri.path() != path
-        || path_and_query.as_str().len() > policy.uri_max_bytes
-        || headers.len() > policy.header_max_fields
-        || headers.contains_key("sec-websocket-protocol")
-    {
-        return Err(());
-    }
-    if !connection_requests_upgrade(headers)? || !is_exact_websocket_upgrade(headers)? {
-        return Err(());
-    }
-    let total = headers.iter().try_fold(0_usize, |total, (name, value)| {
-        total
-            .checked_add(name.as_str().len())?
-            .checked_add(value.as_bytes().len())
-    });
-    if total.is_none_or(|total| total > policy.header_max_bytes) {
-        return Err(());
-    }
-    let mut origins = headers.get_all("origin").iter();
-    let origin = origins.next().cloned();
-    if origins.next().is_some() {
-        return Err(());
-    }
-    if let Some(origin) = origin.as_ref() {
-        let origin = origin.to_str().map_err(|_| ())?;
-        if origin != "null" {
-            let parsed: Uri = origin.parse().map_err(|_| ())?;
-            if parsed.scheme().is_none()
-                || parsed.authority().is_none()
-                || parsed.path() != "/"
-                || parsed.query().is_some()
-            {
-                return Err(());
-            }
-        }
-    }
-    Ok(origin)
-}
-
-fn connection_requests_upgrade(headers: &HeaderMap) -> Result<bool, ()> {
-    let mut found = false;
-    let mut count = 0_usize;
-    for value in headers.get_all(CONNECTION) {
-        let value = value.to_str().map_err(|_| ())?;
-        for token in value.split(',') {
-            let token = token.trim();
-            if token.is_empty() || HeaderName::from_bytes(token.as_bytes()).is_err() {
-                return Err(());
-            }
-            count = count.checked_add(1).ok_or(())?;
-            found |= token.eq_ignore_ascii_case("upgrade");
-        }
-    }
-    Ok(count != 0 && found)
-}
-
-fn is_exact_websocket_upgrade(headers: &HeaderMap) -> Result<bool, ()> {
-    let mut count = 0_usize;
-    for value in headers.get_all(UPGRADE) {
-        let value = value.to_str().map_err(|_| ())?;
-        for token in value.split(',') {
-            let token = token.trim();
-            if token.is_empty()
-                || HeaderName::from_bytes(token.as_bytes()).is_err()
-                || !token.eq_ignore_ascii_case("websocket")
-            {
-                return Err(());
-            }
-            count = count.checked_add(1).ok_or(())?;
-        }
-    }
-    Ok(count == 1)
 }
 
 fn admission_fault(error: AdmissionError) -> HttpFault {
@@ -1085,7 +985,6 @@ fn realtime_model<'a>(
     uri: &Uri,
     resolve_default: impl FnOnce() -> DefaultModelResolution<'a>,
 ) -> Result<String, HttpFault> {
-    validate_query_encoding(uri.query().unwrap_or_default())?;
     let Query(query) =
         Query::<RealtimeQuery>::try_from_uri(uri).map_err(|_| HttpFault::MalformedRequest)?;
     match query.model {
@@ -1096,40 +995,6 @@ fn realtime_model<'a>(
             DefaultModelResolution::Ambiguous => Err(HttpFault::AmbiguousModel),
             DefaultModelResolution::NoService => Err(HttpFault::RouterUnavailable),
         },
-    }
-}
-
-fn validate_query_encoding(query: &str) -> Result<(), HttpFault> {
-    let mut decoded = Vec::with_capacity(query.len());
-    for component in query.split('&').flat_map(|pair| pair.splitn(2, '=')) {
-        decoded.clear();
-        let bytes = component.as_bytes();
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] == b'%' {
-                let high = bytes.get(index + 1).and_then(|byte| hex_value(*byte));
-                let low = bytes.get(index + 2).and_then(|byte| hex_value(*byte));
-                let (Some(high), Some(low)) = (high, low) else {
-                    return Err(HttpFault::MalformedRequest);
-                };
-                decoded.push((high << 4) | low);
-                index += 3;
-            } else {
-                decoded.push(bytes[index]);
-                index += 1;
-            }
-        }
-        std::str::from_utf8(&decoded).map_err(|_| HttpFault::MalformedRequest)?;
-    }
-    Ok(())
-}
-
-const fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
     }
 }
 
@@ -1200,12 +1065,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use axum::http::header::{CONNECTION, UPGRADE};
-    use axum::http::{HeaderMap, HeaderValue, Uri, Version};
+    use axum::http::Uri;
     use tokio::sync::{Semaphore, watch};
 
     use crate::classification;
-    use crate::config::WebsocketConfig;
     use crate::error::HttpFault;
     use crate::worker_pool::{
         DefaultModelResolution, ModelSelection, ProfileRequirement, ReferenceForm,
@@ -1214,7 +1077,7 @@ mod tests {
 
     use super::{
         DrainState, EventKind, SetupTermination, is_speech_setup_event, parse_event_kind,
-        parse_speech_config, realtime_model, setup_until, speech_requirement, validate_upgrade,
+        parse_speech_config, realtime_model, setup_until, speech_requirement,
         websocket_message_too_large,
     };
 
@@ -1415,7 +1278,9 @@ mod tests {
             realtime_model(&absent, || DefaultModelResolution::Unique("common")),
             Ok(String::from("common"))
         );
-        for query in ["model=a&model=b", "model=", "model=%", "model=%FF"] {
+        assert_eq!(explicit("model=%"), Ok(String::from("%")));
+        assert_eq!(explicit("model=%FF"), Ok(String::from("�")));
+        for query in ["model=a&model=b", "model="] {
             assert_eq!(explicit(query), Err(HttpFault::MalformedRequest));
         }
     }
@@ -1449,44 +1314,5 @@ mod tests {
             },
         ));
         assert!(websocket_message_too_large(&error));
-    }
-
-    #[test]
-    fn handshake_tokens_are_exact_not_axum_substrings() {
-        let uri: Uri = "/v1/realtime".parse().expect("valid route URI");
-        let policy = WebsocketConfig::default();
-        let mut headers = HeaderMap::new();
-        headers.insert(CONNECTION, HeaderValue::from_static("keep-alive, Upgrade"));
-        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
-        assert!(
-            validate_upgrade(Version::HTTP_11, &uri, &headers, "/v1/realtime", &policy).is_ok()
-        );
-
-        let origin = HeaderValue::from_static("https://Client.Example:8443");
-        headers.insert("origin", origin.clone());
-        let validated = validate_upgrade(Version::HTTP_11, &uri, &headers, "/v1/realtime", &policy)
-            .expect("valid upgrade")
-            .expect("validated origin");
-        assert_eq!(validated.as_bytes(), origin.as_bytes());
-
-        headers.insert(
-            "origin",
-            HeaderValue::from_static("https://client.example?tenant=one"),
-        );
-        assert!(
-            validate_upgrade(Version::HTTP_11, &uri, &headers, "/v1/realtime", &policy).is_err()
-        );
-        headers.remove("origin");
-
-        headers.insert(CONNECTION, HeaderValue::from_static("xupgrade"));
-        assert!(
-            validate_upgrade(Version::HTTP_11, &uri, &headers, "/v1/realtime", &policy).is_err()
-        );
-
-        headers.insert(CONNECTION, HeaderValue::from_static("upgrade"));
-        headers.append(UPGRADE, HeaderValue::from_static("websocket"));
-        assert!(
-            validate_upgrade(Version::HTTP_11, &uri, &headers, "/v1/realtime", &policy).is_err()
-        );
     }
 }

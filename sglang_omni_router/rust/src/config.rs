@@ -22,15 +22,6 @@ const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 30_000;
 const SCHEMA_VERSION: u32 = 1;
 const MAX_GLOBAL_ADMISSION: u32 = 1_000_000;
 const MAX_CLASS_ADMISSION: u32 = 65_535;
-const MAX_WS_URI_BYTES: usize = 2_048;
-const MAX_WS_HEADER_FIELDS: usize = 64;
-const MAX_WS_HEADER_BYTES: usize = 32 * 1_024;
-const MAX_WS_FRAME_BYTES: usize = 16 * 1_024 * 1_024;
-const MAX_WS_WORKER_MESSAGE_BYTES: usize = 64 * 1_024 * 1_024;
-const MAX_WS_SPEECH_CONFIG_BYTES: usize = 15_029_592;
-const MAX_WS_SPEECH_MESSAGE_BYTES: usize = 131_072;
-const MAX_WS_REALTIME_MESSAGE_BYTES: usize = 16 * 1_024 * 1_024;
-const DEFAULT_WS_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_WS_SETUP_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_WS_SPEECH_CONFIG_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_WS_CLOSE_TIMEOUT_MS: u64 = 5_000;
@@ -63,15 +54,6 @@ pub struct Config {
 pub(crate) struct WebsocketConfig {
     pub(crate) speech: Option<WebsocketRouteConfig>,
     pub(crate) realtime: Option<WebsocketRouteConfig>,
-    pub(crate) uri_max_bytes: usize,
-    pub(crate) header_max_fields: usize,
-    pub(crate) header_max_bytes: usize,
-    pub(crate) frame_max_bytes: usize,
-    pub(crate) worker_message_max_bytes: usize,
-    pub(crate) speech_config_max_bytes: usize,
-    pub(crate) speech_message_max_bytes: usize,
-    pub(crate) realtime_message_max_bytes: usize,
-    connect_timeout_ms: u64,
     setup_timeout_ms: u64,
     speech_config_timeout_ms: u64,
     close_timeout_ms: u64,
@@ -88,15 +70,6 @@ impl Default for WebsocketConfig {
         Self {
             speech: None,
             realtime: None,
-            uri_max_bytes: MAX_WS_URI_BYTES,
-            header_max_fields: MAX_WS_HEADER_FIELDS,
-            header_max_bytes: MAX_WS_HEADER_BYTES,
-            frame_max_bytes: MAX_WS_FRAME_BYTES,
-            worker_message_max_bytes: MAX_WS_WORKER_MESSAGE_BYTES,
-            speech_config_max_bytes: MAX_WS_SPEECH_CONFIG_BYTES,
-            speech_message_max_bytes: MAX_WS_SPEECH_MESSAGE_BYTES,
-            realtime_message_max_bytes: MAX_WS_REALTIME_MESSAGE_BYTES,
-            connect_timeout_ms: DEFAULT_WS_CONNECT_TIMEOUT_MS,
             setup_timeout_ms: DEFAULT_WS_SETUP_TIMEOUT_MS,
             speech_config_timeout_ms: DEFAULT_WS_SPEECH_CONFIG_TIMEOUT_MS,
             close_timeout_ms: DEFAULT_WS_CLOSE_TIMEOUT_MS,
@@ -105,10 +78,6 @@ impl Default for WebsocketConfig {
 }
 
 impl WebsocketConfig {
-    pub(crate) const fn connect_timeout(&self) -> Duration {
-        Duration::from_millis(self.connect_timeout_ms)
-    }
-
     pub(crate) const fn setup_timeout(&self) -> Duration {
         Duration::from_millis(self.setup_timeout_ms)
     }
@@ -555,67 +524,7 @@ impl Config {
                 "must enable speech or realtime",
             ));
         }
-        for (field, value, maximum) in [
-            (
-                "websocket.uri_max_bytes",
-                websocket.uri_max_bytes,
-                MAX_WS_URI_BYTES,
-            ),
-            (
-                "websocket.header_max_fields",
-                websocket.header_max_fields,
-                MAX_WS_HEADER_FIELDS,
-            ),
-            (
-                "websocket.header_max_bytes",
-                websocket.header_max_bytes,
-                MAX_WS_HEADER_BYTES,
-            ),
-            (
-                "websocket.frame_max_bytes",
-                websocket.frame_max_bytes,
-                MAX_WS_FRAME_BYTES,
-            ),
-            (
-                "websocket.worker_message_max_bytes",
-                websocket.worker_message_max_bytes,
-                MAX_WS_WORKER_MESSAGE_BYTES,
-            ),
-            (
-                "websocket.speech_config_max_bytes",
-                websocket.speech_config_max_bytes,
-                MAX_WS_SPEECH_CONFIG_BYTES,
-            ),
-            (
-                "websocket.speech_message_max_bytes",
-                websocket.speech_message_max_bytes,
-                MAX_WS_SPEECH_MESSAGE_BYTES,
-            ),
-            (
-                "websocket.realtime_message_max_bytes",
-                websocket.realtime_message_max_bytes,
-                MAX_WS_REALTIME_MESSAGE_BYTES,
-            ),
-        ] {
-            if value == 0 || value > maximum {
-                return Err(ConfigError::invalid(
-                    field,
-                    "must be positive and not exceed the accepted maximum",
-                ));
-            }
-        }
-        if websocket.frame_max_bytes > websocket.worker_message_max_bytes
-            || websocket.frame_max_bytes > websocket.realtime_message_max_bytes
-            || websocket.speech_message_max_bytes > websocket.worker_message_max_bytes
-            || websocket.speech_config_max_bytes > websocket.worker_message_max_bytes
-        {
-            return Err(ConfigError::invalid(
-                "websocket",
-                "message limits must contain their frame or route limits",
-            ));
-        }
         for (field, value) in [
-            ("websocket.connect_timeout_ms", websocket.connect_timeout_ms),
             ("websocket.setup_timeout_ms", websocket.setup_timeout_ms),
             (
                 "websocket.speech_config_timeout_ms",
