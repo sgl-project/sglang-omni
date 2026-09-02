@@ -72,6 +72,30 @@ def test_parser_selection_rejects_an_operator_selected_parser() -> None:
         select_moss_tts_nano_model_config_parser({"model_config_parser": "hf"})
 
 
+def test_engine_builder_selects_parser_before_resolving_context(monkeypatch) -> None:
+    pytest.importorskip("sglang")
+    from sglang_omni.models.moss_tts import hf_loading
+    from sglang_omni.models.moss_tts_nano.engine_builder import MossTtsNanoEngineBuilder
+
+    def fake_get_config(model_path: str, **kwargs: object) -> PretrainedConfig:
+        assert model_path == "model"
+        assert kwargs["model_config_parser"] == MOSS_TTS_NANO_MODEL_CONFIG_PARSER
+        config = PretrainedConfig()
+        config.model_type = "moss_tts_nano"
+        config.gpt2_config = GPT2Config(n_positions=32768)
+        return adapt_moss_tts_nano_hf_config(config)
+
+    monkeypatch.setattr(hf_loading, "get_config", fake_get_config)
+    builder = MossTtsNanoEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+
+    assert builder.resolve_context_length("model") == 32768
+
+
 def test_model_worker_registers_nano_parser_before_model_config(monkeypatch) -> None:
     platforms_module = ModuleType("sglang_omni.platforms")
     platforms_module.current_platform = SimpleNamespace()

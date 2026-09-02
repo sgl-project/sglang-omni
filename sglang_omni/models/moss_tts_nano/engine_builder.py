@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Mapping
 from typing import Any
 
 from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
@@ -17,6 +18,19 @@ class MossTtsNanoEngineBuilder(MossTtsLocalEngineBuilder):
     model_name = "MOSS-TTS-Nano"
     context_length = 32768
     model_arch_override = "MossTTSNanoSGLangModel"
+
+    def resolve_context_length(
+        self,
+        checkpoint_dir: str,
+        *,
+        server_args_overrides: Mapping[str, Any] | None = None,
+    ) -> int:
+        overrides = dict(server_args_overrides or {})
+        select_moss_tts_nano_model_config_parser(overrides)
+        return super().resolve_context_length(
+            checkpoint_dir,
+            server_args_overrides=overrides,
+        )
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         super().adjust_overrides(overrides)
