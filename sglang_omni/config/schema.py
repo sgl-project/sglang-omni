@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -37,6 +39,41 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 
 logger = logging.getLogger(__name__)
+
+MAX_SPEECH_INPUT_CHARS: int = 4096
+
+
+def parse_memory_bytes(field_name: str, value: int | str | None) -> int | None:
+    """Parse a byte count given as an int or an exact binary-size string."""
+
+    format_error = (
+        f"{field_name} must be a positive integer byte count or an "
+        "exact binary-size string ending in KiB, MiB, GiB, or TiB"
+    )
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(format_error)
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"{field_name} must be positive")
+        return value
+    if not isinstance(value, str):
+        raise ValueError(format_error)
+
+    match = re.fullmatch(r"([0-9]+)(KiB|MiB|GiB|TiB)", value)
+    if match is None:
+        raise ValueError(format_error)
+    quantity = int(match.group(1))
+    if quantity <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    unit_multipliers = {
+        "KiB": 1024,
+        "MiB": 1024**2,
+        "GiB": 1024**3,
+        "TiB": 1024**4,
+    }
+    return quantity * unit_multipliers[match.group(2)]
 
 
 class CommConfig(BaseModel):
@@ -88,10 +125,39 @@ class EngineArgs(BaseModel):
     cpu_offload_gb: int | None = Field(default=None, ge=0)
     quantization: str | None = Field(default=None, min_length=1)
     disable_custom_all_reduce: bool | None = None
+    kv_cache_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Authoritative KV pool size in bytes, per rank; accepts an int or "
+            "an exact binary-size string such as 2GiB. Consumed by the omni "
+            "KV configurator, never forwarded to SGLang ServerArgs."
+        ),
+    )
+
+    _NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
+
+    @field_validator("kv_cache_bytes", mode="before")
+    @classmethod
+    def _parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
+        return parse_memory_bytes("engine.kv_cache_bytes", value)
 
     def model_post_init(self, __context: Any = None) -> None:
         if self.quantization is not None and not self.quantization.strip():
             raise ValueError("engine.quantization must not be empty")
+        if self.kv_cache_bytes is not None and self.mem_fraction_static is not None:
+            raise ValueError(
+                "engine.kv_cache_bytes cannot be set together with "
+                "engine.mem_fraction_static; if the fraction comes from the "
+                "pipeline's built-in defaults, set mem_fraction_static: null "
+                "on the same stage"
+            )
+        if self.kv_cache_bytes is not None and self.max_total_tokens is not None:
+            raise ValueError(
+                "engine.kv_cache_bytes cannot be set together with "
+                "engine.max_total_tokens; both pin the generation stage's KV "
+                "capacity, and the lower token cap silently shrinks the "
+                "byte-derived pool"
+            )
 
     def overrides(self) -> dict[str, Any]:
         """Return the keys set on this block, declared and free-form alike.
@@ -104,7 +170,7 @@ class EngineArgs(BaseModel):
         return {
             key: value
             for key, value in self.model_dump().items()
-            if value is not None or key in extra
+            if (value is not None or key in extra) and key not in self._NON_SERVER_KEYS
         }
 
 
@@ -273,6 +339,25 @@ class StageConfig(BaseModel):
             "that process's budget."
         ),
     )
+    total_reserve_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Per-replica total physical VRAM budget in bytes (weights, KV, "
+            "activations); accepts an int or an exact binary-size string. "
+            "Drives placement capacity checks and MPS preflight arithmetic, "
+            "and unless enforce_total_reserve is false it is enforced at "
+            "stage startup through a per-process torch allocator cap, so a "
+            "stage that outgrows its budget fails itself instead of a "
+            "co-tenant. The cap bounds torch allocations only; declared "
+            "budgets need headroom above the measured model footprint."
+        ),
+    )
+    enforce_total_reserve: bool = True
+
+    @field_validator("total_reserve_bytes", mode="before")
+    @classmethod
+    def _parse_total_reserve_bytes(cls, value: int | str | None) -> int | None:
+        return parse_memory_bytes("total_reserve_bytes", value)
 
     # --- Consumer groups ---
     engine: EngineArgs | None = None
@@ -327,6 +412,26 @@ class StageConfig(BaseModel):
                 f"Stage {self.name!r} is not an engine stage; the engine block "
                 "only exists on stages whose factory drives an SGLang engine"
             )
+        if (
+            self.total_reserve_bytes is not None
+            and self.gpu_memory_fraction is not None
+        ):
+            raise ValueError(
+                f"Stage {self.name!r}: total_reserve_bytes and "
+                "gpu_memory_fraction declare the same budget in two units; "
+                "keep exactly one (set the other to null if it comes from the "
+                "pipeline's built-in defaults)"
+            )
+        kv = self.engine.kv_cache_bytes if self.engine is not None else None
+        if (
+            kv is not None
+            and self.total_reserve_bytes is not None
+            and kv > self.total_reserve_bytes
+        ):
+            raise ValueError(
+                f"Stage {self.name!r}: engine.kv_cache_bytes must not exceed "
+                "total_reserve_bytes"
+            )
 
         gpu = self.gpu
         if gpu is None:
@@ -357,39 +462,32 @@ class EngineStageConfig(StageConfig):
 
 
 class AudioChunkingConfig(BaseModel):
-    """Per-model long-audio policy for the transcription endpoint.
+    """Operator-tunable scheduling policy for long-audio transcription.
 
-    Each ASR model declares the longest clip it can take in one request; anything
-    longer gets split into non-overlapping chunks. Models may opt into ordered
-    previous-text conditioning; otherwise chunks are transcribed independently.
+    These are the knobs a deployment may set (YAML or dotted CLI overrides).
+    The model-owned side of the contract -- whether chunking is allowed at
+    all, the native clip limit, the tail floor -- lives on PipelineConfig
+    ClassVars, out of reach of configuration.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # Some models can't correctly transcribe an isolated chunk (e.g. diarization needs to track speakers across the whole
-    # recording), so we leave the default value of `allow_audio_chunking` = False.
-    allow_audio_chunking: bool = False
     # Note (Jeffro): Longest clip (chunk length) sent to the engine in one request.
     # Must stay within what the model's context can hold (Qwen3-ASR sizes its
     # context for the official 1,200s native limit); below that ceiling it
     # is a scheduling trade-off: shorter chunks batch better and keep a
     # long upload from monopolizing the engine, at the cost of more seams.
-    max_audio_clip_s: float = Field(default=60.0, gt=0)
+    max_audio_clip_s: float = Field(default=30.0, gt=0)
 
-    max_native_clip_s: float | None = Field(default=None, gt=0)
-
+    # Memory guard for the whole upload: the decoded waveform stays resident
+    # while its chunks run.
     max_total_audio_s: float | None = Field(default=3600.0, gt=0)
-
-    # Shortest final chunk worth transcribing.
-    min_tail_s: float = Field(default=0.5, ge=0)
 
     # Note (Jeffro): How many chunks of one HTTP request may run in the engine at once.
     # This is a fairness cap: to avoid a single long
     # upload grabs every batch slot and queues out everyone else's requests.
     # This is a pre-request cap.
     max_concurrent_chunks: int = Field(default=8, ge=1)
-
-    condition_on_previous_text: bool = False
 
     def model_post_init(self, __context: Any = None) -> None:
         if (
@@ -400,14 +498,26 @@ class AudioChunkingConfig(BaseModel):
                 f"max_total_audio_s={self.max_total_audio_s} must be at least "
                 f"max_audio_clip_s={self.max_audio_clip_s}"
             )
-        if (
-            self.max_native_clip_s is not None
-            and self.max_native_clip_s < self.max_audio_clip_s
-        ):
-            raise ValueError(
-                f"max_native_clip_s={self.max_native_clip_s} must be at least "
-                f"max_audio_clip_s={self.max_audio_clip_s}"
-            )
+
+
+@dataclass(frozen=True)
+class ResolvedAudioChunking:
+    """The merged long-audio contract the transcription handlers consume.
+
+    Built by PipelineConfig.resolved_audio_chunking from the model's ClassVars and the operator policy.
+    """
+
+    allow_audio_chunking: bool = False
+    max_audio_clip_s: float = 30.0
+    max_native_clip_s: float | None = None
+    max_total_audio_s: float | None = 3600.0
+    min_tail_s: float = 0.5
+    max_concurrent_chunks: int = 8
+    condition_on_previous_text: bool = False
+
+    @classmethod
+    def disabled(cls) -> "ResolvedAudioChunking":
+        return cls()
 
     @property
     def stream_clip_limit_s(self) -> float:
@@ -440,7 +550,20 @@ class PipelineConfig(BaseModel):
     speech_reference_text_required: ClassVar[bool] = False
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
-    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig()
+
+    # Note (Jeffro): the model-owned parameters of the long-audio transcription
+    # contract. Chunking stays off by default: some models can't correctly
+    # transcribe an isolated chunk (e.g. diarization tracks speakers across the
+    # whole recording).
+    allow_audio_chunking: ClassVar[bool] = (
+        False  # Whether the model can correctly transcribe an isolated chunk.
+    )
+    max_native_clip_s: ClassVar[float | None] = None
+    min_tail_s: ClassVar[float] = 0.5  # Shortest final chunk worth transcribing.
+    condition_on_previous_text: ClassVar[bool] = (
+        False  # Whether the model can condition on the previous text.
+    )
+    max_speech_input_chars: ClassVar[int | None] = MAX_SPEECH_INPUT_CHARS
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {}
     """Stage name -> ``StageConfig`` subclass for this pipeline's stage types.
@@ -454,6 +577,7 @@ class PipelineConfig(BaseModel):
     """
 
     model_path: str
+    audio_chunking: AudioChunkingConfig = Field(default_factory=AudioChunkingConfig)
     stages: list[StageConfig]
     name: str | None = None
     entry_stage: str | None = None
@@ -501,9 +625,39 @@ class PipelineConfig(BaseModel):
     def model_post_init(self, __context: Any = None) -> None:
         self._validate_general()
         self._validate_processes()
+
+        native = type(self).max_native_clip_s
+        if native is not None and self.audio_chunking.max_audio_clip_s > native:
+            raise ValueError(
+                f"audio_chunking.max_audio_clip_s="
+                f"{self.audio_chunking.max_audio_clip_s:g} must not exceed "
+                f"the model's native clip limit ({native:g}s)"
+            )
+
+        if self.audio_chunking.max_audio_clip_s < type(self).min_tail_s:
+            raise ValueError(
+                f"audio_chunking.max_audio_clip_s="
+                f"{self.audio_chunking.max_audio_clip_s:g} must be at least "
+                f"the model's minimum useful clip length "
+                f"({type(self).min_tail_s:g}s)"
+            )
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
+
+    @property
+    def resolved_audio_chunking(self) -> ResolvedAudioChunking:
+        """The merged long-audio contract: model ClassVars + operator policy."""
+        cls = type(self)
+        return ResolvedAudioChunking(
+            allow_audio_chunking=cls.allow_audio_chunking,
+            max_audio_clip_s=self.audio_chunking.max_audio_clip_s,
+            max_native_clip_s=cls.max_native_clip_s,
+            max_total_audio_s=self.audio_chunking.max_total_audio_s,
+            min_tail_s=cls.min_tail_s,
+            max_concurrent_chunks=self.audio_chunking.max_concurrent_chunks,
+            condition_on_previous_text=cls.condition_on_previous_text,
+        )
 
     @classmethod
     def stage_config_cls(cls, stage_name: str) -> type[StageConfig]:

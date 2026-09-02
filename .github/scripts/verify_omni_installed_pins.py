@@ -3,26 +3,53 @@
 
 from __future__ import annotations
 
-import re
 import sys
 import tomllib
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-_EXACT_PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([^,\s]+)")
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
 
 
-def _exact_pins(pyproject_path: Path) -> dict[str, str]:
+def _exact_pins(
+    pyproject_path: Path,
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return exact pins whose PEP 508 markers match this interpreter.
+
+    A project can declare different exact versions for different platforms.
+    Parsing the complete requirement (rather than regexing the raw string)
+    avoids both treating the marker's semicolon as part of the version and
+    accidentally letting an inactive platform overwrite the active pin.
+    """
     data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    marker_environment = dict(default_environment())
+    if environment is not None:
+        marker_environment.update(environment)
+
     pins: dict[str, str] = {}
-    for spec in data.get("project", {}).get("dependencies", []):
-        match = _EXACT_PIN.match(spec.strip())
-        if match is not None:
-            pins[match.group(1).lower()] = match.group(2)
-    for spec in data.get("tool", {}).get("uv", {}).get("override-dependencies", []):
-        match = _EXACT_PIN.match(spec.strip())
-        if match is not None:
-            pins[match.group(1).lower()] = match.group(2)
+    project_requirements = data.get("project", {}).get("dependencies", [])
+    override_requirements = (
+        data.get("tool", {}).get("uv", {}).get("override-dependencies", [])
+    )
+    # Keep uv's existing precedence: an active override intentionally wins over
+    # the corresponding project dependency.
+    for raw_spec in [*project_requirements, *override_requirements]:
+        requirement = Requirement(raw_spec.strip())
+        if requirement.marker is not None and not requirement.marker.evaluate(
+            marker_environment
+        ):
+            continue
+        exact_versions = [
+            specifier.version
+            for specifier in requirement.specifier
+            if specifier.operator == "==" and not specifier.version.endswith(".*")
+        ]
+        if len(exact_versions) != 1:
+            continue
+        pins[requirement.name.lower()] = exact_versions[0]
     return pins
 
 

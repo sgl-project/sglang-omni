@@ -91,8 +91,8 @@ enable_deterministic_inference: true
 
 When enabled, the same prompt, reference audio, and seed produce byte-identical
 PCM across runtime batch sizes. This mode reduces throughput because it
-serializes reference preprocessing and vocoder decoding and disables Talker
-compilation and the initial vocoder CUDA Graph, so it is disabled by default.
+serializes reference preprocessing and vocoder decoding and disables both the
+initial and follow-up vocoder CUDA Graphs, so it is disabled by default.
 
 ### Overload / admission policy
 
@@ -261,6 +261,36 @@ codec frames for the first vocoder chunk so concurrent streams stay continuous.
 Pass a smaller value only when trading continuity for lower time-to-first-audio.
 Utterances that finish in fewer than `8` generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
+
+#### First-audio chunk ramp
+
+For latency-sensitive deployments the whole early chunk schedule can be
+configured server-side with `stream_chunk_ramp` on the vocoder stage: entry
+`i` sizes streaming decode chunk `i + 1` in codec frames, and past the ramp
+the steady stride takes over, so `[2, 4, 8]` yields a
+`2 -> 4 -> 8 -> 8 -> ...` schedule. Set it through a pipeline config file:
+
+```yaml
+config_cls: Qwen3TTSPipelineConfig
+model_path: Qwen/Qwen3-TTS-12Hz-0.6B-Base
+stages:
+  vocoder:
+    factory:
+      stream_chunk_ramp: [2, 4, 8]
+```
+
+```bash
+python -m sglang_omni.cli serve --config qwen3_tts_ramp.yaml
+```
+
+Smaller early chunks lower time-to-first-audio but start playback with less
+buffered audio, so the continuity cost grows with concurrency: keep
+`[2, 4, 8]` to low concurrency, prefer `[4, 8]` up to moderate concurrency,
+and keep the default schedule for saturated serving. The ramp is mutually
+exclusive with the legacy `initial_chunk_frames` /
+`stream_initial_followup_stride` options, its first entry must not exceed the
+steady stride, and a per-request `initial_codec_chunk_frames` still overrides
+only the first chunk.
 
 ## Generation Parameters
 

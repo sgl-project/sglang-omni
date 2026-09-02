@@ -389,6 +389,18 @@ def _render_missing_fraction_stages(
     return ", ".join(rendered)
 
 
+def _stage_lacks_declared_memory_budget(stage: StageConfig) -> bool:
+    """True when a stage does not declare its total GPU footprint.
+
+    Colocation needs each stage on a shared GPU to declare how much of the card
+    it intends to use in total. ``gpu_memory_fraction`` states that directly;
+    on the byte path only ``total_reserve_bytes`` does, because
+    ``engine.kv_cache_bytes`` covers the KV pool alone and says nothing about
+    weights, activations, or graphs.
+    """
+    return stage.gpu_memory_fraction is None and stage.total_reserve_bytes is None
+
+
 def _validate_gpu_process_colocation(
     config: PipelineConfig,
     gpu_placement: StagePlacementPlan,
@@ -420,7 +432,7 @@ def _validate_gpu_process_colocation(
         gpu_processes[gpu_id].add(process_name)
         if stage.name in replica_device_stage_names:
             replica_gpus.add(gpu_id)
-        if stage.gpu_memory_fraction is None:
+        if _stage_lacks_declared_memory_budget(stage):
             missing_fraction[gpu_id].add(stage.name)
 
     for group in topology_plan.groups:
@@ -452,8 +464,8 @@ def _validate_gpu_process_colocation(
                 else "is shared by multiple process groups"
             )
             raise ValueError(
-                f"GPU {gpu_id} {sharing} without "
-                "gpu_memory_fraction: "
+                f"GPU {gpu_id} {sharing} without a declared total "
+                "footprint (gpu_memory_fraction or total_reserve_bytes): "
                 f"{_render_missing_fraction_stages(missing, gpu_placement)}"
             )
         total = gpu_placement.gpus[gpu_id].total_gpu_memory_fraction

@@ -17,7 +17,6 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     preprocess_qwen3_tts_payload,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
-    DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES,
     DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
@@ -103,24 +102,6 @@ def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _compile_qwen3_tts_backbone(model: Any) -> None:
-    """Compile decoder blocks while leaving decode-input staging eager."""
-
-    text_model = model.model
-    layers = text_model.layers
-
-    from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
-
-    set_torch_compile_config()
-    compile_mode = os.environ.get(
-        "SGLANG_TORCH_COMPILE_MODE",
-        "max-autotune-no-cudagraphs",
-    )
-    text_model._compiled_decode_layers = [
-        torch.compile(layer, mode=compile_mode) for layer in layers
-    ]
-
-
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -175,7 +156,8 @@ def create_vocoder_executor(
     stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     stream_initial_followup_stride: int | None = None,
-    initial_chunk_frames: int = DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES,
+    initial_chunk_frames: int | None = None,
+    stream_chunk_ramp: tuple[int, ...] | list[int] | None = None,
     stream_left_context_frames: int = DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     initial_max_batch_size: int = 32,
     initial_batch_wait_ms: int = 2,
@@ -184,6 +166,7 @@ def create_vocoder_executor(
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
+    enable_stateful_codec_decoder: bool = False,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
     tokenizer = _load_qwen3_tts_tokenizer(
@@ -200,6 +183,7 @@ def create_vocoder_executor(
         stream_followup_stride=stream_followup_stride,
         stream_initial_followup_stride=stream_initial_followup_stride,
         initial_chunk_frames=initial_chunk_frames,
+        stream_chunk_ramp=stream_chunk_ramp,
         stream_left_context_frames=stream_left_context_frames,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
@@ -210,6 +194,7 @@ def create_vocoder_executor(
         initial_cuda_graph=initial_cuda_graph,
         enable_deterministic_inference=enable_deterministic_inference,
         followup_cuda_graph=followup_cuda_graph,
+        enable_stateful_codec_decoder=enable_stateful_codec_decoder,
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work

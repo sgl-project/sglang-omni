@@ -43,3 +43,19 @@ matching `torch` and `torch_npu` major-minor versions, NPU availability, and a
 small NPU matrix multiplication. Run `bash scripts/npu/install_npu.sh --help`
 for optional extras, non-editable installation, and environments where devices
 are intentionally not exposed during the build.
+
+## Torcodec installation for TTS models
+
+Models in the TTS models utilize **`torchcodec`** for high-efficiency, native-streaming audio decoding directly into PyTorch tensors.
+
+The helper script `scripts/npu/install_npu_torchcodec.sh` automatically installs:
+* **Audio codec:** `ffmpeg`
+* **CANN 9.1.0 stack:** `toolkit`, `A3-ops`, `nnal`
+* **PyTorch 2.11 stack:** `torch`, `torchvision`, `torchaudio`, `torch_npu`, `torchcodec`
+
+To run the installation:
+
+```bash
+# Specify your device type as the first argument (910b or A3)
+bash scripts/npu/install_npu_torchcodec.sh A3
+```

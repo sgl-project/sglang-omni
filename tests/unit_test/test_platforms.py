@@ -144,3 +144,26 @@ def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     assert platform.get_stage_process_env(spec, {"ZE_AFFINITY_MASK": "0,1"}) == {
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"
     }
+
+
+def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
+    backend = xpu_platform.XPUOmniPlatform().get_decode_cuda_graph_backend()
+
+    # ServerArgs takes this as a config string, so the hook owes a plain str.
+    assert backend == "full"
+    assert type(backend) is str
+    # Other platforms keep SGLang's own device default.
+    assert OmniPlatform().get_decode_cuda_graph_backend() is None
+    assert CPUOmniPlatform().get_decode_cuda_graph_backend() is None
+
+
+def test_xpu_keeps_the_qwen3_omni_talker_decode_eager() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is False
+    assert OmniPlatform().enable_talker_graph() is True
+    assert CPUOmniPlatform().enable_talker_graph() is True
+
+
+def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
+    assert OmniPlatform().enable_thinker_decode_graph() is True
+    assert CPUOmniPlatform().enable_thinker_decode_graph() is True

@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from sglang_omni.client import Client, ClientError, GenerateRequest
-from sglang_omni.config import AudioChunkingConfig
+from sglang_omni.config import ResolvedAudioChunking
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import TranscriptionResponse, TranscriptionUsage
@@ -85,7 +85,7 @@ def register_transcriptions(app: FastAPI) -> None:
             form.file
         )
 
-        chunking: AudioChunkingConfig = app.state.audio_chunking
+        chunking: ResolvedAudioChunking = app.state.audio_chunking
 
         if form.stream:
             speech_to_text.validate_speech_to_text_response_format(
@@ -99,13 +99,20 @@ def register_transcriptions(app: FastAPI) -> None:
                 chunking.allow_audio_chunking
                 and duration_s > chunking.stream_clip_limit_s
             ):
+                if (
+                    chunking.max_total_audio_s is not None
+                    and chunking.max_total_audio_s <= chunking.stream_clip_limit_s
+                ):
+                    recovery = "use a shorter audio file"
+                else:
+                    recovery = (
+                        "use stream=false, which transcribes long audio in chunks"
+                    )
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         "stream=true does not support audio longer than "
-                        f"{chunking.stream_clip_limit_s:g} seconds; "
-                        "use stream=false, which transcribes long audio in "
-                        "chunks"
+                        f"{chunking.stream_clip_limit_s:g} seconds; {recovery}"
                     ),
                 )
             gen_req = speech_to_text.build_speech_to_text_generate_request(

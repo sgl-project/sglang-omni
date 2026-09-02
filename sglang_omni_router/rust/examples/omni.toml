@@ -1,0 +1,68 @@
+# Two replicas serving multimodal chat and audio output.
+schema_version = 1
+
+[server]
+listen = "0.0.0.0:30000"
+max_connections = 1024
+
+[shutdown]
+drain_timeout_ms = 30000
+
+[logging]
+format = "json"
+filter = "info"
+
+[router]
+strategy = "round_robin"
+
+[admission]
+global = 128
+generation_http = 64
+
+[health]
+interval_ms = 5000
+timeout_ms = 5000
+success_threshold = 2
+failure_threshold = 3
+
+[http_generation]
+trust_domain = "local"
+streamed_request_max_bytes = 536870912
+connect_timeout_ms = 5000
+request_timeout_ms = 1800000
+pool_idle_timeout_ms = 90000
+pool_max_idle_per_host = 8
+
+[[workers]]
+worker_id = "omni-1"
+base_url = "http://127.0.0.1:8000/"
+trust_domain = "local"
+default_model_id = "omni-model"
+health_path = "/health"
+
+[[workers.service_profiles]]
+service = "generation_http"
+model_ids = ["omni-model"]
+message_content_forms = ["string", "typed_parts"]
+media_placements = ["top_level", "typed_parts"]
+input_modalities = ["text", "image", "audio", "video"]
+output_modalities = ["text", "audio"]
+chat_audio_formats = ["wav", "mp3", "flac", "pcm", "aac", "opus"]
+stream_modes = ["non_streaming", "streaming"]
+
+[[workers]]
+worker_id = "omni-2"
+base_url = "http://127.0.0.1:8001/"
+trust_domain = "local"
+default_model_id = "omni-model"
+health_path = "/health"
+
+[[workers.service_profiles]]
+service = "generation_http"
+model_ids = ["omni-model"]
+message_content_forms = ["string", "typed_parts"]
+media_placements = ["top_level", "typed_parts"]
+input_modalities = ["text", "image", "audio", "video"]
+output_modalities = ["text", "audio"]
+chat_audio_formats = ["wav", "mp3", "flac", "pcm", "aac", "opus"]
+stream_modes = ["non_streaming", "streaming"]

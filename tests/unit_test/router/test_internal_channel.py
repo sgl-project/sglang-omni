@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from sglang_omni_router.internal_channel import (
+from sglang_omni_router.python.internal_channel import (
     INTERNAL_TOKEN_HEADER,
     InternalChannelState,
     create_internal_app,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from sglang_omni.config import AudioChunkingConfig
+from sglang_omni.config import AudioChunkingConfig, ResolvedAudioChunking
 from sglang_omni.serve import transcription_chunking
 from sglang_omni.serve.transcription_chunking import (
     RMSSplitter,
@@ -17,7 +17,7 @@ from sglang_omni.serve.transcription_chunking import (
 )
 from sglang_omni.utils.audio import load_audio
 
-_ENABLED = AudioChunkingConfig(allow_audio_chunking=True, max_audio_clip_s=60.0)
+_ENABLED = ResolvedAudioChunking(allow_audio_chunking=True, max_audio_clip_s=60.0)
 
 _SAMPLE_RATE = 16000
 _ENERGY_WINDOW = 1600  # 100ms at 16 kHz
@@ -69,29 +69,98 @@ def _silence(num_samples: int) -> np.ndarray:
 
 
 def test_pipeline_config_leaves_chunking_off_by_default() -> None:
-    from sglang_omni.config import PipelineConfig
+    from sglang_omni.config import PipelineConfig, StageConfig
 
-    assert PipelineConfig.audio_chunking.allow_audio_chunking is False
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            StageConfig(
+                name="asr", factory_path="pkg.make_stage", process="asr", terminal=True
+            )
+        ],
+    )
+    assert config.resolved_audio_chunking.allow_audio_chunking is False
 
 
-def test_qwen3_asr_pipeline_declares_chunking() -> None:
+def test_qwen3_asr_pipeline_declaresResolvedAudioChunking(monkeypatch) -> None:
+    from sglang_omni.platforms import current_platform
+
+    # Keep this declaration test independent of the host backend. The Qwen
+    # Torch-MPS override is covered explicitly below.
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 
-    declared = Qwen3ASRPipelineConfig.audio_chunking
+    declared = Qwen3ASRPipelineConfig(model_path="dummy").resolved_audio_chunking
     assert declared.allow_audio_chunking is True
-    # 60s is a scheduling choice, not a context limit (the context is sized
+    # 30s is a scheduling choice, not a context limit (the context is sized
     # for the model's native 1,200s): short chunks batch well and keep one
     # long upload from monopolizing the engine.
-    assert declared.max_audio_clip_s == 60.0
+    assert declared.max_audio_clip_s == 30.0
     # The native limit feeds the streaming path, which cannot chunk and so
     # accepts single requests up to what the engine context fits.
     assert declared.max_native_clip_s == 1200.0
 
 
+def test_qwen3_asr_torch_mps_limits_runtime_audio_policy(monkeypatch) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: True)
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+
+    resolved = Qwen3ASRPipelineConfig(
+        model_path="Qwen/Qwen3-ASR-0.6B"
+    ).resolved_audio_chunking
+
+    assert resolved.max_audio_clip_s == 30.0
+    assert resolved.max_native_clip_s == 60.0
+    assert resolved.max_total_audio_s == 60.0
+
+
+def test_qwen3_asr_torch_mps_rejects_unsafe_chunk_length(monkeypatch) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: True)
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+
+    with pytest.raises(ValueError, match="up to 60s"):
+        Qwen3ASRPipelineConfig(
+            model_path="Qwen/Qwen3-ASR-0.6B",
+            audio_chunking=AudioChunkingConfig(max_audio_clip_s=60.1),
+        ).resolved_audio_chunking
+
+
+@pytest.mark.parametrize(("is_mps", "use_mlx"), [(False, False), (True, True)])
+def test_qwen3_asr_non_torch_mps_keeps_native_audio_policy(
+    monkeypatch, is_mps: bool, use_mlx: bool
+) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: is_mps)
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: use_mlx)
+
+    resolved = Qwen3ASRPipelineConfig(
+        model_path="Qwen/Qwen3-ASR-0.6B"
+    ).resolved_audio_chunking
+
+    assert resolved.max_audio_clip_s == 30.0
+    assert resolved.max_native_clip_s == 1200.0
+    assert resolved.max_total_audio_s == 3600.0
+
+
 def test_whisper_asr_pipeline_declares_chunking() -> None:
     from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 
-    declared = WhisperASRPipelineConfig.audio_chunking
+    declared = WhisperASRPipelineConfig(model_path="dummy").resolved_audio_chunking
     assert declared.allow_audio_chunking is True
     # For Whisper the chunk length IS the native limit: the feature extractor
     # truncates everything past its 30s mel window, so without chunking a
@@ -104,7 +173,7 @@ def test_whisper_asr_pipeline_declares_chunking() -> None:
 
 
 def test_disabled_config_never_chunks() -> None:
-    config = AudioChunkingConfig(max_audio_clip_s=60.0)
+    config = ResolvedAudioChunking()
 
     assert config.allow_audio_chunking is False
     assert needs_chunking(600.0, config) is False
@@ -126,25 +195,25 @@ def test_duration_past_the_clip_limit_is_chunked() -> None:
 
 def test_chunk_samples_floors_and_stays_positive() -> None:
     assert _ENABLED.chunk_samples(16000) == 960_000
-    assert AudioChunkingConfig(max_audio_clip_s=0.5).chunk_samples(16000) == 8000
+    assert ResolvedAudioChunking(max_audio_clip_s=0.5).chunk_samples(16000) == 8000
     # Rates so low that the product rounds to zero still yield one sample.
-    assert AudioChunkingConfig(max_audio_clip_s=0.5).chunk_samples(1) == 1
+    assert ResolvedAudioChunking(max_audio_clip_s=0.5).chunk_samples(1) == 1
 
 
 def test_total_duration_limit_can_be_disabled() -> None:
-    config = AudioChunkingConfig(allow_audio_chunking=True, max_total_audio_s=None)
+    config = ResolvedAudioChunking(allow_audio_chunking=True, max_total_audio_s=None)
 
     check_total_duration(100_000.0, config)
 
 
 def test_total_duration_at_the_limit_is_accepted() -> None:
-    config = AudioChunkingConfig(allow_audio_chunking=True, max_total_audio_s=3600.0)
+    config = ResolvedAudioChunking(allow_audio_chunking=True, max_total_audio_s=3600.0)
 
     check_total_duration(3600.0, config)
 
 
 def test_total_duration_past_the_limit_is_rejected() -> None:
-    config = AudioChunkingConfig(allow_audio_chunking=True, max_total_audio_s=3600.0)
+    config = ResolvedAudioChunking(allow_audio_chunking=True, max_total_audio_s=3600.0)
 
     with pytest.raises(ValueError) as exc_info:
         check_total_duration(3600.5, config)
@@ -161,16 +230,20 @@ def test_total_limit_below_clip_limit_is_rejected_at_config_time() -> None:
         AudioChunkingConfig(max_audio_clip_s=60.0, max_total_audio_s=30.0)
 
 
-def test_native_limit_below_clip_limit_is_rejected_at_config_time() -> None:
-    # Chunks are engine requests, so the chunk length must fit natively.
-    with pytest.raises(ValueError, match="max_native_clip_s"):
-        AudioChunkingConfig(max_audio_clip_s=60.0, max_native_clip_s=30.0)
+def test_clip_length_past_the_native_limit_is_rejected_at_config_time() -> None:
+    from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+
+    with pytest.raises(ValueError, match="native clip limit"):
+        WhisperASRPipelineConfig(
+            model_path="dummy",
+            audio_chunking=AudioChunkingConfig(max_audio_clip_s=60.0),
+        )
 
 
 def test_stream_clip_limit_falls_back_to_the_chunk_length() -> None:
-    assert AudioChunkingConfig(max_audio_clip_s=60.0).stream_clip_limit_s == 60.0
+    assert ResolvedAudioChunking(max_audio_clip_s=60.0).stream_clip_limit_s == 60.0
     assert (
-        AudioChunkingConfig(
+        ResolvedAudioChunking(
             max_audio_clip_s=60.0, max_native_clip_s=1200.0
         ).stream_clip_limit_s
         == 1200.0
@@ -183,8 +256,6 @@ def test_stream_clip_limit_falls_back_to_the_chunk_length() -> None:
         ("max_audio_clip_s", 0.0),
         ("max_audio_clip_s", -1.0),
         ("max_total_audio_s", 0.0),
-        ("max_native_clip_s", 0.0),
-        ("min_tail_s", -0.5),
     ],
 )
 def test_out_of_range_config_values_are_rejected(field: str, value: float) -> None:
@@ -344,7 +415,7 @@ def test_min_tail_shift_skips_degenerate_chunk_sizes() -> None:
     assert spans == [(index, index + 1) for index in range(10)]
 
 
-_PLAN_CONFIG = AudioChunkingConfig(allow_audio_chunking=True, max_audio_clip_s=1.0)
+_PLAN_CONFIG = ResolvedAudioChunking(allow_audio_chunking=True, max_audio_clip_s=1.0)
 _PLAN_SPLITTER = RMSSplitter(search_window_s=0.25)
 
 

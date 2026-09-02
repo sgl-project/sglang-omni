@@ -151,6 +151,8 @@ def resolve_stage_factory_arg_defaults(
     defaults["gpu_id"] = gpu_id
     if stage_cfg.gpu_memory_fraction is not None:
         defaults["total_gpu_memory_fraction"] = stage_cfg.gpu_memory_fraction
+
+    defaults["max_audio_clip_s"] = global_cfg.audio_chunking.max_audio_clip_s
     return defaults
 
 

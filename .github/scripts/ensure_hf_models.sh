@@ -66,10 +66,15 @@ def weights_ready(model_dir: Path) -> bool:
     )
 
 
-def hf_cache_snapshot(repo_id: str) -> Path | None:
+def hf_cache_snapshot(repo_id: str, revision: str | None) -> Path | None:
     try:
         snapshot = Path(
-            snapshot_download(repo_id, repo_type="model", local_files_only=True)
+            snapshot_download(
+                repo_id,
+                repo_type="model",
+                revision=revision,
+                local_files_only=True,
+            )
         )
     except Exception:
         return None
@@ -78,7 +83,7 @@ def hf_cache_snapshot(repo_id: str) -> Path | None:
     return snapshot
 
 
-def download_via_hf_hub(repo_id: str) -> Path:
+def download_via_hf_hub(repo_id: str, revision: str | None) -> Path:
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     endpoint = os.environ["HF_ENDPOINT"]
     print(f"Downloading model weights via Hugging Face Hub ({endpoint}): {repo_id}")
@@ -86,6 +91,7 @@ def download_via_hf_hub(repo_id: str) -> Path:
         snapshot_download(
             repo_id,
             repo_type="model",
+            revision=revision,
             token=token,
             endpoint=endpoint,
         )
@@ -99,22 +105,24 @@ def download_via_hf_hub(repo_id: str) -> Path:
     return snapshot
 
 
-def ensure_model(repo_id: str) -> Path:
-    local_path = Path(repo_id)
+def ensure_model(spec: str) -> Path:
+    local_path = Path(spec)
     if local_path.is_dir():
         if not weights_ready(local_path):
             raise SystemExit(
-                f"Local model path {repo_id} is missing weight files"
+                f"Local model path {spec} is missing weight files"
             )
-        print(f"OK local path: {repo_id}")
+        print(f"OK local path: {spec}")
         return local_path
 
-    cached = hf_cache_snapshot(repo_id)
+    # A spec may pin a revision as <repo-id>@<revision>; no @ means latest.
+    repo_id, _, revision = spec.partition("@")
+    cached = hf_cache_snapshot(repo_id, revision or None)
     if cached is not None:
-        print(f"OK HF cache: {repo_id} -> {cached}")
+        print(f"OK HF cache: {spec} -> {cached}")
         return cached
 
-    return download_via_hf_hub(repo_id)
+    return download_via_hf_hub(repo_id, revision or None)
 
 
 for model_id in sys.argv[1:]:
