@@ -63,6 +63,7 @@ impl Drop for ChildGuard {
 struct WorkerState {
     speech_config: Arc<Mutex<Option<String>>>,
     speech_request_id: Arc<Mutex<Option<String>>>,
+    speech_close_code: Arc<AtomicUsize>,
     realtime_path: Arc<Mutex<Option<String>>>,
     realtime_release: Arc<Notify>,
     realtime_control: Arc<Notify>,
@@ -72,6 +73,8 @@ struct WorkerState {
 struct SetupDeadlineWorkerState {
     speech_attempts: Arc<AtomicUsize>,
     realtime_attempts: Arc<AtomicUsize>,
+    speech_close_code: Arc<AtomicUsize>,
+    realtime_close_code: Arc<AtomicUsize>,
 }
 
 const REALTIME_FLOOD: &str = r#"{"type":"test.flood"}"#;
@@ -119,6 +122,11 @@ async fn speech_worker(
                             .await;
                     }
                     Ok(Message::Close(frame)) => {
+                        if let Some(frame) = &frame {
+                            state
+                                .speech_close_code
+                                .store(usize::from(frame.code), Ordering::Relaxed);
+                        }
                         let _closed = socket.send(Message::Close(frame)).await;
                         break;
                     }
@@ -196,7 +204,15 @@ async fn setup_deadline_speech_worker(
             return;
         };
         if state.speech_attempts.fetch_add(1, Ordering::Relaxed) == 0 {
-            while socket.next().await.is_some() {}
+            while let Some(message) = socket.next().await {
+                if let Ok(Message::Close(Some(frame))) = message {
+                    state
+                        .speech_close_code
+                        .store(usize::from(frame.code), Ordering::Relaxed);
+                    let _closed = socket.send(Message::Close(Some(frame))).await;
+                    break;
+                }
+            }
             return;
         }
         if socket
@@ -227,7 +243,15 @@ async fn setup_deadline_realtime_worker(
 ) -> impl axum::response::IntoResponse {
     upgrade.on_upgrade(move |mut socket| async move {
         if state.realtime_attempts.fetch_add(1, Ordering::Relaxed) == 0 {
-            while socket.next().await.is_some() {}
+            while let Some(message) = socket.next().await {
+                if let Ok(Message::Close(Some(frame))) = message {
+                    state
+                        .realtime_close_code
+                        .store(usize::from(frame.code), Ordering::Relaxed);
+                    let _closed = socket.send(Message::Close(Some(frame))).await;
+                    break;
+                }
+            }
             return;
         }
         if socket
@@ -389,6 +413,7 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
     let state = WorkerState {
         speech_config: Arc::new(Mutex::new(None)),
         speech_request_id: Arc::new(Mutex::new(None)),
+        speech_close_code: Arc::new(AtomicUsize::new(0)),
         realtime_path: Arc::new(Mutex::new(None)),
         realtime_release: Arc::new(Notify::new()),
         realtime_control: Arc::new(Notify::new()),
@@ -546,8 +571,8 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
             .expect("valid active worker frame");
         assert_eq!(frame.into_data(), expected);
     }
-    let _closed = active_speech.close(None).await;
     drop(active_speech);
+    wait_for_worker_attempt(&state.speech_close_code, 1000).await;
 
     let exact_realtime_path =
         "/v1/realtime?unknown=first&model=%6F%6D%6E%69&unknown=second%2fvalue";
@@ -688,6 +713,8 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
     let state = SetupDeadlineWorkerState {
         speech_attempts: Arc::new(AtomicUsize::new(0)),
         realtime_attempts: Arc::new(AtomicUsize::new(0)),
+        speech_close_code: Arc::new(AtomicUsize::new(0)),
+        realtime_close_code: Arc::new(AtomicUsize::new(0)),
     };
     let worker_app = Router::new()
         .route("/health", get(health))
@@ -723,6 +750,16 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         .expect("send configuration to stalled speech worker");
     wait_for_worker_attempt(&state.speech_attempts, 1).await;
     assert_eq!(state.speech_attempts.load(Ordering::Relaxed), 1);
+    let speech_close = tokio::time::timeout(Duration::from_secs(2), stalled_speech.next())
+        .await
+        .expect("setup deadline closes downstream speech")
+        .expect("speech close frame")
+        .expect("valid speech close frame");
+    assert!(matches!(
+        speech_close,
+        ClientMessage::Close(Some(frame)) if u16::from(frame.code) == 1011
+    ));
+    wait_for_worker_attempt(&state.speech_close_code, 1011).await;
     drop(stalled_speech);
 
     let mut reused_speech = tokio::time::timeout(Duration::from_secs(1), async {
@@ -754,9 +791,19 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
     assert_eq!(state.speech_attempts.load(Ordering::Relaxed), 2);
 
     let realtime_url = format!("ws://{router_address}/v1/realtime");
-    let stalled_realtime = connect_with_retry(&realtime_url).await;
+    let mut stalled_realtime = connect_with_retry(&realtime_url).await;
     wait_for_worker_attempt(&state.realtime_attempts, 1).await;
     assert_eq!(state.realtime_attempts.load(Ordering::Relaxed), 1);
+    let realtime_close = tokio::time::timeout(Duration::from_secs(2), stalled_realtime.next())
+        .await
+        .expect("setup deadline closes downstream realtime")
+        .expect("realtime close frame")
+        .expect("valid realtime close frame");
+    assert!(matches!(
+        realtime_close,
+        ClientMessage::Close(Some(frame)) if u16::from(frame.code) == 1011
+    ));
+    wait_for_worker_attempt(&state.realtime_close_code, 1011).await;
     drop(stalled_realtime);
 
     let mut reused_realtime = tokio::time::timeout(Duration::from_secs(1), async {

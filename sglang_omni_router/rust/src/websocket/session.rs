@@ -216,6 +216,40 @@ impl SessionSupervisor {
         self.lease.request_immediate_probe();
     }
 
+    pub(super) async fn close_setup(
+        mut self,
+        downstream: &mut WebSocket,
+        code: CloseCode,
+        reason: &'static str,
+        policy: &WebsocketConfig,
+        drain: &mut watch::Receiver<DrainState>,
+    ) {
+        terminate_both(
+            downstream,
+            &mut self.upstream,
+            code,
+            reason,
+            policy.close_timeout(),
+            drain,
+        )
+        .await;
+    }
+
+    pub(super) async fn close_upstream_after_client_loss(
+        mut self,
+        downstream: &mut WebSocket,
+        policy: &WebsocketConfig,
+        drain: &mut watch::Receiver<DrainState>,
+    ) {
+        close_upstream(
+            downstream,
+            &mut self.upstream,
+            policy.close_timeout(),
+            drain,
+        )
+        .await;
+    }
+
     pub(super) async fn relay(
         self,
         downstream: WebSocket,
@@ -503,7 +537,10 @@ async fn close_upstream(
         downstream,
         upstream,
         None,
-        Some(UpstreamMessage::Close(None)),
+        Some(UpstreamMessage::Close(Some(UpstreamClose {
+            code: UpstreamCloseCode::Normal,
+            reason: "".into(),
+        }))),
         ClosePlan::UpstreamOnly,
         timeout,
         drain,

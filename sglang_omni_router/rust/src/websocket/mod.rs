@@ -168,12 +168,10 @@ async fn run_speech(
     {
         Ok(Ok(text)) => text,
         Ok(Err(close)) => {
-            drop(pending);
             send_setup_close(&mut downstream, &gateway.policy, &mut drain, close).await;
             return;
         }
         Err(termination) => {
-            drop(pending);
             close_for_setup_termination(
                 &mut downstream,
                 &gateway.policy,
@@ -201,7 +199,6 @@ async fn run_speech(
     let (config_text, requirement) = match classified {
         Ok(Ok((text, Ok(requirement)))) => (text, requirement),
         Ok(Ok((_text, Err(())))) => {
-            drop(pending);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -213,7 +210,6 @@ async fn run_speech(
         }
         Ok(Err(source)) => {
             error!(error = %source, "classification task failed");
-            drop(pending);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -224,7 +220,6 @@ async fn run_speech(
             return;
         }
         Err(termination) => {
-            drop(pending);
             close_for_setup_termination(
                 &mut downstream,
                 &gateway.policy,
@@ -239,7 +234,6 @@ async fn run_speech(
     let upstream_config = match downstream_text_to_upstream(config_text) {
         Ok(text) => text,
         Err(()) => {
-            drop(pending);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -254,7 +248,6 @@ async fn run_speech(
     let lease = match gateway.pool.dispatch_session(admission, &requirement) {
         Ok(lease) => lease,
         Err(error) => {
-            drop(registration);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -281,8 +274,6 @@ async fn run_speech(
         Ok(Ok(upstream)) => upstream,
         Ok(Err(_)) => {
             lease.request_immediate_probe();
-            drop(lease);
-            drop(registration);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -296,8 +287,6 @@ async fn run_speech(
             if termination == SetupTermination::Deadline {
                 lease.request_immediate_probe();
             }
-            drop(lease);
-            drop(registration);
             close_for_setup_termination(
                 &mut downstream,
                 &gateway.policy,
@@ -323,27 +312,29 @@ async fn run_speech(
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
             supervisor.request_immediate_probe();
-            drop(supervisor);
-            send_setup_close(
-                &mut downstream,
-                &gateway.policy,
-                &mut drain,
-                close_message(1011, "upstream setup failure"),
-            )
-            .await;
+            supervisor
+                .close_setup(
+                    &mut downstream,
+                    1011,
+                    "upstream setup failure",
+                    &gateway.policy,
+                    &mut drain,
+                )
+                .await;
             return;
         }
         Err(termination) => {
             if termination == SetupTermination::Deadline {
                 supervisor.request_immediate_probe();
             }
-            drop(supervisor);
-            close_for_setup_termination(
+            close_supervised_setup_termination(
+                supervisor,
                 &mut downstream,
                 &gateway.policy,
                 &mut drain,
                 termination,
-                close_message(1011, "upstream setup failure"),
+                1011,
+                "upstream setup failure",
             )
             .await;
             return;
@@ -362,27 +353,29 @@ async fn run_speech(
         Ok(Some(Ok(UpstreamMessage::Text(text)))) if is_speech_setup_event(text.as_bytes()) => text,
         Ok(_) => {
             supervisor.request_immediate_probe();
-            drop(supervisor);
-            send_setup_close(
-                &mut downstream,
-                &gateway.policy,
-                &mut drain,
-                close_message(1011, "upstream setup failure"),
-            )
-            .await;
+            supervisor
+                .close_setup(
+                    &mut downstream,
+                    1011,
+                    "upstream setup failure",
+                    &gateway.policy,
+                    &mut drain,
+                )
+                .await;
             return;
         }
         Err(termination) => {
             if termination == SetupTermination::Deadline {
                 supervisor.request_immediate_probe();
             }
-            drop(supervisor);
-            close_for_setup_termination(
+            close_supervised_setup_termination(
+                supervisor,
                 &mut downstream,
                 &gateway.policy,
                 &mut drain,
                 termination,
-                close_message(1011, "upstream setup failure"),
+                1011,
+                "upstream setup failure",
             )
             .await;
             return;
@@ -392,14 +385,15 @@ async fn run_speech(
         Ok(text) => text,
         Err(()) => {
             supervisor.request_immediate_probe();
-            drop(supervisor);
-            send_setup_close(
-                &mut downstream,
-                &gateway.policy,
-                &mut drain,
-                close_message(1011, "upstream setup failure"),
-            )
-            .await;
+            supervisor
+                .close_setup(
+                    &mut downstream,
+                    1011,
+                    "upstream setup failure",
+                    &gateway.policy,
+                    &mut drain,
+                )
+                .await;
             return;
         }
     };
@@ -412,17 +406,20 @@ async fn run_speech(
     {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
-            drop(supervisor);
+            supervisor
+                .close_upstream_after_client_loss(&mut downstream, &gateway.policy, &mut drain)
+                .await;
             return;
         }
         Err(termination) => {
-            drop(supervisor);
-            close_for_setup_termination(
+            close_supervised_setup_termination(
+                supervisor,
                 &mut downstream,
                 &gateway.policy,
                 &mut drain,
                 termination,
-                close_message(1011, "upstream setup failure"),
+                1011,
+                "upstream setup failure",
             )
             .await;
             return;
@@ -538,27 +535,29 @@ async fn run_realtime(
         }
         Ok(_) => {
             supervisor.request_immediate_probe();
-            drop(supervisor);
-            send_setup_close(
-                &mut downstream,
-                &gateway.policy,
-                &mut drain,
-                close_message(1011, "invalid session.created"),
-            )
-            .await;
+            supervisor
+                .close_setup(
+                    &mut downstream,
+                    1011,
+                    "invalid session.created",
+                    &gateway.policy,
+                    &mut drain,
+                )
+                .await;
             return;
         }
         Err(termination) => {
             if termination == SetupTermination::Deadline {
                 supervisor.request_immediate_probe();
             }
-            drop(supervisor);
-            close_for_setup_termination(
+            close_supervised_setup_termination(
+                supervisor,
                 &mut downstream,
                 &gateway.policy,
                 &mut drain,
                 termination,
-                close_message(1011, "invalid session.created"),
+                1011,
+                "invalid session.created",
             )
             .await;
             return;
@@ -568,14 +567,15 @@ async fn run_realtime(
         Ok(text) => text,
         Err(()) => {
             supervisor.request_immediate_probe();
-            drop(supervisor);
-            send_setup_close(
-                &mut downstream,
-                &gateway.policy,
-                &mut drain,
-                close_message(1011, "invalid session.created"),
-            )
-            .await;
+            supervisor
+                .close_setup(
+                    &mut downstream,
+                    1011,
+                    "invalid session.created",
+                    &gateway.policy,
+                    &mut drain,
+                )
+                .await;
             return;
         }
     };
@@ -588,17 +588,20 @@ async fn run_realtime(
     {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
-            drop(supervisor);
+            supervisor
+                .close_upstream_after_client_loss(&mut downstream, &gateway.policy, &mut drain)
+                .await;
             return;
         }
         Err(termination) => {
-            drop(supervisor);
-            close_for_setup_termination(
+            close_supervised_setup_termination(
+                supervisor,
                 &mut downstream,
                 &gateway.policy,
                 &mut drain,
                 termination,
-                close_message(1011, "invalid session.created"),
+                1011,
+                "invalid session.created",
             )
             .await;
             return;
@@ -656,6 +659,30 @@ async fn close_for_setup_termination(
         SetupTermination::Drain(state) => {
             close_setup_for_drain(downstream, policy, drain, state).await;
         }
+    }
+}
+
+async fn close_supervised_setup_termination(
+    supervisor: SessionSupervisor,
+    downstream: &mut WebSocket,
+    policy: &WebsocketConfig,
+    drain: &mut watch::Receiver<DrainState>,
+    termination: SetupTermination,
+    timeout_code: u16,
+    timeout_reason: &'static str,
+) {
+    match termination {
+        SetupTermination::Deadline => {
+            supervisor
+                .close_setup(downstream, timeout_code, timeout_reason, policy, drain)
+                .await;
+        }
+        SetupTermination::Drain(DrainState::Draining) => {
+            supervisor
+                .close_setup(downstream, 1012, "service restart", policy, drain)
+                .await;
+        }
+        SetupTermination::Drain(DrainState::Serving | DrainState::Forced) => {}
     }
 }
 
