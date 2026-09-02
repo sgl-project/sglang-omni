@@ -58,6 +58,7 @@ from sglang_omni.client.audio import (
     select_audio_delta,
 )
 from sglang_omni.config import ResolvedAudioChunking
+from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS
 from sglang_omni.http.admin_auth import (
     make_admin_auth_dependency,
     resolve_admin_api_key,
@@ -102,7 +103,6 @@ from sglang_omni.serve.protocol import (
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
-    internal_error,
     openai_error_payload,
     speech_error_response,
     speech_generation_error,
@@ -183,6 +183,7 @@ def create_app(
     speech_reference_text_required: bool = False,
     speech_reference_text_excludes_instructions: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
+    max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
     enable_realtime: bool = False,
     supports_realtime_audio_output: bool = False,
     allowed_local_media_path: str | None = None,
@@ -210,6 +211,8 @@ def create_app(
         speech_reference_text_excludes_instructions: Whether a reference
             transcript and style instructions are mutually exclusive.
         additional_speech_languages: Pipeline-specific accepted languages.
+        max_speech_input_chars: Maximum accepted input characters, or ``None``
+            to defer length validation to model-specific context checks.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
         supports_realtime_audio_output: Whether the mounted realtime endpoint
@@ -261,6 +264,7 @@ def create_app(
             speech_reference_text_excludes_instructions
         ),
         additional_speech_languages=additional_speech_languages,
+        max_speech_input_chars=max_speech_input_chars,
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,
         voice_store=app.state.speaker_sample_store,
@@ -1211,16 +1215,16 @@ def _speech_generation_failure_response(
     unexpected_message: str | None = None,
 ) -> JSONResponse:
     mapped = speech_generation_error(exc)
-    if mapped.status_code == 503:
+    if mapped.status_code not in (400, 503):
+        logger.exception(
+            unexpected_message or "Error generating speech for request %s",
+            request_id,
+        )
+    else:
         logger.warning(
             "Rejecting speech request %s: %s",
             request_id,
             mapped.message,
-        )
-    else:
-        logger.exception(
-            unexpected_message or "Error generating speech for request %s",
-            request_id,
         )
     return speech_error_response(mapped)
 
@@ -1334,8 +1338,18 @@ def _register_speech_batch(app: FastAPI) -> None:
         except SpeechAPIError as exc:
             return speech_error_response(exc)
         except Exception as exc:
-            logger.exception("Error generating speech batch for request %s", request_id)
-            return speech_error_response(internal_error(str(exc)))
+            mapped = speech_generation_error(exc)
+            if mapped.status_code not in (400, 503):
+                logger.exception(
+                    "Error generating speech batch for request %s", request_id
+                )
+            else:
+                logger.warning(
+                    "Rejecting speech batch request %s: %s",
+                    request_id,
+                    mapped.message,
+                )
+            return speech_error_response(mapped)
 
         response = SpeechBatchResponse.model_validate(response)
         return JSONResponse(content=response.model_dump(exclude_none=True))

@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
 from sglang_omni.client.audio import audio_encoding_unavailable_reason
+from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
@@ -36,9 +37,9 @@ from sglang_omni.serve.protocol import (
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
-    internal_error,
     openai_error_payload,
     service_unavailable,
+    speech_generation_error,
 )
 from sglang_omni.serve.speech_limits import MAX_REFERENCE_AUDIO_BYTES
 
@@ -55,7 +56,6 @@ _TTS_TASK_TYPE_ALIASES = {
     task_type.replace("_", "").replace("-", "").lower(): task_type
     for task_type in SUPPORTED_TTS_TASK_TYPES
 }
-MAX_SPEECH_INPUT_CHARS = 4096
 _REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
 _ReferenceCacheKey = tuple[Any, ...]
 
@@ -87,6 +87,7 @@ class SpeechRequestValidator:
         speech_reference_text_required: bool = False,
         speech_reference_text_excludes_instructions: bool = False,
         additional_speech_languages: frozenset[str] = frozenset(),
+        max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
         allowed_local_media_path: str | Path | None = None,
         allowed_media_domains: list[str] | None = None,
         voice_store: "SpeakerSampleStore | None" = None,
@@ -99,6 +100,14 @@ class SpeechRequestValidator:
             and required_speech_reference_count < 1
         ):
             raise ValueError("required_speech_reference_count must be greater than 0")
+        if max_speech_input_chars is not None and (
+            isinstance(max_speech_input_chars, bool)
+            or not isinstance(max_speech_input_chars, int)
+            or max_speech_input_chars < 1
+        ):
+            raise ValueError(
+                "max_speech_input_chars must be a positive integer or None"
+            )
         self.default_model = default_model
         self.requires_uploaded_voice_for_named_voice = (
             requires_uploaded_voice_for_named_voice
@@ -109,6 +118,7 @@ class SpeechRequestValidator:
         )
         self.required_speech_reference_count = required_speech_reference_count
         self.speech_reference_text_required = speech_reference_text_required
+        self.max_speech_input_chars = max_speech_input_chars
         self.speech_reference_text_excludes_instructions = (
             speech_reference_text_excludes_instructions
         )
@@ -210,9 +220,10 @@ class SpeechRequestValidator:
     def validate_input_text(self, input_text: str) -> None:
         if not isinstance(input_text, str) or not input_text.strip():
             raise bad_request("input must be a non-empty string", param="input")
-        if len(input_text) > MAX_SPEECH_INPUT_CHARS:
+        limit = self.max_speech_input_chars
+        if limit is not None and len(input_text) > limit:
             raise bad_request(
-                f"input must be at most {MAX_SPEECH_INPUT_CHARS} characters",
+                f"input must be at most {limit} characters",
                 param="input",
             )
 
@@ -427,7 +438,10 @@ class SpeechRequestValidator:
                     )
                 else:
                     results[index] = _batch_error_result(
-                        index, internal_error(str(task_result))
+                        index,
+                        _batch_item_error(
+                            speech_generation_error(task_result), index=index
+                        ),
                     )
 
         final_results = [result for result in results if result is not None]
@@ -473,7 +487,7 @@ class SpeechRequestValidator:
                 allow_format_fallback=False,
             )
         except ClientError as exc:
-            raise internal_error(str(exc)) from exc
+            raise speech_generation_error(exc) from exc
         return SpeechBatchResult(
             index=index,
             status="success",

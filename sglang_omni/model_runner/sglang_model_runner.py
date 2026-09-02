@@ -38,6 +38,21 @@ def filter_weights_by_prefix(
             yield name[len(prefix) :], tensor
 
 
+def _free_gpu_memory_bytes(device: Any, gpu_id: int) -> int:
+    """Currently free GPU memory in bytes, min-reduced across the world group."""
+    from sglang.srt.distributed.parallel_state import get_world_group
+    from sglang.srt.utils.common import get_available_gpu_memory
+
+    world_group = get_world_group()
+    free_gib = get_available_gpu_memory(
+        device,
+        gpu_id,
+        distributed=world_group.world_size > 1,
+        cpu_group=world_group.cpu_group,
+    )
+    return int(free_gib * (1 << 30))
+
+
 @dataclass(slots=True, kw_only=True)
 class _OmniKVCacheConfigurator(KVCacheConfigurator):
     """KV-cache configurator that honors an Omni colocated-stage memory budget.
@@ -48,6 +63,7 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
     """
 
     total_gpu_memory_fraction: float | None = None
+    kv_cache_bytes: int | None = None
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
@@ -58,6 +74,14 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
         another process can change global free memory while this process is
         loading weights, making the global delta too small or negative.
 
+        When ``kv_cache_bytes`` is declared it is authoritative: it becomes the
+        KV pool budget directly, with an explicit free-memory check so an
+        over-committed card fails with actionable numbers instead of a bare
+        CUDA OOM during pool allocation. The check covers pool allocation only;
+        later capture-time pressure is handled by the post-capture guard.
+        ``kv_cache_bytes`` is a per-rank pool size: every TP rank's engine
+        allocates the full amount on its assigned GPU.
+
         When a stage total-memory budget is provided, compute cache headroom as
         total GPU memory times that budget minus this stage's measured memory.
         NVML process accounting is preferred. If NVML cannot identify the
@@ -66,6 +90,35 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
         upstream SGLang profiling semantics for ordinary non-colocated AR
         serving.
         """
+        if self.kv_cache_bytes is not None:
+            if self.kv_cache_bytes <= 0:
+                raise ValueError("kv_cache_bytes must be positive")
+            if self.mambaish_config is not None:
+                # Note (Jiaxin Deng): the byte branch bypasses upstream's mamba
+                # cache derivation; refuse rather than boot with it unsized.
+                raise ValueError(
+                    "engine.kv_cache_bytes does not support "
+                    "mamba/hybrid models yet; use fraction-based sizing"
+                )
+            free_bytes = self._free_gpu_memory_bytes()
+            if free_bytes < self.kv_cache_bytes:
+                raise ValueError(
+                    "Insufficient free GPU memory for the declared KV byte "
+                    f"budget after model load: requested kv_cache_bytes="
+                    f"{format_bytes_gib(self.kv_cache_bytes)} "
+                    f"({self.kv_cache_bytes} bytes), free="
+                    f"{format_bytes_gib(free_bytes)} ({free_bytes} bytes) on "
+                    f"gpu_id={self.gpu_id}. Lower engine.kv_cache_bytes "
+                    "or free memory on this GPU."
+                )
+            logger.info(
+                f"SGLang AR memory profile: gpu_mem_accounting=kv_cache_bytes "
+                f"gpu_id={self.gpu_id} "
+                f"kv_cache_bytes={format_bytes_gib(self.kv_cache_bytes)} "
+                f"free={format_bytes_gib(free_bytes)}"
+            )
+            return self.kv_cache_bytes
+
         if self.total_gpu_memory_fraction is None:
             return KVCacheConfigurator._profile_available_bytes(
                 self, pre_model_load_memory
@@ -92,6 +145,9 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
             total_memory,
             process_memory,
         )
+
+    def _free_gpu_memory_bytes(self) -> int:
+        return _free_gpu_memory_bytes(self.device, self.gpu_id)
 
     def _profile_available_bytes_from_stage_load_delta(
         self,
@@ -170,9 +226,11 @@ class SGLModelRunner(ModelRunner):
         model_arch_override: str | None = None,
         weight_prefix: str | None = None,
         total_gpu_memory_fraction: float | None = None,
+        kv_cache_bytes: int | None = None,
     ) -> None:
         self._weight_prefix = weight_prefix
         self._total_gpu_memory_fraction = total_gpu_memory_fraction
+        self._kv_cache_bytes = kv_cache_bytes
         self._model_arch_override = model_arch_override
         self._weight_share_config = None
         self._weight_share_record = None
@@ -387,6 +445,34 @@ class SGLModelRunner(ModelRunner):
             self.post_capture_resize_kv_pool()
         return result
 
+    def post_capture_resize_kv_pool(self):
+        """Back the KV pool post-capture without silently shrinking a byte budget.
+
+        SGLang 0.5.16's post-capture sizing re-derives the pool from live free
+        memory, which can only shrink the pool below the declared
+        ``kv_cache_bytes`` when capture-time allocations ate into it. A byte
+        budget is authoritative, so a shrink must fail loudly instead of
+        serving with a silently clamped pool.
+        """
+        if self._kv_cache_bytes is None:
+            return super().post_capture_resize_kv_pool()
+
+        tokens_before = self.max_total_num_tokens
+        result = super().post_capture_resize_kv_pool()
+        if self.max_total_num_tokens < tokens_before:
+            free_bytes = _free_gpu_memory_bytes(self.device, self.gpu_id)
+            raise RuntimeError(
+                "Post-capture KV sizing cannot honor the declared byte budget: "
+                f"kv_cache_bytes={format_bytes_gib(self._kv_cache_bytes)} sized "
+                f"the pool at {tokens_before} tokens, but free memory minus the "
+                f"post-capture headroom only backs {self.max_total_num_tokens} "
+                f"tokens (free={format_bytes_gib(free_bytes)}, "
+                f"gpu_id={self.gpu_id}). Lower engine.kv_cache_bytes, "
+                "free memory on this GPU, or close a decode graph max_bs gap "
+                "below max_running_requests that raises the reserved headroom."
+            )
+        return result
+
     def _weight_update_blocked_reason(self) -> str | None:
         ws = self._weight_share_config
         if ws is None:
@@ -489,4 +575,5 @@ class SGLModelRunner(ModelRunner):
                 if field.init
             },
             total_gpu_memory_fraction=self._total_gpu_memory_fraction,
+            kv_cache_bytes=self._kv_cache_bytes,
         )

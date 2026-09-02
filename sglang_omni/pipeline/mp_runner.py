@@ -17,6 +17,7 @@ from sglang_omni.config.placement import (
     StagePlacementPlan,
     resolve_gpu_stage_names,
     resolve_stage_gpu_ids,
+    validate_gpu_capacity,
 )
 from sglang_omni.config.runtime import (
     requires_factory_gpu_id,
@@ -289,6 +290,18 @@ def _resolve_same_process_targets(
     return same_process_targets
 
 
+def _stage_byte_budget_kwargs(stage_cfg: StageConfig) -> dict[str, Any]:
+    """Spec fields carrying the stage's byte budgets to the worker process."""
+
+    return {
+        "kv_cache_bytes": (
+            stage_cfg.engine.kv_cache_bytes if stage_cfg.engine is not None else None
+        ),
+        "total_reserve_bytes": stage_cfg.total_reserve_bytes,
+        "enforce_total_reserve": stage_cfg.enforce_total_reserve,
+    }
+
+
 def _build_single_stage_spec(
     *,
     stage_cfg: StageConfig,
@@ -312,6 +325,7 @@ def _build_single_stage_spec(
         factory_arg_defaults=resolve_stage_factory_arg_defaults(
             stage_cfg, config, gpu_id=gpu_id
         ),
+        **_stage_byte_budget_kwargs(stage_cfg),
         comm_config=comm_config,
         recv_endpoint=recv_endpoint,
         **stage_kwargs,
@@ -360,6 +374,7 @@ def _build_tp_stage_specs(
                     factory_arg_defaults=resolve_stage_factory_arg_defaults(
                         stage_cfg, config, gpu_id=gpu_id
                     ),
+                    **_stage_byte_budget_kwargs(stage_cfg),
                     comm_config=comm_config,
                     recv_endpoint=recv_endpoint,
                     follower_work_queues=follower_work_queues,
@@ -384,6 +399,7 @@ def _build_tp_stage_specs(
                 factory_arg_defaults=resolve_stage_factory_arg_defaults(
                     stage_cfg, config, gpu_id=gpu_id
                 ),
+                **_stage_byte_budget_kwargs(stage_cfg),
                 comm_config=comm_config,
                 recv_endpoint="",
                 internal_work_queue=follower_work_queues[idx],
@@ -501,6 +517,7 @@ class MultiProcessPipelineRunner:
             )
             self._prep = prep
             self._ipc_runtime_dir = prep.runtime_dir
+            validate_gpu_capacity(prep.placement_plan)
             groups = _build_stage_groups(
                 self._config,
                 ctx,

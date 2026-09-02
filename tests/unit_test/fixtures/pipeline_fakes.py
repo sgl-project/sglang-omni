@@ -568,3 +568,12 @@ def make_noop_projector(marker: str) -> Callable[[StagePayload], StagePayload]:
         )
 
     return _project
+
+
+def make_scheduler_consuming_kv_budget(**kwargs: Any) -> FakeScheduler:
+    from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+
+    scheduler = FakeScheduler()
+    scheduler.consumed_kv_cache_bytes = consume_stage_kv_cache_bytes()
+    scheduler.factory_kwargs = kwargs
+    return scheduler

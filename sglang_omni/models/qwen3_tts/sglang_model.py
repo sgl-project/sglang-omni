@@ -12,6 +12,9 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.layers.sampler import multinomial_with_seed
+from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph import (
+    eager_on_graph,
+)
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -46,6 +49,11 @@ _PREDICTOR_GRAPH_MAX_FAILURES = 8
 # Note: (Jiaxin Deng) 50 is on the ladder because it is the family checkpoint
 # default, keeping the dominant signature's kernel width exactly as before.
 _PREDICTOR_TOP_K_LADDER = (4, 8, 16, 32, 50, 64, 128, 256, 512, 1024)
+
+
+def _install_breakable_prefill_qk_norm_rope_graph_break(attention: Any) -> None:
+    """Keep Qwen3-TTS QK norm and RoPE outside breakable graph segments."""
+    attention.apply_qk_norm_rope = eager_on_graph(True)(attention.apply_qk_norm_rope)
 
 
 def _predictor_graph_env_enabled() -> bool:
@@ -205,6 +213,11 @@ class Qwen3TTSTalkerDecoderLayer(nn.Module):
             dual_chunk_attention_config=None,
             alt_stream=None,
         )
+        # Capturing the packed QKV normalization and RoPE block corrupts
+        # Qwen3-TTS prefill replay. Keep this narrow block eager while the
+        # surrounding projections and MLP remain captured. Decode execution
+        # runs outside the breakable-prefill context and is unchanged.
+        _install_breakable_prefill_qk_norm_rope_graph_break(self.self_attn)
         self.mlp = Qwen3OmniMoeTalkerDenseMLP(
             config.hidden_size,
             config.intermediate_size,
@@ -380,6 +393,11 @@ class Qwen3TTSCodePredictor(nn.Module):
 
 class Qwen3TTSTalker(nn.Module):
     """Qwen3-TTS Base talker with SGLang-managed KV cache for the main AR loop."""
+
+    # The outer forward substitutes ForwardBatch.mrope_positions whenever they
+    # are present. Prefill CUDA graph runners capture the inner text model
+    # directly and use this marker to preserve that position contract.
+    is_mrope_enabled = True
 
     def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
         del quant_config
@@ -1102,8 +1120,9 @@ class Qwen3TTSTalker(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
         input_embeds_are_projected: bool = False,
+        omni_prefill_rids: list[str] | None = None,
     ) -> LogitsProcessorOutput:
-        del input_embeds_are_projected
+        del input_embeds_are_projected, omni_prefill_rids
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
 

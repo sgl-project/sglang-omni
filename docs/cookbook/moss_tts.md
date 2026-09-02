@@ -47,6 +47,10 @@ components it uses instead of loading a complete codec copy.
 The bounded 24 GB and 32 GB configurations explicitly move preprocessing to
 CPU. They retain BF16 compute unless `compute_dtype` is overridden.
 
+Speech input admission follows the text backbone's context metadata rather than
+the generic 4,096-character precheck. Requests that exceed the effective model
+context are rejected with an OpenAI-compatible HTTP 400 error.
+
 For the bounded 32 GB qualification layout, use:
 
 ```bash

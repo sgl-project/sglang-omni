@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
@@ -38,6 +39,41 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 
 logger = logging.getLogger(__name__)
+
+MAX_SPEECH_INPUT_CHARS: int = 4096
+
+
+def parse_memory_bytes(field_name: str, value: int | str | None) -> int | None:
+    """Parse a byte count given as an int or an exact binary-size string."""
+
+    format_error = (
+        f"{field_name} must be a positive integer byte count or an "
+        "exact binary-size string ending in KiB, MiB, GiB, or TiB"
+    )
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(format_error)
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"{field_name} must be positive")
+        return value
+    if not isinstance(value, str):
+        raise ValueError(format_error)
+
+    match = re.fullmatch(r"([0-9]+)(KiB|MiB|GiB|TiB)", value)
+    if match is None:
+        raise ValueError(format_error)
+    quantity = int(match.group(1))
+    if quantity <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    unit_multipliers = {
+        "KiB": 1024,
+        "MiB": 1024**2,
+        "GiB": 1024**3,
+        "TiB": 1024**4,
+    }
+    return quantity * unit_multipliers[match.group(2)]
 
 
 class CommConfig(BaseModel):
@@ -89,10 +125,39 @@ class EngineArgs(BaseModel):
     cpu_offload_gb: int | None = Field(default=None, ge=0)
     quantization: str | None = Field(default=None, min_length=1)
     disable_custom_all_reduce: bool | None = None
+    kv_cache_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Authoritative KV pool size in bytes, per rank; accepts an int or "
+            "an exact binary-size string such as 2GiB. Consumed by the omni "
+            "KV configurator, never forwarded to SGLang ServerArgs."
+        ),
+    )
+
+    _NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
+
+    @field_validator("kv_cache_bytes", mode="before")
+    @classmethod
+    def _parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
+        return parse_memory_bytes("engine.kv_cache_bytes", value)
 
     def model_post_init(self, __context: Any = None) -> None:
         if self.quantization is not None and not self.quantization.strip():
             raise ValueError("engine.quantization must not be empty")
+        if self.kv_cache_bytes is not None and self.mem_fraction_static is not None:
+            raise ValueError(
+                "engine.kv_cache_bytes cannot be set together with "
+                "engine.mem_fraction_static; if the fraction comes from the "
+                "pipeline's built-in defaults, set mem_fraction_static: null "
+                "on the same stage"
+            )
+        if self.kv_cache_bytes is not None and self.max_total_tokens is not None:
+            raise ValueError(
+                "engine.kv_cache_bytes cannot be set together with "
+                "engine.max_total_tokens; both pin the generation stage's KV "
+                "capacity, and the lower token cap silently shrinks the "
+                "byte-derived pool"
+            )
 
     def overrides(self) -> dict[str, Any]:
         """Return the keys set on this block, declared and free-form alike.
@@ -105,7 +170,7 @@ class EngineArgs(BaseModel):
         return {
             key: value
             for key, value in self.model_dump().items()
-            if value is not None or key in extra
+            if (value is not None or key in extra) and key not in self._NON_SERVER_KEYS
         }
 
 
@@ -274,6 +339,25 @@ class StageConfig(BaseModel):
             "that process's budget."
         ),
     )
+    total_reserve_bytes: int | None = Field(
+        default=None,
+        description=(
+            "Per-replica total physical VRAM budget in bytes (weights, KV, "
+            "activations); accepts an int or an exact binary-size string. "
+            "Drives placement capacity checks and MPS preflight arithmetic, "
+            "and unless enforce_total_reserve is false it is enforced at "
+            "stage startup through a per-process torch allocator cap, so a "
+            "stage that outgrows its budget fails itself instead of a "
+            "co-tenant. The cap bounds torch allocations only; declared "
+            "budgets need headroom above the measured model footprint."
+        ),
+    )
+    enforce_total_reserve: bool = True
+
+    @field_validator("total_reserve_bytes", mode="before")
+    @classmethod
+    def _parse_total_reserve_bytes(cls, value: int | str | None) -> int | None:
+        return parse_memory_bytes("total_reserve_bytes", value)
 
     # --- Consumer groups ---
     engine: EngineArgs | None = None
@@ -327,6 +411,26 @@ class StageConfig(BaseModel):
             raise ValueError(
                 f"Stage {self.name!r} is not an engine stage; the engine block "
                 "only exists on stages whose factory drives an SGLang engine"
+            )
+        if (
+            self.total_reserve_bytes is not None
+            and self.gpu_memory_fraction is not None
+        ):
+            raise ValueError(
+                f"Stage {self.name!r}: total_reserve_bytes and "
+                "gpu_memory_fraction declare the same budget in two units; "
+                "keep exactly one (set the other to null if it comes from the "
+                "pipeline's built-in defaults)"
+            )
+        kv = self.engine.kv_cache_bytes if self.engine is not None else None
+        if (
+            kv is not None
+            and self.total_reserve_bytes is not None
+            and kv > self.total_reserve_bytes
+        ):
+            raise ValueError(
+                f"Stage {self.name!r}: engine.kv_cache_bytes must not exceed "
+                "total_reserve_bytes"
             )
 
         gpu = self.gpu
@@ -459,6 +563,7 @@ class PipelineConfig(BaseModel):
     condition_on_previous_text: ClassVar[bool] = (
         False  # Whether the model can condition on the previous text.
     )
+    max_speech_input_chars: ClassVar[int | None] = MAX_SPEECH_INPUT_CHARS
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {}
     """Stage name -> ``StageConfig`` subclass for this pipeline's stage types.

@@ -16,6 +16,7 @@ import pytest
 import torch
 
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
@@ -150,6 +151,15 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             "sglang.srt.layers.logits_processor"
         ),
         "sglang.srt.layers.sampler": types.ModuleType("sglang.srt.layers.sampler"),
+        "sglang.srt.model_executor": types.ModuleType("sglang.srt.model_executor"),
+        "sglang.srt.model_executor.runner_backend_utils": types.ModuleType(
+            "sglang.srt.model_executor.runner_backend_utils"
+        ),
+        "sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph": (
+            types.ModuleType(
+                "sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph"
+            )
+        ),
         "sglang.srt.model_loader": types.ModuleType("sglang.srt.model_loader"),
         "sglang.srt.model_loader.weight_utils": types.ModuleType(
             "sglang.srt.model_loader.weight_utils"
@@ -169,6 +179,8 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
         "sglang.srt",
         "sglang.srt.managers",
         "sglang.srt.layers",
+        "sglang.srt.model_executor",
+        "sglang.srt.model_executor.runner_backend_utils",
         "sglang.srt.model_loader",
         "sglang.srt.sampling",
     ):
@@ -176,6 +188,7 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     modules["sglang"].srt = modules["sglang.srt"]
     modules["sglang.srt"].managers = modules["sglang.srt.managers"]
     modules["sglang.srt"].layers = modules["sglang.srt.layers"]
+    modules["sglang.srt"].model_executor = modules["sglang.srt.model_executor"]
     modules["sglang.srt"].model_loader = modules["sglang.srt.model_loader"]
     modules["sglang.srt"].sampling = modules["sglang.srt.sampling"]
     modules["sglang.srt"].utils = modules["sglang.srt.utils"]
@@ -187,6 +200,12 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
         "sglang.srt.layers.logits_processor"
     ]
     modules["sglang.srt.layers"].sampler = modules["sglang.srt.layers.sampler"]
+    modules["sglang.srt.model_executor"].runner_backend_utils = modules[
+        "sglang.srt.model_executor.runner_backend_utils"
+    ]
+    modules["sglang.srt.model_executor.runner_backend_utils"].breakable_cuda_graph = (
+        modules["sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph"]
+    )
     modules["sglang.srt.model_loader"].weight_utils = modules[
         "sglang.srt.model_loader.weight_utils"
     ]
@@ -206,6 +225,9 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     modules["sglang.srt.layers.sampler"].multinomial_with_seed = multinomial_with_seed
     modules["sglang.srt.layers.sampler"].sampler_calls = sampler_calls
+    modules[
+        "sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph"
+    ].eager_on_graph = lambda enabled: lambda function: function
     modules["sglang.srt.model_loader.weight_utils"].default_weight_loader = (
         default_weight_loader
     )
@@ -274,6 +296,88 @@ def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
     assert vocoder["enable_deterministic_inference"]
     assert vocoder["initial_cuda_graph"] is False
     assert vocoder["followup_cuda_graph"] is False
+
+
+def test_qwen3_tts_breakable_prefill_is_compatible_but_not_default_enabled() -> None:
+    """Compatibility permits explicit opt-in without changing shipped defaults."""
+    from sglang_omni.models.qwen3_tts import CAPABILITIES
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    builder = Qwen3TtsEngineBuilder()
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert CAPABILITIES.supports_breakable_prefill_cuda_graph is True
+    assert (
+        type(builder).supports_breakable_prefill_cuda_graph
+        is CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
+    assert "cuda_graph_backend_prefill" not in defaults
+    assert "cuda_graph_bs_prefill" not in defaults
+    assert defaults["disable_cuda_graph"] is False
+
+
+def test_qwen3_tts_breakable_prefill_breaks_around_qk_norm_rope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sglang_model
+
+    events: list[tuple[str, object]] = []
+
+    def fake_eager_on_graph(enabled: bool):
+        events.append(("enabled", enabled))
+
+        def decorate(function):
+            def wrapped(*args, **kwargs):
+                events.append(("wrapped", (args, kwargs)))
+                return function(*args, **kwargs)
+
+            return wrapped
+
+        return decorate
+
+    class FakeAttention(torch.nn.Module):
+        def __init__(self, **kwargs) -> None:
+            super().__init__()
+
+        def apply_qk_norm_rope(self, qkv, positions, forward_batch):
+            events.append(("inner", (qkv, positions, forward_batch)))
+            return qkv, positions, forward_batch
+
+    class FakeModule(torch.nn.Module):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__()
+
+    monkeypatch.setattr(sglang_model, "eager_on_graph", fake_eager_on_graph)
+    monkeypatch.setattr(
+        sglang_model,
+        "Qwen3OmniMoeThinkerTextAttention",
+        FakeAttention,
+    )
+    monkeypatch.setattr(sglang_model, "Qwen3OmniMoeTalkerDenseMLP", FakeModule)
+    monkeypatch.setattr(sglang_model, "RMSNorm", FakeModule)
+
+    config = SimpleNamespace(
+        hidden_size=1024,
+        num_attention_heads=16,
+        num_key_value_heads=8,
+        rope_theta=1_000_000,
+        rope_scaling=None,
+        max_position_embeddings=32_768,
+        head_dim=128,
+        rms_norm_eps=1e-6,
+        attention_bias=False,
+        intermediate_size=3072,
+    )
+    layer = sglang_model.Qwen3TTSTalkerDecoderLayer(config, layer_id=0)
+
+    expected = (object(), object(), object())
+    assert layer.self_attn.apply_qk_norm_rope(*expected) == expected
+    assert events == [
+        ("enabled", True),
+        ("wrapped", (expected, {})),
+        ("inner", expected),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -4256,27 +4360,106 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         qwen3_request_builders.cleanup_prepared_qwen3_tts_request(request_id)
 
 
-def test_qwen3_tts_prefill_prepares_subtalker_buffers_before_forward(
+def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Prefill conditioning stays outside upstream graph-admission fields."""
     install_fake_sglang(monkeypatch)
     from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
     calls: list[str] = []
+    input_embeds = torch.ones(3, 2)
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
         prepare_decode_buffers=lambda requests: calls.append("prepare")
     )
     runner._build_prefill_input_embeds = (
-        lambda forward_batch, requests: calls.append("embeds") or object()
+        lambda forward_batch, requests: calls.append("embeds") or input_embeds
     )
-    runner._forward_with_input_embeds = (
-        lambda forward_batch, input_embeds: calls.append("forward") or "result"
+    mm_inputs = [object()]
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(3, dtype=torch.long),
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=mm_inputs,
     )
 
-    runner.before_prefill(object(), object(), [object()])
-    assert runner.custom_prefill_forward(object(), object(), [object()]) == "result"
-    assert calls == ["prepare", "embeds", "forward"]
+    runner.before_prefill(forward_batch, object(), [object()])
+
+    sidecar = get_omni_prefill_inputs(forward_batch)
+    assert sidecar is not None
+    assert sidecar.input_embeds is input_embeds
+    assert forward_batch.input_embeds is None
+    assert forward_batch.mm_inputs is mm_inputs
+    assert calls == ["prepare", "embeds"]
+
+
+def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The standard generation path late-binds Qwen conditioning and request ids."""
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
+    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+
+    input_embeds = torch.arange(6, dtype=torch.float32).view(3, 2)
+    received: dict[str, object] = {}
+
+    class FakeTalker:
+        def prepare_decode_buffers(self, requests) -> None:
+            received["prepared_requests"] = requests
+
+        def __call__(self, **kwargs):
+            received.update(kwargs)
+            return "logits"
+
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.model = FakeTalker()
+    runner._build_prefill_input_embeds = lambda _batch, _requests: input_embeds
+
+    shared_runner = SGLModelRunner.__new__(SGLModelRunner)
+    shared_runner.support_pp = False
+    shared_runner.is_generation = True
+    shared_runner.dtype = torch.float32
+
+    def forward_batch_generation(forward_batch):
+        kwargs = shared_runner._extend_forward_kwargs(forward_batch, object())
+        logits_output = runner.model(
+            input_ids=forward_batch.input_ids,
+            positions=forward_batch.positions,
+            forward_batch=forward_batch,
+            **kwargs,
+        )
+        return SimpleNamespace(logits_output=logits_output, next_token_ids=None)
+
+    runner.tp_worker = SimpleNamespace(
+        forward_batch_generation=forward_batch_generation
+    )
+    requests = [SimpleNamespace(request_id="request-a")]
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(3, dtype=torch.long),
+        input_embeds=None,
+        replace_embeds=None,
+        replace_positions=None,
+        mm_inputs=[None],
+        batch_size=1,
+        rids=["request-a"],
+        positions=torch.arange(3),
+    )
+    schedule_batch = SimpleNamespace(is_prefill_only=True)
+
+    result = runner._prepare_and_forward(
+        forward_batch,
+        schedule_batch,
+        requests,
+        is_prefill=True,
+    )
+
+    assert result.logits_output == "logits"
+    assert received["input_embeds"] is input_embeds
+    assert received["omni_prefill_rids"] is forward_batch.rids
+    assert forward_batch.input_embeds is None
+    assert get_omni_prefill_inputs(forward_batch) is None
 
 
 def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
@@ -5192,39 +5375,46 @@ def test_qwen3_tts_cli_rejects_out_of_range_mem_fraction() -> None:
         ConfigManager(config).merge_config([], extra_patches=patches)
 
 
-def test_qwen3_tts_prefill_publishes_sglang_forward_context() -> None:
-    from sglang.srt.model_executor.forward_context import (
-        get_forward_context,
-        has_forward_context,
-    )
+def test_qwen3_tts_talker_forward_accepts_shared_prefill_request_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shared request-id transport does not alter Talker prefill results."""
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
 
-    from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+    input_embeds = torch.arange(6, dtype=torch.float32).view(3, 2)
+    received: dict[str, object] = {}
 
-    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
-    attn_backend = SimpleNamespace(init_forward_metadata=lambda _batch: None)
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(attn_backend=attn_backend)
-    )
+    def backbone(**kwargs):
+        received.update(kwargs)
+        return kwargs["input_embeds"]
 
-    seen = []
-
-    def model(**kwargs):
-        seen.append(get_forward_context().attn_backend)
-        return "logits"
-
-    model.parameters = lambda: iter([torch.zeros(1, dtype=torch.float32)])
-    runner.model = model
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.model = backbone
+    talker.codec_head = lambda hidden_states: (hidden_states + 1, None)
     forward_batch = SimpleNamespace(
-        positions=torch.tensor([0]),
+        input_ids=torch.zeros(3, dtype=torch.long),
         mrope_positions=None,
-        input_ids=torch.tensor([1]),
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+        extend_seq_lens=torch.tensor([3]),
+    )
+    request_ids = ["request-a"]
+
+    result = Qwen3TTSTalker.forward(
+        talker,
+        input_ids=forward_batch.input_ids,
+        positions=torch.arange(3),
+        forward_batch=forward_batch,
+        input_embeds=input_embeds,
+        omni_prefill_rids=request_ids,
     )
 
-    assert not has_forward_context()
-    result = runner._forward_with_input_embeds(forward_batch, torch.ones(1, 2))
-
-    assert seen == [attn_backend]
-    assert result.logits_output == "logits"
+    assert received["input_embeds"] is input_embeds
+    assert Qwen3TTSTalker.is_mrope_enabled is True
+    torch.testing.assert_close(
+        result.next_token_logits,
+        input_embeds[-1:] + 1,
+    )
 
 
 def _make_prep_talker(monkeypatch):

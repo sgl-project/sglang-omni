@@ -186,7 +186,11 @@ To reproduce the async-decode comparison below, resolve the pinned checkpoint an
 
 ```bash
 MODEL_REVISION=06f233fe06e710322aca913c1bc4249a0d71fce1
-MODEL_PATH=$(hf download openai/whisper-large-v3 --revision "$MODEL_REVISION")
+MODEL_PATH="$(
+  hf download openai/whisper-large-v3 \
+    --revision "$MODEL_REVISION" \
+    --quiet
+)"
 
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --model-path "$MODEL_PATH" \
