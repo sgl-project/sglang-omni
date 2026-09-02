@@ -48,6 +48,51 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     )
 
 
+def test_voxtral_stage_factories_use_platform_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts.pipeline import engine_builder
+
+    captured: dict[str, object] = {}
+
+    class FakeBuilder:
+        def build(self, model_path, **kwargs):
+            captured["build"] = (model_path, kwargs)
+            return "generation"
+
+    monkeypatch.setattr(engine_builder, "VoxtralTtsEngineBuilder", FakeBuilder)
+    monkeypatch.setattr(
+        stages.current_platform,
+        "get_device",
+        lambda gpu_id: f"npu:{gpu_id}",
+    )
+
+    generation = stages.create_generation_executor("model", gpu_id=3)
+
+    assert generation == "generation"
+    assert captured["build"] == (
+        "model",
+        {
+            "device": "npu:3",
+            "gpu_id": None,
+            "server_args_overrides": None,
+        },
+    )
+
+    seen_devices: list[str] = []
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "_load_audio_tokenizer",
+        lambda _checkpoint, _config, device: (
+            seen_devices.append(device) or SimpleNamespace()
+        ),
+    )
+
+    stages.create_vocoder_executor("model", gpu_id=4)
+    assert seen_devices == ["npu:4"]
+
+
 def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
     """Different voice embeddings must not share a placeholder-token cache prefix."""
     model = SimpleNamespace(
@@ -171,6 +216,31 @@ def test_voxtral_audio_codes_payload_is_compact() -> None:
     assert "audio_codes_bytes" in data
     assert "audio_codes" not in data
     assert restored.audio_codes.tolist() == [[1, 2], [3, 4]]
+
+
+def test_voxtral_audio_attention_accepts_non_contiguous_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts import audio_tokenizer
+
+    monkeypatch.setattr(audio_tokenizer, "HAS_FLASH_ATTN", False)
+    attention = audio_tokenizer.Attention(
+        SimpleNamespace(
+            n_heads=2,
+            n_kv_heads=2,
+            attn_sliding_window_size=8,
+            dim=4,
+            head_dim=2,
+            use_biases=False,
+            qk_norm=False,
+            causal=True,
+        ),
+        layer_id=0,
+    )
+
+    output = attention(torch.randn(3, 4))
+
+    assert output.shape == (3, 4)
 
 
 def test_voxtral_vocoder_preserves_warmup_trim_and_fade(

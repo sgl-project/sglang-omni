@@ -180,6 +180,10 @@ def create_generation_executor(
         VoxtralTtsEngineBuilder,
     )
 
+    if gpu_id is not None:
+        device = str(current_platform.get_device(gpu_id))
+        gpu_id = None
+
     return VoxtralTtsEngineBuilder().build(
         model_path,
         device=device,
@@ -401,7 +405,7 @@ def create_vocoder_executor(
 ) -> SimpleScheduler:
     checkpoint_dir = _resolve_checkpoint(model_path)
     if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
+        device = str(current_platform.get_device(gpu_id))
 
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
     audio_tokenizer = _load_audio_tokenizer(checkpoint_dir, {}, device)
