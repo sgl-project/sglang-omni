@@ -1,6 +1,6 @@
 ---
 name: model-profiling
-description: Generate a bounded task plan (and the agent prompt for it) that runs the 5-layer profiling methodology in .claude/skills/model-profiling/METHODOLOGY.md against one model, stops for human confirmation before any GPU work starts, then delegates the actual run to a background agent, verifies its completion claim, and folds findings into docs/developer_reference/<model>_profile.md plus the methodology doc.
+description: Generate a bounded task plan (and the agent prompt for it) that runs the 5-layer profiling methodology in .claude/skills/model-profiling/METHODOLOGY.md against one model, stops for human confirmation before any GPU work starts, then delegates the actual run to a background agent, verifies its completion claim, and routes findings into a gitignored .profiling-runs/<model>/ directory — durably tracked as a sub-issue under the tracking issue named in SKILL.md's "Result tracking" section — plus the methodology doc.
 ---
 
 # model-profiling
@@ -37,15 +37,31 @@ here**:
 - `§3` — checklist for the next executor / expected output shape.
 - `§4` — tool and script index (py-spy, CPU pinning, nvidia-smi, DCGM, nsys).
 
-This is currently English-only — no Chinese translation is tracked yet.
-`docs/profiling_methodology_zh.md` exists locally as an untranslated draft
-and is not part of this skill; if it's ever added to the repo, treat it as
-a second document to keep in sync, not a replacement for the path above.
-
 The methodology doc gets corrected as new models are profiled. Always read
 the current version at invocation time — never assume the section numbers
 or findings above are still accurate, and never copy its prose into this
 skill or into the generated prompt; reference section names instead.
+
+## Result tracking
+
+Single source of truth for where results go — every "tracking issue"
+mention elsewhere in this skill and in `PROMPT_TEMPLATE.md` refers here,
+so if the tracking issue ever moves, update only this section.
+
+- **Local working artifacts**: `.profiling-runs/<model>/` (gitignored) —
+  `profile.md` plus every raw artifact its numbers cite (py-spy outputs,
+  benchmark logs, nvidia-smi captures). Disposable by design: a fresh
+  clone won't have it, and nothing under `.profiling-runs/` is ever
+  committed. The only committable output of a run is a METHODOLOGY.md
+  edit.
+- **Durable record**: a sub-issue under GitHub issue **#1798** — the only
+  place results survive an environment reset. A run is not durably
+  recorded until its sub-issue exists.
+- **Sub-issue summary shape**: baseline fingerprint (including the repo
+  commit SHA), per-layer conclusions with evidence strength graded by
+  METHODOLOGY.md §3 item 8's rubric, the findings-evidence-recommendation
+  table, and a note naming the host/directory where the raw artifacts
+  live, since they are local-only.
 
 ## Prerequisites (the skill verifies, it does not create)
 
@@ -58,16 +74,22 @@ skill or into the generated prompt; reference section names instead.
   shows nothing) as proof no one else is using the card; shared sandboxes
   can hide cross-tenant PIDs.
 - `py-spy` installed and permitted to attach to the target process (Layer 2).
-- Check whether `docs/developer_reference/<model>_profile.md` already
-  exists — if it does, this is a resume/extend run, not a fresh one; read
-  it first so the plan only covers the missing layers.
+- Check whether `.profiling-runs/<model>/profile.md` already exists — if it
+  does, this is a resume/extend run, not a fresh one; read it first so the
+  plan only covers the missing layers, and compare its recorded baseline
+  fingerprint (commit SHA, GPU model, dependency pins) against the current
+  environment — drift means the prior layers' evidence may be stale, which
+  changes what "missing" means (the agent prompt re-checks this too). The
+  path is gitignored, so a fresh clone won't have it even if the model was
+  profiled before — in that case check the sub-issues under the tracking
+  issue (see Result tracking) before scoping the plan as fresh.
 
 ## Invocation
 
 - `/model-profiling <model>` — resolve the model, draft the plan and the
   filled-in agent prompt, print both, and stop. No GPU work happens yet.
 - `/model-profiling <model> --resume` — same, but explicitly scoped to only
-  the layers missing from the existing `<model>_profile.md`.
+  the layers missing from the existing `.profiling-runs/<model>/profile.md`.
 
 Unlike `running-eval-suite`, this skill **does** pause for a human decision
 before the GPU-touching step — that pause is the point, not an oversight.
@@ -79,14 +101,17 @@ that evidence exists.
 ## Steps I follow
 
 1. Locate the model's benchmark entrypoint and any existing
-   `docs/developer_reference/<model>_profile.md`. Decide fresh vs. resume.
+   `.profiling-runs/<model>/profile.md` (and, if that's absent, any prior
+   sub-issue under the tracking issue — see Result tracking). Decide fresh
+   vs. resume.
 2. Run the cheap parts of the
    `.claude/skills/model-profiling/METHODOLOGY.md` §1 checklist
    myself (`nvidia-smi` free-GPU check, `py-spy --version`); leave the
    expensive/stateful checks (baseline env fingerprint, orphan cleanup) for
    the executing agent to do and record.
 3. Check whether a concrete Layer 4 hypothesis already exists — from an
-   existing `<model>_profile.md`'s Layer 2 findings, or from something
+   existing `.profiling-runs/<model>/profile.md`'s Layer 2 findings, or
+   from something
    already established earlier in this conversation. If not, this run
    cannot pick a Layer 4 A/B variable yet: scope the plan to **discovery
    only** (Layer 1, then 3 and/or 2 per
@@ -115,23 +140,42 @@ that evidence exists.
    on its own. Only after confirmation, resume the same agent
    (`SendMessage`) with the approved Layer 4 (and Layer 5, if applicable)
    scope. Skip this step when the hypothesis was already confirmed before
-   step 5 (e.g. a resume run).
+   step 5 (e.g. a resume run). If the agent took the saturation branch
+   (GPU-kernel-bound, Layer 2 skipped), there is no hypothesis to confirm —
+   the pause still happens, but what's presented is the saturation evidence
+   and a choice: end the run there, or scope kernel-level analysis as a
+   new plan. Don't let the absence of a hypothesis silently skip the pause.
 9. Once genuinely done — discovery, and the approved experiment if one ran
-   — independently verify before reporting: check the new/updated doc's
-   section headers (`grep "^## "`) and `git status --short docs/` — don't
-   just relay the agent's self-summary.
+   — independently verify before reporting, don't just relay the agent's
+   self-summary: check the new/updated `.profiling-runs/<model>/profile.md`
+   has a section per in-scope layer (`grep "^## "`), that the
+   findings-evidence-recommendation table actually exists (headers alone
+   don't prove content), that the raw artifacts the doc cites are actually
+   present in `.profiling-runs/<model>/`, and — if the methodology doc was
+   touched — `git status --short .claude/`.
 10. Route findings:
     - Model-specific numbers and tables → new or updated
-      `docs/developer_reference/<model>_profile.md`, following the section
-      shape of the most complete prior example (currently
-      `moss_transcribe_diarize_profile.md`: baseline env, Layer 1/3, Layer 2,
-      Layer 4, Layer 5, a findings-evidence-recommendation table, cleanup).
+      `.profiling-runs/<model>/profile.md`, with the report shape
+      METHODOLOGY.md §3 item 8 defines (baseline env including commit SHA,
+      one section per layer entered with method/findings/rubric-graded
+      evidence strength, a findings-evidence-recommendation table,
+      cleanup), raw artifacts alongside it in the same directory. This
+      stays out of the repo — see Result tracking.
     - Cross-model, generalizable lessons (sampling bias, outlier fragility,
       tooling gotchas) → `.claude/skills/model-profiling/METHODOLOGY.md`.
     - Anything ambiguous between the two → ask the user, don't decide alone.
-11. **Do not auto-commit.** Print `git status --short docs/` and let the
-    user review and commit themselves — unlike `running-eval-suite`'s
-    auto-commit, these docs carry judgment calls a human should sign off on.
+11. **Do not auto-commit.** Nothing under `.profiling-runs/` is ever
+    committed; the only committable output is a METHODOLOGY.md edit —
+    print `git status --short .claude/` and let the user review and commit
+    that themselves, since it carries judgment calls a human should sign
+    off on.
+12. **Close the loop on the durable record.** End the final report with a
+    ready-to-post sub-issue summary (shape per Result tracking) and the
+    explicit status line "tracking sub-issue not yet filed" — the run is
+    not durably recorded until the user posts it (or explicitly declines,
+    in which case note where the local artifacts live and that they won't
+    survive an environment reset). Do not post the sub-issue yourself
+    without the user's confirmation.
 
 ## What I do not do
 
@@ -150,6 +194,9 @@ that evidence exists.
   on my own — ask when it's not clear-cut.
 - Let a discovery-only run proceed into Layer 4 without a second, explicit
   confirmation of the concrete hypothesis Layer 2 turned up.
+- Treat a run as durably recorded while only the gitignored local artifacts
+  exist — the record isn't closed until the tracking sub-issue is filed or
+  the user explicitly declines it (step 12).
 
 ## Files
 
@@ -167,6 +214,7 @@ that evidence exists.
 2. No config file to add: this skill fills `PROMPT_TEMPLATE.md` fresh per
    invocation instead of reading a per-model registry, since Layer 2/4
    choices are model-specific judgment calls anyway.
-3. After a model's first full run, its `docs/developer_reference/<model>_profile.md`
-   becomes the new best example for Step 10's section shape if it's more
-   complete than the current reference example.
+3. The report shape comes from METHODOLOGY.md §3 item 8, not from a prior
+   model's profile doc — those are gitignored working artifacts and may not
+   exist in a given clone, so never point the agent prompt at one as an
+   example.
