@@ -22,7 +22,8 @@ const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 30_000;
 const SCHEMA_VERSION: u32 = 1;
 const MAX_GLOBAL_ADMISSION: u32 = 1_000_000;
 const MAX_CLASS_ADMISSION: u32 = 65_535;
-const DEFAULT_WS_SETUP_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_WS_CONNECT_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_WS_WORKER_SETUP_TIMEOUT_MS: u64 = DEFAULT_REQUEST_TIMEOUT_MS;
 const DEFAULT_WS_SPEECH_CONFIG_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_WS_CLOSE_TIMEOUT_MS: u64 = 5_000;
 
@@ -54,7 +55,8 @@ pub struct Config {
 pub(crate) struct WebsocketConfig {
     pub(crate) speech: Option<WebsocketRouteConfig>,
     pub(crate) realtime: Option<WebsocketRouteConfig>,
-    setup_timeout_ms: u64,
+    connect_timeout_ms: u64,
+    worker_setup_timeout_ms: u64,
     speech_config_timeout_ms: u64,
     close_timeout_ms: u64,
 }
@@ -70,7 +72,8 @@ impl Default for WebsocketConfig {
         Self {
             speech: None,
             realtime: None,
-            setup_timeout_ms: DEFAULT_WS_SETUP_TIMEOUT_MS,
+            connect_timeout_ms: DEFAULT_WS_CONNECT_TIMEOUT_MS,
+            worker_setup_timeout_ms: DEFAULT_WS_WORKER_SETUP_TIMEOUT_MS,
             speech_config_timeout_ms: DEFAULT_WS_SPEECH_CONFIG_TIMEOUT_MS,
             close_timeout_ms: DEFAULT_WS_CLOSE_TIMEOUT_MS,
         }
@@ -78,8 +81,12 @@ impl Default for WebsocketConfig {
 }
 
 impl WebsocketConfig {
-    pub(crate) const fn setup_timeout(&self) -> Duration {
-        Duration::from_millis(self.setup_timeout_ms)
+    pub(crate) const fn connect_timeout(&self) -> Duration {
+        Duration::from_millis(self.connect_timeout_ms)
+    }
+
+    pub(crate) const fn worker_setup_timeout(&self) -> Duration {
+        Duration::from_millis(self.worker_setup_timeout_ms)
     }
 
     pub(crate) const fn speech_config_timeout(&self) -> Duration {
@@ -525,7 +532,7 @@ impl Config {
             ));
         }
         for (field, value) in [
-            ("websocket.setup_timeout_ms", websocket.setup_timeout_ms),
+            ("websocket.connect_timeout_ms", websocket.connect_timeout_ms),
             (
                 "websocket.speech_config_timeout_ms",
                 websocket.speech_config_timeout_ms,
@@ -535,6 +542,14 @@ impl Config {
             if !(1..=60_000).contains(&value) {
                 return Err(ConfigError::invalid(field, "must be between 1 and 60000"));
             }
+        }
+        if websocket.worker_setup_timeout_ms < websocket.connect_timeout_ms
+            || websocket.worker_setup_timeout_ms > 3_600_000
+        {
+            return Err(ConfigError::invalid(
+                "websocket.worker_setup_timeout_ms",
+                "must be at least connect_timeout_ms and at most 3600000",
+            ));
         }
         if let Some(route) = websocket.speech.as_ref() {
             self.validate_websocket_route(

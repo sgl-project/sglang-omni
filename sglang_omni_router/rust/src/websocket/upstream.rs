@@ -174,7 +174,7 @@ mod tests {
         );
 
         let policy = WebsocketConfig::default();
-        let setup_deadline = tokio::time::Instant::now() + policy.setup_timeout();
+        let setup_deadline = tokio::time::Instant::now() + policy.connect_timeout();
         let mut socket = connect(
             &target,
             "/v1/realtime",

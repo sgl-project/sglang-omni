@@ -183,12 +183,12 @@ async fn run_speech(
             return;
         }
     };
-    let setup_deadline = Instant::now() + gateway.policy.setup_timeout();
+    let classification_deadline = Instant::now() + gateway.policy.worker_setup_timeout();
     let classify_pool = Arc::clone(&gateway.pool);
     let classify_trust = trust.clone();
     let classified = setup_until(
         &mut drain,
-        setup_deadline,
+        classification_deadline,
         classify_blocking(move || {
             let requirement =
                 classify_speech(config_text.as_bytes(), &classify_pool, &classify_trust);
@@ -258,15 +258,16 @@ async fn run_speech(
             return;
         }
     };
+    let connect_deadline = Instant::now() + gateway.policy.connect_timeout();
     let connected = setup_until(
         &mut drain,
-        setup_deadline,
+        connect_deadline,
         upstream::connect(
             lease.target(),
             &upstream_path,
             upstream_query.as_deref(),
             &upstream_headers,
-            setup_deadline,
+            connect_deadline,
         ),
     )
     .await;
@@ -299,11 +300,12 @@ async fn run_speech(
         }
     };
     let mut supervisor = SessionSupervisor::from_admitted(registration, lease, upstream);
+    let worker_deadline = Instant::now() + gateway.policy.worker_setup_timeout();
     let sent = {
         let upstream = supervisor.upstream_mut();
         setup_until(
             &mut drain,
-            setup_deadline,
+            worker_deadline,
             upstream.send(UpstreamMessage::Text(upstream_config)),
         )
         .await
@@ -324,9 +326,6 @@ async fn run_speech(
             return;
         }
         Err(termination) => {
-            if termination == SetupTermination::Deadline {
-                supervisor.request_immediate_probe();
-            }
             close_supervised_setup_termination(
                 supervisor,
                 &mut downstream,
@@ -344,7 +343,7 @@ async fn run_speech(
         let upstream = supervisor.upstream_mut();
         setup_until(
             &mut drain,
-            setup_deadline,
+            worker_deadline,
             next_worker_application(upstream),
         )
         .await
@@ -365,9 +364,6 @@ async fn run_speech(
             return;
         }
         Err(termination) => {
-            if termination == SetupTermination::Deadline {
-                supervisor.request_immediate_probe();
-            }
             close_supervised_setup_termination(
                 supervisor,
                 &mut downstream,
@@ -399,7 +395,7 @@ async fn run_speech(
     };
     match setup_until(
         &mut drain,
-        setup_deadline,
+        worker_deadline,
         downstream.send(Message::Text(text)),
     )
     .await
@@ -458,7 +454,6 @@ pub(crate) async fn realtime(
         return HttpFault::RouterUnavailable.into_response();
     };
     let mut drain = registration.drain_receiver();
-    let setup_deadline = Instant::now() + gateway.policy.setup_timeout();
     let requirement = RouteRequirement::new(
         ProfileRequirement::RealtimeWebsocket {
             protocol: RealtimeProtocol::OpenaiRealtimeV1,
@@ -473,15 +468,16 @@ pub(crate) async fn realtime(
             return dispatch_fault(error).into_response();
         }
     };
+    let connect_deadline = Instant::now() + gateway.policy.connect_timeout();
     let connected = setup_until(
         &mut drain,
-        setup_deadline,
+        connect_deadline,
         upstream::connect(
             lease.target(),
             uri.path(),
             uri.query(),
             &upstream_headers,
-            setup_deadline,
+            connect_deadline,
         ),
     )
     .await;
@@ -506,7 +502,7 @@ pub(crate) async fn realtime(
     upgrade
         .max_message_size(MAX_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
-            run_realtime(socket, gateway, supervisor, setup_deadline).await;
+            run_realtime(socket, gateway, supervisor).await;
         })
         .into_response()
 }
@@ -515,14 +511,14 @@ async fn run_realtime(
     mut downstream: WebSocket,
     gateway: Arc<WebsocketGateway>,
     mut supervisor: SessionSupervisor,
-    setup_deadline: Instant,
 ) {
     let mut drain = supervisor.drain_receiver();
+    let worker_deadline = Instant::now() + gateway.policy.worker_setup_timeout();
     let first = {
         let upstream = supervisor.upstream_mut();
         setup_until(
             &mut drain,
-            setup_deadline,
+            worker_deadline,
             next_worker_application(upstream),
         )
         .await
@@ -547,9 +543,6 @@ async fn run_realtime(
             return;
         }
         Err(termination) => {
-            if termination == SetupTermination::Deadline {
-                supervisor.request_immediate_probe();
-            }
             close_supervised_setup_termination(
                 supervisor,
                 &mut downstream,
@@ -581,7 +574,7 @@ async fn run_realtime(
     };
     match setup_until(
         &mut drain,
-        setup_deadline,
+        worker_deadline,
         downstream.send(Message::Text(text)),
     )
     .await

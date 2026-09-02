@@ -75,12 +75,18 @@ struct SetupDeadlineWorkerState {
     realtime_attempts: Arc<AtomicUsize>,
     speech_close_code: Arc<AtomicUsize>,
     realtime_close_code: Arc<AtomicUsize>,
+    health_probes: Arc<AtomicUsize>,
 }
 
 const REALTIME_FLOOD: &str = r#"{"type":"test.flood"}"#;
 const REALTIME_CONTROL: &str = r#"{"type":"response.cancel"}"#;
 
 async fn health() -> StatusCode {
+    StatusCode::OK
+}
+
+async fn setup_deadline_health(State(state): State<SetupDeadlineWorkerState>) -> StatusCode {
+    state.health_probes.fetch_add(1, Ordering::Relaxed);
     StatusCode::OK
 }
 
@@ -305,7 +311,8 @@ success_threshold = 1
 failure_threshold = 1
 
 [websocket]
-setup_timeout_ms = 5000
+connect_timeout_ms = 5000
+worker_setup_timeout_ms = 5000
 
 [websocket.speech]
 trust_domain = "local"
@@ -715,9 +722,10 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         realtime_attempts: Arc::new(AtomicUsize::new(0)),
         speech_close_code: Arc::new(AtomicUsize::new(0)),
         realtime_close_code: Arc::new(AtomicUsize::new(0)),
+        health_probes: Arc::new(AtomicUsize::new(0)),
     };
     let worker_app = Router::new()
-        .route("/health", get(health))
+        .route("/health", get(setup_deadline_health))
         .route("/v1/audio/speech/stream", get(setup_deadline_speech_worker))
         .route("/v1/realtime", get(setup_deadline_realtime_worker))
         .with_state(state.clone());
@@ -729,7 +737,12 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
     let directory = TestDir::new();
     let config = directory.config(
         &router_config(router_address, worker_address)
-            .replace("setup_timeout_ms = 5000", "setup_timeout_ms = 500"),
+            .replace("interval_ms = 100", "interval_ms = 60000")
+            .replace("connect_timeout_ms = 5000", "connect_timeout_ms = 100")
+            .replace(
+                "worker_setup_timeout_ms = 5000",
+                "worker_setup_timeout_ms = 500",
+            ),
     );
     let child = Command::new(env!("CARGO_BIN_EXE_sgl-omni-router"))
         .arg("--config")
@@ -740,6 +753,7 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         .expect("start setup-deadline router");
     let _child = ChildGuard(child);
     wait_ready(router_address).await;
+    let initial_health_probes = state.health_probes.load(Ordering::Relaxed);
 
     let speech_url = format!("ws://{router_address}/v1/audio/speech/stream");
     let speech_config = r#"{"type":"session.config","model":"omni","response_format":"pcm"}"#;
@@ -760,6 +774,11 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         ClientMessage::Close(Some(frame)) if u16::from(frame.code) == 1011
     ));
     wait_for_worker_attempt(&state.speech_close_code, 1011).await;
+    assert_eq!(
+        state.health_probes.load(Ordering::Relaxed),
+        initial_health_probes,
+        "a worker application timeout must not trigger a health probe"
+    );
     drop(stalled_speech);
 
     let mut reused_speech = tokio::time::timeout(Duration::from_secs(1), async {
@@ -804,6 +823,11 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         ClientMessage::Close(Some(frame)) if u16::from(frame.code) == 1011
     ));
     wait_for_worker_attempt(&state.realtime_close_code, 1011).await;
+    assert_eq!(
+        state.health_probes.load(Ordering::Relaxed),
+        initial_health_probes,
+        "a worker application timeout must not trigger a health probe"
+    );
     drop(stalled_realtime);
 
     let mut reused_realtime = tokio::time::timeout(Duration::from_secs(1), async {

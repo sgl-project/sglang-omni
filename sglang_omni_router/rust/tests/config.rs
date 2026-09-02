@@ -195,11 +195,11 @@ fn websocket_handlers_are_independently_configurable_without_http_routes() {
 }
 
 #[test]
-fn websocket_setup_timeout_is_one_strict_bounded_configuration_value() {
+fn websocket_transport_and_worker_setup_timeouts_have_distinct_bounds() {
     let base = websocket_only_config("speech");
     let explicit = base.replace(
         "[websocket.speech]",
-        "[websocket]\nsetup_timeout_ms = 5000\n\n[websocket.speech]",
+        "[websocket]\nconnect_timeout_ms = 5000\nworker_setup_timeout_ms = 1800000\n\n[websocket.speech]",
     );
     assert!(load_bytes(explicit.as_bytes()).is_ok());
     for value in [0, 60_001] {
@@ -207,8 +207,8 @@ fn websocket_setup_timeout_is_one_strict_bounded_configuration_value() {
             load_bytes(
                 explicit
                     .replace(
-                        "setup_timeout_ms = 5000",
-                        &format!("setup_timeout_ms = {value}")
+                        "connect_timeout_ms = 5000",
+                        &format!("connect_timeout_ms = {value}")
                     )
                     .as_bytes()
             )
@@ -218,11 +218,24 @@ fn websocket_setup_timeout_is_one_strict_bounded_configuration_value() {
     assert!(
         load_bytes(
             explicit
-                .replace("setup_timeout_ms", "handshake_timeout_ms")
+                .replace("connect_timeout_ms", "handshake_timeout_ms")
                 .as_bytes()
         )
         .is_err()
     );
+    for value in [4_999, 3_600_001] {
+        assert!(
+            load_bytes(
+                explicit
+                    .replace(
+                        "worker_setup_timeout_ms = 1800000",
+                        &format!("worker_setup_timeout_ms = {value}")
+                    )
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
 }
 
 #[test]
