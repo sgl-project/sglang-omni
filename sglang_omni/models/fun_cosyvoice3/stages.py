@@ -110,18 +110,26 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
+    disable_cuda_graph: bool = False,
+    disable_piecewise_cuda_graph: bool = False,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
     from sglang_omni.models.fun_cosyvoice3.engine_builder import (
         FunCosyVoice3EngineBuilder,
     )
 
+    overrides = dict(server_args_overrides or {})
+    if disable_cuda_graph:
+        overrides["disable_cuda_graph"] = True
+    if disable_piecewise_cuda_graph:
+        overrides["disable_piecewise_cuda_graph"] = True
+
     return FunCosyVoice3EngineBuilder().build(
         model_path,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides=overrides,
     )
 
 

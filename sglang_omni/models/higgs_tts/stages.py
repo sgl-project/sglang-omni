@@ -474,6 +474,7 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
     cuda_graph_max_bs: int = 64,
+    disable_cuda_graph: bool = False,
     server_args_overrides: dict[str, Any] | None = None,
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
@@ -486,6 +487,10 @@ def create_sglang_tts_engine_executor(
 ):
     """sglang-backed AR engine for Higgs TTS."""
     from sglang_omni.models.higgs_tts.engine_builder import HiggsTtsEngineBuilder
+
+    overrides = dict(server_args_overrides or {})
+    if disable_cuda_graph:
+        overrides["disable_cuda_graph"] = True
 
     return HiggsTtsEngineBuilder(
         max_new_tokens=max_new_tokens,
@@ -502,7 +507,7 @@ def create_sglang_tts_engine_executor(
     ).build(
         model_path,
         device=device,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides=overrides,
     )
 
 
