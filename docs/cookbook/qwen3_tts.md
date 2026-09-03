@@ -94,6 +94,23 @@ PCM across runtime batch sizes. This mode reduces throughput because it
 serializes reference preprocessing and vocoder decoding and disables both the
 initial and follow-up vocoder CUDA Graphs, so it is disabled by default.
 
+### Talker MLP FP8
+
+To run the Talker and Code Predictor feed-forward MLPs in FP8, enable SGLang's
+quantization path explicitly:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --config examples/configs/qwen3_tts_0_6b.yaml \
+  --tts_engine.engine.quantization fp8 \
+  --port 8000
+```
+
+Attention, embeddings, projections, and output heads remain on the BF16 path.
+BF16 is still the default and the reference for reporting FP8 accuracy and
+performance.
+
 ### Overload / admission policy
 
 Two SGLang generation-stage knobs bound how the server behaves past saturation:
