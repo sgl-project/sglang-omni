@@ -576,3 +576,66 @@ class TestServeErrors:
         output = output_of(result)
         assert "Missing value" in output
         assert "Traceback" not in output
+
+
+class TestRuntimeResolvedRendering:
+    """Hardware-resolved engine fields left at "auto" get a value only on the
+    GPU the stage lands on; the preview cannot know it. The commands say so
+    with a pending runtime line instead of guessing or staying silent."""
+
+    def test_provenance_lists_a_pending_runtime_line(self, runner, config_file, stage):
+        result = runner.invoke(
+            config_app,
+            ["resolve", "--config", str(config_file), "--show", "provenance"],
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        output = output_of(result)
+        assert f"stages.{stage}.engine.chunked_prefill_size" in output
+        assert "auto (resolved from GPU memory at launch)" in output
+        assert "runtime (sglang hardware resolution at launch)" in output
+
+    def test_explain_answers_for_an_auto_field(self, runner, config_file, stage):
+        result = runner.invoke(
+            config_app,
+            [
+                "explain",
+                f"stages.{stage}.engine.chunked_prefill_size",
+                "--config",
+                str(config_file),
+            ],
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        output = output_of(result)
+        assert "auto (resolved from GPU memory at launch)" in output
+
+    def test_explicit_value_gets_no_pending_line(self, runner, config_file, stage):
+        result = runner.invoke(
+            config_app,
+            [
+                "explain",
+                f"stages.{stage}.engine.chunked_prefill_size",
+                "--config",
+                str(config_file),
+                f"--{stage}.engine.chunked_prefill_size",
+                "4096",
+            ],
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        output = output_of(result)
+        assert "4096" in output
+        assert "auto (resolved from GPU memory at launch)" not in output
+
+    def test_explain_listing_survives_runtime_only_paths(
+        self, runner, plain_config_file
+    ):
+        """The no-argument listing used to assert every path had a winner;
+        runtime-only paths have none."""
+        result = runner.invoke(
+            config_app, ["explain", "--config", str(plain_config_file)]
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        assert "runtime (sglang hardware resolution at launch)" in output_of(result)
