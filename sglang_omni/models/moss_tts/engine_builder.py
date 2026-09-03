@@ -39,6 +39,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         return {
+            "disable_radix_cache": True,
             "max_running_requests": 16,
             "dtype": dtype,
             "disable_cuda_graph": False,

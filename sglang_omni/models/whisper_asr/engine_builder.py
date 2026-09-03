@@ -239,6 +239,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
+            "disable_radix_cache": True,
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
