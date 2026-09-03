@@ -33,6 +33,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         *,
         token_hop_len: int = TOKEN_HOP_LEN,
         onnx_intra_op_threads: int = 16,
+        total_gpu_memory_fraction: float | None = None,
     ) -> None:
         super().__init__()
         hop = int(token_hop_len)
@@ -40,12 +41,22 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
         self._token_hop_len = hop
         self._checkpoint_root: str | None = None
+        self.total_gpu_memory_fraction = total_gpu_memory_fraction
 
         # note (Dayuxiaoshui): both ONNX sessions get a pool of this size, so
         # cap it at the host core count instead of trusting the default of 16.
         self._onnx_intra_op_threads = max(
             1, min(int(onnx_intra_op_threads), os.cpu_count() or 1)
         )
+
+    def infra_kwargs(self) -> dict[str, Any]:
+        # Note (Jiaxin Deng): without this the declared stage budget stops at the
+        # placement validator and KV sizing falls back to whatever the card happens to
+        # have free, so capacity would depend on which process loaded first. Emitted
+        # only when a budget is declared, so the single-process path is untouched.
+        if self.total_gpu_memory_fraction is None:
+            return {}
+        return {"total_gpu_memory_fraction": self.total_gpu_memory_fraction}
 
     def _blanken_dir(self) -> str:
         assert self._checkpoint_root is not None, "checkpoint_root not set"
