@@ -38,7 +38,7 @@ impl Drop for TestDir {
 
 fn valid_config(listen: &str, drain_timeout_ms: u64, filter: &str) -> String {
     format!(
-        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n"
+        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 2\nfailure_threshold = 3\n\n[http_generation]\ntrust_domain = \"local\"\nstreamed_request_max_bytes = 16777216\nconnect_timeout_ms = 1000\nrequest_timeout_ms = 5000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
     )
 }
 
@@ -59,6 +59,16 @@ fn with_header_timeout(config: String, timeout_ms: u64) -> String {
 fn load_bytes(contents: &[u8]) -> Result<Config, ConfigError> {
     let directory = TestDir::new();
     Config::load(&directory.write(contents))
+}
+
+fn append_worker(base: &str, worker_id: &str, port: u16) -> String {
+    let (_, worker) = base
+        .split_once("[[workers]]")
+        .expect("valid fixture contains a worker");
+    let worker = format!("[[workers]]{worker}")
+        .replace("worker-a", worker_id)
+        .replace("127.0.0.1:8000", &format!("127.0.0.1:{port}"));
+    format!("{base}\n{worker}")
 }
 
 #[test]
@@ -96,6 +106,13 @@ fn validates_connection_cap_boundaries() {
         );
         assert!(load_bytes(config.as_bytes()).is_err());
     }
+}
+
+#[test]
+fn enabled_router_accepts_non_loopback_listener() {
+    let config = load_bytes(valid_config("0.0.0.0:30000", 30_000, "info").as_bytes())
+        .expect("an explicit non-loopback listener should be valid");
+    assert_eq!(config.server.listen.to_string(), "0.0.0.0:30000");
 }
 
 #[test]
@@ -185,4 +202,184 @@ fn parse_errors_include_path_and_cause_without_echoing_contents() {
     assert!(message.contains("router.toml"));
     assert!(message.contains("unknown field"));
     assert!(!message.contains("do-not-log"));
+}
+
+#[test]
+fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info");
+    assert!(
+        load_bytes(
+            base.replace(
+                "pool_max_idle_per_host = 8",
+                "pool_max_idle_per_host = 1024",
+            )
+            .as_bytes(),
+        )
+        .is_ok()
+    );
+    let cases = [
+        base.replace("global = 128", "global = 0"),
+        base.replace(
+            "streamed_request_max_bytes = 16777216",
+            "streamed_request_max_bytes = 0",
+        ),
+        base.replace("connect_timeout_ms = 1000", "connect_timeout_ms = 0"),
+        base.replace("pool_max_idle_per_host = 8", "pool_max_idle_per_host = 0"),
+        base.replace(
+            "pool_max_idle_per_host = 8",
+            "pool_max_idle_per_host = 1025",
+        ),
+        base.replace("worker_id = \"worker-a\"", "worker_id = \"bad worker\""),
+        base.replace(
+            "default_model_id = \"omni\"",
+            "default_model_id = \"other\"",
+        ),
+        base.replace(
+            "message_content_forms = [\"string\"]",
+            "message_content_forms = []",
+        ),
+        base.replace(
+            "trust_domain = \"local\"\nstreamed_request_max_bytes",
+            "trust_domain = \"remote\"\nstreamed_request_max_bytes",
+        ),
+        base.replace("global = 128", "global = 128\nfuture_limit = 1"),
+    ];
+    for contents in cases {
+        assert!(load_bytes(contents.as_bytes()).is_err());
+    }
+}
+
+#[test]
+fn content_blind_route_requires_a_homogeneous_worker_cohort() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info");
+    let two_workers = append_worker(&base, "worker-b", 8001);
+    assert!(load_bytes(two_workers.as_bytes()).is_ok());
+
+    let different_model = two_workers.replacen(
+        "default_model_id = \"omni\"",
+        "default_model_id = \"other\"",
+        1,
+    );
+    let different_model =
+        different_model.replacen("model_ids = [\"omni\"]", "model_ids = [\"other\"]", 1);
+    let error = load_bytes(different_model.as_bytes())
+        .expect_err("different default models must reject content-blind routing");
+    assert!(matches!(
+        error,
+        ConfigError::InvalidField {
+            field: "http_generation.trust_domain",
+            ..
+        }
+    ));
+
+    let different_profile = two_workers.replacen(
+        "input_modalities = [\"text\"]",
+        "input_modalities = [\"text\", \"audio\"]",
+        1,
+    );
+    assert!(load_bytes(different_profile.as_bytes()).is_err());
+}
+
+#[test]
+fn worker_fields_are_validated_before_route_cross_checks() {
+    let invalid_worker = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "trust_domain = \"local\"\ndefault_model_id",
+        "trust_domain = \"bad domain\"\ndefault_model_id",
+    );
+    let error = load_bytes(invalid_worker.as_bytes()).expect_err("invalid worker label must fail");
+    assert!(matches!(
+        error,
+        ConfigError::InvalidField {
+            field: "workers.trust_domain",
+            ..
+        }
+    ));
+
+    let invalid_route = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "trust_domain = \"local\"\nstreamed_request_max_bytes",
+        "trust_domain = \"local \"\nstreamed_request_max_bytes",
+    );
+    let error = load_bytes(invalid_route.as_bytes()).expect_err("invalid route label must fail");
+    assert!(matches!(
+        error,
+        ConfigError::InvalidField {
+            field: "http_generation.trust_domain",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn worker_origins_are_strict_and_dns_is_deferred() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info");
+    let invalid = [
+        base.replace(
+            "base_url = \"http://127.0.0.1:8000/\"",
+            "base_url = \"http://user:secret@127.0.0.1:8000/\"",
+        ),
+        base.replace(
+            "base_url = \"http://127.0.0.1:8000/\"",
+            "base_url = \"http://127.0.0.1:8000/chat\"",
+        ),
+        base.replace(
+            "base_url = \"http://127.0.0.1:8000/\"",
+            "base_url = \"http://127.0.0.1:8000/?worker=secret\"",
+        ),
+        base.replace(
+            "base_url = \"http://127.0.0.1:8000/\"",
+            "base_url = \"http://127.0.0.1:8000/#secret\"",
+        ),
+        base.replace(
+            "base_url = \"http://127.0.0.1:8000/\"",
+            "base_url = \"http://127.0.0.1:0/\"",
+        ),
+    ];
+    for contents in invalid {
+        let error = load_bytes(contents.as_bytes()).expect_err("invalid worker target must fail");
+        let message = error.to_string();
+        assert!(message.contains("workers.base_url"));
+        assert!(!message.contains("secret"));
+    }
+
+    let hostname = base.replace(
+        "base_url = \"http://127.0.0.1:8000/\"",
+        "base_url = \"http://worker.invalid:8000/\"",
+    );
+    assert!(load_bytes(hostname.as_bytes()).is_ok());
+
+    let stale_pin = base.replace(
+        "base_url = \"http://127.0.0.1:8000/\"",
+        "base_url = \"http://127.0.0.1:8000/\"\nresolved_ip = \"127.0.0.1\"",
+    );
+    let error = load_bytes(stale_pin.as_bytes()).expect_err("removed pin field must fail config");
+    assert!(error.to_string().contains("resolved_ip"));
+}
+
+fn additional_worker(worker_id: &str, base_url: &str) -> String {
+    format!(
+        "\n[[workers]]\nworker_id = \"{worker_id}\"\nbase_url = \"{base_url}\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
+    )
+}
+
+#[test]
+fn normalized_worker_origins_are_unique() {
+    let first = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "base_url = \"http://127.0.0.1:8000/\"",
+        "base_url = \"http://worker.invalid:8000/\"",
+    );
+
+    let distinct = format!(
+        "{first}{}",
+        additional_worker("worker-b", "http://worker.invalid:8001/")
+    );
+    assert!(load_bytes(distinct.as_bytes()).is_ok());
+
+    let duplicate = format!(
+        "{first}{}",
+        additional_worker("worker-b", "HTTP://WORKER.INVALID:8000/")
+    );
+    let error = load_bytes(duplicate.as_bytes()).expect_err("duplicate origin must fail config");
+    let message = error.to_string();
+    assert!(message.contains("workers.base_url"));
+    assert!(!message.contains("worker.invalid"));
 }

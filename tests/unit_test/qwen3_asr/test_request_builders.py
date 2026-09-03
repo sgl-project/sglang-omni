@@ -473,6 +473,37 @@ def test_qwen3_asr_request_builder_preserves_sampling_mode(
     assert data.req.sampling_params.top_k == expected_top_k
 
 
+def test_qwen3_asr_mlx_rejects_non_greedy_sampling(monkeypatch) -> None:
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 3000)),
+        attention_mask=torch.ones((1, 101), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: pytest.fail(
+            "non-greedy Apple request should fail before audio decoding"
+        ),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+        greedy_only=True,
+    )
+    payload = StagePayload(
+        request_id="req-asr-mlx-sampling",
+        request=OmniRequest(
+            inputs={"audio_bytes": b"wav"},
+            params={"temperature": 0.1},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="supports only greedy decoding"):
+        request_builder(payload)
+
+
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     monkeypatch,
 ) -> None:

@@ -82,7 +82,7 @@ def asr_router_server(
 ) -> ManagedRouterHandle:
     with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
-        model_path=_PRESET.model_path,
+        model_path=_PRESET.resolved_model_path(),
         model_name=_PRESET.model_path,
         worker_extra_args="",
         wait_timeout=STARTUP_TIMEOUT,

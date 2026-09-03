@@ -10,18 +10,116 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
-MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B --revision "${MODEL_REVISION}")
+MODEL_PATH="$(
+  hf download Qwen/Qwen3-ASR-1.7B \
+    --revision "${MODEL_REVISION}" \
+    --quiet
+)"
 ```
+
+### Apple Silicon (MLX)
+
+The Apple Silicon path requires macOS, Python 3.12, Homebrew, and SGLang's MLX
+runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+
+```bash
+brew install ffmpeg@7
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
+currently installs FFmpeg 9, while Apple installs `torchcodec==0.11.1`, which
+supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
+directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
+
+macOS may remove `DYLD_*` variables when a SIP-protected system executable
+launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
+for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
+`/usr/bin/time`. Test a compressed input such as M4A or MP3, since WAV decoding
+can succeed without loading FFmpeg.
+
+Create one virtual environment for both repositories, then install the pinned
+SGLang tag from source with its `all_mps` dependencies before installing
+SGLang-Omni:
+
+```bash
+git clone --branch v0.5.18 https://github.com/sgl-project/sglang.git
+git clone https://github.com/sgl-project/sglang-omni.git
+
+uv venv -p 3.12 sglang-omni/.venv-apple
+source sglang-omni/.venv-apple/bin/activate
+
+cd sglang
+cp python/pyproject_other.toml python/pyproject.toml
+uv pip install -e "python[all_mps]"
+
+cd ../sglang-omni
+uv pip install -e .
+```
+
+This installs MLX through SGLang. It does not install or use the `mlx-audio`
+package. Before downloading a model, verify both Metal and FFmpeg loading:
+
+```bash
+SGLANG_USE_MLX=1 python - <<'PY'
+import mlx.core as mx
+from torchcodec.decoders import AudioDecoder
+
+assert mx.metal.is_available()
+print("MLX Metal and TorchCodec FFmpeg loading are available")
+PY
+```
+
+Use an MLX-converted Qwen3-ASR checkpoint and opt into the MLX runner:
+
+```bash
+export SGLANG_USE_MLX=1
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+sgl-omni serve \
+  --model-path mlx-community/Qwen3-ASR-0.6B-4bit \
+  --model-name Qwen/Qwen3-ASR-0.6B \
+  --asr.engine.max_running_requests 1 \
+  --port 8000
+```
+
+The MLX path currently supports one device (`tp_size=1`) and greedy decoding.
+Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
+HTTP and SSE transcription interfaces below are the same as on CUDA;
+`stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
+The Apple paths do not provide sampling penalties or token logprobs yet. MLX
+can batch multiple requests, but `max_running_requests=1` is recommended when
+single-request latency matters; increase it only when throughput is preferred.
+
+To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
+and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
+greedy decoding, and the eager `torch_native`/`sdpa` profile:
+
+```bash
+unset SGLANG_USE_MLX
+sgl-omni serve \
+  --model-path Qwen/Qwen3-ASR-0.6B \
+  --model-name Qwen/Qwen3-ASR-0.6B \
+  --asr.engine.max_running_requests 1 \
+  --port 8000
+```
+
+The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses
+`audio_chunking.max_audio_clip_s` for non-streaming chunks (30 seconds by
+default), and caps native/whole-upload requests at 60 seconds. Values above
+that qualified limit are rejected. Use the MLX path for long audio and the
+larger native context limit.
 
 ## Server Configuration
 
 Qwen3-ASR runs a single ASR stage on one GPU. Its default `auto` dtype follows
 the checkpoint configuration (BF16 for Qwen3-ASR-1.7B); pass
-`--stages.asr.factory-args.dtype float16` to force FP16.
+`--asr.factory.dtype float16` to force FP16.
 Async decode is enabled by default for all decode batch sizes, allowing the
 shared one-step-lookahead path to overlap host-side result processing with the
-next GPU decode forward even for a single request. Use `--asr.factory.enable_async_decode false` to
-disable it, or tune the crossover with `--asr.factory.async_decode_min_batch_size`.
+next GPU decode forward even for a single request. Use
+`--asr.factory.enable_async_decode false` to disable it, or tune the crossover
+with `--asr.factory.async_decode_min_batch_size`.
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 40 ms. Once request-build work drains, a ready prefill is released immediately
@@ -155,17 +253,31 @@ are not supported as forced `language` hints; use `Chinese`/`zh` for them.
 The current Qwen3-ASR model accepts at most 1,200 seconds of audio in one
 request, so we transcribe longer uploads in chunks: we split the audio, run
 each chunk as its own engine request, and join the transcripts back in
-order. The behavior follows these values, which Qwen3-ASR declares in code
-(`Qwen3ASRPipelineConfig.audio_chunking`). They are fixed model defaults in
-this release:
+order. The behavior follows two kinds of values.
+
+The scheduling policy is yours to tune, with dotted flags or the matching
+YAML keys:
+
+| Name | Default | Meaning |
+|---|---|---|
+| `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. It sits well below the model's native 1,200s on purpose: shorter chunks batch better, and the output-token budget scales with clip length on its own. Capped at the native clip limit. |
+| `--audio_chunking.max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests. |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+
+The model properties are ClassVars on `Qwen3ASRPipelineConfig`; no
+configuration path reaches them:
 
 | Name | Value | Meaning |
 |---|---|---|
-| `max_audio_clip_s` | `60` | Longest clip we send to the engine in one request, and therefore the chunk length. It sits well below the model's native 1,200s on purpose: shorter chunks batch better, and the output-token budget scales with clip length on its own. |
-| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff. |
-| `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
-| `max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests. |
+| `allow_audio_chunking` | `true` | Qwen3-ASR transcribes an isolated chunk correctly, so chunking is on. |
+| `max_native_clip_s` | `1200` | Longest clip the model takes as one request (its native limit). Streaming cannot chunk, so this is the streaming cutoff; the Torch MPS compatibility path resolves it to its qualified 60-second cap. |
 | `min_tail_s` | `0.5` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it. This matches the model's own minimum input length. |
+
+Note: Raising `audio_chunking.max_audio_clip_s` also resizes the encoder CUDA-graph bucket
+ladder, which is derived from the chunk length: a longer chunk means more and
+larger captured graphs, and their static buffers stay resident for the life of
+the server (roughly 6.6 KB per token of ladder ceiling; at 1,200s the ceiling
+is 124,800 tokens). Budget for that when you raise the flag on small GPUs.
 
 Behavior notes:
 
@@ -175,9 +287,10 @@ Behavior notes:
 - A few unusual audio formats may not expose a readable duration; we fall
   back to the non-chunked path for those uploads.
 - Streamed responses (`stream=true`) do not support chunking yet; a stream
-  request runs as one engine request, so it takes audio up to
-  `max_native_clip_s` (1,200s) and gets HTTP 400 above that -- use
-  `stream=false` for longer uploads.
+  request runs as one engine request. MLX and CUDA accept audio up to the
+  model-native `max_native_clip_s` (1,200s), while Torch MPS accepts up to its
+  qualified 60-second cap and returns HTTP 400 above that -- use `stream=false`
+  for longer uploads.
 
 ## Benchmarking
 
@@ -278,6 +391,7 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 - The endpoint accepts one uploaded file per request.
 - Non-streaming uploads up to `max_total_audio_s` (default one hour) are
   transcribed in full via chunking; see Long Audio above. Streaming requests
-  are limited to `max_native_clip_s` (1,200s).
+  are limited to `max_native_clip_s` (1,200s) on MLX/CUDA; Torch MPS caps both
+  native and whole-upload requests at 60 seconds.
 - `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

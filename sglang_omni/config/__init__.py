@@ -19,6 +19,7 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     PlacementConfig,
     ProcessConfig,
+    ResolvedAudioChunking,
     StageConfig,
 )
 from sglang_omni.config.topology import (
@@ -49,6 +50,7 @@ __all__ = [
     "ProcessTopologyPlan",
     "build_process_topology_plan",
     "AudioChunkingConfig",
+    "ResolvedAudioChunking",
     "compile_logical_processes",
     "PipelineConfig",
     "ProcessConfig",

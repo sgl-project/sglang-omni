@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
-use sgl_omni_router::{RunOutcome, execute};
+use sgl_omni_router::{Config, RouterError, run};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -32,12 +32,17 @@ fn main() -> ExitCode {
         }
     };
 
-    match execute(&cli.config, cli.check_config) {
-        Ok(RunOutcome::ConfigValid) => {
-            let _write_result = writeln!(io::stdout().lock(), "configuration valid");
-            ExitCode::SUCCESS
-        }
-        Ok(RunOutcome::CleanShutdown) => ExitCode::SUCCESS,
+    let result = if cli.check_config {
+        Config::load(&cli.config)
+            .map_err(RouterError::from)
+            .map(|_| {
+                let _write_result = writeln!(io::stdout().lock(), "configuration valid");
+            })
+    } else {
+        run(&cli.config)
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let exit_code = error.exit_code();
             let mut command = Cli::command();

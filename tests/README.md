@@ -78,6 +78,7 @@ tests/
     ├── models/
     │   └── test_model_capabilities.py
     ├── model_runner/
+    │   ├── test_arch_override.py
     │   ├── test_hidden_capture.py
     │   └── test_prefill_cuda_graph_usage.py
     ├── audar_tts/
@@ -202,11 +203,13 @@ tests/
     │   ├── test_stop_run_id.py
     │   └── test_views.py
     ├── serve/
+    │   ├── test_cli_audio_chunking.py
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
     │   ├── test_speech_to_text.py
     │   ├── test_subtitles.py
+    │   ├── test_transcription_chunking.py
     │   ├── test_translation_capability.py
     │   └── test_translations.py
     ├── scheduling/
@@ -475,6 +478,9 @@ that happened to contain an older version of the test.
     error propagation with same-device stream checks, using CPU stand-ins
     where no GPU is present.
 - `unit_test/model_runner/`: Shared model-runner contract tests:
+  - arch override pool sizing: a sub-model engine's KV pool takes the
+    sub-model's layer count through SGLang's layer resolver (the Qwen3-Omni
+    talker at 20 layers, the thinker at 48).
   - graph-safe hidden-state capture: stable registered buffers refreshed by
     decoder-layer pre-hooks, capacity validation, graph-replay row reads, and
     buffer address stability across forwards, including real breakable CUDA

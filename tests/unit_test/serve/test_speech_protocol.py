@@ -662,17 +662,55 @@ def test_reference_audio_rejects_oversized_data_url(
     assert exc_info.value.param == "ref_audio"
 
 
-def test_speech_service_rejects_oversized_input(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = SpeechRequestValidator(default_model="tts")
-    monkeypatch.setattr(speech_service, "MAX_SPEECH_INPUT_CHARS", 5)
+def test_speech_service_rejects_oversized_input() -> None:
+    service = SpeechRequestValidator(default_model="tts", max_speech_input_chars=5)
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello world"})
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "input"
+
+
+def test_speech_service_keeps_default_input_limit() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "x" * (speech_service.MAX_SPEECH_INPUT_CHARS + 1)}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "input"
+
+
+def test_speech_input_default_is_shared_with_pipeline_schema() -> None:
+    from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS, PipelineConfig
+
+    assert speech_service.MAX_SPEECH_INPUT_CHARS == MAX_SPEECH_INPUT_CHARS
+    assert PipelineConfig.max_speech_input_chars == MAX_SPEECH_INPUT_CHARS
+
+
+@pytest.mark.parametrize("max_speech_input_chars", [0, -1, True, 1.5])
+def test_speech_service_rejects_invalid_input_limit(
+    max_speech_input_chars: object,
+) -> None:
+    with pytest.raises(ValueError, match="positive integer or None"):
+        SpeechRequestValidator(
+            default_model="tts",
+            max_speech_input_chars=max_speech_input_chars,
+        )
+
+
+def test_speech_service_can_defer_input_length_to_model_context() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        max_speech_input_chars=None,
+    )
+
+    request = service.parse_request({"input": "x" * 5000})
+
+    assert len(request.input) == 5000
 
 
 def test_reference_list_accepts_raw_local_path(tmp_path: Path) -> None:

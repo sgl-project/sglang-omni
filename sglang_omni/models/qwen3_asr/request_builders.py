@@ -114,6 +114,7 @@ def make_qwen3_asr_scheduler_adapters(
     context_length: int | None = None,
     audio_encoder_service: Any = None,
     should_wait_for_encode: Callable[[], bool] | None = None,
+    greedy_only: bool = False,
 ) -> tuple[
     Callable[[StagePayload], Qwen3ASRRequestData | DeferredAdmission],
     Callable[[Any], StagePayload],
@@ -178,6 +179,12 @@ def make_qwen3_asr_scheduler_adapters(
         payload: StagePayload,
     ) -> Qwen3ASRRequestData | DeferredAdmission:
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
+        if greedy_only and temperature != 0.0:
+            raise ValueError(
+                "Qwen3-ASR Apple backend currently supports only greedy decoding; "
+                "set temperature=0"
+            )
         language = params.get("language")
         requested_language = None if language is None else str(language)
         forced_language = (
@@ -335,7 +342,6 @@ def make_qwen3_asr_scheduler_adapters(
         # (mrope_fast_path.py) can skip the per-request position loop for it.
         setattr(mm_inputs, mrope_fast_path.DEGENERATE_MROPE_FLAG, True)
 
-        temperature = float(params.get("temperature") or 0.0)
         logger.debug(
             f"[qwen3-asr] sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"

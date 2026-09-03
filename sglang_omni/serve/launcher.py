@@ -130,14 +130,19 @@ def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any
     summary: dict[str, Any] = {}
     for stage in pipeline_config.stages:
         fraction = stage.gpu_memory_fraction
+        kv_cache_bytes = (
+            stage.engine.kv_cache_bytes if stage.engine is not None else None
+        )
         mem_fraction = (
             stage.engine.mem_fraction_static if stage.engine is not None else None
         )
-        if stage.gpu is None and fraction is None:
+        if stage.gpu is None and fraction is None and kv_cache_bytes is None:
             continue
         summary[stage.name] = {
             "gpu": stage.gpu,
             "total_gpu_memory_fraction": fraction,
+            "kv_cache_bytes": kv_cache_bytes,
+            "total_reserve_bytes": stage.total_reserve_bytes,
             "mem_fraction_static": mem_fraction,
         }
     return summary
@@ -188,6 +193,8 @@ def _placement_log_summary(
                 "stages": list(gpu.stage_names),
                 "total_gpu_memory_fraction": round(gpu.total_gpu_memory_fraction, 3),
                 "missing_fraction_stages": list(gpu.missing_fraction_stage_names),
+                "total_kv_cache_bytes": gpu.total_kv_cache_bytes,
+                "total_reserve_bytes": gpu.total_reserve_bytes,
             }
             for gpu_id, gpu in placement_plan.gpus.items()
         },
@@ -434,6 +441,7 @@ async def _run_server(
                 pipeline_config.speech_reference_text_excludes_instructions
             ),
             additional_speech_languages=pipeline_config.additional_speech_languages,
+            max_speech_input_chars=pipeline_config.max_speech_input_chars,
             enable_realtime=enable_realtime,
             supports_realtime_audio_output=(
                 type(pipeline_config).code2wav_stage() is not None
@@ -442,7 +450,7 @@ async def _run_server(
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
             architectures=[pipeline_config.architecture],
-            audio_chunking=pipeline_config.audio_chunking,
+            audio_chunking=pipeline_config.resolved_audio_chunking,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
