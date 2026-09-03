@@ -536,11 +536,20 @@ def _qwen3_tts_uploaded_voice_cache_key(state: Qwen3TTSState) -> SpeakerCacheKey
     if state.uploaded_voice_name is None or state.uploaded_voice_created_at is None:
         return None
     mode = "xvec" if state.x_vector_only_mode else "icl"
+    artifact_kind = "voice_clone_prompt"
+    if not state.x_vector_only_mode:
+        effective_transcript = json.dumps(
+            state.ref_text,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        transcript_digest = hashlib.sha256(effective_transcript).hexdigest()
+        artifact_kind = f"{artifact_kind}:ref_text:{transcript_digest}"
     return SpeakerCacheKey(
         model_type=f"qwen3_tts_{mode}",
         voice_name=state.uploaded_voice_name,
         voice_version=int(state.uploaded_voice_created_at),
-        artifact_kind="voice_clone_prompt",
+        artifact_kind=artifact_kind,
     )
 
 
@@ -969,38 +978,35 @@ def _prepare_qwen3_tts_base_request(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     speaker_cache = get_speaker_artifact_cache()
     cache_key = _qwen3_tts_uploaded_voice_cache_key(state)
-    cached_artifact = speaker_cache.get(cache_key) if cache_key is not None else None
-    cached_prompt = (
-        _qwen3_tts_voice_prompt_from_cache(cached_artifact)
-        if isinstance(cached_artifact, dict)
-        else None
-    )
-    if cached_prompt is not None:
-        voice_clone_prompt, ref_text = cached_prompt
-    elif cache_key is None:
+    if cache_key is None:
         reference_service = _get_qwen3_tts_adhoc_reference_service(model, wrapper)
         voice_clone_prompt, ref_text = reference_service.get_or_encode(
             state,
             desc="Qwen3-TTS ad-hoc reference",
         )
     else:
-        with torch.no_grad():
-            prompt_items = wrapper.create_voice_clone_prompt(
-                ref_audio=state.ref_audio,
-                ref_text=state.ref_text,
-                x_vector_only_mode=state.x_vector_only_mode,
+
+        def encode_uploaded_voice() -> dict[str, Any]:
+            reference_service = _get_qwen3_tts_adhoc_reference_service(model, wrapper)
+            voice_clone_prompt, ref_text = reference_service.get_or_encode(
+                state,
+                desc=f"Qwen3-TTS uploaded voice {state.uploaded_voice_name}",
             )
-        if len(prompt_items) != 1:
-            raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
-        voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
-        ref_text = prompt_items[0].ref_text
-        speaker_cache.put(
-            cache_key,
-            _cacheable_qwen3_tts_voice_prompt(
+            return _cacheable_qwen3_tts_voice_prompt(
                 voice_clone_prompt,
                 ref_text=ref_text,
-            ),
+            )
+
+        cached_artifact = speaker_cache.get_or_compute(
+            cache_key,
+            encode_uploaded_voice,
+            accept_cached=lambda artifact: isinstance(artifact, dict)
+            and artifact.get("artifact_type") == "qwen3_tts_voice_clone_prompt",
         )
+        cached_prompt = _qwen3_tts_voice_prompt_from_cache(cached_artifact)
+        if cached_prompt is None:
+            raise RuntimeError("Qwen3-TTS uploaded voice cache entry is invalid")
+        voice_clone_prompt, ref_text = cached_prompt
 
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[0]
     ref_id = (

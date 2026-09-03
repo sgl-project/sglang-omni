@@ -434,6 +434,32 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     assert tts_params["uploaded_voice_created_at"] == uploaded["created_at"]
 
 
+def test_speech_service_stored_transcript_overrides_request_transcript(
+    tmp_path: Path,
+) -> None:
+    store = SpeakerSampleStore(root_dir=tmp_path)
+    store.upload(
+        name="Anchor",
+        consent="consent",
+        audio_bytes=_reference_wav(),
+        filename="anchor.wav",
+        content_type="audio/wav",
+        ref_text="stored transcript",
+    )
+    service = SpeechRequestValidator(default_model="tts", voice_store=store)
+
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "voice": "anchor",
+            "ref_text": "request transcript",
+        }
+    )
+    gen_req = service.build_generate_request(request)
+
+    assert gen_req.metadata["tts_params"]["ref_text"] == "stored transcript"
+
+
 def test_speech_service_explicit_reference_overrides_uploaded_voice(
     tmp_path: Path,
 ) -> None:
