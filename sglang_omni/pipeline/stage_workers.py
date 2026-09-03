@@ -68,6 +68,11 @@ class StageLaunchConfig:
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
+    # Note (Jiaxin Deng): the byte budgets are first-class fields, never
+    # factory kwargs, so no factory signature can accidentally absorb them.
+    kv_cache_bytes: int | None = None
+    total_reserve_bytes: int | None = None
+    enforce_total_reserve: bool = True
 
     # Routing: static next stage(s)
     next_stages: str | list[str] | None = None
@@ -797,6 +802,49 @@ def _construct_stage(
     return stage
 
 
+# Summed declared reserves per device for this OS process; colocated stages
+# sharing a worker accumulate into one allocator cap.
+_process_reserve_bytes: dict[int, int] = {}
+
+
+def _apply_total_reserve_cap(
+    spec: StageLaunchConfig,
+    gpu_id: int | None,
+    log: logging.Logger,
+) -> None:
+    """Cap this process's torch allocator at its summed declared reserves.
+
+    Note (Jiaxin Deng): with the cap, a stage that outgrows its declared
+    budget OOMs itself instead of a co-tenant on the same GPU, which makes
+    the failure attributable.
+    """
+
+    if (
+        spec.total_reserve_bytes is None
+        or not spec.enforce_total_reserve
+        or gpu_id is None
+    ):
+        return
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    device = int(gpu_id)
+    total = torch.cuda.get_device_properties(device).total_memory
+    _process_reserve_bytes[device] = (
+        _process_reserve_bytes.get(device, 0) + spec.total_reserve_bytes
+    )
+    fraction = min(1.0, _process_reserve_bytes[device] / total)
+    torch.cuda.set_per_process_memory_fraction(fraction, device)
+    log.info(
+        "Stage %s: torch allocator capped at %d bytes on cuda:%d (fraction %.4f)",
+        spec.stage_name,
+        _process_reserve_bytes[device],
+        device,
+        fraction,
+    )
+
+
 def _construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
@@ -804,6 +852,9 @@ def _construct_scheduler(
 ) -> Any:
     """Build a scheduler, serializing GPU factory work per visible device."""
 
+    from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
+
+    _apply_total_reserve_cap(spec, gpu_id, log)
     factory = import_string(spec.factory)
     factory_args = apply_typed_stage_kwargs(
         factory,
@@ -811,6 +862,7 @@ def _construct_scheduler(
         spec.typed_kwargs,
         stage_name=spec.stage_name,
     )
+    kv_cache_bytes = spec.kv_cache_bytes
     factory_args = resolve_factory_signature_args(
         factory,
         factory_args,
@@ -818,12 +870,19 @@ def _construct_scheduler(
         require_gpu_id=spec.require_factory_gpu_id,
         stage_name=spec.stage_name,
     )
+
+    def _invoke() -> Any:
+        if kv_cache_bytes is None:
+            return factory(**factory_args)
+        with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
+            return factory(**factory_args)
+
     if gpu_id is None:
-        return factory(**factory_args)
+        return _invoke()
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return factory(**factory_args)
+        return _invoke()
 
 
 def _prepare_accelerator_environment(

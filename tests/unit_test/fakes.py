@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 
 
 class FakeExecutionBridge:
@@ -30,3 +31,12 @@ class FakeExecutionBridge:
 
     def record_completion(self):
         return self.device_module.Event()
+
+
+class FakeServerArgs(SimpleNamespace):
+    """ServerArgs double exposing the override() mutation entry point."""
+
+    def override(self, source: str, **fields: object) -> None:
+        del source
+        for name, value in fields.items():
+            setattr(self, name, value)

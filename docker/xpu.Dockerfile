@@ -28,8 +28,19 @@ ARG GMM_VERSION=22.10.0
 WORKDIR /workspace
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ffmpeg libsndfile1 sox software-properties-common curl ca-certificates \
-    && add-apt-repository -y ppa:kobuk-team/intel-graphics \
+        git ffmpeg libsndfile1 sox python3-dev build-essential python3.12-venv \
+        software-properties-common curl ca-certificates
+
+ARG RENDER_GID=110
+RUN getent group render >/dev/null \
+    || groupadd --system --gid ${RENDER_GID} render \
+    || groupadd --system render
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+RUN add-apt-repository -y ppa:kobuk-team/intel-graphics \
     && apt-get update \
     # Loader + media/metrics from the PPA; the GPU driver itself is pinned below.
     && apt-get install -y \

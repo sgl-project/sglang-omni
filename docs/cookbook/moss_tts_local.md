@@ -40,6 +40,10 @@ sgl-omni serve \
 
 A matching config file is available at `examples/configs/moss_tts_local.yaml`.
 
+Speech input admission follows the text backbone's context metadata rather than
+the generic 4,096-character precheck. Requests that exceed the effective model
+context are rejected with an OpenAI-compatible HTTP 400 error.
+
 ## Synthesizing Speech
 
 ### Basic Speech

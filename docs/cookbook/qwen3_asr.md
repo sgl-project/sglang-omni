@@ -10,7 +10,11 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
-MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B --revision "${MODEL_REVISION}")
+MODEL_PATH="$(
+  hf download Qwen/Qwen3-ASR-1.7B \
+    --revision "${MODEL_REVISION}" \
+    --quiet
+)"
 ```
 
 ### Apple Silicon (MLX)

@@ -6,11 +6,13 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.scheduling.types import RequestOutput
 
@@ -42,20 +44,16 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        del forward_batch, schedule_batch
-        self.model.prepare_decode_buffers(requests)
-
-    def custom_prefill_forward(
-        self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> GenerationBatchResult | None:
         del schedule_batch
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
-        return self._forward_with_input_embeds(
+        self.model.prepare_decode_buffers(requests)
+        attach_omni_prefill_inputs(
             forward_batch,
-            input_embeds,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(
+                    forward_batch,
+                    requests,
+                ),
+            ),
         )
 
     def before_decode(
@@ -369,33 +367,4 @@ class Qwen3TTSModelRunner(ModelRunner):
         return torch.cat(pieces, dim=0).to(
             device=forward_batch.input_ids.device,
             dtype=next(self.model.parameters()).dtype,
-        )
-
-    def _forward_with_input_embeds(
-        self,
-        forward_batch: Any,
-        input_embeds: torch.Tensor,
-    ) -> GenerationBatchResult:
-        model_runner = self.tp_worker.model_runner
-        model_dtype = next(self.model.parameters()).dtype
-        model_runner.attn_backend.init_forward_metadata(forward_batch)
-
-        positions = forward_batch.positions
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-        input_embeds = input_embeds.to(
-            device=forward_batch.input_ids.device,
-            dtype=model_dtype,
-        )
-        with attn_forward_context(model_runner.attn_backend):
-            logits_output = self.model(
-                input_ids=forward_batch.input_ids,
-                positions=positions,
-                forward_batch=forward_batch,
-                input_embeds=input_embeds,
-                input_embeds_are_projected=True,
-            )
-        return GenerationBatchResult(
-            logits_output=logits_output,
-            can_run_cuda_graph=False,
         )

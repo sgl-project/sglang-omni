@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.client import Client, GenerateChunk
+from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
@@ -181,6 +181,18 @@ class FailingSpeechGenerateClient:
         del request, request_id
         raise RuntimeError(self.error)
         yield
+
+    async def speech(
+        self,
+        request: Any,
+        *,
+        request_id: str,
+        response_format: str = "wav",
+        speed: float = 1.0,
+        allow_format_fallback: bool = True,
+    ):
+        del request, request_id, response_format, speed, allow_format_fallback
+        raise ClientError(self.error)
 
     async def abort(self, request_id: str) -> None:
         del request_id
@@ -632,6 +644,42 @@ def test_speech_stream_admission_reject_returns_503_without_traceback(
     assert not any(rec.exc_info for rec in caplog.records)
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_context_rejection_returns_400_without_traceback(
+    stream: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    message = "Requested token count exceeds the model's maximum context length"
+    client = TestClient(
+        create_app(FailingSpeechGenerateClient(message), model_name="s2-pro")
+    )
+
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.serve.openai_api"):
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "s2-pro",
+                "input": "hello",
+                "voice": "default",
+                "stream": stream,
+                "response_format": "pcm" if stream else "wav",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "message": message,
+        "type": "BadRequestError",
+        "param": None,
+        "code": 400,
+    }
+    assert any(
+        rec.levelno == logging.WARNING and "Rejecting speech request" in rec.message
+        for rec in caplog.records
+    )
+    assert not any(rec.exc_info for rec in caplog.records)
+
+
 def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
 
@@ -675,6 +723,16 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
+
+
+def test_create_app_passes_model_specific_speech_input_limit() -> None:
+    app = create_app(
+        SuccessfulSpeechClient(),
+        model_name="moss-tts",
+        max_speech_input_chars=None,
+    )
+
+    assert app.state.speech_service.max_speech_input_chars is None
 
 
 @pytest.mark.parametrize("stream", [False, True])

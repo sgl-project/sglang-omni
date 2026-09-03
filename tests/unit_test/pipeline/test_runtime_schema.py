@@ -141,3 +141,67 @@ def test_pipeline_accepts_placement_config() -> None:
 def test_invalid_placement_limit_raises() -> None:
     with pytest.raises(ValueError, match="max_total_gpu_memory_fraction_per_gpu"):
         PlacementConfig(max_total_gpu_memory_fraction_per_gpu=1.1)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (2 * 1024**3, 2 * 1024**3),
+        ("512KiB", 512 * 1024),
+        ("128MiB", 128 * 1024**2),
+        ("2GiB", 2 * 1024**3),
+        ("1TiB", 1024**4),
+    ],
+)
+def test_engine_kv_cache_bytes_parses_sizes(value, expected) -> None:
+    from sglang_omni.config import EngineArgs
+
+    assert EngineArgs(kv_cache_bytes=value).kv_cache_bytes == expected
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "2GB", "1.5GiB", "GiB", " 2GiB"])
+def test_engine_kv_cache_bytes_rejects_bad_values(value) -> None:
+    from sglang_omni.config import EngineArgs
+
+    with pytest.raises(ValueError):
+        EngineArgs(kv_cache_bytes=value)
+
+
+def test_engine_kv_cache_bytes_rejects_mem_fraction_static() -> None:
+    from sglang_omni.config import EngineArgs
+
+    with pytest.raises(ValueError, match="keep exactly one|cannot be set together"):
+        EngineArgs(kv_cache_bytes="2GiB", mem_fraction_static=0.7)
+
+
+def test_stage_total_reserve_rejects_gpu_memory_fraction() -> None:
+    from sglang_omni.config import StageConfig
+
+    with pytest.raises(ValueError, match="same budget in two units"):
+        StageConfig(
+            name="a",
+            factory_path="x.y",
+            terminal=True,
+            gpu_memory_fraction=0.5,
+            total_reserve_bytes="8GiB",
+        )
+
+
+def test_stage_rejects_kv_above_total_reserve() -> None:
+    from sglang_omni.config import EngineArgs, EngineStageConfig
+
+    with pytest.raises(ValueError, match="must not exceed"):
+        EngineStageConfig(
+            name="a",
+            factory_path="x.y",
+            terminal=True,
+            total_reserve_bytes="2GiB",
+            engine=EngineArgs(kv_cache_bytes="4GiB"),
+        )
+
+
+def test_engine_kv_cache_bytes_rejects_max_total_tokens() -> None:
+    from sglang_omni.config import EngineArgs
+
+    with pytest.raises(ValueError, match="cannot be set together"):
+        EngineArgs(kv_cache_bytes="2GiB", max_total_tokens=4096)

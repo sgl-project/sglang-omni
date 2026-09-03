@@ -201,6 +201,7 @@ def test_pcm_equivalence_rejects_samples_outside_tolerance() -> None:
         _assert_pcm_equivalent(baseline, replica)
 
 
+@pytest.mark.benchmark
 @requires_gpus
 def test_every_replica_serves_audio(replica_server, baseline_pcm: np.ndarray):
     port: int = replica_server.port

@@ -9,6 +9,7 @@ from collections import deque
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -102,6 +103,7 @@ def make_payload(
 
 def test_moss_tts_config_and_registry_contracts() -> None:
     config = MossTTSPipelineConfig(model_path="model")
+    assert config.max_speech_input_chars is None
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
         "tts_engine",
@@ -357,8 +359,213 @@ def test_moss_tts_preprocessing_rejects_invalid_reference_cache_settings(
         stages.create_preprocessing_executor("model", **kwargs)
 
 
+@pytest.mark.parametrize(
+    ("context_length", "expected_max_prefill_tokens"),
+    [(4096, 4096), (40960, 8192)],
+)
+def test_moss_tts_engine_uses_text_backbone_context(
+    monkeypatch: pytest.MonkeyPatch,
+    context_length: int,
+    expected_max_prefill_tokens: int,
+) -> None:
+    from sglang_omni.models.moss_tts import engine_builder, hf_loading
+
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: SimpleNamespace(max_position_embeddings=context_length),
+    )
+
+    builder = engine_builder.MossTtsEngineBuilder()
+    builder.context_length = builder.resolve_context_length("model")
+
+    assert builder.context_length == context_length
+    assert (
+        builder.generation_defaults(dtype="bfloat16")["max_prefill_tokens"]
+        == expected_max_prefill_tokens
+    )
+
+
+def test_moss_tts_context_probe_uses_runtime_model_config_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import engine_builder, hf_loading
+
+    captured: dict[str, object] = {}
+
+    def fake_get_config(model_path: str, **kwargs: Any) -> SimpleNamespace:
+        captured["model_path"] = model_path
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(
+            language_config=SimpleNamespace(max_position_embeddings=4096)
+        )
+
+    monkeypatch.setattr(hf_loading, "get_config", fake_get_config)
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: config.language_config,
+    )
+
+    context_length = engine_builder.MossTtsEngineBuilder().resolve_context_length(
+        "model",
+        server_args_overrides={
+            "trust_remote_code": False,
+            "model_config_parser": "hf",
+            "json_model_override_args": (
+                '{"language_config": {"max_position_embeddings": 4096}}'
+            ),
+            "decrypted_config_file": "/tmp/override.json",
+        },
+    )
+
+    assert context_length == 4096
+    assert captured == {
+        "model_path": "model",
+        "kwargs": {
+            "trust_remote_code": False,
+            "model_config_parser": "hf",
+            "model_override_args": {
+                "language_config": {"max_position_embeddings": 4096}
+            },
+            "_configuration_file": "/tmp/override.json",
+        },
+    }
+
+
+def test_moss_tts_context_probe_uses_model_default_without_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import engine_builder, hf_loading
+
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: SimpleNamespace(),
+    )
+
+    assert (
+        engine_builder.MossTtsEngineBuilder().resolve_context_length("model")
+        == engine_builder.MossTtsEngineBuilder.context_length
+    )
+
+
+@pytest.mark.parametrize("value", [True, 1.5, float("inf"), "4096", 0, -1])
+def test_moss_tts_context_probe_rejects_invalid_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    value: object,
+) -> None:
+    from sglang_omni.models.moss_tts import engine_builder, hf_loading
+
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: SimpleNamespace(max_position_embeddings=value),
+    )
+
+    with pytest.raises(ValueError, match="context metadata max_position_embeddings"):
+        engine_builder.MossTtsEngineBuilder().resolve_context_length("model")
+
+
+@pytest.mark.parametrize(
+    ("rope_scaling", "match"),
+    [
+        ({"factor": "2"}, "rope_scaling.factor must be a finite number"),
+        ({"factor": float("inf")}, "rope_scaling.factor must be a finite number"),
+        ({"factor": 1.1}, "rope_scaling.factor must produce an integer"),
+        (
+            {"factor": 0},
+            "rope_scaling.factor must produce a positive context length",
+        ),
+        (
+            {"factor": -1},
+            "rope_scaling.factor must produce a positive context length",
+        ),
+    ],
+)
+def test_moss_tts_context_probe_rejects_invalid_rope_scaling(
+    monkeypatch: pytest.MonkeyPatch,
+    rope_scaling: dict[str, object],
+    match: str,
+) -> None:
+    from sglang_omni.models.moss_tts import engine_builder, hf_loading
+
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: SimpleNamespace(
+            max_position_embeddings=4096,
+            rope_scaling=rope_scaling,
+        ),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        engine_builder.MossTtsEngineBuilder().resolve_context_length("model")
+
+
+def test_moss_tts_context_probe_accepts_integral_rope_scaling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import engine_builder, hf_loading
+
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: SimpleNamespace(
+            max_position_embeddings=4096,
+            rope_scaling={"factor": 1.5},
+        ),
+    )
+
+    assert engine_builder.MossTtsEngineBuilder().resolve_context_length("model") == 6144
+
+
+def test_moss_tts_context_probe_does_not_mutate_cached_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from transformers import PretrainedConfig
+
+    from sglang_omni.models.moss_tts import engine_builder, hf_loading
+
+    config = PretrainedConfig()
+    config.architectures = ["MossTTSDelayModel"]
+    config.language_config = {
+        "num_attention_heads": 8,
+        "max_position_embeddings": 4096,
+    }
+    monkeypatch.setattr(hf_loading, "get_config", lambda *args, **kwargs: config)
+
+    assert engine_builder.MossTtsEngineBuilder().resolve_context_length("model") == 4096
+    assert isinstance(config.language_config, dict)
+
+
 def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
-    from sglang_omni.models.moss_tts import request_builders, stages
+    from sglang_omni.models.moss_tts import hf_loading, request_builders, stages
     from sglang_omni.scheduling import (
         bootstrap,
         engine_factory,
@@ -366,11 +573,11 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         sglang_backend,
     )
 
-    captured: dict[str, object] = {"build_kwargs": []}
+    captured: dict[str, object] = {"build_kwargs": [], "context_lengths": []}
 
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         captured["model_path"] = model_path
-        captured["context_length"] = context_length
+        captured["context_lengths"].append(context_length)
         captured["build_kwargs"].append(dict(kwargs))
         return SimpleNamespace(
             disable_cuda_graph=kwargs["disable_cuda_graph"],
@@ -452,6 +659,16 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
     monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: SimpleNamespace(max_position_embeddings=40960),
+    )
+    monkeypatch.setattr(
         request_builders,
         "make_moss_tts_scheduler_adapters",
         lambda model: (lambda payload: payload, lambda data: data),
@@ -492,7 +709,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
     assert explicit_kwargs["cuda_graph_max_bs"] == 16
     assert explicit_kwargs["enable_torch_compile"] is True
     assert explicit_kwargs["mem_fraction_static"] == 0.61
-    assert captured["context_length"] == 8192
+    assert captured["context_lengths"] == [40960, 40960]
     assert captured["model_arch_override"] == "MossTTSDelaySGLangModel"
     assert captured["defer_cuda_graph_capture"] is True
     assert captured["graph_inits"] == 2
@@ -506,6 +723,16 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         "backbone",
         "sampling",
     ]
+
+    stages.create_sglang_tts_engine_executor(
+        "OpenMOSS-Team/MOSS-TTS-v1.5",
+        server_args_overrides={
+            "context_length": 4096,
+            "disable_cuda_graph": True,
+        },
+    )
+    assert captured["context_lengths"][-1] == 4096
+    assert captured["build_kwargs"][-1]["max_prefill_tokens"] == 4096
 
 
 def test_moss_tts_talker_torch_compile_dotted_flags_target_tts_engine() -> None:

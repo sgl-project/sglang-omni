@@ -49,7 +49,7 @@ impl TestDir {
     ) -> PathBuf {
         let path = self.0.join("router.toml");
         let contents = format!(
-            "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = {max_connections}\nheader_read_timeout_ms = {header_read_timeout_ms}\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n"
+            "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = {max_connections}\nheader_read_timeout_ms = {header_read_timeout_ms}\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 100\ntimeout_ms = 50\nsuccess_threshold = 1\nfailure_threshold = 1\n\n[http_generation]\ntrust_domain = \"local\"\nstreamed_request_max_bytes = 1048576\nconnect_timeout_ms = 1000\nrequest_timeout_ms = 5000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:1/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
         );
         fs::write(&path, contents).expect("write isolated process config");
         path
@@ -86,7 +86,7 @@ impl ChildGuard {
             .arg(env!("CARGO_BIN_EXE_sgl-omni-router"))
             .arg(config)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn router with bounded RLIMIT_NOFILE");
@@ -407,16 +407,35 @@ fn invalid_connection_caps_fail_check_config_with_exit_two() {
 }
 
 #[test]
-fn impossible_nofile_limit_fails_before_serving() {
+fn low_hard_nofile_limit_warns_and_serves() {
     let _process_guard = process_lock();
     let directory = TestDir::new();
     let address = unused_address();
     let config = directory.config(address, 128, 1_000);
-    let mut child = ChildGuard::spawn_with_nofile(&config, 32);
+    let mut child = ChildGuard::spawn_with_nofile(&config, 192);
 
-    assert_eq!(child.wait(PROCESS_DEADLINE).code(), Some(1));
-    TcpStream::connect_timeout(&address, Duration::from_millis(100))
-        .expect_err("invalid file limit must fail before the service becomes live");
+    wait_until_live(address, &mut child);
+    signal(child.id(), "-TERM");
+    assert_eq!(child.wait(PROCESS_DEADLINE).code(), Some(0));
+    let mut diagnostics = String::new();
+    child
+        .0
+        .stdout
+        .take()
+        .expect("file-limit log stream remains available")
+        .read_to_string(&mut diagnostics)
+        .expect("read file-limit log");
+    child
+        .0
+        .stderr
+        .take()
+        .expect("file-limit warning stream remains available")
+        .read_to_string(&mut diagnostics)
+        .expect("read file-limit warning");
+    assert!(
+        diagnostics.contains("RLIMIT_NOFILE remains below the recommended target"),
+        "missing file-limit warning: {diagnostics}"
+    );
 }
 
 #[test]
@@ -471,8 +490,8 @@ fn serves_only_exact_local_liveness_route_and_shuts_down_cleanly() {
         ("POST", "/live", "405"),
         ("HEAD", "/live", "405"),
         ("GET", "/live/", "404"),
-        ("GET", "/ready", "404"),
-        ("PUT", "/ready", "404"),
+        ("GET", "/ready", "503"),
+        ("PUT", "/ready", "405"),
         ("GET", "/ready/", "404"),
         ("GET", "/health", "404"),
         ("GET", "/metrics", "404"),

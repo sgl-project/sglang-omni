@@ -273,10 +273,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         # Replace the per-request decode mrope-position loop with a vectorized
         # equivalent before any forward runs.
         mrope_fast_path.apply_asr_mrope_fast_path()
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        kv_cache_bytes = peek_stage_kv_cache_bytes()
         logger.info(
             "Qwen3-ASR runtime profile: dtype=%s attention_backend=%s "
             "mm_attention_backend=%s cuda_graph=%s cuda_graph_bs=%s "
-            "torch_compile=%s max_running_requests=%s mem_fraction_static=%s",
+            "torch_compile=%s max_running_requests=%s kv_sizing=%s",
             getattr(server_args, "dtype", None),
             getattr(server_args, "attention_backend", None),
             getattr(server_args, "mm_attention_backend", None),
@@ -284,7 +287,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             get_decode_cuda_graph_bs(server_args),
             getattr(server_args, "enable_torch_compile", False),
             getattr(server_args, "max_running_requests", None),
-            getattr(server_args, "mem_fraction_static", None),
+            (
+                f"kv_cache_bytes={kv_cache_bytes}"
+                if kv_cache_bytes is not None
+                else "mem_fraction_static="
+                f"{getattr(server_args, 'mem_fraction_static', None)}"
+            ),
         )
         self._log_memory_checkpoint("pre_model_load")
 
