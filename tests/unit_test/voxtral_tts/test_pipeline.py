@@ -48,7 +48,7 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     )
 
 
-def test_voxtral_stage_factories_use_platform_devices(
+def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocoder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from sglang_omni.models.voxtral_tts.pipeline import engine_builder
@@ -61,25 +61,37 @@ def test_voxtral_stage_factories_use_platform_devices(
             return "generation"
 
     monkeypatch.setattr(engine_builder, "VoxtralTtsEngineBuilder", FakeBuilder)
-    monkeypatch.setattr(
-        stages.current_platform,
-        "get_device",
-        lambda gpu_id: f"npu:{gpu_id}",
-    )
-
     generation = stages.create_generation_executor("model", gpu_id=3)
 
     assert generation == "generation"
     assert captured["build"] == (
         "model",
         {
-            "device": "npu:3",
-            "gpu_id": None,
+            "device": None,
+            "gpu_id": 3,
+            "server_args_overrides": None,
+        },
+    )
+
+    stages.create_generation_executor("model", device="cuda:2", gpu_id=5)
+    assert captured["build"] == (
+        "model",
+        {
+            "device": "cuda:2",
+            "gpu_id": 5,
             "server_args_overrides": None,
         },
     )
 
     seen_devices: list[str] = []
+    resolved_devices: list[tuple[str | None, int | None]] = []
+    monkeypatch.setattr(
+        stages,
+        "resolve_device_spec",
+        lambda device, gpu_id: (
+            resolved_devices.append((device, gpu_id)) or f"npu:{gpu_id}"
+        ),
+    )
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(
         stages,
@@ -90,6 +102,7 @@ def test_voxtral_stage_factories_use_platform_devices(
     )
 
     stages.create_vocoder_executor("model", gpu_id=4)
+    assert resolved_devices == [(None, 4)]
     assert seen_devices == ["npu:4"]
 
 
