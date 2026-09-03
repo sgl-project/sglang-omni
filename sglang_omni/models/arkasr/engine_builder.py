@@ -15,11 +15,7 @@ from sglang_omni.models.arkasr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
-from sglang_omni.scheduling.generation_batch_policy import (
-    CudaGraphBackend,
-    build_default_prefill_cuda_graph_bs,
-    clamp_prefill_cuda_graph_max_bs,
-)
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 logger = logging.getLogger(__name__)
@@ -134,17 +130,6 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             if sm_version is not None and sm_version >= 100:
                 defaults["mm_attention_backend"] = "triton_attn"
         return defaults
-
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        if (
-            overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED
-            or "cuda_graph_bs_prefill" in overrides
-        ):
-            return
-
-        overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(
-            clamp_prefill_cuda_graph_max_bs(overrides)
-        )
 
     def setup_model_resources(
         self,
