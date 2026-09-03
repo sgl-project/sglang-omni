@@ -166,15 +166,6 @@ class SGLangGenerationEngineBuilder(ABC):
             **overrides,
         )
         self.customize_server_args(server_args)
-        if (
-            overrides.get("chunked_prefill_size") is None
-            and get_prefill_cuda_graph_backend(server_args) != CudaGraphBackend.DISABLED
-        ):
-            logger.info(
-                f"{self.model_name}: chunked_prefill_size was unset, SGLang resolved "
-                f"{server_args.chunked_prefill_size}, prefill CUDA graph cap "
-                f"{server_args.cuda_graph_config.prefill.max_bs}"
-            )
         self.validate_before_infrastructure(server_args)
 
         # ServerArgs construction is where "auto" fields become concrete
@@ -186,6 +177,17 @@ class SGLangGenerationEngineBuilder(ABC):
         RUNTIME_RESOLUTION_RECORD.record(self.model_name, self.runtime_resolutions)
         for resolution in self.runtime_resolutions:
             logger.info(f"{self.model_name}: runtime-resolved {resolution.describe()}")
+        if (
+            overrides.get("chunked_prefill_size") is None
+            and get_prefill_cuda_graph_backend(server_args) != CudaGraphBackend.DISABLED
+        ):
+            # The consumer of the resolved chunk: SGLang capped its prefill
+            # graph ladder by it. Logged next to the resolution lines above so
+            # the value and its consequence read together.
+            logger.info(
+                f"{self.model_name}: prefill CUDA graph cap follows the resolved "
+                f"chunked_prefill_size: {server_args.cuda_graph_config.prefill.max_bs}"
+            )
         self.finalize_runtime_derived(server_args, self.runtime_resolutions)
 
         infra_kwargs = dict(self.infra_kwargs())
