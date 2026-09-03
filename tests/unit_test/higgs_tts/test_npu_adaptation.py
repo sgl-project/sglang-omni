@@ -11,6 +11,7 @@ import torch
 
 import sglang_omni.platforms as platforms_mod
 import sglang_omni.utils.device as device_mod
+from sglang_omni.models.higgs_tts import npu_fallback
 from sglang_omni.models.higgs_tts import sampler as higgs_sampler
 from sglang_omni.models.higgs_tts import stages as higgs_stages
 from sglang_omni.platforms import current_platform
@@ -37,14 +38,14 @@ def test_sampler_renorm_falls_back_to_torch_on_npu(monkeypatch) -> None:
 
     top_k, top_p = higgs_sampler._resolve_renorm_kernels()
 
-    assert top_k is higgs_sampler._top_k_renorm_prob_torch
-    assert top_p is higgs_sampler._top_p_renorm_prob_torch
+    assert top_k is npu_fallback.top_k_renorm_prob
+    assert top_p is npu_fallback.top_p_renorm_prob
 
 
 def test_torch_top_k_renorm_keeps_top_k_and_renormalizes() -> None:
     probs = torch.tensor([[0.1, 0.2, 0.3, 0.4], [0.25, 0.25, 0.25, 0.25]])
 
-    out = higgs_sampler._top_k_renorm_prob_torch(probs, torch.tensor([2, 2]))
+    out = npu_fallback.top_k_renorm_prob(probs, torch.tensor([2, 2]))
 
     assert torch.allclose(out.sum(dim=-1), torch.ones(2))
     # Row 0: top-2 are {0.3, 0.4}; 0.1/0.2 are filtered out.
@@ -57,7 +58,7 @@ def test_torch_top_k_renorm_keeps_top_k_and_renormalizes() -> None:
 def test_torch_top_p_renorm_keeps_top_token_and_renormalizes() -> None:
     probs = torch.tensor([[0.1, 0.2, 0.3, 0.4], [0.6, 0.4, 0.0, 0.0]])
 
-    out = higgs_sampler._top_p_renorm_prob_torch(probs, torch.tensor([0.6, 0.4]))
+    out = npu_fallback.top_p_renorm_prob(probs, torch.tensor([0.6, 0.4]))
 
     assert torch.allclose(out.sum(dim=-1), torch.ones(2))
     # Row 0 (p=0.6): keep {0.3, 0.4}, filter 0.1/0.2.
@@ -72,10 +73,10 @@ def test_batched_sampler_works_with_torch_renorm_fallback(monkeypatch) -> None:
     """The NPU torch renorm path must produce valid in-support samples and keep
     the greedy short-circuit (top_k == 1 → argmax) intact."""
     monkeypatch.setattr(
-        higgs_sampler, "_top_k_renorm", higgs_sampler._top_k_renorm_prob_torch
+        higgs_sampler, "_fused_top_k_renorm", npu_fallback.top_k_renorm_prob
     )
     monkeypatch.setattr(
-        higgs_sampler, "_top_p_renorm", higgs_sampler._top_p_renorm_prob_torch
+        higgs_sampler, "_fused_top_p_renorm", npu_fallback.top_p_renorm_prob
     )
 
     B, N, V = 3, 8, 64

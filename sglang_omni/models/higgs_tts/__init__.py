@@ -20,8 +20,8 @@ from .hf_config import HiggsMultimodalQwen3Config
 
 AutoConfig.register("higgs_multimodal_qwen3", HiggsMultimodalQwen3Config)
 
-# The owned torch.compile paths (codec acoustic encoder + vocoder decode) are
-# gated off on Ascend NPU (no torch.compile backend), so the capability is CUDA-only.
+# NPU's compile backend cannot compile this codec model 
+# (crashes on dynamic shapes, verified on Atlas 910B).
 _supports_torch_compile = not current_platform.is_npu()
 
 CAPABILITIES = ModelCapabilities(

@@ -29,60 +29,27 @@ STOP_CODE = -1
 K_MAX = 1026
 
 
-def _top_k_renorm_prob_torch(probs: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-    """torch fallback for ``sgl_kernel.top_k_renorm_prob`` (Ascend NPU).
-
-    Zeroes every entry below each row's k-th largest value and renormalizes.
-    Ties at the k-th boundary are kept, matching the per-row oracle in
-    :func:`_sample_independent`.
-    """
-    v = probs.shape[-1]
-    k_safe = k.long().clamp(min=1, max=v)
-    kth = probs.sort(dim=-1, descending=True).values.gather(
-        -1, (k_safe - 1).unsqueeze(-1)
-    ).squeeze(-1)
-    masked = torch.where(probs < kth.unsqueeze(-1), torch.zeros_like(probs), probs)
-    denom = masked.sum(dim=-1, keepdim=True)
-    return masked / denom.clamp_min(torch.finfo(probs.dtype).tiny)
-
-
-def _top_p_renorm_prob_torch(probs: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-    """torch fallback for ``sgl_kernel.top_p_renorm_prob`` (Ascend NPU).
-
-    Nucleus (top-p) filtering with the same convention as the per-row oracle
-    :func:`_sample_independent`: force-keep the highest-probability token and
-    keep the token whose cumulative mass first crosses ``p``, then renormalize.
-    """
-    sorted_probs, sorted_indices = probs.sort(dim=-1, descending=True)
-    cum_probs = sorted_probs.cumsum(dim=-1)
-    remove = cum_probs > p.unsqueeze(-1)
-    remove[..., 1:] = remove[..., :-1].clone()
-    remove[..., 0] = False
-    scatter = torch.zeros_like(remove)
-    scatter.scatter_(-1, sorted_indices, remove)
-    masked = torch.where(scatter, torch.zeros_like(probs), probs)
-    denom = masked.sum(dim=-1, keepdim=True)
-    return masked / denom.clamp_min(torch.finfo(probs.dtype).tiny)
-
-
 def _resolve_renorm_kernels():
     """Return ``(top_k_renorm, top_p_renorm)`` callables for this platform.
 
     CUDA uses the fused ``sgl_kernel`` kernels to avoid a full-vocab
-    ``torch.sort`` in decode. Ascend NPU has no fused renorm kernels so
-    it falls back to the equivalent torch implementations above.
+    ``torch.sort`` in decode. Ascend NPU has no fused renorm kernels so it
+    falls back to the pure-torch implementations in ``npu_fallback.py``;
+    the same fallback serves any other platform without ``sgl_kernel``.
     """
     if current_platform.device_type == "cuda":
-        try:
-            from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob
+        from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob
 
-            return top_k_renorm_prob, top_p_renorm_prob
-        except ImportError:
-            pass
-    return _top_k_renorm_prob_torch, _top_p_renorm_prob_torch
+        return top_k_renorm_prob, top_p_renorm_prob
+    from sglang_omni.models.higgs_tts.npu_fallback import (
+        top_k_renorm_prob,
+        top_p_renorm_prob,
+    )
+
+    return top_k_renorm_prob, top_p_renorm_prob
 
 
-_top_k_renorm, _top_p_renorm = _resolve_renorm_kernels()
+_fused_top_k_renorm, _fused_top_p_renorm = _resolve_renorm_kernels()
 
 
 @dataclass
@@ -322,10 +289,10 @@ def _sample_independent_batched(
             .to(torch.int32)
             .contiguous()
         )
-        probs = _top_k_renorm(probs, tk)
+        probs = _fused_top_k_renorm(probs, tk)
     if top_p is not None:
         tp = top_p.view(B, 1).expand(B, N).reshape(B * N).to(torch.float32).contiguous()
-        probs = _top_p_renorm(probs, tp)
+        probs = _fused_top_p_renorm(probs, tp)
 
     codes_flat = probs.multinomial(num_samples=1).squeeze(-1)
     if seeds_B is not None:

@@ -401,8 +401,8 @@ def create_audio_encoder_executor(
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
     if not current_platform.is_npu():
-        # Ascend NPU has no torch.compile backend; keep the codec acoustic
-        # encoder eager there.
+        # NPU's torch.compile backend cannot compile this codec model
+        # (crashes on dynamic shapes, verified on Atlas 910B).
         codec.model.acoustic_encoder = torch.compile(
             codec.model.acoustic_encoder, mode="default", dynamic=True
         )
