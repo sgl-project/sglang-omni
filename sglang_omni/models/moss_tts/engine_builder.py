@@ -8,6 +8,7 @@ from typing import Any
 
 from sglang_omni.models.moss_tts import request_builders
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
 
 class MossTtsEngineBuilder(TtsEngineBuilder):
@@ -45,11 +46,15 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         self._model_runner = model_worker.model_runner
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
-        del server_args
-        graph_runner = self._model_runner.decode_cuda_graph_runner
+        graph_runner = getattr(self._model_runner, "decode_cuda_graph_runner", None)
+        if graph_runner is None:
+            graph_runner = getattr(self._model_runner, "piecewise_cuda_graph_runner", None)
+        capture_bs = getattr(graph_runner, "capture_bs", None)
+        if capture_bs is None:
+            capture_bs = get_decode_cuda_graph_bs(server_args)
         model.init_sampling_graphs(
-            list(graph_runner.capture_bs),
-            disable_padding=graph_runner.disable_padding,
+            list(capture_bs),
+            disable_padding=bool(getattr(graph_runner, "disable_padding", False)),
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:

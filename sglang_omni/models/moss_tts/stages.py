@@ -7,11 +7,13 @@ import concurrent.futures
 import logging
 import os
 import queue
+import wave
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
+import numpy as np
 import torch
 from transformers import AutoConfig, AutoTokenizer
 
@@ -323,13 +325,57 @@ def _load_reference_waveform(
 ) -> _LoadedReferenceWaveform:
     """Load once through the shared resolver and key the exact codec input."""
 
-    waveform = load_audio(
-        os.fsdecode(source),
-        source_name="MOSS-TTS reference",
-        target_sample_rate=audio_tokenizer.sample_rate,
-        mono=True,
-    )
-    duration = len(waveform) / max(audio_tokenizer.sample_rate, 1)
+    source_path = os.fsdecode(source)
+    if source_path.lower().endswith((".wav", ".wave")):
+        with wave.open(source_path, "rb") as handle:
+            channels = handle.getnchannels()
+            sample_rate = handle.getframerate()
+            sample_width = handle.getsampwidth()
+            frames = handle.readframes(handle.getnframes())
+        if sample_width == 1:
+            audio = np.frombuffer(frames, dtype=np.uint8).astype(np.float32)
+            audio = (audio - 128.0) / 128.0
+        elif sample_width == 2:
+            audio = (
+                np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+            )
+        elif sample_width == 4:
+            audio = (
+                np.frombuffer(frames, dtype=np.int32).astype(np.float32)
+                / 2147483648.0
+            )
+        else:
+            raise ValueError(
+                f"unsupported WAV sample width {sample_width} bytes for {source_path}"
+            )
+        if channels > 1:
+            waveform = audio.reshape(-1, channels).T
+        else:
+            waveform = audio.reshape(1, -1)
+        if sample_rate != audio_tokenizer.sample_rate:
+            ratio = audio_tokenizer.sample_rate / max(sample_rate, 1)
+            new_len = max(1, int(round(waveform.shape[-1] * ratio)))
+            x_old = np.linspace(0.0, 1.0, waveform.shape[-1], endpoint=False)
+            x_new = np.linspace(0.0, 1.0, new_len, endpoint=False)
+            waveform = np.stack(
+                [np.interp(x_new, x_old, channel) for channel in waveform], axis=0
+            )
+        if waveform.ndim == 1:
+            waveform = waveform[np.newaxis, :]
+        if waveform.shape[0] == 1:
+            waveform = np.repeat(waveform, 2, axis=0)
+    else:
+        waveform = load_audio(
+            source_path,
+            source_name="MOSS-TTS reference",
+            target_sample_rate=audio_tokenizer.sample_rate,
+            mono=False,
+        )
+        if waveform.ndim == 1:
+            waveform = waveform[np.newaxis, :]
+        if waveform.shape[0] == 1:
+            waveform = np.repeat(waveform, 2, axis=0)
+    duration = waveform.shape[-1] / max(audio_tokenizer.sample_rate, 1)
     if duration > _MAX_REFERENCE_SECONDS:
         raise ValueError(
             f"reference audio is {duration:.1f}s long, limit is "

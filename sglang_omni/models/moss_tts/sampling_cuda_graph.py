@@ -77,6 +77,13 @@ class MossTTSDelaySamplingCudaGraphRunner:
             capture_bs=capture_bs,
             disable_padding=disable_padding,
         )
+        if getattr(model.device, "type", "") == "musa":
+            logger.warning(
+                "MOSS-TTS Delay sampling CUDA graph capture is disabled on "
+                "MUSA because torch-musa stream capture rejects bool/cat "
+                "sampling ops; using eager sampling for this small tail"
+            )
+            return runner
         capture_failed = False
         try:
             with torch.cuda.device(model.device):
@@ -142,6 +149,14 @@ class MossTTSDelaySamplingCudaGraphRunner:
                     "backbone_bucket=%s; that bucket will use eager",
                     bucket,
                 )
+                if getattr(self.model.device, "type", "") == "musa":
+                    logger.warning(
+                        "MOSS-TTS Delay sampling CUDA graph capture is not "
+                        "fully supported on MUSA for this bucket; discarding "
+                        "partial graphs and using eager sampling"
+                    )
+                    self.clear()
+                    return
 
     @staticmethod
     def _is_cuda_oom(exc: BaseException) -> bool:

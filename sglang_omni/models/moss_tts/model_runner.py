@@ -26,6 +26,21 @@ _UINT64_MASK = (1 << 64) - 1
 _INT64_SEED_MASK = (1 << 63) - 1
 
 
+def _request_extend_length(req: Any) -> int:
+    if hasattr(req, "extend_input_len"):
+        return int(req.extend_input_len)
+    extend_range = getattr(req, "extend_range", None)
+    if extend_range is not None and hasattr(extend_range, "length"):
+        return int(extend_range.length)
+    fill_ids = getattr(req, "fill_ids", None)
+    if fill_ids is not None:
+        prefix_indices = getattr(req, "prefix_indices", None)
+        prefix_len = len(prefix_indices) if prefix_indices is not None else 0
+        return max(0, len(fill_ids) - prefix_len)
+    origin_ids = getattr(req, "origin_input_ids", None)
+    return len(origin_ids) if origin_ids is not None else 0
+
+
 class MossTTSModelRunner(ModelRunner):
     """Samples MOSS-TTS text/audio channels and maintains delay-pattern state."""
 
@@ -33,6 +48,21 @@ class MossTTSModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self._pending_rows: torch.Tensor | None = None
         self._pending_embeds: torch.Tensor | None = None
+
+    def before_prefill(
+        self,
+        forward_batch: Any,
+        schedule_batch: Any,
+        requests: list,
+    ) -> None:
+        del schedule_batch
+        prefill_inputs = OmniPrefillInputs(
+            input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
+        )
+        attach_omni_prefill_inputs(forward_batch, prefill_inputs)
+        # Older SGLang runners may skip the Omni sidecar hook. Keep the
+        # projected embeddings directly on the forward batch as well.
+        forward_batch.input_embeds = prefill_inputs.input_embeds
 
     def custom_prefill_forward(
         self,
@@ -93,7 +123,7 @@ class MossTTSModelRunner(ModelRunner):
             rows = data.prompt_rows
             if rows is None:
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
-            req_len = int(req.extend_range.length)
+            req_len = _request_extend_length(req)
             prefix_len = len(req.prefix_indices)
             if data.output_rows:
                 # note (Richard Wang): prompt_rows is short by the generated tail
@@ -234,9 +264,11 @@ class MossTTSModelRunner(ModelRunner):
         device = channel_logits[0].device
         batch_size = len(datas)
         n_vq = len(channel_logits) - 1
+        audio_lengths, delayed, audio_mask = self._delay_state_columns(datas)
         delay_state = torch.stack(
-            [self._delay_state_tensor(data, device) for data in datas], dim=0
-        )
+            (audio_lengths, delayed, audio_mask.long()),
+            dim=1,
+        ).to(device=device)
         seeds = torch.tensor(
             [int(data.sampling_seed) for data in datas],
             dtype=torch.long,
@@ -267,7 +299,12 @@ class MossTTSModelRunner(ModelRunner):
         rows = sampled.rows[:batch_size].clone()
         next_state = sampled.next_delay_state[:batch_size].clone()
         for index, data in enumerate(datas):
-            data.delay_state = next_state[index]
+            state = next_state[index].detach().cpu()
+            data.delay_state = state
+            data.audio_length = int(state[0])
+            delayed_i = int(state[1])
+            data.delayed_length = _INF_DELAY if delayed_i == _INT64_MAX else delayed_i
+            data.is_audio = bool(int(state[2]))
         return rows
 
     def _channel_logits_from_result(
@@ -302,27 +339,40 @@ class MossTTSModelRunner(ModelRunner):
         raise RuntimeError("MOSS-TTS model output did not include channel logits")
 
     @staticmethod
-    def _delay_state_tensor(data: Any, device: torch.device) -> torch.Tensor:
-        state = getattr(data, "delay_state", None)
-        if isinstance(state, torch.Tensor) and tuple(state.shape) == (3,):
-            state = state.to(device=device, dtype=torch.long)
-        else:
-            delayed = (
-                _INT64_MAX
-                if int(getattr(data, "delayed_length", _INF_DELAY)) == _INF_DELAY
-                else int(getattr(data, "delayed_length"))
-            )
-            state = torch.tensor(
-                [
-                    int(getattr(data, "audio_length", 0)),
-                    delayed,
-                    int(data.is_audio),
-                ],
-                dtype=torch.long,
-                device=device,
-            )
-        data.delay_state = state
-        return state
+    def _delay_state_columns(
+        datas: list,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        audio_lengths: list[int] = []
+        delayed: list[int] = []
+        audio_mask: list[bool] = []
+        for data in datas:
+            state = getattr(data, "delay_state", None)
+            if isinstance(state, torch.Tensor) and tuple(state.shape) == (3,):
+                state = state.detach().to(dtype=torch.long, device="cpu")
+                audio_length = int(state[0])
+                delayed_length = int(state[1])
+                is_audio = bool(int(state[2]))
+            else:
+                audio_length = int(getattr(data, "audio_length", 0))
+                delayed_length = (
+                    _INT64_MAX
+                    if int(getattr(data, "delayed_length", _INF_DELAY)) == _INF_DELAY
+                    else int(getattr(data, "delayed_length"))
+                )
+                is_audio = bool(int(data.is_audio))
+                state = torch.tensor(
+                    [audio_length, delayed_length, int(is_audio)],
+                    dtype=torch.long,
+                )
+            data.delay_state = state.detach().cpu()
+            audio_lengths.append(audio_length)
+            delayed.append(delayed_length)
+            audio_mask.append(is_audio)
+        return (
+            torch.tensor(audio_lengths, dtype=torch.long),
+            torch.tensor(delayed, dtype=torch.long),
+            torch.tensor(audio_mask, dtype=torch.bool),
+        )
 
     def _sample_rows(
         self,
@@ -349,174 +399,194 @@ class MossTTSModelRunner(ModelRunner):
         im_end = int(cfg.im_end_token_id)
         audio_pad_code = int(cfg.audio_pad_code)
 
-        delay_state = torch.stack(
-            [self._delay_state_tensor(d, device) for d in datas], dim=0
+        audio_lengths_cpu, delayed_cpu, audio_mask_cpu = self._delay_state_columns(
+            datas
         )
-        audio_lengths = delay_state[:, 0]
-        delayed = delay_state[:, 1]
-        audio_mask = delay_state[:, 2].bool()
-        gen_steps = torch.tensor(
-            [int(d.generation_steps) for d in datas], dtype=torch.long, device=device
-        )
+        audio_lengths = audio_lengths_cpu.tolist()
+        delayed = delayed_cpu.tolist()
+        audio_mask_list = audio_mask_cpu.tolist()
+        audio_lengths_t = audio_lengths_cpu
+        delayed_t = delayed_cpu
+        audio_mask_t = audio_mask_cpu
+        gen_steps_list = [int(d.generation_steps) for d in datas]
+        gen_steps_t = torch.tensor(gen_steps_list, dtype=torch.long)
         text_temp = torch.tensor(
             [float(d.text_temperature) for d in datas],
             dtype=torch.float32,
-            device=device,
         )
         audio_temp = torch.tensor(
             [float(d.audio_temperature) for d in datas],
             dtype=torch.float32,
-            device=device,
         )
         text_top_p = torch.tensor(
-            [float(d.text_top_p) for d in datas], dtype=torch.float32, device=device
+            [float(d.text_top_p) for d in datas], dtype=torch.float32
         )
         text_top_k = torch.tensor(
-            [int(d.text_top_k) for d in datas], dtype=torch.long, device=device
+            [int(d.text_top_k) for d in datas], dtype=torch.long
         )
         audio_top_p = torch.tensor(
-            [float(d.audio_top_p) for d in datas], dtype=torch.float32, device=device
+            [float(d.audio_top_p) for d in datas], dtype=torch.float32
         )
         audio_top_k = torch.tensor(
-            [int(d.audio_top_k) for d in datas], dtype=torch.long, device=device
+            [int(d.audio_top_k) for d in datas], dtype=torch.long
         )
         audio_rep = torch.tensor(
             [float(d.audio_repetition_penalty) for d in datas],
             dtype=torch.float32,
-            device=device,
         )
         sampling_seeds = torch.tensor(
-            [int(d.sampling_seed) for d in datas], dtype=torch.long, device=device
+            [int(d.sampling_seed) for d in datas], dtype=torch.long
         )
         num_channels = n_vq + 1
 
-        text_logits = channel_logits[0].to(torch.float32)
+        text_logits = channel_logits[0].detach().clone().to(torch.float32).cpu()
+        text_vocab = int(text_logits.shape[-1])
         next_text = torch.full(
-            (batch_size,), pad_token_id, dtype=torch.long, device=device
+            (batch_size,), pad_token_id, dtype=torch.long
         )
-        next_text[delayed < n_vq] = delay_slot
-        is_audio_eos = delayed == n_vq
-        next_text[is_audio_eos] = audio_end
-        audio_mask = audio_mask & ~is_audio_eos
+        delay_indices = [i for i, d in enumerate(delayed) if d < n_vq]
+        eos_indices = [i for i, d in enumerate(delayed) if d == n_vq]
+        if delay_indices:
+            next_text[delay_indices] = delay_slot
+        if eos_indices:
+            next_text[eos_indices] = audio_end
+        audio_mask_list = [
+            m and i not in eos_indices for i, m in enumerate(audio_mask_list)
+        ]
         text_candidate_token_ids: torch.Tensor | None = None
+        token_ids = torch.arange(text_vocab)
         if is_audio:
-            if int(text_logits.shape[-1]) != 2:
+            if text_vocab != 2:
                 raise RuntimeError(
                     "MOSS-TTS control-only text logits must have two columns"
                 )
             text_candidate_token_ids = self.model.text_control_token_ids.to(
-                device=device
+                device="cpu"
             )
-            sampling_text_mask = audio_mask & (delayed > n_vq)
-            step0 = gen_steps == 0
-            if bool(step0.any()):
-                text_logits[step0, 1] = _NEG_INF
+            sampling_text_mask = audio_mask_t & (delayed_t > n_vq)
+            step0_mask = audio_mask_t & (gen_steps_t == 0)
+            if bool(step0_mask.any()):
+                text_logits = text_logits.masked_fill(
+                    step0_mask[:, None] & (token_ids == delay_slot), _NEG_INF
+                )
         else:
-            vocab = text_logits.shape[-1]
-            sampling_text_mask = delayed > n_vq
-            not_audio = ~audio_mask
-            if bool(not_audio.any()):
-                exclude = torch.tensor(
-                    [
-                        t
-                        for t in (pad_token_id, gen_slot, delay_slot, audio_end)
-                        if 0 <= t < vocab
-                    ],
-                    dtype=torch.long,
-                    device=device,
-                )
-                text_logits[not_audio] = text_logits[not_audio].index_fill(
-                    -1, exclude, _NEG_INF
-                )
-            if bool(audio_mask.any()):
-                allow_only = torch.ones(vocab, dtype=torch.bool, device=device)
-                for token_id in (gen_slot, delay_slot):
-                    if 0 <= token_id < vocab:
-                        allow_only[token_id] = False
-                text_logits[audio_mask] = text_logits[audio_mask].masked_fill(
-                    allow_only, _NEG_INF
-                )
-
-            if 0 <= delay_slot < vocab:
-                step0 = gen_steps == 0
-                if bool(step0.any()):
-                    text_logits[step0, delay_slot] = _NEG_INF
-            if 0 <= im_end < vocab:
-                step_le_nvq = gen_steps <= n_vq
-                if bool(step_le_nvq.any()):
-                    text_logits[step_le_nvq, im_end] = _NEG_INF
-
-        if bool(sampling_text_mask.any()):
-            idx = sampling_text_mask.nonzero(as_tuple=False).squeeze(1)
-            next_text[idx] = self._sample_tokens(
-                text_logits[idx],
-                temperature=text_temp[idx],
-                top_p=text_top_p[idx],
-                top_k=text_top_k[idx],
-                seeds=sampling_seeds[idx],
-                positions=gen_steps[idx] * num_channels,
-                candidate_token_ids=text_candidate_token_ids,
+            sampling_text_mask = torch.tensor(
+                [d > n_vq for d in delayed], dtype=torch.bool
             )
-        audio_mask = audio_mask | (next_text == audio_start)
-        audio_mask = audio_mask & (next_text != im_end)
+            audio_mask_rows = torch.tensor(audio_mask_list, dtype=torch.bool)
+            disallowed = (
+                (token_ids == pad_token_id)
+                | (token_ids == gen_slot)
+                | (token_ids == delay_slot)
+                | (token_ids == audio_end)
+            )
+            text_logits = text_logits.masked_fill(
+                (~audio_mask_rows)[:, None] & disallowed[None, :], _NEG_INF
+            )
+            allowed_audio = (token_ids == gen_slot) | (token_ids == delay_slot)
+            text_logits = text_logits.masked_fill(
+                audio_mask_rows[:, None] & ~allowed_audio[None, :], _NEG_INF
+            )
+            text_logits = text_logits.masked_fill(
+                audio_mask_rows[:, None]
+                & (gen_steps_t == 0)[:, None]
+                & (token_ids == delay_slot),
+                _NEG_INF,
+            )
+            text_logits = text_logits.masked_fill(
+                audio_mask_rows[:, None]
+                & (gen_steps_t <= n_vq)[:, None]
+                & (token_ids == im_end),
+                _NEG_INF,
+            )
+        text_positions = torch.tensor(
+            [g * num_channels for g in gen_steps_list], dtype=torch.long
+        )
+        sampled_text = self._sample_tokens(
+            text_logits,
+            temperature=text_temp,
+            top_p=text_top_p,
+            top_k=text_top_k,
+            seeds=sampling_seeds,
+            positions=text_positions,
+            candidate_token_ids=text_candidate_token_ids,
+        )
+        next_text = torch.where(sampling_text_mask, sampled_text, next_text)
+        next_text_cpu = next_text.detach().cpu().tolist()
+        audio_mask_list = [
+            m or (t == audio_start) for m, t in zip(audio_mask_list, next_text_cpu)
+        ]
+        audio_mask_list = [
+            m and (t != im_end) for m, t in zip(audio_mask_list, next_text_cpu)
+        ]
 
         next_audio = torch.full(
-            (batch_size, n_vq), audio_pad_code, dtype=torch.long, device=device
+            (batch_size, n_vq), audio_pad_code, dtype=torch.long
         )
-        channel_idx = torch.arange(n_vq, device=device)
-        pre_audio = audio_lengths.unsqueeze(1) > channel_idx.unsqueeze(0)
-        post_audio = channel_idx.unsqueeze(0) > (delayed.unsqueeze(1) - 1)
-        post_audio = post_audio | (delayed == _INT64_MAX).unsqueeze(1)
-        sampling_audio_mask = pre_audio & post_audio
-        if bool(sampling_audio_mask.any()):
-            audio_logits = torch.stack(
-                [cl.to(torch.float32) for cl in channel_logits[1:]], dim=1
-            )  # [batch, n_vq, vocab_audio]
-            if 0 <= audio_pad_code < audio_logits.shape[-1]:
-                audio_logits[..., audio_pad_code:] = _NEG_INF
-            if bool((audio_rep != 1.0).any()):
-                self._apply_audio_repetition_penalty(audio_logits, datas, n_vq=n_vq)
-            audio_temp_full = audio_temp.unsqueeze(1).expand(batch_size, n_vq)
-            audio_top_p_full = audio_top_p.unsqueeze(1).expand(batch_size, n_vq)
-            audio_top_k_full = audio_top_k.unsqueeze(1).expand(batch_size, n_vq)
-            mask_idx = sampling_audio_mask.nonzero(as_tuple=False)
-            audio_rows = mask_idx[:, 0]
-            audio_chans = mask_idx[:, 1]
-            next_audio[sampling_audio_mask] = self._sample_tokens(
-                audio_logits[sampling_audio_mask],
-                temperature=audio_temp_full[sampling_audio_mask],
-                top_p=audio_top_p_full[sampling_audio_mask],
-                top_k=audio_top_k_full[sampling_audio_mask],
-                seeds=sampling_seeds[audio_rows],
-                positions=gen_steps[audio_rows] * num_channels + (audio_chans + 1),
+        channel_indices = torch.arange(n_vq, dtype=torch.long)
+        sampling_audio_mask = (
+            (audio_lengths_t[:, None] > channel_indices[None, :])
+            & (
+                (channel_indices[None, :] > (delayed_t[:, None] - 1))
+                | (delayed_t[:, None] == _INT64_MAX)
+            )
+        )
+        audio_logits = torch.stack(
+            [cl.detach().clone().to(torch.float32).cpu() for cl in channel_logits[1:]],
+            dim=1,
+        )
+        if 0 <= audio_pad_code < audio_logits.shape[-1]:
+            audio_logits[..., audio_pad_code:] = _NEG_INF
+        if bool((audio_rep != 1.0).any()):
+            self._apply_audio_repetition_penalty(audio_logits, datas, n_vq=n_vq)
+        for ch in range(n_vq):
+            sampled_audio = self._sample_tokens(
+                audio_logits[:, ch, :],
+                temperature=audio_temp,
+                top_p=audio_top_p,
+                top_k=audio_top_k,
+                seeds=sampling_seeds,
+                positions=torch.tensor(
+                    [g * num_channels + (ch + 1) for g in gen_steps_list],
+                    dtype=torch.long,
+                ),
+            )
+            next_audio[:, ch] = torch.where(
+                sampling_audio_mask[:, ch], sampled_audio, next_audio[:, ch]
             )
 
-        increment = (
-            (next_text == audio_start)
-            | (next_text == gen_slot)
-            | (next_text == delay_slot)
-        )
-        audio_lengths = audio_lengths + increment.long()
-        audio_lengths[next_text == audio_end] = 0
-        delayed[(delayed == _INT64_MAX) & (next_text == delay_slot)] = 0
-        not_inf = delayed != _INT64_MAX
-        delayed[not_inf] = delayed[not_inf] + 1
-        delayed[delayed > n_vq] = _INT64_MAX
+        increment = [
+            int(t == audio_start or t == gen_slot or t == delay_slot)
+            for t in next_text_cpu
+        ]
+        audio_lengths = [al + inc for al, inc in zip(audio_lengths, increment)]
+        audio_lengths = [
+            0 if t == audio_end else al for al, t in zip(audio_lengths, next_text_cpu)
+        ]
+        delayed = [
+            0 if (dl == _INT64_MAX and t == delay_slot) else dl
+            for dl, t in zip(delayed, next_text_cpu)
+        ]
+        delayed = [
+            _INT64_MAX if dl > n_vq else (dl + 1 if dl != _INT64_MAX else dl)
+            for dl in delayed
+        ]
 
-        next_state = torch.stack((audio_lengths, delayed, audio_mask.long()), dim=1)
+        next_state = torch.tensor(
+            list(zip(audio_lengths, delayed, [int(m) for m in audio_mask_list])),
+            dtype=torch.long,
+        )
         for i, data in enumerate(datas):
-            data.delay_state = next_state[i].detach()
-            if device.type == "cpu":
-                data.audio_length = int(next_state[i, 0])
-                delayed_i = int(next_state[i, 1])
-                data.delayed_length = (
-                    _INF_DELAY if delayed_i == _INT64_MAX else delayed_i
-                )
-                data.is_audio = bool(int(next_state[i, 2]))
+            state = next_state[i]
+            data.delay_state = state
+            data.audio_length = int(state[0])
+            delayed_i = int(state[1])
+            data.delayed_length = _INF_DELAY if delayed_i == _INT64_MAX else delayed_i
+            data.is_audio = bool(int(state[2]))
 
         rows = torch.empty((batch_size, n_vq + 1), dtype=torch.long, device=device)
-        rows[:, 0] = next_text
-        rows[:, 1:] = next_audio
+        rows[:, 0] = next_text.to(device=device)
+        rows[:, 1:] = next_audio.to(device=device)
         return rows
 
     @staticmethod
@@ -559,7 +629,10 @@ class MossTTSModelRunner(ModelRunner):
         device = logits.device
         if candidate_token_ids is not None:
             candidate_token_ids = candidate_token_ids.to(device=device)
-            if tuple(logits.shape[1:]) != (2,) or int(candidate_token_ids.numel()) != 2:
+            if (
+                tuple(logits.shape[1:]) != (2,)
+                or int(candidate_token_ids.numel()) != 2
+            ):
                 raise ValueError(
                     "MOSS-TTS compact candidate sampling requires exactly two tokens"
                 )
@@ -666,10 +739,10 @@ class MossTTSModelRunner(ModelRunner):
                 ^ ((position + 0x9E3779B97F4A7C15) & _UINT64_MASK)
                 ^ ((position << 17) & _UINT64_MASK)
             ) & _INT64_SEED_MASK
-            generator = torch.Generator(device="cpu")
+            generator = torch.Generator(device=row.device)
             generator.manual_seed(mixed_seed)
             sampled[row_idx] = torch.multinomial(
-                row.cpu(), num_samples=1, generator=generator
+                row, num_samples=1, generator=generator
             ).to(device=probs.device)
         return sampled
 

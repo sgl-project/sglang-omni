@@ -203,7 +203,7 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
             generation_steps * self.num_channels,
             self.text_control_token_ids,
         )
-        sampled_text = self.text_control_token_ids[sampled_control]
+        sampled_text = self.text_control_token_ids[sampled_control].reshape(batch_size)
         next_text = torch.where(sampling_text_mask, sampled_text, next_text)
         is_audio = (is_audio | (next_text == self.audio_start_token_id)) & (
             next_text != self.im_end_token_id
@@ -265,5 +265,11 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
         next_delay_state = torch.stack(
             (next_audio_lengths, next_delayed, is_audio.long()), dim=1
         )
-        rows = torch.cat((next_text.unsqueeze(1), next_audio), dim=1)
+        next_text = next_text.reshape(batch_size)
+        next_audio = next_audio.reshape(batch_size, self.n_vq)
+        rows = torch.empty(
+            (batch_size, self.n_vq + 1), dtype=torch.long, device=next_audio.device
+        )
+        rows[:, 0] = next_text
+        rows[:, 1:] = next_audio
         return DelaySamplingOutput(rows=rows, next_delay_state=next_delay_state)

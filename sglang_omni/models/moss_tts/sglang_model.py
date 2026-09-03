@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from copy import copy
 from typing import Any, Iterable, Optional, Tuple
 
@@ -263,7 +264,10 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             dtype=weight.dtype,
         )
         for idx, embed_layer in enumerate(self.embedding_list):
-            embeds = embeds + embed_layer(input_ids_2d[:, idx])
+            # MUSA embedding kernels are sensitive to strided column slices.
+            # Make each channel input contiguous before the vocab lookup.
+            channel_ids = input_ids_2d[:, idx].contiguous()
+            embeds = embeds + embed_layer(channel_ids)
         return embeds
 
     @torch.no_grad()
@@ -371,10 +375,33 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         *,
         is_audio: bool = False,
     ) -> list[torch.Tensor]:
-        logits = [
-            output.next_token_logits
-            for output in self.compute_channel_outputs(hidden_states, forward_batch)
-        ]
+        if os.getenv("MUSA_LAUNCH_BLOCKING") == "1":
+            musa_mod = getattr(torch, "musa", None)
+            if musa_mod is not None and hasattr(musa_mod, "synchronize"):
+                musa_mod.synchronize()
+        hidden_states_musa = hidden_states.detach().clone().to(torch.float32)
+        logits: list[torch.Tensor] = []
+        for lm_head in self.lm_heads:
+            weight = getattr(lm_head, "weight", None)
+            if not isinstance(weight, torch.Tensor):
+                raise RuntimeError("MOSS-TTS LM head is missing weight tensor")
+            weight_f32 = weight.detach().clone().to(
+                dtype=torch.float32,
+                device=hidden_states_musa.device,
+            )
+            logits_i = hidden_states_musa @ weight_f32.T
+            bias = getattr(lm_head, "bias", None)
+            if bias is not None:
+                bias_f32 = bias.detach().clone().to(
+                    dtype=torch.float32,
+                    device=hidden_states_musa.device,
+                )
+                logits_i = logits_i + bias_f32
+            if os.getenv("MUSA_LAUNCH_BLOCKING") == "1":
+                musa_mod = getattr(torch, "musa", None)
+                if musa_mod is not None and hasattr(musa_mod, "synchronize"):
+                    musa_mod.synchronize()
+            logits.append(logits_i)
         if is_audio:
             token_ids = self._text_control_token_ids.to(device=logits[0].device)
             logits[0] = logits[0].index_select(-1, token_ids)

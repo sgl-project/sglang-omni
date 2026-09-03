@@ -557,6 +557,8 @@ class MossTTSAudioTokenizer:
                     dtype=torch.bool,
                 )
                 for index, wav in enumerate(prepared):
+                    if wav.shape[0] > 1:
+                        wav = torch.mean(wav, dim=0, keepdim=True)
                     length = int(wav.shape[-1])
                     input_values[index, 0, :length] = wav
                     padding_mask[index, :length] = True
@@ -588,8 +590,6 @@ class MossTTSAudioTokenizer:
             raise ValueError(
                 f"expected waveform with shape [channels, samples], got {tuple(wav.shape)}"
             )
-        if int(wav.shape[0]) > 1:
-            wav = torch.mean(wav, dim=0, keepdim=True)
         if int(sample_rate) != self.sample_rate:
             if torchaudio is not None:
                 wav = torchaudio.functional.resample(
@@ -599,7 +599,9 @@ class MossTTSAudioTokenizer:
                 )
             else:
                 wav = _cached_resample(wav, int(sample_rate), self.sample_rate, None)
-        wav = self._loudness_normalize(wav.squeeze(0))
+        if wav.shape[0] == 1:
+            wav = wav.repeat(2, 1)
+        wav = self._loudness_normalize(wav)
         return wav.to(device=self.device, dtype=torch.float32)
 
     def decode_codes(
