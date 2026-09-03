@@ -841,6 +841,40 @@ def test_runtime_resolutions_captured_and_finalize_hook_runs_after_construction(
     assert "runtime-resolved chunked_prefill_size: auto -> 2048" in caplog.text
 
 
+def test_capture_runs_before_customize_server_args(monkeypatch) -> None:
+    """A builder's customize_server_args write (zonos2 forces
+    chunked_prefill_size=0) must not be recorded as the hardware's
+    resolution — capture reads the constructed args, not the customized
+    ones."""
+    from sglang_omni.scheduling import sglang_backend
+
+    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+        monkeypatch
+    )
+    del build_kwargs, consumed
+
+    harness_fake = sglang_backend.build_sglang_server_args
+
+    def resolving_server_args(*args: Any, **kwargs: Any) -> Any:
+        server_args = harness_fake(*args, **kwargs)
+        server_args.chunked_prefill_size = 2048
+        return server_args
+
+    monkeypatch.setattr(
+        sglang_backend, "build_sglang_server_args", resolving_server_args
+    )
+
+    class ForcingBuilder(MinimalBuilder):
+        def customize_server_args(self, server_args: Any) -> None:
+            server_args.chunked_prefill_size = 0
+
+    builder = ForcingBuilder()
+    builder.build("model", device="cuda:0", gpu_id=0)
+
+    by_path = {r.path: r for r in builder.runtime_resolutions}
+    assert by_path["chunked_prefill_size"].resolved == 2048
+
+
 def test_finalize_runtime_derived_default_is_a_no_op(monkeypatch) -> None:
     """Existing builders that override nothing must build exactly as before,
     with the captured resolutions recorded on the builder."""

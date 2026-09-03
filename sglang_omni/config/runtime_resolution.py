@@ -53,17 +53,20 @@ PENDING = _Pending()
 """Resolved value used by GPU-less previews (``sgl-omni config resolve``)."""
 
 
-RUNTIME_RESOLVED_FIELDS: tuple[str, ...] = (
-    "chunked_prefill_size",
-    "mem_fraction_static",
-    "cuda_graph_max_bs",
-    "max_total_tokens",
-)
-"""ServerArgs fields whose ``None`` means "auto, resolve from the GPU".
+RUNTIME_RESOLVED_FIELDS: dict[str, str] = {
+    "chunked_prefill_size": "chunked_prefill_size",
+    "mem_fraction_static": "mem_fraction_static",
+    # The omni override name; ServerArgs has no attribute of that name — the
+    # builder aliases it to cuda_graph_max_bs_decode and the resolved value
+    # lands on the nested cuda_graph_config.
+    "cuda_graph_max_bs": "cuda_graph_config.decode.max_bs",
+}
+"""Override name -> dotted ``ServerArgs`` attribute path for "auto" fields.
 
 The set mirrors what SGLang's ``ServerArgs._handle_gpu_memory_settings``
-fills in from device memory. Extend it when upstream grows a new
-hardware-resolved field.
+fills in from device memory (``max_total_tokens`` is not among them: it is
+resolved later, from the allocated KV pool). Extend it when upstream grows
+a new hardware-resolved field.
 """
 
 SERVER_ARGS_HARDWARE_RESOLUTION = "sglang ServerArgs hardware resolution"
@@ -93,11 +96,19 @@ class RuntimeResolution:
         return f"{self.path}: {configured} -> {self.resolved!r} ({self.origin})"
 
 
+def _read_attr_path(obj: Any, dotted: str) -> Any:
+    for part in dotted.split("."):
+        obj = getattr(obj, part, _UNSET)
+        if obj is _UNSET:
+            return _UNSET
+    return obj
+
+
 def capture_runtime_resolutions(
     configured: Mapping[str, Any],
     server_args: Any,
     *,
-    fields: tuple[str, ...] = RUNTIME_RESOLVED_FIELDS,
+    fields: Mapping[str, str] = RUNTIME_RESOLVED_FIELDS,
 ) -> list[RuntimeResolution]:
     """Report every hardware-resolved field the constructed args changed.
 
@@ -108,8 +119,8 @@ def capture_runtime_resolutions(
     explicitly-set field passing through unchanged is not one.
     """
     out: list[RuntimeResolution] = []
-    for name in fields:
-        resolved = getattr(server_args, name, _UNSET)
+    for name, attr_path in fields.items():
+        resolved = _read_attr_path(server_args, attr_path)
         if resolved is _UNSET:
             continue
         supplied = configured.get(name)

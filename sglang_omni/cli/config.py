@@ -198,11 +198,13 @@ def _resolve_sources(
             resolved.provenance.record_resolved(
                 path_text, derivation_patch.path.read(derived)
             )
-        # Hardware-resolved engine fields left at "auto" only get a value
-        # inside ServerArgs construction, on the GPU the stage lands on.
-        # This preview runs without one, so the honest answer is a pending
-        # runtime entry, rendered as "auto (resolved from GPU memory at
-        # launch)" instead of a value this command cannot know.
+        # Hardware-resolved engine fields left at "auto" only get a value at
+        # launch: the stage's builder may fill them from its own generation
+        # defaults, and whatever is still unset then is resolved by SGLang
+        # from the GPU the stage lands on. This preview runs without either
+        # (builder defaults need a constructed builder, the GPU is not
+        # here), so the honest answer is a pending runtime entry naming both
+        # possible settlers instead of a value this command cannot know.
         engine_stage_names = set(_engine_stage_names(derived))
         for stage in derived.stages:
             if stage.name not in engine_stage_names:
@@ -220,7 +222,10 @@ def _resolve_sources(
                         path=path_text,
                         configured=None,
                         resolved=PENDING,
-                        origin="sglang hardware resolution at launch",
+                        origin=(
+                            "settled at launch: the stage builder's defaults, "
+                            "else sglang's hardware resolution"
+                        ),
                     ),
                 )
         return Resolution(baseline, replace(resolved, config=derived))
@@ -347,12 +352,16 @@ def explain(
             print("No configuration source touched the pipeline's defaults.")
             return
         for listed in provenance.paths():
-            winner = provenance.winner(listed)
-            if winner is None:
-                # A runtime-only path: no source wrote it, the launch will.
-                runtime = provenance.runtime[listed]
+            runtime = provenance.runtime.get(listed)
+            if runtime is not None:
+                # The launch has the last word, exactly as `explain <path>`
+                # reports it — even when a source also wrote the path (a
+                # yaml `mem_fraction_static: null` is a source write whose
+                # value the launch settles).
                 print(f"{listed} = {runtime.resolved!r}  <- runtime ({runtime.origin})")
                 continue
+            winner = provenance.winner(listed)
+            assert winner is not None  # a non-runtime path has entries
             value = provenance.resolved_value(listed, winner.value)
             print(f"{listed} = {value!r}  <- {winner.source.describe()}")
         return

@@ -99,6 +99,16 @@ class TestCapture:
         )
         assert resolution.origin == HARDWARE
 
+    def test_cuda_graph_max_bs_reads_the_nested_decode_config(self):
+        """ServerArgs has no cuda_graph_max_bs attribute; the omni override
+        is aliased at construction and the resolved value lands on
+        cuda_graph_config.decode.max_bs."""
+        args = server_args(
+            cuda_graph_config=SimpleNamespace(decode=SimpleNamespace(max_bs=160))
+        )
+        (resolution,) = capture_runtime_resolutions({}, args)
+        assert (resolution.path, resolution.resolved) == ("cuda_graph_max_bs", 160)
+
 
 class TestRequireResolved:
     def test_passes_a_concrete_value_through(self):

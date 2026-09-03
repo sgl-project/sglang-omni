@@ -165,15 +165,14 @@ class SGLangGenerationEngineBuilder(ABC):
             context_length=self.context_length,
             **overrides,
         )
-        self.customize_server_args(server_args)
-        self.validate_before_infrastructure(server_args)
-
         # ServerArgs construction is where "auto" fields become concrete
         # (SGLang resolves them from GPU memory in __post_init__). Read the
-        # settled values back, record them, and only then let builders derive
-        # from them — this is the first point in the lifecycle where a
-        # derivation from these fields reads a value that actually exists.
+        # settled values back immediately — before customize_server_args,
+        # whose builder writes (zonos2 forces chunked_prefill_size=0) would
+        # otherwise be recorded as the hardware's resolution.
         self.runtime_resolutions = capture_runtime_resolutions(overrides, server_args)
+        self.customize_server_args(server_args)
+        self.validate_before_infrastructure(server_args)
         RUNTIME_RESOLUTION_RECORD.record(self.model_name, self.runtime_resolutions)
         for resolution in self.runtime_resolutions:
             logger.info(f"{self.model_name}: runtime-resolved {resolution.describe()}")

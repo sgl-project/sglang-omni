@@ -593,7 +593,10 @@ class TestRuntimeResolvedRendering:
         output = output_of(result)
         assert f"stages.{stage}.engine.chunked_prefill_size" in output
         assert "auto (resolved from GPU memory at launch)" in output
-        assert "runtime (sglang hardware resolution at launch)" in output
+        assert (
+            "runtime (settled at launch: the stage builder's defaults, else sglang's hardware resolution)"
+            in output
+        )
 
     def test_explain_answers_for_an_auto_field(self, runner, config_file, stage):
         result = runner.invoke(
@@ -638,4 +641,33 @@ class TestRuntimeResolvedRendering:
         )
 
         assert result.exit_code == 0, output_of(result)
-        assert "runtime (sglang hardware resolution at launch)" in output_of(result)
+        assert (
+            "runtime (settled at launch: the stage builder's defaults, else sglang's hardware resolution)"
+            in output_of(result)
+        )
+
+    def test_listing_and_explain_agree_on_a_source_written_auto(
+        self, runner, tmp_path, base_config, stage
+    ):
+        """A source writing the literal null (the kv_cache_bytes recipe
+        recommends `mem_fraction_static: null`) touches the path AND leaves
+        it auto; the no-argument listing must report the same pending value
+        `explain <path>` does, not the yaml's None."""
+        path = f"stages.{stage}.engine.mem_fraction_static"
+        data = {
+            "config_cls": base_config.config_cls,
+            "model_path": "dummy",
+            "stages": {stage: {"engine": {"mem_fraction_static": None}}},
+        }
+        null_file = tmp_path / "null.yaml"
+        null_file.write_text(yaml.safe_dump(data, sort_keys=False))
+
+        result = runner.invoke(config_app, ["explain", "--config", str(null_file)])
+
+        assert result.exit_code == 0, output_of(result)
+        listing_line = next(
+            line
+            for line in output_of(result).splitlines()
+            if line.startswith(f"{path} =")
+        )
+        assert "auto (resolved from GPU memory at launch)" in listing_line
