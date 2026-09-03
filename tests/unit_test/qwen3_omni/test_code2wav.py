@@ -13,6 +13,7 @@ import torch
 
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+    Code2WavCudaGraphRunner,
     Code2WavRunResult,
     GraphKey,
 )
@@ -39,12 +40,19 @@ class _FactoryModel(FakeCode2WavModel):
         return self
 
 
-def _pin_cuda_platform(monkeypatch) -> None:
+def _pin_cuda_platform(monkeypatch, graph_runner_cls=Code2WavCudaGraphRunner) -> None:
     import sglang_omni.platforms as platforms
 
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
+    platform = SimpleNamespace(
+        device_type="cuda",
+        code2wav_graph_runner=graph_runner_cls,
+        get_device=lambda index: torch.device("cuda", index),
     )
+    # The scheduler keeps an imported alias while resolve_device_spec imports
+    # the platform module at call time. Pin both views so this remains a pure
+    # factory test on CPU, CUDA, and NPU hosts.
+    monkeypatch.setattr(code2wav_scheduler, "current_platform", platform)
+    monkeypatch.setattr(platforms, "current_platform", platform)
 
 
 class _FakeCudaGraphRunner:
@@ -124,6 +132,25 @@ def test_qwen_load_code2wav_model_returns_eval_model(monkeypatch) -> None:
     assert model.eval_calls == 1
 
 
+def test_transformers_capture_patch_is_scoped_to_npu(monkeypatch) -> None:
+    from sglang_omni.utils import hf_transformers_patches
+
+    calls = []
+    monkeypatch.setattr(
+        hf_transformers_patches,
+        "patch_transformers_stream_capture_detection",
+        lambda: calls.append("patched"),
+    )
+
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("cpu")
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("cuda")
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("musa")
+    assert calls == []
+
+    code2wav_scheduler._patch_transformers_for_code2wav_capture("npu")
+    assert calls == ["patched"]
+
+
 def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -> None:
     model = _FactoryModel()
     monkeypatch.setattr(
@@ -134,7 +161,7 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
         raise AssertionError("disabled default must not build CUDA graphs")
 
     monkeypatch.setattr(
-        code2wav_scheduler.Code2WavCudaGraphRunner,
+        Code2WavCudaGraphRunner,
         "build",
         staticmethod(_unexpected_build),
     )
@@ -147,21 +174,30 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     assert scheduler._cuda_graph_runner is None
 
 
-def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
-    """The runner is CUDA-only, and the platform owns that decision rather than the
-    factory re-deriving it from the device type. A platform inheriting the base True
-    would reach the CUDA-only runner, so every non-CUDA platform declares itself.
-    """
+def test_platforms_select_supported_code2wav_graph_backends() -> None:
+    """CUDA-compatible and NPU platforms enable their graph runners."""
+    from sglang_omni.models.qwen3_omni.components.code2wav_npu_graph import (
+        Code2WavNpuGraphRunner,
+    )
     from sglang_omni.platforms.cpu import CPUOmniPlatform
     from sglang_omni.platforms.cuda import CUDAOmniPlatform
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
     from sglang_omni.platforms.npu import NPUOmniPlatform
     from sglang_omni.platforms.rocm import ROCMOmniPlatform
     from sglang_omni.platforms.xpu import XPUOmniPlatform
 
+    assert XPUOmniPlatform().code2wav_graph_runner is None
+    assert NPUOmniPlatform().code2wav_graph_runner is Code2WavNpuGraphRunner
+    assert CPUOmniPlatform().code2wav_graph_runner is None
+    assert CUDAOmniPlatform().code2wav_graph_runner is Code2WavCudaGraphRunner
+    assert MUSAOmniPlatform().code2wav_graph_runner is Code2WavCudaGraphRunner
+    assert ROCMOmniPlatform().code2wav_graph_runner is None
+
     assert XPUOmniPlatform().enable_code2wav_graph() is False
-    assert NPUOmniPlatform().enable_code2wav_graph() is False
+    assert NPUOmniPlatform().enable_code2wav_graph() is True
     assert CPUOmniPlatform().enable_code2wav_graph() is False
     assert CUDAOmniPlatform().enable_code2wav_graph() is True
+    assert MUSAOmniPlatform().enable_code2wav_graph() is True
     assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
@@ -213,7 +249,7 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
         code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model.eval()
     )
     monkeypatch.setattr(
-        code2wav_scheduler.Code2WavCudaGraphRunner,
+        Code2WavCudaGraphRunner,
         "build",
         staticmethod(lambda *args, **kwargs: runner),
     )
@@ -234,14 +270,13 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
 def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
-    _pin_cuda_platform(monkeypatch)
     captured_keys: list[tuple] = []
 
     class _RecordingRunner:
         @staticmethod
         def build(model, **kwargs):
             captured_keys.append(tuple(kwargs["graph_keys"]))
-            runner = object.__new__(code2wav_scheduler.Code2WavCudaGraphRunner)
+            runner = object.__new__(Code2WavCudaGraphRunner)
             runner.stats = lambda: {"enabled": True, "disable_reason": None}
             return runner
 
@@ -250,11 +285,7 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
         "load_code2wav_model",
         lambda *args, **kwargs: _FactoryModel(),
     )
-    monkeypatch.setattr(
-        code2wav_scheduler,
-        "Code2WavCudaGraphRunner",
-        _RecordingRunner,
-    )
+    _pin_cuda_platform(monkeypatch, _RecordingRunner)
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
@@ -281,14 +312,13 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
 def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
     monkeypatch,
 ) -> None:
-    _pin_cuda_platform(monkeypatch)
     build_calls: list[tuple] = []
 
     class _DisabledRunner:
         @staticmethod
         def build(model, **kwargs):
             build_calls.append(tuple(kwargs["graph_keys"]))
-            runner = object.__new__(code2wav_scheduler.Code2WavCudaGraphRunner)
+            runner = object.__new__(Code2WavCudaGraphRunner)
             runner.stats = lambda: {"enabled": False, "disable_reason": "test"}
             return runner
 
@@ -297,11 +327,7 @@ def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
         "load_code2wav_model",
         lambda *args, **kwargs: _FactoryModel(),
     )
-    monkeypatch.setattr(
-        code2wav_scheduler,
-        "Code2WavCudaGraphRunner",
-        _DisabledRunner,
-    )
+    _pin_cuda_platform(monkeypatch, _DisabledRunner)
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
@@ -360,17 +386,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     )
     load_call: dict = {}
     build_call: dict = {}
-    import sglang_omni.platforms as platforms
-
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
-    )
-    monkeypatch.setattr(
-        platforms.current_platform,
-        "get_device",
-        lambda index: torch.device("cuda", index),
-        raising=False,
-    )
+    _pin_cuda_platform(monkeypatch)
     monkeypatch.setattr(
         code2wav_scheduler.torch,
         "get_device_module",
@@ -387,7 +403,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
 
     monkeypatch.setattr(code2wav_scheduler, "load_code2wav_model", _load)
     monkeypatch.setattr(
-        code2wav_scheduler.Code2WavCudaGraphRunner,
+        Code2WavCudaGraphRunner,
         "build",
         staticmethod(_build),
     )
@@ -441,21 +457,11 @@ def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
         code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model.eval()
     )
     monkeypatch.setattr(
-        code2wav_scheduler.Code2WavCudaGraphRunner,
+        Code2WavCudaGraphRunner,
         "build",
         staticmethod(lambda *args, **kwargs: runner),
     )
-    import sglang_omni.platforms as platforms
-
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
-    )
-    monkeypatch.setattr(
-        platforms.current_platform,
-        "get_device",
-        lambda index: torch.device("cuda", index),
-        raising=False,
-    )
+    _pin_cuda_platform(monkeypatch)
 
     with caplog.at_level(logging.INFO, logger=code2wav_scheduler.__name__):
         scheduler = code2wav_scheduler.create_code2wav_scheduler(

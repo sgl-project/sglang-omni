@@ -300,7 +300,25 @@ def test_cuda_graph_dotted_flags_reach_resolved_sglang_args():
     talker_args = resolve_stage_factory_args(_stage(merged, "talker_ar"), merged)
 
     assert thinker_args["server_args_overrides"]["disable_cuda_graph"] is True
+    assert thinker_args["server_args_overrides"]["disable_decode_cuda_graph"] is True
     assert talker_args["server_args_overrides"]["disable_cuda_graph"] is False
+    assert talker_args["server_args_overrides"]["disable_decode_cuda_graph"] is False
+
+
+def test_decode_cuda_graph_dotted_flag_overrides_all_phase_default():
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+
+    merged = ConfigManager(config).merge_config(
+        [
+            ("talker_ar.engine.disable_cuda_graph", "false"),
+            ("talker_ar.engine.disable_decode_cuda_graph", "true"),
+        ]
+    )
+
+    talker_args = resolve_stage_factory_args(_stage(merged, "talker_ar"), merged)
+
+    assert talker_args["server_args_overrides"]["disable_cuda_graph"] is False
+    assert talker_args["server_args_overrides"]["disable_decode_cuda_graph"] is True
 
 
 def test_torch_compile_dotted_flags_reach_resolved_sglang_args():

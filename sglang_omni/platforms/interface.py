@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sglang.srt.platforms.device_mixin import DeviceMixin
 
@@ -57,9 +57,14 @@ class OmniPlatform(DeviceMixin):
             effective_quantization = server_quantization
         return effective_quantization
 
-    def enable_code2wav_graph(self):
+    @property
+    def code2wav_graph_runner(self) -> type[Any] | None:
+        """Return the platform-specific Code2Wav graph runner, if supported."""
+        return None
+
+    def enable_code2wav_graph(self) -> bool:
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
-        return True
+        return self.code2wav_graph_runner is not None
 
     def enable_talker_graph(self) -> bool:
         return True

@@ -17,8 +17,13 @@ class NPUOmniPlatform(OmniPlatform):
     def set_device(self, device: "torch.device") -> None:
         torch.npu.set_device(device)
 
-    def enable_code2wav_graph(self):
-        return False
+    @property
+    def code2wav_graph_runner(self):
+        from sglang_omni.models.qwen3_omni.components.code2wav_npu_graph import (
+            Code2WavNpuGraphRunner,
+        )
+
+        return Code2WavNpuGraphRunner
 
     def supports_torchaudio_resample(self) -> bool:
         """Disabled as it run on CPU and faced errors during inference for now"""

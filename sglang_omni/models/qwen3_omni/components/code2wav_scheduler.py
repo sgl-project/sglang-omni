@@ -12,13 +12,12 @@ import logging
 import queue
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 import numpy as np
 import torch
 
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
-    Code2WavCudaGraphRunner,
     Code2WavRunResult,
     GraphKey,
 )
@@ -35,9 +34,34 @@ from sglang_omni.utils.device import resolve_device_spec
 logger = logging.getLogger(__name__)
 
 
+class _Code2WavGraphRunner(Protocol):
+    def available_batch_sizes(self, frames: int) -> tuple[int, ...]: ...
+
+    def run(
+        self,
+        codes: torch.Tensor,
+        *,
+        eligible: bool,
+    ) -> Code2WavRunResult: ...
+
+
 # Note (ruoyu): the decomposition, the captured batched keys and the batch
 # ceiling all derive from this tuple so a captured key can never go missing.
 _DECOMPOSE_SIZES = (8, 4, 2, 1)
+
+
+def _patch_transformers_for_code2wav_capture(device_type: str) -> None:
+    if device_type != "npu":
+        return
+
+    from sglang_omni.utils.hf_transformers_patches import (
+        patch_transformers_stream_capture_detection,
+    )
+
+    # Transformers only checks CUDA stream capture in is_tracing(). Without
+    # NPU detection, masking_utils takes tensor-to-Python scalar branches and
+    # triggers an illegal stream synchronize during NPUGraph capture.
+    patch_transformers_stream_capture_detection()
 
 
 def _serial_threshold_graph_keys(
@@ -76,13 +100,17 @@ def _batched_graph_keys(
 
 
 def load_code2wav_model(
-    model_path: str, *, device: str = "cuda", dtype: str | None = None
+    model_path: str,
+    *,
+    device: str | torch.device = "cuda",
+    dtype: str | None = None,
 ):
     """Load Code2Wav model from HF checkpoint."""
     from transformers import AutoConfig
 
     from sglang_omni.models.weight_loader import load_module, resolve_dtype
 
+    _patch_transformers_for_code2wav_capture(torch.device(device).type)
     torch_dtype = resolve_dtype(dtype)
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     code2wav_config = config.code2wav_config
@@ -162,7 +190,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         batch_ceiling: int = 8,
         enable_output_overlap: bool = True,
         enable_cuda_graph: bool = False,
-        _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
+        _cuda_graph_runner: _Code2WavGraphRunner | None = None,
     ):
         self._model = model
         self._device = torch.device(device)
@@ -998,7 +1026,7 @@ def create_code2wav_scheduler(
     """Factory: returns Code2WavScheduler."""
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(
-            "Code2Wav CUDA graph requires "
+            "Code2Wav accelerator graph requires "
             "runtime.resources.total_gpu_memory_fraction"
         )
     concrete_device = torch.device(resolve_device_spec(device, gpu_id))
@@ -1023,7 +1051,13 @@ def create_code2wav_scheduler(
                 stream_chunk_size,
                 left_context_size,
             )
-        cuda_graph_runner = Code2WavCudaGraphRunner.build(
+        graph_runner_cls = current_platform.code2wav_graph_runner
+        if graph_runner_cls is None:
+            raise ValueError(
+                "Code2Wav graph is unsupported on platform "
+                f"{current_platform.device_type!r}, device={concrete_device}"
+            )
+        cuda_graph_runner = graph_runner_cls.build(
             model,
             device=concrete_device,
             num_quantizers=int(model.config.num_quantizers),
@@ -1042,7 +1076,8 @@ def create_code2wav_scheduler(
             )
             enable_batching = False
         logger.info(
-            "Code2Wav CUDA graph startup stats=%s",
+            "Code2Wav %s graph startup stats=%s",
+            concrete_device.type.upper(),
             json.dumps(
                 cuda_graph_runner.stats(),
                 sort_keys=True,

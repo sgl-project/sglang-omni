@@ -24,6 +24,13 @@ from sglang_omni.scheduling.messages import IncomingMessage
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel
 
 
+def _pin_factory_platform(monkeypatch, scheduler_module, platform) -> None:
+    import sglang_omni.platforms as platforms
+
+    monkeypatch.setattr(scheduler_module, "current_platform", platform)
+    monkeypatch.setattr(platforms, "current_platform", platform)
+
+
 class _FakeGraphRunner:
     def __init__(self, model, keys) -> None:
         self._model = model
@@ -692,10 +699,14 @@ def test_factory_builds_batched_keys_with_batching(monkeypatch) -> None:
             captured.update(kwargs)
             return _FakeGraphRunner(model, kwargs["graph_keys"])
 
-    monkeypatch.setattr(mod, "Code2WavCudaGraphRunner", _FakeRunnerCls)
+    _pin_factory_platform(
+        monkeypatch,
+        mod,
+        SimpleNamespace(device_type="cuda", code2wav_graph_runner=_FakeRunnerCls),
+    )
     scheduler = mod.create_code2wav_scheduler(
         "fake-path",
-        device="cpu",
+        device="cuda:0",
         stream_chunk_size=2,
         left_context_size=1,
         enable_batching=True,
@@ -709,6 +720,48 @@ def test_factory_builds_batched_keys_with_batching(monkeypatch) -> None:
     assert GraphKey(batch_size=4, frames=2) in keys
     assert all(key.batch_size <= 4 for key in keys)
     assert scheduler._chunk_aligned_dispatch is True
+
+
+def test_factory_selects_npu_graph_runner(monkeypatch) -> None:
+    import sglang_omni.models.qwen3_omni.components.code2wav_scheduler as mod
+
+    try:
+        torch.device("npu:0")
+    except RuntimeError:
+        torch.utils.rename_privateuse1_backend("npu")
+
+    def _fake_load(path, *, device, dtype):
+        model = FakeCode2WavModel(total_upsample=2)
+        model.config = SimpleNamespace(num_quantizers=2)
+        return model
+
+    captured: dict = {}
+
+    class _FakeNpuRunnerCls:
+        @classmethod
+        def build(cls, model, **kwargs):
+            captured.update(kwargs)
+            return _FakeGraphRunner(model, kwargs["graph_keys"])
+
+    monkeypatch.setattr(mod, "load_code2wav_model", _fake_load)
+    _pin_factory_platform(
+        monkeypatch,
+        mod,
+        SimpleNamespace(device_type="npu", code2wav_graph_runner=_FakeNpuRunnerCls),
+    )
+
+    scheduler = mod.create_code2wav_scheduler(
+        "fake-path",
+        device="npu:0",
+        stream_chunk_size=2,
+        left_context_size=1,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.05,
+    )
+
+    assert captured["device"] == torch.device("npu:0")
+    assert captured["num_quantizers"] == 2
+    assert scheduler._cuda_graph_runner is not None
 
 
 def test_serial_only_runner_splits_groups_into_safe_b1_replays() -> None:

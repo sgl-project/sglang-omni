@@ -48,6 +48,14 @@ def _is_fp8_cutlass_moe_supported() -> bool:
 
 
 class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
+    @property
+    def code2wav_graph_runner(self):
+        from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+            Code2WavCudaGraphRunner,
+        )
+
+        return Code2WavCudaGraphRunner
+
     def get_stage_process_env(
         self,
         spec: StageLaunchConfig,
