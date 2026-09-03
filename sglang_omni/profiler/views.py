@@ -137,6 +137,7 @@ _STAGE_INTERVAL_EVENTS = (
     ("stage_input_received", "stage_complete"),
     ("encoder_start", "encoder_end"),
     ("preprocess_start", "preprocess_end"),
+    ("code2wav_decode_start", "code2wav_decode_end"),
     ("scheduler_request_build_start", "scheduler_request_build_end"),
     ("scheduler_request_build_end", "scheduler_queue_enter"),
     ("scheduler_queue_enter", "scheduler_prefill_start"),

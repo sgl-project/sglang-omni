@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any
 
+from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,23 @@ def create_aggregate_executor():
 ENCODER_CACHE_MAX_ENTRIES = 64
 ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
+_ENCODER_MODALITY = {"image_encoder": "image", "audio_encoder": "audio"}
+
+
+def _encoder_item_count(model_inputs: dict[str, Any]) -> int | None:
+    """Items in one encoder payload: image slices or audio mel chunks."""
+    pixel_values = model_inputs.get("pixel_values")
+    if pixel_values is not None:
+        try:
+            return len(pixel_values)
+        except TypeError:
+            return None
+    audio_features = model_inputs.get("audio_features")
+    shape = getattr(audio_features, "shape", None)
+    if shape is not None and len(shape) > 0:
+        return int(shape[0])
+    return None
+
 
 def _run_single_encoder_payload(
     payload: StagePayload,
@@ -66,16 +84,50 @@ def _run_single_encoder_payload(
     state = MiniCPMOPipelineState.from_dict(payload.data)
     request = build_encoder_request(state, stage_name=stage_name)
     if request.skip_result is not None:
+        # Note (ruoyu): skip runs emit no encoder events so the profiler's
+        # encoder intervals only cover real encode/cache work.
         result = request.skip_result
     else:
-        result = None
-        if cache is not None and request.cache_key is not None:
-            result = cache.get(request.cache_key)
-        if result is None:
-            with torch.no_grad():
-                result = model(**request.model_inputs)
-            if cache is not None and request.cache_key is not None:
-                cache.put(request.cache_key, result)
+        modality = _ENCODER_MODALITY.get(stage_name, stage_name)
+        # Note (ruoyu): batch_size counts payloads per dispatch (qwen3_omni
+        # parity); num_items counts slices/chunks inside this payload.
+        start_metadata: dict[str, Any] = {"modality": modality, "batch_size": 1}
+        num_items = _encoder_item_count(request.model_inputs)
+        if num_items is not None:
+            start_metadata["num_items"] = num_items
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="encoder_start",
+            metadata=start_metadata,
+        )
+        cacheable = cache is not None and request.cache_key is not None
+        cache_hit = False
+        status = "error"
+        try:
+            result = None
+            if cacheable:
+                result = cache.get(request.cache_key)
+                cache_hit = result is not None
+            if result is None:
+                with torch.no_grad():
+                    result = model(**request.model_inputs)
+                if cacheable:
+                    cache.put(request.cache_key, result)
+            status = "ok"
+        finally:
+            _emit_event(
+                request_id=payload.request_id,
+                stage=None,
+                event_name="encoder_end",
+                metadata={
+                    "modality": modality,
+                    "batch_size": 1,
+                    "cacheable": cacheable,
+                    "cache_hit": cache_hit,
+                    "status": status,
+                },
+            )
     apply_encoder_result(state, stage_name=stage_name, result=result)
     payload.data = state.to_dict()
     return payload
@@ -196,35 +248,81 @@ def create_sglang_talker_executor_from_config(
     return scheduler
 
 
+def _run_code2wav_payload(payload: StagePayload, *, model: Any) -> StagePayload:
+    """Vocode one utterance, framed by profiler events.
+
+    Event names mirror qwen3_omni's code2wav events
+    (``code2wav_decode_start``/``end``, ``code2wav_first_audio``) so the
+    existing profiler views and analysis tooling read both models. This
+    vocoder is single-shot, so ``code2wav_first_audio`` fires when the whole
+    utterance is ready — that is the honest TTFA milestone for this pipeline.
+    """
+    from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+    from sglang_omni.models.minicpm_o.request_builders import TALKER_STAGE
+    from sglang_omni.utils.audio_payload import audio_waveform_payload
+
+    state = MiniCPMOPipelineState.from_dict(payload.data)
+    talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
+    codec_tokens = talker_out["codec_tokens"]
+    n_codec = int(codec_tokens.numel())
+    _emit_event(
+        request_id=payload.request_id,
+        stage=None,
+        event_name="code2wav_decode_start",
+        metadata={"codec_tokens": n_codec},
+    )
+    result = None
+    status = "error"
+    try:
+        result = model(codec_tokens=codec_tokens)
+        status = "ok"
+    finally:
+        end_metadata: dict[str, Any] = {"codec_tokens": n_codec, "status": status}
+        if result is not None:
+            waveform = result["waveform"]
+            sample_rate = int(result["sample_rate"])
+            samples = int(waveform.shape[0])
+            end_metadata["audio_samples"] = samples
+            end_metadata["audio_seconds"] = samples / sample_rate
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="code2wav_decode_end",
+            metadata=end_metadata,
+        )
+    if samples:
+        _emit_event(
+            request_id=payload.request_id,
+            stage=None,
+            event_name="code2wav_first_audio",
+            metadata={"samples": samples},
+        )
+    # Terminal payload goes back through msgpack: keep only the audio
+    # fields, no tensors from the pipeline state.
+    payload.data = dict(
+        audio_waveform_payload(
+            waveform,
+            sample_rate=sample_rate,
+            modality="audio",
+            source_hint="MiniCPM-o",
+        )
+    )
+    return payload
+
+
 def create_code2wav_executor(
     model_path: str,
     *,
     device: str | None = None,
 ):
     from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
-    from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-    from sglang_omni.models.minicpm_o.request_builders import TALKER_STAGE
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.audio_payload import audio_waveform_payload
     from sglang_omni.utils.device import resolve_device_spec
 
     model = MiniCPMOCode2Wav(model_path, device=resolve_device_spec(device))
 
     def _vocode(payload: StagePayload) -> StagePayload:
-        state = MiniCPMOPipelineState.from_dict(payload.data)
-        talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
-        result = model(codec_tokens=talker_out["codec_tokens"])
-        # Terminal payload goes back through msgpack: keep only the audio
-        # fields, no tensors from the pipeline state.
-        payload.data = dict(
-            audio_waveform_payload(
-                result["waveform"],
-                sample_rate=int(result["sample_rate"]),
-                modality="audio",
-                source_hint="MiniCPM-o",
-            )
-        )
-        return payload
+        return _run_code2wav_payload(payload, model=model)
 
     return SimpleScheduler(_vocode)
 
