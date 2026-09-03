@@ -4,8 +4,8 @@ pub(crate) mod profile;
 mod resolver;
 mod selection;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use tokio::sync::{Notify, Semaphore};
 
@@ -96,7 +96,6 @@ pub(crate) struct WorkerPool {
     records: Vec<Arc<WorkerRecord>>,
     admission: AdmissionController,
     selector: Selector,
-    session_selection: Mutex<()>,
     homogeneous_generation_http: Vec<HomogeneousGenerationCohort>,
     homogeneous_media_http: Vec<HomogeneousMediaCohort>,
     health_client: reqwest::Client,
@@ -180,7 +179,6 @@ impl WorkerPool {
             records,
             admission,
             selector,
-            session_selection: Mutex::new(()),
             homogeneous_generation_http,
             homogeneous_media_http,
             health_client,
@@ -305,11 +303,7 @@ impl WorkerPool {
         let mut eligible_count = 0;
         let mut preferred = [0; MAX_WORKERS];
         let mut preferred_count = 0;
-        let policy = self.selector.least_requests_guard();
-        let selection = self
-            .session_selection
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut selector = self.selector.lock();
         for record in &self.records {
             if &record.trust_domain != requirement.trust_domain()
                 || !record.has_profile(requirement)
@@ -353,10 +347,14 @@ impl WorkerPool {
         };
         let selected = match self.selector.strategy() {
             RoutingStrategy::RoundRobin => {
-                Arc::clone(&self.records[eligible[self.selector.start(eligible.len())]])
+                let candidates = candidate_set(eligible);
+                selector
+                    .select(&candidates)
+                    .map(|index| Arc::clone(&self.records[index]))
             }
-            RoutingStrategy::LeastRequests => self.select_least_requests(eligible),
-        };
+            RoutingStrategy::LeastRequests => self.select_least_requests(eligible, &mut selector),
+        }
+        .ok_or(DispatchError::Internal)?;
         let capacity = selected
             .session_capacity(class)
             .ok_or(DispatchError::Internal)?;
@@ -364,8 +362,7 @@ impl WorkerPool {
             .try_acquire_owned()
             .map_err(|_| DispatchError::Internal)?;
         let lease = RequestLease::new_session(admission, permit, selected);
-        drop(selection);
-        drop(policy);
+        drop(selector);
         Ok(lease)
     }
 
@@ -815,7 +812,6 @@ mod tests {
                 [Some(admission), None, None, None, None, None],
             ),
             selector,
-            session_selection: Mutex::new(()),
             health_client: client.clone(),
             http_client: client,
         }
@@ -1448,7 +1444,6 @@ mod tests {
                 [Some(8), Some(8), Some(8), Some(8), None, None],
             ),
             selector,
-            session_selection: Mutex::new(()),
             health_client: client.clone(),
             http_client: client,
         }
