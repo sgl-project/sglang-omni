@@ -257,7 +257,7 @@ impl WorkerPool {
             if !owner.is_routable() {
                 return Err(DispatchError::Unavailable);
             }
-            let policy = self.selector.least_requests_guard();
+            let policy = self.selector.lock();
             let lease = RequestLease::new(admission, Arc::clone(owner));
             drop(policy);
             return Ok(lease);
@@ -426,7 +426,7 @@ impl WorkerPool {
         if !owner.is_routable() {
             return Err(DispatchError::Unavailable);
         }
-        let policy = self.selector.least_requests_guard();
+        let policy = self.selector.lock();
         let lease = RequestLease::new_owner(envelope, Arc::clone(owner));
         drop(policy);
         Ok(lease)

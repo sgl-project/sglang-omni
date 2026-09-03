@@ -4,8 +4,8 @@ use crate::config::RoutingStrategy;
 
 use super::profile::MAX_WORKERS;
 
-/// Selection and reservation share this lock so least-request callers cannot
-/// choose from the same load observation.
+/// Selection and reservation share this lock so recency and load observations
+/// are updated atomically.
 pub(super) struct Selector {
     strategy: RoutingStrategy,
     recency: Mutex<RecencyOrder>,
