@@ -13,10 +13,16 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 
 class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
     """ROCm policy with PyTorch's CUDA-compatible HIP device surface."""
+
+    def _get_device_graph_backend(self) -> DeviceGraphBackend:
+        from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
+
+        return CudaDeviceGraphBackend()
 
     def get_stage_process_env(
         self,

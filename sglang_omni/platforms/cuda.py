@@ -14,6 +14,7 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,11 @@ def _is_fp8_cutlass_moe_supported() -> bool:
 
 
 class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
+    def _get_device_graph_backend(self) -> DeviceGraphBackend:
+        from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
+
+        return CudaDeviceGraphBackend()
+
     def get_stage_process_env(
         self,
         spec: StageLaunchConfig,

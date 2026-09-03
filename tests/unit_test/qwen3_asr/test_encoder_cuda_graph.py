@@ -119,21 +119,31 @@ def asr_server_args():
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.skipif(
+    current_platform.get_device_graph_backend(
+        SimpleNamespace(type=current_platform.device_type)
+    )
+    is None,
+    reason="requires an accelerator whose platform names a graph backend",
+)
 def test_graph_matches_eager_tower(asr_server_args):
     from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig
     from sglang.srt.distributed import (
         init_distributed_environment,
         initialize_model_parallel,
     )
-    from sglang.srt.distributed.parallel_state import model_parallel_is_initialized
+    from sglang.srt.distributed.parallel_state import (
+        get_default_distributed_backend,
+        model_parallel_is_initialized,
+    )
 
     from sglang_omni.models.qwen3_asr.audio_lengths import qwen3_asr_num_audio_tokens
     from sglang_omni.models.qwen3_asr.encoder_cuda_graph import eager_preamble
 
+    device = current_platform.device_type
     if not model_parallel_is_initialized():
         init_distributed_environment(
-            backend="nccl",
+            backend=get_default_distributed_backend(device),
             world_size=1,
             rank=0,
             local_rank=0,
@@ -153,7 +163,8 @@ def test_graph_matches_eager_tower(asr_server_args):
         n_window_infer=800,
     )
     torch.manual_seed(0)
-    tower = Qwen3OmniMoeAudioEncoder(cfg).cuda().eval().to(torch.bfloat16)
+    tower = Qwen3OmniMoeAudioEncoder(cfg).to(device).eval().to(torch.bfloat16)
+    tower_device = next(tower.parameters()).device
     with torch.no_grad():
         for name, prm in tower.named_parameters():
             if prm.dim() >= 2:
@@ -164,18 +175,21 @@ def test_graph_matches_eager_tower(asr_server_args):
                 prm.zero_()
 
     runner = Qwen3ASREncoderLayerStackGraphRunner(
-        tower, buckets=build_buckets(4, 104), max_batch_size=4
+        tower,
+        buckets=build_buckets(4, 104),
+        max_batch_size=4,
+        graph_backend=current_platform.get_device_graph_backend(tower_device),
     )
     runner.capture_all()
     assert runner._graphs and not runner._failed
+    pools = [entry.graph.pool() for entry in runner._graphs.values()]
+    assert len(set(pools)) == len(pools)
 
-    # [500] and [450] share a bucket, so the second replay also checks that
-    # stale rows from the first never leak into the output.
-    for frame_lens in ([500], [450], [300, 500, 120], [800, 800, 800, 800]):
-        feats = (torch.randn(128, sum(frame_lens), device="cuda") * 0.05).to(
+    def check(frame_lens):
+        feats = (torch.randn(128, sum(frame_lens), device=device) * 0.05).to(
             torch.bfloat16
         )
-        lens = torch.tensor(frame_lens, device="cuda", dtype=torch.long)
+        lens = torch.tensor(frame_lens, device=device, dtype=torch.long)
         with torch.no_grad():
             ref = tower(feats, feature_lens=lens).last_hidden_state.squeeze(0)
         wl = window_lens_from_token_counts(
@@ -186,10 +200,38 @@ def test_graph_matches_eager_tower(asr_server_args):
         diff = (out.float() - ref.float()).abs().max().item()
         assert diff < 3e-2, f"{frame_lens}: max|diff|={diff}"
 
+    # [500] and [450] share a bucket, so the second replay also checks that
+    # stale rows from the first never leak into the output. The descending pass
+    # is the order a long clip followed by a short one produces, which no shared
+    # graph memory may assume away.
+    sequence = ([500], [450], [300, 500, 120], [800, 800, 800, 800])
+    for frame_lens in sequence:
+        check(frame_lens)
+    for frame_lens in reversed(sequence):
+        check(frame_lens)
+
     assert (
         runner.run(
-            torch.zeros(9999, 64, device="cuda", dtype=torch.bfloat16),
+            torch.zeros(9999, 64, device=device, dtype=torch.bfloat16),
             [104] * 96 + [15],
         )
         is None
     )
+
+
+def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
+    """A CPU tower must not build a runner that fails every bucket in turn.
+
+    __new__ skips the checkpoint work; only the tower's device decides this.
+    """
+    model = sglang_model.Qwen3ASRForConditionalGeneration.__new__(
+        sglang_model.Qwen3ASRForConditionalGeneration
+    )
+    model.audio_tower = SimpleNamespace(parameters=lambda: iter([torch.zeros(1)]))
+    model._encoder_graph_runner = "untouched"
+
+    sglang_model.Qwen3ASRForConditionalGeneration.init_encoder_graphs(
+        model, max_batch_size=4, max_tokens_per_clip=780
+    )
+
+    assert model._encoder_graph_runner == "untouched"
