@@ -11,7 +11,10 @@ What it deliberately does *not* do:
   themselves into patches before they get here;
 * it does not compute placement, process topology or SGLang server args —
   those are downstream consumers of the resolved value, and must not write
-  back into it.
+  back into the config model. Values the launch itself settles (an "auto"
+  field SGLang resolves from the GPU) are recorded as observations in the
+  provenance's runtime channel
+  (:mod:`sglang_omni.config.runtime_resolution`), never as patches.
 """
 
 from __future__ import annotations
