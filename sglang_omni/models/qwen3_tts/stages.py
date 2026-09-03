@@ -127,11 +127,25 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
     server_args_overrides: dict[str, Any] | None = None,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 12.0,
+    prefill_coalesce_when_idle: bool = False,
+    prefill_coalesce_requires_pending_builds: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool = True,
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
     return Qwen3TtsEngineBuilder(
         attn_implementation=attn_implementation,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        prefill_coalesce_requires_pending_builds=(
+            prefill_coalesce_requires_pending_builds
+        ),
+        prefill_coalesce_after_builds_during_decode=(
+            prefill_coalesce_after_builds_during_decode
+        ),
     ).build(
         model_path,
         device=device,
