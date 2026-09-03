@@ -9,6 +9,11 @@ from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, ClassVar
 
+from sglang_omni.config.runtime_resolution import (
+    RUNTIME_RESOLUTION_RECORD,
+    RuntimeResolution,
+    capture_runtime_resolutions,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
@@ -172,6 +177,17 @@ class SGLangGenerationEngineBuilder(ABC):
             )
         self.validate_before_infrastructure(server_args)
 
+        # ServerArgs construction is where "auto" fields become concrete
+        # (SGLang resolves them from GPU memory in __post_init__). Read the
+        # settled values back, record them, and only then let builders derive
+        # from them — this is the first point in the lifecycle where a
+        # derivation from these fields reads a value that actually exists.
+        self.runtime_resolutions = capture_runtime_resolutions(overrides, server_args)
+        RUNTIME_RESOLUTION_RECORD.record(self.model_name, self.runtime_resolutions)
+        for resolution in self.runtime_resolutions:
+            logger.info(f"{self.model_name}: runtime-resolved {resolution.describe()}")
+        self.finalize_runtime_derived(server_args, self.runtime_resolutions)
+
         infra_kwargs = dict(self.infra_kwargs())
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
@@ -292,10 +308,35 @@ class SGLangGenerationEngineBuilder(ABC):
         del model, server_args
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        """Adjust the overrides dict before ServerArgs construction.
+
+        Runs while "auto" fields (``chunked_prefill_size`` and friends) are
+        still ``None`` — SGLang only resolves them from GPU memory inside
+        ``ServerArgs``. Do not derive dependent values from them here; that
+        belongs in :meth:`finalize_runtime_derived`, and derivation code can
+        call :func:`~sglang_omni.config.runtime_resolution.require_resolved`
+        to enforce it.
+        """
         del overrides
 
     def customize_server_args(self, server_args: Any) -> None:
         del server_args
+
+    def finalize_runtime_derived(
+        self,
+        server_args: Any,
+        resolutions: list[RuntimeResolution],
+    ) -> None:
+        """Derive framework values that depend on hardware-resolved fields.
+
+        Runs after ``ServerArgs`` construction and
+        :meth:`customize_server_args`, before any CUDA graph decisions are
+        read off ``server_args`` — the only place in the build where fields
+        like ``chunked_prefill_size`` are guaranteed concrete. ``resolutions``
+        lists what the runtime filled in or rewrote, configured value
+        included, so a builder can tell operator intent from auto resolution.
+        """
+        del server_args, resolutions
 
     def infra_kwargs(self) -> dict[str, Any]:
         return {}

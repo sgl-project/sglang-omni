@@ -784,3 +784,71 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
     assert captured_kwargs["tp_worker"] == "worker"
     assert captured_kwargs["request_builder"] == "request_builder"
     assert captured_kwargs["result_adapter"] == "result_adapter"
+
+
+def test_runtime_resolutions_captured_and_finalize_hook_runs_after_construction(
+    monkeypatch, caplog
+) -> None:
+    """The build must read hardware-resolved fields back off the constructed
+    ServerArgs, record them, and only then call finalize_runtime_derived —
+    the one place a derivation from those fields reads a real value."""
+    import logging
+
+    from sglang_omni.config.runtime_resolution import RuntimeResolution
+    from sglang_omni.scheduling import engine_factory, sglang_backend
+
+    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+        monkeypatch
+    )
+    del build_kwargs, consumed
+
+    # The harness leaves chunked_prefill_size unset (auto); simulate SGLang
+    # resolving it from GPU memory inside construction.
+    harness_fake = sglang_backend.build_sglang_server_args
+
+    def resolving_server_args(*args: Any, **kwargs: Any) -> Any:
+        server_args = harness_fake(*args, **kwargs)
+        server_args.chunked_prefill_size = 2048
+        return server_args
+
+    monkeypatch.setattr(
+        sglang_backend, "build_sglang_server_args", resolving_server_args
+    )
+
+    seen: dict[str, Any] = {}
+
+    class FinalizingBuilder(MinimalBuilder):
+        def customize_server_args(self, server_args: Any) -> None:
+            del server_args
+            seen["customize_ran"] = True
+
+        def finalize_runtime_derived(
+            self, server_args: Any, resolutions: list[RuntimeResolution]
+        ) -> None:
+            assert seen.get("customize_ran"), "hook must run after customize"
+            seen["chunk"] = server_args.chunked_prefill_size
+            seen["resolutions"] = resolutions
+
+    with caplog.at_level(logging.INFO, logger=engine_factory.logger.name):
+        builder = FinalizingBuilder()
+        builder.build("model", device="cuda:0", gpu_id=0)
+
+    assert seen["chunk"] == 2048
+    by_path = {r.path: r for r in seen["resolutions"]}
+    assert by_path["chunked_prefill_size"].configured is None
+    assert by_path["chunked_prefill_size"].resolved == 2048
+    assert builder.runtime_resolutions == seen["resolutions"]
+    assert "runtime-resolved chunked_prefill_size: auto -> 2048" in caplog.text
+
+
+def test_finalize_runtime_derived_default_is_a_no_op(monkeypatch) -> None:
+    """Existing builders that override nothing must build exactly as before,
+    with the captured resolutions recorded on the builder."""
+    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+        monkeypatch
+    )
+    del build_kwargs, consumed
+
+    builder = MinimalBuilder()
+    builder.build("model", device="cuda:0", gpu_id=0)
+    assert isinstance(builder.runtime_resolutions, list)
