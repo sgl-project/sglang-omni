@@ -1,8 +1,9 @@
 # TTS Model Integration
 
 Notes on adding a new TTS model family for native `/v1/audio/speech` serving.
-Read [main.md](./main.md) first for the broader stage / scheduler / coordinator
-picture; this page only covers the TTS-specific pieces.
+Read [Runtime Architecture](./runtime_architecture.md) first for the broader
+stage / scheduler / coordinator picture; this page only covers the TTS-specific
+pieces.
 
 ## Order of work
 

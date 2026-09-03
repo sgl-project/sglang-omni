@@ -1,6 +1,6 @@
-## Pipeline Overview
+# Pipeline Lifecycle
 
-### Coordinator
+## Coordinator
 
 `Coordinator` is the global request router. It registers stage endpoints, sends
 new requests to the entry stage, receives `CompleteMessage` and `StreamMessage`
@@ -19,7 +19,7 @@ The coordinator is stage-implementation agnostic. In a tensor
 parallel stage group, it only talks to rank 0. Peer ranks stay internal to the
 stage group.
 
-### Stage
+## Stage
 
 `Stage` is an IO shell. It handles all inter-stage communication. It receives control messages, reads
 and writes relay payloads, performs fan-in when needed, and pushes all executable
@@ -57,7 +57,7 @@ The important invariant is that `Stage` does not branch on scheduler type.
 `SimpleScheduler`, `OmniScheduler`, and streaming schedulers all present the
 same surface.
 
-### Scheduler
+## Scheduler
 
 All schedulers implement the same interface:
 
@@ -87,7 +87,7 @@ class OutgoingMessage:
     metadata: dict[str, Any] | None
 ```
 
-#### OmniScheduler
+### OmniScheduler
 
 `OmniScheduler` is used by autoregressive stages. It composes with SGLang's
 upstream scheduler. The goal is to reuse SGLang's
@@ -97,7 +97,7 @@ outside the upstream scheduler. (Overlap scheduling is explicitly unsupported:
 `OmniScheduler._event_loop_overlap` refuses to run because the
 `Req.inflight_middle_chunks` decrement would lag one iteration on that loop.)
 
-#### SimpleScheduler
+### SimpleScheduler
 
 `SimpleScheduler` is for non-AR stages such as preprocessing, encoders,
 aggregation, and decode. It has no KV cache and no SGLang batching. The loop is:
@@ -109,7 +109,7 @@ inbox.get() -> compute function -> outbox.put(result or error)
 It supports a batch compute function for stages where local batching is
 useful.
 
-#### Code2WavScheduler
+### Code2WavScheduler
 
 `Code2WavScheduler` is a streaming vocoder scheduler. It handles:
 
@@ -117,7 +117,7 @@ useful.
 - `stream_chunk`: accumulate and decode code chunks
 - `stream_done`: flush remaining audio and emit a final result
 
-### Model Runner
+## Model Runner
 
 The model runner layer owns the AR forward path. The design target is:
 
@@ -129,13 +129,13 @@ The shared base runner owns common mechanics: `ForwardBatch` construction,
 sampling, logit processing, repetition penalty handling, output processing, and
 conversion into scheduler output.
 
-#### ThinkerModelRunner
+### ThinkerModelRunner
 
 `ThinkerModelRunner` is for Qwen-omni thinker-style AR models. Its model-specific job is
 to prepare the forward batch by injecting multimodal embeddings such as image,
 video, audio, and deepstack inputs before the model forward.
 
-#### FeedbackARModelRunner
+### FeedbackARModelRunner
 
 The refactor design identifies a shared `FeedbackARModelRunner` role for AR
 models whose next decode step depends on feedback produced by the previous step

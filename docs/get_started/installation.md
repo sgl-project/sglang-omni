@@ -6,7 +6,7 @@ Choose the path for your platform. Docker is recommended for NVIDIA CUDA —
 UCX, flash-attn, SGLang, and CUDA are prebuilt. Apple Silicon has a dedicated
 source installer below.
 
-> **Intel GPU (XPU)?** For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
+> **Intel GPU (XPU)?** For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
 
 > **Intel CPU?** Also not this page. See [Installation — Intel CPU](./installation_cpu.md), which uses [`pyproject_cpu.toml`](../../pyproject_cpu.toml) + the PyTorch CPU wheel index.
 
@@ -51,7 +51,7 @@ source .venv/bin/activate
 uv pip install --prerelease=allow "sglang-omni==0.1.4"
 ```
 
-<a id="macos-apple-silicon"></a>
+(macos-apple-silicon)=
 
 ## 🍎 Option B: macOS Apple Silicon installer
 
@@ -123,7 +123,7 @@ For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 
 Build prerequisites first:
 
-- **UCX 1.20.x** with CUDA + verbs — [upstream](https://github.com/openucx/ucx), or reuse flags in [`docker/Dockerfile`](../../docker/Dockerfile).
+- **UCX 1.20.x** with CUDA + verbs — [upstream](https://github.com/openucx/ucx), or reuse flags in [`docker/Dockerfile`](https://github.com/sgl-project/sglang-omni/blob/main/docker/Dockerfile).
 - **flash-attn-4** `>=4.0.0b18`, matching `torch==2.13.0` and SGLang 0.5.18's `nvidia-cutlass-dsl` 4.6.2 pin.
 
 Then:

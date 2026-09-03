@@ -1,112 +1,117 @@
 # Qwen3-Omni
 
-[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) is a multi-modal model
-that accepts text, image, audio, and video input and can produce text-only or text + audio output.
-This page covers every supported server configuration — use the generator to get the exact launch
-command for your hardware, then check the tables to confirm your combination is supported.
+[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct)
+accepts text, image, audio, and video and returns text or text plus 24 kHz audio.
+
+## Overview
+
+| Item | Value |
+|---|---|
+| Task | Omni |
+| Checkpoint(s) | `Qwen/Qwen3-Omni-30B-A3B-Instruct` |
+| Endpoint(s) | `/v1/chat/completions`, `/v1/realtime` |
+| Text pipeline | preprocessing/encoders → multimodal aggregate → thinker → decode |
+| Speech pipeline | preprocessing/encoders → thinker and talker AR → decode/code2wav |
+| Input / output | Text, image, audio, or video → text and optional audio |
+| Streaming | Chat SSE and realtime WebSocket; text and optional audio output |
+| Validated hardware | H100 |
 
 ## Prerequisites
 
-```bash
-docker pull hongccc/sglang-omni:dev
-docker run -it --shm-size 32g --gpus all hongccc/sglang-omni:dev /bin/zsh
-```
+Follow [Installation](../get_started/installation.md). No additional
+model-specific package is required.
+
+## Deploy
+
+Start one worker with the H100 BF16 profile:
 
 ```bash
-pip install --upgrade pip
-pip install uv
-
-uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.1.4"
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_colocated_h100_bf16.yaml \
+  --colocate \
+  --port 8008
 ```
 
-See [Installation](../get_started/installation.md) for Docker digests and source installs.
+## Send a request
 
-## Server Configuration
+This example combines image and text input and requests text plus audio. Use a
+speech-mode server for audio output.
 
-Use the selector below to generate the exact launch command for your configuration.
-
-```{raw} html
-<div id="sgl-server-gen-mount"></div>
+```bash
+curl -X POST http://localhost:8008/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3-omni",
+    "messages": [{"role": "user", "content": "How many cars are there?"}],
+    "images": ["tests/data/cars.jpg"],
+    "modalities": ["text", "audio"],
+    "max_tokens": 16
+  }'
 ```
 
-## Compatibility Matrix
+## Capabilities
 
-Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
-(or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
+- Text-only mode runs a six-stage pipeline with a multimodal aggregation stage.
+  Speech mode uses a seven-stage topology: its encoders join directly into the
+  thinker and talker, so it does not include the separate aggregation stage.
+- Any supported input modality can produce text. Speech mode can additionally
+  return audio with `modalities: ["text", "audio"]`.
+- Native BF16, native FP8, and an AutoRound INT4 thinker with BF16
+  talker/code2wav are supported in the documented topologies.
+- The speech pipeline supports streaming chat and server-VAD realtime input;
+  the shared transport contracts are documented in [Streaming](../user_guide/advanced_features/streaming.md).
+- Disaggregated thinker TP=1 or TP=2 is supported. Colocated speech requires
+  thinker TP=1 and explicit per-stage memory budgets.
 
-| Mode | Topology | Thinker TP | Precision | Status |
-|---|---|---|---|---|
-| Thinker-only | — | — | BF16 | ✅ |
-| Thinker-only | — | — | FP8 | ✅ |
-| Thinker-only | — | — | AutoRound INT4 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | BF16 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | FP8 | ✅ |
-| Thinker-Talker | Disaggregated | TP=2 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
-| Thinker-Talker | Colocated | TP=1 | BF16 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | FP8 | ✅ |
-| Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav | ✅ |
+See [Omni model usage](../basic_usage/qwen3_omni.md) for complete modality
+examples, model-specific placement measurements, precision details, and
+sampling fields. Shared placement behavior is documented in
+[Stage placement](../user_guide/deployment/stage_placement.md).
 
-## Input / Output Modalities
+## Configuration
 
-All input modality combinations work with both text-only and speech servers.
-`modalities: ["text", "audio"]` requires a **speech-mode server** (omit `--text-only`).
+Use `examples/configs/qwen3_omni_colocated_h100_fp8.yaml` with the H100 FP8
+checkpoint. H20 and H200 profiles are also checked in as
+`qwen3_omni_colocated_h20.yaml` and `qwen3_omni_colocated_h200.yaml`; their
+presence records an available topology, not runtime validation on those
+accelerators.
 
-| Input | Output | Speech server | Minimal request body | Notes |
-|---|---|---|---|---|
-| Text | Text | No | `{"messages": [{"role": "user", "content": "..."}], "modalities": ["text"]}` | — |
-| Image + text | Text | No | `{"messages": [{"role": "user", "content": "..."}], "images": ["path/or/url"], "modalities": ["text"]}` | — |
-| Audio | Text | No | `{"messages": [{"role": "user", "content": ""}], "audios": ["path/or/url"], "modalities": ["text"]}` | content must be "" when the query is spoken |
-| Image + audio | Text | No | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text"]}` | content must be "" when the query is spoken |
-| Image | Text | No | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "modalities": ["text"]}` | content must be "" when query comes from image |
-| Video + text | Text | No | `{"messages": [{"role": "user", "content": "..."}], "videos": ["path/or/url"], "modalities": ["text"]}` | — |
-| Video + audio | Text | No | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text"]}` | content must be "" when the query is spoken |
-| Video | Text | No | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "modalities": ["text"]}` | content must be "" when query comes from video |
-| Text | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": "..."}], "modalities": ["text", "audio"]}` | — |
-| Image + text | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": "..."}], "images": ["path/or/url"], "modalities": ["text", "audio"]}` | — |
-| Audio | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "audios": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when the query is spoken |
-| Image + audio | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when the query is spoken |
-| Image | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when query comes from image |
-| Video + text | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": "..."}], "videos": ["path/or/url"], "modalities": ["text", "audio"]}` | — |
-| Video + audio | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when the query is spoken |
-| Video | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when query comes from video |
+See [Omni model usage](../basic_usage/qwen3_omni.md) for the command selector,
+text-only and speech topology choices, tensor parallelism, precision options,
+and sampling fields. Config-file composition and command-line precedence follow
+the shared [configuration contract](../developer_reference/config.md).
 
-### Sampling Parameters
+## Limitations
 
-Standard sampling parameters apply to the thinker stage. When `modalities` includes `"audio"`, the additional talker-specific parameters below control the speech generation independently.
+- A text-only server accepts `modalities: ["text", "audio"]` but returns no
+  audio; use a speech-mode server when audio output is required.
+- Use an empty message `content` when the request's semantic input is entirely
+  in `images`, `audios`, or `videos`. Non-empty content is processed as an
+  additional text input.
+- Colocated speech does not support thinker TP=2. Use disaggregated placement.
+- Requests are rejected when prompt tokens or prompt plus requested output meet
+  or exceed the model context length.
 
-| Parameter | Type | Default | Applies to |
-|---|---|---|---|
-| `temperature` | float | `1.0` | Thinker |
-| `top_p` | float | `1.0` | Thinker |
-| `top_k` | int | `-1` | Thinker |
-| `min_p` | float | `0.0` | Thinker |
-| `repetition_penalty` | float | `1.0` | Thinker |
-| `max_tokens` | int | `2048` | Thinker |
-| `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
-| `stop` | str \| list | `null` | Thinker |
-| `seed` | int | `null` | Thinker |
-| `stream` | bool | `false` | Both |
-| `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
-| `talker_temperature` | float | `0.9` | Talker (audio output only) |
-| `talker_top_p` | float | `1.0` | Talker (audio output only) |
-| `talker_top_k` | int | `50` | Talker (audio output only) |
-| `talker_repetition_penalty` | float | `1.05` | Talker (audio output only) |
-| `talker_max_new_tokens` | int | `4096` | Talker (audio output only) |
-| `stage_sampling` | dict | `null` | Per-stage sampling override |
-| `stage_params` | dict | `null` | Per-stage non-sampling params |
-| `video_fps` | float | `null` | Frame sampling rate for video input (uses server default if unset) |
-| `video_max_frames` | int | `null` | Maximum number of frames sampled from a video |
-| `video_min_pixels` | int | `null` | Minimum pixels per video frame |
-| `video_max_pixels` | int | `null` | Maximum pixels per video frame |
-| `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
+## Benchmark
 
-### Known Limitations
+Use MMMU as the canonical image-plus-text benchmark:
 
-- **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
-- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
-- **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
-- **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit.
+```bash
+python benchmarks/eval/benchmark_omni_mmmu.py \
+  --model qwen3-omni \
+  --host localhost \
+  --port 8008
+```
+
+Follow the [benchmark methodology](../benchmarks/methodology.md) when
+publishing results.
+
+## Related documentation
+
+- [Omni model usage](../basic_usage/qwen3_omni.md)
+- [Omni router](../basic_usage/omni_router.md)
+- [Streaming](../user_guide/advanced_features/streaming.md)
+- [Stage placement](../user_guide/deployment/stage_placement.md)
+- [Benchmark methodology](../benchmarks/methodology.md)
+- [Pipeline architecture](../developer_reference/pipeline.md)
+- [Supported models](../supported_models.md)

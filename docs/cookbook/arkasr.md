@@ -1,6 +1,6 @@
 # ARK-ASR-3B
 
-[ARK-ASR-3B](https://huggingface.co/AutoArk-AI/ARK-ASR-3B) (AutoArk-AI, Apache-2.0)
+[ARK-ASR-3B](https://huggingface.co/Audio8/ARK-ASR-3B) (Audio8, Apache-2.0)
 is a multilingual open ASR model served through the OpenAI-compatible
 `/v1/audio/transcriptions` endpoint. It accepts one uploaded audio file per
 request and returns text. Architecturally it is a Whisper-style audio tower
@@ -17,7 +17,7 @@ ARK-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 40
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
 
 ```bash
-hf download AutoArk-AI/ARK-ASR-3B
+hf download Audio8/ARK-ASR-3B
 ```
 
 ## Server Configuration
@@ -38,7 +38,7 @@ Request concurrency and audio-encoder batching are controlled separately:
 
 ```bash
 sgl-omni serve \
-  --model-path AutoArk-AI/ARK-ASR-3B \
+  --model-path Audio8/ARK-ASR-3B \
   --port 8000
 ```
 
@@ -48,7 +48,7 @@ by lowering SGLang's static memory fraction, for example:
 
 ```bash
 sgl-omni serve \
-  --model-path AutoArk-AI/ARK-ASR-3B \
+  --model-path Audio8/ARK-ASR-3B \
   --mem-fraction-static 0.75 \
   --port 8000
 ```
@@ -64,7 +64,7 @@ To force synchronous decode while comparing modes, use:
 
 ```bash
 sgl-omni serve \
-  --model-path AutoArk-AI/ARK-ASR-3B \
+  --model-path Audio8/ARK-ASR-3B \
   --asr.factory.enable_async_decode false \
   --port 8000
 ```
@@ -76,7 +76,7 @@ admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
 
 ```bash
 sgl-omni serve \
-  --model-path AutoArk-AI/ARK-ASR-3B \
+  --model-path Audio8/ARK-ASR-3B \
   --prefill-coalesce-requests 16 \
   --prefill-coalesce-wait-ms 32 \
   --port 8000
@@ -91,7 +91,7 @@ target request distribution and latency requirements.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
-  -F model=AutoArk-AI/ARK-ASR-3B \
+  -F model=Audio8/ARK-ASR-3B \
   -F file=@tests/data/query_to_cars.wav \
   -F language=en \
   -F response_format=json
@@ -104,7 +104,7 @@ with open("tests/data/query_to_cars.wav", "rb") as f:
     resp = requests.post(
         "http://localhost:8000/v1/audio/transcriptions",
         data={
-            "model": "AutoArk-AI/ARK-ASR-3B",
+            "model": "Audio8/ARK-ASR-3B",
             "language": "en",
             "response_format": "json",
         },
@@ -240,7 +240,7 @@ The graphs are captured after SGLang's generation CUDA graphs and before the
 pre-LM encoder service. To profile eager encoder execution:
 
 ```bash
-sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B \
+sgl-omni serve --model-path Audio8/ARK-ASR-3B \
   --asr.factory.enable_encoder_cuda_graph false
 ```
 
@@ -257,15 +257,15 @@ stages:
 
 Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
 SeedTTS reference audio through `/v1/audio/transcriptions`. Pass
-`--model-path AutoArk-AI/ARK-ASR-3B`; the shared request and metric logic lives in
+`--model-path Audio8/ARK-ASR-3B`; the shared request and metric logic lives in
 `benchmarks.tasks.asr`.
 
 ```bash
-sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B --port 8000
+sgl-omni serve --model-path Audio8/ARK-ASR-3B --port 8000
 
 # Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
 python -m benchmarks.eval.benchmark_asr_seedtts \
-  --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
+  --port 8000 --model-path Audio8/ARK-ASR-3B \
   --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
 ```
 

@@ -194,6 +194,7 @@ as the static superset because runtime prep derives stream receivers from it.
 | --- | --- | --- | --- |
 | `model_path` | `str` | required | Hugging Face model id or local checkpoint path. |
 | `stages` | `list[StageConfig]` | required | Stage definitions. Config files override fields on them by name and cannot add or remove stages. |
+| `processes` | `dict[str, ProcessConfig]` | `{}` | Sparse replica policy keyed by logical process name. Stage membership remains owned by `StageConfig.process`. |
 | `name` | `str` or `None` | `model_path` | Pipeline name. Used for reporting and runtime identification. |
 | `entry_stage` | `str` or `None` | first stage | Declared by the config class when the first stage is not the entry. Not settable from a config file or the CLI. |
 | `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process. |
@@ -218,6 +219,57 @@ Class-level hooks a model config may declare:
 
 Derived values are computed from stages, not manually maintained:
 `resolved_entry_stage`, `terminal_stages`, `gpu_placement`.
+
+## Logical processes and replicas
+
+`StageConfig.process` assigns a stage to a logical process. Non-TP stages with
+the same value run in one OS process; different values isolate them. A TP stage
+owns its rank processes and may use `process` as the prefix for their derived
+names.
+
+`PipelineConfig.processes` is a sparse policy mapping. It does not repeat
+membership: a key configures replicas only for the process name already
+declared by one or more stages.
+
+```text
+StageConfig.process
+    ↓ membership
+logical process
+    ↓ policy lookup
+PipelineConfig.processes[name]
+    ↓
+num_replicas / replica_devices
+```
+
+For example, this policy copies the complete `asr_worker` process twice and
+places the two replicas on GPUs 0 and 1:
+
+```yaml
+stages:
+  - name: asr
+    process: asr_worker
+    gpu: 0
+
+processes:
+  asr_worker:
+    num_replicas: 2
+    replica_devices: [0, 1]
+```
+
+The configuration and topology compiler enforce these rules:
+
+- every non-TP stage declares `process` explicitly;
+- each `processes` key names a process already declared by a stage;
+- `num_replicas` is at least one, and replication copies the whole logical
+  process rather than an individual member stage;
+- a replicated GPU process provides `num_replicas * tp_size` device ids, which
+  are partitioned in replica order;
+- CPU-only processes do not declare `replica_devices`, and GPU ids within each
+  TP replica are unique.
+
+Process replication does not relax placement budgets. A non-TP process can
+contain CPU stages and stages on at most one GPU, and separate processes that
+share a GPU still need explicit per-stage memory fractions.
 
 ### Stage Fusion
 

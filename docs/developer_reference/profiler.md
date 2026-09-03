@@ -1,4 +1,4 @@
-# Request-level profiler
+# Profiling
 
 `sglang-omni` ships two complementary profilers that share the same `run_id`
 and are controlled by the same HTTP surface:

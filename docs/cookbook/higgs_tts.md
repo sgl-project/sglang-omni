@@ -1,7 +1,7 @@
 # Higgs TTS
 
-[Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b)
-is a text-to-speech model from Boson AI. It generates **24 kHz speech** and supports [**100+ languages**](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b#supported-languages), voice cloning from a reference clip, and fine-grained **inline control** over emotion, style, sound effects, and prosody.
+[Higgs Audio v3 TTS](https://huggingface.co/bosonai/higgs-tts-3-4b)
+is a text-to-speech model from Boson AI. It generates **24 kHz speech** and supports [**100+ languages**](https://huggingface.co/bosonai/higgs-tts-3-4b#supported-languages), voice cloning from a reference clip, and fine-grained **inline control** over emotion, style, sound effects, and prosody.
 
 ![Higgs Audio v3 Generation Architecture](../_static/image/higgs-architecture.png)
 
@@ -50,10 +50,10 @@ Win-rate (↑) per category on the Emergent TTS benchmark — judge preference v
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download and serve the model:
 
 ```bash
-hf download bosonai/higgs-audio-v3-tts-4b
+hf download bosonai/higgs-tts-3-4b
 
 sgl-omni serve \
-  --model-path bosonai/higgs-audio-v3-tts-4b \
+  --model-path bosonai/higgs-tts-3-4b \
   --allowed-local-media-path docs/_static/audio \
   --port 8000
 ```
@@ -71,7 +71,7 @@ The voice-cloning examples below use local reference clips from
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "Hello, how are you?"
   }' \
@@ -86,7 +86,7 @@ import requests
 resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
-        "model": "bosonai/higgs-audio-v3-tts-4b",
+        "model": "bosonai/higgs-tts-3-4b",
         "voice": "default",
         "input": "Hello, how are you?",
     },
@@ -112,7 +112,7 @@ Supplying the reference transcript (`text`) materially improves cloning quality.
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "Have a nice day and enjoy south california sunshine.",
     "references": [{
@@ -134,7 +134,7 @@ import requests
 resp = requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
-        "model": "bosonai/higgs-audio-v3-tts-4b",
+        "model": "bosonai/higgs-tts-3-4b",
         "voice": "default",
         "input": "Have a nice day and enjoy south california sunshine.",
         "references": [{
@@ -182,7 +182,7 @@ Set `"stream": true` and `"response_format": "pcm"` in your request body:
 curl -N -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "Get the trust fund to the bank early.",
     "references": [{
@@ -224,7 +224,7 @@ SPEECH_INPUT = "Get the trust fund to the bank early."
 with requests.post(
     "http://localhost:8000/v1/audio/speech",
     json={
-        "model": "bosonai/higgs-audio-v3-tts-4b",
+        "model": "bosonai/higgs-tts-3-4b",
         "voice": "default",
         "input": SPEECH_INPUT,
         "references": [{"audio_path": REFERENCE_AUDIO, "text": REFERENCE_TEXT}],
@@ -291,7 +291,7 @@ categories can be combined. Each request is a single **turn**, and two rules mak
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:amusement|><|prosody:expressive_high|>Wait, wait, that was kind of hilarious. <|sfx:laughter|>Hehe, no, seriously, I was not ready for that.",
     "temperature": 0.8,
@@ -313,7 +313,7 @@ Reference output:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:anger|><|style:shouting|>No, that is not okay! We cannot ship something that sounds broken, delayed, and unnatural.",
     "temperature": 0.8,
@@ -334,7 +334,7 @@ Reference output:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:sadness|><|sfx:crying|>I... I’m sorry. <|sfx:sniff|>Sff, We really tried. after all those late nights, I thought the whole thing had failed.",
     "references": [{
@@ -359,7 +359,7 @@ Reference output:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:confusion|><|sfx:humming|>Hmm... wait. <|sfx:sigh|>Uh, I’m not sure I understand. Do you mean the voice should speak faster, or the system should respond earlier?",
     "references": [{
@@ -384,7 +384,7 @@ Reference output:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:surprise|><|prosody:pitch_high|><|sfx:screaming|>Ah! Wait, I almost forgot! Higgs Audio v3 also supports over one hundred languages.",
     "references": [{
@@ -416,7 +416,7 @@ Part 1 — she asks about the missed class:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:contemplation|>Hi David, I missed the biology class today because I caught a cold. <|sfx:cough|>Ahem! Sorry, Could you tell me what the teacher covered?",
     "references": [{
@@ -436,7 +436,7 @@ Part 2 — he explains what was covered:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:enthusiasm|>Sure, no problem! We learned how plants make food through photosynthesis, and <|prosody:long_pause|> there will be a quiz this Friday.",
     "references": [{
@@ -456,7 +456,7 @@ Part 3 — she reads the result:
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "model": "bosonai/higgs-tts-3-4b",
     "voice": "default",
     "input": "<|emotion:relief|>Oh, that is really helpful. Thank you!",
     "references": [{

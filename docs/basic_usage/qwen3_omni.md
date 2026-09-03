@@ -629,3 +629,22 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `stream` | bool | `false` | Enable streaming via SSE |
 | `audio` | dict | `null` | Speech response format configuration, e.g. `{"format": "wav"}` |
 | `stage_sampling` | dict | `null` | Per-stage sampling overrides, e.g. `{"thinker": {"temperature": 0.8}}` |
+| `stage_params` | dict | `null` | Per-stage non-sampling parameters |
+| `min_p` | float | `null` | Min-p sampling |
+| `stop` | str \| list | `null` | Stop strings |
+| `talker_temperature` | float | `null` (talker uses `0.9`) | Talker sampling temperature; audio output only |
+| `talker_top_p` | float | `null` (talker uses `1.0`) | Talker top-p; audio output only |
+| `talker_top_k` | int | `null` (talker uses `50`) | Talker top-k; audio output only |
+| `talker_repetition_penalty` | float | `null` (talker uses `1.05`) | Talker repetition penalty; audio output only |
+| `talker_max_new_tokens` | int | `null` (talker uses `4096`) | Talker generation cap; audio output only |
+| `video_fps` | float | `null` | Frame sampling rate for video input; server default when unset |
+| `video_max_frames` | int | `null` | Maximum frames sampled from a video |
+| `video_min_pixels` | int | `null` | Minimum pixels per video frame |
+| `video_max_pixels` | int | `null` | Maximum pixels per video frame |
+| `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
+
+The `talker_*` fields are unset on the request model
+(`sglang_omni/serve/protocol.py`); the values in parentheses are the effective
+defaults the talker applies when the field is omitted
+(`sglang_omni/models/qwen3_omni/request_builders.py`). They take effect only
+when `modalities` includes `"audio"`.

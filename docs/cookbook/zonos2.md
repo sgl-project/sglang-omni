@@ -26,7 +26,7 @@ uv pip install \
 Then download the model:
 
 ```bash
-hf download Zyphra/zonos2
+hf download Zyphra/ZONOS2
 ```
 
 The processor ships with the checkpoint. Voice cloning transcodes reference audio
@@ -43,7 +43,7 @@ ZONOS2 ships a `params.json` whose `model_type` (`zonos2`) auto-selects the
 
 ```bash
 sgl-omni serve \
-  --model-path Zyphra/zonos2 \
+  --model-path Zyphra/ZONOS2 \
   --port 8000
 ```
 
@@ -163,7 +163,7 @@ benchmark against a running server:
 ```bash
 python -m benchmarks.eval.benchmark_tts_seedtts \
   --meta zhaochenyang20/seed-tts-eval-arrow \
-  --model Zyphra/zonos2 --port 8000 \
+  --model Zyphra/ZONOS2 --port 8000 \
   --ref-format references \
   --output-dir results/zonos2_en --lang en --max-concurrency 16
 ```

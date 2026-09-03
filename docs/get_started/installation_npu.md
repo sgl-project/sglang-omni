@@ -2,7 +2,7 @@
 
 Install the Ascend software stack and NPU build of SGLang before installing
 `sglang-omni`. The helper script
-[`install_npu.sh`](../../scripts/npu/install_npu.sh) installs only
+[`install_npu.sh`](https://github.com/sgl-project/sglang-omni/blob/main/scripts/npu/install_npu.sh) installs only
 `sglang-omni`; it does not install or change any prerequisite in the table below.
 
 ## Prerequisites

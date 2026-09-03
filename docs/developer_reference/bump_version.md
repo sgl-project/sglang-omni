@@ -1,11 +1,11 @@
-# Bumping the SGLang Pin
+# Bumping the SGLang Version
 
 SGLang-Omni pins one SGLang release and the stack that release pins. Moving
 that pin is a version bump PR. This page covers what moves together, where
 Omni depends on SGLang beyond its public API, how the CI image is updated,
 and what has to be measured before the PR is credible. Read
-[main.md](./main.md) first for the stage / scheduler / model-runner picture;
-the seams named below are the ones that page introduces.
+[Runtime Architecture](./runtime_architecture.md) first for the stage, scheduler,
+and model-runner picture; the seams named below are the ones that page introduces.
 
 Omni is not a thin caller of SGLang. `OmniScheduler` borrows the upstream
 `Scheduler` methods it does not override and runs them on itself,

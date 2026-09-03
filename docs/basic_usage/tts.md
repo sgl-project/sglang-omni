@@ -47,7 +47,7 @@ for details.
 | [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 48 kHz stereo local-transformer MOSS-TTS; voice cloning / reference-less; streaming |
 | [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |
 | [dots.tts](../cookbook/dots_tts.md) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow (`dots.tts-mf`) uses continuous batching (`max_running_requests=16` by default) with engine-wide `num_steps=4` and Euler. SOAR (`dots.tts-soar`) and base (`dots.tts-base`) are flow matching and run the single-request solver with CFG at `max_running_requests=1`; both use the SOAR config. All require `ref_audio` + `ref_text`. TP1 only |
-| [ZONOS2](../cookbook/zonos2.md) | `--model-path Zyphra/zonos2` | MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook) |
+| [ZONOS2](../cookbook/zonos2.md) | `--model-path Zyphra/ZONOS2` | MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook) |
 
 ## Launch the Server
 
@@ -583,45 +583,12 @@ with wave.open("output_stream.wav", "wb") as w:
 
 ## Request Parameters
 
-The table below lists all parameters accepted by the `/v1/audio/speech` endpoint.
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `model` | string | served model | Served model identifier |
-| `input` | string | (required) | Text to synthesize |
-| `voice` | string | `"default"` | Preset or uploaded voice identifier |
-| `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
-| `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
-| `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
-| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS Base uses `8`, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
-| `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text` |
-| `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
-| `ref_text` | string | `null` | Transcript for `ref_audio`. Equivalent to `references[0].text` |
-| `language` | string | `null` | Language hint: `Auto`, `Chinese`, `English`, `Japanese`, `Korean`, `German`, `French`, `Russian`, `Portuguese`, `Spanish`, or `Italian` |
-| `task_type` | string | `null` | Qwen3-TTS task type: `Base`, `CustomVoice`, or `VoiceDesign`. Inferred as `Base` when reference audio/text is present, otherwise `CustomVoice` |
-| `instructions` | string | `null` | Qwen3-TTS style or VoiceDesign instructions |
-| `max_new_tokens` | int | `null` | Maximum number of generated tokens |
-| `token_count` | int | `null` | Model-specific duration token target |
-| `duration_tokens` | int | `null` | Alias-style duration token target for models that expose duration control |
-| `x_vector_only_mode` | bool | `null` | Qwen3-TTS Base speaker-embedding mode |
-| `temperature` | float | `null` | Sampling temperature |
-| `top_p` | float | `null` | Top-p sampling |
-| `top_k` | int | `null` | Top-k sampling |
-| `repetition_penalty` | float | `null` | Repetition penalty |
-| `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
-
-Invalid speech requests return an OpenAI-style error envelope:
-
-```json
-{
-  "error": {
-    "message": "stream=true requires response_format='pcm'",
-    "type": "BadRequestError",
-    "param": "response_format",
-    "code": 400
-  }
-}
-```
+The [Speech API](../user_guide/serving/speech_api.md) is the source of truth for
+shared request fields, response formats, batch semantics, and errors. Use the
+model cookbook for required references, accepted languages, model-specific
+defaults, and unsupported extensions. See
+[Streaming](../user_guide/advanced_features/streaming.md) for HTTP PCM and
+WebSocket framing.
 
 ## H200 SeedTTS Benchmark Commands
 

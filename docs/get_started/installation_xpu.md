@@ -8,9 +8,9 @@ XPU wheel index.
 
 ## Why a separate pyproject
 
-`pip install -e .` resolves the CUDA [`pyproject.toml`](../../pyproject.toml), whose torch
+`pip install -e .` resolves the CUDA [`pyproject.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject.toml), whose torch
 family and CUDA-only wheels would replace the `+xpu` stack.
-[`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
+[`pyproject_xpu.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families

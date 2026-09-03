@@ -1,4 +1,4 @@
-# API Server Design
+# API Server
 
 This page explains the API server at the level that is most useful for maintenance: where it sits in the system, which files matter, and how requests are mapped into the runtime.
 
