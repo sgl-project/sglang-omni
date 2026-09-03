@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""GPU-free tests for the SpeakerEncoder content-hash cache.
+"""GPU-free tests for the SpeakerEncoder caches.
 
 The LRU mechanics live in the shared StageOutputCache (covered by its own tests);
 these cover ZONOS2's model-local glue now routed through it: content-hash keying,
 a cache hit avoiding a second forward, recency-ordered eviction at the count cap,
-and clone isolation of returned embeddings. The Qwen3 embedder is stubbed, so no
-model checkpoint or GPU is needed (the module still imports torchaudio/transformers).
+clone isolation of returned embeddings, and the bounded resampler cache. The Qwen3
+embedder is stubbed, so no model checkpoint or GPU is needed (the module still
+imports torchaudio/transformers).
 """
 
 import threading
@@ -19,8 +20,10 @@ pytest.importorskip("transformers")
 import torch  # noqa: E402
 
 from sglang_omni.models.zonos2.components.speaker_encoder import (  # noqa: E402
+    _RESAMPLER_CACHE_MAX_ITEMS,
     SPEAKER_EMBEDDING_DIM,
     SpeakerEncoder,
+    _make_resampler_getter,
 )
 
 
@@ -130,3 +133,38 @@ def test_returned_embedding_is_isolated_clone() -> None:
 def test_rejects_non_positive_cache_size() -> None:
     with pytest.raises(ValueError):
         SpeakerEncoder(device="cpu", cache_max_items=0)
+
+
+def test_speaker_resampler_cache_is_bounded_and_recency_ordered(monkeypatch) -> None:
+    created = []
+
+    class _FakeResampler(torch.nn.Module):
+        def __init__(self, orig_sample_rate: int, target_sample_rate: int) -> None:
+            super().__init__()
+            self.orig_sample_rate = orig_sample_rate
+            self.target_sample_rate = target_sample_rate
+            created.append(self)
+
+    monkeypatch.setattr(
+        "sglang_omni.models.zonos2.components.speaker_encoder."
+        "torchaudio.transforms.Resample",
+        _FakeResampler,
+    )
+
+    get_resampler = _make_resampler_getter(
+        target_sample_rate=24000,
+        device="cpu",
+    )
+
+    sample_rates = [8000 + index for index in range(_RESAMPLER_CACHE_MAX_ITEMS)]
+    for sample_rate in sample_rates:
+        get_resampler(sample_rate)
+
+    first = get_resampler(sample_rates[0])
+    overflow_rate = 48000
+    get_resampler(overflow_rate)
+
+    assert get_resampler(sample_rates[0]) is first
+    assert len(created) == _RESAMPLER_CACHE_MAX_ITEMS + 1
+    get_resampler(sample_rates[1])
+    assert len(created) == _RESAMPLER_CACHE_MAX_ITEMS + 2
