@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use crate::worker_pool::{ReferenceForm, SpeechResponseFormat, SpeechTask};
 
@@ -61,36 +61,37 @@ where
     A: MapAccess<'de>,
 {
     match key {
-        "model" => fields.model = Some(map.next_value()?),
-        "response_format" => fields.response_format = Some(map.next_value()?),
-        "task_type" => fields.task = Some(map.next_value()?),
+        "model" => fields.model = Some(map.next_value_seed(ScalarFactSeed)?.into_string()),
+        "response_format" => {
+            fields.response_format = Some(map.next_value_seed(ScalarFactSeed)?.into_string())
+        }
+        "task_type" => fields.task = Some(map.next_value_seed(ScalarFactSeed)?.into_string()),
         "voice" => {
-            fields.voice = Some(map.next_value()?);
+            fields.voice = Some(map.next_value_seed(ScalarFactSeed)?.into_string());
             fields.voice_present = true;
         }
         "speaker" => {
-            let value = map.next_value()?;
+            let value = map.next_value_seed(ScalarFactSeed)?.into_string();
             if !fields.voice_present {
                 fields.voice = Some(value);
             }
         }
-        "ref_audio" => {
-            let (present, valid) = map.next_value_seed(ScalarFactSeed)?.into_string_presence();
-            if !valid {
-                return Err(de::Error::custom("ref_audio must be null or a string"));
-            }
-            fields.ref_audio = Some(present);
-        }
+        "ref_audio" => fields.ref_audio = Some(map.next_value_seed(ScalarFactSeed)?.is_string()),
         "references" => {
-            let (value, valid) = map.next_value_seed(ReferencesFactSeed)?.into_parts();
-            if !valid {
-                return Err(de::Error::custom("references must be null or an array"));
-            }
-            fields.references = Some(value);
+            fields.references = Some(map.next_value_seed(ReferencesFactSeed)?.into_value())
         }
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// Reads a Pydantic-compatible boolean routing fact without rejecting other worker-owned values.
+pub(crate) fn read_stream<'de, A>(map: &mut A, fields: &mut SpeechFields) -> Result<(), A::Error>
+where
+    A: MapAccess<'de>,
+{
+    fields.stream = Some(map.next_value_seed(ScalarFactSeed)?.into_bool());
+    Ok(())
 }
 
 /// Reads one permissive batch-item field while retaining whether its final shape is routable.
@@ -268,6 +269,10 @@ impl ScalarFact<'_> {
             Self::Float(_) | Self::Null | Self::Other => None,
         }
     }
+
+    fn is_string(&self) -> bool {
+        matches!(self, Self::String(_))
+    }
 }
 
 pub(crate) struct ScalarFactSeed;
@@ -374,6 +379,13 @@ enum ReferencesFact {
 }
 
 impl ReferencesFact {
+    const fn into_value(self) -> Option<ReferenceFlags> {
+        match self {
+            Self::Value(value) => value,
+            Self::Invalid => None,
+        }
+    }
+
     const fn into_parts(self) -> (Option<ReferenceFlags>, bool) {
         match self {
             Self::Value(value) => (value, true),
