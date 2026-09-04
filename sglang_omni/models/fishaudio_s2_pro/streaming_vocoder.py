@@ -15,9 +15,14 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
+from sglang_omni.scheduling.streaming_vocoder import resolve_initial_codec_chunk_frames
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_S2PRO_STREAM_STRIDE = 40
+DEFAULT_S2PRO_STREAM_FOLLOWUP_STRIDE = 45
+DEFAULT_S2PRO_INITIAL_CHUNK_FRAMES = 0
 
 
 @dataclass
@@ -28,6 +33,7 @@ class _StreamVocoderState:
     next_vocode_tokens: int = 0
     pending_tail: torch.Tensor | None = None
     total_tokens: int = 0
+    initial_chunk_frames: int | None = None
 
 
 def resolve_stream_overlap_tokens(
@@ -65,7 +71,14 @@ def build_stream_vocoder_chunk(
     total_tokens = state.total_tokens + int(codes.shape[1])
     state.total_tokens = total_tokens
 
-    next_vocode_tokens = state.next_vocode_tokens or stream_stride
+    next_vocode_tokens = state.next_vocode_tokens
+    if next_vocode_tokens <= 0:
+        initial_chunk_frames = state.initial_chunk_frames
+        next_vocode_tokens = (
+            initial_chunk_frames
+            if initial_chunk_frames is not None and initial_chunk_frames > 0
+            else stream_stride
+        )
     if total_tokens < next_vocode_tokens:
         state.next_vocode_tokens = next_vocode_tokens
         return None
@@ -282,8 +295,9 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         codec: Any,
         *,
         device: str,
-        stream_stride: int = 40,
-        stream_followup_stride: int = 45,
+        stream_stride: int = DEFAULT_S2PRO_STREAM_STRIDE,
+        stream_followup_stride: int = DEFAULT_S2PRO_STREAM_FOLLOWUP_STRIDE,
+        initial_chunk_frames: int = DEFAULT_S2PRO_INITIAL_CHUNK_FRAMES,
         stream_overlap_tokens: int | None = 20,
         stream_crossfade_samples: int = 512,
         max_batch_size: int = 8,
@@ -302,6 +316,11 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         self._device = torch.device(device)
         self._stream_stride = int(stream_stride)
         self._stream_followup_stride = int(stream_followup_stride)
+        self._default_initial_chunk_frames = resolve_initial_codec_chunk_frames(
+            None,
+            steady_chunk_frames=self._stream_stride,
+            default_frames=initial_chunk_frames,
+        )
         self._stream_overlap_tokens = resolve_stream_overlap_tokens(
             codec, stream_overlap_tokens
         )
@@ -323,13 +342,25 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         self._validate_payload_state(payload)
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        del payload
-        self._stream_states.setdefault(request_id, _StreamVocoderState())
+        state = self._stream_states.setdefault(request_id, _StreamVocoderState())
+        if state.initial_chunk_frames is None:
+            params = payload.request.params
+            state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
+                params if isinstance(params, dict) else None,
+                steady_chunk_frames=self._stream_stride,
+                default_frames=self._default_initial_chunk_frames,
+            )
 
     def on_stream_chunk(
         self, request_id: str, chunk: StreamItem
     ) -> list[OutgoingMessage]:
         state = self._stream_states.setdefault(request_id, _StreamVocoderState())
+        if state.initial_chunk_frames is None:
+            state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
+                chunk.metadata,
+                steady_chunk_frames=self._stream_stride,
+                default_frames=self._default_initial_chunk_frames,
+            )
         codes = chunk.data
         if not isinstance(codes, torch.Tensor):
             raise TypeError(
