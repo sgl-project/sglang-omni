@@ -91,7 +91,8 @@ COPY . /workspace/sglang-omni
 RUN cd /workspace/sglang-omni \
     && pip install --no-cache-dir -U 'setuptools>=77.0.0' \
     && cp pyproject_xpu.toml pyproject.toml \
-    && pip install --no-cache-dir -e . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX}
+    && pip install --no-cache-dir -e '.[fishaudio-s2-pro]' --no-build-isolation \
+        --extra-index-url ${TORCH_XPU_INDEX}
 
 # --no-deps: qwen-tts pins Transformers 4.57.3, which would replace the stack above,
 # and resolving sox lifts numpy past the numba==0.65.1 ceiling.

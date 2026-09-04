@@ -21,6 +21,7 @@ from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.utils 
     apply_rotary_emb,
     precompute_freqs_cis,
 )
+from sglang_omni.platforms import current_platform
 
 FISH_BATCH_INVARIANT = os.getenv("FISH_BATCH_INVARIANT", "false").lower() in (
     "true",
@@ -81,6 +82,62 @@ def _flashinfer_kvcache_attention(
     return torch.stack(outputs, dim=0)
 
 
+def _sdpa_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    causal: bool,
+    cache_position: int,
+) -> torch.Tensor:
+    """Device-agnostic Fast-AR attention for backends without CUDA kernels."""
+    if k is None or v is None:
+        raise ValueError("SDPA Fast-AR attention requires k and v")
+    if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+        raise ValueError("Fast-AR q, k, and v batch sizes must match")
+    if cache_position < 0:
+        raise ValueError("SDPA Fast-AR attention requires cache_position")
+
+    if q.shape[1] != k.shape[1] or k.shape != v.shape:
+        raise ValueError("Fast-AR q, k, and v sequence shapes must match")
+
+    cache_end = cache_position + int(k.shape[1])
+    if cache_end > int(k_cache.shape[1]):
+        raise ValueError("Fast-AR attention exceeds the allocated KV cache")
+    k_cache[:, cache_position:cache_end].copy_(k)
+    v_cache[:, cache_position:cache_end].copy_(v)
+
+    query = q.transpose(1, 2)
+    key = k_cache[:, :cache_end].transpose(1, 2)
+    value = v_cache[:, :cache_end].transpose(1, 2)
+    if query.shape[1] % key.shape[1] != 0:
+        raise ValueError("Fast-AR query heads must be divisible by KV heads")
+    repeat = int(query.shape[1] // key.shape[1])
+    if repeat > 1:
+        key = key.repeat_interleave(repeat, dim=1)
+        value = value.repeat_interleave(repeat, dim=1)
+
+    attention_mask = None
+    if causal:
+        query_positions = torch.arange(
+            cache_position,
+            cache_end,
+            device=q.device,
+        ).unsqueeze(1)
+        key_positions = torch.arange(cache_end, device=q.device).unsqueeze(0)
+        attention_mask = key_positions <= query_positions
+    output = F.scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask=attention_mask,
+        dropout_p=0.0,
+    )
+    return output.transpose(1, 2)
+
+
 @torch.library.custom_op(
     "mylib::flash_attn_kvcache", mutates_args=("k_cache", "v_cache")
 )
@@ -95,8 +152,25 @@ def flash_attn_kvcache_op(
     num_splits: int = 0,
     cache_position: int = -1,
 ) -> torch.Tensor:
+    if current_platform.is_xpu():
+        return _sdpa_kvcache_attention(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            causal=causal,
+            cache_position=cache_position,
+        )
+    if not current_platform.is_cuda():
+        raise RuntimeError(
+            "FishAudio S2-Pro Fast-AR attention is not qualified on "
+            f"{current_platform.device_type}"
+        )
     if q.device.type != "cuda" or q.device.index is None:
-        raise RuntimeError("FishAudio S2-Pro Fast-AR attention requires CUDA")
+        raise RuntimeError(
+            "FishAudio S2-Pro CUDA attention requires an indexed CUDA tensor"
+        )
     if _fast_ar_uses_fa3(q.device.index):
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
 

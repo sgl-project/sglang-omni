@@ -127,8 +127,11 @@ def load_audio_decoder(
     num_codebooks = int(config.audio_decoder_config.num_codebooks)
     codebook_size = int(config.audio_decoder_config.vocab_size)
 
-    if str(device).startswith("cuda"):
-        torch.cuda.empty_cache()
+    device_obj = torch.device(device)
+    if device_obj.type in ("cuda", "xpu"):
+        device_module = torch.get_device_module(device_obj)
+        if device_module.is_available():
+            device_module.empty_cache()
 
     logger.info(
         "Fish audio decoder loaded in %.2fs (num_codebooks=%d, codebook_size=%d)",

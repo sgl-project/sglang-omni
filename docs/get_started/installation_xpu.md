@@ -13,8 +13,9 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
-(S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
+`[fishaudio-s2-pro]` adds the model-specific Descript DAC stack, `[eval]` adds
+SeedTTS/WER tooling, and `[all]` aliases eval. Ming-Omni and Voxtral-TTS remain
+CUDA-only and are not offered here.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
 > `egg-info` instead of a PEP 660 editable install. The installer always passes it.
@@ -72,6 +73,7 @@ Pick extras with `--extras` (comma-separated):
 ```bash
 scripts/xpu/install_xpu.sh --extras eval           # core + SeedTTS/WER eval + tests
 scripts/xpu/install_xpu.sh --extras all            # alias for eval
+scripts/xpu/install_xpu.sh --extras fishaudio-s2-pro # Fish Audio S2-Pro codec
 ```
 
 Or do it manually (the same steps the script automates):

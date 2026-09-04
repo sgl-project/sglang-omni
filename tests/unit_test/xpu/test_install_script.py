@@ -20,6 +20,15 @@ _SCRIPT = Path("scripts/xpu/install_xpu.sh")
 _ORIGINAL_MARKER = "# ORIGINAL-CUDA-MANIFEST"
 
 
+def test_fishaudio_s2_pro_extra_is_installed_by_xpu_docker() -> None:
+    manifest = Path("pyproject_xpu.toml").read_text()
+    dockerfile = Path("docker/xpu.Dockerfile").read_text()
+
+    assert '"descript-audiotools==0.7.2"' in manifest
+    assert '"descript-audio-codec==1.0.0"' in manifest
+    assert ".[fishaudio-s2-pro]" in dockerfile
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A throwaway repo root holding just what the script touches."""

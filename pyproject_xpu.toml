@@ -69,6 +69,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Fish Audio S2-Pro model-specific codec stack.
+fishaudio-s2-pro = [
+    "tiktoken",
+    "hydra-core",
+    "omegaconf",
+    "descript-audiotools==0.7.2",
+    "descript-audio-codec==1.0.0",
+]
 # SeedTTS speaker-sim / WER eval + tests (device-agnostic).
 eval = [
     "s3prl>=0.4.18",

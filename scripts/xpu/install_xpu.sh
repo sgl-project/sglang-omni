@@ -6,6 +6,7 @@
 # Usage:
 #   scripts/xpu/install_xpu.sh                    # lean core, editable
 #   scripts/xpu/install_xpu.sh --extras eval      # core + eval/tests
+#   scripts/xpu/install_xpu.sh --extras fishaudio-s2-pro  # Fish S2-Pro codec
 #   scripts/xpu/install_xpu.sh --no-editable      # non-editable
 #   scripts/xpu/install_xpu.sh --check            # dry-run: show what would run
 #
