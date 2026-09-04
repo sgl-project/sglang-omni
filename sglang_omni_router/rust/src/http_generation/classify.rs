@@ -17,13 +17,13 @@ pub(crate) struct ClassifiedRequest {
 
 #[derive(Default)]
 struct Facts {
-    model: Option<Option<String>>,
-    messages: Option<MessageFacts>,
+    model: Option<String>,
+    messages: MessageFacts,
     top_audio: bool,
     top_image: bool,
     top_video: bool,
-    modalities: Option<Vec<OutputModality>>,
-    audio_format: Option<Option<ChatAudioFormat>>,
+    modalities: Vec<OutputModality>,
+    audio_format: Option<ChatAudioFormat>,
     stream: Option<bool>,
 }
 
@@ -35,7 +35,14 @@ struct MessageFacts {
     audio: bool,
     image: bool,
     video: bool,
-    typed_media: bool,
+}
+
+#[derive(Default)]
+struct PartFacts {
+    text: bool,
+    audio: bool,
+    image: bool,
+    video: bool,
 }
 
 /// Extracts routing facts while leaving worker-owned request validation upstream.
@@ -48,18 +55,16 @@ pub(crate) fn classify(bytes: &[u8], trust: &TrustDomain) -> Result<ClassifiedRe
         .end()
         .map_err(|_| HttpFault::MalformedRequest)?;
 
-    let messages = facts.messages.unwrap_or_default();
     let model = facts
         .model
-        .flatten()
         .filter(|model| !model.is_empty())
         .map_or(ModelSelection::UnresolvedDefault, ModelSelection::Explicit);
 
     let mut message_content_forms = Vec::with_capacity(2);
-    if messages.string {
+    if facts.messages.string {
         message_content_forms.push(MessageContentForm::String);
     }
-    if messages.typed {
+    if facts.messages.typed {
         message_content_forms.push(MessageContentForm::TypedParts);
     }
     let top_media = facts.top_audio || facts.top_image || facts.top_video;
@@ -67,29 +72,30 @@ pub(crate) fn classify(bytes: &[u8], trust: &TrustDomain) -> Result<ClassifiedRe
     if top_media {
         media_placements.push(MediaPlacement::TopLevel);
     }
-    if messages.typed_media {
+    if facts.messages.audio || facts.messages.image || facts.messages.video {
         media_placements.push(MediaPlacement::TypedParts);
     }
     let mut input_modalities = Vec::with_capacity(4);
-    if messages.text {
+    if facts.messages.text {
         input_modalities.push(InputModality::Text);
     }
-    if facts.top_audio || messages.audio {
+    if facts.top_audio || facts.messages.audio {
         input_modalities.push(InputModality::Audio);
     }
-    if facts.top_image || messages.image {
+    if facts.top_image || facts.messages.image {
         input_modalities.push(InputModality::Image);
     }
-    if facts.top_video || messages.video {
+    if facts.top_video || facts.messages.video {
         input_modalities.push(InputModality::Video);
     }
-    let output_modalities = facts
-        .modalities
-        .filter(|modalities| !modalities.is_empty())
-        .unwrap_or_else(|| vec![OutputModality::Text]);
+    let output_modalities = if facts.modalities.is_empty() {
+        vec![OutputModality::Text]
+    } else {
+        facts.modalities
+    };
     let audio_requested = output_modalities.contains(&OutputModality::Audio);
     let audio_format = if audio_requested {
-        Some(facts.audio_format.flatten().unwrap_or(ChatAudioFormat::Wav))
+        Some(facts.audio_format.unwrap_or(ChatAudioFormat::Wav))
     } else {
         None
     };
@@ -143,15 +149,13 @@ impl<'de> Visitor<'de> for RootVisitor {
         let mut facts = Facts::default();
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "model" => facts.model = Some(map.next_value_seed(ScalarFactSeed)?.into_string()),
-                "messages" => facts.messages = Some(map.next_value_seed(MessagesSeed)?),
+                "model" => facts.model = map.next_value_seed(ScalarFactSeed)?.into_string(),
+                "messages" => facts.messages = map.next_value_seed(MessagesSeed)?,
                 "audios" => facts.top_audio = map.next_value_seed(NonEmptyArraySeed)?,
                 "images" => facts.top_image = map.next_value_seed(NonEmptyArraySeed)?,
                 "videos" => facts.top_video = map.next_value_seed(NonEmptyArraySeed)?,
-                "modalities" => {
-                    facts.modalities = Some(map.next_value_seed(NullableModalitiesSeed)?)
-                }
-                "audio" => facts.audio_format = Some(map.next_value_seed(NullableAudioSeed)?),
+                "modalities" => facts.modalities = map.next_value_seed(NullableModalitiesSeed)?,
+                "audio" => facts.audio_format = map.next_value_seed(NullableAudioSeed)?,
                 "stream" => facts.stream = map.next_value_seed(ScalarFactSeed)?.into_bool(),
                 _ => {
                     let _ignored = map.next_value::<IgnoredAny>()?;
@@ -273,7 +277,6 @@ impl<'de> DeserializeSeed<'de> for MessagesSeed {
                     all.audio |= message.audio;
                     all.image |= message.image;
                     all.video |= message.video;
-                    all.typed_media |= message.typed_media;
                 }
                 Ok(all)
             }
@@ -337,15 +340,15 @@ impl<'de> DeserializeSeed<'de> for MessageSeed {
             where
                 A: MapAccess<'de>,
             {
-                let mut content = None;
+                let mut content = MessageFacts::default();
                 while let Some(key) = map.next_key::<String>()? {
                     if key == "content" {
-                        content = Some(map.next_value_seed(ContentSeed)?);
+                        content = map.next_value_seed(ContentSeed)?;
                     } else {
                         let _ignored = map.next_value::<IgnoredAny>()?;
                     }
                 }
-                Ok(content.unwrap_or_default())
+                Ok(content)
             }
 
             fn visit_none<E>(self) -> Result<MessageFacts, E> {
@@ -427,7 +430,6 @@ impl<'de> DeserializeSeed<'de> for ContentSeed {
                     facts.audio |= part.audio;
                     facts.image |= part.image;
                     facts.video |= part.video;
-                    facts.typed_media |= part.audio || part.image || part.video;
                 }
                 Ok(facts)
             }
@@ -470,15 +472,15 @@ impl<'de> DeserializeSeed<'de> for ContentSeed {
 
 struct PartSeed;
 
-fn text_part_facts() -> MessageFacts {
-    MessageFacts {
+fn text_part_facts() -> PartFacts {
+    PartFacts {
         text: true,
-        ..MessageFacts::default()
+        ..PartFacts::default()
     }
 }
 
 impl<'de> DeserializeSeed<'de> for PartSeed {
-    type Value = MessageFacts;
+    type Value = PartFacts;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
@@ -486,33 +488,35 @@ impl<'de> DeserializeSeed<'de> for PartSeed {
     {
         struct PartVisitor;
         impl<'de> Visitor<'de> for PartVisitor {
-            type Value = MessageFacts;
+            type Value = PartFacts;
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a typed content-part object")
             }
-            fn visit_map<A>(self, mut map: A) -> Result<MessageFacts, A::Error>
+            fn visit_map<A>(self, mut map: A) -> Result<PartFacts, A::Error>
             where
                 A: MapAccess<'de>,
             {
-                let mut part_type: Option<Option<String>> = None;
+                let mut part_type = None;
+                let mut type_present = false;
                 while let Some(key) = map.next_key::<String>()? {
                     if key == "type" {
-                        part_type = Some(map.next_value_seed(ScalarFactSeed)?.into_string());
+                        type_present = true;
+                        part_type = map.next_value_seed(ScalarFactSeed)?.into_string();
                     } else {
                         let _ignored = map.next_value::<IgnoredAny>()?;
                     }
                 }
-                let mut facts = MessageFacts::default();
+                let mut facts = PartFacts::default();
                 match part_type {
-                    None => facts.text = true,
-                    Some(Some(value)) if value == "text" => facts.text = true,
-                    Some(Some(value)) if matches!(value.as_str(), "audio_url" | "input_audio") => {
+                    None if !type_present => facts.text = true,
+                    Some(value) if value == "text" => facts.text = true,
+                    Some(value) if matches!(value.as_str(), "audio_url" | "input_audio") => {
                         facts.audio = true;
                     }
-                    Some(Some(value)) if matches!(value.as_str(), "image_url" | "image") => {
+                    Some(value) if matches!(value.as_str(), "image_url" | "image") => {
                         facts.image = true;
                     }
-                    Some(Some(value)) if matches!(value.as_str(), "video_url" | "video") => {
+                    Some(value) if matches!(value.as_str(), "video_url" | "video") => {
                         facts.video = true;
                     }
                     _ => {}
@@ -520,40 +524,40 @@ impl<'de> DeserializeSeed<'de> for PartSeed {
                 Ok(facts)
             }
 
-            fn visit_str<E>(self, _value: &str) -> Result<MessageFacts, E> {
+            fn visit_str<E>(self, _value: &str) -> Result<PartFacts, E> {
                 Ok(text_part_facts())
             }
 
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_none<E>(self) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_unit<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_unit<E>(self) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_bool<E>(self, _value: bool) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_bool<E>(self, _value: bool) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_i64<E>(self, _value: i64) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_i64<E>(self, _value: i64) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_u64<E>(self, _value: u64) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_u64<E>(self, _value: u64) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_f64<E>(self, _value: f64) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_f64<E>(self, _value: f64) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_seq<A>(self, sequence: A) -> Result<MessageFacts, A::Error>
+            fn visit_seq<A>(self, sequence: A) -> Result<PartFacts, A::Error>
             where
                 A: SeqAccess<'de>,
             {
                 ignore_sequence(sequence)?;
-                Ok(MessageFacts::default())
+                Ok(PartFacts::default())
             }
         }
         deserializer.deserialize_any(PartVisitor)
@@ -688,15 +692,15 @@ impl<'de> DeserializeSeed<'de> for NullableAudioSeed {
             where
                 A: MapAccess<'de>,
             {
-                let mut format: Option<Option<String>> = None;
+                let mut format = None;
                 while let Some(key) = map.next_key::<String>()? {
                     if key == "format" {
-                        format = Some(map.next_value_seed(ScalarFactSeed)?.into_string());
+                        format = map.next_value_seed(ScalarFactSeed)?.into_string();
                     } else {
                         let _ignored = map.next_value::<IgnoredAny>()?;
                     }
                 }
-                let Some(Some(format)) = format else {
+                let Some(format) = format else {
                     return Ok(None);
                 };
                 Ok(parse_audio_format(&format))
