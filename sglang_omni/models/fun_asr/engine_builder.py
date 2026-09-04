@@ -117,9 +117,9 @@ class FunASREngineBuilder(AsrEngineBuilder):
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
-            # Qualified capture budget; longer prefills run eager.
+            # Capture every admitted prefill shape up to the chunk limit.
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
-            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(256),
+            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(4096),
             "sampling_backend": "pytorch",
             "dtype": dtype,
         }

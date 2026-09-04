@@ -266,8 +266,9 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         64,
     ]
     assert build_kwargs["cuda_graph_backend_prefill"] == "breakable"
+    assert build_kwargs["chunked_prefill_size"] == 4096
     assert build_kwargs["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
-        256
+        build_kwargs["chunked_prefill_size"]
     )
     assert scheduler.server_args._cuda_graph_config_locked == {("prefill", "bs")}
     assert infra_kwargs[-1]["enable_prefill_input_embeds"] is True
