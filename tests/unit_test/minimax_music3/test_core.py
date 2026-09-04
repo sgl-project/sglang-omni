@@ -280,6 +280,7 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
             dim_heads=64,
             compute_dtype=torch.float32,
             attention_backend="torch_sdpa",
+            fp32_flex_attention=False,
         )
         .cuda()
         .eval()

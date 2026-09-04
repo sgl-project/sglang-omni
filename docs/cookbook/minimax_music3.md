@@ -402,6 +402,22 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --
 
 That serves 32 concurrent requests as 64 rows. Do not pass `engine.cuda_graph_max_bs` here: this model computes the cap itself so the graphs always cover the doubled batch, and a value you supply is discarded rather than honoured.
 
+### FP32 flex attention
+
+On CUDA, the default FP32 acoustic DIT uses PyTorch flex attention while
+retaining FP32 inputs and TF32 matmuls. To restore the previous SDPA path:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \
+  --dit_dav.factory.fp32_flex_attention false
+```
+
+The option resolves to flex attention only on CUDA with `dtype=float32` and
+`attention_backend=torch_sdpa`; MUSA and other dtype/backend combinations
+retain their existing attention path. Flex-attention output is not
+byte-identical to SDPA, so validate generated audio for your workload when
+comparing the two paths.
+
 Send clients in parallel rather than in sequence:
 
 ```python
