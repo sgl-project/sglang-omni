@@ -412,10 +412,12 @@ impl ProfileRequirement {
         match self {
             Self::GenerationHttp { model, .. }
             | Self::SpeechHttp { model, .. }
-            | Self::TranscriptionHttp { model, .. } => model.requires_resolution(),
+            | Self::TranscriptionHttp { model, .. }
+            | Self::SpeechWebsocket { model, .. } => model.requires_resolution(),
             Self::SpeechBatch { models, .. } => {
                 models.iter().any(ModelSelection::requires_resolution)
             }
+            Self::RealtimeWebsocket => false,
         }
     }
 
@@ -855,10 +857,7 @@ impl ServiceProfile {
                     managed_voice: required_voice,
                 },
             ) => {
-                model.matches_worker_default(worker_default)
-                    && model_ids
-                        .iter()
-                        .any(|candidate| candidate == model.model_id())
+                model.matches_profile_models(model_ids, worker_default)
                     && response_format.is_none_or(|format| response_formats.contains(&format))
                     && stream_modes.contains(stream_mode)
                     && task.is_none_or(|task| tasks.contains(&task))

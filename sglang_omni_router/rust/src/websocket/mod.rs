@@ -26,9 +26,8 @@ use crate::speech_facts::{
     response_format as classify_response_format, task as classify_task,
 };
 use crate::worker_pool::{
-    AdmissionError, CapacityClass, DefaultModelResolution, DispatchError, ModelSelection,
-    ProfileRequirement, RouteRequirement, ServiceClass, SpeechResponseFormat, StreamMode,
-    TrustDomain, WorkerPool,
+    AdmissionError, CapacityClass, DispatchError, ModelSelection, ProfileRequirement,
+    RouteRequirement, ServiceClass, SpeechResponseFormat, StreamMode, TrustDomain, WorkerPool,
 };
 
 mod session;
@@ -185,14 +184,12 @@ async fn run_speech(
         }
     };
     let classification_deadline = Instant::now() + gateway.policy.worker_setup_timeout();
-    let classify_pool = Arc::clone(&gateway.pool);
     let classify_trust = trust.clone();
     let classified = setup_until(
         &mut drain,
         classification_deadline,
         classify_blocking(move || {
-            let requirement =
-                classify_speech(config_text.as_bytes(), &classify_pool, &classify_trust);
+            let requirement = classify_speech(config_text.as_bytes(), &classify_trust);
             (config_text, requirement)
         }),
     )
@@ -757,6 +754,7 @@ fn admission_fault(error: AdmissionError) -> HttpFault {
 
 fn dispatch_fault(error: DispatchError) -> HttpFault {
     match error {
+        DispatchError::AmbiguousModel => HttpFault::AmbiguousModel,
         DispatchError::NoEligibleProfile => HttpFault::NoCompatibleWorker,
         DispatchError::Overloaded => HttpFault::RouterOverloaded,
         DispatchError::Unavailable => HttpFault::RouterUnavailable,
@@ -770,6 +768,7 @@ fn dispatch_close(error: DispatchError) -> Message {
             close_message(1013, "route unavailable")
         }
         DispatchError::NoEligibleProfile => close_message(1008, "no compatible worker"),
+        DispatchError::AmbiguousModel => close_message(1008, "explicit model required"),
         DispatchError::Internal => close_message(1011, "internal setup failure"),
     }
 }
@@ -783,24 +782,11 @@ where
     tokio::task::spawn_blocking(operation).await
 }
 
-fn classify_speech(
-    bytes: &[u8],
-    pool: &WorkerPool,
-    trust: &TrustDomain,
-) -> Result<RouteRequirement, ()> {
+fn classify_speech(bytes: &[u8], trust: &TrustDomain) -> Result<RouteRequirement, ()> {
     let fields = parse_speech_config(bytes)?;
     let model = match fields.model.clone().flatten() {
         Some(model) if !model.is_empty() => ModelSelection::Explicit(model),
-        Some(_) | None => {
-            match pool.resolve_default_model_id(trust, ServiceClass::SpeechWebsocket, None) {
-                DefaultModelResolution::Unique(model) => ModelSelection::WorkerDefault {
-                    expected_model_id: model.to_owned(),
-                },
-                DefaultModelResolution::NoService | DefaultModelResolution::Ambiguous => {
-                    return Err(());
-                }
-            }
-        }
+        Some(_) | None => ModelSelection::UnresolvedDefault,
     };
     speech_requirement(fields, model, trust)
 }
@@ -1246,7 +1232,7 @@ mod tests {
         else {
             panic!("speech websocket requirement")
         };
-        assert_eq!(model.model_id(), "tts");
+        assert_eq!(model.expected_model_id(), Some("tts"));
         assert_eq!(*response_format, Some(SpeechResponseFormat::Pcm));
         assert_eq!(*stream_mode, StreamMode::Streaming);
         assert_eq!(*task, Some(SpeechTask::VoiceClone));

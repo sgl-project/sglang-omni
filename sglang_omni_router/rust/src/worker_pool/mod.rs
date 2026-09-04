@@ -303,6 +303,8 @@ impl WorkerPool {
         let mut eligible_count = 0;
         let mut preferred = [0; MAX_WORKERS];
         let mut preferred_count = 0;
+        let requires_default_resolution = requirement.profile.requires_default_resolution();
+        let mut resolved_default = None;
         let mut selector = self.selector.lock();
         for record in &self.records {
             if &record.trust_domain != requirement.trust_domain()
@@ -311,6 +313,16 @@ impl WorkerPool {
                 continue;
             }
             profile_found = true;
+            if requires_default_resolution {
+                let Some(model_id) = record.default_model_id.as_deref() else {
+                    return Err(DispatchError::AmbiguousModel);
+                };
+                match resolved_default {
+                    None => resolved_default = Some(model_id),
+                    Some(expected) if expected == model_id => {}
+                    Some(_) => return Err(DispatchError::AmbiguousModel),
+                }
+            }
             if !record.is_routable() {
                 continue;
             }
@@ -744,6 +756,21 @@ mod tests {
             tasks: vec![SpeechTask::TextToSpeech],
             reference_forms: vec![ReferenceForm::None],
             voice_name_policy: VoiceNamePolicy::Preset,
+        }
+    }
+
+    fn speech_websocket_profile(
+        model: &str,
+        response_format: SpeechResponseFormat,
+        stream_mode: StreamMode,
+    ) -> ServiceProfile {
+        ServiceProfile::SpeechWebsocket {
+            model_ids: vec![model.to_owned()],
+            response_formats: vec![response_format],
+            stream_modes: vec![stream_mode],
+            tasks: vec![SpeechTask::TextToSpeech],
+            reference_forms: vec![ReferenceForm::None],
+            managed_voice: false,
         }
     }
 
@@ -1228,7 +1255,7 @@ mod tests {
             ),
         ];
         let mut pool = pool(RoutingStrategy::RoundRobin, records, 2);
-        pool.admission = AdmissionController::new(2, [None, Some(2), None, None]);
+        pool.admission = AdmissionController::new(2, [None, Some(2), None, None, None, None]);
         let requirement = RouteRequirement::new(
             ProfileRequirement::SpeechHttp {
                 model: ModelSelection::UnresolvedDefault,
@@ -1248,6 +1275,78 @@ mod tests {
             )
             .expect("dispatch compatible default");
         assert_eq!(lease.registration_ordinal(), 1);
+    }
+
+    #[test]
+    fn speech_websocket_default_resolution_uses_compatible_profiles() {
+        let build_record = |ordinal, model, format, stream| {
+            let mut record = record_with_profile(
+                ordinal,
+                "local",
+                model,
+                speech_websocket_profile(model, format, stream),
+            );
+            Arc::get_mut(&mut record)
+                .expect("new test record is uniquely owned")
+                .session_capacity[0] = Some(SessionCapacity {
+                semaphore: Arc::new(Semaphore::new(1)),
+            });
+            record
+        };
+        let pcm = build_record(
+            0,
+            "pcm-model",
+            SpeechResponseFormat::Pcm,
+            StreamMode::Streaming,
+        );
+        let wav = build_record(
+            1,
+            "wav-model",
+            SpeechResponseFormat::Wav,
+            StreamMode::NonStreaming,
+        );
+        let mut compatible = pool(RoutingStrategy::RoundRobin, vec![pcm, wav], 2);
+        compatible.admission = AdmissionController::new(2, [None, None, None, None, Some(2), None]);
+        let requirement = RouteRequirement::new(
+            ProfileRequirement::SpeechWebsocket {
+                model: ModelSelection::UnresolvedDefault,
+                response_format: Some(SpeechResponseFormat::Pcm),
+                stream_mode: StreamMode::Streaming,
+                task: Some(SpeechTask::TextToSpeech),
+                reference_forms: vec![ReferenceForm::None],
+                managed_voice: false,
+            },
+            TrustDomain::new(String::from("local")),
+        );
+        let lease = compatible
+            .dispatch_session(
+                compatible
+                    .try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("admit speech session"),
+                &requirement,
+            )
+            .expect("dispatch compatible default");
+        assert_eq!(lease.registration_ordinal(), 0);
+        drop(lease);
+
+        let mut ambiguous = pool(
+            RoutingStrategy::RoundRobin,
+            vec![
+                build_record(0, "pcm-a", SpeechResponseFormat::Pcm, StreamMode::Streaming),
+                build_record(1, "pcm-b", SpeechResponseFormat::Pcm, StreamMode::Streaming),
+            ],
+            2,
+        );
+        ambiguous.admission = AdmissionController::new(2, [None, None, None, None, Some(2), None]);
+        assert!(matches!(
+            ambiguous.dispatch_session(
+                ambiguous
+                    .try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("admit ambiguous speech session"),
+                &requirement,
+            ),
+            Err(DispatchError::AmbiguousModel)
+        ));
     }
 
     #[test]
