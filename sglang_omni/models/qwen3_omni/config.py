@@ -185,13 +185,9 @@ def _decode_stage(*, process: str) -> StageConfig:
 def _talker_stage_env() -> dict[str, str]:
     if not current_platform.is_rocm():
         return {}
-    # sglang's ROCm sampler routes all-greedy batches to aiter's greedy_sample,
-    # which returns wrong token ids for vocabularies below 16384 entries
-    # (measured on gfx950 with aiter c16d44b9); the Talker codec head has 3072.
-    # A greedy Talker request (talker_temperature=0) would feed a corrupt first
-    # codec token into the code predictor, so keep this stage on torch.argmax.
-    # Only greedy token selection changes; attention and MoE kernels stay on
-    # the configured ROCm backends.
+    # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
+    # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
+    # greedy Talker request would corrupt its first codec token.
     return {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}
 
 

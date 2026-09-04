@@ -90,14 +90,10 @@ class _PredictorDecodeGraph:
         self.summed_embeddings: torch.Tensor | None = None
         self._capture()
 
-    # Capture under inference mode like replay. torch's CUDA generator keeps
-    # seed/offset tensors that are allocated when the first live graph
-    # registers with it; SGLang's outer decode graph registers them from
-    # inference mode, so they are inference tensors. capture_begin() then
-    # fills them in place, which a plain no_grad capture is not allowed to do
-    # on torch 2.9 ("Inplace update to inference tensor outside
-    # InferenceMode"); the aborted capture also leaves the generator broken.
-    # torch 2.13 tolerates it, so this is neutral on CUDA CI.
+    # Note (zijiecode): capture in the same mode as replay. SGLang registers the
+    # CUDA generator from inference mode, so on torch 2.9 (ROCm) a no_grad
+    # capture_begin() is refused as an inplace update to an inference tensor
+    # and the aborted capture breaks every later graph in the process.
     @torch.inference_mode()
     def _capture(self) -> None:
         device = self.layer0_codes.device
@@ -1470,10 +1466,14 @@ class Qwen3OmniTalker(nn.Module):
             return False
         if not layer0_codes.is_cuda or not talker_hidden.is_cuda:
             return False
-        # SGLang's decode-graph capture runs warmup forwards before the stream
-        # capture itself; get_is_capture_mode() covers that whole window, so the
-        # predictor never captures its own graph inside the enclosing capture.
-        if get_is_capture_mode() or torch.cuda.is_current_stream_capturing():
+        if torch.cuda.is_current_stream_capturing():
+            return False
+        # Note (zijiecode): SGLang's decode-graph warmup runs this forward before
+        # its own capture. On ROCm (torch 2.9) the predictor must not register
+        # the CUDA generator first, or SGLang's no_grad capture_begin() fails
+        # on the inference tensors it left behind. CUDA keeps the startup-time
+        # capture.
+        if current_platform.is_rocm() and get_is_capture_mode():
             return False
         return True
 

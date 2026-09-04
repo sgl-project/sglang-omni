@@ -234,9 +234,7 @@ def test_rocm_tp_child_keeps_parent_mapped_hip_visible_device(monkeypatch) -> No
     assert spec.comm_config["gpu_id"] == 0
     assert os.environ["HIP_VISIBLE_DEVICES"] == "5"
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "5"
-    assert any("HIP_VISIBLE_DEVICES=5" in message for message in log.messages)
-    # The startup lock keys on the physical card, resolved through the CUDA
-    # alias from the child's local gpu_id.
+    assert any("CUDA_VISIBLE_DEVICES=5" in message for message in log.messages)
     assert get_gpu_startup_lock_path(spec.gpu_id).name.endswith("_gpu_5_startup.lock")
 
 

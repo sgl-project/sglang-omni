@@ -51,11 +51,9 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         }
         if hip_visible:
-            # The HIP runtime honors HIP_VISIBLE_DEVICES over the CUDA alias, so
-            # a HIP-narrowed parent must narrow the child through it as well.
-            # The CUDA alias still carries the same physical id: the startup
-            # lock and sglang's physical-device helpers resolve the card
-            # through CUDA_VISIBLE_DEVICES.
+            # Note (zijiecode): the HIP runtime prefers HIP_VISIBLE_DEVICES over the
+            # CUDA alias, so the child must be narrowed through it; the alias
+            # is kept for the startup lock and SGLang's physical-device helpers.
             env_updates["HIP_VISIBLE_DEVICES"] = mapped_gpu
         return env_updates
 

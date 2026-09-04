@@ -35,10 +35,8 @@ def _packed_attention_backend(capability: tuple[int, int], *, is_hip: bool) -> s
     Hopper only, and Triton is the arm sglang itself uses on the other parts.
     """
     if is_hip:
-        # PyTorch HIP reports AMD gfx950 as capability (9, 5). The Hopper check
-        # below would pick FA3, whose sglang impl raises on HIP ("only
-        # available for cuda or musa") and leaves the encoder eager. These
-        # graphs wire only the FA3 and Triton impls, so HIP takes Triton.
+        # Note (zijiecode): HIP reports gfx950 as (9, 5), which the Hopper check
+        # would send to FA3; FA3 does not exist on HIP.
         return "triton_attn"
     major, _ = capability
     return "fa3" if major == _HOPPER else "triton_attn"

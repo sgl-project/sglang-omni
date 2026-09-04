@@ -903,18 +903,12 @@ def _prepare_accelerator_environment(
             # A CPU stage colocated in a GPU-narrowed process keeps its
             # identity; normalizing it would bind it to the local device.
             return
-        visibility_var = (
-            "HIP_VISIBLE_DEVICES"
-            if current_platform.is_rocm() and os.environ.get("HIP_VISIBLE_DEVICES")
-            else "CUDA_VISIBLE_DEVICES"
-        )
-        mapped_gpu = os.environ.get(visibility_var, str(spec.gpu_id))
+        mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
-            "TP stage %s rank %d sees %s=%s (local gpu_id=0)",
+            "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
             spec.stage_name,
             spec.tp_rank,
-            visibility_var,
             mapped_gpu,
         )
         return
@@ -926,15 +920,8 @@ def _prepare_accelerator_environment(
     for key, value in env_updates.items():
         os.environ[key] = value
 
-    mapped_visibility = next(
-        (
-            (key, env_updates[key])
-            for key in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
-            if env_updates.get(key)
-        ),
-        None,
-    )
-    if mapped_visibility is None:
+    mapped_gpu = env_updates.get("CUDA_VISIBLE_DEVICES")
+    if mapped_gpu is None:
         log.info(
             "TP stage %s rank %d keeps every card visible, using gpu_id=%s",
             spec.stage_name,
@@ -943,13 +930,11 @@ def _prepare_accelerator_environment(
         )
         return
 
-    visibility_var, mapped_gpu = mapped_visibility
     _normalize_spec_gpu_id_to_local_device(spec)
     log.info(
-        "Mapped TP stage %s rank %d to %s=%s (local gpu_id=0)",
+        "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
         spec.stage_name,
         spec.tp_rank,
-        visibility_var,
         mapped_gpu,
     )
 
