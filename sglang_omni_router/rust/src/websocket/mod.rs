@@ -837,8 +837,11 @@ fn speech_requirement(
             .and_then(Option::as_deref)
             .unwrap_or("Base"),
     );
-    let references = reference_forms(&fields);
+    let mut references = reference_forms(&fields);
     let managed_voice = classify_managed_voice(&fields, &references);
+    if managed_voice {
+        references.clear();
+    }
     Ok(RouteRequirement::new(
         ProfileRequirement::SpeechWebsocket {
             model,
@@ -1321,6 +1324,29 @@ mod tests {
             panic!("speech websocket requirement")
         };
         assert_eq!(reference_forms, &[ReferenceForm::List]);
+    }
+
+    #[test]
+    fn managed_speech_config_uses_voice_as_its_reference_requirement() {
+        let fields =
+            parse_speech_config(br#"{"type":"session.config","model":"tts","voice":"named"}"#)
+                .expect("valid managed speech configuration");
+        let requirement = speech_requirement(
+            fields,
+            ModelSelection::Explicit(String::from("tts")),
+            &TrustDomain::new(String::from("local")),
+        )
+        .expect("valid speech requirement");
+        let ProfileRequirement::SpeechWebsocket {
+            reference_forms,
+            managed_voice,
+            ..
+        } = requirement.profile()
+        else {
+            panic!("speech websocket requirement")
+        };
+        assert!(reference_forms.is_empty());
+        assert!(*managed_voice);
     }
 
     #[test]
