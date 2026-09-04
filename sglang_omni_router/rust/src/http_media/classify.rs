@@ -109,6 +109,8 @@ pub(super) fn batch_with_hints(
     }
     let item_count = items.len();
     let mut models = Vec::with_capacity(item_count);
+    let mut default_model = defaults.model.clone().flatten();
+    let mut default_model_added = false;
     let mut formats = Vec::new();
     let mut tasks = Vec::new();
     let mut references = Vec::new();
@@ -132,13 +134,13 @@ pub(super) fn batch_with_hints(
         if !item.routing_fields_valid() {
             continue;
         }
-        let item = item.fields;
-        let effective_model = item
-            .model
-            .clone()
-            .flatten()
-            .or_else(|| defaults.model.clone().flatten());
-        models.push(model_selection(effective_model, route_model)?);
+        let mut item = item.fields;
+        if let Some(model) = item.model.take().flatten() {
+            models.push(model_selection(Some(model), route_model)?);
+        } else if !default_model_added {
+            models.push(model_selection(default_model.take(), route_model)?);
+            default_model_added = true;
+        }
         match item.response_format.as_ref().and_then(Option::as_deref) {
             Some(value) => {
                 if let Some(format) = classify_response_format(value) {
@@ -163,9 +165,9 @@ pub(super) fn batch_with_hints(
         let explicit_reference = effective_references != [ReferenceForm::None];
         let voice = item
             .voice
-            .clone()
-            .flatten()
-            .or_else(|| defaults.voice.clone().flatten());
+            .as_ref()
+            .and_then(Option::as_deref)
+            .or_else(|| defaults.voice.as_ref().and_then(Option::as_deref));
         let item_named_voice = !explicit_reference
             && voice
                 .is_some_and(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"));
@@ -177,6 +179,8 @@ pub(super) fn batch_with_hints(
             }
         }
     }
+    models.sort_unstable();
+    models.dedup();
     let batch_size = u16::try_from(item_count).map_err(|_| HttpFault::MalformedRequest)?;
     Ok(Classified {
         requirement: RouteRequirement::new(
@@ -474,7 +478,7 @@ mod tests {
         StreamMode, TrustDomain, WorkerPool,
     };
 
-    use super::{HttpFault, batch, merge_stream, speech, speech_with_hints};
+    use super::{HttpFault, batch, batch_with_hints, merge_stream, speech, speech_with_hints};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -683,7 +687,7 @@ stream_modes = ["non_streaming", "streaming"]
     }
 
     #[test]
-    fn batch_builds_whole_ordered_effective_unions() {
+    fn batch_builds_unique_effective_unions() {
         let pool = pool();
         let trust = TrustDomain::new(String::from("local"));
         let body = br#"{
@@ -707,10 +711,22 @@ stream_modes = ["non_streaming", "streaming"]
             panic!("batch requirement")
         };
         assert_eq!(*batch_size, 3);
-        assert_eq!(models[0].expected_model_id(), Some("tts"));
-        assert!(matches!(models[0], ModelSelection::Explicit(_)));
-        assert_eq!(models[1].expected_model_id(), Some("other"));
-        assert_eq!(models[2].expected_model_id(), Some("tts"));
+        assert_eq!(models.len(), 2);
+        assert!(
+            models
+                .iter()
+                .all(|model| matches!(model, ModelSelection::Explicit(_)))
+        );
+        assert!(
+            models
+                .iter()
+                .any(|model| model.expected_model_id() == Some("tts"))
+        );
+        assert!(
+            models
+                .iter()
+                .any(|model| model.expected_model_id() == Some("other"))
+        );
         assert_eq!(
             response_formats,
             &[SpeechResponseFormat::Wav, SpeechResponseFormat::Mp3]
@@ -1022,6 +1038,16 @@ stream_modes = ["non_streaming", "streaming"]
             speech_with_hints(
                 br#"{"model":"tts","input":"x","stream":true,"response_format":"wav"}"#,
                 None,
+                None,
+                &trust,
+            )
+            .err(),
+            Some(HttpFault::MalformedRequest)
+        );
+        assert_eq!(
+            batch_with_hints(
+                br#"{"items":[{"input":"x","model":"tts"},{"input":"y","model":"other"}]}"#,
+                Some("tts"),
                 None,
                 &trust,
             )

@@ -287,7 +287,7 @@ pub(crate) enum ProfileRequirement {
 }
 
 /// Preserves whether the caller selected a model or relied on a worker default.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum ModelSelection {
     Explicit(String),
     WorkerDefault { expected_model_id: String },

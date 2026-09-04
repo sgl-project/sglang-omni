@@ -1296,11 +1296,7 @@ mod tests {
         let pool = media_pool(vec![Arc::clone(&record)]);
         let requirement = RouteRequirement::new(
             ProfileRequirement::SpeechBatch {
-                models: vec![
-                    ModelSelection::Explicit(String::from("tts")),
-                    ModelSelection::Explicit(String::from("tts")),
-                    ModelSelection::Explicit(String::from("tts")),
-                ],
+                models: vec![ModelSelection::Explicit(String::from("tts"))],
                 response_formats: vec![SpeechResponseFormat::Wav],
                 tasks: vec![SpeechTask::TextToSpeech],
                 reference_forms: vec![ReferenceForm::None],
@@ -1321,7 +1317,7 @@ mod tests {
         assert_eq!(record.load(), 0);
         let oversized = RouteRequirement::new(
             ProfileRequirement::SpeechBatch {
-                models: vec![ModelSelection::Explicit(String::from("tts")); 5],
+                models: vec![ModelSelection::Explicit(String::from("tts"))],
                 response_formats: vec![SpeechResponseFormat::Wav],
                 tasks: vec![SpeechTask::TextToSpeech],
                 reference_forms: vec![ReferenceForm::None],
