@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
+from sglang_omni.client.client import _extract_inputs
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
@@ -1210,6 +1211,23 @@ def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
     assert gen_req.sampling.top_p == 1.0
     assert gen_req.sampling.top_k == -1
     assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+
+
+@pytest.mark.parametrize("use_audio_in_video", [True, False])
+def test_chat_request_forwards_embedded_video_audio_flag(
+    use_audio_in_video: bool,
+) -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": "hello"}],
+        videos=["clip.mp4"],
+        use_audio_in_video=use_audio_in_video,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.metadata["use_audio_in_video"] is use_audio_in_video
+    assert _extract_inputs(gen_req)["use_audio_in_video"] is use_audio_in_video
 
 
 def test_chat_request_preserves_explicit_default_sampling_values() -> None:

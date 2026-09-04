@@ -338,6 +338,91 @@ def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None
     }
 
 
+@pytest.mark.parametrize(
+    ("explicit", "embedded", "expected_audio", "expected_video_audio"),
+    [
+        ([], ["embedded"], ["embedded"], True),
+        ([], [None], None, False),
+        (["explicit"], ["embedded"], ["explicit", "embedded"], True),
+    ],
+)
+def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
+    monkeypatch,
+    explicit,
+    embedded,
+    expected_audio,
+    expected_video_audio,
+) -> None:
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
+    )
+
+    processor_calls = []
+
+    class FakeProcessor:
+        def apply_chat_template(self, *_args, **_kwargs):
+            return "prompt"
+
+        def __call__(self, **kwargs):
+            processor_calls.append(kwargs)
+            result = {
+                "input_ids": torch.tensor([[1, 2]]),
+                "attention_mask": torch.tensor([[1, 1]]),
+                "pixel_values_videos": torch.ones((1, 3)),
+                "video_grid_thw": torch.tensor([[1, 1, 1]]),
+            }
+            if kwargs["audio"] is not None:
+                result["input_features"] = torch.ones((len(kwargs["audio"]), 2, 3))
+            return result
+
+    async def fake_images(_value):
+        return []
+
+    async def fake_videos(_value, **kwargs):
+        assert kwargs["extract_audio"] is True
+        return ["video"], [1.0], embedded
+
+    async def fake_audios(_value, **_kwargs):
+        return explicit
+
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", fake_images)
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", fake_videos)
+    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", fake_audios)
+    monkeypatch.setattr(preprocessor_mod, "compute_image_cache_key", lambda _v: None)
+    monkeypatch.setattr(preprocessor_mod, "compute_video_cache_key", lambda _v: None)
+    monkeypatch.setattr(preprocessor_mod, "compute_audio_cache_key", lambda _v: None)
+
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.default_video_fps = None
+    pre.default_video_max_frames = None
+    pre.default_video_min_pixels = None
+    pre.default_video_max_pixels = None
+    pre.default_video_total_pixels = None
+    pre.processor = FakeProcessor()
+    payload = StagePayload(
+        request_id="embedded-audio",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "hello"}],
+                "videos": ["video.mp4"],
+                "audios": ["explicit.wav"] if explicit else None,
+                "use_audio_in_video": True,
+            }
+        ),
+        data={},
+    )
+
+    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre._call_impl(payload)).data)
+
+    assert processor_calls[0]["audio"] == expected_audio
+    assert (
+        processor_calls[0]["videos_kwargs"]["use_audio_in_video"]
+        is expected_video_audio
+    )
+    assert state.mm_inputs["video"]["use_audio_in_video"] is expected_video_audio
+
+
 def test_qwen_accepts_miles_audio_video_processor_tensors() -> None:
     from sglang_omni.client import Client
     from sglang_omni.models.qwen3_omni.components import (

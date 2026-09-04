@@ -970,6 +970,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["video_max_pixels"] = req.video_max_pixels
     if req.video_total_pixels is not None:
         metadata["video_total_pixels"] = req.video_total_pixels
+    if req.use_audio_in_video is not None:
+        metadata["use_audio_in_video"] = req.use_audio_in_video
     _record_explicit_generation_params(
         metadata,
         _explicit_generation_params(req),
