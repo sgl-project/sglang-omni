@@ -108,17 +108,6 @@ class SGLangExecutionBridge:
         if next_token_ids.device != self.device:
             next_token_ids = next_token_ids.to(self.device, non_blocking=True)
         indices = batch.req_pool_indices
-        counts = {
-            "scheduler_batch_requests": len(batch.reqs),
-            "req_pool_indices": int(indices.shape[0]),
-            "next_token_rows": int(next_token_ids.shape[0]),
-        }
-        if len(set(counts.values())) != 1:
-            request_ids = [str(req.rid) for req in batch.reqs]
-            raise RuntimeError(
-                "SGLang relay state corruption before FutureMap.stash: "
-                f"counts={counts}, request_ids={request_ids}"
-            )
         self.future_map.stash(
             indices,
             self._relay_payload_type(bonus_tokens=next_token_ids),

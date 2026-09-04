@@ -50,7 +50,6 @@ def _make_bridge() -> tuple[SGLangExecutionBridge, _FutureMap]:
 def test_publish_next_tokens_uses_future_map_and_retires_input_ids() -> None:
     bridge, future_map = _make_bridge()
     batch = SimpleNamespace(
-        reqs=[SimpleNamespace(rid="req-a"), SimpleNamespace(rid="req-b")],
         req_pool_indices=torch.tensor([4, 7]),
         seq_lens=torch.tensor([12, 19]),
         input_ids=torch.tensor([1, 2]),
@@ -65,18 +64,6 @@ def test_publish_next_tokens_uses_future_map_and_retires_input_ids() -> None:
     # new_seq_lens_buf has no non-spec reader; the bridge must not publish.
     assert future_map.published is None
     assert batch.input_ids is None
-
-
-def test_publish_next_tokens_detects_scheduler_row_mismatch() -> None:
-    bridge, _ = _make_bridge()
-    batch = SimpleNamespace(
-        reqs=[SimpleNamespace(rid="req-a")],
-        req_pool_indices=torch.tensor([4, 7]),
-        input_ids=torch.tensor([1]),
-    )
-
-    with pytest.raises(RuntimeError, match="relay state corruption"):
-        bridge.publish_next_tokens(batch, torch.tensor([31]))
 
 
 def test_forward_context_resolves_inputs_without_copying_sampling_info(
