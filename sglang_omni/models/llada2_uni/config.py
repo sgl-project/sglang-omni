@@ -55,12 +55,14 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
             factory=FactoryArgs(max_seq_len=8192),
             gpu=0,
             next=DECODE_STAGE,
+            stream_to=[DECODE_STAGE],
         ),
         StageConfig(
             name=DECODE_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_decode_executor",
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

@@ -9,6 +9,7 @@ import pytest
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
+from sglang_omni.scheduling.messages import OutgoingMessage
 
 
 class _ReqDouble:
@@ -22,17 +23,28 @@ class _ReqDouble:
         )
         self.extend_range = SimpleNamespace(end=len(self.full_untruncated_fill_ids))
         self.output_ids: list[int] = []
-        self.output_ids_through_stop: list[int] = self.output_ids
+        self.finished_len: int | None = None
         self.finished_reason = None
+        self.send_token_offset = 0
         self.req_pool_idx = 3
         self.accepted_lengths: list[int] = []
         self._finished = False
+        self._matches_stop_prefix = False
 
     def update_finish_state(self, *, new_accepted_len: int = 1) -> None:
         self.accepted_lengths.append(new_accepted_len)
 
     def finished(self) -> bool:
         return self._finished
+
+    def check_match_stop_str_prefix(self) -> bool:
+        return self._matches_stop_prefix
+
+    @property
+    def output_ids_through_stop(self) -> list[int]:
+        if self.finished_len is None:
+            return self.output_ids
+        return self.output_ids[: self.finished_len]
 
 
 def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
@@ -43,6 +55,7 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
     )
     scheduler._rid_to_req_data = {}
     scheduler._result_adapter = lambda value: value
+    scheduler._stream_output_builder = None
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
 
@@ -236,6 +249,24 @@ def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     assert req.req_pool_idx == 3
 
 
+def test_fdfo_unresolved_block_does_not_emit_stream_output() -> None:
+    scheduler = _scheduler(fdfo=True)
+    req = _ReqDouble()
+    scheduler._rid_to_req_data[req.rid] = object()
+    emitted = []
+    scheduler._stream_output_builder = lambda *args: emitted.append(args) or []
+    batch = SimpleNamespace(reqs=[req])
+    result = SimpleNamespace(
+        next_token_ids=[[10, 11, 12, 13]],
+        accept_length_per_req_cpu=[0],
+        dllm_algo_state=[{"round": 2}],
+    )
+
+    scheduler._apply_results(batch, result)
+
+    assert emitted == []
+
+
 def test_fdfo_resolved_block_commits_fill_ids_and_output_tokens() -> None:
     scheduler = _scheduler(fdfo=True)
     req = _ReqDouble()
@@ -285,3 +316,180 @@ def test_sync_dllm_result_commits_generated_suffix() -> None:
     assert req.full_untruncated_fill_ids == array("q", [1, 2, -1, -1, 10, 11])
     assert req.output_ids == [10, 11]
     assert req.accepted_lengths == [2]
+
+
+def test_dllm_stream_output_precedes_terminal_result() -> None:
+    scheduler = _scheduler(fdfo=False)
+    req = _ReqDouble()
+    req._finished = True
+    req_data = SimpleNamespace(output_ids=[])
+    scheduler._rid_to_req_data[req.rid] = req_data
+    outbox = []
+    scheduler.outbox = SimpleNamespace(put=outbox.append)
+
+    def build_stream_output(request_id, data, token_ids):
+        assert data is req_data
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=list(token_ids),
+                target="decode",
+            )
+        ]
+
+    scheduler._stream_output_builder = build_stream_output
+    batch = SimpleNamespace(reqs=[req])
+    result = SimpleNamespace(
+        next_token_ids=[[10, 11]],
+        accept_length_per_req_cpu=None,
+        dllm_algo_state=None,
+    )
+
+    scheduler._apply_results(batch, result)
+
+    assert [message.type for message in outbox] == ["stream", "result"]
+    assert outbox[0].data == [10, 11]
+    assert req_data.output_ids == [10, 11]
+
+
+def test_dllm_stream_output_excludes_tokens_after_stop() -> None:
+    scheduler = _scheduler(fdfo=False)
+    req = _ReqDouble()
+    req._finished = True
+    req.finished_len = 1
+    req_data = SimpleNamespace(output_ids=[])
+    scheduler._rid_to_req_data[req.rid] = req_data
+    streamed = []
+
+    def build_stream_output(_request_id, _data, token_ids):
+        streamed.extend(token_ids)
+        return []
+
+    scheduler._stream_output_builder = build_stream_output
+    batch = SimpleNamespace(reqs=[req])
+    result = SimpleNamespace(
+        next_token_ids=[[10, 11, 12]],
+        accept_length_per_req_cpu=None,
+        dllm_algo_state=None,
+    )
+
+    scheduler._apply_results(batch, result)
+
+    assert streamed == [10]
+    assert req_data.output_ids == [10]
+
+
+def test_dllm_stream_output_holds_stop_prefix_and_releases_from_send_offset() -> None:
+    scheduler = _scheduler(fdfo=False)
+    req = _ReqDouble()
+    req._matches_stop_prefix = True
+    req_data = SimpleNamespace(output_ids=[])
+    scheduler._rid_to_req_data[req.rid] = req_data
+    streamed = []
+
+    def build_stream_output(_request_id, _data, token_ids):
+        streamed.append(list(token_ids))
+        return []
+
+    scheduler._stream_output_builder = build_stream_output
+    batch = SimpleNamespace(reqs=[req])
+
+    scheduler._apply_results(
+        batch,
+        SimpleNamespace(
+            next_token_ids=[[10, 11]],
+            accept_length_per_req_cpu=None,
+            dllm_algo_state=None,
+        ),
+    )
+
+    assert streamed == []
+    assert req.send_token_offset == 0
+
+    req._matches_stop_prefix = False
+    scheduler._apply_results(
+        batch,
+        SimpleNamespace(
+            next_token_ids=[[12, 13]],
+            accept_length_per_req_cpu=None,
+            dllm_algo_state=None,
+        ),
+    )
+
+    assert streamed == [[10, 11, 12, 13]]
+    assert req.send_token_offset == 4
+
+
+def test_dllm_stream_output_withholds_terminal_matched_stop_block() -> None:
+    scheduler = _scheduler(fdfo=False)
+    req = _ReqDouble()
+    req._finished = True
+    req.finished_len = 2
+    req.finished_reason = SimpleNamespace(
+        to_json=lambda: {"type": "stop", "matched": "stop here"}
+    )
+    req_data = SimpleNamespace(output_ids=[])
+    scheduler._rid_to_req_data[req.rid] = req_data
+    streamed = []
+    outbox = []
+    scheduler.outbox = SimpleNamespace(put=outbox.append)
+    scheduler._stream_output_builder = lambda _request_id, _data, token_ids: (
+        streamed.append(list(token_ids)) or []
+    )
+
+    scheduler._apply_results(
+        SimpleNamespace(reqs=[req]),
+        SimpleNamespace(
+            next_token_ids=[[10, 11, 12]],
+            accept_length_per_req_cpu=None,
+            dllm_algo_state=None,
+        ),
+    )
+
+    assert streamed == []
+    assert [message.type for message in outbox] == ["result"]
+    assert req_data.output_ids == [10, 11]
+    assert req_data.finish_reason == "stop"
+    assert req_data.finish_reason_data == {
+        "type": "stop",
+        "matched": "stop here",
+    }
+
+
+def test_dllm_stream_output_flushes_held_prefix_on_length_finish() -> None:
+    scheduler = _scheduler(fdfo=False)
+    req = _ReqDouble()
+    req.output_ids = [10, 11]
+    req._finished = True
+    req.finished_reason = SimpleNamespace(
+        to_json=lambda: {"type": "length", "length": 4}
+    )
+    req_data = SimpleNamespace(output_ids=[])
+    scheduler._rid_to_req_data[req.rid] = req_data
+    outbox = []
+    scheduler.outbox = SimpleNamespace(put=outbox.append)
+
+    def build_stream_output(request_id, _data, token_ids):
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=list(token_ids),
+                target="decode",
+            )
+        ]
+
+    scheduler._stream_output_builder = build_stream_output
+    scheduler._apply_results(
+        SimpleNamespace(reqs=[req]),
+        SimpleNamespace(
+            next_token_ids=[[12, 13]],
+            accept_length_per_req_cpu=None,
+            dllm_algo_state=None,
+        ),
+    )
+
+    assert [message.type for message in outbox] == ["stream", "result"]
+    assert outbox[0].data == [10, 11, 12, 13]
+    assert req.send_token_offset == 4
