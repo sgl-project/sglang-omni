@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import threading
+from functools import wraps
 from typing import Any, Callable
 
 import torch
@@ -46,16 +47,20 @@ def _compute_default_rope_parameters(
 
 
 def _make_mask_factory_compat(
-    original: Callable[..., Any], name: str
+    original: Callable[..., Any],
+    name: str,
+    accepts_cache_position: bool,
 ) -> Callable[..., Any]:
+    @wraps(original)
     def mask_factory_compat(*args: Any, **kwargs: Any) -> Any:
         if "input_embeds" in kwargs:
-            kwargs.setdefault("inputs_embeds", kwargs.pop("input_embeds"))
-        kwargs.pop("cache_position", None)
+            if "inputs_embeds" in kwargs:
+                raise TypeError(f"{name} received both input_embeds and inputs_embeds")
+            kwargs["inputs_embeds"] = kwargs.pop("input_embeds")
+        if not accepts_cache_position:
+            kwargs.pop("cache_position", None)
         return original(*args, **kwargs)
 
-    mask_factory_compat.__name__ = getattr(original, "__name__", name)
-    mask_factory_compat.__doc__ = getattr(original, "__doc__", None)
     setattr(mask_factory_compat, _PATCHED_FLAG, True)
     return mask_factory_compat
 
@@ -77,7 +82,15 @@ def _patch_mask_factories() -> None:
         if "inputs_embeds" not in parameters or "input_embeds" in parameters:
             continue
 
-        setattr(masking_utils, name, _make_mask_factory_compat(original, name))
+        accepts_cache_position = "cache_position" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        setattr(
+            masking_utils,
+            name,
+            _make_mask_factory_compat(original, name, accepts_cache_position),
+        )
 
 
 def apply_qwen_tts_transformers_compatibility_patches() -> None:

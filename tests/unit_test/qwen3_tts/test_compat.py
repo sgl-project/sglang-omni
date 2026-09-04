@@ -156,19 +156,18 @@ def test_shim_passes_positional_arguments_through(name: str) -> None:
     )
 
 
-def test_shim_prefers_inputs_embeds_when_both_spellings_are_given() -> None:
+def test_shim_rejects_both_input_embedding_spellings() -> None:
     config = _mask_config()
     compat.apply_qwen_tts_transformers_compatibility_patches()
 
-    mask = masking_utils.create_causal_mask(
-        config=config,
-        input_embeds=torch.zeros(1, 4, 8),
-        inputs_embeds=torch.zeros(1, 2, 8),
-        attention_mask=torch.ones(1, 2, dtype=torch.long),
-        past_key_values=None,
-    )
-
-    assert mask.shape == (1, 1, 2, 2)
+    with pytest.raises(TypeError, match="both input_embeds and inputs_embeds"):
+        masking_utils.create_causal_mask(
+            config=config,
+            input_embeds=torch.zeros(1, 4, 8),
+            inputs_embeds=torch.zeros(1, 2, 8),
+            attention_mask=torch.ones(1, 2, dtype=torch.long),
+            past_key_values=None,
+        )
 
 
 def test_shim_is_idempotent() -> None:
