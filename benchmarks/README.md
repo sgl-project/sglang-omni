@@ -154,7 +154,14 @@ python -m benchmarks.eval.benchmark_omni_videoamme \
     --video-fps 2 --video-max-frames 128 --video-max-pixels 401408 \
     --enable-audio --asr-device cuda:0 --asr-concurrency 32
 
-# 8a. Offline UTMOS (naturalness MOS prediction) scoring on existing output
+# 9. SocialOmni — fixed-prefix speaker, turn-entry, and response evaluation
+python -m benchmarks.eval.benchmark_omni_socialomni \
+    --dataset-root /path/to/socialomni \
+    --model qwen3-omni --base-url http://localhost:8000 \
+    --level both \
+    --judge-config benchmarks/configs/socialomni_judges.example.json
+
+# 10a. Offline UTMOS (naturalness MOS prediction) scoring on existing output
 # For custom TTS models (e.g. S2-Pro, Voxtral, Higgs TTS):
 python -m benchmarks.eval.benchmark_tts_seedtts \
     --utmos-only --output-dir results/s2pro_en --device cuda:0
@@ -163,7 +170,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 python -m benchmarks.eval.benchmark_omni_seedtts \
     --utmos-only --output-dir results/qwen3_omni_en --device cuda:0
 
-# 8b. Offline Speaker Similarity (voice resemblance) scoring on existing output
+# 10b. Offline Speaker Similarity (voice resemblance) scoring on existing output
 # For custom TTS models (e.g. S2-Pro, Voxtral, Higgs TTS):
 python -m benchmarks.eval.benchmark_tts_seedtts \
     --similarity-only --output-dir results/s2pro_en --device cuda:0
@@ -186,12 +193,75 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_omni_mmmu.py` | MMMU (VLM accuracy + speed) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videomme.py` | Video-MME (video understanding) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_videoamme.py` | Video-AMME (video + audio question understanding) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_socialomni.py` | SocialOmni fixed-prefix speaker, turn-entry, and response evaluation | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_stt_benchmark.py` | ASR concurrency scaling on the Pipecat STT benchmark set (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_longform.py` | ASR concurrency scaling on LongLibriHeavy 30/60 s and Meanwhile (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
+
+## SocialOmni
+
+SocialOmni has two levels. Level 1 contains 2,000 four-choice speaker
+attribution items. Level 2 classifies whether a target participant should speak
+at one annotated time, using only the re-encoded audio-video prefix ending at
+that time, and evaluates a generated continuation on gold-positive states.
+Neither model prompt receives the reference transcript or continuation.
+
+The public dataset downloader pins Hugging Face revision
+`3b76009b45090eaa54007454c93a831f3cc8e1e6`.
+
+```bash
+python -m benchmarks.dataset.prepare \
+    --dataset socialomni --local-dir /path/to/socialomni
+```
+
+The judge configuration contains exactly the fixed names `gpt-4o`,
+`gemini-2.5-pro`, and `qwen3-omni`. Each entry declares an OpenAI-compatible
+endpoint, the environment variable holding its API key, and a concurrency
+limit. The output records the environment variable name, never its value. Start
+from `configs/socialomni_judges.example.json`.
+
+```bash
+# Deterministic smoke set: both Level 1 visibility strata and Level 2 YES/NO.
+python -m benchmarks.eval.benchmark_omni_socialomni \
+    --dataset-root /path/to/socialomni --model qwen3-omni \
+    --level both --mini --judge-config /path/to/judges.json
+
+# All 2,000 Level 1 items.
+python -m benchmarks.eval.benchmark_omni_socialomni \
+    --dataset-root /path/to/socialomni --model qwen3-omni \
+    --level level1
+
+# All 209 maintained Level 2 items; also emits the first-200 paper view.
+python -m benchmarks.eval.benchmark_omni_socialomni \
+    --dataset-root /path/to/socialomni --model qwen3-omni \
+    --level level2 --judge-config /path/to/judges.json \
+    --prefix-cache-dir /path/to/socialomni-prefixes
+```
+
+Level 1 reports accuracy, four-position macro-F1, both visibility strata, and
+their descriptive accuracy gap. Level 2 reports classification metrics plus
+four response quantities: `QGold` is the three-judge mean after forced
+generation on every gold-positive state; `QEns` is response quality conditional
+on a correct YES decision and a non-empty response; `Cov+` is the fraction of
+gold-positive states meeting that condition; and `QEns_joint` is
+`Cov+ * QEns`. All three scores in `{0, 25, 50, 75, 100}` are mandatory for
+every non-empty eligible response. A judge failure makes the run incomplete.
+
+Each run writes one JSON file containing its configuration, environment,
+per-sample records, failures, performance summary, and paper metrics. Level 2
+runs all 209 maintained items and derives the source-order first-200 paper view
+from those same records. A model error or unparseable answer remains in the
+fixed denominator. An invalid or missing judge score makes the run incomplete;
+the benchmark never substitutes a two-judge mean. Latency percentiles and
+throughput are engineering diagnostics, not SocialOmni paper metrics. Before
+timing either level, the benchmark sends one warmup request per configured
+concurrent worker by repeating the first sample.
+The result records whether the local metadata matches the pinned revision. This
+is a metadata identity check; local media files are validated as samples are
+loaded, but are not hashed in full at startup.
 
 The two `*_seedtts.py` scripts merge the previous `benchmark_*_tts_speed.py`
 and `voice_clone_*_wer.py` pairs into a single two-phase pipeline: phase 1
@@ -351,10 +421,12 @@ python -m benchmarks.dataset.prepare --dataset mmar          # MMAR metadata + a
 python -m benchmarks.dataset.prepare --dataset videomme-ci-50  # Video-MME CI subset
 python -m benchmarks.dataset.prepare --dataset videomme      # full Video-MME
 python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI subset
+python -m benchmarks.dataset.prepare --dataset socialomni --local-dir /path/to/socialomni
 ```
 
-All datasets are pre-warmed into the default HuggingFace cache via
-`datasets.load_dataset(repo_id)`.  SeedTTS Arrow repos stage audio to
+Most datasets are pre-warmed into the default Hugging Face cache via
+`datasets.load_dataset(repo_id)`. SocialOmni is materialized with its media at
+the requested `--local-dir`. SeedTTS Arrow repos stage audio to
 process-local tempfiles at load time; no manual `--local-dir` step is needed.
 
 Video-AMME is generated from the Video-MME CI subset by moving the

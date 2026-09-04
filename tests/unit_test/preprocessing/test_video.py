@@ -78,7 +78,8 @@ def test_extract_audio_from_path_returns_none_without_audio(monkeypatch) -> None
 def test_extract_audio_from_path_surfaces_decode_failure(monkeypatch) -> None:
     class Container:
         def __init__(self) -> None:
-            self.streams = [SimpleNamespace(type="audio", index=0)]
+            self.audio_stream = SimpleNamespace(type="audio", index=2)
+            self.streams = [SimpleNamespace(type="video", index=0), self.audio_stream]
 
         def __enter__(self):
             return self
@@ -86,8 +87,8 @@ def test_extract_audio_from_path_surfaces_decode_failure(monkeypatch) -> None:
         def __exit__(self, *_args):
             return None
 
-        def decode(self, *, audio):
-            assert audio == 0
+        def decode(self, stream):
+            assert stream is self.audio_stream
             raise RuntimeError("broken stream")
 
     monkeypatch.setattr(video.av, "open", lambda _path: Container())

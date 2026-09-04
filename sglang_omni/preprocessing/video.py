@@ -305,7 +305,7 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
                 rate=target_sr,
             )
             chunks: list[np.ndarray] = []
-            for frame in container.decode(audio=0):
+            for frame in container.decode(audio_stream):
                 for resampled in resampler.resample(frame):
                     chunks.append(resampled.to_ndarray().reshape(-1))
             for resampled in resampler.resample(None):
