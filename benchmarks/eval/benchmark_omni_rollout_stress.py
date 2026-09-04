@@ -21,6 +21,15 @@ with audio output enabled; pass ``--text-only`` for a text-only prompt or
 ``--prompt-override`` to supply the text. Results are written to
 ``<output-dir>/rollout_stress_results.json``; pass ``--no-profile`` to skip the
 server-side event profiler.
+
+Sampling: ``--temperature`` is always sent (default 0.8). For non-greedy
+runs (temperature != 0), when none of ``--top-p`` / ``--top-k`` / ``--min-p``
+is given, requests use the agreed non-greedy A/B profile (top_p 0.8,
+top_k 20, min_p 0); setting any of them sends exactly the flags you set and
+omits the rest (server defaults apply). At ``--temperature 0`` the profile
+is never filled in: the sampler takes the greedy ``torch.argmax`` path and
+never invokes the configured ``sampling_backend``, so greedy runs cannot
+observe sampling-backend changes (issue #1040).
 """
 
 from __future__ import annotations
@@ -49,6 +58,17 @@ def _build_base_url(args: argparse.Namespace) -> str:
     return args.base_url or f"http://{args.host}:{args.port}"
 
 
+def _apply_sampling_profile(args: argparse.Namespace) -> None:
+    """Fall back to the agreed non-greedy A/B profile when no sampling flag
+    is given; flags set on the command line are sent as-is (unset ones
+    omitted from the request). Greedy runs (``--temperature 0``) never fill
+    in the profile — the greedy path ignores these fields anyway."""
+    if args.temperature == 0:
+        return
+    if args.top_p is None and args.top_k is None and args.min_p is None:
+        args.top_p, args.top_k, args.min_p = 0.8, 20, 0.0
+
+
 def _parse_counts(raw: str) -> list[int]:
     counts = [int(value.strip()) for value in raw.split(",") if value.strip()]
     if not counts or any(count <= 0 for count in counts):
@@ -73,6 +93,9 @@ def _make_rollout_send_fn(
     rollout_group_id: str,
     max_tokens: int,
     temperature: float,
+    top_p: float | None,
+    top_k: int | None,
+    min_p: float | None,
     enable_audio: bool,
     talker_max_new_tokens: int | None,
 ) -> Any:
@@ -97,6 +120,12 @@ def _make_rollout_send_fn(
             "stream": False,
             "user": rollout_group_id,
         }
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if top_k is not None:
+            payload["top_k"] = top_k
+        if min_p is not None:
+            payload["min_p"] = min_p
         if enable_audio:
             payload["audio"] = {"format": "wav"}
         if talker_max_new_tokens is not None:
@@ -198,6 +227,7 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
             f"sample_index={args.sample_index} unavailable; loaded {len(samples)}"
         )
     base_sample = samples[args.sample_index]
+    _apply_sampling_profile(args)
     rollout_group_id = args.rollout_group_id or f"rollout:{base_sample.sample_id}"
     run_id = args.profile_run_id or f"rollout-stress-{int(time.time())}"
     event_dir = str(Path(args.profile_event_dir or (output_dir / "events")).resolve())
@@ -224,6 +254,9 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
                     rollout_group_id=rollout_group_id,
                     max_tokens=args.max_tokens,
                     temperature=args.temperature,
+                    top_p=args.top_p,
+                    top_k=args.top_k,
+                    min_p=args.min_p,
                     enable_audio=args.enable_audio,
                     talker_max_new_tokens=args.talker_max_new_tokens,
                 )
@@ -275,6 +308,9 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
             "rollout_counts": args.rollout_counts,
             "max_tokens": args.max_tokens,
             "temperature": args.temperature,
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "min_p": args.min_p,
             "enable_audio": args.enable_audio,
             "talker_max_new_tokens": args.talker_max_new_tokens,
             "profile_run_id": run_id,
@@ -313,6 +349,9 @@ def main() -> None:
     parser.add_argument("--rollout-group-id", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--min-p", type=float, default=None)
     parser.add_argument("--text-only", dest="enable_audio", action="store_false")
     parser.set_defaults(enable_audio=True)
     parser.add_argument("--talker-max-new-tokens", type=int, default=None)
