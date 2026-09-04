@@ -126,6 +126,7 @@ class MiniMaxMusic3AcousticDecoder:
         compile_acoustic: bool = True,
         breakable_cuda_graph: bool = False,
         breakable_cuda_graph_min_free_gb: float | None = None,
+        fp32_flex_attention: bool = False,
         cache_dit_fn_compute_blocks: int = 2,
         cache_dit_bn_compute_blocks: int = 2,
         cache_dit_max_warmup_steps: int = 4,
@@ -158,6 +159,7 @@ class MiniMaxMusic3AcousticDecoder:
         self.attention_backend = attention_backend.strip().lower()
         self.cache_dit = _boolean("cache_dit", cache_dit)
         self.compile_acoustic = _boolean("compile_acoustic", compile_acoustic)
+        self.fp32_flex_attention = _boolean("fp32_flex_attention", fp32_flex_attention)
         self.breakable_cuda_graph_requested = _boolean(
             "breakable_cuda_graph", breakable_cuda_graph
         )
@@ -196,7 +198,7 @@ class MiniMaxMusic3AcousticDecoder:
             f"MiniMax Music 3 PyTorch DIT/DAV loaded device={self.device} dtype={self.dtype} dit_parameters={sum((parameter.numel() for parameter in self.dit.parameters()))} dav_parameters={sum((parameter.numel() for parameter in self.dav.parameters()))} folded_weight_norms={removed_weight_norms} elapsed={time.perf_counter() - load_started:.1f}s"
         )
         logger.info(
-            f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
+            f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} fp32_flex_attention={self.fp32_flex_attention} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
         )
 
     def _build_dit(
@@ -220,6 +222,7 @@ class MiniMaxMusic3AcousticDecoder:
             self.dit = MiniMaxMusic3DIT(
                 compute_dtype=self.dtype,
                 attention_backend=self.attention_backend,
+                fp32_flex_attention=self.fp32_flex_attention,
             )
         self.dit.load_state_dict(state, strict=True, assign=True)
         del state

@@ -25,6 +25,7 @@ from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_c
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.nn.attention.flex_attention import flex_attention
 
 from .constants import AR_HIDDEN_SIZE, DEFAULT_DIT_CFG_SCALE, DEFAULT_DIT_STEPS
 
@@ -104,12 +105,22 @@ class Attention(nn.Module):
         dim_heads: int,
         compute_dtype: torch.dtype,
         attention_backend: str,
+        fp32_flex_attention: bool = False,
     ) -> None:
         super().__init__()
         self.num_heads = dim // dim_heads
         self.dim_heads = dim_heads
         self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
         self.to_out = nn.Linear(dim, dim, bias=False)
+        self.fp32_flex_attention = fp32_flex_attention
+        if fp32_flex_attention and (
+            compute_dtype is not torch.float32
+            or attention_backend.strip().lower() != "torch_sdpa"
+        ):
+            raise ValueError(
+                "MiniMax Music 3 fp32_flex_attention requires "
+                "dtype=float32 and attention_backend=torch_sdpa"
+            )
         resolved_backend = _resolve_attention_backend(attention_backend)
         selected_backend = resolved_backend or AttentionBackendEnum.FA
         supported_backends = None if resolved_backend is None else {resolved_backend}
@@ -140,11 +151,14 @@ class Attention(nn.Module):
         v = v.reshape(bsz, seq, self.num_heads, self.dim_heads).transpose(1, 2)
         q = _apply_rope(q, rope_cos, rope_sin)
         k = _apply_rope(k, rope_cos, rope_sin)
-        out = self.backend(
-            q.transpose(1, 2),
-            k.transpose(1, 2),
-            v.transpose(1, 2),
-        )
+        if self.fp32_flex_attention:
+            out = flex_attention(q, k, v).transpose(1, 2)
+        else:
+            out = self.backend(
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
+            )
         out = out.contiguous().reshape(bsz, seq, dim)
         return self.to_out(out)
 
@@ -180,6 +194,7 @@ class TransformerBlock(nn.Module):
         inner_dim: int,
         compute_dtype: torch.dtype,
         attention_backend: str,
+        fp32_flex_attention: bool,
     ) -> None:
         super().__init__()
         self.pre_norm = LayerNorm(dim)
@@ -188,6 +203,7 @@ class TransformerBlock(nn.Module):
             dim_heads=dim_heads,
             compute_dtype=compute_dtype,
             attention_backend=attention_backend,
+            fp32_flex_attention=fp32_flex_attention,
         )
         self.ff_norm = LayerNorm(dim)
         self.ff = FeedForward(dim, inner_dim)
@@ -199,7 +215,13 @@ class TransformerBlock(nn.Module):
 
 
 class ContinuousTransformer(nn.Module):
-    def __init__(self, *, compute_dtype: torch.dtype, attention_backend: str) -> None:
+    def __init__(
+        self,
+        *,
+        compute_dtype: torch.dtype,
+        attention_backend: str,
+        fp32_flex_attention: bool,
+    ) -> None:
         super().__init__()
         self.project_in = nn.Linear(2304, 2048, bias=False)
         self.project_out = nn.Linear(2048, 128, bias=False)
@@ -215,6 +237,7 @@ class ContinuousTransformer(nn.Module):
                     inner_dim=8192,
                     compute_dtype=compute_dtype,
                     attention_backend=attention_backend,
+                    fp32_flex_attention=fp32_flex_attention,
                 )
                 for _ in range(36)
             ]
@@ -246,11 +269,18 @@ class ContinuousTransformer(nn.Module):
 class DiffusionTransformer(nn.Module):
     """The checkpointed diffusion_transformer wrapper."""
 
-    def __init__(self, *, compute_dtype: torch.dtype, attention_backend: str) -> None:
+    def __init__(
+        self,
+        *,
+        compute_dtype: torch.dtype,
+        attention_backend: str,
+        fp32_flex_attention: bool,
+    ) -> None:
         super().__init__()
         self.transformer = ContinuousTransformer(
             compute_dtype=compute_dtype,
             attention_backend=attention_backend,
+            fp32_flex_attention=fp32_flex_attention,
         )
         self.timestep_features = FourierFeatures(1, 256)
         self.to_timestep_embed = nn.Sequential(
@@ -293,6 +323,7 @@ class MiniMaxMusic3DIT(nn.Module):
         *,
         compute_dtype: torch.dtype = torch.float32,
         attention_backend: str = "torch_sdpa",
+        fp32_flex_attention: bool = False,
     ) -> None:
         super().__init__()
         self.latent_conditioners = nn.Sequential(
@@ -301,6 +332,7 @@ class MiniMaxMusic3DIT(nn.Module):
         self.diffusion_transformer = DiffusionTransformer(
             compute_dtype=compute_dtype,
             attention_backend=attention_backend,
+            fp32_flex_attention=fp32_flex_attention,
         )
         self.cond_layer_logits = nn.Parameter(torch.empty(8))
         self.cond_layer_scale = nn.Parameter(torch.empty(1))

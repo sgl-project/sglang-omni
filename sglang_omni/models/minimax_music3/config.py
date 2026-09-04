@@ -41,6 +41,7 @@ class DitDavFactoryArgs(FactoryArgs):
     cache_dit: bool | None = None
     compile_acoustic: bool | None = None
     breakable_cuda_graph: bool | None = None
+    fp32_flex_attention: bool | None = None
 
 
 class DitDavStageConfig(StageConfig):
@@ -76,6 +77,7 @@ def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
                 cache_dit=False,
                 compile_acoustic=True,
                 breakable_cuda_graph=False,
+                fp32_flex_attention=False,
             ),
             gpu=acoustic_gpu,
             terminal=True,
