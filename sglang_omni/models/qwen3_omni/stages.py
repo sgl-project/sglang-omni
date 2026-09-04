@@ -1035,6 +1035,10 @@ def create_sglang_thinker_executor_from_config(
         sampling_backend="pytorch",
     )
     overrides["tp_size"] = tp_size
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.enable_thinker_decode_graph():
+        overrides.setdefault("disable_decode_cuda_graph", True)
     has_explicit_colocated_mem_fraction = (
         total_gpu_memory_fraction is not None
         and overrides.get("mem_fraction_static") is not None
@@ -1061,13 +1065,24 @@ def create_sglang_thinker_executor_from_config(
         server_args=server_args,
     )
     if total_gpu_memory_fraction is None:
-        encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
-            server_args,
-            has_explicit_mem_fraction_static=(
-                memory_contract.mem_fraction_static_pinned
-            ),
-            encoder_mem_reserve=encoder_mem_reserve,
-        )
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        # Note (Jiaxin Deng): under a byte budget the KV configurator ignores
+        # mem_fraction_static, so an encoder reserve would be a silent no-op.
+        if peek_stage_kv_cache_bytes() is not None:
+            logger.info(
+                "thinker declares engine.kv_cache_bytes; skipping the "
+                f"encoder_mem_reserve={encoder_mem_reserve} fraction adjustment"
+            )
+            encoder_reserve_applied = False
+        else:
+            encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
+                server_args,
+                has_explicit_mem_fraction_static=(
+                    memory_contract.mem_fraction_static_pinned
+                ),
+                encoder_mem_reserve=encoder_mem_reserve,
+            )
         effective_total_gpu_memory_fraction = total_gpu_memory_fraction
         applied_encoder_reserve = (
             encoder_mem_reserve if encoder_reserve_applied else 0.0
@@ -1153,6 +1168,12 @@ def create_talker_ar_executor_from_config(
         disable_cuda_graph=False,
         sampling_backend="pytorch",
     )
+    from sglang_omni.platforms import current_platform
+
+    # A platform may decline the default above; the caller's setting still wins.
+    stated_disable = "disable_cuda_graph" in (server_args_overrides or {})
+    if not stated_disable and not current_platform.enable_talker_graph():
+        overrides["disable_cuda_graph"] = True
     overrides["tp_size"] = tp_size
     _apply_colocated_ar_memory_contract(
         overrides,

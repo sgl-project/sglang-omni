@@ -426,6 +426,144 @@ def test_preprocess_and_build_request_share_prepared_state(
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
 
 
+def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.fun_cosyvoice3 import stages
+
+    class _TrackingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self._attempt_lock = threading.Lock()
+            self.attempt_count = 0
+            self.second_attempted = threading.Event()
+
+        def __enter__(self) -> _TrackingLock:
+            with self._attempt_lock:
+                self.attempt_count += 1
+                if self.attempt_count == 2:
+                    self.second_attempted.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+            del exc_type, exc, traceback
+            self._lock.release()
+
+    tracking_lock = _TrackingLock()
+    monkeypatch.setattr(
+        request_builders,
+        "_PREPROCESSING_FINALIZE_LOCK",
+        tracking_lock,
+    )
+    reference_barrier = threading.Barrier(2)
+    reference_inputs: list[Any] = []
+    reference_lock = threading.Lock()
+
+    def encode_one(
+        hook: _CosyVoice3ReferenceEncodeHook,
+        item: Any,
+    ) -> Any:
+        del hook
+        with reference_lock:
+            reference_inputs.append(item.ref_audio)
+        try:
+            reference_barrier.wait(timeout=2.0)
+        except threading.BrokenBarrierError as exc:
+            raise AssertionError(
+                "different Fun-CosyVoice3 references did not enter encoding concurrently"
+            ) from exc
+        return request_builders._CosyVoice3ReferenceArtifact(
+            llm_prompt_speech_token=torch.tensor([[40]], dtype=torch.int32),
+            flow_prompt_speech_token=torch.tensor([[40]], dtype=torch.int32),
+            flow_prompt_speech_feat=torch.ones(1, 2, 80),
+            flow_embedding=torch.ones(1, 192),
+        )
+
+    monkeypatch.setattr(
+        request_builders._CosyVoice3ReferenceEncodeHook,
+        "encode_one",
+        encode_one,
+    )
+
+    model = _FakeModel()
+    original_text_embed_tokens = model.text_embed_tokens
+    finalization_started = threading.Event()
+    finalization_lock = threading.Lock()
+    active_finalizations = 0
+    max_active_finalizations = 0
+
+    def text_embed_tokens(tokens: torch.Tensor) -> torch.Tensor:
+        nonlocal active_finalizations, max_active_finalizations
+        with finalization_lock:
+            active_finalizations += 1
+            max_active_finalizations = max(
+                max_active_finalizations, active_finalizations
+            )
+        finalization_started.set()
+        try:
+            if not tracking_lock.second_attempted.wait(timeout=2.0):
+                raise AssertionError(
+                    "second preprocessing worker did not attempt finalization"
+                )
+            return original_text_embed_tokens(tokens)
+        finally:
+            with finalization_lock:
+                active_finalizations -= 1
+
+    model.text_embed_tokens = text_embed_tokens
+    set_cosyvoice3_preprocessing_context(
+        model=model,
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_FakeSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+    )
+
+    request_ids = {"req-reference-a", "req-reference-b"}
+    scheduler = stages.create_preprocessing_executor("model")
+    scheduler_thread = threading.Thread(target=scheduler.start, daemon=True)
+    scheduler_thread.start()
+    outputs = []
+    try:
+        for request_id, reference in (
+            ("req-reference-a", b"reference-a"),
+            ("req-reference-b", b"reference-b"),
+        ):
+            scheduler.inbox.put(
+                IncomingMessage(
+                    request_id=request_id,
+                    type="new_request",
+                    data=_payload(
+                        {"text": "hello", "ref_audio": reference},
+                        request_id=request_id,
+                    ),
+                )
+            )
+
+        assert finalization_started.wait(
+            timeout=2.0
+        ), "preprocessing did not reach finalization after reference encoding"
+        assert tracking_lock.second_attempted.wait(
+            timeout=2.0
+        ), "both preprocessing workers did not reach the finalization boundary"
+        outputs = [scheduler.outbox.get(timeout=3.0) for _ in request_ids]
+
+        assert {output.request_id for output in outputs} == request_ids
+        assert all(
+            output.type == "result" for output in outputs
+        ), f"preprocessing errors: {outputs!r}"
+        assert set(reference_inputs) == {b"reference-a", b"reference-b"}
+        assert tracking_lock.attempt_count == 2
+        assert max_active_finalizations == 1
+    finally:
+        tracking_lock.second_attempted.set()
+        scheduler.stop()
+        scheduler_thread.join(timeout=3.0)
+        for request_id in request_ids:
+            cleanup_prepared_cosyvoice3_request(request_id)
+        assert not scheduler_thread.is_alive()
+
+
 def test_build_request_derives_generation_length_contract_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

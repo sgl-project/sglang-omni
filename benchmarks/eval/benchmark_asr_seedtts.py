@@ -15,8 +15,11 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset seedtts
 
     2. Pin and launch Qwen3-ASR:
-    MODEL_PATH=$(hf download Qwen/Qwen3-ASR-1.7B \
-        --revision 7278e1e70fe206f11671096ffdd38061171dd6e5)
+    MODEL_PATH="$(
+      hf download Qwen/Qwen3-ASR-1.7B \
+        --revision 7278e1e70fe206f11671096ffdd38061171dd6e5 \
+        --quiet
+    )"
     sgl-omni serve \
         --model-path "${MODEL_PATH}" \
         --model-name Qwen/Qwen3-ASR-1.7B \

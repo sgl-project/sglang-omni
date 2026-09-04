@@ -496,14 +496,30 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
+    total_gpu_memory_fraction: float | None = None,
+    process_total_gpu_memory_fraction: float | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
-    return MossTtsEngineBuilder().build(
+    overrides = dict(server_args_overrides or {})
+    # Note (Jiaxin Deng): a declared stage fraction only reserves the card on paper, so
+    # the AR engine has to be told about it or it profiles against the whole GPU and the
+    # vocoder process has nothing left to claim. The process total is the right
+    # denominator when the group hosts more than this one GPU stage.
+    engine_fraction = (
+        process_total_gpu_memory_fraction
+        if process_total_gpu_memory_fraction is not None
+        else total_gpu_memory_fraction
+    )
+    if engine_fraction is not None and "mem_fraction_static" not in overrides:
+        overrides["mem_fraction_static"] = float(
+            total_gpu_memory_fraction or engine_fraction
+        )
+    return MossTtsEngineBuilder(total_gpu_memory_fraction=engine_fraction).build(
         model_path,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides=overrides or None,
     )
 
 

@@ -71,7 +71,8 @@ The available voices ship inside the checkpoint as `voice_embedding/*.pt` files.
 from your downloaded snapshot:
 
 ```bash
-ls "$(hf download mistralai/Voxtral-4B-TTS-2603)/voice_embedding"
+MODEL_PATH="$(hf download mistralai/Voxtral-4B-TTS-2603 --quiet)"
+ls "${MODEL_PATH}/voice_embedding"
 ```
 
 #### Python

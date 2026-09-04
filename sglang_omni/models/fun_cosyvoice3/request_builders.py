@@ -333,6 +333,7 @@ class CosyVoice3PreprocessingContext:
 _PREPROCESSING_CONTEXT: CosyVoice3PreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, CosyVoice3PreparedRequest] = {}
 _PREPARED_REQUESTS_LOCK = threading.Lock()
+_PREPROCESSING_FINALIZE_LOCK = threading.Lock()
 
 
 def set_cosyvoice3_preprocessing_context(
@@ -614,13 +615,12 @@ def build_embedding_cache_key_ids(input_embeds: torch.Tensor) -> list[int]:
 
 
 def _prepare_cosyvoice3_request(
-    payload: StagePayload,
     *,
     model: Any,
     tokenizer: CosyVoice3Tokenizer,
-    reference_service: ReferenceEncodeService,
+    state: FunCosyVoice3State,
+    reference_artifact: _CosyVoice3ReferenceArtifact | None,
 ) -> CosyVoice3PreparedRequest:
-    state = build_cosyvoice3_state(payload)
     gen_kwargs = state.generation_kwargs
     device = next(model.parameters()).device
     dtype = next(model.parameters()).dtype
@@ -636,10 +636,8 @@ def _prepare_cosyvoice3_request(
         text_embed = model.text_embed_tokens(text_token)
 
     if state.ref_audio is not None:
-        reference_artifact = reference_service.get_or_encode(
-            state.ref_audio,
-            desc="Fun-CosyVoice3 reference conditioning",
-        )
+        if reference_artifact is None:
+            raise RuntimeError("Fun-CosyVoice3 reference conditioning is missing")
         spk_embedding = reference_artifact.flow_embedding
         prompt_speech_token = reference_artifact.llm_prompt_speech_token
         flow_prompt_speech_token = reference_artifact.flow_prompt_speech_token
@@ -700,14 +698,21 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
     if context is None:
         raise RuntimeError("CosyVoice3 preprocessing context is not initialized")
 
-    prepared = _prepare_cosyvoice3_request(
-        payload,
-        model=context.model,
-        tokenizer=context.tokenizer,
-        reference_service=context.reference_service,
-    )
-    with _PREPARED_REQUESTS_LOCK:
-        _PREPARED_REQUESTS[payload.request_id] = prepared
+    state = build_cosyvoice3_state(payload)
+    reference_artifact = None
+    if state.ref_audio is not None:
+        reference_artifact = context.reference_service.get_or_encode(
+            state.ref_audio,
+            desc="Fun-CosyVoice3 reference conditioning",
+        )
+
+    with _PREPROCESSING_FINALIZE_LOCK:
+        prepared = _prepare_cosyvoice3_request(
+            model=context.model,
+            tokenizer=context.tokenizer,
+            state=state,
+            reference_artifact=reference_artifact,
+        )
 
     prepared.state.flow_embedding = prepared.flow_embedding
     prepared.state.flow_prompt_speech_token = prepared.flow_prompt_speech_token
@@ -715,11 +720,14 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
 
     data = prepared.state.to_dict()
     data[_COSYVOICE3_PREPARED_MARKER] = payload.request_id
-    return StagePayload(
+    prepared_payload = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
         data=data,
     )
+    with _PREPARED_REQUESTS_LOCK:
+        _PREPARED_REQUESTS[payload.request_id] = prepared
+    return prepared_payload
 
 
 def build_sglang_cosyvoice3_request(

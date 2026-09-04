@@ -213,6 +213,7 @@ class OmniScheduler:
         self._shutdown_callback = shutdown_callback
         self._shutdown_lock = threading.Lock()
         self._request_admission_lock = threading.RLock()
+        self._prompt_cache_epoch = 0
         self.request_build_max_workers = max(1, int(request_build_max_workers))
         if self.request_build_max_workers > 1 and int(server_args.tp_size) > 1:
             logger.warning(
@@ -1192,6 +1193,7 @@ class OmniScheduler:
                     len(self.waiting_queue),
                 )
                 return
+            self._apply_prompt_cache_epoch(req)
             _emit_event(
                 request_id=req_id,
                 stage=None,
@@ -1207,6 +1209,17 @@ class OmniScheduler:
         else:
             with self._request_admission_lock:
                 enqueue_if_live()
+
+    def _apply_prompt_cache_epoch(self, req: Any) -> None:
+        cache_key = getattr(req, "_omni_prompt_cache_key", None)
+        if cache_key is not None:
+            req.extra_key = f"{cache_key}:weights:{self._prompt_cache_epoch}"
+
+    def _advance_prompt_cache_epoch(self) -> None:
+        with self._request_admission_lock:
+            self._prompt_cache_epoch += 1
+            for req in self.waiting_queue:
+                self._apply_prompt_cache_epoch(req)
 
     @staticmethod
     def _normalize_req_token_arrays(req: Any) -> None:
@@ -1274,8 +1287,13 @@ class OmniScheduler:
         if required_tokens <= kv_capacity:
             return None
 
+        kv_cache_bytes = getattr(
+            getattr(self, "tp_worker", None), "kv_cache_bytes", None
+        )
         mem_fraction = self.server_args.mem_fraction_static
-        if mem_fraction is not None:
+        if kv_cache_bytes is not None:
+            mem_hint = " Try raising engine.kv_cache_bytes."
+        elif mem_fraction is not None:
             mem_hint = (
                 f" Current mem_fraction_static is {mem_fraction:.3f}; try setting "
                 "--thinker-mem-fraction-static higher."
@@ -1357,6 +1375,13 @@ class OmniScheduler:
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
             return _FAILED_BATCH_RESULT
+
+    def process_batch_result(self, batch, result) -> None:
+        _Upstream.process_batch_result(self, batch, result)
+        # note (Richard Wang): cache prompt before blocking tail inserts
+        for req in batch.reqs:
+            if req.output_ids and getattr(req, "_omni_prompt_only_radix", False):
+                req.skip_radix_cache_insert = True
 
     def _stamp_batch_launch(self, batch) -> None:
         """Mirror upstream per-forward bookkeeping for custom runner paths."""
@@ -2015,6 +2040,8 @@ class OmniScheduler:
                     if keep_pause_on_failure:
                         keep_engine_paused = True
                     raise
+                if success:
+                    self._advance_prompt_cache_epoch()
                 flush_success: bool | None = None
                 if success and bool(payload.get("flush_cache", True)):
                     flush_success = self._flush_cache_after_update()
@@ -2050,16 +2077,14 @@ class OmniScheduler:
     def _admin_update_weights_from_tensor(
         self, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        with self._admin_lock:
-            success, message = self.model_worker.update_weights_from_tensor(payload)
-        return {
-            "success": bool(success),
-            "message": str(message),
-            "data": {
+        return self._run_weight_update_with_lifecycle(
+            payload,
+            self.model_worker.update_weights_from_tensor,
+            {
                 "metadata_only": payload.get("serialized_named_tensors") is None,
             },
-            "error": None if success else str(message),
-        }
+            keep_pause_on_failure=True,
+        )
 
     def _admin_update_weights_from_distributed(
         self, payload: dict[str, Any]
@@ -2646,12 +2671,150 @@ class OmniScheduler:
 def _remove_from_batch(batch: Any, request_id: str) -> None:
     if batch is None:
         return
-    remaining_reqs = []
-    for req in batch.reqs:
-        if req.rid == request_id:
-            _detach_request_data(req)
-        else:
-            remaining_reqs.append(req)
-    batch.reqs = remaining_reqs
-    if not batch.reqs:
+    remove_indices = [
+        index for index, req in enumerate(batch.reqs) if req.rid == request_id
+    ]
+    if not remove_indices:
+        return
+
+    remove_set = set(remove_indices)
+    keep_indices = [
+        index for index in range(len(batch.reqs)) if index not in remove_set
+    ]
+    for index in remove_indices:
+        _detach_request_data(batch.reqs[index])
+
+    # Note (Akazaakane): ScheduleBatch.filter_batch preserves alignment across
+    # per-request state; mutating reqs alone corrupts downstream relay indices.
+    filter_batch = getattr(batch, "filter_batch", None)
+    if not callable(filter_batch):
+        # Note (Akazaakane): Request-only test doubles lack filter_batch;
+        # production batches with row state must not silently use this fallback.
+        aligned_fields = (
+            "req_pool_indices",
+            "req_pool_indices_cpu",
+            "seq_lens",
+            "orig_seq_lens",
+            "seq_lens_cpu",
+            "sampling_info",
+        )
+        populated = [
+            field for field in aligned_fields if getattr(batch, field, None) is not None
+        ]
+        if populated:
+            raise TypeError(
+                "Row-bearing scheduler batch has no filter_batch method: "
+                f"fields={populated}"
+            )
+        batch.reqs = [batch.reqs[index] for index in keep_indices]
+        if not batch.reqs:
+            batch.batch_is_full = False
+        return
+
+    filter_batch(keep_indices=keep_indices)
+    if not keep_indices:
+        # Note (Akazaakane): Upstream leaves empty-batch tensors stale because
+        # callers discard the batch, but Omni retains aliases that require alignment.
+        _clear_empty_schedule_batch_rows(batch)
         batch.batch_is_full = False
+    _validate_schedule_batch_row_alignment(batch)
+
+
+def _clear_empty_schedule_batch_rows(batch: Any) -> None:
+    tensor_fields = (
+        "req_pool_indices",
+        "req_pool_indices_cpu",
+        "seq_lens",
+        "orig_seq_lens",
+        "seq_lens_cpu",
+        "input_ids",
+        "prefill_input_ids_cpu",
+        "input_embeds",
+        "replace_embeds",
+        "replace_positions",
+        "ne_skip_token_table_update",
+        "encoder_lens",
+        "encoder_out_cache_loc",
+        "extend_input_logprob_token_ids",
+    )
+    for field in tensor_fields:
+        value = getattr(batch, field, None)
+        if isinstance(value, torch.Tensor):
+            setattr(batch, field, value[:0])
+
+    list_fields = (
+        "multimodal_inputs",
+        "top_logprobs_nums",
+        "token_ids_logprobs",
+        "encoder_cached",
+        "encoder_lens_cpu",
+        "prefix_lens",
+        "extend_lens",
+        "extend_logprob_start_lens",
+    )
+    for field in list_fields:
+        if isinstance(getattr(batch, field, None), list):
+            setattr(batch, field, [])
+
+    sampling_info = getattr(batch, "sampling_info", None)
+    if sampling_info is not None:
+        device = batch.req_pool_indices.device
+        empty_device_indices = torch.empty(0, dtype=torch.long, device=device)
+        sampling_info.filter_batch([], empty_device_indices)
+
+    spec_info = getattr(batch, "spec_info", None)
+    if spec_info is not None:
+        device = batch.req_pool_indices.device
+        empty_device_indices = torch.empty(0, dtype=torch.long, device=device)
+        spec_info.filter_batch(
+            new_indices=empty_device_indices,
+            has_been_filtered=False,
+            new_indices_cpu=[],
+        )
+
+    batch.out_cache_loc = None
+    batch.mamba_track_indices = None
+    batch.mamba_track_mask = None
+    batch.mamba_track_seqlens = None
+    batch.mamba_cow_src_indices = None
+    batch.mamba_cow_dst_indices = None
+    batch.mamba_clear_indices = None
+    batch.seq_lens_sum = 0
+    if batch.extend_num_tokens is not None:
+        batch.extend_num_tokens = 0
+
+
+def _validate_schedule_batch_row_alignment(batch: Any) -> None:
+    expected = len(batch.reqs)
+    row_fields = (
+        "req_pool_indices",
+        "req_pool_indices_cpu",
+        "seq_lens",
+        "orig_seq_lens",
+        "seq_lens_cpu",
+        "multimodal_inputs",
+        "top_logprobs_nums",
+        "token_ids_logprobs",
+        "encoder_cached",
+        "encoder_lens",
+        "encoder_lens_cpu",
+    )
+    mismatches = {}
+    for field in row_fields:
+        value = getattr(batch, field, None)
+        if value is not None and len(value) != expected:
+            mismatches[field] = len(value)
+
+    forward_mode = getattr(batch, "forward_mode", None)
+    is_decode = forward_mode is not None and forward_mode.is_decode()
+    if is_decode:
+        for field in ("input_ids", "input_embeds"):
+            value = getattr(batch, field, None)
+            if value is not None and len(value) != expected:
+                mismatches[field] = len(value)
+
+    if mismatches:
+        raise RuntimeError(
+            "ScheduleBatch row alignment violated after request removal: "
+            f"requests={expected}, fields={mismatches}"
+        )

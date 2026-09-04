@@ -9,14 +9,14 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
-from sglang_omni_router.config import RouterConfig, WorkerConfig
-from sglang_omni_router.data_plane import (
+from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+from sglang_omni_router.python.data_plane import (
     _MAX_FORWARD_BODY_BYTES,
     DataPlaneWorkerView,
     create_data_plane_app,
 )
-from sglang_omni_router.snapshot import SnapshotWorker, SnapshotWriter
-from sglang_omni_router.worker import worker_id_from_url
+from sglang_omni_router.python.snapshot import SnapshotWorker, SnapshotWriter
+from sglang_omni_router.python.worker import worker_id_from_url
 
 
 def _config(failure_threshold: int = 1) -> RouterConfig:
@@ -93,7 +93,7 @@ def test_forwarded_admin_routes_publish_the_single_process_schema_identity(
     # Note (Jiaxin Deng): changing only --router-processes must not break generated
     # clients: the forwarded admin routes keep the single-process operation ids, the
     # worker_id path parameter name, and the Authorization parameter/security shape
-    from sglang_omni_router.app import create_app
+    from sglang_omni_router.python.app import create_app
 
     single = create_app(
         _config(),
@@ -452,8 +452,8 @@ def test_a_snapshot_apply_wakes_the_heartbeat_without_a_full_period(
 
 
 def test_cp_keepalive_republishes_without_state_changes(tmp_path: Path) -> None:
-    from sglang_omni_router.control_plane import create_control_plane_app
-    from sglang_omni_router.snapshot import SnapshotReader
+    from sglang_omni_router.python.control_plane import create_control_plane_app
+    from sglang_omni_router.python.snapshot import SnapshotReader
 
     snapshot_path = str(tmp_path / "cp.json")
     client = httpx.AsyncClient(
@@ -490,7 +490,7 @@ class _CPRecorder:
 
 
 def _dp_app_forwarding_to_cp(tmp_path: Path, cp: _CPRecorder, **kwargs):
-    from sglang_omni_router.data_plane import create_data_plane_app
+    from sglang_omni_router.python.data_plane import create_data_plane_app
 
     upstream = _Recorder()
     client = httpx.AsyncClient(transport=httpx.MockTransport(upstream.handler))
@@ -730,7 +730,7 @@ def test_dp_reregisters_on_428_instead_of_fencing(tmp_path: Path) -> None:
 def test_dp_fails_closed_after_persistent_registration_rejection(
     tmp_path: Path,
 ) -> None:
-    from sglang_omni_router import data_plane as dp_module
+    from sglang_omni_router.python import data_plane as dp_module
 
     upstream = _Recorder()
     internal = _Recorder(status_for={"/internal/register": 403})
@@ -802,7 +802,7 @@ def test_dp_answers_cors_preflight_like_the_single_process_app(
 
 
 def test_dp_client_limits_split_keepalives_across_processes() -> None:
-    from sglang_omni_router.data_plane import dp_client_limits
+    from sglang_omni_router.python.data_plane import dp_client_limits
 
     config = RouterConfig(
         workers=[WorkerConfig(url="http://worker-a:8101")],
@@ -818,7 +818,10 @@ def test_dp_client_limits_split_keepalives_across_processes() -> None:
 
 
 def test_dp_uses_the_injected_shared_admission(tmp_path: Path) -> None:
-    from sglang_omni_router.admission_shm import SharedAdmission, admission_file_size
+    from sglang_omni_router.python.admission_shm import (
+        SharedAdmission,
+        admission_file_size,
+    )
 
     buf = bytearray(admission_file_size(2))
     sibling = SharedAdmission(
@@ -855,7 +858,7 @@ def test_dp_uses_the_injected_shared_admission(tmp_path: Path) -> None:
 
 
 def test_selector_rr_offset_staggers_first_picks() -> None:
-    from sglang_omni_router.selector import WorkerSelector
+    from sglang_omni_router.python.selector import WorkerSelector
 
     view = DataPlaneWorkerView()
 
@@ -1039,7 +1042,7 @@ def test_control_traffic_survives_a_saturated_forwarding_pool(tmp_path: Path) ->
 def test_forwarded_admin_requests_are_bounded_in_concurrency(tmp_path: Path) -> None:
     # Note (Jiaxin Deng): unauthenticated callers reach this path, so an
     # unbounded number of them must not each hold a buffered body.
-    from sglang_omni_router.data_plane import _MAX_CONCURRENT_FORWARDS
+    from sglang_omni_router.python.data_plane import _MAX_CONCURRENT_FORWARDS
 
     async def _cp_handler(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(1.0)

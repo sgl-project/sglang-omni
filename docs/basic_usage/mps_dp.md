@@ -8,6 +8,105 @@ Same-GPU data parallelism runs several complete serving replicas on one GPU and 
 
 ![Multiple host chains plus CUDA MPS filling the idle GPU](../_static/image/same-gpu-dp-mps.svg)
 
+## Native runtime support (`--mps`)
+
+The runtime can manage MPS itself for the processes of **one pipeline**. When a
+pipeline colocates two or more single-GPU stage processes on one GPU (for
+example a frontend process next to the generation process, or process-level
+replicas), pass `--mps auto`:
+
+```bash
+sgl-omni serve --model-path <model> --mps auto
+```
+
+Modes (`--mps` on the CLI or `mps:` in the pipeline config; default `off`):
+
+* `off`: MPS is never touched.
+* `auto`: MPS is enabled on every GPU that hosts two or more single-GPU,
+  non-TP CUDA processes of this pipeline. GPUs with one process and TP groups
+  run without MPS.
+* `on`: a single eligible process is enough, and an MPS-incapable platform is
+  a hard error instead of a warning. Use `on` for same-GPU data parallelism:
+  every `serve --mps on` on one GPU joins the same daemon.
+
+Both `auto` and `on` reject startup before acquiring MPS state when one process's
+resolved placement spans more than one physical GPU; use `mps=off` for that
+placement. Factory CUDA devices use the narrowed worker's local namespace:
+`cuda:0` is compatible with any single-GPU placement, while a nonzero `cuda:N`
+is excluded because narrowing a worker to one UUID makes its only valid CUDA
+ordinal `cuda:0`.
+Pipeline-edge transport remains the responsibility of the existing router and
+relay layers; it does not participate in MPS eligibility.
+
+The daemon is shared per physical GPU (keyed by device UUID): MPS merges
+kernels only for clients of one server, so the first serve creates the
+daemon, later serves join it, and the last one to leave drains the clients
+and quits it. Logical GPU ordinals are resolved once against the parent
+process's CUDA visibility and then grouped by physical UUID; `auto` counts the
+combined client processes in each physical group. Pipeline or stage
+environment defaults must not override `CUDA_VISIBLE_DEVICES` or
+`CUDA_DEVICE_ORDER` while native MPS is enabled; set them on the parent command
+instead, or use `mps=off`. Same-GPU DP is therefore just N serve commands:
+
+```bash
+sgl-omni serve --model-path <model> --mps on --mem-fraction-static 0.35 --port 8807
+sgl-omni serve --model-path <model> --mps on --mem-fraction-static 0.35 --port 8808
+```
+
+Start replicas one after another and give each an explicit memory budget
+(`--mem-fraction-static` or the stage-qualified
+`--<engine-stage>.engine.max_total_tokens`), for the same KV-sizing
+reasons described under the script recipe below. Route traffic with the
+[Omni Router](omni_router.md).
+
+Process-level replicas can size their pools in bytes instead, with
+`engine.kv_cache_bytes` per stage and `total_reserve_bytes` for the replica's
+full footprint. The budgets are then checked against the card before any
+replica is spawned: colocation requires a declared footprint, the summed
+reserves and fractions must fit the card, and the summed KV pools alone must
+too. `engine.kv_cache_bytes` and `engine.max_total_tokens` are mutually
+exclusive on one stage, since the lower token cap would silently shrink the
+byte-derived pool.
+
+The runtime owns the full lifecycle. Every managed process is verified against
+the daemon's client list before serving starts, because a process that misses
+the pipe directory silently falls back to time slicing. A watchdog fails the
+pipeline if daemon identity or control access is lost mid-serving. Shutdown
+re-evaluates the current client list, drains this serve's clients, and quits the
+daemon only when no other serve still owns it.
+
+If a managed worker does not exit before the shutdown timeout, the runtime
+terminates that directly owned child process and reaps it before the launcher
+exits, even when that directly owned worker is also an MPS client. It sends no
+additional signal based on an MPS snapshot or client PID, and never
+automatically signals the daemon, an unknown descendant, or a GPU-wide process
+set. Process ownership and shared MPS state are handled independently: if
+daemon identity, client ownership, or control state cannot be proved after the
+workers are gone, the owner file is marked `retained`, its lock is released,
+and the state directory is preserved. The current command then exits with a
+detailed non-zero error instead of keeping a CLI owner alive.
+
+Dirty state is never repaired automatically. A join requires the native
+`nvidia-cuda-mps-control.pid` identity, a responsive control socket, and every
+published owner lease to still be held. After a hard kill (SIGKILL, OOM kill,
+node crash), even an idle daemon or one dead co-owner makes the next start
+preserve the state and fail with owner/client details and safe cleanup guidance.
+An unlocked or retained owner blocks every later start until an operator has
+inspected and cleaned the state. Existing healthy co-owners keep serving, but
+new owners cannot join and no process retries cleanup automatically. Clean up
+and start again. A normal shutdown leaves nothing behind.
+
+Operator notes: state lives under `/tmp/sglang-omni-mps-<user>/<gpu-uuid>/`
+(`SGLANG_OMNI_MPS_STATE_ROOT` overrides it). Serves that are meant to share
+one GPU must use the same state root, or they cannot discover each other's
+daemon and will run separate MPS servers that time-slice against each other.
+The state root is created with mode `0700`; an existing root must already be a
+non-symlink directory owned by the current user with that mode. Native MPS
+rejects `CUDA_MPS_PIPE_DIRECTORY` in the parent, pipeline, or stage environment
+instead of overwriting or joining an external daemon. It likewise rejects
+`SGLANG_OMNI_WEIGHT_SHARE` in those locations: CUDA IPC weight sharing remains
+the one deployment shape that still uses `examples/mps_dp/launch.sh` below.
+
 ## Deploy
 
 The steps below are one continuous flow. We provide `examples/mps_dp/launch.sh` to manage the private MPS daemon and serving replicas for one run. It records replica processes, ports, and logs, starts replicas sequentially, verifies their KV capacity and MPS attachment, and tears down only the run it recorded. Detailed instructions are as follows:
@@ -45,7 +144,12 @@ Identical `--mem-fraction-static` flags do **not** mean identical KV capacity. `
 
 ![What same-GPU DP spends in VRAM and what it reclaims](../_static/image/same-gpu-dp-vram.svg)
 
-Memory profiling does not coordinate KV allocation across independent replica processes. For `N > 1`, the launcher therefore requires one common `max_total_tokens` value, either from the pipeline config or from `MAX_TOTAL_TOKENS`. SGLang treats this value as an upper bound; the launcher rejects startup unless every replica resolves exactly that capacity. The cap applies independently to each replica; it is not divided across the pool. It is also independent of the request-level `max_new_tokens` limit and does not distribute requests between replicas.
+Memory profiling does not coordinate KV allocation across independent replica processes. For `N > 1`, every replica must resolve the same KV capacity, which can come from either sizing knob but never both:
+
+* `engine.kv_cache_bytes` in the pipeline config sizes every replica's pool deterministically; the launcher verifies all replicas resolved the same capacity and rejects a simultaneous `MAX_TOTAL_TOKENS`, since a lower token cap would silently shrink the byte-derived pool.
+* Without a byte budget, the launcher requires one common `max_total_tokens` value, from the pipeline config or from `MAX_TOTAL_TOKENS`, and rejects startup unless every replica resolves exactly that capacity.
+
+Either cap applies independently to each replica; it is not divided across the pool. It is also independent of the request-level `max_new_tokens` limit and does not distribute requests between replicas.
 
 The H100 Higgs DP3 profile uses `100000` tokens per replica. The H200 Higgs DP8 profile uses `30000` tokens per replica, preserving GPU memory headroom for non-KV runtime allocations, including the colocated audio encoder and vocoder. These values are specific to their configurations, not universal hardware defaults. Recalculate the cap after changing the model, GPU, runtime, replica count, memory settings, or CUDA-graph settings. If a replica cannot allocate the common cap, lower it or reduce the replica count.
 
@@ -61,7 +165,7 @@ MPS should be verified carefully. Four things are easy to conflate: environment 
 
 5. **Route traffic.**
 
-For easy deployment, you can register each replica endpoint with the [Omni Router](omni_router.md). Keep the router's `--max-connections` at least as large as the total offered concurrency. The case study did not benchmark router scheduling policies, so confirm that the selected policy keeps every replica driven and meets your workload's latency and throughput requirements.
+For easy deployment, you can register each replica endpoint with the [Python Router](python_router.md). Keep the router's `--max-connections` at least as large as the total offered concurrency. The case study did not benchmark router scheduling policies, so confirm that the selected policy keeps every replica driven and meets your workload's latency and throughput requirements.
 
 6. **Tear down safely.**
 

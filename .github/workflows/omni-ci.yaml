@@ -56,7 +56,7 @@ env:
   QWEN3_TTS_MODEL_PATH: Qwen/Qwen3-TTS-12Hz-1.7B-Base
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
-  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
+  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf@972ee603a3abb40a66c802ffaa9ba0ce88742b60
   WHISPER_ASR_MODEL_PATH: openai/whisper-large-v3
 
 
@@ -70,6 +70,7 @@ jobs:
       selected_model: ${{ steps.tts.outputs.selected_model }}
       selection_digest: ${{ steps.tts.outputs.selection_digest }}
       resolved_mps_config: ${{ steps.tts.outputs.resolved_mps_config }}
+      resolved_mps_model: ${{ steps.tts.outputs.resolved_mps_model }}
       exact_sha: ${{ steps.tts.outputs.exact_sha }}
     steps:
       - name: Fetch latest PR gate state
@@ -167,33 +168,31 @@ jobs:
             selection_reason="stable_github_run_id_digest"
           fi
 
-          # Note: (Jiaxin Deng) Qwen3-TTS is gated as a single instance, so
-          # it resolves no MPS config and the MPS stage is skipped for it.
+          # Note (Jiaxin Deng): Qwen3-TTS is gated as a single instance and
+          # has no pool of its own, so stage 5 borrows moss there. Skipping it
+          # instead left the MPS path unexercised on a third of the runs.
           if [[ "${selected_model}" == "higgs" ]]; then
+            mps_model="higgs"
             resolved_config="examples/mps_dp/configs/higgs_h100_dp3.yaml"
             expected_config_cls="HiggsTtsPipelineConfig"
-          elif [[ "${selected_model}" == "moss" ]]; then
+          else
+            mps_model="moss"
             resolved_config="examples/mps_dp/configs/moss_local_h100_dp2.yaml"
             expected_config_cls="MossTTSLocalPipelineConfig"
-          else
-            resolved_config=""
-            expected_config_cls=""
           fi
-          if [[ -n "${resolved_config}" && ! -f "${resolved_config}" ]]; then
-            echo "::error::MPS config is missing for ${selected_model}: ${resolved_config}"
+          if [[ ! -f "${resolved_config}" ]]; then
+            echo "::error::MPS config is missing for ${mps_model}: ${resolved_config}"
             exit 1
           fi
-          if [[ -n "${resolved_config}" ]]; then
-            actual_config_cls="$(sed -n 's/^config_cls:[[:space:]]*//p' "${resolved_config}")"
-            if [[ "${actual_config_cls}" != "${expected_config_cls}" ]]; then
-              echo "::error::resolved config mismatch for ${selected_model}: ${actual_config_cls}; expected ${expected_config_cls}"
-              exit 1
-            fi
+          actual_config_cls="$(sed -n 's/^config_cls:[[:space:]]*//p' "${resolved_config}")"
+          if [[ "${actual_config_cls}" != "${expected_config_cls}" ]]; then
+            echo "::error::resolved config mismatch for ${mps_model}: ${actual_config_cls}; expected ${expected_config_cls}"
+            exit 1
           fi
 
           output_dir="${RUNNER_TEMP}/tts-preflight"
           mkdir -p "${output_dir}"
-          export selected_model selection_digest selection_reason resolved_config
+          export selected_model selection_digest selection_reason resolved_config mps_model
           python - <<'PY' > "${output_dir}/preflight.json.tmp"
           import json
           import os
@@ -214,6 +213,7 @@ jobs:
                       "selection_digest": os.environ["selection_digest"],
                       "selection_reason": os.environ["selection_reason"],
                       "resolved_mps_config": os.environ["resolved_config"],
+                      "resolved_mps_model": os.environ["mps_model"],
                   },
                   indent=2,
                   sort_keys=True,
@@ -224,6 +224,7 @@ jobs:
           echo "selected_model=${selected_model}" >> "${GITHUB_OUTPUT}"
           echo "selection_digest=${selection_digest}" >> "${GITHUB_OUTPUT}"
           echo "resolved_mps_config=${resolved_config}" >> "${GITHUB_OUTPUT}"
+          echo "resolved_mps_model=${mps_model}" >> "${GITHUB_OUTPUT}"
           echo "exact_sha=${EXACT_SHA}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload TTS preflight
@@ -395,6 +396,7 @@ jobs:
     with:
       tts_ci_model: ${{ needs.preflight.outputs.selected_model }}
       tts_mps_config: ${{ needs.preflight.outputs.resolved_mps_config }}
+      tts_mps_model: ${{ needs.preflight.outputs.resolved_mps_model }}
       exact_sha: ${{ needs.preflight.outputs.exact_sha }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'

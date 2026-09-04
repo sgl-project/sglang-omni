@@ -1,0 +1,89 @@
+name: Rust Router
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/rust-router.yml"
+      - "sglang_omni_router/rust/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/rust-router.yml"
+      - "sglang_omni_router/rust/**"
+  workflow_dispatch:
+
+concurrency:
+  group: rust-router-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-router:
+    name: quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: sglang_omni_router/rust
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned implementation and MSRV toolchains
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 \
+            --profile minimal \
+            --component clippy,rustfmt \
+            --no-self-update
+          rustup toolchain install 1.90.0 \
+            --profile minimal \
+            --no-self-update
+          rustc --version --verbose
+          cargo --version --verbose
+          rustc --version | grep -E '^rustc 1\.97\.1 '
+          cargo +1.90.0 --version --verbose
+          rustc +1.90.0 --version | grep -E '^rustc 1\.90\.0 '
+
+      - name: Quality gates
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+
+          cargo fmt --all -- --check
+          cargo +1.90.0 check --workspace --all-targets --all-features --locked
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --all-targets --all-features --locked -- --test-threads=1
+          RUSTDOCFLAGS="-D warnings" \
+            cargo doc --workspace --all-features --no-deps --locked
+
+      - name: Build and validate operator inputs
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+
+          cargo build --release --workspace --all-features --locked
+          binary="./target/release/sgl-omni-router"
+
+          "$binary" --help
+          "$binary" --version
+
+          configs="$(git ls-files -- 'examples/*.toml' | LC_ALL=C sort)"
+          if [[ -n "$configs" ]]; then
+            while IFS= read -r config; do
+              "$binary" --config "$config" --check-config
+            done <<< "$configs"
+          fi

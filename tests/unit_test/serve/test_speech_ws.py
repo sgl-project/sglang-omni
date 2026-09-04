@@ -25,6 +25,10 @@ from sglang_omni.serve.speech_ws import (
     SpeechWebSocketSession,
 )
 
+CONTEXT_LENGTH_ERROR = (
+    "Requested token count exceeds the model's maximum context length"
+)
+
 
 class StreamingSpeechClient:
     def __init__(self, *, sample_rate: int = 24000) -> None:
@@ -184,6 +188,19 @@ class InvalidAudioStreamingSpeechClient:
             audio_data=object(),
             sample_rate=24000,
         )
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class ContextRejectingStreamingSpeechClient:
+    def __init__(self) -> None:
+        self.aborted: list[str] = []
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request, request_id
+        raise RuntimeError(CONTEXT_LENGTH_ERROR)
+        yield
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -800,6 +817,31 @@ def test_speech_websocket_stream_exception_aborts_active_request() -> None:
         assert websocket.sent_text[-1]["type"] == "audio.done"
         assert websocket.sent_text[-1]["error"] is True
         assert session.active_request_id is None
+
+    asyncio.run(run())
+
+
+def test_speech_websocket_context_rejection_is_bad_request() -> None:
+    async def run() -> None:
+        client_impl = ContextRejectingStreamingSpeechClient()
+        websocket = RecordingWebSocket()
+        session = SpeechWebSocketSession(
+            websocket,
+            client=client_impl,
+            speech_service=SpeechRequestValidator(default_model="tts"),
+        )
+        session.config = SpeechStreamSessionConfig(stream_audio=True)
+
+        await session._generate_sentence("Hello.")
+
+        error = websocket.sent_text[-2]
+        assert error == {
+            "type": "error",
+            "message": CONTEXT_LENGTH_ERROR,
+            "error_type": "BadRequestError",
+            "code": 400,
+        }
+        assert client_impl.aborted == [f"{session.session_id}-0"]
 
     asyncio.run(run())
 

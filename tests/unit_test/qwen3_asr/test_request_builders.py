@@ -29,6 +29,13 @@ from sglang_omni.scheduling.types import DeferredAdmission
 from sglang_omni.utils import audio as audio_utils
 from sglang_omni.utils.audio import AudioDecodeError
 
+_EXPECTED_QWEN3_ASR_PROMPT_PREFIX = (
+    "<|im_start|>system\n<|im_end|>\n"
+    "<|im_start|>user\n"
+    "<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n"
+    "<|im_start|>assistant\n"
+)
+
 
 def _unwrap_built(
     result: Qwen3ASRRequestData | DeferredAdmission,
@@ -83,6 +90,7 @@ class _FakeTokenizer:
         )
         pieces = {
             10: "language English",
+            30: "language None",
             100: "<asr_text>",
             101: "",
             20: " leading",
@@ -153,6 +161,21 @@ def test_qwen3_asr_short_audio_keeps_the_floor_budget(monkeypatch) -> None:
     data = request_builder(payload)
 
     assert data.max_new_tokens == 128
+
+
+def test_qwen3_asr_request_builder_enforces_scheduler_request_limits(
+    monkeypatch,
+) -> None:
+    request_builder = _budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-request-limits",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.enforce_request_limits is True
 
 
 def test_qwen3_asr_long_audio_scales_the_budget(monkeypatch) -> None:
@@ -258,7 +281,9 @@ def test_qwen3_asr_request_builder_uses_canonical_language_prompt(
 
     data = request_builder(payload)
 
-    assert tokenizer.call_texts[-1].endswith(f"language {expected_name}<asr_text>")
+    assert tokenizer.call_texts[-1] == (
+        _EXPECTED_QWEN3_ASR_PROMPT_PREFIX + f"language {expected_name}<asr_text>"
+    )
     assert data.language == expected_language
 
 
@@ -288,8 +313,7 @@ def test_qwen3_asr_request_builder_omits_language_prompt_for_auto_detection(
 
     data = request_builder(payload)
 
-    assert tokenizer.call_texts[-1].startswith("<|im_start|>user\n")
-    assert tokenizer.call_texts[-1].endswith("<|im_start|>assistant\n")
+    assert tokenizer.call_texts[-1] == _EXPECTED_QWEN3_ASR_PROMPT_PREFIX
     assert "<asr_text>" not in tokenizer.call_texts[-1]
     assert data.language is None
     assert data.req.vocab_size == len(tokenizer)
@@ -367,6 +391,61 @@ def test_qwen3_asr_rejects_explicit_unsupported_language_before_loading_audio(
 
     with pytest.raises(ValueError, match=error_match):
         request_builder(payload)
+
+
+def _template_for_prompt(monkeypatch, prompt: str | None) -> str:
+    """Return the prompt template the builder hands to the tokenizer."""
+    num_mel_frames = 101
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 3000)),
+        attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    tokenizer = _FakeTokenizer()
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+    )
+    params = {} if prompt is None else {"prompt": prompt}
+    request_builder(
+        StagePayload(
+            request_id="req-bias",
+            request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+            data={},
+        )
+    )
+    return tokenizer.call_texts[-1]
+
+
+def test_qwen3_asr_prompt_reaches_the_system_turn(monkeypatch) -> None:
+    """Caller-supplied biasing text has to reach the model.
+
+    Qwen3-ASR reads biasing text from the system turn. Without this the request
+    builder drops params["prompt"], so domain vocabulary stays unbiased and the
+    caller gets no signal that the hint was ignored.
+    """
+    template = _template_for_prompt(monkeypatch, "PyTorch, nginx, Kubernetes")
+
+    assert "<|im_start|>system\nPyTorch, nginx, Kubernetes<|im_end|>" in template
+
+
+def test_qwen3_asr_blank_prompt_leaves_the_template_unchanged(monkeypatch) -> None:
+    """A blank prompt must not perturb the template.
+
+    The empty system turn comes from the checkpoint's own chat template and the
+    model is sensitive to edits there, so a missing or whitespace-only prompt has
+    to produce exactly the unbiased template.
+    """
+    plain = _template_for_prompt(monkeypatch, None)
+
+    assert plain.startswith("<|im_start|>system\n<|im_end|>")
+    assert _template_for_prompt(monkeypatch, "") == plain
+    assert _template_for_prompt(monkeypatch, "   ") == plain
 
 
 def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:
@@ -449,6 +528,37 @@ def test_qwen3_asr_request_builder_preserves_sampling_mode(
     assert data.req.sampling_params.top_k == expected_top_k
 
 
+def test_qwen3_asr_mlx_rejects_non_greedy_sampling(monkeypatch) -> None:
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 3000)),
+        attention_mask=torch.ones((1, 101), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: pytest.fail(
+            "non-greedy Apple request should fail before audio decoding"
+        ),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+        greedy_only=True,
+    )
+    payload = StagePayload(
+        request_id="req-asr-mlx-sampling",
+        request=OmniRequest(
+            inputs={"audio_bytes": b"wav"},
+            params={"temperature": 0.1},
+        ),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="supports only greedy decoding"):
+        request_builder(payload)
+
+
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     monkeypatch,
 ) -> None:
@@ -523,7 +633,7 @@ def test_qwen3_asr_request_builder_rejects_corrupt_local_audio_path(
         assert source == str(corrupt_path)
         raise RuntimeError("invalid audio data")
 
-    monkeypatch.setattr(audio_utils, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio_utils, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(audio_utils.torchaudio, "load", raise_decode_error)
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -798,6 +908,38 @@ def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
         "skip_special_tokens": True,
         "clean_up_tokenization_spaces": False,
     }
+
+
+@pytest.mark.parametrize(
+    ("output_ids", "expected_text"),
+    [
+        ([30, 100, 101], ""),
+        ([30, 100, 101, 20], " leading"),
+    ],
+)
+def test_qwen3_asr_result_adapter_normalizes_none_language(
+    output_ids: list[int], expected_text: str
+) -> None:
+    tokenizer = _FakeTokenizer()
+    _, result_adapter = make_qwen3_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    payload = StagePayload(
+        request_id="req-asr-none-language",
+        request=OmniRequest(inputs={}),
+        data={},
+    )
+    data = Qwen3ASRRequestData(
+        output_ids=output_ids,
+        stage_payload=payload,
+    )
+
+    result = result_adapter(data)
+
+    assert result.data["text"] == expected_text
+    assert result.data["language"] is None
 
 
 def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(

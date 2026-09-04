@@ -79,6 +79,145 @@ def _new_stage_payload(request_id: str) -> StagePayload:
     )
 
 
+class _RowSamplingInfo:
+    def __init__(self, values: list[int]) -> None:
+        self.values = torch.tensor(values)
+
+    def filter_batch(self, keep_indices, keep_indices_device) -> None:
+        del keep_indices
+        self.values = self.values[keep_indices_device]
+
+
+def _make_row_aligned_schedule_batch(size: int = 4):
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
+    reqs = [
+        SimpleNamespace(
+            rid=f"req-{index}",
+            _omni_data=object(),
+            return_logprob=False,
+            return_hidden_states_mode=CaptureHiddenMode.NULL,
+            grammar=None,
+            finished=lambda: False,
+            is_retracted=False,
+            _omni_terminal_claimed=False,
+            to_finish=None,
+        )
+        for index in range(size)
+    ]
+    row_values = list(range(10, 10 + size))
+    batch = ScheduleBatch(
+        reqs=reqs,
+        model_config=SimpleNamespace(is_encoder_decoder=False),
+        device="cpu",
+    )
+    batch.req_pool_indices = torch.tensor(row_values)
+    batch.req_pool_indices_cpu = torch.tensor(row_values)
+    batch.seq_lens = torch.tensor([100 + value for value in row_values])
+    batch.orig_seq_lens = torch.tensor([200 + value for value in row_values])
+    batch.seq_lens_cpu = torch.tensor([300 + value for value in row_values])
+    batch.input_ids = torch.tensor([400 + value for value in row_values])
+    batch.multimodal_inputs = [f"mm-{value}" for value in row_values]
+    batch.sampling_info = _RowSamplingInfo(row_values)
+    return batch
+
+
+def _assert_row_aligned_batch(batch, expected_pool_indices: list[int]) -> None:
+    expected = len(expected_pool_indices)
+    assert [req.rid for req in batch.reqs] == [
+        f"req-{value - 10}" for value in expected_pool_indices
+    ]
+    assert batch.req_pool_indices.tolist() == expected_pool_indices
+    assert batch.req_pool_indices_cpu.tolist() == expected_pool_indices
+    assert len(batch.seq_lens) == expected
+    assert len(batch.orig_seq_lens) == expected
+    assert len(batch.seq_lens_cpu) == expected
+    assert len(batch.input_ids) == expected
+    assert len(batch.multimodal_inputs) == expected
+    assert batch.sampling_info.values.tolist() == expected_pool_indices
+
+
+@pytest.mark.parametrize(
+    ("request_id", "expected_pool_indices"),
+    [
+        ("req-0", [11, 12, 13]),
+        ("req-1", [10, 12, 13]),
+        ("req-3", [10, 11, 12]),
+    ],
+)
+def test_remove_from_batch_compacts_every_scheduler_row(
+    request_id: str, expected_pool_indices: list[int]
+) -> None:
+    batch = _make_row_aligned_schedule_batch()
+
+    omni_scheduler_module._remove_from_batch(batch, request_id)
+
+    _assert_row_aligned_batch(batch, expected_pool_indices)
+
+
+def test_remove_from_batch_compacts_sequential_removals() -> None:
+    batch = _make_row_aligned_schedule_batch()
+
+    omni_scheduler_module._remove_from_batch(batch, "req-1")
+    omni_scheduler_module._remove_from_batch(batch, "req-3")
+
+    _assert_row_aligned_batch(batch, [10, 12])
+
+
+def test_remove_from_batch_clears_every_row_for_only_request() -> None:
+    batch = _make_row_aligned_schedule_batch(size=1)
+
+    omni_scheduler_module._remove_from_batch(batch, "req-0")
+
+    _assert_row_aligned_batch(batch, [])
+    assert batch.batch_is_full is False
+
+
+def _make_row_removal_abort_scheduler(batch):
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler._pending_request_builds = {}
+    scheduler._pending_request_admissions = {}
+    scheduler._backlogged_request_build_payloads = deque()
+    scheduler.waiting_queue = []
+    scheduler._abort_callback = None
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
+    scheduler._async_pending = None
+    scheduler.inbox = Queue()
+    scheduler.running_batch = batch
+    scheduler.cur_batch = batch
+    scheduler.last_batch = None
+    scheduler._release_immediate_request_resources = lambda _request_id: None
+    return scheduler
+
+
+def test_immediate_abort_compacts_live_schedule_batch_rows() -> None:
+    batch = _make_row_aligned_schedule_batch(size=2)
+    scheduler = _make_row_removal_abort_scheduler(batch)
+
+    scheduler.abort("req-0", defer_running_cleanup=False)
+
+    _assert_row_aligned_batch(batch, [11])
+
+
+def test_terminal_failure_abort_compacts_finished_schedule_batch_row() -> None:
+    batch = _make_row_aligned_schedule_batch(size=2)
+    batch.reqs[0].finished = lambda: True
+    scheduler = _make_row_removal_abort_scheduler(batch)
+
+    scheduler.abort("req-0")
+
+    _assert_row_aligned_batch(batch, [11])
+
+
 def test_scheduler_idle_sleep_yields_to_pending_request_builds(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler._request_admission_lock = threading.RLock()
@@ -2458,6 +2597,62 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     assert req._omni_data is req_data
     assert req.sampling_params.max_new_tokens == 2
     assert req_data.max_new_tokens == 2
+    assert scheduler.outbox.empty()
+
+
+def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
+    """Clamp requests that pass the surface KV check but cannot be prefetched."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler.max_req_len = 23
+    scheduler.max_req_input_len = 22
+    scheduler.max_new_tokens_limit = None
+    scheduler.page_size = 4
+    scheduler.max_total_num_tokens = 24
+    _init_sync_request_build_state(scheduler)
+
+    requested_max_new_tokens = 14
+    sampling_params = SimpleNamespace(
+        max_new_tokens=requested_max_new_tokens,
+        min_new_tokens=0,
+    )
+    req = SimpleNamespace(
+        rid="req-near-capacity",
+        origin_input_ids=[1] * 9,
+        origin_input_ids_unpadded=[1] * 9,
+        sampling_params=sampling_params,
+        output_ids=[],
+        priority=None,
+    )
+    req_data = SimpleNamespace(
+        req=req,
+        max_new_tokens=requested_max_new_tokens,
+        enforce_request_limits=True,
+    )
+    scheduler._request_builder = lambda payload: req_data
+
+    scheduler.process_input_requests([_new_stage_payload("req-near-capacity")])
+
+    input_tokens = len(req.origin_input_ids)
+    paged_input_tokens = 12
+    assert input_tokens + requested_max_new_tokens == scheduler.max_req_len
+    assert (
+        paged_input_tokens + requested_max_new_tokens + scheduler.page_size
+        >= scheduler.max_total_num_tokens
+    )
+    assert req.sampling_params.max_new_tokens == 7
+    assert req_data.max_new_tokens == 7
+    assert (
+        paged_input_tokens + req.sampling_params.max_new_tokens + scheduler.page_size
+        < scheduler.max_total_num_tokens
+    )
+    assert scheduler.waiting_queue == [req]
     assert scheduler.outbox.empty()
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import FunCosyVoice3PipelineConfig
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
@@ -32,11 +34,40 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     assert config.process_local_edges() == frozenset({("preprocessing", "tts_engine")})
     assert CAPABILITIES.supports_streaming_vocoder is False
 
+    vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
+    assert vocoder.factory.dtype == "bfloat16"
+    assert vocoder.factory.model_extra == {
+        "flow_batch_bucket_frames": 50,
+        "flow_batch_admission_frames": 2000,
+        "enable_dit_torch_compile": False,
+    }
+
     build_compiled_process_topology(config)
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("FunCosyVoice3SGLangModel")
         is FunCosyVoice3PipelineConfig
     )
+
+
+def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
+    config = FunCosyVoice3PipelineConfig(model_path="model")
+    manager = ConfigManager(config)
+    merged = manager.merge_config(
+        {
+            "vocoder.factory.flow_batch_bucket_frames": 100,
+            "vocoder.factory.flow_batch_admission_frames": 4000,
+        }
+    )
+    vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
+
+    assert vocoder.factory.model_extra == {
+        "flow_batch_bucket_frames": 100,
+        "flow_batch_admission_frames": 4000,
+        "enable_dit_torch_compile": False,
+    }
+    args = resolve_stage_typed_kwargs(vocoder)
+    assert args["flow_batch_bucket_frames"] == 100
+    assert args["flow_batch_admission_frames"] == 4000
 
 
 def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:

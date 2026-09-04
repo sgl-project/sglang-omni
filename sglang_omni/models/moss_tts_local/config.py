@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, ClassVar
 
 from pydantic import Field
@@ -28,6 +29,32 @@ _REF_AUDIO_CACHE_MAX_ITEMS = 8192
 _REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
 _PREPROCESSING_MAX_CONCURRENCY = 16
 _MAX_PIPELINE_INTRAOP_THREADS = 8
+
+
+def _uses_rocm_wsl_dxg() -> bool:
+    """Return whether PyTorch HIP can select the WSL DXG device path."""
+    try:
+        import torch
+    except ImportError:
+        return False
+    return (
+        torch.version.hip is not None
+        and os.environ.get("HSA_ENABLE_DXG_DETECTION") != "0"
+        and os.path.exists("/dev/dxg")
+    )
+
+
+def resolve_vocoder_cuda_graph(cuda_graph: bool | None) -> bool:
+    """Resolve the platform default and reject an unsafe DXG opt-in."""
+    if not _uses_rocm_wsl_dxg():
+        return True if cuda_graph is None else cuda_graph
+    if cuda_graph is True:
+        raise ValueError(
+            "MOSS-TTS Local vocoder CUDA graphs cannot be enabled on ROCm "
+            "WSL/DXG because HIP graph capture can abort the process; omit "
+            "cuda_graph or set it to false"
+        )
+    return False
 
 
 def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
@@ -88,6 +115,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTTSLocalModel"
     requires_model_capabilities: ClassVar[bool] = True
+    max_speech_input_chars: ClassVar[int | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "MossTTSLocal",
         "MossTTSLocalForConditionalGeneration",
@@ -132,10 +160,9 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
     )
 
-    # Streaming-vocoder CUDA-graph knobs, passed to the vocoder factory via
-    # stage_factory_kwargs. Default on, fail-safe to eager;
-    # cuda_graph_frames=None captures exact T=1..stream_chunk.
-    cuda_graph: bool = True
+    # None preserves whether the user supplied an override. The resolved
+    # default is on except on ROCm WSL/DXG, where capture can abort in C++.
+    cuda_graph: bool | None = None
     cuda_graph_frames: list[int] | None = None
     cuda_graph_min_free_gb: float = 3.0
     ref_audio_cache: bool = True
@@ -158,7 +185,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
             return {}
         if stage_name == "vocoder":
             return {
-                "cuda_graph": self.cuda_graph,
+                "cuda_graph": resolve_vocoder_cuda_graph(self.cuda_graph),
                 "cuda_graph_frames": self.cuda_graph_frames,
                 "cuda_graph_min_free_gb": self.cuda_graph_min_free_gb,
             }
@@ -197,6 +224,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
+        resolve_vocoder_cuda_graph(self.cuda_graph)
         if self.ref_audio_cache_max_items < 1:
             raise ValueError(
                 "ref_audio_cache_max_items must be >= 1; got "

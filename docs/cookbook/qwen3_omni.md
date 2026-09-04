@@ -17,7 +17,7 @@ pip install --upgrade pip
 pip install uv
 
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.1.3"
+uv pip install --prerelease=allow "sglang-omni==0.1.4"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.

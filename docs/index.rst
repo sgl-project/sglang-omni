@@ -86,7 +86,9 @@ Supported Models
    :caption: Get Started
 
    get_started/installation.md
+   get_started/installation_npu.md
    get_started/installation_xpu.md
+   get_started/installation_cpu.md
 
 
 .. toctree::
@@ -146,3 +148,4 @@ Supported Models
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/rl_admin_control.md
+   developer_reference/bump_version.md

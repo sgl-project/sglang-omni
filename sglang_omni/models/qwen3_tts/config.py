@@ -39,23 +39,20 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
         return {k: defaults[k] for k in ("max_running_requests", "max_queued_requests")}
 
-    @classmethod
-    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): preprocessing stores prepared requests in the module-level
-        # _PREPROCESSING_CONTEXT/_PREPARED_REQUESTS registries that the AR engine
-        # builder reads in-process.
-        return frozenset({("preprocessing", "tts_engine")})
-
     model_path: str
     # note (0xtoward): Keep deterministic inference opt-in because it serializes
-    # preprocessing and vocoder decoding and disables Talker compilation and the
-    # vocoder CUDA graphs, reducing throughput.
+    # preprocessing and vocoder decoding and disables the vocoder CUDA graphs,
+    # reducing throughput.
     enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
             name="preprocessing",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            # Note (Jiaxin Deng): no gpu declaration here. Sharing the engine's
+            # process the stage holds no GPU budget of its own, and declaring one
+            # makes every layout that shares the card demand a fraction for it. A
+            # split frontend passes --preprocessing.gpu with its own fraction.
             next="tts_engine",
         ),
         EngineStageConfig(
@@ -78,14 +75,23 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def preprocessing_in_own_process(self) -> bool:
+        stages = {stage.name: stage for stage in self.stages}
+        return stages["preprocessing"].process != stages["tts_engine"].process
+
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        # Note (Jiaxin Deng): outside the engine process the preprocessing stage
+        # loads its own prompt frontend and ships prepared tensors in the payload.
+        if stage_name == "preprocessing" and self.preprocessing_in_own_process():
+            kwargs["load_frontend"] = True
         if not self.enable_deterministic_inference:
-            return {}
+            return kwargs
         # note (0xtoward): deterministic inference serializes preprocessing
         # and vocoder decoding and disables the vocoder CUDA graphs.
         # Applied at launch so an explicit factory.* value still wins.
         if stage_name == "preprocessing":
-            return {"max_concurrency": 1}
+            return {**kwargs, "max_concurrency": 1}
         if stage_name == "tts_engine":
             return {"server_args_overrides": {"enable_deterministic_inference": True}}
         if stage_name == "vocoder":
@@ -94,7 +100,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
                 "initial_cuda_graph": False,
                 "followup_cuda_graph": False,
             }
-        return {}
+        return kwargs
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
         return _is_qwen3_tts_base_model(self.model_path)

@@ -1414,6 +1414,25 @@ def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
     assert scheduler2._cuda_graph_min_free_gb == 7.0
 
 
+def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> None:
+    calls: list[bool | None] = []
+
+    def resolve(cuda_graph: bool | None) -> bool:
+        calls.append(cuda_graph)
+        raise ValueError("unsafe graph")
+
+    monkeypatch.setattr(stages, "resolve_vocoder_cuda_graph", resolve)
+    monkeypatch.setattr(
+        stages,
+        "_load_moss_tts_local_processor",
+        lambda model_path: (_ for _ in ()).throw(AssertionError("loaded codec")),
+    )
+
+    with pytest.raises(ValueError, match="unsafe graph"):
+        stages.create_vocoder_executor("fake-model", device="cpu", cuda_graph=True)
+    assert calls == [True]
+
+
 def test_default_cuda_graph_frames_cover_stream_chunk_exactly(monkeypatch) -> None:
     captured: list[list[int]] = []
     monkeypatch.setattr(

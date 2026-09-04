@@ -493,6 +493,12 @@ def test_local_vocoder_loader_only_loads_decoder_and_quantizer(
 def test_registry_resolves_local_architecture():
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("MossTTSLocalModel")
     assert config_cls is MossTTSLocalPipelineConfig
+    for variant_cls in (
+        MossTTSLocalPipelineConfig,
+        MossTTSLocalColocatedPipelineConfig,
+        MossTTSLocalSplitPipelineConfig,
+    ):
+        assert variant_cls(model_path="dummy").max_speech_input_chars is None
     # The Delay family keeps its own architecture.
     delay_cls = PIPELINE_CONFIG_REGISTRY.get_config("MossTTSDelayModel")
     assert delay_cls is not MossTTSLocalPipelineConfig
@@ -700,6 +706,7 @@ def _install_fake_moss_ar_factory(
 ):
     pytest.importorskip("PIL")
 
+    from sglang_omni.models.moss_tts import hf_loading
     from sglang_omni.models.moss_tts_local import request_builders, stages
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling import engine_factory, omni_scheduler, sglang_backend
@@ -735,6 +742,7 @@ def _install_fake_moss_ar_factory(
         infrastructure_calls.append(
             {
                 "mem_fraction_static": server_args.mem_fraction_static,
+                "context_length": server_args.context_length,
                 "gpu_id": gpu_id,
                 "total_gpu_memory_fraction": kwargs.get("total_gpu_memory_fraction"),
             }
@@ -788,6 +796,16 @@ def _install_fake_moss_ar_factory(
     monkeypatch.setattr(
         engine_factory, "_resolve_checkpoint", lambda model_path: model_path
     )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: types.SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: types.SimpleNamespace(max_position_embeddings=32768),
+    )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", FakeScheduler)
 
     def fake_get_process_gpu_memory_bytes(gpu_id):
@@ -801,6 +819,143 @@ def _install_fake_moss_ar_factory(
     )
 
     return stages, infrastructure_calls, process_memory_queries
+
+
+@pytest.mark.parametrize(
+    ("context_length", "expected_max_prefill_tokens"),
+    [(4096, 4096), (32768, 8192)],
+)
+def test_moss_local_engine_uses_text_backbone_context(
+    monkeypatch: pytest.MonkeyPatch,
+    context_length: int,
+    expected_max_prefill_tokens: int,
+) -> None:
+    from sglang_omni.models.moss_tts import hf_loading
+    from sglang_omni.models.moss_tts_local import engine_builder
+
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: types.SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: types.SimpleNamespace(max_position_embeddings=context_length),
+    )
+
+    builder = engine_builder.MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+    builder.context_length = builder.resolve_context_length("model")
+
+    assert builder.context_length == context_length
+    assert (
+        builder.generation_defaults(dtype="bfloat16")["max_prefill_tokens"]
+        == expected_max_prefill_tokens
+    )
+
+
+def test_moss_local_context_probe_uses_runtime_model_config_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import hf_loading
+    from sglang_omni.models.moss_tts_local import engine_builder
+
+    captured: dict[str, object] = {}
+
+    def fake_get_config(model_path: str, **kwargs: object) -> types.SimpleNamespace:
+        captured["model_path"] = model_path
+        captured["kwargs"] = kwargs
+        return types.SimpleNamespace(
+            language_config=types.SimpleNamespace(max_position_embeddings=4096)
+        )
+
+    monkeypatch.setattr(hf_loading, "get_config", fake_get_config)
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: config.language_config,
+    )
+
+    builder = engine_builder.MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+    context_length = builder.resolve_context_length(
+        "model",
+        server_args_overrides={
+            "trust_remote_code": False,
+            "model_config_parser": "hf",
+            "json_model_override_args": (
+                '{"language_config": {"max_position_embeddings": 4096}}'
+            ),
+            "decrypted_config_file": "/tmp/override.json",
+        },
+    )
+
+    assert context_length == 4096
+    assert captured == {
+        "model_path": "model",
+        "kwargs": {
+            "trust_remote_code": False,
+            "model_config_parser": "hf",
+            "model_override_args": {
+                "language_config": {"max_position_embeddings": 4096}
+            },
+            "_configuration_file": "/tmp/override.json",
+        },
+    }
+
+
+def test_moss_local_context_probe_uses_model_default_without_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import hf_loading
+    from sglang_omni.models.moss_tts_local import engine_builder
+
+    monkeypatch.setattr(
+        hf_loading,
+        "get_config",
+        lambda model_path, **kwargs: types.SimpleNamespace(model_path=model_path),
+    )
+    monkeypatch.setattr(
+        hf_loading,
+        "get_hf_text_config",
+        lambda config: types.SimpleNamespace(),
+    )
+
+    assert (
+        engine_builder.MossTtsLocalEngineBuilder(
+            enable_async_decode=False,
+            async_decode_min_batch_size=2,
+            total_gpu_memory_fraction=None,
+            codec_mem_reserve=0.0,
+        ).resolve_context_length("model")
+        == engine_builder.MossTtsLocalEngineBuilder.context_length
+    )
+
+
+def test_moss_local_engine_honors_context_length_override(monkeypatch):
+    stages, infrastructure_calls, _ = _install_fake_moss_ar_factory(
+        monkeypatch,
+        process_memory_bytes=None,
+    )
+
+    stages.create_sglang_tts_engine_executor(
+        "dummy",
+        server_args_overrides={
+            "context_length": 4096,
+            "disable_cuda_graph": True,
+        },
+    )
+
+    assert infrastructure_calls[0]["context_length"] == 4096
 
 
 def test_colocated_moss_ar_factory_threads_effective_budget(monkeypatch):
@@ -822,6 +977,7 @@ def test_colocated_moss_ar_factory_threads_effective_budget(monkeypatch):
     assert infrastructure_calls == [
         {
             "mem_fraction_static": pytest.approx(0.85),
+            "context_length": 32768,
             "gpu_id": 0,
             "total_gpu_memory_fraction": pytest.approx(0.95),
         }
@@ -850,6 +1006,7 @@ def test_colocated_moss_ar_factory_uses_upstream_profile_without_process_account
     assert infrastructure_calls == [
         {
             "mem_fraction_static": pytest.approx(0.85),
+            "context_length": 32768,
             "gpu_id": 0,
             "total_gpu_memory_fraction": None,
         }

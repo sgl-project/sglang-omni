@@ -11,6 +11,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
 
@@ -43,7 +44,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
+            factory=FactoryArgs(device=current_platform.device_type, dtype="bfloat16"),
             gpu=0,
             next="vocoder",
         ),
@@ -51,7 +52,13 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             name="vocoder",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
+            factory=FactoryArgs(
+                dtype="bfloat16",
+                flow_batch_bucket_frames=50,
+                flow_batch_admission_frames=2000,
+                # Opt-in; off by default (one-time startup compile cost).
+                enable_dit_torch_compile=False,
+            ),
             gpu=0,
             terminal=True,
         ),
