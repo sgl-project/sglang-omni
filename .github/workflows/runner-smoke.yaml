@@ -1,0 +1,43 @@
+name: Runner Smoke
+on:
+  workflow_dispatch:
+    inputs:
+      slots:
+        description: "并发排队的 h100 job 数（1-4）"
+        required: false
+        default: "4"
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs: { matrix: "${{ steps.m.outputs.matrix }}" }
+    steps:
+      - id: m
+        run: |
+          n="${{ inputs.slots }}"; n="${n:-4}"
+          echo "matrix=[$(seq -s, 1 "$n")]" >> "$GITHUB_OUTPUT"
+  smoke:
+    needs: plan
+    strategy: { fail-fast: false, matrix: { slot: "${{ fromJson(needs.plan.outputs.matrix) }}" } }
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 10
+    container:
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      options: --rm -e NVIDIA_VISIBLE_DEVICES -e OMNI_CI_CPUSET
+    steps:
+      - name: Report lane
+        shell: bash
+        run: |
+          echo "runner=${RUNNER_NAME} slot=${{ matrix.slot }}"
+          echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-<unset>} OMNI_CI_CPUSET=${OMNI_CI_CPUSET:-<unset>}"
+          nvidia-smi --query-gpu=index,uuid,memory.used --format=csv
+          test "$(nvidia-smi -L | wc -l)" -eq 2
+          grep Cpus_allowed_list /proc/self/status
+          python3 - <<'PY'
+          import os
+          cs = os.environ["OMNI_CI_CPUSET"]; cpus = set()
+          for part in cs.split(","):
+              a, _, b = part.partition("-"); cpus.update(range(int(a), int(b or a) + 1))
+          os.sched_setaffinity(0, cpus); print("pinned to", len(cpus), "cpus:", cs)
+          PY
+      - name: Hold the lane so all slots overlap
+        run: sleep 120
