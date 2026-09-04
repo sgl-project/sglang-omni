@@ -101,6 +101,25 @@ def derive_qwen3_tts_sampling_seeds(seed: int) -> tuple[int, int]:
     )
 
 
+@dataclass(frozen=True)
+class SubtalkerSampling:
+    do_sample: bool
+    temperature: float
+    top_p: float
+    top_k: int
+
+
+def resolve_subtalker_sampling(gen_kwargs: dict[str, Any]) -> SubtalkerSampling:
+    """Subtalker sampling from merged generate kwargs, with the fallbacks used
+    when the checkpoint ships no generation config."""
+    return SubtalkerSampling(
+        do_sample=bool(gen_kwargs.get("subtalker_dosample", True)),
+        temperature=float(gen_kwargs.get("subtalker_temperature", 0.9)),
+        top_p=float(gen_kwargs.get("subtalker_top_p", 1.0)),
+        top_k=int(gen_kwargs.get("subtalker_top_k", 50)),
+    )
+
+
 @dataclass
 class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     """Qwen3-TTS scheduler-owned request state."""
@@ -1339,6 +1358,7 @@ def build_sglang_qwen3_tts_request(
     ref_code_len = (
         int(prepared.ref_code.shape[0]) if prepared.ref_code is not None else 0
     )
+    subtalker = resolve_subtalker_sampling(gen_kwargs)
     data = Qwen3TTSSGLangRequestData(
         input_ids=prepared.input_ids,
         attention_mask=prepared.attention_mask,
@@ -1353,10 +1373,10 @@ def build_sglang_qwen3_tts_request(
         prompt_input_embeds=prepared.prompt_input_embeds,
         prefill_input_embeds=prepared.prompt_input_embeds,
         semantic_sampling_seed=semantic_sampling_seed,
-        subtalker_dosample=bool(gen_kwargs.get("subtalker_dosample", True)),
-        subtalker_temperature=float(gen_kwargs.get("subtalker_temperature", 0.9)),
-        subtalker_top_p=float(gen_kwargs.get("subtalker_top_p", 1.0)),
-        subtalker_top_k=int(gen_kwargs.get("subtalker_top_k", 50)),
+        subtalker_dosample=subtalker.do_sample,
+        subtalker_temperature=subtalker.temperature,
+        subtalker_top_p=subtalker.top_p,
+        subtalker_top_k=subtalker.top_k,
         subtalker_sampling_seed=subtalker_sampling_seed,
         stream_codec_output=state.stream_codec_output,
         engine_start_s=time.perf_counter(),
