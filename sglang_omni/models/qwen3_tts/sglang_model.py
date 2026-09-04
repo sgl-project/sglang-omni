@@ -391,156 +391,13 @@ class Qwen3TTSCodePredictor(nn.Module):
         return self.small_to_mtp_projection(hidden_states)
 
 
-class Qwen3TTSTalker(nn.Module):
-    """Qwen3-TTS Base talker with SGLang-managed KV cache for the main AR loop."""
+class Qwen3TTSPromptBuilderMixin:
+    """Prompt construction shared by the talker and the standalone prompt frontend.
 
-    # The outer forward substitutes ForwardBatch.mrope_positions whenever they
-    # are present. Prefill CUDA graph runners capture the inner text model
-    # directly and use this marker to preserve that position contract.
-    is_mrope_enabled = True
-
-    def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
-        del quant_config
-        super().__init__()
-        if hasattr(config, "talker_config"):
-            root_config = config
-            config = config.talker_config
-        else:
-            root_config = None
-        self.root_config = root_config
-        self.config = config
-        self.vocab_size = config.vocab_size
-        self.tts_model_type = getattr(root_config, "tts_model_type", "base")
-        self.tokenizer_type = getattr(root_config, "tokenizer_type", "")
-        self.tts_model_size = getattr(root_config, "tts_model_size", "")
-        self.speaker_encoder_sample_rate = getattr(
-            getattr(root_config, "speaker_encoder_config", None),
-            "sample_rate",
-            24000,
-        )
-
-        self.text_projection = ResizeMLP(
-            config.text_hidden_size,
-            config.text_hidden_size,
-            config.hidden_size,
-            prefix=add_prefix("text_projection", prefix),
-        )
-        self.model = Qwen3TTSTalkerTextModel(config, prefix=add_prefix("model", prefix))
-        self.codec_head = ReplicatedLinear(
-            config.hidden_size,
-            config.vocab_size,
-            bias=False,
-            prefix=add_prefix("codec_head", prefix),
-        )
-        self.code_predictor = Qwen3TTSCodePredictor(
-            config,
-            prefix=add_prefix("code_predictor", prefix),
-        )
-
-        if root_config is not None and self.tts_model_type == "base":
-            apply_qwen_tts_transformers_compatibility_patches()
-            from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder
-
-            self.speaker_encoder = Qwen3TTSSpeakerEncoder(
-                root_config.speaker_encoder_config
-            )
-        else:
-            self.speaker_encoder = None
-        self.speech_tokenizer = None
-
-        server_args = get_global_server_args()
-        max_batch_size = server_args.max_running_requests
-        hidden_size = config.hidden_size
-        predictor_len = config.num_code_groups + 1
-        device = self.model.codec_embedding.weight.device
-        dtype = self.model.codec_embedding.weight.dtype
-        self._feedback_buffer = self.model._feedback_buffer
-        self._feedback_mask = self.model._feedback_mask
-        self._decode_feedback_embedding = self.model._decode_feedback_embedding
-        cp_layers = self.code_predictor.model.layers
-        cp_attn = cp_layers[0].self_attn
-        self._predictor_positions = torch.arange(
-            predictor_len, device=device, dtype=torch.long
-        )
-        self._predictor_position_rows = (
-            self._predictor_positions[:, None]
-            .expand(predictor_len, max_batch_size)
-            .contiguous()
-        )
-        self._predictor_k_cache = torch.zeros(
-            len(cp_layers),
-            max_batch_size,
-            cp_attn.num_kv_heads,
-            predictor_len,
-            cp_attn.head_dim,
-            device=device,
-            dtype=dtype,
-        )
-        self._predictor_v_cache = torch.zeros_like(self._predictor_k_cache)
-        self._sampled_token_ids = torch.zeros(
-            max_batch_size, dtype=torch.long, device=device
-        )
-        self._output_codes = torch.zeros(
-            max_batch_size,
-            config.num_code_groups,
-            dtype=torch.long,
-            device=device,
-        )
-        self._output_embeds = torch.zeros(
-            max_batch_size, hidden_size, device=device, dtype=dtype
-        )
-        self._predictor_embedding_buffer = torch.empty(
-            max_batch_size, hidden_size, device=device, dtype=dtype
-        )
-        self._sub_batch_size = 0
-        self._sub_sample_max_row_index = -1
-        self._sub_temperature_tensor = torch.full(
-            (max_batch_size,), 0.9, device=device, dtype=torch.float32
-        )
-        self._sub_top_p_tensor = torch.ones(
-            max_batch_size, device=device, dtype=torch.float32
-        )
-        self._sub_top_k_tensor = torch.full(
-            (max_batch_size,), 50, device=device, dtype=torch.long
-        )
-        self._semantic_sampling_seed_tensor = torch.zeros(
-            max_batch_size, device=device, dtype=torch.long
-        )
-        self._sub_sampling_seed_tensor = torch.zeros(
-            max_batch_size, device=device, dtype=torch.long
-        )
-        self._sub_do_sample_tensor = torch.zeros(
-            max_batch_size, device=device, dtype=torch.bool
-        )
-        self._sub_identity_row_indices_tensor = torch.arange(
-            max_batch_size, device=device, dtype=torch.long
-        )
-        self._sub_sample_row_indices_tensor = torch.zeros(
-            max_batch_size, device=device, dtype=torch.long
-        )
-        self._sub_sample_count = 0
-        self._sub_has_sampled_rows = False
-        self._sub_sampled_has_top_p = False
-        self._sub_sampled_max_top_k = 0
-        self._sub_sampled_has_unbounded_top_k = False
-        self._decode_prep_rids: list | None = None
-        self._predictor_graph_batch_sizes = self._normalize_predictor_graph_batch_sizes(
-            server_args,
-            max_batch_size=max_batch_size,
-        )
-        self._predictor_graphs: dict[tuple, _PredictorDecodeGraph] = {}
-        self._predictor_graph_disabled: set[tuple] = set()
-        # Note: (Jiaxin Deng) None = resolved at decode time; the bootstrap
-        # defers graph capture past init, so nothing is decided here.
-        self._predictor_graph_enabled: bool | None = None
-        self._predictor_graph_failure_count = 0
-        self._predictor_graph_capacity_fallback_count = 0
-        self._predictor_graph_capacity_warned = False
-        self._predictor_graph_capture_count = 0
-        self._predictor_graph_pool = None
-        _bind_default_weight_loaders(self)
-        self._cached_params_dict = dict(self.named_parameters())
-        self._sampler = None
+    Expects ``model`` (embedding tables and ``_feedback_buffer``), ``text_projection``,
+    ``code_predictor.model.codec_embedding``, ``speaker_encoder``, ``speech_tokenizer``,
+    ``config``/``root_config`` and ``speaker_encoder_sample_rate`` on the instance.
+    """
 
     @property
     def device(self) -> torch.device:
@@ -988,6 +845,158 @@ class Qwen3TTSTalker(nn.Module):
             [text_embed] + [tts_pad_embed] * (codec_lens - text_lens), dim=1
         )
         return text_embed + codec_embed, tts_pad_embed
+
+
+class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
+    """Qwen3-TTS Base talker with SGLang-managed KV cache for the main AR loop."""
+
+    # The outer forward substitutes ForwardBatch.mrope_positions whenever they
+    # are present. Prefill CUDA graph runners capture the inner text model
+    # directly and use this marker to preserve that position contract.
+    is_mrope_enabled = True
+
+    def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
+        del quant_config
+        super().__init__()
+        if hasattr(config, "talker_config"):
+            root_config = config
+            config = config.talker_config
+        else:
+            root_config = None
+        self.root_config = root_config
+        self.config = config
+        self.vocab_size = config.vocab_size
+        self.tts_model_type = getattr(root_config, "tts_model_type", "base")
+        self.tokenizer_type = getattr(root_config, "tokenizer_type", "")
+        self.tts_model_size = getattr(root_config, "tts_model_size", "")
+        self.speaker_encoder_sample_rate = getattr(
+            getattr(root_config, "speaker_encoder_config", None),
+            "sample_rate",
+            24000,
+        )
+
+        self.text_projection = ResizeMLP(
+            config.text_hidden_size,
+            config.text_hidden_size,
+            config.hidden_size,
+            prefix=add_prefix("text_projection", prefix),
+        )
+        self.model = Qwen3TTSTalkerTextModel(config, prefix=add_prefix("model", prefix))
+        self.codec_head = ReplicatedLinear(
+            config.hidden_size,
+            config.vocab_size,
+            bias=False,
+            prefix=add_prefix("codec_head", prefix),
+        )
+        self.code_predictor = Qwen3TTSCodePredictor(
+            config,
+            prefix=add_prefix("code_predictor", prefix),
+        )
+
+        if root_config is not None and self.tts_model_type == "base":
+            apply_qwen_tts_transformers_compatibility_patches()
+            from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder
+
+            self.speaker_encoder = Qwen3TTSSpeakerEncoder(
+                root_config.speaker_encoder_config
+            )
+        else:
+            self.speaker_encoder = None
+        self.speech_tokenizer = None
+
+        server_args = get_global_server_args()
+        max_batch_size = server_args.max_running_requests
+        hidden_size = config.hidden_size
+        predictor_len = config.num_code_groups + 1
+        device = self.model.codec_embedding.weight.device
+        dtype = self.model.codec_embedding.weight.dtype
+        self._feedback_buffer = self.model._feedback_buffer
+        self._feedback_mask = self.model._feedback_mask
+        self._decode_feedback_embedding = self.model._decode_feedback_embedding
+        cp_layers = self.code_predictor.model.layers
+        cp_attn = cp_layers[0].self_attn
+        self._predictor_positions = torch.arange(
+            predictor_len, device=device, dtype=torch.long
+        )
+        self._predictor_position_rows = (
+            self._predictor_positions[:, None]
+            .expand(predictor_len, max_batch_size)
+            .contiguous()
+        )
+        self._predictor_k_cache = torch.zeros(
+            len(cp_layers),
+            max_batch_size,
+            cp_attn.num_kv_heads,
+            predictor_len,
+            cp_attn.head_dim,
+            device=device,
+            dtype=dtype,
+        )
+        self._predictor_v_cache = torch.zeros_like(self._predictor_k_cache)
+        self._sampled_token_ids = torch.zeros(
+            max_batch_size, dtype=torch.long, device=device
+        )
+        self._output_codes = torch.zeros(
+            max_batch_size,
+            config.num_code_groups,
+            dtype=torch.long,
+            device=device,
+        )
+        self._output_embeds = torch.zeros(
+            max_batch_size, hidden_size, device=device, dtype=dtype
+        )
+        self._predictor_embedding_buffer = torch.empty(
+            max_batch_size, hidden_size, device=device, dtype=dtype
+        )
+        self._sub_batch_size = 0
+        self._sub_sample_max_row_index = -1
+        self._sub_temperature_tensor = torch.full(
+            (max_batch_size,), 0.9, device=device, dtype=torch.float32
+        )
+        self._sub_top_p_tensor = torch.ones(
+            max_batch_size, device=device, dtype=torch.float32
+        )
+        self._sub_top_k_tensor = torch.full(
+            (max_batch_size,), 50, device=device, dtype=torch.long
+        )
+        self._semantic_sampling_seed_tensor = torch.zeros(
+            max_batch_size, device=device, dtype=torch.long
+        )
+        self._sub_sampling_seed_tensor = torch.zeros(
+            max_batch_size, device=device, dtype=torch.long
+        )
+        self._sub_do_sample_tensor = torch.zeros(
+            max_batch_size, device=device, dtype=torch.bool
+        )
+        self._sub_identity_row_indices_tensor = torch.arange(
+            max_batch_size, device=device, dtype=torch.long
+        )
+        self._sub_sample_row_indices_tensor = torch.zeros(
+            max_batch_size, device=device, dtype=torch.long
+        )
+        self._sub_sample_count = 0
+        self._sub_has_sampled_rows = False
+        self._sub_sampled_has_top_p = False
+        self._sub_sampled_max_top_k = 0
+        self._sub_sampled_has_unbounded_top_k = False
+        self._decode_prep_rids: list | None = None
+        self._predictor_graph_batch_sizes = self._normalize_predictor_graph_batch_sizes(
+            server_args,
+            max_batch_size=max_batch_size,
+        )
+        self._predictor_graphs: dict[tuple, _PredictorDecodeGraph] = {}
+        self._predictor_graph_disabled: set[tuple] = set()
+        # Note: (Jiaxin Deng) None = resolved at decode time; the bootstrap
+        # defers graph capture past init, so nothing is decided here.
+        self._predictor_graph_enabled: bool | None = None
+        self._predictor_graph_failure_count = 0
+        self._predictor_graph_capacity_fallback_count = 0
+        self._predictor_graph_capacity_warned = False
+        self._predictor_graph_capture_count = 0
+        self._predictor_graph_pool = None
+        _bind_default_weight_loaders(self)
+        self._cached_params_dict = dict(self.named_parameters())
+        self._sampler = None
 
     def prepare_decode_buffers(self, requests: list[Any]) -> None:
         batch_size = len(requests)

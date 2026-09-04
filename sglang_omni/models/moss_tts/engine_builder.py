@@ -22,6 +22,19 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
     supports_context_length_override = True
     supports_breakable_prefill_cuda_graph = True
 
+    def __init__(self, *, total_gpu_memory_fraction: float | None = None) -> None:
+        super().__init__()
+        self.total_gpu_memory_fraction = total_gpu_memory_fraction
+
+    def infra_kwargs(self) -> dict[str, Any]:
+        # Note (Jiaxin Deng): without this the declared stage budget stops at the
+        # placement validator and KV sizing profiles against whatever the card happens
+        # to have free, so capacity would depend on which process loaded first. Emitted
+        # only when a budget is declared, so the single-process path is untouched.
+        if self.total_gpu_memory_fraction is None:
+            return {}
+        return {"total_gpu_memory_fraction": self.total_gpu_memory_fraction}
+
     def resolve_context_length(
         self,
         checkpoint_dir: str,
