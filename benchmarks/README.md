@@ -118,6 +118,14 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
     --output-dir results/qwen3_omni_en \
     --model qwen3-omni --lang en --port 8000
 
+# 3d. Qwen3-Omni — colocated multi-server latency benchmark
+python -m benchmarks.eval.benchmark_omni_seedtts_colocated \
+    --base-url http://localhost:8000 \
+    --base-url http://localhost:8001 \
+    --meta seedtts_testset/en/meta.lst \
+    --output-dir results/qwen3_omni_colocated \
+    --model qwen3-omni --max-samples 50 --max-concurrency 16 --rounds 2
+
 # 4. Qwen3-Omni — MMSU (audio comprehension)
 python -m benchmarks.eval.benchmark_omni_mmsu \
     --model qwen3-omni --port 8000 \
@@ -180,6 +188,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_tts_seedtts.py` | TTS speed + WER (unified) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
 | `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, raw PCM streaming, WebSocket, voice and batch contracts |
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_seedtts_colocated.py` | Colocated per-server latency benchmark | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmau.py` | MMAU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmar.py` | MMAR (audio reasoning) | Qwen3-Omni | `/v1/chat/completions` |
