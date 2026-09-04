@@ -261,6 +261,10 @@ impl WorkerPool {
             if !matching.workers[owner.registration_id.startup_ordinal()] {
                 return Err(DispatchError::NoEligibleProfile);
             }
+            if requirement.profile.requires_default_resolution() && owner.default_model_id.is_none()
+            {
+                return Err(DispatchError::AmbiguousModel);
+            }
             if !owner.is_routable() {
                 return Err(DispatchError::Unavailable);
             }
@@ -308,6 +312,10 @@ impl WorkerPool {
                 .ok_or(DispatchError::NoEligibleProfile)?;
             if !matching.workers[owner.registration_id.startup_ordinal()] {
                 return Err(DispatchError::NoEligibleProfile);
+            }
+            if requirement.profile.requires_default_resolution() && owner.default_model_id.is_none()
+            {
+                return Err(DispatchError::AmbiguousModel);
             }
             if !owner.is_routable() {
                 return Err(DispatchError::Unavailable);
@@ -2029,6 +2037,45 @@ mod tests {
             )
             .expect("preset dispatch");
         assert_eq!(lease.registration_ordinal(), 1);
+    }
+
+    #[test]
+    fn uploaded_voice_owner_must_declare_its_default_model() {
+        let mut owner = voice_speech_record(0);
+        Arc::get_mut(&mut owner)
+            .expect("new test record is uniquely owned")
+            .default_model_id = None;
+        let mut pool = media_pool(vec![Arc::clone(&owner)]);
+        pool.voice_owner = Some(owner);
+        pool.admission = AdmissionController::new(8, [None, Some(4), Some(4), None, Some(4), None]);
+
+        let mut http = speech_requirement(true);
+        let ProfileRequirement::SpeechHttp { model, .. } = &mut http.profile else {
+            panic!("speech requirement")
+        };
+        *model = ModelSelection::UnresolvedDefault;
+        assert!(matches!(
+            pool.dispatch(
+                pool.try_admit(CapacityClass::SpeechHttp, 1)
+                    .expect("HTTP admission"),
+                &http,
+            ),
+            Err(DispatchError::AmbiguousModel)
+        ));
+
+        let mut websocket = speech_websocket_requirement(true);
+        let ProfileRequirement::SpeechWebsocket { model, .. } = &mut websocket.profile else {
+            panic!("speech WebSocket requirement")
+        };
+        *model = ModelSelection::UnresolvedDefault;
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("WebSocket admission"),
+                &websocket,
+            ),
+            Err(DispatchError::AmbiguousModel)
+        ));
     }
 
     #[test]
