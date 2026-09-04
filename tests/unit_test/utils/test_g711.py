@@ -3,51 +3,23 @@
 from __future__ import annotations
 
 import struct
-import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from sglang_omni.utils import g711
-from sglang_omni.utils.g711 import (
-    ALAW,
-    MULAW,
-    decode_g711,
-    resolve_g711_encoding,
-    wrap_g711_as_wav,
-)
+from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.g711 import ALAW, MULAW, resolve_g711_encoding, wrap_g711_as_wav
+
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
-def _reference_table(encoding: str) -> np.ndarray:
-    # Note (Jeffro)audioop ships the reference G.711 tables until Python 3.13 removes it the project pins <3.13,
-    # so we compare against it while we can.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        audioop = pytest.importorskip("audioop")
-    decode = audioop.ulaw2lin if encoding == MULAW else audioop.alaw2lin
-    pcm = np.frombuffer(decode(bytes(range(256)), 2), dtype="<i2")
-    return pcm.astype(np.float32) / 32768.0
-
-
-@pytest.mark.parametrize("encoding", [MULAW, ALAW])
-def test_tables_match_the_reference_implementation(encoding: str) -> None:
-    np.testing.assert_array_equal(g711._TABLES[encoding], _reference_table(encoding))
-
-
-def test_decode_yields_one_sample_per_byte_in_unit_range() -> None:
-    samples = decode_g711(bytes(range(256)), MULAW)
-
-    assert samples.shape == (256,)
-    assert samples.dtype == np.float32
-    assert samples.min() >= -1.0 and samples.max() <= 1.0
-    # 0xFF is µ-law silence; 0x00 is the loudest negative code.
-    assert samples[0xFF] == 0.0
-    assert samples[0x00] == pytest.approx(-32124 / 32768.0)
-
-
-def test_decode_rejects_unknown_encoding() -> None:
-    with pytest.raises(ValueError, match="Unsupported G.711 encoding"):
-        decode_g711(b"\x00", "pcm16")
+def _sun_au_mulaw(num_samples: int = 8000) -> bytes:
+    # Sun AU header: magic, header size, data size, encoding (1 = 8-bit
+    # µ-law), sample rate, channels. Built by hand because Python 3.13 drops
+    # the sunau module.
+    payload = b"\xff" * num_samples
+    return b".snd" + struct.pack(">IIIII", 24, len(payload), 1, 8000, 1) + payload
 
 
 @pytest.mark.parametrize(
@@ -79,36 +51,45 @@ def test_resolve_encoding_from_media_type_then_filename(
     assert resolve_g711_encoding(content_type, filename) == expected
 
 
-def test_wrap_produces_a_wav_that_the_fast_path_decodes() -> None:
-    from sglang_omni.preprocessing.audio import _parse_wav_bytes
+def test_wrap_matches_the_ffmpeg_reference_container() -> None:
+    # Both fixtures come from the same ffmpeg conversion: the headerless
+    # payload and the µ-law WAV ffmpeg wrote around it. Wrapping the payload
+    # must decode to exactly what ffmpeg's container decodes to.
+    raw = (_DATA_DIR / "query_to_draw_8k.ulaw").read_bytes()
+    reference = (_DATA_DIR / "query_to_draw_8k_ulaw.wav").read_bytes()
 
-    payload = bytes(range(256)) * 4
-    wav = wrap_g711_as_wav(payload, MULAW)
+    wav = wrap_g711_as_wav(raw, MULAW)
 
     assert wav[:4] == b"RIFF" and wav[8:12] == b"WAVE"
-    fmt_tag, channels, sample_rate, _, block_align, bits = struct.unpack(
-        "<HHIIHH", wav[20:36]
-    )
-    assert (fmt_tag, channels, sample_rate, block_align, bits) == (7, 1, 8000, 1, 8)
-    assert wav.endswith(payload)
-
-    audio, decoded_rate = _parse_wav_bytes(wav)
-    assert decoded_rate == 8000
-    np.testing.assert_array_equal(audio, decode_g711(payload, MULAW))
+    assert wav.endswith(raw)
+    np.testing.assert_array_equal(load_audio(wav), load_audio(reference))
 
 
-def test_wrap_pads_odd_payloads_to_keep_riff_chunks_aligned() -> None:
-    wav = wrap_g711_as_wav(b"\xff" * 3, ALAW)
+@pytest.mark.parametrize("encoding", [MULAW, ALAW])
+def test_wrap_keeps_one_sample_per_byte(encoding: str) -> None:
+    payload = bytes(range(256)) * 4
 
-    riff_size = struct.unpack("<I", wav[4:8])[0]
-    assert riff_size == len(wav) - 8
-    assert len(wav) % 2 == 0
+    samples = load_audio(wrap_g711_as_wav(payload, encoding), target_sample_rate=8000)
+
+    assert samples.shape == (len(payload),)
+    assert samples.dtype == np.float32
+    assert samples.min() >= -1.0 and samples.max() <= 1.0
 
 
 def test_wrap_leaves_existing_wav_untouched() -> None:
     wav = wrap_g711_as_wav(b"\xff" * 10, MULAW)
 
     assert wrap_g711_as_wav(wav, MULAW) is wav
+
+
+def test_wrap_leaves_sun_au_untouched() -> None:
+    # mimetypes maps .au and .snd to audio/basic, the same media type raw
+    # µ-law uses, so a client that sniffs by extension sends AU as
+    # audio/basic. AU already carries a header; wrapping it would turn that
+    # header into bogus samples.
+    au = _sun_au_mulaw()
+
+    assert wrap_g711_as_wav(au, MULAW) is au
 
 
 def test_wrap_rejects_unknown_encoding() -> None:

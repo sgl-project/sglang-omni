@@ -13,14 +13,6 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from sglang_omni.utils.g711 import (
-    ALAW,
-    MULAW,
-    WAV_FORMAT_ALAW,
-    WAV_FORMAT_MULAW,
-    decode_g711,
-)
-
 from .base import MediaIO, _is_url
 
 
@@ -123,10 +115,6 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
             audio = ((audio_u8.astype(np.float32) - 128.0) / 128.0).astype(np.float32)
         else:
             raise ValueError(f"Unsupported PCM WAV bit depth: {bits_per_sample}")
-    elif fmt_tag in (WAV_FORMAT_MULAW, WAV_FORMAT_ALAW):  # G.711 telephony
-        if bits_per_sample != 8:
-            raise ValueError(f"Unsupported G.711 WAV bit depth: {bits_per_sample}")
-        audio = decode_g711(data_bytes, MULAW if fmt_tag == WAV_FORMAT_MULAW else ALAW)
     else:
         raise ValueError(f"Unsupported WAV format tag: {fmt_tag}")
 

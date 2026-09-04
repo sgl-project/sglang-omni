@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import struct
 import wave
 from types import SimpleNamespace
 
@@ -217,3 +218,17 @@ async def test_read_still_rejects_empty_g711_uploads() -> None:
         )
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_read_keeps_sun_au_declared_as_audio_basic_intact() -> None:
+    # Sun AU header by hand (Python 3.13 drops sunau): 1 s of 8 kHz µ-law.
+    payload = b"\xff" * 8000
+    au = b".snd" + struct.pack(">IIIII", 24, len(payload), 1, 8000, 1) + payload
+
+    audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+        _Upload(au, "audio/basic", "call.au")
+    )
+
+    assert audio_bytes is au
+    assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.0)

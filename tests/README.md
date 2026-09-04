@@ -472,11 +472,11 @@ that happened to contain an older version of the test.
 
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
-    and mono/channel preservation, plus the fast WAV path decoding µ-law and
-    A-law containers and the 8 kHz telephony fixtures under `tests/data/`.
-  - G.711 helpers (`test_g711.py`): lookup tables checked against the
-    `audioop` reference, media-type and extension resolution, and wrapping
-    headerless bytes in a WAV container.
+    and mono/channel preservation, plus the 8 kHz telephony fixtures under
+    `tests/data/`.
+  - G.711 helpers (`test_g711.py`): media-type and extension resolution, and
+    wrapping headerless bytes in a WAV container that matches ffmpeg's while
+    leaving WAV and Sun AU inputs untouched.
   - pinned CUDA staging primitives (`cuda_staging`): exact-size growth that
     keeps the old storage on allocation failure, allocation outside inference
     mode, one reusable completion event per transfer slot, and record/sync

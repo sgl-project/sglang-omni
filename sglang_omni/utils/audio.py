@@ -99,6 +99,10 @@ def is_riff_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
 
+def is_sun_au(data: bytes) -> bool:
+    return len(data) >= 24 and data[:4] == b".snd"
+
+
 def _resample_with_scipy(
     audio_np: np.ndarray, sample_rate: int, target_sample_rate: int
 ) -> np.ndarray:
