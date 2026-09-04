@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Small native-MLX speech-token model used by Fun-CosyVoice3.
+"""Native-MLX speech-token model used by Fun-CosyVoice3.
 
-The Flow/HiFT stages remain the existing Torch implementation.  This module
-owns only the Qwen2 speech-token LLM, which keeps the framework boundary at an
-integer token list and avoids importing an external ``mlx-audio`` package.
+This module owns the Qwen2 speech-token LLM. Native MLX Flow/HiFT components
+live in the sibling ``vocoder`` package, keeping the stage boundary at an
+integer token list without importing an external ``mlx-audio`` package.
 """
 
 from __future__ import annotations

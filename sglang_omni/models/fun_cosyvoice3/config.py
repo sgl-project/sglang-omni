@@ -73,6 +73,19 @@ class FunCosyVoice3EngineStageConfig(EngineStageConfig):
     )
 
 
+class FunCosyVoice3VocoderFactoryArgs(FactoryArgs):
+    """Vocoder knobs, including the converted native MLX artifact."""
+
+    mlx_model_path: str | None = Field(default=None)
+    mlx_model_revision: str | None = Field(default=None)
+
+
+class FunCosyVoice3VocoderStageConfig(StageConfig):
+    factory: FunCosyVoice3VocoderFactoryArgs = Field(
+        default_factory=FunCosyVoice3VocoderFactoryArgs
+    )
+
+
 class FunCosyVoice3PipelineConfig(PipelineConfig):
     """3-stage Fun-CosyVoice3 pipeline: preprocessing -> tts_engine -> vocoder."""
 
@@ -84,6 +97,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": FunCosyVoice3EngineStageConfig,
+        "vocoder": FunCosyVoice3VocoderStageConfig,
     }
 
     @classmethod
@@ -112,11 +126,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             next="vocoder",
             stream_to=["vocoder"],
         ),
-        StageConfig(
+        FunCosyVoice3VocoderStageConfig(
             name="vocoder",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FactoryArgs(
+            factory=FunCosyVoice3VocoderFactoryArgs(
                 dtype="bfloat16",
                 flow_batch_admission_frames=8000,
                 flow_merge_max_gap_frames=384,
@@ -150,6 +164,27 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
         )
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        if stage_name != "vocoder":
+            return {}
+        vocoder_factory = self.stage_named("vocoder").factory
+        if vocoder_factory.mlx_model_path is not None:
+            # A distinct vocoder repository must not inherit the engine
+            # repository's revision. Both explicit vocoder fields travel
+            # through typed config instead.
+            return {}
+        # One converted artifact contains the speech-token LLM, Flow, and
+        # HiFT weights. Reuse the engine's artifact by default so the common
+        # MLX launch only needs one model override; an explicit vocoder factory
+        # value still wins through the normal typed-config precedence.
+        engine_factory = self.stage_named("tts_engine").factory
+        kwargs: dict[str, Any] = {}
+        if engine_factory.mlx_model_path is not None:
+            kwargs["mlx_model_path"] = engine_factory.mlx_model_path
+        if engine_factory.mlx_model_revision is not None:
+            kwargs["mlx_model_revision"] = engine_factory.mlx_model_revision
+        return kwargs
 
 
 EntryClass = FunCosyVoice3PipelineConfig
