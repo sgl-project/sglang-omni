@@ -192,7 +192,9 @@ fn render_metrics(lifecycle: LifecycleState, ready: bool, snapshot: &OperationsS
 }
 
 fn render_admission_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
-    output.push_str("# HELP sglang_omni_router_admission_limit Configured admission limit.\n");
+    output.push_str(
+        "# HELP sglang_omni_router_admission_limit Configured admission limit in class-specific units.\n",
+    );
     output.push_str("# TYPE sglang_omni_router_admission_limit gauge\n");
     for entry in &snapshot.admission {
         let _ = writeln!(
@@ -203,7 +205,7 @@ fn render_admission_metrics(output: &mut String, snapshot: &OperationsSnapshot) 
         );
     }
     output.push_str(
-        "# HELP sglang_omni_router_admission_in_flight Current admitted requests and sessions.\n",
+        "# HELP sglang_omni_router_admission_in_flight Current admission usage in class-specific units.\n",
     );
     output.push_str("# TYPE sglang_omni_router_admission_in_flight gauge\n");
     for entry in &snapshot.admission {
@@ -223,7 +225,7 @@ fn render_worker_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
         .map(|worker| worker.active_requests)
         .sum();
     output.push_str(
-        "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load.\n",
+        "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load; speech batches are item-weighted.\n",
     );
     output.push_str("# TYPE sglang_omni_router_worker_active_requests gauge\n");
     let _ = writeln!(
@@ -472,7 +474,7 @@ mod tests {
                 "# HELP sglang_omni_router_workers_routable Routable workers.\n",
                 "# TYPE sglang_omni_router_workers_routable gauge\n",
                 "sglang_omni_router_workers_routable 1\n",
-                "# HELP sglang_omni_router_admission_limit Configured admission limit.\n",
+                "# HELP sglang_omni_router_admission_limit Configured admission limit in class-specific units.\n",
                 "# TYPE sglang_omni_router_admission_limit gauge\n",
                 "sglang_omni_router_admission_limit{class=\"global\"} 100\n",
                 "sglang_omni_router_admission_limit{class=\"generation_http\"} 101\n",
@@ -481,7 +483,7 @@ mod tests {
                 "sglang_omni_router_admission_limit{class=\"transcription_http\"} 104\n",
                 "sglang_omni_router_admission_limit{class=\"speech_websocket\"} 105\n",
                 "sglang_omni_router_admission_limit{class=\"realtime_websocket\"} 106\n",
-                "# HELP sglang_omni_router_admission_in_flight Current admitted requests and sessions.\n",
+                "# HELP sglang_omni_router_admission_in_flight Current admission usage in class-specific units.\n",
                 "# TYPE sglang_omni_router_admission_in_flight gauge\n",
                 "sglang_omni_router_admission_in_flight{class=\"global\"} 0\n",
                 "sglang_omni_router_admission_in_flight{class=\"generation_http\"} 1\n",
@@ -490,7 +492,7 @@ mod tests {
                 "sglang_omni_router_admission_in_flight{class=\"transcription_http\"} 4\n",
                 "sglang_omni_router_admission_in_flight{class=\"speech_websocket\"} 5\n",
                 "sglang_omni_router_admission_in_flight{class=\"realtime_websocket\"} 6\n",
-                "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load.\n",
+                "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load; speech batches are item-weighted.\n",
                 "# TYPE sglang_omni_router_worker_active_requests gauge\n",
                 "sglang_omni_router_worker_active_requests 4\n",
                 "# HELP sglang_omni_router_worker_capacity_limit Aggregate configured worker capacity.\n",
