@@ -10,6 +10,8 @@ from sglang.srt.platforms.device_mixin import DeviceMixin
 from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
+    from torch.nn.attention import SDPBackend
+
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 
@@ -66,6 +68,15 @@ class OmniPlatform(DeviceMixin):
 
     def enable_thinker_decode_graph(self) -> bool:
         return True
+
+    def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
+        """SDPA backends to pin while capturing a graph, in preference order.
+
+        Empty leaves dispatch alone, which is what a platform whose default
+        SDPA selection is already capturable wants: pinning there would only
+        narrow the kernels the capture may choose from.
+        """
+        return ()
 
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None

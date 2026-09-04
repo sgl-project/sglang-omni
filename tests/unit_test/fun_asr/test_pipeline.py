@@ -91,6 +91,15 @@ def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
         )
 
 
+def test_fun_asr_stage_takes_its_device_from_the_host() -> None:
+    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
+
+    # A named device would follow the checkpoint onto a host that has no such
+    # runtime; None resolves to whatever the platform layer reports, as the
+    # other ASR stages already do.
+    assert signature.parameters["device"].default is None
+
+
 def test_fun_asr_stage_default_uses_auto_static_kv_budget() -> None:
     signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 

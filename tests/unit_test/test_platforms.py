@@ -167,3 +167,20 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True
     assert CPUOmniPlatform().enable_thinker_decode_graph() is True
+
+
+def test_xpu_names_the_sdpa_backends_a_capture_can_use() -> None:
+    from torch.nn.attention import SDPBackend
+
+    # The default selection is not capturable on XPU, so a capture must pin one
+    # of these; other platforms pin nothing and keep their own dispatch.
+    assert xpu_platform.XPUOmniPlatform().get_graph_capture_sdpa_backends() == (
+        SDPBackend.FLASH_ATTENTION,
+        SDPBackend.EFFICIENT_ATTENTION,
+        SDPBackend.MATH,
+    )
+
+
+def test_other_platforms_leave_the_sdpa_dispatch_alone() -> None:
+    for platform in (OmniPlatform(), CPUOmniPlatform(), CUDAOmniPlatform()):
+        assert platform.get_graph_capture_sdpa_backends() == ()
