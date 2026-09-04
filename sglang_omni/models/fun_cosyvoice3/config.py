@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from pydantic import Field
+
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -58,6 +60,19 @@ def reject_conflicting_dit_accelerators(
         raise ValueError(_DIT_ACCELERATOR_CONFLICT)
 
 
+class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
+    """Engine-only knobs, including the optional native MLX checkpoint."""
+
+    mlx_model_path: str | None = Field(default=None)
+    mlx_model_revision: str | None = Field(default=None)
+
+
+class FunCosyVoice3EngineStageConfig(EngineStageConfig):
+    factory: FunCosyVoice3EngineFactoryArgs = Field(
+        default_factory=FunCosyVoice3EngineFactoryArgs
+    )
+
+
 class FunCosyVoice3PipelineConfig(PipelineConfig):
     """3-stage Fun-CosyVoice3 pipeline: preprocessing -> tts_engine -> vocoder."""
 
@@ -68,7 +83,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     speech_reference_text_excludes_instructions: ClassVar[bool] = True
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "tts_engine": EngineStageConfig,
+        "tts_engine": FunCosyVoice3EngineStageConfig,
     }
 
     @classmethod
@@ -83,11 +98,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(max_concurrency=8),
             next="tts_engine",
         ),
-        EngineStageConfig(
+        FunCosyVoice3EngineStageConfig(
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(
+            factory=FunCosyVoice3EngineFactoryArgs(
                 dtype="bfloat16",
                 onnx_intra_op_threads=16,
                 # Keep in sync with vocoder token_hop_len (AR flush cadence).
