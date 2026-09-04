@@ -10,6 +10,9 @@ from sglang.srt.platforms.device_mixin import DeviceMixin
 from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
+    import torch
+    from torch.nn.attention import SDPBackend
+
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 
@@ -73,3 +76,23 @@ class OmniPlatform(DeviceMixin):
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
         return True
+
+    def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
+        """SDPA backends to pin while capturing a graph, in preference order.
+
+        Empty leaves dispatch alone, which is what a platform whose default
+        SDPA selection is already capturable wants: pinning there would only
+        narrow the kernels the capture may choose from.
+        """
+        return ()
+
+    def moe_router_logits_dtype(self, gate_dtype: "torch.dtype") -> "torch.dtype":
+        """The dtype this platform's fused top-k router takes gate logits in.
+
+        gate_dtype is the dtype the router weight already computed in, so a
+        platform that names it declines the widening rather than requesting a
+        narrowing: the widened copy carries no information the gate did not.
+        """
+        import torch
+
+        return torch.float32

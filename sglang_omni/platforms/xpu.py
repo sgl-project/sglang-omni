@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
+    from torch.nn.attention import SDPBackend
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 
@@ -58,6 +59,27 @@ class XPUOmniPlatform(OmniPlatform):
         from sglang.srt.model_executor.cuda_graph_config import Backend
 
         return Backend.FULL
+
+    def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
+        # Note (siju): XPU's default SDPA selection is not capturable -- it waits
+        # on an event the graph did not create, and capture ends with "Graph nodes
+        # cannot depend on events from outside the graph". Naming a backend, any
+        # backend, avoids that, so name them in preference order and let SDPA fall
+        # through for the shapes and masks flash declines.
+        from torch.nn.attention import SDPBackend
+
+        return (
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.MATH,
+        )
+
+    def moe_router_logits_dtype(self, gate_dtype: "torch.dtype") -> "torch.dtype":
+        # Note (siju): SGLang routes XPU top-k through sgl-kernel's fused softmax
+        # kernel whenever top_k <= 8 and experts <= 256, and that kernel registers
+        # only the half dtypes. Keep the gate's own dtype: the gate computed there,
+        # so the fp32 copy other platforms take adds nothing this has to undo.
+        return gate_dtype
 
     def apply_model_worker_backend_policy(
         self,

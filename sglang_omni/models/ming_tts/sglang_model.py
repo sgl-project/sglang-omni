@@ -17,6 +17,12 @@ from sglang.srt.runtime_context import get_forward, get_parallel
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
+from sglang_omni.models.ming_tts.device_graph import (
+    accelerator_graph_class,
+    accelerator_module,
+    graph_capture,
+    graph_capture_attention,
+)
 from sglang_omni.models.ming_tts.flow_matching import (
     FlowLoss,
     build_cfm_sde_random,
@@ -36,6 +42,7 @@ from sglang_omni.models.ming_tts.weight_loading import (
     classify_ming_tts_weight,
 )
 from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
     get_tensor_model_parallel_world_size,
@@ -90,7 +97,7 @@ class _MingTTSTailGraph:
     def __init__(self, model: Any, batch_size: int) -> None:
         self.model = model
         self.batch_size = int(batch_size)
-        self.graph: torch.cuda.CUDAGraph | None = None
+        self.graph: Any | None = None
         self.inputs: MingTTSTailInputs | None = None
         self.noise: torch.Tensor | None = None
         self.timesteps: torch.Tensor | None = None
@@ -129,15 +136,23 @@ class _MingTTSTailGraph:
             )
         )
 
+        device_module = accelerator_module(device)
+        if device_module is None:
+            raise RuntimeError(
+                "Ming-Omni-TTS tail graph capture requires an accelerator, "
+                f"got {device}"
+            )
         context = (
-            torch.autocast(device_type="cuda", dtype=hidden_dtype)
-            if device.type == "cuda" and hidden_dtype in (torch.float16, torch.bfloat16)
+            torch.autocast(device_type=device.type, dtype=hidden_dtype)
+            if hidden_dtype in (torch.float16, torch.bfloat16)
             else nullcontext()
         )
-        with context:
-            warmup_stream = torch.cuda.Stream(device=device)
-            warmup_stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(warmup_stream):
+        # Note (siju): Warmup shares the pin, so the attention the capture
+        # records is the one the warmup shape-specialized.
+        with context, graph_capture_attention():
+            warmup_stream = device_module.Stream(device=device)
+            warmup_stream.wait_stream(device_module.current_stream(device))
+            with device_module.stream(warmup_stream):
                 for _ in range(2):
                     self.model._compute_tail_step(
                         self.inputs,
@@ -145,11 +160,11 @@ class _MingTTSTailGraph:
                         timesteps=self.timesteps,
                         sde_random=self.sde_random,
                     )
-            torch.cuda.current_stream(device).wait_stream(warmup_stream)
-            torch.cuda.synchronize(device=device)
+            device_module.current_stream(device).wait_stream(warmup_stream)
+            device_module.synchronize(device=device)
 
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            graph = accelerator_graph_class(device_module)()
+            with graph_capture(device_module, graph):
                 self.outputs = self.model._compute_tail_step(
                     self.inputs,
                     noise=self.noise,
@@ -439,6 +454,14 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
         self.tp_size = get_tensor_model_parallel_world_size()
 
         self.gate = MingBailingMoeGate(config)
+        # Note (siju): Resolved once from the weight, not per step from the
+        # hidden states, because a platform dispatch per layer per step is real
+        # cost on the decode path. The two agree: SGLang builds this block under
+        # the model dtype, so the gate weight and the hidden states it sees carry
+        # the same one, and the gate returns logits in the hidden dtype.
+        self.router_logits_dtype = current_platform.moe_router_logits_dtype(
+            self.gate.weight.dtype
+        )
         if self.multi_gate:
             # Note (yzxiao): These modality gates are loaded for checkpoint
             # coverage even though TTS serving does not use modality masks.
@@ -486,7 +509,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             hidden_states.clone() if self.shared_experts is not None else hidden_states
         )
 
-        router_logits = self.gate(hidden_states).float()
+        router_logits = self.gate(hidden_states).to(self.router_logits_dtype)
         topk_output = self.topk(hidden_states, router_logits)
         hidden_states = self.experts(hidden_states, topk_output)
         if self.shared_experts is not None:
