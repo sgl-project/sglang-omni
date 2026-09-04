@@ -8,6 +8,7 @@ import threading
 import weakref
 from array import array
 from collections import deque
+from dataclasses import dataclass
 from queue import Queue
 from types import SimpleNamespace
 
@@ -2173,6 +2174,53 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
 
     assert observed == [scheduler._execution_bridge]
     assert model_runner._async_enabled is enable_async_decode
+    if hasattr(scheduler.dp_attn_adapter, "model_runner"):
+        assert scheduler.dp_attn_adapter.model_runner is model_runner
+
+
+def test_bind_model_runner_replaces_frozen_dp_adapter(monkeypatch) -> None:
+    """Late binding replaces SGLang's pinned frozen adapter."""
+
+    @dataclass(frozen=True)
+    class _DPAttnAdapter:
+        model_runner: object
+        preserved: object
+
+    class _ExecutionBridge:
+        def __init__(self, **_kwargs):
+            self.future_map = object()
+
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.sglang_execution.SGLangExecutionBridge",
+        _ExecutionBridge,
+    )
+    old_runner = object()
+    preserved = object()
+    original_adapter = _DPAttnAdapter(
+        model_runner=old_runner,
+        preserved=preserved,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._model_runner = None
+    scheduler._execution_bridge = None
+    scheduler.device = torch.device("cpu")
+    scheduler.tp_worker = object()
+    scheduler.req_to_token_pool = object()
+    scheduler.spec_algorithm = object()
+    scheduler.enable_async_decode = False
+    scheduler.dp_attn_adapter = original_adapter
+
+    observed = []
+    model_runner = SimpleNamespace(
+        bind_execution_bridge=lambda bridge: observed.append(bridge)
+    )
+    scheduler.bind_model_runner(model_runner)
+
+    assert scheduler.dp_attn_adapter is not original_adapter
+    assert original_adapter.model_runner is old_runner
+    assert scheduler.dp_attn_adapter.model_runner is model_runner
+    assert scheduler.dp_attn_adapter.preserved is preserved
+    assert observed == [scheduler._execution_bridge]
 
 
 def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:

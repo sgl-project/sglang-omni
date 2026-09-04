@@ -21,6 +21,7 @@ import types
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from itertools import islice
 from typing import Any, Callable
 
@@ -528,6 +529,9 @@ class OmniScheduler:
         # Keep the upstream attribute available to delegated scheduler methods,
         # but make the custom ModelRunner the sole owner of relay.
         self._model_runner = model_runner
+        dp_attn_adapter = self.__dict__.get("dp_attn_adapter")
+        if dp_attn_adapter is not None:
+            self.dp_attn_adapter = replace(dp_attn_adapter, model_runner=model_runner)
         self._execution_bridge = bridge
         self.future_map = bridge.future_map
 
@@ -595,8 +599,12 @@ class OmniScheduler:
         )
         from sglang.srt.runtime_context import get_parallel
 
+        # Prefer the Omni-bound custom runner when present. __init__ may call
+        # bind_model_runner before this component install, so the adapter must
+        # not stay pinned to tp_worker.model_runner alone.
+        adapter_runner = self._model_runner or self.tp_worker.model_runner
         self.dp_attn_adapter = SchedulerDPAttnAdapter(
-            model_runner=self.tp_worker.model_runner,
+            model_runner=adapter_runner,
             tp_group=self.tp_group,
             req_to_token_pool=self.req_to_token_pool,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
