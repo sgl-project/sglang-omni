@@ -83,7 +83,6 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
                 if self.total_gpu_memory_fraction is not None
                 else 0.85
             ),
-            "sampling_backend": "pytorch",
             "chunked_prefill_size": 8192,
             # Qualified capture budget; longer prefills run eager.
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,

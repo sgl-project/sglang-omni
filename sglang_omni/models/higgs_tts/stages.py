@@ -68,7 +68,6 @@ from sglang_omni.scheduling.speaker_cache import (
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
-from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -551,9 +550,9 @@ def create_vocoder_executor(
     if compile_decode:
         if current_platform.is_npu():
             logger.warning(
-                "compile_decode=True was requested but the current platform (%s) "
-                "has no torch.compile backend; falling back to the eager "
-                "vocoder decode",
+                "compile_decode=True was requested but torch.compile on %s "
+                "cannot compile this codec's dynamic-shape graph; falling "
+                "back to the eager vocoder decode",
                 current_platform.device_type,
             )
             compile_decode = False

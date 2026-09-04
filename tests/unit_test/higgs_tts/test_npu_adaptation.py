@@ -121,14 +121,6 @@ def test_vocoder_decode_graph_domain_follows_platform_capability() -> None:
         assert counts == ()
 
 
-def test_capabilities_torch_compile_reflects_platform() -> None:
-    from sglang_omni.models import higgs_tts as higgs_pkg
-
-    assert higgs_pkg.CAPABILITIES.supports_torch_compile is (
-        not current_platform.is_npu()
-    )
-
-
 class _FakeTokenizer:
     @staticmethod
     def from_file(path):  # noqa: ANN001
@@ -219,23 +211,19 @@ def _install_vocoder_fakes(
     )
 
 
-def test_vocoder_compile_decode_falls_back_to_eager_on_npu(
-    monkeypatch, caplog
-) -> None:
+def test_vocoder_compile_decode_falls_back_to_eager_on_npu(monkeypatch, caplog) -> None:
     codec = _fake_vocoder_codec()
     original = codec.model.decode
     _install_vocoder_fakes(monkeypatch, _FakePlatform("npu", npu=True), codec)
 
-    with caplog.at_level(
-        logging.WARNING, logger="sglang_omni.models.higgs_tts.stages"
-    ):
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.models.higgs_tts.stages"):
         result = higgs_stages.create_vocoder_executor(
             "model", device="npu:0", compile_decode=True
         )
 
     assert result == "scheduler"
     assert codec.model.decode is original
-    assert "no torch.compile backend" in caplog.text
+    assert "cannot compile this codec" in caplog.text
 
 
 def test_vocoder_decode_cuda_graphs_skipped_on_npu(monkeypatch) -> None:

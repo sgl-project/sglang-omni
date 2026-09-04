@@ -13,9 +13,11 @@ def top_k_renorm_prob(probs: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
     """
     v = probs.shape[-1]
     k_safe = k.long().clamp(min=1, max=v)
-    kth = probs.sort(dim=-1, descending=True).values.gather(
-        -1, (k_safe - 1).unsqueeze(-1)
-    ).squeeze(-1)
+    kth = (
+        probs.sort(dim=-1, descending=True)
+        .values.gather(-1, (k_safe - 1).unsqueeze(-1))
+        .squeeze(-1)
+    )
     masked = torch.where(probs < kth.unsqueeze(-1), torch.zeros_like(probs), probs)
     denom = masked.sum(dim=-1, keepdim=True)
     return masked / denom.clamp_min(torch.finfo(probs.dtype).tiny)
@@ -23,7 +25,7 @@ def top_k_renorm_prob(probs: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
 
 def top_p_renorm_prob(probs: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
     """torch fallback for ``sgl_kernel.top_p_renorm_prob`` (Ascend NPU).
-    
+
     Nucleus filtering (always keeps the highest-probability token).
     """
     sorted_probs, sorted_indices = probs.sort(dim=-1, descending=True)
