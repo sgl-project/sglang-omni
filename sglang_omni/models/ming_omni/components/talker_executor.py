@@ -23,6 +23,9 @@ from pathlib import Path
 
 import torch
 
+from sglang_omni.models.ming_omni.components.voice_presets import (
+    resolve_prompt_wav_path,
+)
 from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 from sglang_omni.proto import StagePayload
 
@@ -306,11 +309,20 @@ class MingTalkerExecutor:
                     f"[TALKER] voice preset {name!r} in {manifest_path} is "
                     f"missing prompt_wav_path"
                 )
-            resolved = os.path.join(talker_dir, rel_path)
-            if not os.path.isfile(resolved):
+            resolved = resolve_prompt_wav_path(rel_path, talker_dir)
+            if resolved is None:
                 raise FileNotFoundError(
                     f"[TALKER] voice preset {name!r} references missing "
-                    f"prompt wav {resolved}"
+                    f"prompt wav {rel_path} (tried the talker dir and the "
+                    f"checkout-root suffix fallback)"
+                )
+            if resolved != os.path.join(talker_dir, rel_path):
+                logger.warning(
+                    "[TALKER] voice preset %r prompt wav %s resolved via "
+                    "suffix fallback to %s",
+                    name,
+                    rel_path,
+                    resolved,
                 )
             entry["prompt_wav_path"] = resolved
 

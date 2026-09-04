@@ -78,8 +78,7 @@ class SpkembExtractor:
             self.campplus_session.run(
                 None,
                 {
-                    self.campplus_session.get_inputs()[0]
-                    .name: feat.unsqueeze(dim=0)
+                    self.campplus_session.get_inputs()[0].name: feat.unsqueeze(dim=0)
                     .cpu()
                     .numpy()
                 },
@@ -259,6 +258,14 @@ class CFMGraphExecutorPool:
             self.release(executor)
 
 
+def _decode_cache_position(past_key_values, num_new_tokens, device):
+    # transformers>=5 returns a tensor from get_seq_length(); arange needs ints.
+    past_seen_tokens = int(past_key_values.get_seq_length())
+    return torch.arange(
+        past_seen_tokens, past_seen_tokens + num_new_tokens, device=device
+    )
+
+
 class MingOmniTalker(nn.Module):
     """Ming-Omni talker model.
 
@@ -365,9 +372,9 @@ class MingOmniTalker(nn.Module):
             if param.numel() == 1 and loaded_weight.numel() == 1:
                 param.data.fill_(loaded_weight.item())
             else:
-                assert (
-                    param.size() == loaded_weight.size()
-                ), f"Shape mismatch for {name}: param={param.size()}, weight={loaded_weight.size()}"
+                assert param.size() == loaded_weight.size(), (
+                    f"Shape mismatch for {name}: param={param.size()}, weight={loaded_weight.size()}"
+                )
                 param.data.copy_(loaded_weight)
             loaded.add(name)
 
@@ -542,11 +549,10 @@ class MingOmniTalker(nn.Module):
                         output_hidden_states=True,
                     )
                 else:
-                    past_seen_tokens = past_key_values.get_seq_length()
-                    cache_position = torch.arange(
-                        past_seen_tokens,
-                        past_seen_tokens + inputs_embeds.shape[1],
-                        device=inputs_embeds.device,
+                    cache_position = _decode_cache_position(
+                        past_key_values,
+                        inputs_embeds.shape[1],
+                        inputs_embeds.device,
                     )
 
                     if model_graph is None:
@@ -641,9 +647,9 @@ class MingOmniTalker(nn.Module):
         abort_event: threading.Event | None = None,
         max_decode_steps: int | None = None,
     ):
-        assert (
-            self.tokenizer is not None
-        ), "Tokenizer not set. Call set_tokenizer() first."
+        assert self.tokenizer is not None, (
+            "Tokenizer not set. Call set_tokenizer() first."
+        )
         tokenizer = self.tokenizer
 
         spk_emb_prompt: list = []
