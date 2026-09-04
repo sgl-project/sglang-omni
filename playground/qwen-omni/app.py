@@ -27,11 +27,25 @@ _MEDIA_SUFFIXES = {
 
 
 def _fs_root() -> Path:
-    """Filesystem root — always container root ``/``."""
-    return Path("/")
+    """Filesystem root for the playground file browser.
+
+    Configured via the SGLANG_OMNI_FS_ROOT environment variable and
+    defaults to /data. The value / is rejected: using the filesystem
+    root would make the containment check in :func:`_fs_resolve` vacuous
+    and expose the entire container filesystem via /v1/fs/* (CWE-22).
+    """
+    configured = os.environ.get("SGLANG_OMNI_FS_ROOT", "/data").strip() or "/data"
+    root = Path(configured).resolve()
+    if root == Path("/"):
+        raise RuntimeError(
+            "SGLANG_OMNI_FS_ROOT must not be '/'. Set it to a specific "
+            "directory (e.g. /data) to restrict the playground file browser."
+        )
+    return root
 
 
 def _fs_resolve(root: Path, raw_path: str | None) -> Path:
+    root = root.resolve()
     if raw_path is None or raw_path.strip() == "":
         candidate = root
     else:
