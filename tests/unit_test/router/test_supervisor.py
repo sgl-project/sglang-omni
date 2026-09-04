@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni_router.config import RouterConfig, WorkerConfig
-from sglang_omni_router.supervisor import (
+from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+from sglang_omni_router.python.supervisor import (
     RouterSupervisor,
     SupervisorContext,
     SupervisorFailure,
@@ -268,8 +268,8 @@ def test_shutdown_waits_out_the_dp_drain_before_killing(tmp_path: Path) -> None:
 def test_dp_runner_drain_deadline_follows_the_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sglang_omni_router import dp_runner
-    from sglang_omni_router.app_factory import CONFIG_FILE_ENV
+    from sglang_omni_router.python import dp_runner
+    from sglang_omni_router.python.app_factory import CONFIG_FILE_ENV
 
     path = tmp_path / "router_config.json"
     path.write_text(_config(shutdown_drain_secs=77).model_dump_json(), encoding="utf-8")
@@ -423,7 +423,7 @@ def test_run_forever_shutdown_survives_an_unrestorable_previous_handler(
 ) -> None:
     # Note (Jiaxin Deng): a C-level previous handler reads back as None and cannot be
     # reinstalled; that must not skip shutdown() and leak workdir/shm/UDS
-    import sglang_omni_router.supervisor as sup
+    import sglang_omni_router.python.supervisor as sup
 
     def fake_signal(signum, handler):
         if handler is None:
@@ -464,7 +464,10 @@ def test_rapidly_dying_cp_fails_closed(tmp_path: Path) -> None:
 def test_child_env_sets_exactly_one_internal_transport(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sglang_omni_router.supervisor import INTERNAL_TCP_URL_ENV, INTERNAL_UDS_ENV
+    from sglang_omni_router.python.supervisor import (
+        INTERNAL_TCP_URL_ENV,
+        INTERNAL_UDS_ENV,
+    )
 
     # Note (Jiaxin Deng): a stale UDS variable inherited from the parent must not leak
     # through
@@ -483,7 +486,7 @@ def test_watch_supervisor_liveness_sigterms_on_pipe_eof(
     import os
     import time as time_module
 
-    from sglang_omni_router.supervisor import (
+    from sglang_omni_router.python.supervisor import (
         DEATH_PIPE_FD_ENV,
         watch_supervisor_liveness,
     )
@@ -492,7 +495,7 @@ def test_watch_supervisor_liveness_sigterms_on_pipe_eof(
     killed: list[tuple[int, int]] = []
     monkeypatch.setenv(DEATH_PIPE_FD_ENV, str(read_fd))
     monkeypatch.setattr(
-        "sglang_omni_router.supervisor.os.kill",
+        "sglang_omni_router.python.supervisor.os.kill",
         lambda pid, sig: killed.append((pid, sig)),
     )
     watch_supervisor_liveness(sleep=lambda _: None, hard_exit=lambda: None)
@@ -516,7 +519,7 @@ def test_watch_supervisor_liveness_hard_exits_when_sigterm_does_not_land(
     import os
     import signal as signal_module
 
-    from sglang_omni_router.supervisor import (
+    from sglang_omni_router.python.supervisor import (
         _ORPHAN_HARD_EXIT_SECS,
         DEATH_PIPE_FD_ENV,
         watch_supervisor_liveness,
@@ -529,7 +532,7 @@ def test_watch_supervisor_liveness_hard_exits_when_sigterm_does_not_land(
     hard_exits: list[str] = []
     monkeypatch.setenv(DEATH_PIPE_FD_ENV, str(read_fd))
     monkeypatch.setattr(
-        "sglang_omni_router.supervisor.os.kill",
+        "sglang_omni_router.python.supervisor.os.kill",
         lambda pid, sig: signals.append((pid, sig)),
     )
 
@@ -550,7 +553,7 @@ def test_context_carries_the_death_pipe_and_shutdown_closes_it(
 ) -> None:
     import os
 
-    from sglang_omni_router.supervisor import DEATH_PIPE_FD_ENV
+    from sglang_omni_router.python.supervisor import DEATH_PIPE_FD_ENV
 
     harness = Harness(_config(), n=1, tmp_path=tmp_path)
     harness.supervisor.start()
@@ -592,8 +595,8 @@ def test_supervisor_rejects_least_request_with_multiple_processes(
 
 
 def test_supervisor_creates_and_reclaims_admission_slots(tmp_path: Path) -> None:
-    from sglang_omni_router.admission_shm import SlotCodec, admission_file_size
-    from sglang_omni_router.supervisor import ADMISSION_SHM_ENV
+    from sglang_omni_router.python.admission_shm import SlotCodec, admission_file_size
+    from sglang_omni_router.python.supervisor import ADMISSION_SHM_ENV
 
     harness = Harness(_config(), n=2, tmp_path=tmp_path)
     harness.supervisor.start()

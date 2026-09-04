@@ -17,6 +17,16 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
 )
 
 _HIDDEN_SIZE = 4
+if torch.cuda.is_available():
+    _DEVICE = "cuda"
+elif hasattr(torch, "xpu") and torch.xpu.is_available():
+    _DEVICE = "xpu"
+else:
+    _DEVICE = "cpu"
+requires_accelerator = pytest.mark.skipif(
+    _DEVICE == "cpu",
+    reason="requires cuda or xpu",
+)
 _NAMESPACE = "testns"
 _SERVICES: list[Qwen3ASRPreLMEncoderService] = []
 
@@ -40,11 +50,13 @@ class _StubModel(torch.nn.Module):
         )
         self.dtype = dtype
         self.encode_calls = 0
+        self.encode_batch_sizes: list[int] = []
         self.fail = False
         self.fail_oom = False
         self.fail_multi_item = False
         self.packed_3d_output = True
         self.encode_gate: threading.Event | None = None
+        self.encode_started: threading.Event | None = None
         self.row_offset = 0
         self.encode_delay_s = 0.0
         self.grad_enabled_during_encode: bool | None = None
@@ -52,6 +64,9 @@ class _StubModel(torch.nn.Module):
     def get_audio_feature(self, items):  # noqa: ANN001
         self.grad_enabled_during_encode = torch.is_grad_enabled()
         self.encode_calls += 1
+        self.encode_batch_sizes.append(len(items))
+        if self.encode_started is not None:
+            self.encode_started.set()
         gate = self.encode_gate
         if gate is not None:
             self.encode_gate = None
@@ -82,12 +97,14 @@ def _make_service(
     *,
     cache_max_entries: int = 16,
     cache_max_bytes: int = 1 << 20,
+    max_batch_size: int = 8,
 ) -> Qwen3ASRPreLMEncoderService:
     service = Qwen3ASRPreLMEncoderService(
         model or _StubModel(),
         cache_namespace=_NAMESPACE,
         cache_max_entries=cache_max_entries,
         cache_max_bytes=cache_max_bytes,
+        max_batch_size=max_batch_size,
     )
     _SERVICES.append(service)
     return service
@@ -126,6 +143,60 @@ def test_encode_attaches_lm_ready_embedding_and_clears_feature() -> None:
     assert model.encode_calls == 1
     assert model.grad_enabled_during_encode is False
     assert service.stats()["misses"] == 1
+
+
+def test_submit_returns_before_encoding_completes() -> None:
+    model = _StubModel()
+    gate = threading.Event()
+    model.encode_gate = gate
+    service = _make_service(model)
+    item = _item(7, 3)
+
+    future = service.submit_item(item)
+
+    assert not future.done()
+    assert item.precomputed_embeddings is None
+    gate.set()
+    future.result(timeout=2)
+    assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+
+
+def test_async_submissions_form_full_batch_without_blocked_callers() -> None:
+    model = _StubModel()
+    gate = threading.Event()
+    encode_started = threading.Event()
+    model.encode_gate = gate
+    model.encode_started = encode_started
+    service = _make_service(model, max_batch_size=8)
+    items = [_item(audio_hash, 3) for audio_hash in range(9)]
+
+    futures = [service.submit_item(items[0])]
+    assert encode_started.wait(timeout=2)
+    assert model.encode_calls == 1
+    futures.extend(service.submit_item(item) for item in items[1:])
+    gate.set()
+    for future in futures:
+        future.result(timeout=2)
+
+    assert model.encode_batch_sizes == [1, 8]
+
+
+def test_async_single_flight_completes_each_item_future() -> None:
+    model = _StubModel()
+    gate = threading.Event()
+    model.encode_gate = gate
+    service = _make_service(model)
+    items = [_item(123, 3) for _ in range(3)]
+
+    futures = [service.submit_item(item) for item in items]
+    assert all(not future.done() for future in futures)
+    gate.set()
+    for future in futures:
+        future.result(timeout=2)
+
+    assert model.encode_calls == 1
+    assert service.stats()["merged"] == 2
+    assert all(item.precomputed_embeddings is not None for item in items)
 
 
 def test_close_stops_worker() -> None:
@@ -324,6 +395,18 @@ def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
     assert torch.equal(items[0].precomputed_embeddings, items[1].precomputed_embeddings)
 
 
+def test_submit_item_failure_counts_failed() -> None:
+    model = _StubModel()
+    model.fail = True
+    service = _make_service(model)
+
+    future = service.submit_item(_item(88, 3))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        future.result(timeout=2)
+    assert service.stats()["failed"] == 1
+
+
 def test_encode_failure_propagates_without_poisoning_cache() -> None:
     model = _StubModel()
     model.fail = True
@@ -356,16 +439,10 @@ def test_encode_failure_propagates_without_poisoning_cache() -> None:
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
 
 
-def test_oom_failure_detaches_traceback_and_recovers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_oom_failure_detaches_traceback_and_recovers() -> None:
     model = _StubModel()
     model.fail_oom = True
     service = _make_service(model)
-    empty_cache_calls: list[bool] = []
-    monkeypatch.setattr(
-        torch.cuda, "empty_cache", lambda: empty_cache_calls.append(True)
-    )
 
     with pytest.raises(torch.OutOfMemoryError, match="encoder OOM") as excinfo:
         service.encode_item(_item(77, 3))
@@ -586,3 +663,36 @@ def test_flat_2d_encoder_output_is_also_accepted() -> None:
     service.encode_item(item)
 
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+
+
+@pytest.mark.accelerator
+@requires_accelerator
+def test_the_device_cache_is_really_reclaimed_after_an_oom() -> None:
+    """The behaviour the fix exists for, on the live accelerator."""
+    device_module = torch.get_device_module(torch.device(_DEVICE))
+    service = _make_service(_StubModel().to(_DEVICE))
+
+    with device_module.device(_DEVICE):
+        device_module.synchronize()
+        device_module.empty_cache()
+        floor = device_module.memory_reserved()
+        allocated = device_module.memory_allocated()
+        cached_slack = max(0, floor - allocated)
+        block = torch.empty(
+            cached_slack + 64 * 1024 * 1024,
+            dtype=torch.uint8,
+            device=_DEVICE,
+        )
+        device_module.synchronize()
+        reserved_with_block = device_module.memory_reserved()
+        assert reserved_with_block > floor
+
+        del block
+        device_module.synchronize()
+        reserved_before = device_module.memory_reserved()
+        assert reserved_before > floor
+
+        service._recover_after_failure(torch.OutOfMemoryError("encoder OOM"))
+
+        device_module.synchronize()
+        assert device_module.memory_reserved() < reserved_before

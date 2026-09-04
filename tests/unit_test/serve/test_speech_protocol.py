@@ -82,6 +82,48 @@ def test_speech_generation_accepts_seedtts_reference_payload_without_voice(
     ]
 
 
+def test_speech_service_rejects_reference_text_with_instructions_when_configured() -> (
+    None
+):
+    service = SpeechRequestValidator(
+        default_model="cosyvoice",
+        required_speech_reference_count=1,
+        speech_reference_text_excludes_instructions=True,
+    )
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {
+                "input": "hello",
+                "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+                "ref_text": "reference transcript",
+                "instructions": "speak warmly",
+            }
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "instructions"
+    assert "reference transcript" in exc_info.value.message
+
+
+def test_speech_service_allows_reference_text_with_instructions_by_default() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    request = service.parse_request(
+        {
+            "input": "hello",
+            "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+            "ref_text": "reference transcript",
+            "instructions": "speak warmly",
+        }
+    )
+
+    assert request.ref_text == "reference transcript"
+    assert request.instructions == "speak warmly"
+
+
 @pytest.mark.parametrize("response_format", ["wav", "mp3", "flac", "aac", "opus"])
 def test_speech_service_requires_pcm_for_http_streaming(
     response_format: str,
@@ -620,17 +662,55 @@ def test_reference_audio_rejects_oversized_data_url(
     assert exc_info.value.param == "ref_audio"
 
 
-def test_speech_service_rejects_oversized_input(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = SpeechRequestValidator(default_model="tts")
-    monkeypatch.setattr(speech_service, "MAX_SPEECH_INPUT_CHARS", 5)
+def test_speech_service_rejects_oversized_input() -> None:
+    service = SpeechRequestValidator(default_model="tts", max_speech_input_chars=5)
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello world"})
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "input"
+
+
+def test_speech_service_keeps_default_input_limit() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "x" * (speech_service.MAX_SPEECH_INPUT_CHARS + 1)}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "input"
+
+
+def test_speech_input_default_is_shared_with_pipeline_schema() -> None:
+    from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS, PipelineConfig
+
+    assert speech_service.MAX_SPEECH_INPUT_CHARS == MAX_SPEECH_INPUT_CHARS
+    assert PipelineConfig.max_speech_input_chars == MAX_SPEECH_INPUT_CHARS
+
+
+@pytest.mark.parametrize("max_speech_input_chars", [0, -1, True, 1.5])
+def test_speech_service_rejects_invalid_input_limit(
+    max_speech_input_chars: object,
+) -> None:
+    with pytest.raises(ValueError, match="positive integer or None"):
+        SpeechRequestValidator(
+            default_model="tts",
+            max_speech_input_chars=max_speech_input_chars,
+        )
+
+
+def test_speech_service_can_defer_input_length_to_model_context() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        max_speech_input_chars=None,
+    )
+
+    request = service.parse_request({"input": "x" * 5000})
+
+    assert len(request.input) == 5000
 
 
 def test_reference_list_accepts_raw_local_path(tmp_path: Path) -> None:

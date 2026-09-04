@@ -30,11 +30,13 @@ class GraphKey:
 class Code2WavRunResult:
     """Result metadata for either an exact graph replay or eager fallback.
 
-    A ``cuda_graph`` output is a borrowed static buffer. The caller must finish
-    all reads, including trim and device-to-host transfer, before the next graph
-    replay. It must not retain the tensor or use it concurrently. The current
-    scheduler's outer ``_state_lock`` is intended to cover that whole lifetime;
-    this runner deliberately does not clone the output.
+    A ``cuda_graph`` output is a borrowed static buffer. Before the next replay,
+    the caller must either finish every read or enqueue every dependent read and
+    copy on the same CUDA stream so replay cannot overtake them. The tensor
+    itself must not be retained or consumed concurrently; asynchronous host
+    transfer must retain its destination and completion event until
+    materialization finishes. This runner deliberately does not clone the
+    output.
     """
 
     output: torch.Tensor
@@ -168,8 +170,8 @@ class Code2WavCudaGraphRunner:
     ) -> None:
         self._model = model
         self._device = torch.device(device)
-        if self._device.type != "cuda" or self._device.index is None:
-            raise ValueError("Code2Wav CUDA graphs require a concrete CUDA device")
+        if self._device.type not in ("cuda", "musa") or self._device.index is None:
+            raise ValueError("Code2Wav CUDA graphs require a concrete CUDA/MUSA device")
         self._num_quantizers = int(num_quantizers)
         if self._num_quantizers <= 0:
             raise ValueError("Code2Wav CUDA graphs require a positive quantizer count")

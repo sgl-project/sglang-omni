@@ -13,7 +13,7 @@ from typing import Any, Iterable, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.runtime_context import get_forward
+from sglang.srt.runtime_context import get_forward, get_parallel
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
@@ -54,8 +54,6 @@ from sglang_omni.vendor.sglang.layers import (
     SiluAndMul,
     TopK,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
     should_skip_post_experts_all_reduce,
@@ -239,8 +237,8 @@ class MingBailingMoeAttention(nn.Module):
         self.num_kv_heads = int(config.num_key_value_heads)
         self.head_dim = int(config.head_dim)
 
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
+        attn_tp_rank = get_parallel().attn_tp_rank
+        attn_tp_size = get_parallel().attn_tp_size
         if self.num_heads % attn_tp_size != 0:
             raise ValueError(
                 "Ming BailingMoe attention heads must be divisible by "

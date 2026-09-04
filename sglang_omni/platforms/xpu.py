@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
@@ -8,6 +9,8 @@ import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -30,6 +33,31 @@ class XPUOmniPlatform(OmniPlatform):
 
     def enable_code2wav_graph(self):
         return False
+
+    def get_fused_qk_norm_rope_with_cos_sin_cache(self):
+        try:
+            from sgl_kernel import fused_inplace_qknorm_rope
+        except ImportError as exc:
+            logger.info(
+                f"XPU sgl_kernel has no cos/sin-cache fused QK-norm-RoPE kernel "
+                f"({exc}); falling back to the unfused QK-norm and RoPE path"
+            )
+            return None
+        return fused_inplace_qknorm_rope
+
+    def enable_talker_graph(self) -> bool:
+        # The predictor's default SDPA dispatch is not capturable here.
+        return False
+
+    def enable_thinker_decode_graph(self) -> bool:
+        # Capture leaves the scheduler thread's stream recording; host reads fail.
+        return False
+
+    def get_decode_cuda_graph_backend(self) -> str | None:
+        # SGLang leaves XPU decode capture opt-in and accepts only full.
+        from sglang.srt.model_executor.cuda_graph_config import Backend
+
+        return Backend.FULL
 
     def apply_model_worker_backend_policy(
         self,

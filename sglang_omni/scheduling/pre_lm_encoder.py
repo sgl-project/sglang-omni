@@ -109,7 +109,29 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def synchronize_batch(self) -> None:
         pass
 
-    def cache_embedding(self, item: ItemT, embedding: EmbeddingT) -> None:
+    def stage_host_copy(self, item: ItemT, embedding: EmbeddingT) -> Any | None:
+        """Optionally copy embedding from GPU to CPU for the cache.
+
+        Called for each item right after split_embeddings, while the encoder
+        stream is still the current stream and before synchronize_batch. A
+        subclass can therefore do a non-blocking GPU->CPU copy here; the copy
+        queues behind the encoder kernels and synchronize_batch waits for it,
+        so no extra synchronization is needed. The returned object is passed
+        unchanged to cache_embedding as host_copy. The default returns None,
+        which means cache_embedding receives host_copy=None and copies on its
+        own (synchronously) if it wants to cache.
+        """
+        del item, embedding
+        return None
+
+    def cache_embedding(
+        self,
+        item: ItemT,
+        # TODO(Jeffro): once every service stages its own host copy via
+        # stage_host_copy, drop this device-side embedding and cache host_copy only.
+        embedding: EmbeddingT,
+        host_copy: Any | None = None,
+    ) -> None:
         pass
 
     def _execute_batch(self, items: list[ItemT]) -> list[EmbeddingT]:
@@ -122,6 +144,10 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                     f"split_embeddings returned {len(embeddings)} embeddings "
                     f"for {len(items)} items"
                 )
+            host_copies = [
+                self.stage_host_copy(item, embedding)
+                for item, embedding in zip(items, embeddings)
+            ]
             if attach_before_synchronize:
                 for item, embedding in zip(items, embeddings):
                     self.attach_embedding(item, embedding)
@@ -129,8 +155,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         if not attach_before_synchronize:
             for item, embedding in zip(items, embeddings):
                 self.attach_embedding(item, embedding)
-        for item, embedding in zip(items, embeddings):
-            self.cache_embedding(item, embedding)
+        for item, embedding, host_copy in zip(items, embeddings, host_copies):
+            self.cache_embedding(item, embedding, host_copy)
         return embeddings
 
     def _handle_batch_failure(

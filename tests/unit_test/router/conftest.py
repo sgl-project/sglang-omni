@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni_router.update_journal import STATE_DIR_ENV
+from sglang_omni_router.python.update_journal import STATE_DIR_ENV
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +29,7 @@ def restore_router_logging():
     It sets propagate=False on the router logger, which silently stops caplog
     from seeing any later test's warnings.
     """
-    logger = logging.getLogger("sglang_omni_router")
+    logger = logging.getLogger("sglang_omni_router.python")
     saved = (list(logger.handlers), logger.propagate, logger.level)
     yield
     logger.handlers, logger.propagate, logger.level = (

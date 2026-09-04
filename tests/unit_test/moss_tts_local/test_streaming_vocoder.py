@@ -82,11 +82,17 @@ class FakeCodec(nn.Module):
         self.dummy = nn.Parameter(torch.zeros(1))
         self._streaming_state: _FakeStreamingState | None = None
         self.config = SimpleNamespace(sampling_rate=SAMPLE_RATE)
+        self.attention_implementation = "flash_attention_2"
+        self.attention_implementation_calls: list[str] = []
         self.decoder = nn.ModuleList([_FakeDecoderStage()])
         self.frame_calls = 0
         self.decode_calls = 0
         self.decode_chunk_durations: list[float | None] = []
         self.decode_decoders: list[nn.Module] = []
+
+    def set_attention_implementation(self, attention_implementation: str) -> None:
+        self.attention_implementation_calls.append(attention_implementation)
+        self.attention_implementation = attention_implementation
 
     @contextmanager
     def streaming(self, batch_size: int):
@@ -217,8 +223,8 @@ def _patch_vocoder_factory_loaders(
     )
     monkeypatch.setattr(
         stages,
-        "load_moss_tts_local_audio_tokenizer",
-        lambda model_path, *, device: SimpleNamespace(
+        "load_moss_tts_local_audio_vocoder",
+        lambda model_path, **kwargs: SimpleNamespace(
             model=codec,
             sample_rate=SAMPLE_RATE,
         ),
@@ -393,6 +399,38 @@ def test_default_session_preserves_batch_width_for_streaming_lanes(monkeypatch) 
     assert scheduler._stream_slots == 15
     assert session._offline_slots == 1
     assert session._batch_size == 16
+
+
+def test_streaming_session_forces_sdpa_and_restores_codec_backend() -> None:
+    codec = FakeCodec()
+    session = _CodecStreamSession(
+        codec,
+        stream_slots=2,
+        offline_slots=1,
+        n_vq=N_VQ,
+    )
+
+    assert codec.attention_implementation == "sdpa"
+    assert codec.attention_implementation_calls == ["sdpa"]
+
+    session.close()
+
+    assert codec.attention_implementation == "flash_attention_2"
+    assert codec.attention_implementation_calls == ["sdpa", "flash_attention_2"]
+
+
+def test_streaming_session_restores_backend_when_streaming_setup_fails() -> None:
+    class FailingCodec(FakeCodec):
+        def streaming(self, batch_size: int):
+            del batch_size
+            raise RuntimeError("streaming setup failed")
+
+    codec = FailingCodec()
+    with pytest.raises(RuntimeError, match="streaming setup failed"):
+        _CodecStreamSession(codec, stream_slots=1, offline_slots=1, n_vq=N_VQ)
+
+    assert codec.attention_implementation == "flash_attention_2"
+    assert codec.attention_implementation_calls == ["sdpa", "flash_attention_2"]
 
 
 def test_factory_default_decouples_first_chunk_from_join_floor(monkeypatch) -> None:
@@ -1376,6 +1414,25 @@ def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
     assert scheduler2._cuda_graph_min_free_gb == 7.0
 
 
+def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> None:
+    calls: list[bool | None] = []
+
+    def resolve(cuda_graph: bool | None) -> bool:
+        calls.append(cuda_graph)
+        raise ValueError("unsafe graph")
+
+    monkeypatch.setattr(stages, "resolve_vocoder_cuda_graph", resolve)
+    monkeypatch.setattr(
+        stages,
+        "_load_moss_tts_local_processor",
+        lambda model_path: (_ for _ in ()).throw(AssertionError("loaded codec")),
+    )
+
+    with pytest.raises(ValueError, match="unsafe graph"):
+        stages.create_vocoder_executor("fake-model", device="cpu", cuda_graph=True)
+    assert calls == [True]
+
+
 def test_default_cuda_graph_frames_cover_stream_chunk_exactly(monkeypatch) -> None:
     captured: list[list[int]] = []
     monkeypatch.setattr(
@@ -1460,7 +1517,7 @@ def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> No
     codec = FakeCodec()
     loaded_codec_paths = []
 
-    def fake_load_audio_tokenizer(model_path, *, device):
+    def fake_load_audio_vocoder(model_path, **kwargs):
         loaded_codec_paths.append(model_path)
         return SimpleNamespace(model=codec, sample_rate=SAMPLE_RATE)
 
@@ -1471,8 +1528,8 @@ def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> No
     )
     monkeypatch.setattr(
         stages,
-        "load_moss_tts_local_audio_tokenizer",
-        fake_load_audio_tokenizer,
+        "load_moss_tts_local_audio_vocoder",
+        fake_load_audio_vocoder,
     )
 
     stages.create_vocoder_executor("fake-model", device="cpu")
@@ -1487,10 +1544,14 @@ def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
     )
 
     cfg = MossTTSLocalPipelineConfig(model_path="x")
-    voc = next(s for s in cfg.stages if s.factory.endswith("create_vocoder_executor"))
-    assert voc.factory_args["cuda_graph"] is True
-    assert voc.factory_args["cuda_graph_frames"] is None
-    assert voc.factory_args["cuda_graph_min_free_gb"] == 3.0
+    voc = cfg.stage_named("vocoder")
+    assert voc.factory.dtype == "float32"
+    assert voc.factory.compute_dtype == "bfloat16"
+    assert voc.factory.attention_backend == "auto"
+    kwargs = cfg.stage_factory_kwargs("vocoder")
+    assert kwargs["cuda_graph"] is True
+    assert kwargs["cuda_graph_frames"] is None
+    assert kwargs["cuda_graph_min_free_gb"] == 3.0
 
     cfg2 = MossTTSLocalPipelineConfig(
         model_path="x",
@@ -1498,17 +1559,14 @@ def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
         cuda_graph_frames=[5, 25],
         cuda_graph_min_free_gb=4.5,
     )
-    voc2 = next(s for s in cfg2.stages if s.factory.endswith("create_vocoder_executor"))
-    assert voc2.factory_args["cuda_graph"] is False
-    assert voc2.factory_args["cuda_graph_frames"] == [5, 25]
-    assert voc2.factory_args["cuda_graph_min_free_gb"] == 4.5
+    kwargs2 = cfg2.stage_factory_kwargs("vocoder")
+    assert kwargs2["cuda_graph"] is False
+    assert kwargs2["cuda_graph_frames"] == [5, 25]
+    assert kwargs2["cuda_graph_min_free_gb"] == 4.5
 
     # The split variant overrides `stages`; the injection must still reach its vocoder.
     split = MossTTSLocalSplitPipelineConfig(model_path="x", cuda_graph=False)
-    voc3 = next(
-        s for s in split.stages if s.factory.endswith("create_vocoder_executor")
-    )
-    assert voc3.factory_args["cuda_graph"] is False
+    assert split.stage_factory_kwargs("vocoder")["cuda_graph"] is False
 
 
 def test_pipeline_config_rejects_invalid_cuda_graph_settings() -> None:

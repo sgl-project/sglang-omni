@@ -44,11 +44,14 @@ results/
 
 .tune-runs/
 .eval-runs/
+.profiling-runs/
 benchmarks/eval/*.edit.lock
 asr_seedtts_results.json
 .claude/*
 !.claude/skills/
 /core
+# Rust build artifacts
+target/
 
 /task.md
 /test_minimax_music3.py
@@ -57,3 +60,7 @@ asr_seedtts_results.json
 # XPU installer lock/backup
 .pyproject.xpu.lock
 .pyproject.cuda.bak
+
+# CPU installer lock/backup
+.pyproject.cpu.lock
+.pyproject.cpu.bak

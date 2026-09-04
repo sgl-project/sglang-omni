@@ -1,0 +1,2 @@
+config_cls: FunCosyVoice3PipelineConfig
+model_path: FunAudioLLM/Fun-CosyVoice3-0.5B-2512

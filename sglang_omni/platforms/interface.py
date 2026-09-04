@@ -35,6 +35,14 @@ class OmniPlatform(DeviceMixin):
         """Get the fused QK norm RoPE kernel if available, else return None."""
         return None
 
+    def get_fused_qk_norm_rope_with_cos_sin_cache(self):
+        """Get the cos/sin-cache fused QK norm RoPE kernel, else return None.
+
+        Separate from get_fused_qk_norm_rope: this ABI takes q and k as their own
+        tensors plus a cos/sin table, not the packed QKV and rotary parameters.
+        """
+        return None
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,
@@ -51,4 +59,17 @@ class OmniPlatform(DeviceMixin):
 
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
+        return True
+
+    def enable_talker_graph(self) -> bool:
+        return True
+
+    def enable_thinker_decode_graph(self) -> bool:
+        return True
+
+    def get_decode_cuda_graph_backend(self) -> str | None:
+        return None
+
+    def supports_torchaudio_resample(self) -> bool:
+        """Check if current platform support torchaudio.functional.resample"""
         return True

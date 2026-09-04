@@ -39,6 +39,10 @@ _SEGMENT_RE = re.compile(
 
 @register_transcription_adapter("MossTranscribeDiarize")
 class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
+    @property
+    def supports_segment_timestamps(self) -> bool:
+        return True
+
     def postprocess_text(self, text: str) -> str:
         return _SPECIAL_TOKEN_RE.sub("", text).strip()
 
@@ -51,6 +55,26 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         segments = self._parse_segments(text)
         if not segments:
             segments = self._build_fallback_segments(text, audio_duration_s)
+        return self._build_response(text, language, audio_duration_s, segments)
+
+    def build_timestamped_response(
+        self,
+        text: str,
+        language: str | None,
+        audio_duration_s: float,
+    ) -> TranscriptionVerboseResponse:
+        segments = self._parse_segments(text)
+        if not segments:
+            raise ValueError("model did not produce segment timestamps")
+        return self._build_response(text, language, audio_duration_s, segments)
+
+    def _build_response(
+        self,
+        text: str,
+        language: str | None,
+        audio_duration_s: float,
+        segments: list[TranscriptionSegment],
+    ) -> TranscriptionVerboseResponse:
         segments = self._sanitize_segments(segments, audio_duration_s)
         duration = (
             round(float(audio_duration_s), 2)

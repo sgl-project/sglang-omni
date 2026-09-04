@@ -4,18 +4,10 @@ config_cls: Qwen3OmniPipelineConfig
 name: qwen3-omni-mmmu-h100
 model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
 
-stage_overrides:
+stages:
   image_encoder:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.03
-
+    gpu_memory_fraction: 0.03
   audio_encoder:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.03
-
+    gpu_memory_fraction: 0.03
   thinker:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.92
+    gpu_memory_fraction: 0.92

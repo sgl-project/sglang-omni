@@ -9,6 +9,10 @@ import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.moss_tts.request_builders import _INF_DELAY
 from sglang_omni.models.moss_tts.sampler import DelayGraphBatch
 from sglang_omni.models.moss_tts.sampling_kernels import (
@@ -37,8 +41,11 @@ class MossTTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
-            forward_batch, requests
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
+            ),
         )
         return None
 
@@ -88,7 +95,21 @@ class MossTTSModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS prefill requires prompt_rows")
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
+            if data.output_rows:
+                # note (Richard Wang): prompt_rows is short by the generated tail
+                generated = torch.stack(data.output_rows, dim=0)
+                rows = torch.cat([rows.to(generated.device), generated], dim=0)
             current_rows = rows[prefix_len : prefix_len + req_len]
+            if int(current_rows.shape[0]) != req_len:
+                raise RuntimeError(
+                    f"MOSS-TTS prefill row mismatch for {req.rid}: have "
+                    f"{int(current_rows.shape[0])} rows, need {req_len} "
+                    f"(prefix={prefix_len}, prompt={int(data.prompt_rows.shape[0])}, "
+                    f"generated={len(data.output_rows)})"
+                )
+            if data.output_rows:
+                # note (Richard Wang): leftover row would decode instead of new sample
+                data.pending_feedback_queue.clear()
             embeds = self.model._prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )
@@ -226,9 +247,11 @@ class MossTTSModelRunner(ModelRunner):
             dtype=torch.long,
             device=device,
         )
-        audio_logits = torch.stack(
-            [logits.to(torch.float32) for logits in channel_logits[1:]], dim=1
-        )
+        audio_logits = getattr(channel_logits, "fused_audio", None)
+        if audio_logits is None:
+            audio_logits = torch.stack(
+                [logits.to(torch.float32) for logits in channel_logits[1:]], dim=1
+            )
         if tuple(audio_logits.shape[:2]) != (batch_size, n_vq):
             raise RuntimeError(
                 "MOSS-TTS Delay sampling graph audio-logits shape mismatch: "
@@ -448,9 +471,11 @@ class MossTTSModelRunner(ModelRunner):
         post_audio = post_audio | (delayed == _INT64_MAX).unsqueeze(1)
         sampling_audio_mask = pre_audio & post_audio
         if bool(sampling_audio_mask.any()):
-            audio_logits = torch.stack(
-                [cl.to(torch.float32) for cl in channel_logits[1:]], dim=1
-            )  # [batch, n_vq, vocab_audio]
+            audio_logits = getattr(channel_logits, "fused_audio", None)
+            if audio_logits is None:
+                audio_logits = torch.stack(
+                    [cl.to(torch.float32) for cl in channel_logits[1:]], dim=1
+                )  # [batch, n_vq, vocab_audio]
             if 0 <= audio_pad_code < audio_logits.shape[-1]:
                 audio_logits[..., audio_pad_code:] = _NEG_INF
             if bool((audio_rep != 1.0).any()):
@@ -686,7 +711,11 @@ class MossTTSModelRunner(ModelRunner):
         active = (top_p_row > 0.0) & (top_p_row < 1.0)
         if not skip_inactive_check and not bool(active.any()):
             return scores
-        sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
+        # Note (Jiaxin Deng): input order on ties is the one contract the graphed,
+        # branchless and eager paths share; an unstable sort breaks it per backend.
+        sorted_scores, sorted_indices = torch.sort(
+            scores, descending=True, dim=-1, stable=True
+        )
         probs = torch.softmax(sorted_scores, dim=-1)
         cumulative = torch.cumsum(probs, dim=-1)
         remove = cumulative > top_p_row.unsqueeze(1)

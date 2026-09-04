@@ -3,7 +3,7 @@
 
 Runs the real SGLModelRunner.load_model / init_cuda_graphs overrides with the
 upstream ModelRunner methods mocked out, on CPU tensors. Verifies role dispatch,
-the dummy load-format toggle (set for the super() call, restored after),
+the follower's dummy load format resolved as the runner's own draft_load_format,
 attach-before-capture ordering, and the weight-update guards.
 
 Requires sglang to be importable.
@@ -19,13 +19,12 @@ import pytest
 import torch
 from torch import nn
 
-from tests.unit_test.fakes import FakeServerArgs
-
 sglang_model_runner = pytest.importorskip(
     "sglang_omni.model_runner.sglang_model_runner",
     reason="sglang (and its sgl_kernel dependency) not importable here",
 )
 from sglang.srt.model_executor.model_runner import ModelRunner  # noqa: E402
+from sglang.srt.runtime_context import get_context, get_flags  # noqa: E402
 
 from sglang_omni.utils import ipc_weights  # noqa: E402
 
@@ -43,7 +42,7 @@ class SmallModel(nn.Module):
 
 def _bare_runner(load_format="auto"):
     runner = SGLModelRunner.__new__(SGLModelRunner)
-    runner.server_args = FakeServerArgs(
+    runner.server_args = SimpleNamespace(
         load_format=load_format,
         max_total_tokens=1000,
         tp_size=1,
@@ -58,6 +57,9 @@ def _bare_runner(load_format="auto"):
     runner._weight_share_config = None
     runner._weight_share_record = None
     runner._weight_ipc_leader_monitor = None
+    runner.is_draft_worker = False
+    runner.draft_load_format = runner._resolve_draft_load_format()
+    runner.token_to_kv_pool = SimpleNamespace(post_capture_active=False)
     return runner
 
 
@@ -66,7 +68,7 @@ def _fake_upstream_load(fill_by_format):
     values depend on the load format actually in effect during the call."""
 
     def fake_load(self):
-        fmt = self.server_args.load_format
+        fmt = self.draft_load_format or self.server_args.load_format
         assert fmt in fill_by_format, f"unexpected load_format {fmt!r}"
         self.model = SmallModel(fill=fill_by_format[fmt])
 
@@ -94,6 +96,7 @@ def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
         ModelRunner, "load_model", _fake_upstream_load({"auto": 1.0})
     ):
         runner.load_model()
+    assert runner.draft_load_format is None
     assert runner.server_args.load_format == "auto"  # untouched for leader
     handle = tmp_path / "SmallModel.weights-ipc"
     assert handle.exists()
@@ -113,7 +116,7 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     seen_formats = []
 
     def fake_load(self):
-        seen_formats.append(self.server_args.load_format)
+        seen_formats.append(self.draft_load_format or self.server_args.load_format)
         self.model = SmallModel(fill=0.0)  # dummy values
 
     with mock.patch.object(ModelRunner, "load_model", fake_load):
@@ -121,13 +124,37 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
         runner.load_model()
     runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
 
-    # Dummy format was in effect exactly during the super() call, restored after.
     assert seen_formats == ["dummy"]
+    assert runner.draft_load_format == "dummy"
     assert runner.server_args.load_format == "auto"
     # Values came from the leader export, not the dummy init.
     assert torch.all(runner.model.linear.weight == 7.0)
     assert runner._weight_share_record is not None
     assert runner._weight_update_blocked_reason() is not None
+
+
+def test_follower_runs_post_attach_hook_after_aliasing(tmp_path, monkeypatch):
+    seen = []
+
+    class HookModel(SmallModel):
+        def on_weight_share_attached(self):
+            seen.append(float(self.linear.weight[0, 0]))
+
+    ipc_weights.export_weights(
+        HookModel(fill=7.0), str(tmp_path / "HookModel.weights-ipc")
+    )
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
+
+    def fake_load(self):
+        self.model = HookModel(fill=0.0)
+
+    with mock.patch.object(ModelRunner, "load_model", fake_load):
+        runner = _bare_runner()
+        runner.load_model()
+    runner._weight_ipc_leader_monitor.stop()
+
+    # Called once, and only after the follower aliased the leader's storage.
+    assert seen == [7.0]
 
 
 def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch):
@@ -145,6 +172,7 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
         runner.load_model()
     runner._weight_ipc_leader_monitor.stop()  # don't leak the poller thread
     with (
+        get_context().override_server_args(),
         mock.patch.object(
             ModelRunner,
             "init_cuda_graphs",
@@ -166,14 +194,33 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
     calls = []
     runner.post_capture_resize_kv_pool = lambda: calls.append("resize")
 
-    with mock.patch.object(
-        ModelRunner,
-        "init_cuda_graphs",
-        lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+        ),
     ):
         runner.init_cuda_graphs()
 
     assert calls == ["capture", "resize"]
+
+
+def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():
+    runner = _bare_runner()
+
+    with get_context().override_server_args(enable_torch_compile=True):
+        assert get_flags().capture.enable_torch_compile is True
+        get_context().override("test-engine-builder", enable_torch_compile=False)
+        with mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: None,
+        ):
+            runner.init_cuda_graphs()
+
+        assert get_flags().capture.enable_torch_compile is False
 
 
 def test_follower_requires_explicit_kv_cap(tmp_path, monkeypatch):

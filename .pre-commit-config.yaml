@@ -23,7 +23,7 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: check-shebang-scripts-are-executable
-        exclude: ^\.claude/skills/
+        exclude: (?:^\.claude/skills/|^sglang_omni_router/rust/tests/.*\.rs$)
       - id: detect-private-key
       - id: debug-statements
       - id: no-commit-to-branch
@@ -64,4 +64,10 @@ repos:
         entry: python3 .github/update_ci_permission.py --sort-only
         language: system
         files: ^\.github/CI_PERMISSIONS\.json$
+        pass_filenames: false
+      - id: rustfmt-sglang-omni-router
+        name: rustfmt sglang-omni-router
+        entry: bash -c 'cd sglang_omni_router/rust && cargo fmt --all -- --check'
+        language: system
+        files: ^sglang_omni_router/rust/.*\.rs$
         pass_filenames: false

@@ -13,30 +13,27 @@ from sglang_omni.platforms import cuda
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.utils.misc import model_config_has_moe
-from tests.unit_test.fakes import FakeServerArgs
 
 cuda_platform = CUDAOmniPlatform()
 
 
 class _StrictServerArgsDouble:
-    """Reject bare writes while allowing the audited ServerArgs override API."""
+    """Minimal ServerArgs double with the resolved-record mutation guard."""
 
     def __init__(self, **fields: object) -> None:
-        object.__setattr__(self, "_locked", False)
-        object.__setattr__(self, "override_calls", [])
+        object.__setattr__(self, "_declarations_materialized", False)
         for name, value in fields.items():
             object.__setattr__(self, name, value)
-        object.__setattr__(self, "_locked", True)
+        object.__setattr__(self, "_declarations_materialized", True)
 
     def __setattr__(self, name: str, value: object) -> None:
-        if self._locked and not name.startswith("_"):
+        if (
+            not name.startswith("_")
+            and self._declarations_materialized
+            and not getattr(self, "_internal_write", False)
+        ):
             raise AttributeError(f"bare mutation of {name}")
         object.__setattr__(self, name, value)
-
-    def override(self, source: str, **fields: object) -> None:
-        self.override_calls.append((source, dict(fields)))
-        for name, value in fields.items():
-            object.__setattr__(self, name, value)
 
 
 @dataclass(frozen=True)
@@ -63,8 +60,8 @@ def _server_args(
     moe_runner_backend: str = "auto",
     fp8_gemm_runner_backend: str | None = "auto",
     ep_size: int = 1,
-) -> FakeServerArgs:
-    return FakeServerArgs(
+) -> SimpleNamespace:
+    return SimpleNamespace(
         quantization=quantization,
         moe_runner_backend=moe_runner_backend,
         fp8_gemm_runner_backend=fp8_gemm_runner_backend,
@@ -442,7 +439,7 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
     assert effective_quantization == "fp8"
     assert server_args.moe_runner_backend == "cutlass"
     assert server_args.fp8_gemm_runner_backend == "triton"
-    assert server_args.override_calls == [
+    assert server_args._runtime_mutations == [
         (
             "sglang-omni-qwen3-backend-policy",
             {"moe_runner_backend": "cutlass"},
@@ -824,7 +821,7 @@ def test_configure_backend_policy_fp8_gemm_ordering(
     )
 
     # Build server_args.
-    server_args = FakeServerArgs(
+    server_args = SimpleNamespace(
         quantization=case.server_quantization,
         moe_runner_backend=case.initial_moe_backend,
         fp8_gemm_runner_backend=case.initial_fp8_gemm_backend,

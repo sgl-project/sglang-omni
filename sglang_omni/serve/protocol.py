@@ -352,6 +352,7 @@ class CreateSpeechRequest(BaseModel):
     ref_text: str | None = None  # transcript of reference audio
     references: list[SpeechReference] | None = None  # S2-Pro-style refs
     x_vector_only_mode: bool | None = None
+    stream_codec_output: bool | None = None
     token_count: int | None = None  # MOSS-TTS duration token target
     duration_tokens: int | None = None  # alias for token_count
     initial_codec_chunk_frames: int | None = Field(default=None, ge=0)
@@ -389,6 +390,7 @@ class SpeechBatchItem(BaseModel):
     ref_text: Any = None
     references: Any = None
     x_vector_only_mode: Any = None
+    stream_codec_output: Any = None
     token_count: Any = None
     duration_tokens: Any = None
     max_new_tokens: Any = None
@@ -422,6 +424,7 @@ class CreateSpeechBatchRequest(BaseModel):
     ref_text: str | None = None
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
+    stream_codec_output: bool | None = None
     token_count: int | None = None
     duration_tokens: int | None = None
     max_new_tokens: int | None = None
@@ -477,6 +480,7 @@ class SpeechStreamSessionConfig(BaseModel):
     ref_text: str | None = None
     references: list[SpeechReference] | None = None
     x_vector_only_mode: bool | None = None
+    stream_codec_output: bool | None = None
     token_count: int | None = None
     duration_tokens: int | None = None
     max_new_tokens: int | None = None

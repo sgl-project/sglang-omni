@@ -737,9 +737,12 @@ def build_sglang_moss_tts_request(
         sampling_params=sampling_params,
         eos_token_ids={int(cfg.im_end_token_id)},
         vocab_size=int(cfg.vocab_size_list[0]),
+        extra_key="moss_tts:prompt:v1",
     )
     req.tokenizer = None
     req._input_embeds_are_projected = True
+    req._omni_prompt_only_radix = True
+    req._omni_prompt_cache_key = req.extra_key
     req._codec_suppress_tokens = None
 
     data = MossTTSSGLangRequestData(

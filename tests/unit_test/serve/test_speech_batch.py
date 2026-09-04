@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from typing import Any
 
@@ -14,6 +15,10 @@ from sglang_omni.client.types import SpeechResult
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import _create_speech_batch_with_disconnect_watch
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+
+CONTEXT_LENGTH_ERROR = (
+    "Requested token count exceeds the model's maximum context length"
+)
 
 
 class RecordingBatchSpeechClient:
@@ -101,6 +106,8 @@ class MixedBatchSpeechClient:
             await asyncio.sleep(0.01)
         if request.prompt == "fail":
             raise ClientError("model failed")
+        if request.prompt == "context":
+            raise RuntimeError(CONTEXT_LENGTH_ERROR)
         return SpeechResult(
             audio_bytes=f"audio:{request.prompt}".encode(),
             mime_type=f"audio/{response_format}",
@@ -199,6 +206,37 @@ def test_batch_speech_applies_pipeline_reference_requirements() -> None:
 
     assert response.status_code == 200
     assert response.json()["results"][0]["error"]["param"] == "items.0.ref_audio"
+    assert client_impl.requests == []
+
+
+def test_batch_speech_applies_reference_text_instruction_exclusion() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="cosyvoice",
+            required_speech_reference_count=1,
+            speech_reference_text_excludes_instructions=True,
+        )
+    )
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "items": [
+                {
+                    "input": "hello",
+                    "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+                    "ref_text": "reference transcript",
+                    "instructions": "speak warmly",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["error"]["param"] == ("items.0.instructions")
     assert client_impl.requests == []
 
 
@@ -428,6 +466,30 @@ def test_batch_speech_isolates_runtime_failures_and_preserves_order() -> None:
     assert all("success" not in item for item in results)
     assert results[1]["error"]["type"] == "server_error"
     assert set(client_impl.requests) == {"slow", "fail", "fast"}
+
+
+def test_batch_speech_maps_context_rejection_to_bad_request() -> None:
+    client_impl = MixedBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "context"}, {"input": "fast"}],
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["status"] == "error"
+    assert result["error"] == {
+        "message": CONTEXT_LENGTH_ERROR,
+        "type": "BadRequestError",
+        "param": None,
+        "code": 400,
+    }
 
 
 def test_batch_speech_cancellation_aborts_started_items() -> None:

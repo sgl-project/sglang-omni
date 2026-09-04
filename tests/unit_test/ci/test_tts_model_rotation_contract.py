@@ -49,10 +49,14 @@ def test_rotation_offers_every_registered_preset() -> None:
         ), f"dispatch override does not accept {model}"
 
 
-def test_single_instance_models_skip_the_mps_stage() -> None:
-    """A model without an MPS config must not drag the MPS stage along."""
+def test_every_rotation_model_resolves_an_mps_pool() -> None:
+    """A model without a pool of its own must borrow one, not drop stage 5.
+
+    Skipping left the MPS path unexercised on a third of the runs.
+    """
     script = _select_step_script()
-    assert 'resolved_config=""' in script, "no single-instance branch in preflight"
+    assert 'resolved_config=""' not in script, "a rotation model still skips stage 5"
+    assert 'mps_model="moss"' in script, "no fallback pool in preflight"
 
     mps = _workflow(TTS_WORKFLOW)["jobs"]["stage-5-mps"]
     condition = mps["if"]
@@ -74,8 +78,12 @@ def test_qwen3_tts_gates_on_calibrated_thresholds() -> None:
     assert preset.thresholds.non_stream_speed[16]["throughput_qps_min"] > 11.309
     assert preset.thresholds.stream_speed[16]["throughput_qps_min"] > 11.309
     # The tuned operating point, not the shipped defaults, is what CI measures.
-    assert "--max-running-requests 64" in preset.model.worker_extra_args
-    assert "--isolate-stage vocoder" in preset.model.worker_extra_args
+    worker_args = preset.model.worker_extra_args
+    assert "--tts_engine.engine.max_running_requests 64" in worker_args
+    assert "--isolate-stage" not in worker_args
+    assert "--vocoder.process vocoder" in worker_args
+    assert "--tts_engine.gpu_memory_fraction 0.85" in worker_args
+    assert "--vocoder.gpu_memory_fraction 0.10" in worker_args
 
 
 def test_every_registered_model_is_reachable_from_every_entry_point() -> None:

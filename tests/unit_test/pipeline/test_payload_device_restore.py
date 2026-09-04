@@ -44,7 +44,7 @@ def test_host_only_stage_keeps_an_accelerator_origin_tensor_on_the_host() -> Non
 def test_a_raw_stream_ref_carries_its_source_device() -> None:
     """A raw DataRef had nowhere to record residency, so a host-shm hop lost it.
     Qwen3-TTS emits device-resident codec chunks, and a process-isolated vocoder
-    (--isolate-stage) would otherwise feed CPU codes to an accelerator decoder.
+    (--vocoder.process vocoder) would otherwise feed CPU codes to an accelerator decoder.
     """
     from sglang_omni.comm.data_ref import (
         BackendRef,

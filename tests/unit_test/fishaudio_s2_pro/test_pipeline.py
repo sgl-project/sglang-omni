@@ -12,10 +12,7 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 import torch
-import typer
 
-from sglang_omni.cli.serve import apply_torch_compile_cli_overrides
-from sglang_omni.config import build_process_topology_plan, build_stage_placement_plan
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
@@ -34,12 +31,12 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     S2ProTokenizerAdapter,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
-from tests.unit_test.fakes import FakeServerArgs
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
     make_s2pro_payload,
     make_s2pro_state,
 )
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 @pytest.fixture(autouse=True)
@@ -68,11 +65,9 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
         "pipeline",
     ]
     assert [
-        stage.runtime.resources.total_gpu_memory_fraction
-        for stage in config.stages
-        if stage.gpu is not None
+        stage.gpu_memory_fraction for stage in config.stages if stage.gpu is not None
     ] == [None, None]
-    build_process_topology_plan(config, build_stage_placement_plan(config))
+    build_compiled_process_topology(config)
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert config.supports_uploaded_voice_references() is True
@@ -554,65 +549,62 @@ def test_fish_tts_accepts_default_top_k_sentinel() -> None:
 
 
 def _server_args_overrides(config: S2ProPipelineConfig, name: str) -> dict[str, object]:
-    stage = next(stage for stage in config.stages if stage.name == name)
-    return dict(stage.factory_args.get("server_args_overrides") or {})
+    engine = config.stage_named(name).engine
+    return engine.overrides() if engine is not None else {}
 
 
 @pytest.mark.parametrize(
-    "talker_mode,talker_max_bs,expected",
+    "flags,expected",
     [
-        ("on", None, {"enable_torch_compile": True}),
-        ("off", None, {"enable_torch_compile": False}),
-        ("default", 2, {"torch_compile_max_bs": 2}),
-        ("on", 4, {"enable_torch_compile": True, "torch_compile_max_bs": 4}),
+        (
+            [("tts_engine.engine.enable_torch_compile", "true")],
+            {"enable_torch_compile": True},
+        ),
+        (
+            [("tts_engine.engine.enable_torch_compile", "false")],
+            {"enable_torch_compile": False},
+        ),
+        (
+            [("tts_engine.engine.torch_compile_max_bs", "2")],
+            {"torch_compile_max_bs": 2},
+        ),
+        (
+            [
+                ("tts_engine.engine.enable_torch_compile", "true"),
+                ("tts_engine.engine.torch_compile_max_bs", "4"),
+            ],
+            {"enable_torch_compile": True, "torch_compile_max_bs": 4},
+        ),
     ],
 )
-def test_s2pro_cli_talker_torch_compile_targets_tts_engine(
-    talker_mode: str,
-    talker_max_bs: int | None,
+def test_s2pro_dotted_torch_compile_targets_tts_engine(
+    flags: list[tuple[str, str]],
     expected: dict[str, object],
 ) -> None:
+    from sglang_omni.config.manager import ConfigManager
+
     config = S2ProPipelineConfig(model_path="model")
 
-    apply_torch_compile_cli_overrides(
-        config,
-        thinker_torch_compile="default",
-        talker_torch_compile=talker_mode,
-        thinker_torch_compile_max_bs=None,
-        talker_torch_compile_max_bs=talker_max_bs,
-    )
+    merged = ConfigManager(config).merge_config(flags)
 
-    assert _server_args_overrides(config, "tts_engine") == expected
-    assert _server_args_overrides(config, "vocoder") == {}
+    assert _server_args_overrides(merged, "tts_engine") == expected
+    assert _server_args_overrides(merged, "vocoder") == {}
 
 
-def test_s2pro_cli_talker_torch_compile_default_is_noop() -> None:
+def test_s2pro_without_compile_flags_is_a_noop() -> None:
     config = S2ProPipelineConfig(model_path="model")
-
-    apply_torch_compile_cli_overrides(
-        config,
-        thinker_torch_compile="default",
-        talker_torch_compile="default",
-        thinker_torch_compile_max_bs=None,
-        talker_torch_compile_max_bs=None,
-    )
 
     assert _server_args_overrides(config, "tts_engine") == {}
 
 
-def test_s2pro_cli_talker_torch_compile_max_bs_rejects_non_positive() -> None:
+def test_s2pro_torch_compile_max_bs_rejects_non_positive() -> None:
+    from sglang_omni.config.manager import ConfigManager
+
     config = S2ProPipelineConfig(model_path="model")
 
-    with pytest.raises(
-        typer.BadParameter,
-        match="torch compile max batch size must be >= 1",
-    ):
-        apply_torch_compile_cli_overrides(
-            config,
-            thinker_torch_compile="default",
-            talker_torch_compile="default",
-            thinker_torch_compile_max_bs=None,
-            talker_torch_compile_max_bs=0,
+    with pytest.raises(ValueError, match="torch_compile_max_bs"):
+        ConfigManager(config).merge_config(
+            [("tts_engine.engine.torch_compile_max_bs", "0")]
         )
 
 
@@ -640,6 +632,12 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
 
     monkeypatch.setattr(torch, "compile", fake_compile)
     monkeypatch.setenv("SGLANG_TORCH_COMPILE_MODE", "reduce-overhead")
+    warmup_calls: list[tuple[object, int]] = []
+    monkeypatch.setattr(
+        stages,
+        "_warmup_s2pro_codebook_decoder",
+        lambda model, *, max_batch_size: warmup_calls.append((model, max_batch_size)),
+    )
 
     class _Layer:
         def forward_kvcached(
@@ -675,9 +673,129 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     assert getattr(target, "__self__", None) is audio_decoder.layers[0]
     assert getattr(target, "__name__", "") == "forward_kvcached"
     assert mode == "reduce-overhead"
-    assert kwargs == {}
+    assert kwargs == {"dynamic": True}
     assert audio_decoder._compiled_forward_kvcached_layers == ["compiled-1"]
     assert audio_decoder._compiled_forward_kvcached_max_bs == 2
+    assert warmup_calls == [(model, 2)]
+
+
+def test_s2pro_compile_warmup_covers_batches_codebooks_and_resets() -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.embeddings = torch.nn.Embedding(32, 4, dtype=torch.bfloat16)
+            self.project_in = torch.nn.Identity()
+            self.config = SimpleNamespace(num_codebooks=10)
+            self.calls: list[tuple[int, int, torch.dtype, torch.device]] = []
+            self.reset_calls = 0
+
+        def reset_caches(self) -> None:
+            self.reset_calls += 1
+
+        def forward_kvcached(
+            self, decoder_input: torch.Tensor, *, codebook_idx: int
+        ) -> torch.Tensor:
+            self.calls.append(
+                (
+                    int(decoder_input.shape[0]),
+                    codebook_idx,
+                    decoder_input.dtype,
+                    decoder_input.device,
+                )
+            )
+            return decoder_input
+
+    audio_decoder = _AudioDecoder()
+    model = SimpleNamespace(_audio_decoder=audio_decoder)
+
+    stages._warmup_s2pro_codebook_decoder(model, max_batch_size=20)
+
+    expected = [
+        (batch_size, codebook_idx)
+        for _ in range(2)
+        for batch_size in (1, 2, 4, 8, 16, 20)
+        for codebook_idx in range(10)
+    ]
+    assert [
+        (batch_size, codebook_idx)
+        for batch_size, codebook_idx, _, _ in audio_decoder.calls
+    ] == expected
+    assert all(dtype is torch.bfloat16 for _, _, dtype, _ in audio_decoder.calls)
+    assert all(
+        device == audio_decoder.embeddings.weight.device
+        for _, _, _, device in audio_decoder.calls
+    )
+    assert audio_decoder.reset_calls == 2
+
+
+def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    fake_runner = ModuleType("sglang.srt.compilation.torch_compile_decoration")
+    fake_runner.set_torch_compile_config = lambda: None
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.compilation.torch_compile_decoration",
+        fake_runner,
+    )
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda target, **kwargs: target,
+    )
+
+    class _Layer:
+        def forward_kvcached(self, x: torch.Tensor) -> torch.Tensor:
+            return x
+
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.layers = [_Layer()]
+            self.embeddings = torch.nn.Embedding(32, 4)
+            self.config = SimpleNamespace(num_codebooks=10)
+            self._eager_forward_kvcached_layers = ["eager"]
+            self._compiled_forward_kvcached_layers = None
+            self._compiled_forward_kvcached_max_bs = 0
+            self.reset_calls = 0
+
+        def set_compiled_forward_kvcached_layers(
+            self,
+            forward_kvcached_layers: list[object],
+            *,
+            max_batch_size: int,
+        ) -> None:
+            self._compiled_forward_kvcached_layers = forward_kvcached_layers
+            self._compiled_forward_kvcached_max_bs = max_batch_size
+
+        def reset_caches(self) -> None:
+            self.reset_calls += 1
+
+        def forward_kvcached(
+            self, decoder_input: torch.Tensor, *, codebook_idx: int
+        ) -> torch.Tensor:
+            del decoder_input, codebook_idx
+            raise RuntimeError("injected warmup failure")
+
+        def select_forward_kvcached_layers(self) -> list[object]:
+            return (
+                self._compiled_forward_kvcached_layers
+                if self._compiled_forward_kvcached_layers is not None
+                else self._eager_forward_kvcached_layers
+            )
+
+    audio_decoder = _AudioDecoder()
+    stages._compile_s2pro_codebook_decoder(
+        SimpleNamespace(_audio_decoder=audio_decoder),
+        max_batch_size=8,
+    )
+
+    assert audio_decoder._compiled_forward_kvcached_layers is None
+    assert audio_decoder._compiled_forward_kvcached_max_bs == 0
+    assert audio_decoder.select_forward_kvcached_layers() == ["eager"]
+    assert audio_decoder.reset_calls == 3
 
 
 def _run_s2pro_engine_with_fake_buffers(
@@ -713,7 +831,7 @@ def _run_s2pro_engine_with_fake_buffers(
     )
 
     build_kwargs: dict[str, object] = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
+    infrastructure_saw_deferred_capture: list[bool] = []
     compile_calls: list[tuple[object, int]] = []
     init_graph_calls: list[bool] = []
 
@@ -762,10 +880,10 @@ def _run_s2pro_engine_with_fake_buffers(
         model_path: str,
         context_length: int,
         **kwargs: object,
-    ) -> FakeServerArgs:
+    ) -> SimpleNamespace:
         del model_path
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
@@ -789,13 +907,13 @@ def _run_s2pro_engine_with_fake_buffers(
     def fake_create_sglang_infrastructure(
         server_args: SimpleNamespace,
         gpu_id: int,
-    ) -> tuple[object, object, object, object, object, object, object]:
+        *,
+        defer_cuda_graph_capture: bool = False,
+    ) -> tuple[object, object, object, object, object]:
         assert gpu_id == 0
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        infrastructure_saw_deferred_capture.append(defer_cuda_graph_capture)
         return (
             _FakeWorker(server_args),
-            object(),
-            object(),
             object(),
             object(),
             object(),
@@ -811,13 +929,11 @@ def _run_s2pro_engine_with_fake_buffers(
     def fake_create_sglang_infrastructure_defer_cuda_graph(
         server_args: SimpleNamespace,
         gpu_id: int,
-    ) -> tuple[bool, tuple[object, object, object, object, object, object, object]]:
+    ) -> tuple[bool, tuple[object, object, object, object, object]]:
         want_cuda_graph = not bool(server_args.disable_cuda_graph)
-        if want_cuda_graph:
-            server_args.disable_cuda_graph = True
-        infrastructure = fake_create_sglang_infrastructure(server_args, gpu_id)
-        if want_cuda_graph:
-            server_args.disable_cuda_graph = False
+        infrastructure = fake_create_sglang_infrastructure(
+            server_args, gpu_id, defer_cuda_graph_capture=want_cuda_graph
+        )
         return want_cuda_graph, infrastructure
 
     monkeypatch.setattr(
@@ -869,7 +985,7 @@ def _run_s2pro_engine_with_fake_buffers(
     return SimpleNamespace(
         scheduler=scheduler,
         build_kwargs=build_kwargs,
-        infrastructure_saw_graph_disabled=infrastructure_saw_graph_disabled,
+        infrastructure_saw_deferred_capture=infrastructure_saw_deferred_capture,
         compile_calls=compile_calls,
         init_graph_calls=init_graph_calls,
     )
@@ -904,7 +1020,7 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
         64,
     ]
     assert build_kwargs["torch_compile_max_bs"] == 64
-    assert result.infrastructure_saw_graph_disabled == [True]
+    assert result.infrastructure_saw_deferred_capture == [True]
     assert result.compile_calls == [
         (scheduler.model_runner.args[0].model_runner.model, 64)
     ]

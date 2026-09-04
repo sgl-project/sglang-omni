@@ -23,14 +23,14 @@ def _event_to_dict(event) -> dict[str, Any]:
 def create_preprocessing_executor(
     model_path: str,
     *,
-    thinker_max_seq_len: int | None = None,
+    max_seq_len: int | None = None,
 ):
     from sglang_omni.models.llada2_uni.components.preprocessor import LLaDA2Preprocessor
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     preprocessor = LLaDA2Preprocessor(
         model_path=model_path,
-        max_seq_len=thinker_max_seq_len,
+        max_seq_len=max_seq_len,
     )
     return SimpleScheduler(preprocessor)
 
@@ -83,7 +83,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     model_path: str,
     *,
     gpu_id: int = 0,
-    thinker_max_seq_len: int = 8192,
+    max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
     server_args_overrides: dict[str, Any] | None = None,
@@ -101,7 +101,7 @@ def create_sglang_dllm_thinker_executor_from_config(
 
     server_args = build_sglang_server_args(
         model_path,
-        context_length=thinker_max_seq_len,
+        context_length=max_seq_len,
         dllm_algorithm=dllm_algorithm,
         dllm_algorithm_config=dllm_algorithm_config,
         **overrides,

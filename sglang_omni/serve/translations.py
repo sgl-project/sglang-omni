@@ -14,8 +14,9 @@ from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.speech_errors import openai_error_response
 
 TRANSLATIONS_ENDPOINT = "/v1/audio/translations"
-# note (Junnan Li): rejected until a real segment-timestamp channel exists
-_SEGMENT_FORMATS = frozenset({"srt", "vtt"})
+TRANSLATION_RESPONSE_FORMATS = (
+    speech_to_text.DEFAULT_RESPONSE_FORMATS | speech_to_text.SEGMENT_RESPONSE_FORMATS
+)
 
 
 def _invalid_request(
@@ -73,22 +74,29 @@ def register_translations(app: FastAPI) -> None:
                 param="model",
             )
 
-        normalized_response_format = form.response_format.strip().lower()
-        if normalized_response_format in _SEGMENT_FORMATS:
-            return _invalid_request(
-                f"response_format {normalized_response_format!r} requires a "
-                "segment-timestamp capability that the translation pipeline "
-                "does not provide.",
-                param="response_format",
-            )
         try:
-            speech_to_text.validate_speech_to_text_response_format(
+            response_format = speech_to_text.validate_speech_to_text_response_format(
                 form.response_format,
                 stream=form.stream,
                 endpoint_path=TRANSLATIONS_ENDPOINT,
+                response_formats=TRANSLATION_RESPONSE_FORMATS,
             )
         except HTTPException as exc:
             return _http_exception_response(exc, param="response_format")
+        segment_timestamps = response_format in speech_to_text.SEGMENT_RESPONSE_FORMATS
+        # Note (Akazaakane): Reject unsupported subtitle requests before audio
+        # decode and GPU dispatch, matching the transcription endpoint.
+        if (
+            segment_timestamps
+            and not speech_to_text.resolve_speech_to_text_adapter(
+                getattr(app.state, "architectures", None)
+            ).supports_segment_timestamps
+        ):
+            return _invalid_request(
+                f"response_format {response_format!r} requires a "
+                "segment-timestamp capability",
+                param="response_format",
+            )
 
         try:
             audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
@@ -125,6 +133,7 @@ def register_translations(app: FastAPI) -> None:
             max_new_tokens=form.max_new_tokens,
             stream=form.stream,
             task="translate",
+            segment_timestamps=segment_timestamps,
         )
         if form.stream:
             try:
@@ -151,19 +160,23 @@ def register_translations(app: FastAPI) -> None:
         except HTTPException as exc:
             return _http_exception_response(exc, param=None)
 
-        # note (Junnan Li): verbose_json keeps transcription parity: with no
-        # segment-timestamp channel, the shared adapter emits one placeholder
-        # segment.
-        return speech_to_text.assemble_speech_to_text_response(
-            text=result.text,
-            response_format=form.response_format,
-            endpoint_path=TRANSLATIONS_ENDPOINT,
-            task="translate",
-            language=language,
-            audio_bytes=audio_bytes,
-            architectures=getattr(app.state, "architectures", None),
-            duration_s=duration_s,
-        )
+        try:
+            # note (Junnan Li): verbose_json keeps transcription parity: with no
+            # segment-timestamp channel, the shared adapter emits one placeholder
+            # segment.
+            return speech_to_text.assemble_speech_to_text_response(
+                text=result.text,
+                response_format=form.response_format,
+                endpoint_path=TRANSLATIONS_ENDPOINT,
+                task="translate",
+                language=language,
+                audio_bytes=audio_bytes,
+                architectures=getattr(app.state, "architectures", None),
+                duration_s=duration_s,
+                response_formats=TRANSLATION_RESPONSE_FORMATS,
+            )
+        except HTTPException as exc:
+            return _http_exception_response(exc, param=None)
 
 
 __all__ = ["register_translations"]

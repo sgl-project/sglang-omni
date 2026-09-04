@@ -37,6 +37,7 @@ def test_extend_forward_kwargs_bridges_sidecar_without_mutating_batch() -> None:
     runner = SGLModelRunner.__new__(SGLModelRunner)
     runner.support_pp = False
     runner.is_generation = True
+    runner.dtype = torch.float32
     forward_batch = _forward_batch()
     mm_inputs = forward_batch.mm_inputs
     payload = OmniPrefillInputs(input_embeds=torch.zeros(4, 8))
@@ -49,3 +50,37 @@ def test_extend_forward_kwargs_bridges_sidecar_without_mutating_batch() -> None:
     assert forward_batch.input_embeds is None
     assert forward_batch.mm_inputs is mm_inputs
     assert get_omni_prefill_inputs(forward_batch) is payload
+    # Models that do not declare the flag must not receive it.
+    assert "input_embeds_are_projected" not in kwargs
+
+
+def test_extend_forward_kwargs_forwards_the_projected_flag_when_set() -> None:
+    runner = SGLModelRunner.__new__(SGLModelRunner)
+    runner.support_pp = False
+    runner.is_generation = True
+    runner.dtype = torch.float32
+    forward_batch = _forward_batch()
+    attach_omni_prefill_inputs(
+        forward_batch,
+        OmniPrefillInputs(
+            input_embeds=torch.zeros(4, 8), input_embeds_are_projected=True
+        ),
+    )
+
+    kwargs = runner._extend_forward_kwargs(forward_batch, object())
+
+    assert kwargs["input_embeds_are_projected"] is True
+
+
+def test_extend_forward_kwargs_rejects_a_sidecar_in_another_dtype() -> None:
+    runner = SGLModelRunner.__new__(SGLModelRunner)
+    runner.support_pp = False
+    runner.is_generation = True
+    runner.dtype = torch.bfloat16
+    forward_batch = _forward_batch()
+    attach_omni_prefill_inputs(
+        forward_batch, OmniPrefillInputs(input_embeds=torch.zeros(4, 8))
+    )
+
+    with pytest.raises(RuntimeError, match="model dtype"):
+        runner._extend_forward_kwargs(forward_batch, object())

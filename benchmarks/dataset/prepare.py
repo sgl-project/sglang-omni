@@ -5,6 +5,10 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset seedtts
     python -m benchmarks.dataset.prepare --dataset seedtts-mini
     python -m benchmarks.dataset.prepare --dataset seedtts-50
+    python -m benchmarks.dataset.prepare --dataset stt-benchmark
+    python -m benchmarks.dataset.prepare --dataset longlibriheavy-30
+    python -m benchmarks.dataset.prepare --dataset longlibriheavy-60
+    python -m benchmarks.dataset.prepare --dataset meanwhile
     python -m benchmarks.dataset.prepare --dataset mmmu
     python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
     python -m benchmarks.dataset.prepare --dataset mmsu
@@ -25,11 +29,21 @@ logger = logging.getLogger(__name__)
 
 SEEDTTS_DATASET_ID = "zhaochenyang20/seed-tts-eval-arrow"
 SEEDTTS_DATASET_REVISION = "27f4c1adee83b5b29b7c4b375f6b976324bda308"
+STT_BENCHMARK_DATASET_ID = "pipecat-ai/stt-benchmark-data"
+STT_BENCHMARK_DATASET_REVISION = "3fe50170d520c951957b86996ef082a6ab87b394"
+LONGLIBRIHEAVY_DATASET_ID = "inesc-id/longlibriheavy"
+LONGLIBRIHEAVY_DATASET_REVISION = "09bc067255eeb0d0bca62357ac985c2ebdc5169c"
+MEANWHILE_DATASET_ID = "distil-whisper/meanwhile"
+MEANWHILE_DATASET_REVISION = "5a6b431a268523a6603f199d859fc25a24c22900"
 
 DATASETS: dict[str, str] = {
     "seedtts": SEEDTTS_DATASET_ID,
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini-arrow",
     "seedtts-50": "zhaochenyang20/seed-tts-eval-50-arrow",
+    "stt-benchmark": STT_BENCHMARK_DATASET_ID,
+    "longlibriheavy-30": f"{LONGLIBRIHEAVY_DATASET_ID}:llh_test_30",
+    "longlibriheavy-60": f"{LONGLIBRIHEAVY_DATASET_ID}:llh_test_60",
+    "meanwhile": f"{MEANWHILE_DATASET_ID}:test",
     "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
@@ -54,35 +68,42 @@ def download_dataset(
     from datasets import get_dataset_config_names, load_dataset
     from huggingface_hub import hf_hub_download
 
-    if revision is None and repo_id == SEEDTTS_DATASET_ID:
+    dataset_id, separator, split = repo_id.partition(":")
+    if revision is None and dataset_id == SEEDTTS_DATASET_ID:
         revision = SEEDTTS_DATASET_REVISION
+    elif revision is None and dataset_id == STT_BENCHMARK_DATASET_ID:
+        revision = STT_BENCHMARK_DATASET_REVISION
+    elif revision is None and dataset_id == LONGLIBRIHEAVY_DATASET_ID:
+        revision = LONGLIBRIHEAVY_DATASET_REVISION
+    elif revision is None and dataset_id == MEANWHILE_DATASET_ID:
+        revision = MEANWHILE_DATASET_REVISION
     revision_kwargs = {"revision": revision} if revision else {}
     if not quiet:
         logger.info(
-            "Pre-warming HuggingFace cache for %s revision=%s ...",
-            repo_id,
+            "Pre-warming HuggingFace cache for %s split=%s revision=%s ...",
+            dataset_id,
+            split if separator else "all",
             revision or "default",
         )
 
-    if repo_id == "MMMU/MMMU":
-        config_names = get_dataset_config_names(repo_id, **revision_kwargs)
+    if dataset_id == "MMMU/MMMU":
+        config_names = get_dataset_config_names(dataset_id, **revision_kwargs)
         for config_name in config_names:
             load_dataset(
-                repo_id,
+                dataset_id,
                 config_name,
                 split="validation",
                 **revision_kwargs,
             )
-    elif repo_id == "BoJack/MMAR":
-        load_dataset(repo_id, **revision_kwargs)
+    elif dataset_id == "BoJack/MMAR":
+        load_dataset(dataset_id, **revision_kwargs)
         hf_hub_download(
-            repo_id,
+            dataset_id,
             "mmar-audio.tar.gz",
             repo_type="dataset",
             **revision_kwargs,
         )
-    elif repo_id.startswith("lmms-lab/mmau:"):
-        dataset_id, split = repo_id.split(":", 1)
+    elif dataset_id == "lmms-lab/mmau" and separator:
         load_dataset(
             dataset_id,
             split=split,
@@ -90,8 +111,10 @@ def download_dataset(
             verification_mode="no_checks",
             **revision_kwargs,
         )
+    elif separator:
+        load_dataset(dataset_id, split=split, **revision_kwargs)
     else:
-        load_dataset(repo_id, **revision_kwargs)
+        load_dataset(dataset_id, **revision_kwargs)
 
     if not quiet:
         logger.info(f"Dataset {repo_id} cached.")

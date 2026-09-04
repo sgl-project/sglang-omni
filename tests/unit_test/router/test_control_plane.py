@@ -9,12 +9,12 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from sglang_omni_router.config import RouterConfig, WorkerConfig
-from sglang_omni_router.control_plane import create_control_plane_app
-from sglang_omni_router.health import HealthChecker
-from sglang_omni_router.internal_channel import INTERNAL_TOKEN_HEADER
-from sglang_omni_router.snapshot import SnapshotReader
-from sglang_omni_router.worker import build_workers
+from sglang_omni_router.python.config import RouterConfig, WorkerConfig
+from sglang_omni_router.python.control_plane import create_control_plane_app
+from sglang_omni_router.python.health import HealthChecker
+from sglang_omni_router.python.internal_channel import INTERNAL_TOKEN_HEADER
+from sglang_omni_router.python.snapshot import SnapshotReader
+from sglang_omni_router.python.worker import build_workers
 
 
 def _config(failure_threshold: int = 1) -> RouterConfig:
@@ -633,7 +633,10 @@ def test_cp_health_reports_degraded_and_unhealthy_dp_states(
 
 
 def test_cp_health_aggregates_the_admission_shm(tmp_path: Path) -> None:
-    from sglang_omni_router.admission_shm import SharedAdmission, create_admission_file
+    from sglang_omni_router.python.admission_shm import (
+        SharedAdmission,
+        create_admission_file,
+    )
 
     shm_path = str(tmp_path / "admission.shm")
     create_admission_file(shm_path, 2)
@@ -759,7 +762,7 @@ def test_redelivered_failure_events_are_counted_once(tmp_path: Path) -> None:
 def test_cp_restart_recovers_an_unresolved_update_fail_closed(
     tmp_path: Path,
 ) -> None:
-    from sglang_omni_router.update_journal import UpdateJournal
+    from sglang_omni_router.python.update_journal import UpdateJournal
 
     # Note (Jiaxin Deng): a previous CP died mid-broadcast: its journal survives in the
     # workdir
@@ -873,7 +876,10 @@ def test_old_generation_reports_are_fenced(tmp_path: Path) -> None:
 def test_health_excludes_non_serving_and_slot_mismatched_dps(
     tmp_path: Path,
 ) -> None:
-    from sglang_omni_router.admission_shm import SharedAdmission, create_admission_file
+    from sglang_omni_router.python.admission_shm import (
+        SharedAdmission,
+        create_admission_file,
+    )
 
     shm_path = str(tmp_path / "admission.shm")
     create_admission_file(shm_path, 2)
@@ -919,8 +925,8 @@ def test_health_excludes_non_serving_and_slot_mismatched_dps(
 def test_broadcast_crash_keeps_targets_disabled_and_journaled(tmp_path: Path) -> None:
     # Note (Jiaxin Deng): results=None (broadcast started, outcome unknown) must keep
     # ALL targets disabled and journaled - not only for init_weights_update_group
-    from sglang_omni_router.app import _restore_admin_disabled_state
-    from sglang_omni_router.worker import build_workers
+    from sglang_omni_router.python.app import _restore_admin_disabled_state
+    from sglang_omni_router.python.worker import build_workers
 
     workers = build_workers(
         [
@@ -966,7 +972,7 @@ def test_recovery_keeps_absent_journaled_workers_as_tombstones(
     # a full restart) must survive recovery as a tombstone: dropping it would erase the
     # only evidence its update partially applied, and a later re-registration of the
     # same stable id would serve mixed weights
-    from sglang_omni_router.update_journal import UpdateJournal
+    from sglang_omni_router.python.update_journal import UpdateJournal
 
     journal_path = str(tmp_path / "j.json")
     UpdateJournal(journal_path).begin("/x", ["gone-worker-id"])
@@ -996,7 +1002,7 @@ def test_unreadable_journal_disables_the_whole_pool_on_recovery(
 
 
 def test_re_enabling_a_journaled_worker_requires_admin_auth(tmp_path: Path) -> None:
-    from sglang_omni_router.update_journal import UpdateJournal
+    from sglang_omni_router.python.update_journal import UpdateJournal
 
     journal_path = str(tmp_path / "j.json")
     worker_id = "http%3A%2F%2Fworker-a%3A8101"
@@ -1028,7 +1034,7 @@ def test_re_enabling_a_journaled_worker_requires_admin_auth(tmp_path: Path) -> N
 def test_health_reports_admission_error_instead_of_500_when_shm_unstable(
     tmp_path: Path,
 ) -> None:
-    from sglang_omni_router.admission_shm import (
+    from sglang_omni_router.python.admission_shm import (
         SharedAdmission,
         create_admission_file,
         retired_slot_index,
@@ -1043,7 +1049,7 @@ def test_health_reports_admission_error_instead_of_500_when_shm_unstable(
         SharedAdmission(buf, slots=2, own_index=0, max_inflight=8, generation=1, pid=11)
         # Note (Jiaxin Deng): wedge the retired slot mid-write (a fold that never
         # completes)
-        from sglang_omni_router.admission_shm import SlotCodec
+        from sglang_omni_router.python.admission_shm import SlotCodec
 
         SlotCodec(buf, retired_slot_index(2)).begin_write()
 
@@ -1069,7 +1075,7 @@ def test_health_sheds_while_a_dp_slot_is_stuck_mid_write(tmp_path: Path) -> None
     # ready capacity would promise service that answers 503.
     import mmap as mmap_module
 
-    from sglang_omni_router.admission_shm import (
+    from sglang_omni_router.python.admission_shm import (
         SharedAdmission,
         SlotCodec,
         create_admission_file,
@@ -1113,7 +1119,7 @@ def test_a_briefly_unreadable_slot_does_not_evict_the_router(tmp_path: Path) -> 
     # faster than that trades a blip for an LB eviction.
     import mmap as mmap_module
 
-    from sglang_omni_router.admission_shm import (
+    from sglang_omni_router.python.admission_shm import (
         SharedAdmission,
         SlotCodec,
         create_admission_file,

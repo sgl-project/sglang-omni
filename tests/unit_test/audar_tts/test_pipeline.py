@@ -222,7 +222,6 @@ def test_config_dispatch_injects_model_path_and_gpu(tmp_path: Any) -> None:
             config,
             ctx=FakeMpContext(),
             stages_cfg=prepared.stages_cfg,
-            name_map=prepared.name_map,
             endpoints=prepared.endpoints,
             placement_plan=prepared.placement_plan,
             process_plan=prepared.process_plan,
@@ -235,7 +234,7 @@ def test_config_dispatch_injects_model_path_and_gpu(tmp_path: Any) -> None:
     for spec in (spec for group in groups for spec in group.specs):
         resolved[spec.stage_name] = resolve_factory_signature_args(
             import_string(spec.factory),
-            spec.factory_args,
+            spec.factory_kwargs,
             defaults=spec.factory_arg_defaults,
         )
 

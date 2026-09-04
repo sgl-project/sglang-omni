@@ -804,7 +804,7 @@ def launch_managed_router_server(
     cmd = [
         py,
         "-m",
-        "sglang_omni_router.serve",
+        "sglang_omni_router.python.serve",
         "--host",
         "0.0.0.0",
         "--port",

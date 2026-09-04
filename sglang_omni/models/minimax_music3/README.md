@@ -14,7 +14,7 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --
 Install from a checkout with `uv pip uninstall -y flashinfer-cubin && uv pip install -e .`.
 MiniMax Music 3's DIT imports `sglang.multimodal_gen`; those packages are pinned
 in `pyproject.toml`. A leftover `flashinfer-cubin` wheel cannot match
-`flashinfer-python==0.6.14` (no cubin 0.6.14 exists on PyPI) and will fail the
+`flashinfer-python==0.6.17` (no cubin 0.6.17 exists on PyPI) and will fail the
 import. See [the cookbook](../../../docs/cookbook/minimax_music3.md)
 for the full request contract.
 

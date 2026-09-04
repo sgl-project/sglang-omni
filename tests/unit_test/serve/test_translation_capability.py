@@ -21,7 +21,7 @@ def test_pipeline_config_defaults_to_no_audio_translation_support() -> None:
             StageConfig(
                 name="asr",
                 process="asr",
-                factory="tests.fake.create_stage",
+                factory_path="tests.fake.create_stage",
                 terminal=True,
             )
         ],
@@ -56,10 +56,11 @@ def test_other_asr_configs_do_not_support_audio_translation(
     assert config.supports_audio_translation() is False
 
 
-def test_runtime_overrides_cannot_enable_audio_translation() -> None:
-    config = Qwen3ASRPipelineConfig(
-        model_path="Qwen/Qwen3-ASR-1.7B",
-        runtime_overrides={"asr": {"supports_audio_translation": True}},
-    )
+def test_configuration_cannot_enable_audio_translation() -> None:
+    """Translation support is the config class's own claim, not a setting."""
+    from sglang_omni.config.manager import ConfigManager
+    from sglang_omni.config.path import ConfigPathError
 
-    assert config.supports_audio_translation() is False
+    config = Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B")
+    with pytest.raises((ConfigPathError, ValueError)):
+        ConfigManager(config).merge_config([("asr.supports_audio_translation", "true")])

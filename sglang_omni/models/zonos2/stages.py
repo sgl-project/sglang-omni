@@ -59,7 +59,6 @@ def create_preprocessing_executor(
     max_concurrency: int = 16,
     tts_norm: bool = True,
     tts_norm_cache_dir: str | None = None,
-    **_: Any,
 ) -> SimpleScheduler:
     configure_tts_norm_cache_root(tts_norm_cache_dir)
 
@@ -87,7 +86,6 @@ def create_speaker_encode_executor(
     speaker_cache_max_items: int = 256,
     max_concurrency: int = 4,
     spk_compile: bool = False,
-    **_: Any,
 ) -> SimpleScheduler:
     from sglang_omni.models.zonos2.components.speaker_encoder import SpeakerEncoder
 
@@ -118,7 +116,6 @@ def create_vocoder_executor(
     gpu_id: int | None = 0,
     dac_batch: bool = False,
     vocoder_warmup: bool = False,
-    **_: Any,
 ) -> Any:
     from sglang_omni.models.zonos2.components.streaming_vocoder import (
         Zonos2StreamingVocoderScheduler,
@@ -238,7 +235,6 @@ def create_sglang_omni_tts_engine_executor(
     max_running_requests: int = 16,
     cuda_graph_max_bs: int = 16,
     server_args_overrides: dict | None = None,
-    **_: Any,
 ) -> Any:
     from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
 

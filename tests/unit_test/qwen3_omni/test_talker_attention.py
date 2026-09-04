@@ -25,9 +25,13 @@ _DEVICE_DTYPE_PARAMS = [
         "cuda",
         torch.bfloat16,
         id="cuda-bf16",
-        marks=pytest.mark.skipif(
-            not torch.cuda.is_available(), reason="CUDA bf16 variant requires a GPU"
-        ),
+        marks=[
+            pytest.mark.accelerator,
+            pytest.mark.skipif(
+                not torch.cuda.is_available(),
+                reason="CUDA bf16 variant requires a GPU",
+            ),
+        ],
     ),
 ]
 

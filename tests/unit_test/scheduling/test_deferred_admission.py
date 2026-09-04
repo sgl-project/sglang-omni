@@ -87,3 +87,44 @@ def test_failed_dependency_emits_error_without_admission() -> None:
     assert scheduler.errors[0][0] == "r1"
     assert "encode failed" in str(scheduler.errors[0][1])
     assert "r1" in scheduler._aborted_request_ids
+
+
+class _WaitPolicyScheduler:
+    request_build_queue_fits_workers = OmniScheduler.request_build_queue_fits_workers
+
+    def __init__(
+        self,
+        *,
+        workers: int = 8,
+        pending: int = 0,
+        backlog: int = 0,
+        has_executor: bool = True,
+    ) -> None:
+        self._request_admission_lock = threading.RLock()
+        self.request_build_max_workers = workers
+        self._request_build_executor = object() if has_executor else None
+        self._pending_request_builds = {f"p{i}": None for i in range(pending)}
+        self._backlogged_request_build_payloads = [object() for _ in range(backlog)]
+
+
+def test_request_build_queue_fits_workers_when_builds_fit_in_pool() -> None:
+    scheduler = _WaitPolicyScheduler(workers=8, pending=8, backlog=0)
+    assert scheduler.request_build_queue_fits_workers() is True
+
+    scheduler = _WaitPolicyScheduler(workers=8, pending=1, backlog=0)
+    assert scheduler.request_build_queue_fits_workers() is True
+
+
+def test_defer_admission_when_build_backlog_exceeds_workers() -> None:
+    scheduler = _WaitPolicyScheduler(workers=8, pending=8, backlog=1)
+    assert scheduler.request_build_queue_fits_workers() is False
+
+    scheduler = _WaitPolicyScheduler(workers=8, pending=9, backlog=0)
+    assert scheduler.request_build_queue_fits_workers() is False
+
+
+def test_keep_deferred_admission_without_build_executor() -> None:
+    scheduler = _WaitPolicyScheduler(
+        workers=1, pending=0, backlog=0, has_executor=False
+    )
+    assert scheduler.request_build_queue_fits_workers() is False

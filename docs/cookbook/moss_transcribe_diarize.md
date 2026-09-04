@@ -7,6 +7,7 @@ MOSS-Transcribe-Diarize does not support `/v1/audio/translations`; that endpoint
 ![Model Architecture](https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize/resolve/main/Model_Architecture.png)
 
 It transcribes speech, assigns speakers, and predicts timestamps in a single generation pass. With 128K context, it supports up to ~90-minute audio, handles meetings, interruptions, long conversations, and overlapping speech, and adds hotword boosting for names, companies, product terms, and domain vocabulary. MOSS-Transcribe-Diarize is served through the OpenAI-compatible `/v1/audio/transcriptions` endpoint.
+Transcriptions support `response_format=srt` or `response_format=vtt` with real segment timestamps for this model.
 
 | Component | Spec |
 |---|---|
@@ -109,8 +110,8 @@ Serve the model:
 sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
   --port 8000 \
-  --max-running-requests 16 \
-  --cuda-graph-max-bs 16 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
   --mem-fraction-static 0.80
 ```
 
@@ -192,8 +193,8 @@ Thanks to the Moss team for providing the benchmark datasets, we prepare movies8
 python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --dataset movies800times \
   --concurrency 16 \
-  --max-running-requests 16 \
-  --cuda-graph-max-bs 16 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
   --mem-fraction-static 0.80 \
   --output-dir results/moss_transcribe_diarize_movies800times
 
@@ -210,8 +211,8 @@ python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
 python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --dataset aishell4_long \
   --concurrency 16 \
-  --max-running-requests 16 \
-  --cuda-graph-max-bs 16 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
   --mem-fraction-static 0.80 \
   --max-new-tokens 65536 \
   --request-timeout-s 1800 \
@@ -221,8 +222,8 @@ python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
 python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
   --dataset googletime \
   --concurrency 16 \
-  --max-running-requests 16 \
-  --cuda-graph-max-bs 16 \
+  --asr.engine.max_running_requests 16 \
+  --asr.engine.cuda_graph_max_bs 16 \
   --mem-fraction-static 0.80 \
   --max-new-tokens 65536 \
   --request-timeout-s 1800 \

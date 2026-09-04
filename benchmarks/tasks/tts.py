@@ -973,6 +973,7 @@ def _build_tts_payload(
     initial_codec_chunk_frames: int | None = None,
     no_ref_audio: bool = False,
     ref_format: str = "flat",
+    no_ref_text: bool = False,
     voice: str | None = None,
     task_type: str | None = None,
     instructions: str | None = None,
@@ -984,13 +985,17 @@ def _build_tts_payload(
         "response_format": "pcm" if stream else response_format,
     }
     if not no_ref_audio:
+        # no_ref_text keeps ref_audio (voice cloning) but drops the
+        # reference transcript, for cross-lingual-style runs.
         if ref_format == "references":
-            payload["references"] = [
-                {"audio_path": sample.ref_audio, "text": sample.ref_text}
-            ]
+            reference: dict = {"audio_path": sample.ref_audio}
+            if not no_ref_text:
+                reference["text"] = sample.ref_text
+            payload["references"] = [reference]
         else:
             payload["ref_audio"] = sample.ref_audio
-            payload["ref_text"] = sample.ref_text
+            if not no_ref_text:
+                payload["ref_text"] = sample.ref_text
     if voice is not None:
         payload["voice"] = voice
     if task_type is not None:
@@ -1258,6 +1263,7 @@ def make_tts_send_fn(
     initial_codec_chunk_frames: int | None = None,
     no_ref_audio: bool = False,
     ref_format: str = "flat",
+    no_ref_text: bool = False,
     voice: str | None = None,
     task_type: str | None = None,
     instructions: str | None = None,
@@ -1281,6 +1287,7 @@ def make_tts_send_fn(
             initial_codec_chunk_frames=initial_codec_chunk_frames,
             no_ref_audio=no_ref_audio,
             ref_format=ref_format,
+            no_ref_text=no_ref_text,
             voice=voice,
             task_type=task_type,
             instructions=instructions,

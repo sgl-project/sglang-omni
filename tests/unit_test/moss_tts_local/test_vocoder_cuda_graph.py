@@ -10,7 +10,7 @@ import textwrap
 import pytest
 import torch
 
-pytestmark = pytest.mark.gpu
+pytestmark = pytest.mark.accelerator
 
 CODEC_MODEL_ID = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 N_VQ = 12  # MOSS-TTS-Local v1.5 uses the first 12 RVQ codebooks

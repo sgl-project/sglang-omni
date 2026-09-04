@@ -46,6 +46,9 @@ class FunASREngineBuilder(AsrEngineBuilder):
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
+        prefill_coalesce_when_idle: bool,
+        prefill_coalesce_requires_pending_builds: bool,
+        prefill_coalesce_after_builds_during_decode: bool,
         mm_attention_backend: str | None,
         enable_pre_lm_encoder: bool,
         pre_lm_cache_max_entries: int,
@@ -67,6 +70,13 @@ class FunASREngineBuilder(AsrEngineBuilder):
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
+        self.prefill_coalesce_requires_pending_builds = (
+            prefill_coalesce_requires_pending_builds
+        )
+        self.prefill_coalesce_after_builds_during_decode = (
+            prefill_coalesce_after_builds_during_decode
+        )
         self.mm_attention_backend = mm_attention_backend
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
         self.pre_lm_cache_max_entries = pre_lm_cache_max_entries
@@ -212,6 +222,13 @@ class FunASREngineBuilder(AsrEngineBuilder):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
+            "prefill_coalesce_requires_pending_builds": (
+                self.prefill_coalesce_requires_pending_builds
+            ),
+            "prefill_coalesce_after_builds_during_decode": (
+                self.prefill_coalesce_after_builds_during_decode
+            ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
         }

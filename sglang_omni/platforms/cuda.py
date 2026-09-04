@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from sglang.srt.platforms.cuda import CudaDeviceMixin
-from sglang.srt.platforms.rocm import RocmDeviceMixin
 
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.quantization import resolve_quant_config
@@ -34,7 +33,7 @@ def _is_h20_device() -> bool:
 
 
 def _is_fp8_cutlass_moe_supported() -> bool:
-    """Mirror SGLang 0.5.16's CUTLASS FP8 MoE assertions."""
+    """Mirror SGLang's CUTLASS FP8 MoE assertions."""
     from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
     from sglang.srt.utils import (
         is_sm90_supported,
@@ -191,7 +190,3 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             f"fp8_gemm_backend={fp8_gemm_backend}"
         )
         return effective_quantization
-
-
-class ROCMOmniPlatform(RocmDeviceMixin, CUDAOmniPlatform):
-    pass

@@ -6,8 +6,8 @@ config_cls: WhisperASRPipelineConfig
 name: whisper
 model_path: openai/whisper-large-v3-turbo
 
-runtime_overrides:
+stages:
   asr:
-    mem_fraction_static: 0.20
-    server_args_overrides:
+    engine:
+      mem_fraction_static: 0.20
       max_total_tokens: 40000

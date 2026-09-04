@@ -5,11 +5,96 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import PipelineConfig, StageConfig
+from pydantic import Field
+
+from sglang_omni.config import (
+    EngineStageConfig,
+    FactoryArgs,
+    PipelineConfig,
+    StageConfig,
+)
 
 _PKG = "sglang_omni.models.moss_tts"
 _REF_AUDIO_CACHE_MAX_ITEMS = 8192
 _REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_COLOCATED_PREPROCESSING_GPU_MEMORY_FRACTION = 0.10
+_COLOCATED_AR_GPU_MEMORY_FRACTION = 0.72
+_COLOCATED_VOCODER_GPU_MEMORY_FRACTION = 0.18
+
+
+class MossTTSPreprocessingFactoryArgs(FactoryArgs):
+    """Reference-encode cache knobs, typed like the shared ones."""
+
+    compute_dtype: str | None = None
+    ref_audio_cache: bool | None = None
+    ref_audio_cache_max_items: int | None = Field(default=None, ge=1)
+    ref_audio_cache_max_bytes: int | None = Field(default=None, ge=1)
+
+
+class MossTTSPreprocessingStageConfig(StageConfig):
+    factory: MossTTSPreprocessingFactoryArgs = Field(
+        default_factory=MossTTSPreprocessingFactoryArgs
+    )
+
+
+class MossTTSVocoderFactoryArgs(FactoryArgs):
+    compute_dtype: str | None = None
+
+
+class MossTTSVocoderStageConfig(StageConfig):
+    factory: MossTTSVocoderFactoryArgs = Field(
+        default_factory=MossTTSVocoderFactoryArgs
+    )
+
+
+def _stages(*, colocated: bool) -> list[StageConfig]:
+    # Note (Jiaxin Deng): the vocoder's Python decode loop shares the interpreter
+    # with the AR scheduler when both live in one process; on H200 isolating it
+    # lifts single-replica throughput by ~70% at every concurrency cap.
+    return [
+        MossTTSPreprocessingStageConfig(
+            name="preprocessing",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            factory=MossTTSPreprocessingFactoryArgs(
+                compute_dtype="bfloat16",
+                ref_audio_cache=True,
+                ref_audio_cache_max_items=_REF_AUDIO_CACHE_MAX_ITEMS,
+                ref_audio_cache_max_bytes=_REF_AUDIO_CACHE_MAX_BYTES,
+            ),
+            gpu_memory_fraction=(
+                _COLOCATED_PREPROCESSING_GPU_MEMORY_FRACTION if colocated else None
+            ),
+            gpu=0,
+            next="tts_engine",
+        ),
+        EngineStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FactoryArgs(dtype="bfloat16"),
+            gpu_memory_fraction=(
+                _COLOCATED_AR_GPU_MEMORY_FRACTION if colocated else None
+            ),
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
+        ),
+        MossTTSVocoderStageConfig(
+            name="vocoder",
+            process="vocoder" if colocated else "pipeline",
+            factory_path=f"{_PKG}.stages.create_vocoder_executor",
+            factory=MossTTSVocoderFactoryArgs(
+                dtype="float32", compute_dtype="bfloat16"
+            ),
+            gpu_memory_fraction=(
+                _COLOCATED_VOCODER_GPU_MEMORY_FRACTION if colocated else None
+            ),
+            gpu=0,
+            terminal=True,
+            can_accept_stream_before_payload=True,
+        ),
+    ]
 
 
 class MossTTSPipelineConfig(PipelineConfig):
@@ -17,6 +102,7 @@ class MossTTSPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTTSDelayModel"
     requires_model_capabilities: ClassVar[bool] = True
+    max_speech_input_chars: ClassVar[int | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "MossTTSDelay",
         "MossTTSDelayForConditionalGeneration",
@@ -24,78 +110,33 @@ class MossTTSPipelineConfig(PipelineConfig):
         "MossTTSDelayWithCodecModel",
     )
 
-    @classmethod
-    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"talker": "tts_engine"}
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "preprocessing": MossTTSPreprocessingStageConfig,
+        "tts_engine": EngineStageConfig,
+        "vocoder": MossTTSVocoderStageConfig,
+    }
 
     @classmethod
-    def talker_sglang_role_to_stage(cls) -> dict[str, str]:
-        return {"talker": "tts_engine"}
+    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
+        # Note (Akazaakane): preprocessing publishes into the module-level
+        # PreparedRequestQueue that the AR stage pops in-process.
+        return frozenset({("preprocessing", "tts_engine")})
 
-    @classmethod
-    def generation_sglang_role_to_stage(cls) -> dict[str, str]:
-        return {"generation": "tts_engine"}
-
-    @classmethod
-    def process_safe_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): preprocessing -> tts_engine is excluded because
-        # preprocessing publishes into the module-level PreparedRequestQueue that the
-        # AR stage pops in-process. The vocoder loads its own processor and reads
-        # delayed codes from MossTTSState.
-        return frozenset({("tts_engine", "vocoder")})
-
-    @classmethod
-    def process_edge_resources(
-        cls,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        return {
-            ("tts_engine", "vocoder"): {
-                "preprocessing": 0.05,
-                "tts_engine": 0.85,
-                "vocoder": 0.10,
-            }
-        }
-
-    model_path: str
-    stages: list[StageConfig] = [
-        StageConfig(
-            name="preprocessing",
-            process="pipeline",
-            factory=f"{_PKG}.stages.create_preprocessing_executor",
-            factory_args={
-                "dtype": "float32",
-                "ref_audio_cache": True,
-                "ref_audio_cache_max_items": _REF_AUDIO_CACHE_MAX_ITEMS,
-                "ref_audio_cache_max_bytes": _REF_AUDIO_CACHE_MAX_BYTES,
-            },
-            gpu=0,
-            next="tts_engine",
-        ),
-        StageConfig(
-            name="tts_engine",
-            process="pipeline",
-            factory=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory_args={"dtype": "bfloat16"},
-            gpu=0,
-            next="vocoder",
-            stream_to=["vocoder"],
-        ),
-        StageConfig(
-            name="vocoder",
-            process="pipeline",
-            factory=f"{_PKG}.stages.create_vocoder_executor",
-            factory_args={
-                "dtype": "float32",
-                "compute_dtype": "bfloat16",
-            },
-            gpu=0,
-            terminal=True,
-            can_accept_stream_before_payload=True,
-        ),
-    ]
+    stages: list[StageConfig] = Field(default_factory=lambda: _stages(colocated=True))
 
     def supports_uploaded_voice_references(self) -> bool:
         return True
 
 
+class MossTTSSingleProcessPipelineConfig(MossTTSPipelineConfig):
+    """All three stages in one process, the layout before the vocoder split."""
+
+    stages: list[StageConfig] = Field(default_factory=lambda: _stages(colocated=False))
+
+
 EntryClass = MossTTSPipelineConfig
+
+Variants = {
+    "default": MossTTSPipelineConfig,
+    "single_process": MossTTSSingleProcessPipelineConfig,
+}

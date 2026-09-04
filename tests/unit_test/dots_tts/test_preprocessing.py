@@ -5,9 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from dots_tts.utils.tokenizer import AUDIO_COMP_SPAN_TOKEN, AUDIO_GEN_SPAN_TOKEN
 
 from sglang_omni.models.dots_tts import stages
+from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.stages import preprocess_dots_tts_payload
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -17,6 +17,7 @@ class _RecordingTokenizer:
     eos_token_id = 0
 
     def __init__(self) -> None:
+        import_dots_tts()
         from dots_tts.utils.tokenizer import (
             AUDIO_COMP_SPAN_TOKEN,
             AUDIO_GEN_SPAN_TOKEN,
@@ -29,6 +30,7 @@ class _RecordingTokenizer:
             AUDIO_GEN_SPAN_TOKEN: 102,
             AUDIO_COMP_SPAN_TOKEN: 103,
         }
+        self.audio_span_tokens = [AUDIO_GEN_SPAN_TOKEN, AUDIO_COMP_SPAN_TOKEN]
         self.len_calls = 0
         self.converted_tokens: list[str] = []
 
@@ -144,17 +146,11 @@ def test_dots_executor_resolves_tokenizer_invariants_once(
     preprocess = stages.create_preprocessing_executor("model")._fn
 
     assert tokenizer.len_calls == 1
-    assert tokenizer.converted_tokens == [
-        AUDIO_GEN_SPAN_TOKEN,
-        AUDIO_COMP_SPAN_TOKEN,
-    ]
+    assert tokenizer.converted_tokens == tokenizer.audio_span_tokens
     first = DotsTTSState.from_dict(preprocess(_payload()).data)
     second = DotsTTSState.from_dict(preprocess(_payload()).data)
     assert tokenizer.len_calls == 1
-    assert tokenizer.converted_tokens == [
-        AUDIO_GEN_SPAN_TOKEN,
-        AUDIO_COMP_SPAN_TOKEN,
-    ]
+    assert tokenizer.converted_tokens == tokenizer.audio_span_tokens
     assert first.audio_span_token_ids == second.audio_span_token_ids == [102, 103]
     assert first.audio_span_token_ids is not second.audio_span_token_ids
     assert first.vocab_size == second.vocab_size == 256
@@ -172,9 +168,6 @@ def test_dots_direct_preprocessor_resolves_tokenizer_invariants(
     state = _preprocess(_payload(), tokenizer)
 
     assert tokenizer.len_calls == 1
-    assert tokenizer.converted_tokens == [
-        AUDIO_GEN_SPAN_TOKEN,
-        AUDIO_COMP_SPAN_TOKEN,
-    ]
+    assert tokenizer.converted_tokens == tokenizer.audio_span_tokens
     assert state.audio_span_token_ids == [102, 103]
     assert state.vocab_size == 256

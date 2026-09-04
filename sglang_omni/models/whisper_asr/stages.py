@@ -30,6 +30,7 @@ def create_sglang_whisper_asr_executor(
     pre_lm_cache_size_bytes: int | None = None,
     pre_lm_max_batch_size: int = 8,
     pre_lm_max_batch_wait_ms: int = 0,
+    pre_lm_cache_pin_host_memory: bool = True,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
@@ -58,6 +59,7 @@ def create_sglang_whisper_asr_executor(
         pre_lm_cache_size_bytes=pre_lm_cache_size_bytes,
         pre_lm_max_batch_size=pre_lm_max_batch_size,
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
+        pre_lm_cache_pin_host_memory=pre_lm_cache_pin_host_memory,
     ).build(
         model_path,
         device=device,

@@ -21,6 +21,7 @@ from typing import Any, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
+from sglang.srt.runtime_context import get_parallel
 from torch import nn
 
 from sglang_omni.models.ming_omni.configuration import (
@@ -46,8 +47,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     SiluAndMul,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
@@ -89,8 +88,8 @@ class BailingMoeV2Attention(nn.Module):
         self.rotary_dim = config.rotary_dim
         self.use_qk_norm = config.use_qk_norm
 
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
+        attn_tp_rank = get_parallel().attn_tp_rank
+        attn_tp_size = get_parallel().attn_tp_size
         validate_attention_tp_config(
             num_attention_heads=self.num_heads,
             num_key_value_heads=self.num_kv_heads,

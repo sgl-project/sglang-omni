@@ -40,9 +40,12 @@ class LocalStageDispatcher:
         to_stage: str,
         request_id: str,
         payload: Any,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
         target = self._get_stage(from_stage, to_stage)
-        await target.receive_local_payload(request_id, from_stage, payload)
+        await target.receive_local_payload(
+            request_id, from_stage, payload, replica_bindings
+        )
 
     async def send_stream_chunk(
         self,
@@ -53,6 +56,7 @@ class LocalStageDispatcher:
         chunk_id: int,
         data: Any,
         metadata: dict[str, Any] | None = None,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
         target = self._get_stage(from_stage, to_stage)
         await target.receive_local_stream_chunk(
@@ -61,6 +65,7 @@ class LocalStageDispatcher:
             chunk_id,
             data,
             metadata,
+            replica_bindings,
         )
 
     async def send_stream_signal(
@@ -71,6 +76,7 @@ class LocalStageDispatcher:
         request_id: str,
         is_done: bool = False,
         error: str | None = None,
+        replica_bindings: dict[str, int] | None = None,
     ) -> None:
         target = self._get_stage(from_stage, to_stage)
         await target.receive_local_stream_signal(
@@ -78,4 +84,5 @@ class LocalStageDispatcher:
             from_stage,
             is_done=is_done,
             error=error,
+            replica_bindings=replica_bindings,
         )

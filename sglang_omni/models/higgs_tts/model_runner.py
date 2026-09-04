@@ -215,7 +215,7 @@ class HiggsTTSModelRunner(ModelRunner):
         # Note (Yueying Li): sync-free launch cache: temperature/top_p/top_k/row-index are
         # per-request constants, so the four H2D uploads below need to
         # rerun only when the batch composition changes (the extract itself is
-        # host-side in the 0.5.15 adaptation). The key is
+        # host-side in this adaptation). The key is
         # order-sensitive and includes the pool rows (recomputed from
         # acquire_row every step), so admission / finish / retract / abort /
         # reorder / row re-allocation all miss; bs covers the padding-row

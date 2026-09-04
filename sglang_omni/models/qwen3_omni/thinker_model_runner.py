@@ -311,7 +311,14 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         if disposition.kind == _SIDECAR:
             raise RuntimeError("Qwen prefill sidecar was not attached before forward")
 
-        return super().custom_prefill_forward(forward_batch, schedule_batch, requests)
+        result = super().custom_prefill_forward(
+            forward_batch,
+            schedule_batch,
+            requests,
+        )
+        if result is not None:
+            self.tp_worker.record_custom_prefill_eager()
+        return result
 
 
 __all__ = ["Qwen3OmniThinkerModelRunner"]

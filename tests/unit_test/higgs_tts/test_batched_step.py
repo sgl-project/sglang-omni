@@ -75,6 +75,7 @@ def _assert_pools_equal(a: dict, b: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.accelerator
 def test_batched_matches_per_row_delay_window():
     """First N steps must force codebooks > delay_count to BOC."""
     B = 3
@@ -103,6 +104,7 @@ def test_batched_matches_per_row_delay_window():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.accelerator
 def test_batched_matches_per_row_eoc_winddown():
     """After delay, fire cb0=EOC and verify wind-down + done flag match."""
     B = 2
@@ -159,6 +161,7 @@ def test_batched_matches_per_row_eoc_winddown():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.accelerator
 def test_batched_done_row_returns_stop_and_freezes_state():
     """A row already marked generation_done must return STOP and not mutate."""
     pool = HiggsBatchedSamplerState(2, N, device=DEVICE)
@@ -196,6 +199,7 @@ def test_batched_done_row_returns_stop_and_freezes_state():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.accelerator
 def test_batched_matches_per_row_mixed_phases():
     """One row mid-delay, one mid-winddown, one fresh — batched == per-row."""
     pool_pr = HiggsBatchedSamplerState(3, N, device=DEVICE)
@@ -233,6 +237,7 @@ def test_batched_matches_per_row_mixed_phases():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.accelerator
 def test_batched_step_mixed_top_k_per_row_filter():
     """Regression: eager path must accept heterogeneous top_k per row.
     Row 0 uses ``K_MAX`` (no-op filter, mirrors ``top_k=None``); row 1
@@ -315,6 +320,7 @@ def test_batched_greedy_temperature_zero_is_deterministic_argmax():
         assert torch.equal(o, expected), "temperature=0 must be deterministic argmax"
 
 
+@pytest.mark.accelerator
 def test_batched_greedy_top_k_one_is_argmax():
     from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
 

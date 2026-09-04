@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.scheduling.omni_scheduler as omni_scheduler_module
 from sglang_omni.models.fishaudio_s2_pro.model_runner import (
     FishS2ProModelRunner,
     collect_s2pro_step_outputs,
@@ -413,6 +414,7 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
     assert int(audio_decoder.seen_embedding_ids[0][0].item()) == 0
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="multinomial_with_seed needs CUDA"
 )
@@ -628,7 +630,9 @@ def test_fish_tts_result_adapter_maps_finish_reason_and_engine_time() -> None:
     assert result_adapter(data).data["finish_reason"] == "stop"
 
 
-def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length() -> None:
+def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length(
+    monkeypatch,
+) -> None:
     """Budget exhaustion runs the upstream length path end-to-end: the Req
     finishes with FINISH_LENGTH and the scheduler maps it onto the terminal
     Fish payload."""
@@ -662,7 +666,11 @@ def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length() -> None:
     scheduler._result_adapter = result_adapter
     scheduler._model_runner = None
     scheduler._stream_output_builder = None
-    scheduler.server_args = SimpleNamespace(weight_version=None)
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_serving",
+        lambda: SimpleNamespace(weight_version=None),
+    )
 
     scheduler.stream_output([req])
 

@@ -4,7 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sglang.srt.runtime_context import get_stream
+from sglang.srt.runtime_context import get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -32,8 +32,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     TopK,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
@@ -168,8 +166,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         self.hidden_size = hidden_size
         self.layer_id = layer_id
 
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
+        attn_tp_rank = get_parallel().attn_tp_rank
+        attn_tp_size = get_parallel().attn_tp_size
 
         self.config = config
         self.total_num_heads = num_heads
@@ -508,8 +506,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
 
         self.layer_id = layer_id
 
-        self.attn_tp_size = get_attention_tp_size()
-        self.attn_tp_rank = get_attention_tp_rank()
+        self.attn_tp_size = get_parallel().attn_tp_size
+        self.attn_tp_rank = get_parallel().attn_tp_rank
 
         # Qwen3MoE all layers are sparse and have no nextn now
         self.is_layer_sparse = True

@@ -479,7 +479,13 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         if self._stream is not None:
             self._stream.synchronize()
 
-    def cache_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+    def cache_embedding(
+        self,
+        item: Any,
+        embedding: torch.Tensor,
+        host_copy: torch.Tensor | None = None,
+    ) -> None:
+        del host_copy
         key = self._cache_key(item)
         if key is not None:
             self._cache.put(key, embedding)
