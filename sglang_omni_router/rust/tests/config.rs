@@ -108,7 +108,7 @@ fn websocket_only_config(route: &str) -> String {
 
 fn voice_only_config() -> String {
     String::from(
-        "schema_version = 1\n\n[server]\nlisten = \"127.0.0.1:30000\"\n\n[shutdown]\ndrain_timeout_ms = 30000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\nvoice_owner_worker_id = \"voice-owner\"\n\n[admission]\nglobal = 8\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 16777216\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"voice-owner\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"wav\"]\nstream_modes = [\"non_streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nmanaged_voice = true\n",
+        "schema_version = 1\n\n[server]\nlisten = \"127.0.0.1:30000\"\n\n[shutdown]\ndrain_timeout_ms = 30000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\nvoice_owner_worker_id = \"voice-owner\"\n\n[admission]\nglobal = 8\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 16777216\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"voice-owner\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"wav\"]\nstream_modes = [\"non_streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"uploaded\"\n",
     )
 }
 
@@ -269,7 +269,7 @@ fn websocket_transport_and_worker_setup_timeouts_are_independently_bounded() {
 }
 
 #[test]
-fn voice_state_has_one_exact_owner_with_managed_voice_support() {
+fn voice_state_has_one_exact_owner_with_uploaded_voice_support() {
     let base = voice_only_config();
     assert!(load_bytes(base.as_bytes()).is_ok());
     for invalid in [
@@ -277,25 +277,34 @@ fn voice_state_has_one_exact_owner_with_managed_voice_support() {
             "voice_owner_worker_id = \"voice-owner\"",
             "voice_owner_worker_id = \"missing\"",
         ),
-        base.replace("managed_voice = true", "managed_voice = false"),
+        base.replace(
+            "voice_name_policy = \"uploaded\"",
+            "voice_name_policy = \"preset\"",
+        ),
     ] {
         assert!(load_bytes(invalid.as_bytes()).is_err());
     }
 }
 
 #[test]
-fn enabled_speech_consumers_require_managed_owner_rows_in_matching_trust() {
+fn enabled_speech_consumers_require_uploaded_owner_rows_in_matching_trust() {
     let base = voice_only_config().replace("global = 8", "global = 8\nspeech_http = 4");
     let media = "\n[http_media]\nroutes = [\"speech\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n";
     let invalid = format!(
         "{}{media}",
-        base.replace("managed_voice = true", "managed_voice = false")
+        base.replace(
+            "voice_name_policy = \"uploaded\"",
+            "voice_name_policy = \"preset\"",
+        )
     );
     assert!(load_bytes(invalid.as_bytes()).is_err());
     assert!(
         load_bytes(
             invalid
-                .replace("managed_voice = false", "managed_voice = true")
+                .replace(
+                    "voice_name_policy = \"preset\"",
+                    "voice_name_policy = \"uploaded\"",
+                )
                 .as_bytes()
         )
         .is_ok()
@@ -303,7 +312,10 @@ fn enabled_speech_consumers_require_managed_owner_rows_in_matching_trust() {
     assert!(
         load_bytes(
             invalid
-                .replace("managed_voice = false", "managed_voice = true")
+                .replace(
+                    "voice_name_policy = \"preset\"",
+                    "voice_name_policy = \"uploaded\"",
+                )
                 .replace(
                     "trust_domain = \"local\"\nbuffered",
                     "trust_domain = \"remote\"\nbuffered"

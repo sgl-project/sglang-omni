@@ -774,7 +774,7 @@ impl Config {
     }
 
     fn validate_voice_state(&self) -> Result<(), ConfigError> {
-        use crate::worker_pool::profile::{ServiceClass, ServiceProfile};
+        use crate::worker_pool::profile::{ServiceClass, ServiceProfile, VoiceNamePolicy};
 
         let Some(owner_id) = self.router.voice_owner_worker_id.as_deref() else {
             return Ok(());
@@ -789,25 +789,31 @@ impl Config {
                     "must name a configured worker",
                 )
             })?;
-        let supports_managed_voice = |profile: &ServiceProfile| match profile {
-            ServiceProfile::SpeechHttp { managed_voice, .. }
-            | ServiceProfile::SpeechBatch { managed_voice, .. }
-            | ServiceProfile::SpeechWebsocket { managed_voice, .. } => *managed_voice,
+        let supports_uploaded_voice = |profile: &ServiceProfile| match profile {
+            ServiceProfile::SpeechHttp {
+                voice_name_policy, ..
+            }
+            | ServiceProfile::SpeechBatch {
+                voice_name_policy, ..
+            }
+            | ServiceProfile::SpeechWebsocket {
+                voice_name_policy, ..
+            } => *voice_name_policy == VoiceNamePolicy::Uploaded,
             ServiceProfile::GenerationHttp { .. }
             | ServiceProfile::TranscriptionHttp { .. }
             | ServiceProfile::RealtimeWebsocket => false,
         };
-        if !owner.service_profiles.iter().any(supports_managed_voice) {
+        if !owner.service_profiles.iter().any(supports_uploaded_voice) {
             return Err(ConfigError::invalid(
                 "router.voice_owner_worker_id",
-                "owner must advertise a managed-voice service profile",
+                "owner must advertise an uploaded-voice service profile",
             ));
         }
 
-        let owner_has_managed = |service, trust: &str| {
+        let owner_has_uploaded = |service, trust: &str| {
             owner.trust_domain == trust
                 && owner.service_profiles.iter().any(|profile| {
-                    profile.service_class() == service && supports_managed_voice(profile)
+                    profile.service_class() == service && supports_uploaded_voice(profile)
                 })
         };
         if let Some(media) = self.http_media.as_ref() {
@@ -816,10 +822,10 @@ impl Config {
                 HttpMediaRoute::SpeechBatch => Some(ServiceClass::SpeechBatch),
                 HttpMediaRoute::Transcription | HttpMediaRoute::Translation => None,
             }) {
-                if !owner_has_managed(service, &media.trust_domain) {
+                if !owner_has_uploaded(service, &media.trust_domain) {
                     return Err(ConfigError::invalid(
                         "router.voice_owner_worker_id",
-                        "enabled speech HTTP routes require an owner-side managed_voice row in the same trust domain",
+                        "enabled speech HTTP routes require an owner-side uploaded-voice row in the same trust domain",
                     ));
                 }
             }
@@ -828,11 +834,11 @@ impl Config {
             .websocket
             .as_ref()
             .and_then(|websocket| websocket.speech.as_ref())
-            && !owner_has_managed(ServiceClass::SpeechWebsocket, &speech.trust_domain)
+            && !owner_has_uploaded(ServiceClass::SpeechWebsocket, &speech.trust_domain)
         {
             return Err(ConfigError::invalid(
                 "router.voice_owner_worker_id",
-                "enabled speech WebSocket requires an owner-side managed_voice row in the same trust domain",
+                "enabled speech WebSocket requires an owner-side uploaded-voice row in the same trust domain",
             ));
         }
         Ok(())
