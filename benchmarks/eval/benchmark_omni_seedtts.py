@@ -164,6 +164,7 @@ from benchmarks.tasks.asr import (
     QWEN3_ASR_MODEL_PATH,
 )
 from benchmarks.tasks.tts import (
+    SpeechGenerationError,
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,
@@ -317,7 +318,11 @@ def make_send_fn(
                 ]
             if text_first_time_holder:
                 result.text_ttft_s = text_first_time_holder[0] - start_time
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            SpeechGenerationError,
+        ) as exc:
             result.error = str(exc)
         finally:
             result.latency_s = time.perf_counter() - start_time
