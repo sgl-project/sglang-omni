@@ -36,6 +36,7 @@ struct Worker {
     stop: Arc<AtomicBool>,
     healthy: Arc<AtomicBool>,
     health_requests: Arc<AtomicUsize>,
+    application_requests: Arc<AtomicUsize>,
     captured: Arc<Mutex<Vec<Captured>>>,
     thread: Option<JoinHandle<()>>,
     _guard: Rc<MutexGuard<'static, ()>>,
@@ -90,10 +91,12 @@ impl Worker {
         let stop = Arc::new(AtomicBool::new(false));
         let healthy = Arc::new(AtomicBool::new(true));
         let health_requests = Arc::new(AtomicUsize::new(0));
+        let application_requests = Arc::new(AtomicUsize::new(0));
         let captured = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
         let thread_healthy = Arc::clone(&healthy);
         let thread_health_requests = Arc::clone(&health_requests);
+        let thread_application_requests = Arc::clone(&application_requests);
         let thread_captured = Arc::clone(&captured);
         let thread = thread::spawn(move || {
             let mut connections = Vec::new();
@@ -103,8 +106,16 @@ impl Worker {
                         let captures = Arc::clone(&thread_captured);
                         let healthy = Arc::clone(&thread_healthy);
                         let health_requests = Arc::clone(&thread_health_requests);
+                        let application_requests = Arc::clone(&thread_application_requests);
                         connections.push(thread::spawn(move || {
-                            serve_connection(stream, captures, healthy, health_requests, behavior);
+                            serve_connection(
+                                stream,
+                                captures,
+                                healthy,
+                                health_requests,
+                                application_requests,
+                                behavior,
+                            );
                         }));
                     }
                     Ok((_stream, _peer)) => {}
@@ -132,6 +143,7 @@ impl Worker {
             stop,
             healthy,
             health_requests,
+            application_requests,
             captured,
             thread: Some(thread),
             _guard: guard,
@@ -146,6 +158,17 @@ impl Worker {
         let deadline = Instant::now() + DEADLINE;
         while self.captures().len() < count {
             assert!(Instant::now() < deadline, "worker did not receive request");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn wait_for_application_requests(&self, count: usize) {
+        let deadline = Instant::now() + DEADLINE;
+        while self.application_requests.load(Ordering::Acquire) < count {
+            assert!(
+                Instant::now() < deadline,
+                "worker did not receive application request"
+            );
             thread::sleep(Duration::from_millis(2));
         }
     }
@@ -196,6 +219,7 @@ fn serve_connection(
     captured: Arc<Mutex<Vec<Captured>>>,
     healthy: Arc<AtomicBool>,
     health_requests: Arc<AtomicUsize>,
+    application_requests: Arc<AtomicUsize>,
     behavior: WorkerBehavior,
 ) {
     stream
@@ -216,11 +240,13 @@ fn serve_connection(
                 );
                 health_requests.fetch_add(1, Ordering::AcqRel);
             } else if behavior == WorkerBehavior::RejectAfterHeaders {
+                application_requests.fetch_add(1, Ordering::AcqRel);
                 write_response(
                     &mut stream,
                     b"HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: 18\r\nConnection: close\r\n\r\n{\"early\":\"reject\"}",
                 );
             } else {
+                application_requests.fetch_add(1, Ordering::AcqRel);
                 thread::sleep(Duration::from_secs(3));
             }
         }
@@ -242,6 +268,7 @@ fn serve_connection(
             health_requests.fetch_add(1, Ordering::AcqRel);
             continue;
         }
+        application_requests.fetch_add(1, Ordering::AcqRel);
         captured.lock().expect("record request").push(Captured {
             head,
             body: body.clone(),
@@ -261,6 +288,14 @@ fn serve_connection(
                     b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\nB\r\ndata: one\n\n\r\n",
                 );
                 thread::sleep(Duration::from_millis(750));
+                write_response(&mut stream, b"E\r\ndata: [DONE]\n\n\r\n0\r\n\r\n");
+            }
+            b"disconnect-hold" => {
+                write_response(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\nB\r\ndata: one\n\n\r\n",
+                );
+                thread::sleep(Duration::from_secs(3));
                 write_response(&mut stream, b"E\r\ndata: [DONE]\n\n\r\n0\r\n\r\n");
             }
             b"timeout" => {
@@ -1112,7 +1147,7 @@ fn early_upload_eof_and_downstream_disconnect_release_admission() {
         .expect("bound disconnect response");
     disconnect
         .write_all(
-            b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\nslow",
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\ndisconnect-hold",
         )
         .expect("write disconnect request");
     worker.wait_for_requests(1);
@@ -1121,11 +1156,16 @@ fn early_upload_eof_and_downstream_disconnect_release_admission() {
     assert_ne!(count, 0);
     drop(disconnect);
 
+    let release_started = Instant::now();
     let released = post_when_capacity_releases(router.address);
     assert_ne!(
         status(&released),
         429,
         "downstream drop retained the sole admission permit"
+    );
+    assert!(
+        release_started.elapsed() < Duration::from_secs(1),
+        "admission was released only when the upstream stream ended"
     );
 }
 
@@ -1190,6 +1230,12 @@ fn outer_deadline_bounds_a_backpressured_upload() {
             }
         }
     });
+    worker.wait_for_application_requests(1);
+    thread::sleep(Duration::from_millis(25));
+    assert!(
+        !upload.is_finished(),
+        "large upload completed even though the worker did not read its body"
+    );
 
     let release_started = Instant::now();
     let released = post_when_capacity_releases(router.address);
