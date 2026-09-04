@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from typing import Any
@@ -106,6 +107,7 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_concurrency: int = 8,
+    stream_codec_output: bool = True,
 ) -> ThreadedSimpleScheduler:
     del model_path
     # note (luojiaxuan): preprocessing must admit several requests at once. A
@@ -113,7 +115,10 @@ def create_preprocessing_executor(
     # the speech-tokenizer batcher would only ever see batches of one; the
     # default matches the batcher's max_batch_size.
     return ThreadedSimpleScheduler(
-        preprocess_qwen3_tts_payload,
+        functools.partial(
+            preprocess_qwen3_tts_payload,
+            default_stream_codec_output=stream_codec_output,
+        ),
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
     )
@@ -126,12 +131,16 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 60.0,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
     return Qwen3TtsEngineBuilder(
         attn_implementation=attn_implementation,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
     ).build(
         model_path,
         device=device,
@@ -166,6 +175,7 @@ def create_vocoder_executor(
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
+    fused_snake_activation: bool = False,
     enable_stateful_codec_decoder: bool = False,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
@@ -194,6 +204,7 @@ def create_vocoder_executor(
         initial_cuda_graph=initial_cuda_graph,
         enable_deterministic_inference=enable_deterministic_inference,
         followup_cuda_graph=followup_cuda_graph,
+        fused_snake_activation=fused_snake_activation,
         enable_stateful_codec_decoder=enable_stateful_codec_decoder,
     )
     # note (ratish): Factory construction completes before the stage process

@@ -78,6 +78,7 @@ tests/
     ├── models/
     │   └── test_model_capabilities.py
     ├── model_runner/
+    │   ├── test_arch_override.py
     │   ├── test_hidden_capture.py
     │   └── test_prefill_cuda_graph_usage.py
     ├── audar_tts/
@@ -165,7 +166,8 @@ tests/
     ├── arkasr/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_encoder_service.py
-    │   └── test_pipeline.py
+    │   ├── test_pipeline.py
+    │   └── test_stream_output_builder.py
     ├── moss_transcribe_diarize/
     │   ├── test_encoder_cache.py
     │   ├── test_encoder_service.py
@@ -477,6 +479,9 @@ that happened to contain an older version of the test.
     error propagation with same-device stream checks, using CPU stand-ins
     where no GPU is present.
 - `unit_test/model_runner/`: Shared model-runner contract tests:
+  - arch override pool sizing: a sub-model engine's KV pool takes the
+    sub-model's layer count through SGLang's layer resolver (the Qwen3-Omni
+    talker at 20 layers, the thinker at 48).
   - graph-safe hidden-state capture: stable registered buffers refreshed by
     decoder-layer pre-hooks, capacity validation, graph-replay row reads, and
     buffer address stability across forwards, including real breakable CUDA
@@ -531,6 +536,9 @@ that happened to contain an older version of the test.
     parity check
   - audio-token count formula, audio-tower forward shape, marker-token
     suppression, and the fp16 encoder residual clamp.
+  - streaming output: request-contract validation, chunked-prefill gating,
+    rate-limited and terminal flushes, UTF-8 boundaries, per-request state,
+    and `join(deltas).strip() == done.text`.
 - `unit_test/fun_asr/`: Fun-ASR-Nano unit tests:
   - pipeline config and stage factory: single `asr` stage, `max_running_requests=64`,
     auto static KV budget, pre-LM encoder/cache defaults, scheduler-owned

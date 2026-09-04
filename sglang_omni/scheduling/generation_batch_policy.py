@@ -70,28 +70,18 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     return values
 
 
-def clamp_prefill_cuda_graph_max_bs(
-    overrides: dict[str, Any],
-    *,
-    context_length: int | None = None,
-) -> int:
-    """Clamp the prefill graph budget to the reachable token limits."""
-    caps = [
-        overrides.get("cuda_graph_max_bs_prefill"),
-        overrides.get("max_prefill_tokens"),
-        overrides.get("max_total_tokens"),
-        (
-            context_length
-            if context_length is not None
-            else overrides.get("context_length")
-        ),
-    ]
-    chunked_prefill_size = overrides.get("chunked_prefill_size")
-    if chunked_prefill_size is not None and int(chunked_prefill_size) > 0:
-        caps.append(chunked_prefill_size)
-
-    cap = min(int(value) for value in caps if value is not None)
-    overrides["cuda_graph_max_bs_prefill"] = cap
+def _explicit_prefill_cap(overrides: Mapping[str, Any]) -> int | None:
+    """The cap SGLang derives inside ServerArgs once its inputs are explicit."""
+    declared = overrides.get("cuda_graph_max_bs_prefill")
+    if declared is not None:
+        return int(declared) if int(declared) > 0 else None
+    chunk = overrides.get("chunked_prefill_size")
+    if chunk is None or int(chunk) <= 0:
+        return None
+    cap = int(chunk)
+    max_total_tokens = overrides.get("max_total_tokens")
+    if max_total_tokens is not None:
+        cap = min(cap, int(max_total_tokens))
     return cap
 
 
@@ -175,27 +165,33 @@ def build_generation_batch_overrides(
         overrides.pop("cuda_graph_bs_prefill", None)
         overrides.pop("cuda_graph_max_bs_prefill", None)
 
-    # Reconcile the merged buckets with the cap: derive a missing cap from
-    # the buckets, and trim stage-default buckets to an operator cap. An
-    # operator-stated list is never trimmed; contradictions fail validation.
     prefill_bs = overrides.get("cuda_graph_bs_prefill")
     prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
     if (
         prefill_bs is None
-        and prefill_max_bs is not None
         and overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.BREAKABLE
     ):
-        prefill_max_bs = clamp_prefill_cuda_graph_max_bs(overrides)
-        prefill_bs = build_default_prefill_cuda_graph_bs(prefill_max_bs)
-        overrides["cuda_graph_bs_prefill"] = prefill_bs
+        # note (ratish): SGLang's prefill generator omits an off-grid cap, and
+        # an unset chunk is only known inside ServerArgs.
+        cap = _explicit_prefill_cap(overrides)
+        if cap is not None:
+            prefill_bs = build_default_prefill_cuda_graph_bs(cap)
+            prefill_max_bs = cap
+            overrides["cuda_graph_bs_prefill"] = prefill_bs
+            overrides["cuda_graph_max_bs_prefill"] = cap
+    # note (Akazaakane): SGLang sets the prefill max_bs from the chunk even
+    # when a list is declared.
     if prefill_bs and prefill_max_bs is None:
         overrides["cuda_graph_max_bs_prefill"] = max(int(b) for b in prefill_bs)
-    elif (
-        prefill_bs
-        and "cuda_graph_bs_prefill" not in incoming
-        and int(prefill_max_bs) < max(int(b) for b in prefill_bs)
-    ):
+    elif prefill_bs and int(prefill_max_bs) < max(int(b) for b in prefill_bs):
+        # note (ratish): SGLang keeps a declared list as is, so an operator cap
+        # bounds a stage list only here.
         cap = int(prefill_max_bs)
+        if "cuda_graph_bs_prefill" in incoming:
+            raise ValueError(
+                f"cuda_graph_max_bs_prefill={cap} is below the declared "
+                f"cuda_graph_bs_prefill top {max(int(b) for b in prefill_bs)}"
+            )
         trimmed = [int(b) for b in prefill_bs if int(b) <= cap]
         if not trimmed or trimmed[-1] != cap:
             trimmed.append(cap)
@@ -287,8 +283,8 @@ def _validate_prefill_graph_policy(
     cuda_graph_enabled: bool,
     errors: list[str],
 ) -> None:
-    """Validate the declared prefill CUDA graph policy: breakable backend
-    only, with explicitly declared buckets."""
+    """Validate the resolved prefill CUDA graph policy: breakable backend
+    only, with the bucket list checked against the chunked prefill ceiling."""
     backend = get_prefill_cuda_graph_backend(server_args)
     if backend == CudaGraphBackend.DISABLED:
         return
@@ -319,42 +315,30 @@ def _validate_prefill_graph_policy(
                 "set cuda_graph_backend_prefill='disabled'"
             )
 
-    if ("prefill", "bs") not in server_args._cuda_graph_config_locked:
-        errors.append(
-            "breakable prefill CUDA graphs require explicit "
-            "cuda_graph_bs_prefill buckets (sglang's generated ladder is "
-            "not an accepted shape policy)"
+    prefill_cfg = server_args.cuda_graph_config.prefill
+    if not prefill_cfg.bs:
+        logger.warning(
+            "breakable prefill CUDA graphs require a positive prefill graph cap: "
+            f"chunked_prefill_size={server_args.chunked_prefill_size}, "
+            f"cuda_graph_max_bs_prefill={prefill_cfg.max_bs}, so SGLang captures "
+            "no prefill graphs"
         )
         return
-
-    prefill_cfg = server_args.cuda_graph_config.prefill
     buckets = _normalize_cuda_graph_bs(
         prefill_cfg.bs, errors, field="cuda_graph_bs_prefill"
     )
     if buckets is None:
         return
 
-    max_bs = prefill_cfg.max_bs
-    if max_bs is not None and max(buckets) != int(max_bs):
-        errors.append(
-            "max(cuda_graph_bs_prefill) must match cuda_graph_max_bs_prefill "
-            f"({max(buckets)} != {max_bs})"
+    # note (ratish): PrefillAdder bounds each admission by the remaining chunk,
+    # so a positive chunked_prefill_size is the only per-forward ceiling.
+    # max_prefill_tokens is a cumulative stop one admission can overshoot.
+    chunk = server_args.chunked_prefill_size
+    if chunk is not None and int(chunk) > 0 and buckets[-1] > int(chunk):
+        logger.warning(
+            f"cuda_graph_bs_prefill max={buckets[-1]} exceeds chunked_prefill_size="
+            f"{chunk}, buckets above it are captured but cannot be scheduled"
         )
-
-    # Buckets above either per-forward token cap can never replay.
-    for cap_name, cap_value in (
-        ("chunked_prefill_size", server_args.chunked_prefill_size),
-        ("max_prefill_tokens", server_args.max_prefill_tokens),
-    ):
-        if (
-            cap_value is not None
-            and int(cap_value) > 0
-            and max(buckets) > int(cap_value)
-        ):
-            errors.append(
-                f"cuda_graph_bs_prefill buckets above {cap_name} are "
-                f"unreachable ({max(buckets)} > {cap_value})"
-            )
 
     # The largest eager-falling length under bucket nxt is
     # (nxt - 1) // factor; a valley exists only when that reaches past the

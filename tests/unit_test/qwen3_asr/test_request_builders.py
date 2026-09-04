@@ -393,6 +393,61 @@ def test_qwen3_asr_rejects_explicit_unsupported_language_before_loading_audio(
         request_builder(payload)
 
 
+def _template_for_prompt(monkeypatch, prompt: str | None) -> str:
+    """Return the prompt template the builder hands to the tokenizer."""
+    num_mel_frames = 101
+    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
+        input_features=torch.zeros((1, 128, 3000)),
+        attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
+    )
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    tokenizer = _FakeTokenizer()
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=feature_extractor,
+    )
+    params = {} if prompt is None else {"prompt": prompt}
+    request_builder(
+        StagePayload(
+            request_id="req-bias",
+            request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+            data={},
+        )
+    )
+    return tokenizer.call_texts[-1]
+
+
+def test_qwen3_asr_prompt_reaches_the_system_turn(monkeypatch) -> None:
+    """Caller-supplied biasing text has to reach the model.
+
+    Qwen3-ASR reads biasing text from the system turn. Without this the request
+    builder drops params["prompt"], so domain vocabulary stays unbiased and the
+    caller gets no signal that the hint was ignored.
+    """
+    template = _template_for_prompt(monkeypatch, "PyTorch, nginx, Kubernetes")
+
+    assert "<|im_start|>system\nPyTorch, nginx, Kubernetes<|im_end|>" in template
+
+
+def test_qwen3_asr_blank_prompt_leaves_the_template_unchanged(monkeypatch) -> None:
+    """A blank prompt must not perturb the template.
+
+    The empty system turn comes from the checkpoint's own chat template and the
+    model is sensitive to edits there, so a missing or whitespace-only prompt has
+    to produce exactly the unbiased template.
+    """
+    plain = _template_for_prompt(monkeypatch, None)
+
+    assert plain.startswith("<|im_start|>system\n<|im_end|>")
+    assert _template_for_prompt(monkeypatch, "") == plain
+    assert _template_for_prompt(monkeypatch, "   ") == plain
+
+
 def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:
     num_mel_frames = 101
     num_audio_tokens = qwen3_asr_num_audio_tokens(num_mel_frames)
