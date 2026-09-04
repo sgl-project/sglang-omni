@@ -116,6 +116,27 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
 
+    def setup_model_resources(
+        self,
+        model: Any,
+        server_args: Any,
+        *,
+        generation_cuda_graph_enabled: bool,
+    ) -> None:
+        del server_args
+        if not generation_cuda_graph_enabled:
+            return
+        # note(ratish): the bucket warmups also build cuDNN's attention plans,
+        # which otherwise land inside the first serving step of each batch size.
+        subtalker = request_builders.resolve_subtalker_sampling(
+            self.wrapper._merge_generate_kwargs()
+        )
+        model.capture_predictor_graphs(
+            do_sample=subtalker.do_sample,
+            top_k=subtalker.top_k,
+            top_p=subtalker.top_p,
+        )
+
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.qwen3_tts.model_runner"
