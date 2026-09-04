@@ -3,6 +3,7 @@ use std::fmt;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use crate::error::HttpFault;
+use crate::speech_facts::ScalarFactSeed;
 use crate::worker_pool::profile::{InputModality, OutputModality, StreamMode};
 use crate::worker_pool::{
     ChatAudioFormat, MediaPlacement, MessageContentForm, ModelSelection, ProfileRequirement,
@@ -177,136 +178,6 @@ where
         let _ignored = map.next_value::<IgnoredAny>()?;
     }
     Ok(())
-}
-
-enum ScalarFact {
-    String(String),
-    Bool(bool),
-    Signed(i64),
-    Unsigned(u64),
-    Float(f64),
-    Other,
-}
-
-impl ScalarFact {
-    fn into_string(self) -> Option<String> {
-        match self {
-            Self::String(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn into_bool(self) -> Option<bool> {
-        match self {
-            Self::Bool(value) => Some(value),
-            Self::Signed(value) => bool_from_integer(value),
-            Self::Unsigned(value) => bool_from_integer(value),
-            Self::Float(0.0) => Some(false),
-            Self::Float(1.0) => Some(true),
-            Self::String(value) => parse_bool_fact(&value),
-            Self::Float(_) | Self::Other => None,
-        }
-    }
-}
-
-fn bool_from_integer<T>(value: T) -> Option<bool>
-where
-    T: Eq + From<u8>,
-{
-    if value == T::from(0) {
-        Some(false)
-    } else if value == T::from(1) {
-        Some(true)
-    } else {
-        None
-    }
-}
-
-struct ScalarFactSeed;
-
-impl<'de> DeserializeSeed<'de> for ScalarFactSeed {
-    type Value = ScalarFact;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct ScalarVisitor;
-
-        impl<'de> Visitor<'de> for ScalarVisitor {
-            type Value = ScalarFact;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a scalar or worker-owned value")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-                Ok(ScalarFact::String(value.to_owned()))
-            }
-
-            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-                Ok(ScalarFact::String(value))
-            }
-
-            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Bool(value))
-            }
-
-            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Signed(value))
-            }
-
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Unsigned(value))
-            }
-
-            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Float(value))
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Other)
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Other)
-            }
-
-            fn visit_seq<A>(self, sequence: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                ignore_sequence(sequence)?;
-                Ok(ScalarFact::Other)
-            }
-
-            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                ignore_map(map)?;
-                Ok(ScalarFact::Other)
-            }
-        }
-
-        deserializer.deserialize_any(ScalarVisitor)
-    }
-}
-
-fn parse_bool_fact(value: &str) -> Option<bool> {
-    if ["1", "on", "t", "true", "y", "yes"]
-        .iter()
-        .any(|candidate| value.eq_ignore_ascii_case(candidate))
-    {
-        Some(true)
-    } else if ["0", "off", "f", "false", "n", "no"]
-        .iter()
-        .any(|candidate| value.eq_ignore_ascii_case(candidate))
-    {
-        Some(false)
-    } else {
-        None
-    }
 }
 
 struct NonEmptyArraySeed;
