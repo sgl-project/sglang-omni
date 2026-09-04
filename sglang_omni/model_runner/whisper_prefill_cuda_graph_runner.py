@@ -20,6 +20,9 @@ class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
         self_attention_layers = [layer.self_attn.attn for layer in decoder.layers]
         cross_attention_layers = [layer.encoder_attn.attn for layer in decoder.layers]
         model_runner.attention_layers = self_attention_layers + cross_attention_layers
+        # note (Junnan Li): radix_attention indexes this by layer_id, and
+        # cross-attention ids start at num_decoder_layers.
+        model_runner.mha_companion_layers = [None] * len(model_runner.attention_layers)
         super().__init__(model_runner)
 
     def capture_prepare(self, num_tokens: int) -> tuple[ForwardBatch, Any]:

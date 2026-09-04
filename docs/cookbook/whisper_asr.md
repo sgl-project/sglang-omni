@@ -50,11 +50,23 @@ The current benchmark results were collected with
 startup time and GPU memory, set the prefill graph cap explicitly:
 
 ```yaml
-runtime_overrides:
+stages:
   asr:
-    server_args_overrides:
+    engine:
       cuda_graph_max_bs_prefill: 256
 ```
+
+Whisper runs three independently configured graph planes, each bucketed on its
+own axis; cross-attention K/V is written once per request between the first
+two and only read afterwards:
+
+| plane | bucket axis | config |
+|---|---|---|
+| encoder forward | batch size | `enable_encoder_cuda_graph`, encoder graph buckets |
+| decoder prefill body | aggregate prefill tokens | `cuda_graph_backend_prefill`, `cuda_graph_bs_prefill` |
+| decoder decode | batch size | `cuda_graph_bs`, `cuda_graph_max_bs` |
+
+Disabling one plane leaves the other two active.
 
 To disable only the prefill graph while keeping decode and encoder CUDA Graphs
 enabled, override the ASR stage:
@@ -64,9 +76,9 @@ config_cls: WhisperASRPipelineConfig
 name: whisper
 model_path: openai/whisper-large-v3
 
-runtime_overrides:
+stages:
   asr:
-    server_args_overrides:
+    engine:
       cuda_graph_backend_prefill: disabled
 ```
 

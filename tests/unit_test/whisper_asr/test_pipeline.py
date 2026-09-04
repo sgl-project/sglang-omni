@@ -337,6 +337,15 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         build_kwargs["context_length"] = context_length
         build_kwargs.update(overrides)
         server_args = SimpleNamespace(**overrides)
+        for name, default in (
+            ("attn_cp_size", 1),
+            ("dcp_size", 1),
+            ("lora_paths", None),
+            ("enable_lora", None),
+            ("moe_a2a_backend", "none"),
+        ):
+            if not hasattr(server_args, name):
+                setattr(server_args, name, default)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
@@ -408,8 +417,10 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4
     assert build_kwargs["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
+    # The prefill ladder is capped by the model context (1988 < max_prefill_tokens).
+    assert build_kwargs["cuda_graph_max_bs_prefill"] == 1500 + 224 + 256 + 8
     assert build_kwargs["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
-        256
+        1500 + 224 + 256 + 8
     )
     assert len(graph_init_calls) == 1
     assert len(attest_calls) == 1
