@@ -111,7 +111,6 @@ pub(super) fn batch_with_hints(
     let mut models = Vec::with_capacity(item_count);
     let mut default_model = defaults.model.clone().flatten();
     let mut default_model_added = false;
-    let mut formats = Vec::new();
     let mut tasks = Vec::new();
     let mut references = Vec::new();
     let default_format = classify_response_format(
@@ -122,6 +121,7 @@ pub(super) fn batch_with_hints(
             .unwrap_or("wav"),
     )
     .ok_or(HttpFault::MalformedRequest)?;
+    let mut formats = vec![default_format];
     let default_task = defaults
         .task
         .as_ref()
@@ -776,6 +776,35 @@ stream_modes = ["non_streaming", "streaming"]
     }
 
     #[test]
+    fn batch_default_response_format_remains_a_top_level_requirement() {
+        let pool = pool();
+        let trust = TrustDomain::new(String::from("local"));
+        let classified = batch(
+            br#"{
+                "model":"tts",
+                "response_format":"mp3",
+                "items":[
+                    {"input":"first","response_format":"wav"},
+                    {"input":"second","response_format":"wav"}
+                ]
+            }"#,
+            &pool,
+            &trust,
+        )
+        .expect("classify overridden default response format");
+        let ProfileRequirement::SpeechBatch {
+            response_formats, ..
+        } = classified.requirement.profile()
+        else {
+            panic!("batch requirement")
+        };
+        assert_eq!(
+            response_formats,
+            &[SpeechResponseFormat::Mp3, SpeechResponseFormat::Wav]
+        );
+    }
+
+    #[test]
     fn batch_combines_named_voice_and_external_reference_requirements() {
         let pool = pool();
         let trust = TrustDomain::new(String::from("local"));
@@ -829,7 +858,7 @@ stream_modes = ["non_streaming", "streaming"]
         else {
             panic!("batch requirement")
         };
-        assert!(response_formats.is_empty());
+        assert_eq!(response_formats, &[SpeechResponseFormat::Wav]);
         assert!(tasks.is_empty());
 
         assert_eq!(
@@ -875,7 +904,10 @@ stream_modes = ["non_streaming", "streaming"]
         assert_eq!(classified.credits, 2);
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].expected_model_id(), Some("other"));
-        assert_eq!(response_formats, &[SpeechResponseFormat::Pcm]);
+        assert_eq!(
+            response_formats,
+            &[SpeechResponseFormat::Wav, SpeechResponseFormat::Pcm]
+        );
         assert_eq!(reference_forms, &[ReferenceForm::None]);
     }
 
