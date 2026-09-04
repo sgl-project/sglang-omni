@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -17,17 +18,24 @@ from sglang_omni.utils import (
 
 def resolve_config_cls_for_model_path(model_path: str):
     """Resolve a PipelineConfig class from HF config metadata."""
+    # note (db-ol): a pinned <repo-id>@<revision> spec resolves metadata at
+    # the pinned revision without materializing the snapshot. The weights
+    # download happens later, when resolve_checkpoint loads a stage.
+    repo_id, revision = model_path, None
+    if "@" in model_path and not os.path.isdir(model_path):
+        repo_id, _, pinned = model_path.partition("@")
+        revision = pinned or None
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(model_path)
+        hf_config = AutoConfig.from_pretrained(repo_id, revision=revision)
     except (OSError, ValueError, KeyError):
         hf_config = None
 
     arch = architecture_from_hf_config(hf_config) if hf_config is not None else None
     if arch is None:
-        arch = try_resolve_arch_from_raw_config(model_path)
+        arch = try_resolve_arch_from_raw_config(repo_id, revision=revision)
     if arch is None:
-        arch = try_resolve_arch_from_mistral_config(model_path)
+        arch = try_resolve_arch_from_mistral_config(repo_id, revision=revision)
     if arch is None:
         raise ValueError(f"Could not resolve model architecture for {model_path!r}")
     return PIPELINE_CONFIG_REGISTRY.get_config(arch)
