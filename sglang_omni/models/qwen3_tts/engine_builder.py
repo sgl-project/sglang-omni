@@ -21,6 +21,21 @@ def _is_truthy(value: Any) -> bool:
     return False
 
 
+def _talker_requires_speech_tokenizer(model: Any) -> bool:
+    """Return whether this Talker checkpoint can consume reference audio.
+
+    Base checkpoints use the speech tokenizer to encode reference audio. The
+    CustomVoice and VoiceDesign request paths reject reference audio entirely,
+    so keeping a second full speech-tokenizer copy on the Talker is unnecessary.
+
+    Unknown/future model types conservatively keep the historical behavior.
+    """
+
+    model_type = str(getattr(model, "tts_model_type", "base"))
+    normalized = model_type.replace("-", "").replace("_", "").strip().lower()
+    return normalized not in {"customvoice", "voicedesign"}
+
+
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     model_name = "Qwen3-TTS"
     context_length = 8192
@@ -89,13 +104,14 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         from transformers import AutoProcessor
 
         model = model_worker.model_runner.model
-        speech_tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
-            checkpoint_dir,
-            device=device,
-            dtype=self.dtype,
-            attn_implementation=self.attn_implementation,
-        )
-        model.load_speech_tokenizer(speech_tokenizer)
+        if _talker_requires_speech_tokenizer(model):
+            speech_tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
+                checkpoint_dir,
+                device=device,
+                dtype=self.dtype,
+                attn_implementation=self.attn_implementation,
+            )
+            model.load_speech_tokenizer(speech_tokenizer)
         processor = AutoProcessor.from_pretrained(
             checkpoint_dir,
             fix_mistral_regex=True,

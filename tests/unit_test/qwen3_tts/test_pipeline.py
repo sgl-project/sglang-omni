@@ -5273,6 +5273,41 @@ def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(
         )
 
 
+@pytest.mark.parametrize(
+    ("model_type", "expected"),
+    [
+        ("base", True),
+        ("custom_voice", False),
+        ("customvoice", False),
+        ("custom-voice", False),
+        ("voice_design", False),
+        ("voicedesign", False),
+        ("voice-design", False),
+        ("future_variant", True),
+    ],
+)
+def test_qwen3_tts_talker_tokenizer_loading_policy(
+    model_type: str,
+    expected: bool,
+) -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import (
+        _talker_requires_speech_tokenizer,
+    )
+
+    assert (
+        _talker_requires_speech_tokenizer(SimpleNamespace(tts_model_type=model_type))
+        is expected
+    )
+
+
+def test_qwen3_tts_talker_tokenizer_loading_defaults_to_safe_behavior() -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import (
+        _talker_requires_speech_tokenizer,
+    )
+
+    assert _talker_requires_speech_tokenizer(SimpleNamespace())
+
+
 def test_qwen3_tts_engine_disables_torch_compile_by_default() -> None:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
