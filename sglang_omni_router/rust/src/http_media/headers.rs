@@ -1,10 +1,8 @@
-use axum::http::header::{
-    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, HeaderValue, TRAILER, TRANSFER_ENCODING,
-};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
+use axum::http::HeaderValue;
 
 use crate::error::HttpFault;
-use crate::http_relay::{is_request_media_type, parse_content_length, sanitize_response_headers};
+use crate::http_relay::{is_request_media_type, request_content_type, validate_request_envelope};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RequestKind {
@@ -14,7 +12,6 @@ pub(super) enum RequestKind {
 
 pub(super) struct RequestFraming {
     pub(super) content_length: Option<u64>,
-    pub(super) has_route_hint: bool,
     pub(super) content_type: HeaderValue,
     pub(super) boundary: Option<Vec<u8>>,
     pub(super) route_model: Option<String>,
@@ -25,14 +22,7 @@ pub(super) fn validate_request(
     headers: &HeaderMap,
     kind: RequestKind,
 ) -> Result<RequestFraming, HttpFault> {
-    let mut content_types = headers.get_all(CONTENT_TYPE).iter();
-    let Some(content_type) = content_types.next() else {
-        return Err(HttpFault::UnsupportedMediaType);
-    };
-    if content_types.next().is_some() {
-        return Err(HttpFault::UnsupportedMediaType);
-    }
-    let content_type = content_type.clone();
+    let content_type = request_content_type(headers)?;
     let text = content_type
         .to_str()
         .map_err(|_| HttpFault::UnsupportedMediaType)?;
@@ -49,36 +39,7 @@ pub(super) fn validate_request(
                 .into_bytes(),
         ),
     };
-    let mut encodings = headers.get_all(CONTENT_ENCODING).iter();
-    let encoding = encodings.next();
-    if encodings.next().is_some()
-        || encoding.is_some_and(|value| {
-            !value
-                .to_str()
-                .is_ok_and(|text| text.eq_ignore_ascii_case("identity"))
-        })
-    {
-        return Err(HttpFault::UnsupportedContentEncoding);
-    }
-    let mut expectations = headers.get_all(EXPECT).iter();
-    if let Some(expectation) = expectations.next()
-        && (!expectation.as_bytes().eq_ignore_ascii_case(b"100-continue")
-            || expectations.next().is_some())
-    {
-        return Err(HttpFault::ExpectationFailed);
-    }
-    if headers.contains_key(TRAILER) {
-        return Err(HttpFault::MalformedRequest);
-    }
-    let transfer_framed = headers.contains_key(TRANSFER_ENCODING);
-    let mut lengths = headers.get_all(CONTENT_LENGTH).iter();
-    let length = lengths.next();
-    if lengths.next().is_some() || (transfer_framed && length.is_some()) {
-        return Err(HttpFault::MalformedRequest);
-    }
-    let content_length = length
-        .map(|value| parse_content_length(value).ok_or(HttpFault::MalformedRequest))
-        .transpose()?;
+    let envelope = validate_request_envelope(headers)?;
     let route_model = one_route_header(headers, "x-sglang-omni-route-model")?
         .map(str::trim)
         .map(str::to_owned);
@@ -97,10 +58,8 @@ pub(super) fn validate_request(
             }
         })
         .transpose()?;
-    let has_route_hint = route_model.is_some() || route_stream.is_some();
     Ok(RequestFraming {
-        content_length,
-        has_route_hint,
+        content_length: envelope.content_length,
         content_type,
         boundary,
         route_model,
@@ -126,13 +85,6 @@ fn one_route_header<'a>(
             Ok(text)
         })
         .transpose()
-}
-
-pub(super) fn sanitize_response(
-    status: StatusCode,
-    source: &HeaderMap,
-) -> Result<HeaderMap, HttpFault> {
-    sanitize_response_headers(status, source)
 }
 
 fn multipart_boundary(value: &str) -> Option<String> {
@@ -203,7 +155,9 @@ mod tests {
     use axum::http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE};
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
-    use super::{HttpFault, RequestKind, sanitize_response, validate_request};
+    use crate::http_relay::sanitize_response_headers as sanitize_response;
+
+    use super::{HttpFault, RequestKind, validate_request};
 
     fn json_headers(content_type: &[u8]) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -317,8 +271,6 @@ mod tests {
         let framing = validate_request(&headers, RequestKind::Json).expect("route facts");
         assert_eq!(framing.route_model.as_deref(), Some("asr"));
         assert_eq!(framing.route_stream, Some(true));
-        assert!(framing.has_route_hint);
-
         headers.append(
             "x-sglang-omni-route-stream",
             HeaderValue::from_static("true"),

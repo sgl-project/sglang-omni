@@ -1,66 +1,23 @@
-use axum::http::header::{
-    CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, TRAILER, TRANSFER_ENCODING,
-};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue};
 
 use crate::error::HttpFault;
-use crate::http_relay::{is_request_media_type, parse_content_length, sanitize_response_headers};
+use crate::http_relay::{
+    RequestEnvelope, is_request_media_type, request_content_type, validate_request_envelope,
+};
 
-pub(crate) struct RequestFraming {
-    pub(crate) content_length: Option<u64>,
-}
-
-pub(crate) fn validate_request(headers: &HeaderMap) -> Result<RequestFraming, HttpFault> {
-    let mut content_types = headers.get_all(CONTENT_TYPE).iter();
-    let content_type = content_types.next();
-    if content_types.next().is_some()
-        || !content_type
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| is_request_media_type(value, "application/json"))
+pub(crate) fn validate_request(headers: &HeaderMap) -> Result<RequestEnvelope, HttpFault> {
+    let content_type = request_content_type(headers)?;
+    if !content_type
+        .to_str()
+        .is_ok_and(|value| is_request_media_type(value, "application/json"))
     {
         return Err(HttpFault::UnsupportedMediaType);
     }
-    let mut encodings = headers.get_all(CONTENT_ENCODING).iter();
-    let encoding = encodings.next();
-    if encodings.next().is_some()
-        || encoding.is_some_and(|value| {
-            !value
-                .to_str()
-                .is_ok_and(|text| text.eq_ignore_ascii_case("identity"))
-        })
-    {
-        return Err(HttpFault::UnsupportedContentEncoding);
-    }
-    let mut expectations = headers.get_all(EXPECT).iter();
-    if let Some(expectation) = expectations.next()
-        && (!expectation.as_bytes().eq_ignore_ascii_case(b"100-continue")
-            || expectations.next().is_some())
-    {
-        return Err(HttpFault::ExpectationFailed);
-    }
-    if headers.contains_key(TRAILER) {
+    let framing = validate_request_envelope(headers)?;
+    if framing.content_length.is_none() && !framing.transfer_framed {
         return Err(HttpFault::MalformedRequest);
     }
-    let transfer_framed = headers.contains_key(TRANSFER_ENCODING);
-    let mut content_lengths = headers.get_all(CONTENT_LENGTH).iter();
-    let content_length = content_lengths.next();
-    if content_lengths.next().is_some() || (transfer_framed && content_length.is_some()) {
-        return Err(HttpFault::MalformedRequest);
-    }
-    let content_length = content_length
-        .map(|value| parse_content_length(value).ok_or(HttpFault::MalformedRequest))
-        .transpose()?;
-    if content_length.is_none() && !transfer_framed {
-        return Err(HttpFault::MalformedRequest);
-    }
-    Ok(RequestFraming { content_length })
-}
-
-pub(crate) fn sanitize_response(
-    status: StatusCode,
-    source: &HeaderMap,
-) -> Result<HeaderMap, HttpFault> {
-    sanitize_response_headers(status, source)
+    Ok(framing)
 }
 
 pub(crate) fn canonical_content_type() -> HeaderValue {
@@ -75,7 +32,9 @@ mod tests {
     };
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
-    use super::{HttpFault, sanitize_response, validate_request};
+    use crate::http_relay::sanitize_response_headers as sanitize_response;
+
+    use super::{HttpFault, validate_request};
 
     fn valid_request_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();

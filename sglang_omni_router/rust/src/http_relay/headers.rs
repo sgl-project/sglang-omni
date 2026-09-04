@@ -1,12 +1,66 @@
 use std::collections::HashSet;
 
 use axum::http::header::{
-    CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, HeaderValue, TRANSFER_ENCODING,
+    CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, HeaderName, HeaderValue,
+    TRAILER, TRANSFER_ENCODING,
 };
 use axum::http::{HeaderMap, StatusCode};
 
 use crate::error::HttpFault;
 use crate::request_id::REQUEST_ID_HEADER;
+
+pub(crate) struct RequestEnvelope {
+    pub(crate) content_length: Option<u64>,
+    pub(crate) transfer_framed: bool,
+}
+
+pub(crate) fn request_content_type(headers: &HeaderMap) -> Result<HeaderValue, HttpFault> {
+    let mut values = headers.get_all(CONTENT_TYPE).iter();
+    let Some(value) = values.next() else {
+        return Err(HttpFault::UnsupportedMediaType);
+    };
+    if values.next().is_some() {
+        return Err(HttpFault::UnsupportedMediaType);
+    }
+    Ok(value.clone())
+}
+
+pub(crate) fn validate_request_envelope(headers: &HeaderMap) -> Result<RequestEnvelope, HttpFault> {
+    let mut encodings = headers.get_all(CONTENT_ENCODING).iter();
+    let encoding = encodings.next();
+    if encodings.next().is_some()
+        || encoding.is_some_and(|value| {
+            !value
+                .to_str()
+                .is_ok_and(|text| text.eq_ignore_ascii_case("identity"))
+        })
+    {
+        return Err(HttpFault::UnsupportedContentEncoding);
+    }
+    let mut expectations = headers.get_all(EXPECT).iter();
+    if let Some(expectation) = expectations.next()
+        && (!expectation.as_bytes().eq_ignore_ascii_case(b"100-continue")
+            || expectations.next().is_some())
+    {
+        return Err(HttpFault::ExpectationFailed);
+    }
+    if headers.contains_key(TRAILER) {
+        return Err(HttpFault::MalformedRequest);
+    }
+    let transfer_framed = headers.contains_key(TRANSFER_ENCODING);
+    let mut lengths = headers.get_all(CONTENT_LENGTH).iter();
+    let length = lengths.next();
+    if lengths.next().is_some() || (transfer_framed && length.is_some()) {
+        return Err(HttpFault::MalformedRequest);
+    }
+    let content_length = length
+        .map(|value| parse_content_length(value).ok_or(HttpFault::MalformedRequest))
+        .transpose()?;
+    Ok(RequestEnvelope {
+        content_length,
+        transfer_framed,
+    })
+}
 
 pub(crate) fn sanitize_response_headers(
     status: StatusCode,

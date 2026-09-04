@@ -10,7 +10,9 @@ use axum::http::{HeaderValue, Method, Request, Response, Version};
 
 use crate::config::{Config, HttpMediaRoute};
 use crate::error::{HttpFault, RouterError};
-use crate::http_relay::{HttpRelay, OutgoingRequest, map_admission, map_dispatch};
+use crate::http_relay::{
+    HttpRelay, OutgoingRequest, map_admission, map_dispatch, sanitize_response_headers,
+};
 use crate::request_id::CanonicalRequestId;
 use crate::worker_pool::{CapacityClass, TrustDomain, WorkerPool};
 
@@ -141,20 +143,17 @@ async fn handle(
     if request.method() != Method::POST {
         return Err(HttpFault::MethodNotAllowed);
     }
-    if request.version() != Version::HTTP_11
-        || request.uri().path() != route.path()
-        || request.uri().query().is_some()
-    {
-        return Err(if request.version() != Version::HTTP_11 {
-            HttpFault::HttpVersionNotSupported
-        } else {
-            HttpFault::MalformedRequest
-        });
+    if request.version() != Version::HTTP_11 {
+        return Err(HttpFault::HttpVersionNotSupported);
+    }
+    if request.uri().path() != route.path() || request.uri().query().is_some() {
+        return Err(HttpFault::MalformedRequest);
     }
     let deadline = tokio::time::Instant::now() + media.request_timeout;
     let framing = headers::validate_request(request.headers(), route.request_kind())?;
     let direct_proof = if route != HttpMediaRoute::SpeechBatch
-        && !framing.has_route_hint
+        && framing.route_model.is_none()
+        && framing.route_stream.is_none()
         && framing
             .content_length
             .is_none_or(|length| length <= media.streamed_max)
@@ -201,9 +200,13 @@ async fn handle(
             media.streamed_max,
         );
         return Arc::clone(&media.relay)
-            .send(outgoing, lease, request_id, deadline, |status, headers| {
-                headers::sanitize_response(status, headers)
-            })
+            .send(
+                outgoing,
+                lease,
+                request_id,
+                deadline,
+                sanitize_response_headers,
+            )
             .await;
     }
     let upload = media
@@ -258,9 +261,13 @@ async fn handle(
         .map_err(map_dispatch)?;
     let outgoing = OutgoingRequest::buffered(route.path(), content_type, upload)?;
     Arc::clone(&media.relay)
-        .send(outgoing, lease, request_id, deadline, |status, headers| {
-            headers::sanitize_response(status, headers)
-        })
+        .send(
+            outgoing,
+            lease,
+            request_id,
+            deadline,
+            sanitize_response_headers,
+        )
         .await
 }
 

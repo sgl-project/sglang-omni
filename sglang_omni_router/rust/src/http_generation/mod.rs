@@ -9,12 +9,14 @@ use axum::http::{HeaderValue, Method, Request, Response, Version};
 
 use crate::config::Config;
 use crate::error::{HttpFault, RouterError};
-use crate::http_relay::{HttpRelay, OutgoingRequest, map_admission, map_dispatch};
+use crate::http_relay::{
+    HttpRelay, OutgoingRequest, map_admission, map_dispatch, sanitize_response_headers,
+};
 use crate::request_id::CanonicalRequestId;
 use crate::worker_pool::{CapacityClass, TrustDomain, WorkerPool};
 
 use classify::classify;
-use headers::{canonical_content_type, sanitize_response, validate_request};
+use headers::{canonical_content_type, validate_request};
 
 pub(crate) const CHAT_PATH: &str = "/v1/chat/completions";
 
@@ -107,7 +109,13 @@ async fn handle(
             generation.streamed_max,
         );
         return Arc::clone(&generation.relay)
-            .send(outgoing, lease, request_id, deadline, sanitize_response)
+            .send(
+                outgoing,
+                lease,
+                request_id,
+                deadline,
+                sanitize_response_headers,
+            )
             .await;
     }
 
@@ -134,6 +142,12 @@ async fn handle(
         .map_err(map_dispatch)?;
     let outgoing = OutgoingRequest::buffered(CHAT_PATH, canonical_content_type(), upload)?;
     Arc::clone(&generation.relay)
-        .send(outgoing, lease, request_id, deadline, sanitize_response)
+        .send(
+            outgoing,
+            lease,
+            request_id,
+            deadline,
+            sanitize_response_headers,
+        )
         .await
 }
