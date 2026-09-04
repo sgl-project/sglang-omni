@@ -496,6 +496,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deterministic-inference">Deterministic Inference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overload-admission-policy">Overload / admission policy</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#breakable-prefill-cuda-graphs">Breakable prefill CUDA graphs</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prefill-admission-coalescing">Prefill Admission Coalescing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#process-topology">Process topology</a></li>
 </ul>
@@ -636,6 +637,49 @@ must be <strong>≥ 1</strong>. Capacity is about <code class="docutils literal 
 HTTP <strong>503</strong> (<code class="docutils literal notranslate"><span class="pre">The</span> <span class="pre">request</span> <span class="pre">queue</span> <span class="pre">is</span> <span class="pre">full.</span></code>) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.</p>
+</section>
+<section id="breakable-prefill-cuda-graphs">
+<h3>Breakable prefill CUDA graphs<a class="headerlink" href="#breakable-prefill-cuda-graphs" title="Link to this heading">#</a></h3>
+<p>Non-Base checkpoints (CustomVoice, VoiceDesign) default to the breakable
+prefill CUDA-graph backend with a token ladder up to 512:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Knob</p></th>
+<th class="head"><p>Meaning</p></th>
+<th class="head"><p>Default</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_backend_prefill</span></code></p></td>
+<td><p>Prefill graph backend (<code class="docutils literal notranslate"><span class="pre">breakable</span></code> or <code class="docutils literal notranslate"><span class="pre">disabled</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">breakable</span></code> on CustomVoice, unset elsewhere</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_bs_prefill</span></code></p></td>
+<td><p>Prefill token-count ladder to capture</p></td>
+<td><p>shared ladder through <code class="docutils literal notranslate"><span class="pre">512</span></code>, plus a <code class="docutils literal notranslate"><span class="pre">1</span></code> bucket</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_max_bs_prefill</span></code></p></td>
+<td><p>Cap for the ladder</p></td>
+<td><p>top of the ladder</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The default is the shared ladder with one bucket added. A replay falls
+back to eager when its bucket exceeds twice the real token count, and the
+shared ladder starts at 4, so a 1-token prefill lands in bucket 4 and
+misses. Measured over 3203 prefills at 10 and 20 RPS, 1301 of them (40.6%)
+are exactly one token, and they are the only shapes that fall back: 2 and
+3 already replay inside bucket 4. Adding the single <code class="docutils literal notranslate"><span class="pre">1</span></code> bucket takes the
+fallback rate to zero.</p>
+<p>Only CustomVoice takes this default, selected by the checkpoint’s
+<code class="docutils literal notranslate"><span class="pre">tts_model_type</span></code>. Base prefills also carry reference audio, so their shape
+distribution differs, and VoiceDesign has not been measured; both keep the
+eager path.</p>
+<p>Opt out with <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_backend_prefill</span> <span class="pre">disabled</span></code>. The
+default costs extra graph capture during startup. Raising
+<code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs_prefill</span></code> on its own regrows the default ladder to the
+new cap; declaring <code class="docutils literal notranslate"><span class="pre">cuda_graph_bs_prefill</span></code> yourself keeps your list as is.</p>
 <p>Raising <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> does <strong>not</strong> automatically raise the waiting
 bound. For a ceiling-32 experiment:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
@@ -1091,6 +1135,7 @@ checkpoint is less prone.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deterministic-inference">Deterministic Inference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overload-admission-policy">Overload / admission policy</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#breakable-prefill-cuda-graphs">Breakable prefill CUDA graphs</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#prefill-admission-coalescing">Prefill Admission Coalescing</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#process-topology">Process topology</a></li>
 </ul>

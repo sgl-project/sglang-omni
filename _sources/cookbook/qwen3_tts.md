@@ -109,6 +109,35 @@ HTTP **503** (`The request queue is full.`) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.
 
+### Breakable prefill CUDA graphs
+
+Non-Base checkpoints (CustomVoice, VoiceDesign) default to the breakable
+prefill CUDA-graph backend with a token ladder up to 512:
+
+| Knob | Meaning | Default |
+|---|---|---|
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` on CustomVoice, unset elsewhere |
+| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
+| `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
+
+The default is the shared ladder with one bucket added. A replay falls
+back to eager when its bucket exceeds twice the real token count, and the
+shared ladder starts at 4, so a 1-token prefill lands in bucket 4 and
+misses. Measured over 3203 prefills at 10 and 20 RPS, 1301 of them (40.6%)
+are exactly one token, and they are the only shapes that fall back: 2 and
+3 already replay inside bucket 4. Adding the single `1` bucket takes the
+fallback rate to zero.
+
+Only CustomVoice takes this default, selected by the checkpoint's
+`tts_model_type`. Base prefills also carry reference audio, so their shape
+distribution differs, and VoiceDesign has not been measured; both keep the
+eager path.
+
+Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
+default costs extra graph capture during startup. Raising
+`cuda_graph_max_bs_prefill` on its own regrows the default ladder to the
+new cap; declaring `cuda_graph_bs_prefill` yourself keeps your list as is.
+
 Raising `max_running_requests` does **not** automatically raise the waiting
 bound. For a ceiling-32 experiment:
 
