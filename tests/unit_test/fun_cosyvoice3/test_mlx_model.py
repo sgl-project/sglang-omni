@@ -11,6 +11,7 @@ mx = pytest.importorskip("mlx.core")
 
 from mlx.nn import QuantizedLinear  # noqa: E402
 from mlx_lm.models.qwen2 import ModelArgs, Qwen2Model  # noqa: E402
+from sglang.srt.hardware_backend.mlx.sampling import MlxSamplingParams  # noqa: E402
 
 from sglang_omni.models.fun_cosyvoice3.mlx.model import (  # noqa: E402
     SPEECH_TOKEN_SIZE,
@@ -94,6 +95,7 @@ def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
     runner._cosyvoice3_prompt_lengths = {"req": 2}
     runner._cosyvoice3_min_lengths = {"req": 4}
     runner._cosyvoice3_repetition_penalties = {"req": 2.0}
+    runner._cosyvoice3_recent_tokens = {"req": []}
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
     runner._cosyvoice3_seen_masks = {"req": (speech_ids == 5) | (speech_ids == 6)}
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=5)
@@ -122,6 +124,7 @@ def test_runner_chained_constraint_includes_the_lazy_predecessor() -> None:
     runner._cosyvoice3_prompt_lengths = {"req": 2}
     runner._cosyvoice3_min_lengths = {"req": 0}
     runner._cosyvoice3_repetition_penalties = {"req": 2.0}
+    runner._cosyvoice3_recent_tokens = {"req": []}
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
     runner._cosyvoice3_seen_masks = {"req": speech_ids == 5}
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=4)
@@ -139,6 +142,63 @@ def test_runner_chained_constraint_includes_the_lazy_predecessor() -> None:
     mx.eval(constrained)
     assert constrained[0, 5].item() == pytest.approx(2.0)
     assert constrained[0, 6].item() == pytest.approx(3.0)
+
+
+def test_runner_tracks_recent_history_for_ras() -> None:
+    runner = object.__new__(FunCosyVoice3MlxModelRunner)
+    runner._cosyvoice3_recent_tokens = {"req": [29, 28, 29]}
+    mask = runner._recent_token_masks(["req"], None)
+    mx.eval(mask)
+    assert mask.shape == (1, SPEECH_TOKEN_SIZE)
+    assert bool(mask[0, 29].item())
+    assert bool(mask[0, 28].item())
+    assert not bool(mask[0, 100].item())
+
+
+def test_runner_ras_redraws_a_repeated_primary_token() -> None:
+    runner = object.__new__(FunCosyVoice3MlxModelRunner)
+    runner._enable_sampling = True
+    runner._req_sampling = {
+        "req": MlxSamplingParams(
+            temperature=1.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
+        )
+    }
+    runner._rng_key = mx.random.key(0)
+    runner._cosyvoice3_recent_tokens = {"req": [5]}
+    runner._cosyvoice3_sampling_pending_tokens = None
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
+    runner._edited_logits = lambda logits, edit_rows: logits
+
+    logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
+    logits = logits.at[0, 5].add(10.0)
+    logits = logits.at[0, 6].add(9.0)
+    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
+
+    mx.eval(tokens)
+    assert int(tokens[0].item()) == 6
+
+
+def test_runner_ras_keeps_a_non_repeated_primary_token() -> None:
+    runner = object.__new__(FunCosyVoice3MlxModelRunner)
+    runner._enable_sampling = True
+    runner._req_sampling = {
+        "req": MlxSamplingParams(
+            temperature=1.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
+        )
+    }
+    runner._rng_key = mx.random.key(0)
+    runner._cosyvoice3_recent_tokens = {"req": [5]}
+    runner._cosyvoice3_sampling_pending_tokens = None
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
+    runner._edited_logits = lambda logits, edit_rows: logits
+
+    logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
+    logits = logits.at[0, 6].add(10.0)
+    logits = logits.at[0, 5].add(9.0)
+    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
+
+    mx.eval(tokens)
+    assert int(tokens[0].item()) == 6
 
 
 @pytest.mark.parametrize(

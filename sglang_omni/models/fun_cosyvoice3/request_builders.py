@@ -50,6 +50,10 @@ _COSYVOICE3_SAMPLING_SEED_MASK = SAMPLING_SEED_MASK
 _COSYVOICE3_END_OF_PROMPT = "<|endofprompt|>"
 _COSYVOICE3_PROMPT_PREFIX = "You are a helpful assistant.<|endofprompt|>"
 _COSYVOICE3_INSTRUCT_PREFIX = "You are a helpful assistant. "
+_COSYVOICE3_SILENT_TOKEN_IDS = frozenset(
+    {1, 2, 28, 29, 55, 248, 494, 2241, 2242, 2322, 2323}
+)
+_COSYVOICE3_MAX_CONSECUTIVE_SILENT_TOKENS = 5
 
 _GENERATION_FIELDS = (
     "do_sample",
@@ -795,8 +799,8 @@ def build_sglang_cosyvoice3_request(
         min_new_tokens=min_new_tokens,
         temperature=temperature,
         top_p=float(gen_kwargs.get("top_p", 0.8)),
-        top_k=int(gen_kwargs.get("top_k", 20)),
-        repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.1)),
+        top_k=int(gen_kwargs.get("top_k", 25)),
+        repetition_penalty=float(gen_kwargs.get("repetition_penalty", 1.0)),
         # Stop on any of the 200 ids CosyVoice3 treats as terminal/non-speech
         # control ids, not only EOS_ID — the other 199 never stopped the
         # scheduler when only EOS_ID was registered, so generation could run
@@ -838,16 +842,9 @@ def apply_sglang_cosyvoice3_result(
     payload: StagePayload,
     data: CosyVoice3SGLangRequestData,
 ) -> StagePayload:
-    code_parts: list[torch.Tensor] = []
     if data.output_codes:
-        code_parts.append(torch.stack(data.output_codes, dim=0).to(dtype=torch.long))
-
-    if code_parts:
-        device = code_parts[0].device
-        codes = torch.cat(
-            [part.to(device=device, dtype=torch.long) for part in code_parts],
-            dim=0,
-        ).cpu()
+        codes = torch.stack(data.output_codes, dim=0).to(dtype=torch.long)
+        codes = _filter_cosyvoice3_silent_runs(codes).cpu()
     else:
         codes = torch.empty((0,), dtype=torch.long)
 
@@ -856,6 +853,8 @@ def apply_sglang_cosyvoice3_result(
     state.prompt_tokens = (
         int(data.input_ids.numel()) if data.input_ids is not None else 0
     )
+    # Report the scheduler's actual AR work, including silent tokens removed
+    # only from the downstream vocoder input.
     state.completion_tokens = len(data.output_codes)
     state.engine_time_s = time.perf_counter() - data.engine_start_s
     state.sample_rate = _SAMPLE_RATE
@@ -865,6 +864,29 @@ def apply_sglang_cosyvoice3_result(
         request=payload.request,
         data=state.to_dict(),
     )
+
+
+def _filter_cosyvoice3_silent_runs(codes: torch.Tensor) -> torch.Tensor:
+    """Keep at most five consecutive CosyVoice3 silent or breath tokens."""
+    if codes.numel() == 0:
+        return codes
+
+    token_rows = codes.reshape(codes.shape[0], -1)
+    if token_rows.shape[1] != 1:
+        raise ValueError("CosyVoice3 audio codes must contain one token per row")
+
+    keep = []
+    consecutive_silent_tokens = 0
+    for token_id in token_rows[:, 0].tolist():
+        if token_id in _COSYVOICE3_SILENT_TOKEN_IDS:
+            consecutive_silent_tokens += 1
+            keep.append(
+                consecutive_silent_tokens <= _COSYVOICE3_MAX_CONSECUTIVE_SILENT_TOKENS
+            )
+        else:
+            consecutive_silent_tokens = 0
+            keep.append(True)
+    return codes[torch.tensor(keep, dtype=torch.bool, device=codes.device)]
 
 
 def make_cosyvoice3_scheduler_adapters(*, model: Any):
