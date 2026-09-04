@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni.quantization import (
     get_weight_preprocessor,
+    inject_fp8_experts_quant_config,
     quant_method_name,
     resolve_quant_config,
 )
@@ -57,6 +58,25 @@ class TestExtractQuantizationConfig:
         config.text_config = config
 
         assert resolve_quant_config(config) is None
+
+
+class TestInjectFp8ExpertsQuantConfig:
+    def test_no_flag_returns_none(self) -> None:
+        model_config = SimpleNamespace(hf_config=SimpleNamespace(), quantization=None)
+        assert inject_fp8_experts_quant_config(model_config) is None
+        assert model_config.quantization is None
+
+    def test_flag_injects_fp8_block_config(self) -> None:
+        model_config = SimpleNamespace(
+            hf_config=SimpleNamespace(use_fp8_experts=True), quantization=None
+        )
+        result = inject_fp8_experts_quant_config(model_config)
+        assert result is not None
+        assert model_config.quantization == "fp8"
+        injected = model_config.hf_config.quantization_config
+        assert injected["quant_method"] == "fp8"
+        assert injected["weight_block_size"] == [128, 128]
+        assert "down_proj" in injected["modules_to_not_convert"]
 
 
 class TestQuantMethodName:
