@@ -326,9 +326,7 @@ fn upload_fault(upload: Option<&SharedUploadState>) -> Result<Option<HttpFault>,
 fn deadline_fault(upload: Option<&SharedUploadState>) -> HttpFault {
     match upload.map(snapshot_upload).transpose() {
         Err(fault) => fault,
-        Ok(Some(UploadState::Incomplete | UploadState::Failed(HttpFault::RequestTimeout))) => {
-            HttpFault::RequestTimeout
-        }
+        Ok(Some(UploadState::Incomplete)) => HttpFault::RequestTimeout,
         Ok(Some(UploadState::Failed(fault))) => fault,
         Ok(Some(UploadState::Complete) | None) => HttpFault::UpstreamTimeout,
     }

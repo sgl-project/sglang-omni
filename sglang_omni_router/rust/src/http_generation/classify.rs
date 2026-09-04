@@ -210,10 +210,6 @@ impl<'de> DeserializeSeed<'de> for NonEmptyArraySeed {
                 Ok(nonempty)
             }
 
-            fn visit_none<E>(self) -> Result<bool, E> {
-                Ok(false)
-            }
-
             fn visit_unit<E>(self) -> Result<bool, E> {
                 Ok(false)
             }
@@ -281,10 +277,6 @@ impl<'de> DeserializeSeed<'de> for MessagesSeed {
                 Ok(all)
             }
 
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
-            }
-
             fn visit_unit<E>(self) -> Result<MessageFacts, E> {
                 Ok(MessageFacts::default())
             }
@@ -349,10 +341,6 @@ impl<'de> DeserializeSeed<'de> for MessageSeed {
                     }
                 }
                 Ok(content)
-            }
-
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
             }
 
             fn visit_unit<E>(self) -> Result<MessageFacts, E> {
@@ -432,10 +420,6 @@ impl<'de> DeserializeSeed<'de> for ContentSeed {
                     facts.video |= part.video;
                 }
                 Ok(facts)
-            }
-
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
             }
 
             fn visit_unit<E>(self) -> Result<MessageFacts, E> {
@@ -528,10 +512,6 @@ impl<'de> DeserializeSeed<'de> for PartSeed {
                 Ok(text_part_facts())
             }
 
-            fn visit_none<E>(self) -> Result<PartFacts, E> {
-                Ok(PartFacts::default())
-            }
-
             fn visit_unit<E>(self) -> Result<PartFacts, E> {
                 Ok(PartFacts::default())
             }
@@ -602,17 +582,8 @@ impl<'de> DeserializeSeed<'de> for NullableModalitiesSeed {
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an output-modality array or worker-owned value")
             }
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(Vec::new())
-            }
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
                 Ok(Vec::new())
-            }
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                deserializer.deserialize_seq(self)
             }
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
             where
@@ -676,17 +647,8 @@ impl<'de> DeserializeSeed<'de> for NullableAudioSeed {
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an audio configuration object or worker-owned value")
             }
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(None)
-            }
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
                 Ok(None)
-            }
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                deserializer.deserialize_map(self)
             }
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where

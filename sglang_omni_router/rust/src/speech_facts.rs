@@ -299,10 +299,6 @@ impl<'de> DeserializeSeed<'de> for ScalarFactSeed {
                 Ok(ScalarFact::String(Cow::Owned(value)))
             }
 
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Null)
-            }
-
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
                 Ok(ScalarFact::Null)
             }
@@ -424,10 +420,6 @@ impl<'de> DeserializeSeed<'de> for ReferencesFactSeed {
                 })
             }
 
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(ReferencesFact::Value(None))
-            }
-
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
                 Ok(ReferencesFact::Value(None))
             }
@@ -497,10 +489,6 @@ impl<'de> DeserializeSeed<'de> for ReferenceFactSeed {
                     list: true,
                     vq_codes,
                 }))
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(None)
             }
 
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
