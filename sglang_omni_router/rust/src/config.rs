@@ -626,12 +626,6 @@ impl Config {
                     "configured class limits must be between 1 and 65535",
                 ));
             }
-            if limit > self.admission.global {
-                return Err(ConfigError::invalid(
-                    "admission",
-                    "configured class limits must not exceed admission.global",
-                ));
-            }
         }
         Ok(())
     }

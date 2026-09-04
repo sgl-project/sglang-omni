@@ -225,10 +225,11 @@ concurrency to choose between the supported policies.
 
 ### Admission and backpressure
 
-Global and per-service admission are fail-fast. One request owns its admission
-and worker-load guard until response EOF, upstream error, or downstream
-cancellation. The worker remains responsible for its execution and queue
-capacity.
+Global admission counts request envelopes. Per-service admission counts
+requests or sessions, except speech-batch admission, which counts batch items.
+Admission is fail-fast, and its permits and worker-load guard remain held until
+response EOF, upstream error, or downstream cancellation. The worker remains
+responsible for its execution and queue capacity.
 
 The router sends one upstream request through a shared HTTP/1.1 connection
 pool. Redirects, ambient proxies, retries, and automatic decompression are
@@ -247,8 +248,7 @@ or process drain.
 ## Media and Realtime Sessions
 
 Media routes are enabled independently. Speech batches remain ordered and are
-never split. Speech-batch admission and worker load count batch items rather
-than HTTP requests. Classified transcription and translation requests buffer the full
+never split. Classified transcription and translation requests buffer the full
 multipart upload, so heterogeneous ASR deployments must size the buffered
 limits for their largest accepted recordings. Transcription and translation
 share a capacity class but require separate profile tasks.

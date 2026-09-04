@@ -159,17 +159,23 @@ fn generation_and_media_handlers_are_independently_configurable() {
 }
 
 #[test]
-fn speech_batch_profile_maximum_is_independent_from_capacity_budgets() {
-    let generation_only = valid_config("127.0.0.1:30000", 30_000, "info").replace(
-        "generation_http = 8",
-        "generation_http = 8\nspeech_batch = 3",
-    ) + "\n[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"wav\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 3\n";
-    assert!(load_bytes(generation_only.as_bytes()).is_ok());
-
-    let base = generation_only.replace(
+fn speech_batch_profile_maximum_is_independent_from_admission_limit() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
         "generation_http = 64",
         "generation_http = 64\nspeech_batch = 2",
+    ) + "\n[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"wav\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 3\n";
+    let config = format!(
+        "{base}\n[http_media]\nroutes = [\"speech_batch\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
     );
+    assert!(load_bytes(config.as_bytes()).is_ok());
+}
+
+#[test]
+fn speech_batch_admission_counts_items_independently_from_global() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "global = 128\ngeneration_http = 64",
+        "global = 2\ngeneration_http = 2\nspeech_batch = 3",
+    ) + "\n[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"wav\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 3\n";
     let config = format!(
         "{base}\n[http_media]\nroutes = [\"speech_batch\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
     );
@@ -306,7 +312,7 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
     );
     let cases = [
         base.replace("global = 128", "global = 0"),
-        base.replace("generation_http = 64", "generation_http = 129"),
+        base.replace("generation_http = 64", "generation_http = 65536"),
         base.replace(
             "buffered_request_max_bytes = 1048576",
             "buffered_request_max_bytes = 0",
