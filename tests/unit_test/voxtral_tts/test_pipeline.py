@@ -18,7 +18,7 @@ from sglang_omni.models.voxtral_tts.request_builders import build_sglang_voxtral
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.audio_payload import audio_waveform_payload
-from tests.unit_test.fakes import FakeExecutionBridge, FakeServerArgs
+from tests.unit_test.fakes import FakeExecutionBridge
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
@@ -31,23 +31,79 @@ def test_voxtral_tts_config_uses_current_stage_schema() -> None:
     ]
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_generation": 0, "vocoder": 0}
-    assert "device" not in config.stages[1].factory_args
-    assert "device" not in config.stages[2].factory_args
+    assert config.stages[1].factory.device is None
+    assert config.stages[2].factory.device is None
     assert [stage.process for stage in config.stages] == [
         "pipeline",
         "pipeline",
         "pipeline",
     ]
     assert [
-        stage.runtime.resources.total_gpu_memory_fraction
-        for stage in config.stages
-        if stage.gpu is not None
+        stage.gpu_memory_fraction for stage in config.stages if stage.gpu is not None
     ] == [None, None]
     build_compiled_process_topology(config)
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("VoxtralTTSForConditionalGeneration")
         is VoxtralTTSPipelineConfig
     )
+
+
+def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts.pipeline import engine_builder
+
+    captured: dict[str, object] = {}
+
+    class FakeBuilder:
+        def build(self, model_path, **kwargs):
+            captured["build"] = (model_path, kwargs)
+            return "generation"
+
+    monkeypatch.setattr(engine_builder, "VoxtralTtsEngineBuilder", FakeBuilder)
+    generation = stages.create_generation_executor("model", gpu_id=3)
+
+    assert generation == "generation"
+    assert captured["build"] == (
+        "model",
+        {
+            "device": None,
+            "gpu_id": 3,
+            "server_args_overrides": None,
+        },
+    )
+
+    stages.create_generation_executor("model", device="cuda:2", gpu_id=5)
+    assert captured["build"] == (
+        "model",
+        {
+            "device": "cuda:2",
+            "gpu_id": 5,
+            "server_args_overrides": None,
+        },
+    )
+
+    seen_devices: list[str] = []
+    resolved_devices: list[tuple[str | None, int | None]] = []
+    monkeypatch.setattr(
+        stages,
+        "resolve_device_spec",
+        lambda device, gpu_id: (
+            resolved_devices.append((device, gpu_id)) or f"npu:{gpu_id}"
+        ),
+    )
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages,
+        "_load_audio_tokenizer",
+        lambda _checkpoint, _config, device: (
+            seen_devices.append(device) or SimpleNamespace()
+        ),
+    )
+
+    stages.create_vocoder_executor("model", gpu_id=4)
+    assert resolved_devices == [(None, 4)]
+    assert seen_devices == ["npu:4"]
 
 
 def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
@@ -173,6 +229,31 @@ def test_voxtral_audio_codes_payload_is_compact() -> None:
     assert "audio_codes_bytes" in data
     assert "audio_codes" not in data
     assert restored.audio_codes.tolist() == [[1, 2], [3, 4]]
+
+
+def test_voxtral_audio_attention_accepts_non_contiguous_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.voxtral_tts import audio_tokenizer
+
+    monkeypatch.setattr(audio_tokenizer, "HAS_FLASH_ATTN", False)
+    attention = audio_tokenizer.Attention(
+        SimpleNamespace(
+            n_heads=2,
+            n_kv_heads=2,
+            attn_sliding_window_size=8,
+            dim=4,
+            head_dim=2,
+            use_biases=False,
+            qk_norm=False,
+            causal=True,
+        ),
+        layer_id=0,
+    )
+
+    output = attention(torch.randn(3, 4))
+
+    assert output.shape == (3, 4)
 
 
 def test_voxtral_vocoder_preserves_warmup_trim_and_fade(
@@ -466,7 +547,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     from sglang_omni.scheduling import sglang_backend
 
     build_kwargs: dict = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
+    infrastructure_saw_deferred_capture: list[bool] = []
     init_graph_calls: list[bool] = []
 
     class FakeModel:
@@ -509,7 +590,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
         del model_path, context_length
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             cuda_graph_config=SimpleNamespace(
@@ -530,12 +611,12 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id, kwargs
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
+        del gpu_id
+        infrastructure_saw_deferred_capture.append(
+            bool(kwargs.get("defer_cuda_graph_capture"))
+        )
         return (
             FakeWorker(server_args),
-            object(),
-            object(),
             object(),
             object(),
             object(),
@@ -576,7 +657,7 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["sampling_backend"] == "pytorch"
     assert build_kwargs["torch_compile_max_bs"] == 16
-    assert infrastructure_saw_graph_disabled == [True]
+    assert infrastructure_saw_deferred_capture == [True]
     assert init_graph_calls == [True]
     assert scheduler.server_args.cuda_graph_bs == [1, 2, 4, 8, 12, 16]
     assert scheduler.server_args.cuda_graph_max_bs == 16

@@ -87,6 +87,43 @@ def test_contention_peak_from_log():
     assert tune.contention_peak_from_log(text) == 2.5
 
 
+def _sampler_with(samples):
+    ContentionSampler = tune._import_contention_sampler()
+    sampler = ContentionSampler({0})
+    sampler._samples = list(samples)
+    return sampler
+
+
+def test_contention_abort_holds_through_a_single_spike():
+    over = tune._CONTENTION_FAIL_CORES + 0.01
+    assert tune.contention_abort_reason(_sampler_with([0.1, over, 0.1])) is None
+
+
+def test_contention_abort_holds_before_enough_windows_exist():
+    over = tune._CONTENTION_FAIL_CORES + 0.5
+    short = [over] * (tune._CONTENTION_FAIL_WINDOWS - 1)
+    assert tune.contention_abort_reason(_sampler_with(short)) is None
+
+
+def test_contention_abort_fires_on_sustained_intrusion():
+    over = tune._CONTENTION_FAIL_CORES + 0.5
+    held = [0.1] + [over] * tune._CONTENTION_FAIL_WINDOWS
+    reason = tune.contention_abort_reason(_sampler_with(held))
+    assert reason is not None
+    assert "consecutive windows" in reason
+
+
+def test_contention_abort_releases_once_the_lane_recovers():
+    over = tune._CONTENTION_FAIL_CORES + 0.5
+    recovered = [over] * tune._CONTENTION_FAIL_WINDOWS + [0.1]
+    assert tune.contention_abort_reason(_sampler_with(recovered)) is None
+
+
+def test_contention_reading_describes_peak_and_mean():
+    seen = tune.ContentionReading(peak=2.4, mean=0.6, windows=78)
+    assert seen.describe() == "peak 2.40 cores, mean 0.60 over 78 windows"
+
+
 def test_classify_cpuset_contention_rc():
     assert tune._classify("", tune._PYTEST_RC_CPUSET_CONTENTION) == (
         "cpuset_contention"

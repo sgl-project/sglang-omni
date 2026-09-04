@@ -34,7 +34,7 @@ class FakeExecutionBridge:
 
 
 class FakeServerArgs(SimpleNamespace):
-    """ServerArgs double exposing the 0.5.16 override() mutation entry point."""
+    """ServerArgs double exposing the override() mutation entry point."""
 
     def override(self, source: str, **fields: object) -> None:
         del source

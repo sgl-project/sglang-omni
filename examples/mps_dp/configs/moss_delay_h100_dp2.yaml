@@ -7,15 +7,9 @@ config_cls: MossTTSPipelineConfig
 name: mossd
 model_path: OpenMOSS-Team/MOSS-TTS-v1.5
 
-stage_overrides:
+stages:
   tts_engine:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.37
-      sglang_server_args:
-        mem_fraction_static: 0.30
-
-runtime_overrides:
-  tts_engine:
-    server_args_overrides:
+    gpu_memory_fraction: 0.37
+    engine:
+      mem_fraction_static: 0.30
       max_total_tokens: 30000

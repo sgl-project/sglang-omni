@@ -178,8 +178,8 @@ def launch_qwen_text_server(args: argparse.Namespace) -> None:
     preprocessing_updates: dict[str, object] = {}
     if args.thinker_max_seq_len is not None:
         max_seq_len = int(args.thinker_max_seq_len)
-        thinker_updates["thinker_max_seq_len"] = max_seq_len
-        preprocessing_updates["thinker_max_seq_len"] = max_seq_len
+        thinker_updates["max_seq_len"] = max_seq_len
+        preprocessing_updates["max_seq_len"] = max_seq_len
     if args.encoder_mem_reserve is not None:
         thinker_updates["encoder_mem_reserve"] = args.encoder_mem_reserve
 
@@ -433,7 +433,7 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
         talker_mem_fraction_static=args.talker_mem_fraction_static,
     )
     if args.thinker_max_seq_len is not None:
-        updates = {"thinker_max_seq_len": int(args.thinker_max_seq_len)}
+        updates = {"max_seq_len": int(args.thinker_max_seq_len)}
         apply_stage_factory_updates(config, stage_name="thinker", updates=updates)
         apply_stage_factory_updates(
             config,
@@ -444,7 +444,7 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
         apply_stage_factory_updates(
             config,
             stage_name="talker_ar",
-            updates={"talker_max_seq_len": int(args.talker_max_seq_len)},
+            updates={"max_seq_len": int(args.talker_max_seq_len)},
         )
     partial_start_updates: dict[str, object] = {
         "enable_partial_start": enable_partial_start

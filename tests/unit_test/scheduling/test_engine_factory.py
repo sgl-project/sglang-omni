@@ -84,6 +84,55 @@ def test_tts_engine_builder_hook_contract_is_narrow() -> None:
     adjust_overrides_signature = inspect.signature(TtsEngineBuilder.adjust_overrides)
     assert list(adjust_overrides_signature.parameters) == ["self", "overrides"]
 
+    resolve_context_length_signature = inspect.signature(
+        TtsEngineBuilder.resolve_context_length
+    )
+    assert list(resolve_context_length_signature.parameters) == [
+        "self",
+        "checkpoint_dir",
+        "server_args_overrides",
+    ]
+
+
+def test_context_length_override_is_capability_gated() -> None:
+    from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
+    from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    assert TtsEngineBuilder.supports_context_length_override is False
+    assert ArkasrEngineBuilder.supports_context_length_override is False
+    assert MossTtsEngineBuilder.supports_context_length_override is True
+    assert MossTtsLocalEngineBuilder.supports_context_length_override is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, False, 1.5, 3.0, float("inf"), float("-inf"), float("nan"), "8192", None],
+)
+def test_normalize_context_length_rejects_non_integral_values(value: Any) -> None:
+    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+
+    with pytest.raises(ValueError, match="context length must be a positive integer"):
+        _normalize_context_length(value, model_name="MOSS-TTS")
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_normalize_context_length_rejects_non_positive_values(value: int) -> None:
+    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+
+    with pytest.raises(ValueError, match="resolved an invalid context length"):
+        _normalize_context_length(value, model_name="MOSS-TTS")
+
+
+@pytest.mark.parametrize("value", [1, 8192])
+def test_normalize_context_length_preserves_integral_values(value: int) -> None:
+    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+
+    assert _normalize_context_length(value, model_name="MOSS-TTS") == value
+
 
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
@@ -98,7 +147,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     events: list[str] = []
     build_kwargs: dict[str, Any] = {}
-    infrastructure_saw_graph_disabled: list[bool] = []
     init_graph_calls: list[bool] = []
 
     class FakeModel:
@@ -127,7 +175,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> Any:
         events.append("build_server_args")
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             checkpoint_dir=checkpoint_dir,
             context_length=context_length,
             cuda_graph_bs=kwargs["cuda_graph_bs"],
@@ -157,14 +205,11 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             "defer_cuda_graph_capture": True,
             "model_arch_override": "TestArch",
         }
-        infrastructure_saw_graph_disabled.append(bool(server_args.disable_cuda_graph))
         return (
             FakeWorker(server_args),
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 
@@ -199,6 +244,32 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         def pre_infra_setup(self, checkpoint_dir: str) -> None:
             events.append("pre_infra_setup")
             assert checkpoint_dir == "model-resolved"
+
+        def resolve_context_length(
+            self,
+            checkpoint_dir: str,
+            *,
+            server_args_overrides: dict[str, Any] | None = None,
+        ) -> int:
+            events.append("resolve_context_length")
+            assert checkpoint_dir == "model-resolved"
+            assert server_args_overrides == {
+                "cuda_graph_max_bs": 8,
+                "torch_compile_max_bs": 8,
+                "mem_fraction_static": 0.7,
+                "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
+                "max_running_requests": 2,
+                "trust_remote_code": False,
+                "model_config_parser": "hf",
+                "json_model_override_args": (
+                    '{"language_config": {"max_position_embeddings": 4096}}'
+                ),
+                "decrypted_config_file": "/tmp/override.json",
+            }
+            return super().resolve_context_length(
+                checkpoint_dir,
+                server_args_overrides=server_args_overrides,
+            )
 
         def generation_defaults(
             self,
@@ -274,8 +345,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             token_to_kv_pool_allocator: Any,
             server_args: Any,
             model_config: Any,
-            prefill_manager: Any,
-            decode_manager: Any,
             model_runner: Any,
             request_builder: Any,
             result_adapter: Any,
@@ -292,8 +361,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
                     "token_to_kv_pool_allocator": token_to_kv_pool_allocator,
                     "server_args": server_args,
                     "model_config": model_config,
-                    "prefill_manager": prefill_manager,
-                    "decode_manager": decode_manager,
                     "model_runner": model_runner,
                 },
             )
@@ -312,12 +379,19 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             "mem_fraction_static": 0.7,
             "max_total_tokens": TEST_MAX_TOTAL_TOKENS,
             "max_running_requests": 2,
+            "trust_remote_code": False,
+            "model_config_parser": "hf",
+            "json_model_override_args": (
+                '{"language_config": {"max_position_embeddings": 4096}}'
+            ),
+            "decrypted_config_file": "/tmp/override.json",
         },
     )
 
     assert events == [
         "resolve_checkpoint",
         "pre_infra_setup",
+        "resolve_context_length",
         "generation_defaults",
         "adjust_overrides",
         "build_server_args",
@@ -340,10 +414,150 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     assert build_kwargs["torch_compile_max_bs"] == 8
     assert build_kwargs["mem_fraction_static"] == 0.7
     assert build_kwargs["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
-    assert infrastructure_saw_graph_disabled == [True]
+    assert build_kwargs["trust_remote_code"] is False
+    assert build_kwargs["model_config_parser"] == "hf"
+    assert build_kwargs["json_model_override_args"] == (
+        '{"language_config": {"max_position_embeddings": 4096}}'
+    )
+    assert build_kwargs["decrypted_config_file"] == "/tmp/override.json"
     assert init_graph_calls == [True]
     assert scheduler.kwargs["server_args"].disable_cuda_graph is False
     assert scheduler.kwargs["model_runner"].outbox == "outbox"
+
+
+def _build_minimal_tts_builder_harness(monkeypatch):
+    """Fakes for exercising ``build()`` without CUDA graphs or a real engine."""
+    from sglang_omni.scheduling import bootstrap, sglang_backend
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
+    )
+
+    build_kwargs: dict[str, Any] = {}
+    consumed: list[int | None] = []
+
+    class FakeModel:
+        pass
+
+    class FakeWorker:
+        def __init__(self, server_args: Any) -> None:
+            self.model_runner = SimpleNamespace(
+                model=FakeModel(), server_args=server_args
+            )
+            self.model_config = SimpleNamespace(is_multimodal=False)
+            self.enable_prefill_input_embeds = False
+
+    def fake_build_sglang_server_args(
+        checkpoint_dir: str, *, context_length: int, **kwargs: Any
+    ) -> Any:
+        build_kwargs.update(kwargs)
+        return FakeServerArgs(
+            checkpoint_dir=checkpoint_dir,
+            context_length=context_length,
+            cuda_graph_bs=None,
+            cuda_graph_max_bs=None,
+            cuda_graph_config=SimpleNamespace(
+                decode=SimpleNamespace(max_bs=None, bs=None),
+                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            ),
+            disable_cuda_graph=True,
+            enable_torch_compile=False,
+            max_running_requests=kwargs["max_running_requests"],
+            mem_fraction_static=kwargs.get("mem_fraction_static"),
+            torch_compile_max_bs=None,
+        )
+
+    def fake_create_sglang_infrastructure(
+        server_args: Any, gpu_id: int, **kwargs: Any
+    ) -> tuple[Any, ...]:
+        consumed.append(consume_stage_kv_cache_bytes())
+        return (
+            FakeWorker(server_args),
+            "tree_cache",
+            "req_pool",
+            "kv_pool",
+            "model_config",
+        )
+
+    monkeypatch.setattr(
+        sglang_backend, "build_sglang_server_args", fake_build_sglang_server_args
+    )
+    monkeypatch.setattr(
+        bootstrap, "create_sglang_infrastructure", fake_create_sglang_infrastructure
+    )
+    monkeypatch.setattr(
+        sglang_backend,
+        "SGLangOutputProcessor",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    class MinimalBuilder(TtsEngineBuilder):
+        model_name = "Test TTS"
+        context_length = 123
+
+        def resolve_checkpoint(self, model_path: str) -> str:
+            return model_path
+
+        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+            return {
+                "max_running_requests": 4,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "mem_fraction_static": 0.2,
+            }
+
+        def setup_model(self, **kwargs: Any) -> None:
+            pass
+
+        def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+            return SimpleNamespace(model_worker=model_worker)
+
+        def make_adapters(self, model: Any) -> tuple[Any, Any]:
+            return "request_builder", "result_adapter"
+
+        def make_scheduler(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(outbox="outbox")
+
+    return MinimalBuilder, build_kwargs, consumed
+
+
+def test_byte_budget_clears_builder_default_mem_fraction(monkeypatch, caplog) -> None:
+    """A KV-tuned builder default (e.g. dots 0.20) must not shape ServerArgs when
+    the byte budget owns KV sizing, or post-capture headroom inherits it."""
+    import logging
+
+    from sglang_omni.scheduling import engine_factory
+    from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
+
+    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+        monkeypatch
+    )
+
+    with caplog.at_level(logging.INFO, logger=engine_factory.logger.name):
+        with stage_kv_cache_budget("tts_engine", 2 * 1024**3):
+            MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+
+    assert "mem_fraction_static" not in build_kwargs
+    assert consumed == [2 * 1024**3]
+    assert "clearing builder default mem_fraction_static=0.2" in caplog.text
+
+
+def test_without_byte_budget_builder_default_mem_fraction_is_kept(
+    monkeypatch,
+) -> None:
+    MinimalBuilder, build_kwargs, consumed = _build_minimal_tts_builder_harness(
+        monkeypatch
+    )
+
+    MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+
+    assert build_kwargs["mem_fraction_static"] == 0.2
+    assert consumed == [None]
 
 
 def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None:
@@ -390,8 +604,6 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
             "tree_cache",
             "req_pool",
             "kv_pool",
-            "prefill",
-            "decode",
             "model_config",
         )
 
@@ -560,8 +772,6 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
         token_to_kv_pool_allocator="kv_pool",
         server_args="server_args",
         model_config="model_config",
-        prefill_manager="prefill",
-        decode_manager="decode",
         model_runner="runner",
         request_builder="request_builder",
         result_adapter="result_adapter",

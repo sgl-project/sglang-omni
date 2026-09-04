@@ -8,6 +8,7 @@ import pytest
 
 from sglang_omni.config import (
     EndpointsConfig,
+    FactoryArgs,
     PipelineConfig,
     ProcessConfig,
     StageConfig,
@@ -27,16 +28,16 @@ async def test_replicated_multistage_process_dispatch_stream_and_shutdown(
             StageConfig(
                 name="producer",
                 process="pair",
-                factory=fake_factory_path("make_replica_process_probe_scheduler"),
-                factory_args={"marker": "producer", "emit_stream": True},
+                factory_path=fake_factory_path("make_replica_process_probe_scheduler"),
+                factory=FactoryArgs(marker="producer", emit_stream=True),
                 next="consumer",
                 stream_to=["consumer"],
             ),
             StageConfig(
                 name="consumer",
                 process="pair",
-                factory=fake_factory_path("make_replica_process_probe_scheduler"),
-                factory_args={"marker": "consumer"},
+                factory_path=fake_factory_path("make_replica_process_probe_scheduler"),
+                factory=FactoryArgs(marker="consumer"),
                 terminal=True,
                 can_accept_stream_before_payload=True,
             ),

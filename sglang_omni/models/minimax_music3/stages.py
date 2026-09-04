@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AR_CONCURRENCY = int(os.environ.get("MINIMAX_MUSIC3_AR_CONCURRENCY", "16"))
 
 
-def create_preprocessing_executor(model_path: str, **_: Any) -> SimpleScheduler:
+def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     del model_path
 
     def _preprocess(payload: StagePayload) -> StagePayload:
@@ -43,7 +43,6 @@ def create_ar_executor(
     device: str | None = None,
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
-    **_: Any,
 ):
     if device is None:
         if gpu_id is None or not (
@@ -94,7 +93,6 @@ def create_dit_dav_executor(
     cache_dit_max_warmup_steps: int = 4,
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
-    **_: Any,
 ) -> MiniMaxMusic3AcousticScheduler:
     if device is None:
         if gpu_id is None or not (

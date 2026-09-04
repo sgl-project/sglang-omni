@@ -76,6 +76,18 @@ refused.
   `run{k}.json` or the report. `run` waits for CPU and GPU recovery and
   retries the same stage without stopping the calibration. Contention
   retries do not consume the ordinary infra attempt budget.
+- **What counts as intrusion:** only the driver's live monitor decides, and
+  only on load that persists — above `_CONTENTION_FAIL_CORES` for
+  `_CONTENTION_FAIL_WINDOWS` consecutive sample windows. A discard costs the
+  attempt's whole runtime, so the evidence must outlast one window. The
+  discarded attempt records the peak, mean and window count actually
+  measured; a record that reports the threshold back as the observation is
+  not an audit trail.
+- **The session's own contention line is not evidence.** The
+  `[cpuset-contention]` summary a pytest session prints at teardown roots its
+  tree at the pytest pid, so stages whose servers double-fork and reparent to
+  init have their own CPU charged as foreign. It is recorded as
+  `session_summary_peak_cores` for triage and must never gate a round.
 
 ## Destructive observations
 

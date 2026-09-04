@@ -153,8 +153,8 @@ class DotsTTSModelRunner(ModelRunner):
 
         # note (luojiaxuan): decode runs one token per request, so FULL and LAST return the same
         # rows. The decode CUDA graph is captured with FULL (via
-        # enable_return_hidden_states) and its can_run gate requires an exact
-        # hidden-mode match, so request FULL whenever the graph path is on.
+        # enable_return_hidden_states) and load_batch raises when a batch requests
+        # more than the captured mode, so request FULL whenever the graph path is on.
         if self.model.graph_feedback_buffer is not None:
             return CaptureHiddenMode.FULL
         return CaptureHiddenMode.LAST

@@ -28,7 +28,6 @@ from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_i
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from tests.unit_test.fakes import FakeServerArgs
 
 
 def _tiny_config():
@@ -59,14 +58,12 @@ def test_arkasr_config_registered():
     assert config.entry_stage == "asr"
     assert config.stages[0].name == "asr"
     assert config.stages[0].terminal
-    assert config.stages[0].factory_args["encoder_max_batch_size"] == 8
-    assert config.stages[0].factory_args["prefill_coalesce_requests"] == 16
-    assert config.stages[0].factory_args["prefill_coalesce_wait_ms"] == 32
-    assert config.stages[0].factory_args["prefill_coalesce_when_idle"] is True
-    assert (
-        config.stages[0].factory_args["prefill_coalesce_requires_pending_builds"]
-        is True
-    )
+    assert config.stages[0].factory.encoder_max_batch_size == 8
+    assert config.stages[0].factory.enable_encoder_cuda_graph is True
+    assert config.stages[0].factory.prefill_coalesce_requests == 16
+    assert config.stages[0].factory.prefill_coalesce_wait_ms == 32
+    assert config.stages[0].factory.prefill_coalesce_when_idle is True
+    assert config.stages[0].factory.prefill_coalesce_requires_pending_builds is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("ArkasrForConditionalGeneration")
         is ArkasrPipelineConfig
@@ -93,6 +90,8 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
     assert signature.parameters["pre_lm_max_pending"].default == 32
+    assert signature.parameters["enable_encoder_cuda_graph"].default is False
+    assert signature.parameters["stream_emit_interval_s"].default == 0.05
 
 
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
@@ -109,18 +108,17 @@ def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
 
 
 def test_arkasr_pre_lm_encoder_knobs_are_stage_configurable():
-    factory_args = (
-        ArkasrPipelineConfig(model_path="AutoArk-AI/ARK-ASR-3B").stages[0].factory_args
-    )
+    factory = ArkasrPipelineConfig(model_path="AutoArk-AI/ARK-ASR-3B").stages[0].factory
 
-    assert factory_args["request_build_max_workers"] == 2
-    assert factory_args["request_build_max_pending"] == 16
-    assert factory_args["enable_pre_lm_encoder"] is True
-    assert factory_args["pre_lm_cache_max_entries"] == 4096
-    assert factory_args["pre_lm_cache_size_bytes"] == 2 * 1024**3
-    assert factory_args["pre_lm_max_batch_size"] == 8
-    assert factory_args["pre_lm_max_batch_wait_ms"] == 0
-    assert factory_args["pre_lm_max_pending"] == 32
+    assert factory.request_build_max_workers == 2
+    assert factory.request_build_max_pending == 16
+    assert factory.enable_pre_lm_encoder is True
+    assert factory.pre_lm_cache_max_entries == 4096
+    assert factory.pre_lm_cache_size_bytes == 2 * 1024**3
+    assert factory.pre_lm_max_batch_size == 8
+    assert factory.pre_lm_max_batch_wait_ms == 0
+    assert factory.pre_lm_max_pending == 32
+    assert factory.enable_encoder_cuda_graph is True
 
 
 def test_arkasr_rejects_invalid_pre_lm_batch_size():
@@ -189,6 +187,8 @@ def _stub_arkasr_engine_build(
     graph_init_workers: list[object] = []
     adapter_kwargs: dict[str, object] = {}
     encoder_service_kwargs: dict[str, object] = {}
+    stream_builder_calls: list[dict[str, object]] = []
+    stream_output_builder = object()
 
     encoder_batch_sizes: list[int] = []
     model_worker = SimpleNamespace(
@@ -197,7 +197,7 @@ def _stub_arkasr_engine_build(
             model=SimpleNamespace(set_encoder_max_batch_size=encoder_batch_sizes.append)
         ),
     )
-    infra = (want_cuda_graph, (model_worker, None, None, None, None, None, None))
+    infra = (want_cuda_graph, (model_worker, None, None, None, None))
 
     monkeypatch.setattr(
         platforms.current_platform, "get_device", lambda index: "cpu", raising=False
@@ -244,9 +244,14 @@ def _stub_arkasr_engine_build(
         "make_arkasr_scheduler_adapters",
         lambda **k: (adapter_kwargs.update(k) or object(), object()),
     )
+    monkeypatch.setattr(
+        request_builders,
+        "make_arkasr_stream_output_builder",
+        lambda **k: stream_builder_calls.append(k) or stream_output_builder,
+    )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
-        server_args = FakeServerArgs(context_length=context_length, **overrides)
+        server_args = SimpleNamespace(context_length=context_length, **overrides)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
@@ -286,6 +291,8 @@ def _stub_arkasr_engine_build(
         graph_init_workers=graph_init_workers,
         adapter_kwargs=adapter_kwargs,
         encoder_service_kwargs=encoder_service_kwargs,
+        stream_builder_calls=stream_builder_calls,
+        stream_output_builder=stream_output_builder,
         infra_kwargs_seen=infra_kwargs_seen,
         encoder_batch_sizes=encoder_batch_sizes,
         model_worker=model_worker,
@@ -311,6 +318,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
         async_decode_min_batch_size=4,
         prefill_coalesce_requests=8,
         prefill_coalesce_wait_ms=24.0,
+        stream_emit_interval_s=0.125,
     )
 
     assert stub.graph_init_workers == ([stub.model_worker] if want_cuda_graph else [])
@@ -324,6 +332,13 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert scheduler.prefill_coalesce_wait_ms == 24.0
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
+    assert stub.stream_builder_calls == [
+        {
+            "tokenizer": stub.adapter_kwargs["tokenizer"],
+            "min_emit_interval_s": 0.125,
+        }
+    ]
+    assert scheduler.stream_output_builder is stub.stream_output_builder
     assert stub.adapter_kwargs["merge_factor"] == 7
     assert stub.adapter_kwargs["audio_token_id"] == 4242
     assert stub.adapter_kwargs["max_new_tokens"] == 256
@@ -354,6 +369,13 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
 
     assert stub.adapter_kwargs["audio_encoder_service"] is encoder_service
     assert scheduler.shutdown_callback == encoder_service.close
+    assert scheduler.stream_output_builder is stub.stream_output_builder
+    assert stub.stream_builder_calls == [
+        {
+            "tokenizer": stub.adapter_kwargs["tokenizer"],
+            "min_emit_interval_s": 0.05,
+        }
+    ]
     # Note (Akazaakane): The model-internal bound still applies behind the
     # pre-LM service because the two batch limits are independent.
     assert stub.encoder_batch_sizes == [8]
@@ -422,6 +444,7 @@ def _tiny_ark_audio_mm_model() -> ArkasrForConditionalGeneration:
     nn.Module.__init__(model)
     model.audio_encoder = ArkAudioMLPAdapter(_tiny_config()).eval()
     model.encoder_max_batch_size = model.DEFAULT_ENCODER_MAX_BATCH_SIZE
+    model.encoder_cuda_graph_runner = None
     return model
 
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.stages import preprocess_dots_tts_payload
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -15,6 +16,7 @@ class _RecordingTokenizer:
     eos_token_id = 0
 
     def __init__(self) -> None:
+        import_dots_tts()
         from dots_tts.utils.tokenizer import (
             AUDIO_COMP_SPAN_TOKEN,
             AUDIO_GEN_SPAN_TOKEN,

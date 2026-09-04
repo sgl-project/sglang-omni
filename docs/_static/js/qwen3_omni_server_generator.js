@@ -79,7 +79,7 @@
       subtitle: '3 GPUs',
       gpus:     function() { return '3 GPUs'; },
       contribute: function() {
-        return { flags: ['--thinker-tp-size 2', '--thinker-gpus 0,1', '--talker-gpu 2'] };
+        return { flags: ['--thinker.tp_size 2', '--thinker.gpu "[0, 1]"', '--talker_ar.gpu 2'] };
       },
     },
   };
@@ -134,9 +134,9 @@
           items.push({ flag: '--config …colocated_' + ctx.hw + '.yaml', desc: 'Memory budget profile calibrated for ' + hwDef.label + ' (' + hwDef.subtitle + ')' });
         }
       } else if (ctx.tp === 'tp2') {
-        items.push({ flag: '--thinker-tp-size 2', desc: 'Tensor-parallel the thinker across 2 GPUs' });
-        items.push({ flag: '--thinker-gpus 0,1',  desc: 'Assign thinker TP ranks to GPU 0 and GPU 1' });
-        items.push({ flag: '--talker-gpu 2',       desc: 'Assign talker to GPU 2' });
+        items.push({ flag: '--thinker.tp_size 2', desc: 'Tensor-parallel the thinker across 2 GPUs' });
+        items.push({ flag: '--thinker.gpu "[0, 1]"',  desc: 'Assign thinker TP ranks to GPU 0 and GPU 1' });
+        items.push({ flag: '--talker_ar.gpu 2',       desc: 'Assign talker to GPU 2' });
       }
     }
     if (ctx.prec === 'fp8' && !(ctx.mode === 'speech' && ctx.topo === 'colocated')) {

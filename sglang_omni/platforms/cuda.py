@@ -33,7 +33,7 @@ def _is_h20_device() -> bool:
 
 
 def _is_fp8_cutlass_moe_supported() -> bool:
-    """Mirror SGLang 0.5.16's CUTLASS FP8 MoE assertions."""
+    """Mirror SGLang's CUTLASS FP8 MoE assertions."""
     from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
     from sglang.srt.utils import (
         is_sm90_supported,

@@ -30,7 +30,7 @@ from tests.utils import MetricCheckCollector, apply_slack, assert_speed_threshol
 
 CONCURRENCY = 16
 
-MMMU_MIN_ACCURACY = 0.54
+MMMU_MIN_ACCURACY = 0.6
 
 _MMMU_P95 = {
     16: {

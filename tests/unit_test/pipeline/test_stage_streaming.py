@@ -591,7 +591,7 @@ def test_stage_config_rejects_unknown_model_transport_field() -> None:
     with pytest.raises(ValidationError):
         StageConfig(
             name="tts_engine",
-            factory="pkg.create",
+            factory_path="pkg.create",
             next="vocoder",
             stream_to=["vocoder"],
             **{field_name: {"vocoder": "relay"}},

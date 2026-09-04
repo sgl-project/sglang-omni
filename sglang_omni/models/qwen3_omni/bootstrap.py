@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.vendor.sglang.server_args import override_server_args
-
 
 def create_thinker_scheduler(
     server_args: Any,
@@ -52,44 +50,24 @@ def create_thinker_scheduler(
     enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
-    if defer_cuda_graph_capture:
-        saved_disable_cuda_graph = server_args.disable_cuda_graph
-        saved_return_hidden_states = server_args.enable_return_hidden_states
-        override_server_args(
-            server_args,
-            "sglang_omni.qwen3_omni.defer_cuda_graph_capture",
-            enable_return_hidden_states=True,
-            disable_cuda_graph=True,
-        )
 
-    try:
-        infrastructure = create_sglang_infrastructure(
-            server_args,
-            gpu_id,
-            tp_rank=tp_rank,
-            nccl_port=nccl_port,
-            model_arch_override="Qwen3OmniThinkerForCausalLM",
-            capture_hidden_layers=capture_hidden_layers,
-            total_gpu_memory_fraction=total_gpu_memory_fraction,
-            defer_cuda_graph_capture=defer_cuda_graph_capture,
-            enable_prefill_input_embeds=enable_prefill_input_embeds,
-        )
-    finally:
-        if defer_cuda_graph_capture:
-            override_server_args(
-                server_args,
-                "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
-                disable_cuda_graph=saved_disable_cuda_graph,
-                enable_return_hidden_states=saved_return_hidden_states,
-            )
+    infrastructure = create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        model_arch_override="Qwen3OmniThinkerForCausalLM",
+        capture_hidden_layers=capture_hidden_layers,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        defer_cuda_graph_capture=defer_cuda_graph_capture,
+        enable_prefill_input_embeds=enable_prefill_input_embeds,
+    )
 
     (
         model_worker,
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_config,
     ) = infrastructure
 
@@ -138,8 +116,6 @@ def create_thinker_scheduler(
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         server_args=server_args,
         model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
@@ -193,8 +169,6 @@ def create_talker_scheduler(
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_config,
     ) = create_sglang_infrastructure(
         server_args,
@@ -216,11 +190,6 @@ def create_talker_scheduler(
         _runner_cfg.vocab_size = _codec_vocab_size
     model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
-        override_server_args(
-            server_args,
-            "sglang_omni.qwen3_omni.talker_restore_cuda_graph_capture",
-            disable_cuda_graph=False,
-        )
         # Equivalent to init_cuda_graphs() while the talker requests no prefill
         # embeds slot, but keeps both stages on one path so enabling talker
         # prefill graphs later cannot silently miss the embeds view.
@@ -279,8 +248,6 @@ def create_talker_scheduler(
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         server_args=server_args,
         model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_chunk_handler=stream_chunk_handler,

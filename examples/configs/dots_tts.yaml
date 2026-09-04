@@ -1,15 +1,27 @@
 config_cls: DotsTTSPipelineConfig
 model_path: dots-studio/dots.tts-mf
-runtime_overrides:
+
+# The solver settings feed two consumers: the latent AR engine solves with
+# them, and preprocessing sizes its generation schedule from them. The
+# selector writes one value into both stages; an explicit per-stage entry
+# under stages: would override it.
+shared:
+  - select:
+      stages: [preprocessing, latent_engine]
+    factory:
+      num_steps: 4
+      max_generate_length: 500
+
+stages:
   reference_encode:
-    max_concurrency: 8
-    max_batch_size: 1
-    max_batch_wait_ms: 4
+    factory:
+      max_concurrency: 8
+      max_batch_size: 1
+      max_batch_wait_ms: 4
   latent_engine:
-    optimize: true
-    num_steps: 4
-    max_generate_length: 500
-    server_args_overrides:
+    factory:
+      optimize: true
+    engine:
       mem_fraction_static: 0.20
       max_running_requests: 16
       # note (luojiaxuan): backbone decode runs through the SGLang CUDA graph
@@ -18,6 +30,7 @@ runtime_overrides:
       disable_cuda_graph: false
       cuda_graph_max_bs: 16
   vocoder:
-    optimize: true
-    max_batch_size: 4
-    max_batch_wait_ms: 2
+    factory:
+      optimize: true
+      max_batch_size: 4
+      max_batch_wait_ms: 2

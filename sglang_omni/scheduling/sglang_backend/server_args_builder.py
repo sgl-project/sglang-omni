@@ -22,7 +22,7 @@ def _platform_device_type() -> str:
 
 
 def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
-    """Translate Omni's legacy public knobs to SGLang 0.5.16 decode fields."""
+    """Translate Omni's legacy public knobs to SGLang's decode fields."""
     for legacy_name, decode_name in _DECODE_CUDA_GRAPH_ALIASES.items():
         if legacy_name not in kwargs:
             continue
@@ -33,6 +33,22 @@ def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
                 f"{legacy_value!r} != {kwargs[decode_name]!r}"
             )
         kwargs[decode_name] = legacy_value
+
+
+def _apply_platform_decode_cuda_graph_backend(kwargs: dict[str, Any]) -> None:
+    """SGLang applies this after its disable switches, and a stage may name cpu
+    on an accelerator host, so both are checked before it is set."""
+    from sglang_omni.platforms import current_platform
+
+    backend = current_platform.get_decode_cuda_graph_backend()
+    if backend is None:
+        return
+    device = str(kwargs.get("device") or "").split(":")[0]
+    if device != current_platform.device_type:
+        return
+    if kwargs.get("disable_cuda_graph") or kwargs.get("disable_decode_cuda_graph"):
+        return
+    kwargs.setdefault("cuda_graph_backend_decode", backend)
 
 
 def build_sglang_server_args(
@@ -68,11 +84,19 @@ def build_sglang_server_args(
     if kwargs.get("mem_fraction_static") is None:
         kwargs.pop("mem_fraction_static", None)
     kwargs.setdefault("device", _platform_device_type())
+    _apply_platform_decode_cuda_graph_backend(kwargs)
     server_args = ServerArgs(**kwargs)
     # DP attention is unsupported; reject at configuration time. Mixed
     # chunked prefill stays allowed (the bridge handles it natively).
     if server_args.enable_dp_attention:
         raise ValueError("sglang-omni does not support enable_dp_attention")
+    # Overlapped startup weight load leaves sentinel weights until the scheduler
+    # calls finalize_startup_weight_load after capture; omni's bootstrap never
+    # does, so profiling, weight sharing and capture would run on the sentinels.
+    if server_args.startup_weight_load_mode == "overlap":
+        raise ValueError(
+            "sglang-omni does not support startup_weight_load_mode='overlap'"
+        )
     return server_args
 
 

@@ -24,7 +24,6 @@ def _config_data_with_thinker_tp(*, talker_gpu: int) -> dict:
         if stage["name"] == THINKER_STAGE:
             stage["gpu"] = [0, 1]
             stage["tp_size"] = 2
-            stage["parallelism"] = {"tp": 2}
         elif stage["name"] == TALKER_STREAM_STAGE:
             stage["gpu"] = talker_gpu
     return data
@@ -45,7 +44,7 @@ def test_streaming_thinker_fans_out_to_decode_and_segmenter():
     decode = _stage(config, DECODE_STAGE)
     assert thinker.next == [DECODE_STAGE, SEGMENTER_STAGE]
     assert thinker.stream_to == [DECODE_STAGE, SEGMENTER_STAGE]
-    assert thinker.factory_args.get("enable_streaming_tts") is True
+    assert thinker.factory.enable_streaming_tts is True
     assert decode.can_accept_stream_before_payload is True
 
 

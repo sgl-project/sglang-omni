@@ -274,16 +274,22 @@ def managed_omni_server(
     ]
     if server_config is not None:
         cmd.extend(["--config", server_config])
-    if max_running_requests is not None:
-        cmd.extend(["--max-running-requests", str(max_running_requests)])
-    if max_queued_requests is not None:
-        cmd.extend(["--max-queued-requests", str(max_queued_requests)])
-    if cuda_graph_max_bs is not None:
-        cmd.extend(["--cuda-graph-max-bs", str(cuda_graph_max_bs)])
+    engine_overrides = {
+        "max_running_requests": max_running_requests,
+        "max_queued_requests": max_queued_requests,
+        "cuda_graph_max_bs": cuda_graph_max_bs,
+        "quantization": quantization,
+    }
+    if any(value is not None for value in engine_overrides.values()):
+        engine_stage = _resolve_managed_server_engine_stage(
+            model_path=model_path,
+            server_config=server_config,
+        )
+        for name, value in engine_overrides.items():
+            if value is not None:
+                cmd.extend([f"--{engine_stage}.engine.{name}", str(value)])
     if mem_fraction_static is not None:
         cmd.extend(["--mem-fraction-static", str(mem_fraction_static)])
-    if quantization is not None:
-        cmd.extend(["--quantization", quantization])
     logger.info(f"Starting server: {' '.join(cmd)}")
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +301,34 @@ def managed_omni_server(
         stop_server(proc)
         if wait_for_gpu_release:
             wait_for_gpu_memory_release()
+
+
+def _resolve_managed_server_engine_stage(
+    *,
+    model_path: str,
+    server_config: str | None,
+) -> str:
+    from sglang_omni.config.manager import ConfigManager
+
+    config_manager = (
+        ConfigManager.from_file(server_config)
+        if server_config is not None
+        else ConfigManager.from_model_path(model_path)
+    )
+    config = config_manager.config
+    assert config is not None
+    config_cls = type(config)
+    engine_stages = [
+        stage.name
+        for stage in config.stages
+        if config_cls.stage_config_cls(stage.name).engine_stage
+    ]
+    if len(engine_stages) != 1:
+        raise ValueError(
+            "managed server engine overrides require exactly one SGLang "
+            f"engine stage; found {engine_stages}"
+        )
+    return engine_stages[0]
 
 
 def _ensure_port_available(host: str, port: int) -> None:

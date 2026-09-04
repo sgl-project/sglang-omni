@@ -1,10 +1,12 @@
 import os
 import pkgutil
+import platform as host_platform
 
 import torch
 from sglang.srt import platforms as srt_platforms
 from sglang.srt.platforms.interface import SRTPlatform
 
+from sglang_omni.platforms.apple import AppleOmniPlatform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
@@ -30,12 +32,12 @@ def _is_npu_available() -> bool:
     return bool(npu.is_available())
 
 
-def _is_xpu_available() -> bool:
-    try:
-        xpu = torch.xpu
-    except AttributeError:
-        return False
-    return bool(xpu.is_available())
+def _is_apple_silicon_mps_available() -> bool:
+    return (
+        host_platform.system() == "Darwin"
+        and host_platform.machine() == "arm64"
+        and bool(torch.backends.mps.is_available())
+    )
 
 
 def _load_platform_class(qualname: str) -> type[OmniPlatform]:
@@ -60,12 +62,16 @@ def _as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
         return ROCMOmniPlatform()
     if platform.is_cpu():
         return CPUOmniPlatform()
+    if platform.is_xpu():
+        return XPUOmniPlatform()
+    # note (yexiaodong): Explicit CPU and registered platform selections must
+    # win. SGLang otherwise leaves Apple Metal on its generic platform.
+    if type(platform) is SRTPlatform and _is_apple_silicon_mps_available():
+        return AppleOmniPlatform()
     if type(platform) is SRTPlatform and _is_musa_available():
         return MUSAOmniPlatform()
     if type(platform) is SRTPlatform and _is_npu_available():
         return NPUOmniPlatform()
-    if type(platform) is SRTPlatform and _is_xpu_available():
-        return XPUOmniPlatform()
     qualname = f"{type(platform).__module__}.{type(platform).__qualname__}"
     return _load_platform_class(qualname)()
 

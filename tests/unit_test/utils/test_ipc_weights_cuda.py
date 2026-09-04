@@ -81,7 +81,7 @@ def test_weight_share_stage_bootstrap_supports_direct_cuda_ipc(
             StageLaunchConfig(
                 stage_name="consumer",
                 factory=f"{__name__}._direct_ipc_consumer_factory",
-                factory_args={"data_queue": data_queue, "done": done},
+                factory_kwargs={"data_queue": data_queue, "done": done},
             )
         ],
     )

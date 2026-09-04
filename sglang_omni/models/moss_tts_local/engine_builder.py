@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Mapping
 from typing import Any
 
+from sglang_omni.models.moss_tts.hf_loading import (
+    MOSS_TTS_DEFAULT_CONTEXT_LENGTH,
+    resolve_moss_tts_context_length,
+)
 from sglang_omni.models.moss_tts_local import request_builders
 from sglang_omni.models.moss_tts_local import stages as moss_local_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
@@ -13,8 +18,20 @@ from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 class MossTtsLocalEngineBuilder(TtsEngineBuilder):
     model_name = "MOSS-TTS Local"
-    context_length = 8192
+    context_length = MOSS_TTS_DEFAULT_CONTEXT_LENGTH
     model_arch_override = "MossTTSLocalSGLangModel"
+    supports_context_length_override = True
+
+    def resolve_context_length(
+        self,
+        checkpoint_dir: str,
+        *,
+        server_args_overrides: Mapping[str, Any] | None = None,
+    ) -> int:
+        return resolve_moss_tts_context_length(
+            checkpoint_dir,
+            server_args_overrides=server_args_overrides,
+        )
 
     def __init__(
         self,
@@ -52,7 +69,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": False,
-            "max_prefill_tokens": 8192,
+            "max_prefill_tokens": min(self.context_length, 8192),
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
         }

@@ -29,9 +29,10 @@ config_cls: WhisperASRPipelineConfig
 name: whisper
 model_path: openai/whisper-large-v3-turbo
 
-runtime_overrides:
+stages:
   asr:
-    enable_encoder_cuda_graph: false
+    factory:
+      enable_encoder_cuda_graph: false
 ```
 
 The graph is captured after SGLang's generation graphs. With pre-LM off, raise `max_prefill_tokens` before configuring larger LM-side buckets (12/16). Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.
@@ -45,20 +46,21 @@ Whisper builds requests with eight worker threads by default, matching other pre
 Use `prefill_coalesce_requests` and `prefill_coalesce_wait_ms` to tune the gate. Set `prefill_coalesce_requests: 0` to disable only coalescing, or also set `request_build_max_workers: 1` to restore the pre-optimization request-build path:
 
 ```yaml
-runtime_overrides:
+stages:
   asr:
-    request_build_max_workers: 1
-    prefill_coalesce_requests: 0
+    factory:
+      request_build_max_workers: 1
+      prefill_coalesce_requests: 0
 ```
 
 ## Async Decode
 
-Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 64. Use the shared decode-mode option to compare against synchronous decode or diagnose a request lifecycle issue:
+Whisper enables the shared one-step-lookahead decode path at batch size 2 and above. It overlaps the current decode step's GPU work with the previous step's host-side result processing, while batch size 1 remains on the synchronous path. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:
 
 ```bash
 sgl-omni serve \
   --model-path openai/whisper-large-v3 \
-  --decode-mode sync \
+  --asr.factory.enable_async_decode false \
   --port 8000
 ```
 
@@ -148,16 +150,25 @@ windows and can reset that history during fallback, while SGLang-Omni currently 
 TED-LIUM evaluation did not show an accuracy or throughput advantage from enabling this implementation, so it remains disabled by default.
 Changing the default or implementing token-level parity should be evaluated in a separate PR.
 
-The behavior follows these values, which Whisper
-declares in code (`WhisperASRPipelineConfig.audio_chunking`). They are fixed model defaults in this release:
+The behavior follows two kinds of values.
 
-| Name | Value | Meaning                                                                                                                                                                     |
-|---|---|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR this is not a scheduling choice: 30s is the hard edge of the model's mel window. |
-| `max_native_clip_s` | `30` | Same as the chunk length. Streaming cannot chunk, so `stream=true` takes audio up to 30s and gets HTTP 400 above that.                                                      |
-| `max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run.                            |
-| `max_concurrent_chunks` | `8` | Per-request concurrency cap used while chunks are independent. When previous-text conditioning is enabled, one request's Whisper chunks decode in order while chunks from different requests can still batch together. |
-| `min_tail_s` | `1` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it, which keeps Whisper from hallucinating on very short clips.      |
+The scheduling policy is yours to tune, with dotted flags or the matching
+YAML keys:
+
+| Name | Default | Meaning |
+|---|---|---|
+| `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. Unlike Qwen3-ASR you can only lower it: 30s is the hard edge of the model's mel window. |
+| `--audio_chunking.max_concurrent_chunks` | `8` | Per-request concurrency cap used while chunks are independent. When previous-text conditioning is enabled, one request's Whisper chunks decode in order while chunks from different requests can still batch together. |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+
+The model properties are ClassVars on `WhisperASRPipelineConfig`; no
+configuration path reaches them:
+
+| Name | Value | Meaning |
+|---|---|---|
+| `allow_audio_chunking` | `true` | Whisper transcribes an isolated chunk correctly, so chunking is on. |
+| `max_native_clip_s` | `30` | The mel-window edge. Streaming cannot chunk, so `stream=true` takes audio up to 30s and gets HTTP 400 above that. |
+| `min_tail_s` | `1` | Shortest final chunk worth transcribing; if the tail would be shorter, we move the previous cut earlier to absorb it, which keeps Whisper from hallucinating on very short clips. |
 | `condition_on_previous_text` | `false` | Whether Whisper serializes chunks and conditions each chunk on the preceding decoded text. Disabled chunks remain independent and can use the per-request concurrency cap. |
 
 ## Benchmarking
@@ -175,7 +186,11 @@ To reproduce the async-decode comparison below, resolve the pinned checkpoint an
 
 ```bash
 MODEL_REVISION=06f233fe06e710322aca913c1bc4249a0d71fce1
-MODEL_PATH=$(hf download openai/whisper-large-v3 --revision "$MODEL_REVISION")
+MODEL_PATH="$(
+  hf download openai/whisper-large-v3 \
+    --revision "$MODEL_REVISION" \
+    --quiet
+)"
 
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --model-path "$MODEL_PATH" \
@@ -186,7 +201,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --model-path "$MODEL_PATH" \
   --mem-fraction-static 0.30 \
-  --decode-mode sync \
+  --asr.factory.enable_async_decode false \
   --port 8000
 ```
 
@@ -258,7 +273,7 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
   Graph. Validate the selected buckets before production use.
 - Audio encoding runs before LM admission by default
   (`pre_lm_max_batch_size=8`, `request_build_max_workers=8`). Set
-  `enable_pre_lm_encoder: false` under `runtime_overrides.asr` to run the
+  `enable_pre_lm_encoder: false` under `stages.asr.factory` to run the
   encoder inside prefill again.
 - The pre-LM encoder cache (`pre_lm_cache_max_entries=1024`) keeps its
   entries in page-locked (pinned) host memory so device-to-host and

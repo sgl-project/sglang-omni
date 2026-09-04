@@ -94,6 +94,9 @@ async def run(
                 "max_tokens": args.max_tokens,
                 "temperature": args.temperature,
                 "seed": args.seed,
+                "warmup": runner.config.effective_warmup,
+                "max_concurrency": args.max_concurrency,
+                "request_rate": args.request_rate,
             },
             args.output_dir,
             benchmark_name="mmar",
@@ -116,7 +119,12 @@ def main() -> None:
     p.add_argument("--prompt", type=str, default=DEFAULT_PROMPT)
     p.add_argument("--max-tokens", type=int, default=32)
     p.add_argument("--temperature", type=float, default=0.0)
-    p.add_argument("--warmup", type=int, default=1)
+    p.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Warmup requests; defaults to the configured concurrency.",
+    )
     p.add_argument("--max-concurrency", type=int, default=32)
     p.add_argument("--request-rate", type=float, default=float("inf"))
     p.add_argument("--timeout-s", type=int, default=300)

@@ -3,15 +3,12 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 import os
 from dataclasses import dataclass
-from types import MethodType
 
 import torch
 import torch.nn as nn
-from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 logger = logging.getLogger(__name__)
 
@@ -28,49 +25,65 @@ class _Captured:
     segment_slots: int
 
 
-def _varlen_attention_forward(
-    self, hidden_states, cu_seqlens, max_seqlen: int, **kwargs
-):
+_HOPPER = 9
+
+
+def _packed_attention_backend(capability: tuple[int, int]) -> str:
+    """FA3 on Hopper, Triton on every other CUDA device.
+
+    sglang's VisionAttention rule also picks FA4 on Blackwell. Omni validates
+    Hopper only, and Triton is the arm sglang itself uses on the other parts.
+    """
+    major, _ = capability
+    return "fa3" if major == _HOPPER else "triton_attn"
+
+
+def _resolve_packed_attention(device: torch.device) -> tuple[nn.Module, str]:
+    # Local import: only a process that requests the graphs loads sglang's kernels.
+    from sglang.srt.layers.attention import vision
+
+    backend = _packed_attention_backend(torch.cuda.get_device_capability(device))
+    if backend == "fa3":
+        impl_class = vision.VisionFlash3Attention
+    else:
+        impl_class = vision.VisionTritonAttention
+    # The encoder process holds no sglang parallel state to read.
+    return impl_class(use_data_parallel=True), backend
+
+
+def _packed_attention_forward(
+    attention: nn.Module,
+    packed_attention: nn.Module,
+    hidden_states: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    max_seqlen: int,
+) -> torch.Tensor:
     seq_length, _ = hidden_states.size()
-    query_states = self.q_proj(hidden_states).reshape(seq_length, self.num_heads, -1)
-    key_states = self.k_proj(hidden_states).reshape(seq_length, self.num_heads, -1)
-    value_states = self.v_proj(hidden_states).reshape(seq_length, self.num_heads, -1)
-    query_states = query_states.transpose(0, 1).unsqueeze(0)
-    key_states = key_states.transpose(0, 1).unsqueeze(0)
-    value_states = value_states.transpose(0, 1).unsqueeze(0)
-    varlen_config = self._omni_varlen_config
-    attention_interface = hf_modeling.ALL_ATTENTION_FUNCTIONS.get_interface(
-        varlen_config._attn_implementation, hf_modeling.eager_attention_forward
+    heads = attention.num_heads
+    query_states = attention.q_proj(hidden_states).reshape(seq_length, heads, -1)
+    key_states = attention.k_proj(hidden_states).reshape(seq_length, heads, -1)
+    value_states = attention.v_proj(hidden_states).reshape(seq_length, heads, -1)
+    # An int max_seqlen avoids the device-to-host max() that would break capture.
+    attn_output = packed_attention(
+        query_states,
+        key_states,
+        value_states,
+        cu_seqlens,
+        bsz=1,
+        seq_len=seq_length,
+        softmax_scale=attention.scaling,
+        max_seqlen=max_seqlen,
     )
-    stock_config, self.config = self.config, varlen_config
-    try:
-        attn_output, _ = attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask=None,
-            scaling=self.scaling,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            cu_seq_lens_q=cu_seqlens,
-            cu_seq_lens_k=cu_seqlens,
-            max_length_q=max_seqlen,
-            max_length_k=max_seqlen,
-            is_causal=False,
-            **kwargs,
-        )
-    finally:
-        self.config = stock_config
-    return self.out_proj(attn_output.reshape(seq_length, -1).contiguous())
+    return attention.out_proj(attn_output.reshape(seq_length, -1).contiguous())
 
 
 class AudioLayerGraphRunner:
     """Replays the audio encoder's layer stack from a captured CUDA graph.
 
     One instance owns one tower on one CUDA device. Replay is opt-in because
-    it runs varlen flash attention where serving otherwise runs sdpa: outputs
-    agree to bf16 kernel noise, not bitwise, so it needs the content gate
-    rather than an equality check.
+    it runs the packed attention kernel sglang picks for the device where
+    serving otherwise runs sdpa: outputs agree to bf16 kernel noise, not
+    bitwise, so it needs the content gate rather than an equality check.
     """
 
     def __init__(
@@ -100,7 +113,8 @@ class AudioLayerGraphRunner:
         self._owner_pid = os.getpid()
         self._dtype = next(tower.parameters()).dtype
         self._hidden = tower.config.d_model
-        self._patched = False
+        self._packed_attention: nn.Module | None = None
+        self._backend: str | None = None
 
     @property
     def has_graphs(self) -> bool:
@@ -127,28 +141,32 @@ class AudioLayerGraphRunner:
         segments.extend([0] * (self._segment_slots(bucket) - len(segments)))
         return segments
 
-    def _install_varlen(self) -> None:
-        if self._patched:
+    def _resolve_attention(self) -> None:
+        if self._packed_attention is not None or self._disabled_reason is not None:
             return
-        for layer in self._tower.layers:
-            attention = layer.self_attn
-            # Note (wenyao): the config object is shared with the rest of the
-            # thinker, so flipping it in place would silently switch attention
-            # for every other component that loaded the same config.
-            varlen_config = copy.copy(attention.config)
-            varlen_config._attn_implementation = "flash_attention_2"
-            attention._omni_varlen_config = varlen_config
-            attention._omni_varlen_forward = MethodType(
-                _varlen_attention_forward, attention
+        try:
+            self._packed_attention, self._backend = _resolve_packed_attention(
+                self._device
             )
-        self._patched = True
+        except Exception as exc:
+            # Like a failed capture: the encoder stays eager, the stage lives.
+            self._disabled_reason = f"packed attention unavailable: {exc}"
+            logger.warning(
+                "audio layer CUDA graphs unavailable: %s",
+                self._disabled_reason,
+                exc_info=True,
+            )
 
     def _run_layers(self, hidden_states, cu_seqlens, max_seqlen: int):
         for layer in self._tower.layers:
             residual = hidden_states
             hidden_states = layer.self_attn_layer_norm(hidden_states)
-            hidden_states = layer.self_attn._omni_varlen_forward(
-                hidden_states, cu_seqlens, max_seqlen
+            hidden_states = _packed_attention_forward(
+                layer.self_attn,
+                self._packed_attention,
+                hidden_states,
+                cu_seqlens,
+                max_seqlen,
             )
             hidden_states = residual + hidden_states
             residual = hidden_states
@@ -199,7 +217,9 @@ class AudioLayerGraphRunner:
         return _Captured(graph, hidden_states, cu_seqlens, output, slots)
 
     def capture_all(self) -> None:
-        self._install_varlen()
+        self._resolve_attention()
+        if self._disabled_reason is not None:
+            return
         for bucket in self._token_buckets:
             captured = self._capture(bucket)
             if captured is None:
@@ -208,7 +228,9 @@ class AudioLayerGraphRunner:
                 return
             self._graphs[bucket] = captured
         logger.info(
-            "audio layer CUDA graphs captured for buckets %s", list(self._graphs)
+            "audio layer CUDA graphs captured for buckets %s with %s attention",
+            list(self._graphs),
+            self._backend,
         )
 
     def _select(self, tokens: int, segments: list[int]) -> int | None:

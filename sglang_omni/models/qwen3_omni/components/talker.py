@@ -1369,7 +1369,7 @@ class Qwen3OmniTalker(nn.Module):
             # Keep sampler control flow static during graph capture while
             # preserving SGLang's actual sampling kernel semantics.
             is_all_greedy=False,
-            # Added by 0.5.16 as a required field. Only the dspark speculative
+            # A required field. Only the dspark speculative
             # verify path reads it (the regular sampler branches on
             # is_all_greedy alone), and this scheduler refuses speculative
             # decoding, so False is inert here -- it also matches what upstream
@@ -1381,12 +1381,7 @@ class Qwen3OmniTalker(nn.Module):
             need_min_p_sampling=False,
             vocab_size=self.config.text_config.vocab_size,
             grammars=[],
-            vocab_mask=None,
-            apply_mask_func=None,
             penalizer_orchestrator=None,
-            # Note:(Chenchen Hong) SGLang 0.5.12.post1 replaced the single
-            # acc_linear_penalties field with acc_additive_penalties /
-            # acc_scaling_penalties (both default None); leave them unset.
             has_custom_logit_processor=False,
             custom_params=None,
             custom_logit_processor=None,
@@ -1407,7 +1402,6 @@ class Qwen3OmniTalker(nn.Module):
         # The static-padded variant that used ForwardBatch.padded_static_len is
         # gone: only the EAGLE draft-extend graph runners ever set that field,
         # and the talker refuses speculative decoding, so it was always -1 here.
-        # sglang 0.5.16 removed the field and the matching upstream branch.
         seq_lens = extend_seq_lens.to(device=device)
         return torch.cumsum(seq_lens, dim=0) - 1
 

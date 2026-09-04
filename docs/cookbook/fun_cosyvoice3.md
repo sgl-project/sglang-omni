@@ -61,6 +61,94 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Flow Decoder Batching
+
+The buffered vocoder uses the batch-capable `FunCosyVoice3Flow.inference` API for every
+request. `SimpleScheduler` collects up to 8 requests for at most 2 ms, then the vocoder
+groups requests by total mel length in 50-frame buckets. Every bucket, including a
+single-request bucket, calls the same built-in Flow inference method; packing, padding,
+masking, CFM Euler/CFG, and output unpadding are handled inside the Flow implementation.
+The 50-frame default matches the current DiT estimator's static chunk size; a larger bucket
+can combine more requests at the cost of additional padding, compute, and peak GPU memory.
+
+The scheduler uses a bucket-rounded Flow admission budget, configured by
+`flow_batch_admission_frames` (2,000 by default). It controls whether a later request joins the
+current Flow batch; it is not a maximum supported request length. A request whose total
+prompt-plus-output mel length exceeds that budget runs as a B=1 Flow batch through the same
+adapter, and later requests wait for the next scheduler batch. This preserves valid long
+generations while preventing them from being combined with more work.
+
+HiFT still runs once per request. The built-in Flow implementation supports the pinned
+CosyVoice PyTorch estimator and buffered `streaming=False, finalize=True` inference only.
+TensorRT Flow is not supported by this integration and fails during vocoder initialization
+rather than falling back to another inference path.
+
+Change the mel-frame bucket size, for example to 100 frames:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --port 8000 \
+  --vocoder.factory.flow_batch_bucket_frames 100
+```
+
+The same setting can be written in the pipeline config under the vocoder's
+`factory` group:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      flow_batch_bucket_frames: 100
+```
+
+Increase the normal Flow batching budget only after measuring the target GPU. This changes the
+maximum aggregate padded work admitted into one scheduler batch; it does not reject a longer
+single request.
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --port 8000 \
+  --vocoder.factory.flow_batch_admission_frames 4000
+```
+
+The YAML equivalent is:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      flow_batch_admission_frames: 4000
+```
+
+The built-in Flow implementation is tied to the Flow/CFM structure in the documented CosyVoice commit
+`074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`. It does not modify or monkey-patch the
+CosyVoice checkout; an incompatible Flow structure fails directly instead of using a
+fallback implementation.
+
+### torch.compile for the DiT backbone
+
+The flow decoder's DiT backbone (`flow.decoder.estimator`, a 22-layer DiT invoked
+once per Euler step) can be compiled with `torch.compile` to reduce per-step
+kernel-launch overhead. It is opt-in because it pays a one-time compile cost at
+startup and is most beneficial under sustained throughput load. The compile uses
+`dynamic=True`, so one symbolic-sequence-length graph serves every utterance
+length.
+
+Enable it by overriding the vocoder stage's `factory` args (the `stages.`
+prefix is implied in the CLI dotted path):
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --vocoder.factory.enable_dit_torch_compile true \
+  --port 8000
+```
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
@@ -219,6 +307,8 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
 - **Streaming decode.** The current implementation buffers all speech tokens before Flow + HiFT
   decoding. Incremental PCM output is planned but is not yet available.
+- **Flow batch scope.** Flow batching currently supports only the PyTorch estimator. HiFT
+  remains serial, and streaming Flow/HiFT batching is outside the current buffered decoder.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be
   installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
   only the CosyVoice Flow and HiFT paths are used by the buffered decoder.

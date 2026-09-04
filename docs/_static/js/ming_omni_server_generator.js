@@ -77,12 +77,12 @@
       '--model-name ming-omni',
     ];
     if (!p.isSpeech) parts.push('--text-only');
-    parts.push('--thinker-tp-size ' + p.tT);
-    parts.push('--thinker-gpus ' + p.thinkerGpus.join(','));
-    if (p.talkerGpu !== null) parts.push('--talker-gpu ' + p.talkerGpu);
+    parts.push('--thinker.tp_size ' + p.tT);
+    parts.push('--thinker.gpu "[' + p.thinkerGpus.join(', ') + ']"');
+    if (p.talkerGpu !== null) parts.push('--talker.gpu ' + p.talkerGpu);
     if (p.visionGpus) {
-      parts.push('--image-encoder-tp-size ' + p.vT);
-      parts.push('--image-encoder-gpus ' + p.visionGpus.join(','));
+      parts.push('--image_encoder.tp_size ' + p.vT);
+      parts.push('--image_encoder.gpu "[' + p.visionGpus.join(', ') + ']"');
     }
     parts.push('--cpu-offload-gb 0');
     parts.push('--mem-fraction-static ' + HARDWARE[ctx.hw].mem);
@@ -100,14 +100,14 @@
     if (!p.isSpeech) {
       items.push({ flag: '--text-only', desc: 'Thinker-only pipeline — no talker, no audio output' });
     }
-    items.push({ flag: '--thinker-tp-size ' + p.tT, desc: 'Tensor-parallel the thinker across ' + p.tT + ' GPU' + (p.tT > 1 ? 's' : '') });
-    items.push({ flag: '--thinker-gpus ' + p.thinkerGpus.join(','), desc: 'Thinker TP ranks on GPU' + (p.tT > 1 ? 's ' : ' ') + p.thinkerGpus.join(', ') });
+    items.push({ flag: '--thinker.tp_size ' + p.tT, desc: 'Tensor-parallel the thinker across ' + p.tT + ' GPU' + (p.tT > 1 ? 's' : '') });
+    items.push({ flag: '--thinker.gpu "[' + p.thinkerGpus.join(', ') + ']"', desc: 'Thinker TP ranks on GPU' + (p.tT > 1 ? 's ' : ' ') + p.thinkerGpus.join(', ') });
     if (p.talkerGpu !== null) {
-      items.push({ flag: '--talker-gpu ' + p.talkerGpu, desc: 'Dedicated talker GPU for speech output (must not overlap the thinker)' });
+      items.push({ flag: '--talker.gpu ' + p.talkerGpu, desc: 'Dedicated talker GPU for speech output (must not overlap the thinker)' });
     }
     if (p.visionGpus) {
-      items.push({ flag: '--image-encoder-tp-size ' + p.vT, desc: 'Tensor-parallel the image (vision) encoder across ' + p.vT + ' ranks' });
-      items.push({ flag: '--image-encoder-gpus ' + p.visionGpus.join(','),
+      items.push({ flag: '--image_encoder.tp_size ' + p.vT, desc: 'Tensor-parallel the image (vision) encoder across ' + p.vT + ' ranks' });
+      items.push({ flag: '--image_encoder.gpu "[' + p.visionGpus.join(', ') + ']"',
                    desc: p.colo
                      ? 'Vision-encoder ranks colocated on thinker GPUs ' + p.visionGpus.join(', ')
                      : 'Vision-encoder ranks on dedicated GPUs ' + p.visionGpus.join(', ') });

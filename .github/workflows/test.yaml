@@ -23,7 +23,7 @@ jobs:
     name: unit-test
     runs-on: [self-hosted, h100]
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -57,7 +57,7 @@ jobs:
     name: unit-test-accelerator
     runs-on: [self-hosted, h100]
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

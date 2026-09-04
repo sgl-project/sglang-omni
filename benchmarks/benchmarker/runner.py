@@ -20,13 +20,26 @@ logger = logging.getLogger(__name__)
 SendFn = Callable[[aiohttp.ClientSession, Any], Coroutine[Any, Any, RequestResult]]
 
 
+def resolve_warmup(warmup: int | None, max_concurrency: int) -> int:
+    # note (luojiaxuan): warmup=None means match the configured concurrency, so
+    # the timed cohort is not the first to absorb concurrency-shaped cold work.
+    # An explicit count always wins, including 0 to disable warmup entirely.
+    if warmup is not None:
+        return warmup
+    return max_concurrency if max_concurrency > 0 else 1
+
+
 @dataclass
 class RunConfig:
     max_concurrency: int = 1
     request_rate: float = float("inf")
-    warmup: int = 1
+    warmup: int | None = None
     disable_tqdm: bool = False
     timeout_s: int = 300
+
+    @property
+    def effective_warmup(self) -> int:
+        return resolve_warmup(self.warmup, self.max_concurrency)
 
 
 class BenchmarkRunner:
@@ -56,7 +69,7 @@ class BenchmarkRunner:
         async with aiohttp.ClientSession(
             timeout=timeout, connector=connector
         ) as session:
-            if self.config.warmup > 0:
+            if self.config.effective_warmup > 0:
                 await self._warmup(session, samples, send_fn)
 
             logger.info(
@@ -75,10 +88,27 @@ class BenchmarkRunner:
         samples: list,
         send_fn: SendFn,
     ) -> None:
-        count = min(self.config.warmup, len(samples))
+        count = self.config.effective_warmup if samples else 0
         logger.info("Warmup (%d requests)...", count)
-        for i in range(count):
-            result = await send_fn(session, samples[i])
+        semaphore = (
+            asyncio.Semaphore(self.config.max_concurrency)
+            if self.config.max_concurrency
+            else None
+        )
+
+        async def _limited(sample: Any) -> RequestResult:
+            if semaphore is None:
+                return await send_fn(session, sample)
+            async with semaphore:
+                return await send_fn(session, sample)
+
+        # note (luojiaxuan): The measured cohort reuses this same sample list,
+        # so warming distinct samples would pre-fill per-sample server caches,
+        # such as the MOSS-TTS reference-audio cache, for requests that are
+        # about to be timed. Repeat one sample to get the concurrency shape
+        # without widening that bias as concurrency grows.
+        results = await asyncio.gather(*(_limited(samples[0]) for _ in range(count)))
+        for i, result in enumerate(results):
             status = "ok" if result.is_success else result.error
             logger.info("  warmup %d/%d: %s", i + 1, count, status)
 

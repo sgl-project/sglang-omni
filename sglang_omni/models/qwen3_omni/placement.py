@@ -120,29 +120,36 @@ class Qwen3OmniPlacementPolicy:
             )
 
     def _validate_colocated_qwen_runtime(self, stage_map) -> None:
+        # Note (Jiaxin Deng): the schema forbids fraction next to kv_cache_bytes,
+        # so requiring the fraction would outlaw every colocated byte budget.
         missing_budgets = [
             stage_name
             for stage_name in sorted(_COLOCATED_BUDGET_STAGES)
             if (
-                stage_map[stage_name].runtime.resources.total_gpu_memory_fraction
-                is None
+                stage_map[stage_name].gpu_memory_fraction is None
+                and (
+                    stage_map[stage_name].engine is None
+                    or stage_map[stage_name].engine.kv_cache_bytes is None
+                )
             )
         ]
         if missing_budgets:
             raise ValueError(
-                "Qwen colocated speech requires total_gpu_memory_fraction for "
-                f"{missing_budgets}"
+                "Qwen colocated speech requires gpu_memory_fraction or "
+                f"engine.kv_cache_bytes for {missing_budgets}"
             )
 
         for stage_name in _AR_STAGES:
             stage = stage_map[stage_name]
-            total_fraction = stage.runtime.resources.total_gpu_memory_fraction
-            mem_fraction = stage.runtime.sglang_server_args.mem_fraction_static
+            total_fraction = stage.gpu_memory_fraction
+            mem_fraction = (
+                stage.engine.mem_fraction_static if stage.engine is not None else None
+            )
             if mem_fraction is None:
                 continue
             if abs(mem_fraction - total_fraction) > 1e-3:
                 raise ValueError(
                     f"Qwen colocated speech stage {stage_name} sets conflicting "
-                    "memory fractions: total_gpu_memory_fraction="
+                    "memory fractions: gpu_memory_fraction="
                     f"{total_fraction:.3f}, mem_fraction_static={mem_fraction:.3f}"
                 )

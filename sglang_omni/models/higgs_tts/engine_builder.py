@@ -92,7 +92,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         # Note: (Jiaxin Deng) an explicit mem_fraction_static override (e.g.
-        # --talker-mem-fraction-static) wins, but never silently.
+        # --tts_engine.engine.mem_fraction_static) wins, but never silently.
         expected = self.total_gpu_memory_fraction
         if expected is None:
             return

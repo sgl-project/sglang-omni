@@ -27,6 +27,7 @@ from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
 from sglang_omni.utils import ipc_weights
+from sglang_omni.utils.gpu_memory import GpuDeviceInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MPS_DP_DIR = REPO_ROOT / "examples" / "mps_dp"
@@ -58,6 +59,13 @@ def _write_yaml(tmp_path: Path, config_cls: str, name: str = "probe") -> Path:
     return path
 
 
+def _strict_budget(*args, **kwargs):
+    """Strict-mode resolve: tests always want the missing-budget error."""
+    return mps_dp_config._resolve_mps_memory_budget(
+        *args, allow_missing_budget=False, **kwargs
+    )
+
+
 def test_registry_matches_weight_share_policies():
     # Note (Jiaxin Deng): implications, not an identity: every validated
     # config's architecture must be gate-enabled and never audit-only, and
@@ -75,23 +83,25 @@ def test_registry_matches_weight_share_policies():
 
 def test_every_validated_config_class_has_a_drivable_topology():
     for name, cls in VALIDATED_CONFIG_CLASSES.items():
-        stage = cls.generation_sglang_role_to_stage().get("generation")
-        assert stage, f"{name} declares no generation stage"
-        union = {
-            *cls.mem_fraction_role_to_stage().values(),
-            *cls.talker_sglang_role_to_stage().values(),
-            *cls.generation_sglang_role_to_stage().values(),
-        }
-        assert union == {stage}, f"{name} is not a single-SGLang-engine pipeline"
+        config = cls(model_path="dummy")
+        engine_stages = [
+            stage.name
+            for stage in config.stages
+            if cls.stage_config_cls(stage.name).engine_stage
+        ]
+        assert (
+            len(engine_stages) == 1
+        ), f"{name} is not a single-SGLang-engine pipeline: {engine_stages}"
 
 
 def test_every_shipped_example_config_resolves_with_sharing(tmp_path):
     yamls = sorted((MPS_DP_DIR / "configs").glob("*.yaml"))
     assert yamls, "no example configs shipped"
     for yaml_path in yamls:
-        value = mps_dp_config.resolve_max_total_tokens(
+        stage_name, value = mps_dp_config.resolve_max_total_tokens(
             yaml_path, require_single_sglang_engine=True, weight_share=True
         )
+        assert stage_name
         assert (
             isinstance(value, int) and value > 0
         ), f"{yaml_path.name} does not pin a positive max_total_tokens"
@@ -100,10 +110,15 @@ def test_every_shipped_example_config_resolves_with_sharing(tmp_path):
 @pytest.mark.parametrize(
     "config_cls", ["LLaDA2UniPipelineConfig", "Qwen3OmniPipelineConfig"]
 )
-def test_pipelines_without_generation_stage_fail_at_any_n(tmp_path, config_cls):
+def test_single_engine_pipelines_resolve_but_pin_nothing(tmp_path, config_cls):
+    """These pipelines drive one SGLang engine (the thinker), which is the
+    launcher's structural requirement; with no max_total_tokens pinned they
+    resolve to (stage, None), and launch.sh refuses an unpinned KV budget for
+    N > 1 before creating any state."""
     yaml_path = _write_yaml(tmp_path, config_cls)
-    with pytest.raises(ValueError, match="does not declare a generation stage"):
-        mps_dp_config.resolve_max_total_tokens(yaml_path)
+    stage_name, value = mps_dp_config.resolve_max_total_tokens(yaml_path)
+    assert stage_name == "thinker"
+    assert value is None
 
 
 def test_multi_engine_pipeline_fails_the_singleton_check(tmp_path):
@@ -122,6 +137,206 @@ def test_weight_share_rejected_for_unvalidated_configs(tmp_path, config_cls):
     yaml_path = _write_yaml(tmp_path, config_cls)
     with pytest.raises(ValueError, match="not passed end-to-end validation"):
         mps_dp_config.resolve_max_total_tokens(yaml_path, weight_share=True)
+
+
+def _write_budget_yaml(
+    tmp_path: Path,
+    *,
+    kv_cache_bytes: str,
+    total_reserve_bytes: str | None = None,
+) -> Path:
+    path = tmp_path / "budget-probe.yaml"
+    lines = [
+        "config_cls: Qwen3ASRPipelineConfig",
+        "name: budget-probe",
+        "model_path: dummy/none",
+        "stages:",
+        "  asr:",
+        "    engine:",
+        f"      kv_cache_bytes: {kv_cache_bytes}",
+    ]
+    if total_reserve_bytes is not None:
+        lines.append(f"    total_reserve_bytes: {total_reserve_bytes}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def gpu_with_16gib(monkeypatch):
+    monkeypatch.setattr(
+        mps_dp_config,
+        "get_gpu_device_info",
+        lambda gpu_id: GpuDeviceInfo(
+            logical_gpu_id=gpu_id,
+            device_id=gpu_id,
+            name="RTX 4070 Ti",
+            total_memory_bytes=16 * 1024**3,
+        ),
+    )
+
+
+def test_budget_rejects_kv_pools_over_physical_vram(tmp_path, gpu_with_16gib):
+    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="9GiB")
+    with pytest.raises(ValueError, match="18.00GiB of KV pools"):
+        _strict_budget(yaml_path, gpu_id=0, replicas=2)
+
+
+def test_kv_hard_bound_applies_with_weight_share_too(tmp_path, gpu_with_16gib):
+    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="9GiB")
+    with pytest.raises(ValueError, match="KV pools"):
+        _strict_budget(yaml_path, gpu_id=0, replicas=2, weight_share=True)
+
+
+def test_budget_rejects_declared_reserve_total_over_physical_vram(
+    tmp_path, gpu_with_16gib
+):
+    yaml_path = _write_budget_yaml(
+        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="9GiB"
+    )
+    with pytest.raises(ValueError, match="requested=18.00GiB"):
+        _strict_budget(yaml_path, gpu_id=0, replicas=2)
+
+
+def test_budget_within_vram_passes_with_declared_reserve(tmp_path, gpu_with_16gib):
+    yaml_path = _write_budget_yaml(
+        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="8GiB"
+    )
+
+    budget = _strict_budget(yaml_path, gpu_id=0, replicas=2)
+
+    assert budget["per_replica_kv_cache_bytes"] == 6 * 1024**3
+    assert budget["total_kv_cache_bytes"] == 12 * 1024**3
+    assert budget["requested_total_bytes"] == 16 * 1024**3
+
+
+def test_omitted_reserve_passes_kv_bound_and_warns_for_dp(
+    tmp_path, gpu_with_16gib, capsys
+):
+    """No invented reserve default: kv-only DP2 must pass the hard bound, and
+    the unvalidated total footprint is called out instead of being charged a
+    number the user never wrote."""
+    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="6GiB")
+
+    budget = _strict_budget(yaml_path, gpu_id=0, replicas=2)
+
+    assert budget["total_kv_cache_bytes"] == 12 * 1024**3
+    assert "requested_total_bytes" not in budget
+    err = capsys.readouterr().err
+    assert "NOT validated" in err
+    assert "8.00GiB" in err
+
+
+def test_omitted_reserve_single_replica_does_not_warn(tmp_path, gpu_with_16gib, capsys):
+    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="6GiB")
+
+    _strict_budget(yaml_path, gpu_id=0, replicas=1)
+
+    assert capsys.readouterr().err == ""
+
+
+def test_kv_error_only_cites_user_written_numbers(tmp_path, gpu_with_16gib):
+    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="9GiB")
+
+    with pytest.raises(ValueError) as exc_info:
+        _strict_budget(yaml_path, gpu_id=0, replicas=2)
+
+    message = str(exc_info.value)
+    assert "total_reserve_bytes" not in message
+    assert "even split" not in message
+
+
+def test_weight_share_budget_skips_reserve_total_check(
+    tmp_path, gpu_with_16gib, capsys
+):
+    yaml_path = _write_budget_yaml(
+        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="9GiB"
+    )
+
+    budget = _strict_budget(yaml_path, gpu_id=0, replicas=2, weight_share=True)
+
+    assert budget["per_replica_total_reserve_bytes"] == 9 * 1024**3
+    assert "requested_total_bytes" not in budget
+    assert "2-way total is NOT validated" in capsys.readouterr().err
+
+
+def test_weight_share_still_bounds_one_replica_reserve(tmp_path, gpu_with_16gib):
+    """The weight-share warning claims one replica's reservation was checked
+    against VRAM; the check must actually exist."""
+    yaml_path = _write_budget_yaml(
+        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="20GiB"
+    )
+
+    with pytest.raises(ValueError, match="one replica"):
+        _strict_budget(yaml_path, gpu_id=0, replicas=2, weight_share=True)
+
+
+def _write_reserve_only_yaml(tmp_path: Path) -> Path:
+    path = tmp_path / "reserve-only.yaml"
+    path.write_text(
+        "\n".join(
+            [
+                "config_cls: Qwen3ASRPipelineConfig",
+                "name: reserve-only",
+                "model_path: dummy/none",
+                "stages:",
+                "  asr:",
+                "    total_reserve_bytes: 9GiB",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_reserve_only_config_still_gets_the_reserve_bound(tmp_path, gpu_with_16gib):
+    """A legacy-fraction migration config declaring only total_reserve_bytes
+    must not skip preflight entirely."""
+    yaml_path = _write_reserve_only_yaml(tmp_path)
+
+    with pytest.raises(ValueError, match="total_reserve_bytes"):
+        mps_dp_config._resolve_mps_memory_budget(
+            yaml_path, gpu_id=0, replicas=2, allow_missing_budget=True
+        )
+
+
+def test_reserve_only_config_within_vram_passes_without_kv_fields(
+    tmp_path, gpu_with_16gib
+):
+    yaml_path = _write_reserve_only_yaml(tmp_path)
+
+    budget = mps_dp_config._resolve_mps_memory_budget(
+        yaml_path, gpu_id=0, replicas=1, allow_missing_budget=True
+    )
+
+    assert budget is not None
+    assert budget["per_replica_total_reserve_bytes"] == 9 * 1024**3
+    assert "per_replica_kv_cache_bytes" not in budget
+
+
+def test_missing_kv_budget_is_required_but_may_be_skipped(tmp_path, gpu_with_16gib):
+    yaml_path = _write_yaml(tmp_path, "Qwen3ASRPipelineConfig")
+
+    with pytest.raises(ValueError, match="kv_cache_bytes"):
+        _strict_budget(yaml_path, gpu_id=0, replicas=2)
+
+    assert (
+        mps_dp_config._resolve_mps_memory_budget(
+            yaml_path, gpu_id=0, replicas=2, allow_missing_budget=True
+        )
+        is None
+    )
+
+
+def test_budget_manifest_serialization_has_single_vram_key(tmp_path, gpu_with_16gib):
+    yaml_path = _write_budget_yaml(
+        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="8GiB"
+    )
+
+    budget = _strict_budget(yaml_path, gpu_id=0, replicas=2)
+    manifest = mps_dp_config._serialize_mps_memory_budget_manifest(budget)
+
+    assert "mps_budget_total_vram_bytes=" in manifest
 
 
 def test_docs_table_matches_the_code_registries():
@@ -165,11 +380,11 @@ class TestLaunchFailsClosedBeforeResources:
         )
         return proc, state_root
 
-    def test_unsupported_topology_leaves_no_state(self, tmp_path):
+    def test_unpinned_kv_budget_leaves_no_state(self, tmp_path):
         yaml_path = _write_yaml(tmp_path, "LLaDA2UniPipelineConfig")
         proc, state_root = self._run(tmp_path, yaml_path)
         assert proc.returncode != 0
-        assert "does not declare a generation stage" in proc.stdout + proc.stderr
+        assert "MAX_TOTAL_TOKENS is required" in proc.stdout + proc.stderr
         assert not state_root.exists()
 
     def test_unvalidated_weight_share_leaves_no_state(self, tmp_path):
@@ -197,3 +412,47 @@ class TestLaunchFailsClosedBeforeResources:
         # launch still fails closed before any state is created.
         if shutil.which("nvidia-smi"):
             assert "RUN_ID must be a single" in proc.stdout + proc.stderr
+
+
+def _engine_stage_name(config_cls) -> str:
+    config = config_cls(model_path="dummy")
+    return next(
+        stage.name
+        for stage in config.stages
+        if config_cls.stage_config_cls(stage.name).engine_stage
+    )
+
+
+def test_kv_budget_rejects_a_second_token_cap_knob(tmp_path):
+    stage = _engine_stage_name(WhisperASRPipelineConfig)
+    yaml_path = tmp_path / "probe.yaml"
+    yaml_path.write_text(
+        "config_cls: WhisperASRPipelineConfig\n"
+        "name: probe\n"
+        "model_path: dummy/none\n"
+        "stages:\n"
+        f"  {stage}:\n"
+        "    engine:\n"
+        "      kv_cache_bytes: 2GiB\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="keep exactly one"):
+        mps_dp_config.resolve_max_total_tokens(yaml_path, 30000)
+
+
+def test_kv_only_config_resolves_unpinned(tmp_path):
+    stage = _engine_stage_name(WhisperASRPipelineConfig)
+    yaml_path = tmp_path / "probe.yaml"
+    yaml_path.write_text(
+        "config_cls: WhisperASRPipelineConfig\n"
+        "name: probe\n"
+        "model_path: dummy/none\n"
+        "stages:\n"
+        f"  {stage}:\n"
+        "    engine:\n"
+        "      kv_cache_bytes: 2GiB\n",
+        encoding="utf-8",
+    )
+    resolved_stage, value = mps_dp_config.resolve_max_total_tokens(yaml_path)
+    assert resolved_stage == stage
+    assert value is None

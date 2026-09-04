@@ -13,6 +13,8 @@ import torch
 from einops import rearrange
 from torch import nn
 
+from sglang_omni.models.dots_tts.compat import import_dots_tts
+
 
 @dataclass
 class DotsFlowState:
@@ -55,6 +57,7 @@ class DotsTTSFlowHead(nn.Module):
         optimize: bool,
     ) -> None:
         super().__init__()
+        import_dots_tts()
         from dots_tts.models.dots_tts.config import ModelConfig
         from dots_tts.models.dots_tts.core import IOHelper
         from dots_tts.modules.backbone.dit import DiT
@@ -125,6 +128,7 @@ class DotsTTSFlowHead(nn.Module):
 
     def _patch_encoder_inference(self):
         if self._patch_inference is None:
+            import_dots_tts()
             from dots_tts.modules.backbone.encoder_inference import (
                 SemanticEncoderInference,
             )
@@ -134,6 +138,7 @@ class DotsTTSFlowHead(nn.Module):
 
     def _solver(self):
         if self._dit_solver is None:
+            import_dots_tts()
             from dots_tts.modules.backbone.dit_inference import (
                 DiTInferenceContext,
                 DiTSolver,
@@ -539,6 +544,7 @@ class DotsTTSFlowHead(nn.Module):
                     self._eos_event = torch.cuda.Event()
                 self._eos_pinned.copy_(eos_hit, non_blocking=True)
                 self._eos_event.record()
+        import_dots_tts()
         from dots_tts.modules.backbone.dit_inference import DiTSolverState
 
         if state.dit_state is None:

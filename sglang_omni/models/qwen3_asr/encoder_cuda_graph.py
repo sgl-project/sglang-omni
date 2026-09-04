@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from sglang.srt.layers.attention.vision import VisionAttentionMetadata
+
+from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,7 @@ class _CapturedGraph:
     graph: torch.cuda.CUDAGraph
     hidden_states: torch.Tensor  # [bucket, hidden] static input
     cu_seqlens: torch.Tensor  # [max_windows + 1] static window boundaries
+    attention_metadata: VisionAttentionMetadata | None
     output: torch.Tensor  # [bucket, output_dim] static result
 
 
@@ -88,6 +92,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self._buckets = buckets[:-1] + (top + self._max_windows_for(top),)
         self._graphs: dict[int, _CapturedGraph] = {}  # bucket size -> recorded graph
         self._failed: set[int] = set()
+        self._capture_attention_metadata: VisionAttentionMetadata | None = None
 
     @property
     def tokens_per_window(self) -> int:
@@ -118,7 +123,11 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         for layer in tower.layers:
             residual = h
             h = layer.self_attn_layer_norm(h)
-            h = layer.self_attn(x=h, cu_seqlens=cu_seqlens, max_seqlen=self._max_seqlen)
+            attention_kwargs = dict(
+                max_seqlen=self._max_seqlen,
+                forward_metadata=self._capture_attention_metadata,
+            )
+            h = layer.self_attn(x=h, cu_seqlens=cu_seqlens, **attention_kwargs)
             h = residual + h
             residual = h
             h = layer.final_layer_norm(h)
@@ -144,6 +153,18 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         for size in sizes:
             bounds.append(bounds[-1] + size)
         static_cu = torch.tensor(bounds, dtype=torch.int32, device=device)
+        attention_metadata = None
+        if current_platform.is_rocm():
+            # VisionAiterAttention otherwise recomputes max_seqlen with
+            # seq_lens.max().item() inside the captured region. The device-to-host
+            # sync is illegal during HIP graph capture. Keep the mutable tensor
+            # metadata static and supply the architectural maximum as a host scalar.
+            attention_metadata = VisionAttentionMetadata(
+                cu_seqlens=static_cu,
+                seq_lens=static_cu[1:] - static_cu[:-1],
+                max_seqlen=self._max_seqlen,
+            )
+        self._capture_attention_metadata = attention_metadata
 
         def run_once() -> torch.Tensor:
             with torch.no_grad():
@@ -170,6 +191,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             graph=graph,
             hidden_states=static_hs,
             cu_seqlens=static_cu,
+            attention_metadata=attention_metadata,
             output=static_out,
         )
 
@@ -212,6 +234,8 @@ class Qwen3ASREncoderLayerStackGraphRunner:
 
         entry.hidden_states[:total].copy_(hidden_states)
         entry.cu_seqlens.copy_(cu, non_blocking=True)
+        if entry.attention_metadata is not None:
+            entry.attention_metadata.seq_lens.copy_(cu[1:] - cu[:-1], non_blocking=True)
         entry.graph.replay()
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]

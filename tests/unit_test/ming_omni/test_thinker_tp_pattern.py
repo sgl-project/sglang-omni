@@ -34,11 +34,9 @@ def test_ming_attention_and_layer_boundary_tp_pattern():
     )
 
     assert 'prefix="layers"' in src
-    assert "get_attention_tp_rank" in src
-    assert "get_attention_tp_size" in src
     assert "validate_attention_tp_config" in src
-    assert "attn_tp_rank = get_attention_tp_rank()" in src
-    assert "attn_tp_size = get_attention_tp_size()" in src
+    assert "attn_tp_rank = get_parallel().attn_tp_rank" in src
+    assert "attn_tp_size = get_parallel().attn_tp_size" in src
     assert "tp_rank=attn_tp_rank" in src
     assert "tp_size=attn_tp_size" in src
     assert "reduce_results=False" in attention_src

@@ -15,7 +15,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioTokenizerVocoderDecoder,
-    MossTTSAudioTokenizer,
+    MossAudioVocoder,
 )
 from sglang_omni.models.moss_tts.delay_pattern import split_moss_audio_segments
 from sglang_omni.models.moss_tts.payload_types import (
@@ -122,18 +122,18 @@ class MossTTSVocoder(BatchVocoderBase):
     def __init__(
         self,
         processor: Any,
-        audio_tokenizer: MossTTSAudioTokenizer,
+        audio_vocoder: MossAudioVocoder,
         device: str,
         *,
         compute_dtype: torch.dtype | None = None,
         max_segment_batch_size: int = 8,
     ) -> None:
         self._processor = processor
-        self._audio_tokenizer = audio_tokenizer
+        self._audio_vocoder = audio_vocoder
         self._device = device
         self._compute_dtype = compute_dtype
         self._max_segment_batch_size = max(int(max_segment_batch_size), 1)
-        self._codec = getattr(audio_tokenizer, "model", None)
+        self._codec = getattr(audio_vocoder, "model", None)
         self._quantizer = getattr(self._codec, "quantizer", None)
         self._quantizer_decoder = None
         self._nonstream_decoder = None
@@ -145,8 +145,9 @@ class MossTTSVocoder(BatchVocoderBase):
         ):
             codec_device = _codec_device(self._codec, self._device)
             try:
-                nonstream_decoder = MossAudioTokenizerVocoderDecoder(
-                    self._codec.decoder
+                source_decoder = self._codec.decoder
+                nonstream_decoder = MossAudioTokenizerVocoderDecoder.from_module(
+                    source_decoder
                 )
                 supports_packed_attention = nonstream_decoder.supports_packed_attention(
                     codec_device,
@@ -213,7 +214,7 @@ class MossTTSVocoder(BatchVocoderBase):
         decoded = []
         with _autocast_if_supported(codec_device, codec_dtype):
             for segment in segments:
-                decoded.extend(self._audio_tokenizer.decode_codes([segment]))
+                decoded.extend(self._audio_vocoder.decode_codes([segment]))
         if not decoded:
             raise RuntimeError("MOSS-TTS vocoder decoded no audio segments")
         waveforms = [
@@ -224,7 +225,7 @@ class MossTTSVocoder(BatchVocoderBase):
 
     def _resolve_sample_rate(self, state: MossTTSState) -> int:
         return int(
-            getattr(self._audio_tokenizer, "sample_rate", 0)
+            getattr(self._audio_vocoder, "sample_rate", 0)
             or getattr(getattr(self._codec, "config", None), "sampling_rate", 0)
             or getattr(
                 getattr(self._processor, "model_config", None), "sampling_rate", 0
