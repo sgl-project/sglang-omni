@@ -51,6 +51,7 @@ pub(crate) fn classify(bytes: &[u8], trust: &TrustDomain) -> Result<ClassifiedRe
     let model = facts
         .model
         .flatten()
+        .filter(|model| !model.is_empty())
         .map_or(ModelSelection::UnresolvedDefault, ModelSelection::Explicit);
 
     let mut message_content_forms = Vec::with_capacity(2);
@@ -1278,6 +1279,7 @@ stream_modes = ["non_streaming", "streaming"]
             &[
                 r#"{"messages":[{"content":"x"}]}"#,
                 r#"{"messages":[{"content":"x"}],"model":null}"#,
+                r#"{"messages":[{"content":"x"}],"model":""}"#,
             ],
             &[
                 r#"{"messages":[{"content":"x"}]}"#,
