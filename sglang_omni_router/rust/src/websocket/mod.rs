@@ -21,7 +21,7 @@ use crate::config::{Config, WebsocketConfig};
 use crate::error::HttpFault;
 use crate::request_id::CanonicalRequestId;
 use crate::speech_facts::{
-    ScalarFactSeed, SpeechFields, managed_voice as classify_managed_voice,
+    ScalarFactSeed, SpeechFields, named_voice as classify_named_voice,
     read_field as read_shared_speech_field, read_stream as read_speech_stream, reference_forms,
     response_format as classify_response_format, task as classify_task,
 };
@@ -824,8 +824,8 @@ fn speech_requirement(
             .unwrap_or("Base"),
     );
     let mut references = reference_forms(&fields);
-    let managed_voice = classify_managed_voice(&fields, &references);
-    if managed_voice {
+    let named_voice = classify_named_voice(&fields, &references);
+    if named_voice {
         references.clear();
     }
     Ok(RouteRequirement::new(
@@ -835,7 +835,7 @@ fn speech_requirement(
             stream_mode,
             task,
             reference_forms: references,
-            managed_voice,
+            named_voice,
         },
         trust.clone(),
     ))
@@ -1226,7 +1226,7 @@ mod tests {
             stream_mode,
             task,
             reference_forms,
-            managed_voice,
+            named_voice,
             ..
         } = requirement.profile()
         else {
@@ -1245,8 +1245,8 @@ mod tests {
             ]
         );
         assert!(
-            !managed_voice,
-            "explicit references avoid managed voice routing"
+            !named_voice,
+            "explicit references avoid named voice routing"
         );
 
         let encoded_stream = parse_speech_config(
@@ -1313,10 +1313,10 @@ mod tests {
     }
 
     #[test]
-    fn managed_speech_config_uses_voice_as_its_reference_requirement() {
+    fn named_speech_config_uses_voice_as_its_reference_requirement() {
         let fields =
             parse_speech_config(br#"{"type":"session.config","model":"tts","voice":"named"}"#)
-                .expect("valid managed speech configuration");
+                .expect("valid named speech configuration");
         let requirement = speech_requirement(
             fields,
             ModelSelection::Explicit(String::from("tts")),
@@ -1325,14 +1325,14 @@ mod tests {
         .expect("valid speech requirement");
         let ProfileRequirement::SpeechWebsocket {
             reference_forms,
-            managed_voice,
+            named_voice,
             ..
         } = requirement.profile()
         else {
             panic!("speech websocket requirement")
         };
         assert!(reference_forms.is_empty());
-        assert!(*managed_voice);
+        assert!(*named_voice);
     }
 
     #[test]

@@ -92,7 +92,7 @@ fn websocket_only_config(route: &str) -> String {
         (
             "speech_websocket = 4",
             "speech_websocket = 2",
-            "service = \"speech_websocket\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nmanaged_voice = false",
+            "service = \"speech_websocket\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"",
         )
     } else {
         (

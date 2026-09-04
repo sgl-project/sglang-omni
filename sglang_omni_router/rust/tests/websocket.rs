@@ -343,7 +343,7 @@ response_formats = ["pcm"]
 stream_modes = ["non_streaming", "streaming"]
 tasks = ["text_to_speech"]
 reference_forms = ["none"]
-managed_voice = false
+voice_name_policy = "preset"
 
 [[workers.service_profiles]]
 service = "realtime_websocket"

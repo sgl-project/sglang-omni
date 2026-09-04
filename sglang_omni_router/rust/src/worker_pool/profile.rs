@@ -267,7 +267,7 @@ pub(crate) enum ServiceProfile {
         stream_modes: Vec<StreamMode>,
         tasks: Vec<SpeechTask>,
         reference_forms: Vec<ReferenceForm>,
-        managed_voice: bool,
+        voice_name_policy: VoiceNamePolicy,
     },
     RealtimeWebsocket,
 }
@@ -318,7 +318,7 @@ pub(crate) enum ProfileRequirement {
         stream_mode: StreamMode,
         task: Option<SpeechTask>,
         reference_forms: Vec<ReferenceForm>,
-        managed_voice: bool,
+        named_voice: bool,
     },
     RealtimeWebsocket,
 }
@@ -423,10 +423,12 @@ impl ProfileRequirement {
 
     pub(super) const fn has_named_voice(&self) -> bool {
         match self {
-            Self::SpeechHttp { named_voice, .. } | Self::SpeechBatch { named_voice, .. } => {
-                *named_voice
-            }
-            Self::GenerationHttp { .. } | Self::TranscriptionHttp { .. } => false,
+            Self::SpeechHttp { named_voice, .. }
+            | Self::SpeechBatch { named_voice, .. }
+            | Self::SpeechWebsocket { named_voice, .. } => *named_voice,
+            Self::GenerationHttp { .. }
+            | Self::TranscriptionHttp { .. }
+            | Self::RealtimeWebsocket => false,
         }
     }
 }
@@ -700,7 +702,7 @@ impl ServiceProfile {
                     stream_modes: asm,
                     tasks: at,
                     reference_forms: ar,
-                    managed_voice: av,
+                    voice_name_policy: av,
                 },
                 Self::SpeechWebsocket {
                     model_ids: bm,
@@ -708,7 +710,7 @@ impl ServiceProfile {
                     stream_modes: bsm,
                     tasks: bt,
                     reference_forms: br,
-                    managed_voice: bv,
+                    voice_name_policy: bv,
                 },
             ) => {
                 av == bv
@@ -846,7 +848,7 @@ impl ServiceProfile {
                     stream_modes,
                     tasks,
                     reference_forms,
-                    managed_voice,
+                    ..
                 },
                 ProfileRequirement::SpeechWebsocket {
                     model,
@@ -854,14 +856,13 @@ impl ServiceProfile {
                     stream_mode,
                     task,
                     reference_forms: required_references,
-                    managed_voice: required_voice,
+                    ..
                 },
             ) => {
                 model.matches_profile_models(model_ids, worker_default)
                     && response_format.is_none_or(|format| response_formats.contains(&format))
                     && stream_modes.contains(stream_mode)
                     && task.is_none_or(|task| tasks.contains(&task))
-                    && (!*required_voice || *managed_voice)
                     && contains_all(reference_forms, required_references)
             }
             (Self::RealtimeWebsocket, ProfileRequirement::RealtimeWebsocket) => true,
@@ -898,8 +899,13 @@ impl ServiceProfile {
             }
             | Self::SpeechBatch {
                 voice_name_policy, ..
+            }
+            | Self::SpeechWebsocket {
+                voice_name_policy, ..
             } => Some(*voice_name_policy),
-            Self::GenerationHttp { .. } | Self::TranscriptionHttp { .. } => None,
+            Self::GenerationHttp { .. }
+            | Self::TranscriptionHttp { .. }
+            | Self::RealtimeWebsocket => None,
         }
     }
 }
@@ -1208,7 +1214,7 @@ mod tests {
             stream_modes: vec![StreamMode::NonStreaming, StreamMode::Streaming],
             tasks: vec![SpeechTask::TextToSpeech],
             reference_forms: vec![ReferenceForm::None],
-            managed_voice: false,
+            voice_name_policy: VoiceNamePolicy::Preset,
         };
         assert!(
             websocket(vec![SpeechResponseFormat::Pcm])
@@ -1427,23 +1433,24 @@ mod tests {
     }
 
     #[test]
-    fn managed_voice_websocket_matches_stored_or_explicit_reference() {
+    fn named_voice_websocket_keeps_reference_matching_independent() {
         let row = ServiceProfile::SpeechWebsocket {
             model_ids: vec![String::from("tts")],
             response_formats: vec![SpeechResponseFormat::Pcm],
             stream_modes: vec![StreamMode::Streaming],
             tasks: vec![SpeechTask::TextToSpeech],
             reference_forms: vec![ReferenceForm::Direct],
-            managed_voice: true,
+            voice_name_policy: VoiceNamePolicy::Uploaded,
         };
-        let requirement = |reference_forms, managed_voice| ProfileRequirement::SpeechWebsocket {
+        let requirement = |reference_forms, named_voice| ProfileRequirement::SpeechWebsocket {
             model: ModelSelection::Explicit(String::from("tts")),
             response_format: Some(SpeechResponseFormat::Pcm),
             stream_mode: StreamMode::Streaming,
             task: None,
             reference_forms,
-            managed_voice,
+            named_voice,
         };
+        assert_eq!(row.voice_name_policy(), Some(VoiceNamePolicy::Uploaded));
         assert!(row.matches(&requirement(Vec::new(), true), Some("tts")));
         assert!(row.matches(
             &requirement(vec![ReferenceForm::Direct], false),
