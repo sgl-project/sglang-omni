@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, Fun-CosyVoice3, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -37,6 +37,9 @@ Supported Models
    * - `Qwen/Qwen3-TTS-12Hz-Base <https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base>`_
      - TTS
      - Voice cloning, streaming, 10 languages, 0.6B / 1.7B
+   * - `FunAudioLLM/Fun-CosyVoice3-0.5B-2512 <https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512>`_
+     - TTS
+     - Voice cloning, cross-lingual synthesis, instruction control
    * - `OpenMOSS-Team/MOSS-TTS-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5>`_
      - TTS
      - Delay-pattern MOSS-TTS; voice cloning, streaming, 31 languages
@@ -98,6 +101,7 @@ Supported Models
    cookbook/higgs_tts.md
    cookbook/voxtral_tts.md
    cookbook/fishaudio_s2_pro.md
+   cookbook/fun_cosyvoice3.md
    cookbook/qwen3_tts.md
    cookbook/ming_tts.md
    cookbook/moss_tts.md

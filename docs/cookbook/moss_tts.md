@@ -184,7 +184,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 MOSS-TTS conditions on a target **duration token count** (codec frames; a larger count yields
 longer audio). Set it with an inline `${token:N}` prefix on `input` (stripped before synthesis),
-or with a `token_count` (alias `duration_tokens` / `tokens`) parameter. The count must be a
+or with a `token_count` (alias `duration_tokens`) parameter. The count must be a
 positive integer.
 
 ```json
@@ -202,7 +202,7 @@ sample with `--token-count auto`.
 ### Text Markup, Style, and Language
 
 Inline text markup that the model understands (for example `[pause Xs]`, pinyin, and IPA) is
-passed through unchanged. An optional `instructions` (alias `instruct`) field carries a
+passed through unchanged. An optional `instructions` field carries a
 free-text style directive, and an optional `language` hint biases the target language (omit it
 to let the model infer from the text):
 
@@ -212,7 +212,7 @@ to let the model infer from the text):
   "voice": "default",
   "input": "今天天气不错 [pause 0.5s] 就该出去晒晒太阳。",
   "ref_audio": "...", "ref_text": "...",
-  "language": "Chinese",
+  "language": "Chinese"
 }
 ```
 
@@ -227,8 +227,8 @@ to let the model infer from the text):
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `language` | `null` | Optional target-language hint. Omit to let the model infer |
-| `instructions` / `instruct` | `null` | Optional free-text style directive |
-| `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames. It must be `> 0` |
+| `instructions` | `null` | Optional free-text style directive |
+| `token_count` / `duration_tokens` | `null` | Target duration in codec frames. It must be `> 0` |
 | `max_new_tokens` | `4096` | Maximum generated frames. An explicit value must be `> 0` |
 | `temperature` | `1.5` text / `1.7` audio | Sampling temperature. A single `temperature` overrides both channels |
 | `top_p` | `1.0` text / `0.8` audio | Top-p sampling. A single `top_p` overrides both channels |
@@ -236,9 +236,8 @@ to let the model infer from the text):
 | `repetition_penalty` | `1.0` | Audio repetition penalty |
 | `seed` | `null` | Non-negative integer. See [Seed Reproducibility](#seed-reproducibility) |
 
-The per-channel fields (`text_temperature`, `audio_temperature`, `text_top_p`, `audio_top_p`,
-`text_top_k`, `audio_top_k`, `audio_repetition_penalty`) are also accepted and take precedence
-over the single-value aliases.
+The two default values are the model's separate text-channel and audio-channel sampling settings.
+A single `temperature`, `top_p`, or `top_k` applies to both channels.
 
 ## Seed Reproducibility
 
