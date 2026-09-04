@@ -11,12 +11,22 @@ pub(super) struct MultipartFacts {
     pub(super) stream: Option<bool>,
 }
 
-#[derive(Default)]
 struct Facts {
     model: Option<String>,
-    response_format: Option<String>,
-    stream: Option<bool>,
+    response_format: Result<Option<String>, ()>,
+    stream: Result<Option<bool>, ()>,
     file_seen: bool,
+}
+
+impl Default for Facts {
+    fn default() -> Self {
+        Self {
+            model: None,
+            response_format: Ok(None),
+            stream: Ok(None),
+            file_seen: false,
+        }
+    }
 }
 
 pub(super) fn scan(body: &[u8], boundary: &[u8]) -> Result<MultipartFacts, HttpFault> {
@@ -87,8 +97,10 @@ pub(super) fn scan(body: &[u8], boundary: &[u8]) -> Result<MultipartFacts, HttpF
     }
     Ok(MultipartFacts {
         model: facts.model,
-        response_format: facts.response_format,
-        stream: facts.stream,
+        response_format: facts
+            .response_format
+            .map_err(|()| HttpFault::MalformedRequest)?,
+        stream: facts.stream.map_err(|()| HttpFault::MalformedRequest)?,
     })
 }
 
@@ -211,29 +223,9 @@ fn classify_part(headers: &PartHeaders, value: &[u8], facts: &mut Facts) -> Resu
     let name = headers.name.as_deref().ok_or(HttpFault::MalformedRequest)?;
     match name {
         "model" => set_model(&mut facts.model, value)?,
-        "response_format" => set_text(&mut facts.response_format, value)?,
+        "response_format" => facts.response_format = parse_response_format(value),
         "stream" => {
-            if value.len() > MAX_ROUTING_VALUE_BYTES {
-                return Err(HttpFault::MalformedRequest);
-            }
-            let text = std::str::from_utf8(value)
-                .map_err(|_| HttpFault::MalformedRequest)?
-                .trim();
-            facts.stream = Some(
-                if ["true", "1", "on", "yes", "y", "t"]
-                    .iter()
-                    .any(|value| text.eq_ignore_ascii_case(value))
-                {
-                    true
-                } else if ["false", "0", "off", "no", "n", "f"]
-                    .iter()
-                    .any(|value| text.eq_ignore_ascii_case(value))
-                {
-                    false
-                } else {
-                    return Err(HttpFault::MalformedRequest);
-                },
-            );
+            facts.stream = parse_stream(value);
         }
         "file" => {
             facts.file_seen = true;
@@ -252,18 +244,38 @@ fn set_model(slot: &mut Option<String>, value: &[u8]) -> Result<(), HttpFault> {
     Ok(())
 }
 
-fn set_text(slot: &mut Option<String>, value: &[u8]) -> Result<(), HttpFault> {
+fn parse_response_format(value: &[u8]) -> Result<Option<String>, ()> {
+    if value.is_empty() {
+        return Ok(None);
+    }
     if value.len() > MAX_ROUTING_VALUE_BYTES {
-        return Err(HttpFault::MalformedRequest);
+        return Err(());
     }
-    let text = std::str::from_utf8(value)
-        .map_err(|_| HttpFault::MalformedRequest)?
-        .trim();
-    if text.is_empty() {
-        return Err(HttpFault::MalformedRequest);
+    let text = std::str::from_utf8(value).map_err(|_| ())?.trim();
+    Ok(Some(text.to_owned()))
+}
+
+fn parse_stream(value: &[u8]) -> Result<Option<bool>, ()> {
+    if value.is_empty() {
+        return Ok(None);
     }
-    *slot = Some(text.to_owned());
-    Ok(())
+    if value.len() > MAX_ROUTING_VALUE_BYTES {
+        return Err(());
+    }
+    let text = std::str::from_utf8(value).map_err(|_| ())?.trim();
+    if ["true", "1", "on", "yes", "y", "t"]
+        .iter()
+        .any(|value| text.eq_ignore_ascii_case(value))
+    {
+        Ok(Some(true))
+    } else if ["false", "0", "off", "no", "n", "f"]
+        .iter()
+        .any(|value| text.eq_ignore_ascii_case(value))
+    {
+        Ok(Some(false))
+    } else {
+        Err(())
+    }
 }
 
 fn find(haystack: &[u8], start: usize, needle: &[u8]) -> Option<usize> {
@@ -342,16 +354,46 @@ mod tests {
             &[
                 ("model", None, b"a"),
                 ("model", None, b"b"),
+                ("response_format", None, b""),
+                ("response_format", None, b"text"),
+                ("stream", None, b"invalid"),
+                ("stream", None, b"true"),
+                ("file", Some("audio/wav"), b"RIFF"),
+            ],
+            true,
+        );
+        let facts = scan(&duplicate, b"route-boundary")
+            .expect("duplicate form fields use worker-compatible last-wins parsing");
+        assert_eq!(facts.model.as_deref(), Some("b"));
+        assert_eq!(facts.response_format.as_deref(), Some("text"));
+        assert_eq!(facts.stream, Some(true));
+    }
+
+    #[test]
+    fn empty_scalar_form_fields_use_worker_defaults() {
+        let empty = body(
+            &[
+                ("response_format", None, b""),
+                ("stream", None, b""),
+                ("file", Some("audio/wav"), b"RIFF"),
+            ],
+            true,
+        );
+        let facts = scan(&empty, b"route-boundary").expect("empty fields use defaults");
+        assert_eq!(facts.response_format, None);
+        assert_eq!(facts.stream, None);
+
+        let invalid_final = body(
+            &[
+                ("stream", None, b"true"),
+                ("stream", None, b"invalid"),
                 ("file", Some("audio/wav"), b"RIFF"),
             ],
             true,
         );
         assert_eq!(
-            scan(&duplicate, b"route-boundary")
-                .expect("duplicate form fields use worker-compatible last-wins parsing")
-                .model
-                .as_deref(),
-            Some("b")
+            scan(&invalid_final, b"route-boundary"),
+            Err(HttpFault::MalformedRequest)
         );
     }
 
