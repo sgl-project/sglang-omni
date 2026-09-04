@@ -664,7 +664,7 @@ impl ServiceProfile {
                     stream_modes,
                     tasks,
                     reference_forms,
-                    ..
+                    voice_name_policy,
                 },
                 ProfileRequirement::SpeechHttp {
                     model,
@@ -672,14 +672,19 @@ impl ServiceProfile {
                     stream_mode,
                     task,
                     reference_forms: required_references,
-                    ..
+                    named_voice,
                 },
             ) => {
                 model.matches_profile_models(model_ids, worker_default)
                     && response_formats.contains(response_format)
                     && stream_modes.contains(stream_mode)
                     && task.is_none_or(|task| tasks.contains(&task))
-                    && contains_all(reference_forms, required_references)
+                    && matches_speech_references(
+                        reference_forms,
+                        required_references,
+                        *named_voice,
+                        *voice_name_policy,
+                    )
             }
             (
                 Self::SpeechBatch {
@@ -687,16 +692,16 @@ impl ServiceProfile {
                     response_formats,
                     tasks,
                     reference_forms,
+                    voice_name_policy,
                     max_batch_size,
-                    ..
                 },
                 ProfileRequirement::SpeechBatch {
                     models,
                     response_formats: required_formats,
                     tasks: required_tasks,
                     reference_forms: required_references,
+                    named_voice,
                     batch_size,
-                    ..
                 },
             ) => {
                 models
@@ -705,7 +710,12 @@ impl ServiceProfile {
                     && *batch_size <= *max_batch_size
                     && contains_all(response_formats, required_formats)
                     && contains_all(tasks, required_tasks)
-                    && contains_all(reference_forms, required_references)
+                    && matches_speech_references(
+                        reference_forms,
+                        required_references,
+                        *named_voice,
+                        *voice_name_policy,
+                    )
             }
             (
                 Self::TranscriptionHttp {
@@ -916,6 +926,18 @@ fn set_eq<T: Eq>(left: &[T], right: &[T]) -> bool {
 
 fn contains_all<T: Eq>(available: &[T], required: &[T]) -> bool {
     required.iter().all(|item| available.contains(item))
+}
+
+fn matches_speech_references(
+    available: &[ReferenceForm],
+    required: &[ReferenceForm],
+    named_voice: bool,
+    voice_name_policy: VoiceNamePolicy,
+) -> bool {
+    contains_all(available, required)
+        && (!named_voice
+            || voice_name_policy == VoiceNamePolicy::Uploaded
+            || available.contains(&ReferenceForm::None))
 }
 
 pub(crate) fn validate_identifier(value: &str, field: &'static str) -> Result<(), ConfigError> {
@@ -1141,8 +1163,8 @@ mod tests {
     }
 
     #[test]
-    fn named_voice_policy_is_independent_of_reference_capability() {
-        let row = ServiceProfile::SpeechHttp {
+    fn named_voice_policy_controls_the_implicit_reference() {
+        let mut row = ServiceProfile::SpeechHttp {
             model_ids: vec![String::from("tts")],
             response_formats: vec![SpeechResponseFormat::Wav],
             stream_modes: vec![StreamMode::NonStreaming],
@@ -1165,6 +1187,21 @@ mod tests {
             Some("tts")
         ));
         assert!(!row.matches(&requirement(vec![ReferenceForm::None], false), Some("tts")));
+
+        if let ServiceProfile::SpeechHttp {
+            voice_name_policy, ..
+        } = &mut row
+        {
+            *voice_name_policy = VoiceNamePolicy::Preset;
+        }
+        assert!(!row.matches(&requirement(Vec::new(), true), Some("tts")));
+        if let ServiceProfile::SpeechHttp {
+            reference_forms, ..
+        } = &mut row
+        {
+            reference_forms.push(ReferenceForm::None);
+        }
+        assert!(row.matches(&requirement(Vec::new(), true), Some("tts")));
     }
 
     #[test]
@@ -1194,5 +1231,20 @@ mod tests {
         };
         reference_forms.push(ReferenceForm::Direct);
         assert!(row.matches(&requirement, Some("tts")));
+
+        if let ServiceProfile::SpeechBatch {
+            voice_name_policy, ..
+        } = &mut row
+        {
+            *voice_name_policy = VoiceNamePolicy::Preset;
+        }
+        assert!(row.matches(&requirement, Some("tts")));
+        if let ServiceProfile::SpeechBatch {
+            reference_forms, ..
+        } = &mut row
+        {
+            reference_forms.retain(|form| *form != ReferenceForm::None);
+        }
+        assert!(!row.matches(&requirement, Some("tts")));
     }
 }
