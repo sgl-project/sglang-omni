@@ -1791,18 +1791,19 @@ class Stage:
         if msg.enable_torch and not TorchProfiler.is_active():
             try:
                 base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
+            except (AttributeError, IndexError, KeyError, ValueError):
+                logger.warning(
+                    "Stage %s failed to start torch profiler: "
+                    "trace_path_template is invalid or contains an unsupported placeholder. "
+                    "Supported placeholders are {run_id} and {stage}.",
+                    self.name,
+                )
+            else:
                 template = f"{base_tpl}_pid{os.getpid()}"
                 prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
                 if prof_dir and not os.path.isabs(template):
                     template = os.path.join(prof_dir, template)
                 TorchProfiler.start(template, run_id=run_id)
-            except KeyError:
-                logger.warning(
-                    "Stage %s failed to start torch profiler: "
-                    "trace_path_template contains an unsupported placeholder. "
-                    "Supported placeholders are {run_id} and {stage}.",
-                    self.name,
-                )
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(
