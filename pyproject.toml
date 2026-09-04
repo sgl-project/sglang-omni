@@ -74,7 +74,11 @@ dependencies = [
     "jiwer",
     "zhon>=2.0.2",            # note (yzxiao): shared Chinese WER normalization uses zhon.hanzi punctuation.
     "scipy>=1.10.0",
-    "openai-whisper==20250625",
+    "openai-whisper==20250625",  # EN ASR for SeedTTS WER eval
+    # SeedTTS ZH transcribe + text normalization
+    "funasr>=1.3.0",          # Paraformer-zh ASR for SeedTTS ZH eval
+    "zhconv>=1.4.0",          # trad-to-simplified normalization of FunASR output
+    "zhon>=2.0.0",            # Chinese punctuation set for reference-text normalization
     # SeedTTS speaker similarity (WavLM-large SV head). The pip-installed
     # package supplies s3prl.upstream.wavlm.hubconf at runtime, so no source
     # clone is required.
