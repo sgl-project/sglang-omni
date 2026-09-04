@@ -426,6 +426,61 @@ def test_preprocess_and_build_request_share_prepared_state(
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
 
 
+def test_mlx_preprocessing_uses_token_metadata_without_torch_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: torch.zeros(1600).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: torch.zeros(2400).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    set_cosyvoice3_preprocessing_context(
+        model=None,
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_FakeSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+        use_mlx=True,
+        model_revision="mlx-test",
+    )
+    payload = _payload(
+        {
+            "text": "hello",
+            "ref_audio": "reference.wav",
+            "ref_text": "reference",
+        },
+        params={"do_sample": False},
+        request_id="req-mlx",
+    )
+
+    prepared_payload = preprocess_cosyvoice3_payload(payload)
+    prepared = pop_prepared_cosyvoice3_request(prepared_payload)
+
+    assert prepared is not None
+    assert prepared.prompt_input_embeds is None
+    # [SOS] + [prompt text: 3] + [target text: 2] + [TASK] + [speech: 2].
+    assert prepared.input_ids_list == [0] * 9
+    assert prepared.input_ids.tolist() == [0] * 9
+    assert prepared.text_token_ids == [3, 4, 5, 1, 2]
+    assert prepared.llm_prompt_speech_token_ids == [40, 41]
+
+    request_builders._PREPARED_REQUESTS["req-mlx"] = prepared
+    request_data = build_sglang_cosyvoice3_request(prepared_payload, model=None)
+
+    assert request_data.prompt_input_embeds is None
+    assert request_data.req._cosyvoice3_text_token_ids == [3, 4, 5, 1, 2]
+    assert request_data.req._cosyvoice3_prompt_speech_token_ids == [40, 41]
+
+
 def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

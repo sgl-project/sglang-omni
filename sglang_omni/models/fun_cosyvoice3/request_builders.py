@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -176,7 +177,7 @@ class CosyVoice3PreparedRequest:
     state: FunCosyVoice3State
     input_ids_list: list[int]
     input_ids: torch.Tensor
-    prompt_input_embeds: torch.Tensor
+    prompt_input_embeds: torch.Tensor | None
     llm_prompt_speech_token: torch.Tensor
     flow_prompt_speech_token: torch.Tensor
     flow_prompt_speech_feat: torch.Tensor
@@ -187,6 +188,11 @@ class CosyVoice3PreparedRequest:
     # upstream generation-length contract is defined in terms of this count,
     # not the full prompt length.
     target_text_token_count: int = 0
+    # MLX builds the prompt embeddings inside its native runner. Keeping the
+    # token ids here avoids loading a duplicate Torch Qwen2 model merely for
+    # preprocessing.
+    text_token_ids: list[int] = dataclass_field(default_factory=list)
+    llm_prompt_speech_token_ids: list[int] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -323,7 +329,8 @@ class _CosyVoice3ReferenceEncodeHook(
 
 @dataclass
 class CosyVoice3PreprocessingContext:
-    model: Any
+    model: Any | None
+    use_mlx: bool
     tokenizer: CosyVoice3Tokenizer
     speech_tokenizer: SpeechTokenizerV3
     speaker_encoder: SpeakerEncoder
@@ -338,10 +345,11 @@ _PREPROCESSING_FINALIZE_LOCK = threading.Lock()
 
 def set_cosyvoice3_preprocessing_context(
     *,
-    model: Any,
+    model: Any | None,
     tokenizer: CosyVoice3Tokenizer,
     speech_tokenizer: SpeechTokenizerV3,
     speaker_encoder: SpeakerEncoder,
+    use_mlx: bool = False,
     model_revision: str | None = None,
 ) -> None:
     """Register model objects used by the preprocessing stage."""
@@ -357,6 +365,7 @@ def set_cosyvoice3_preprocessing_context(
     with _PREPARED_REQUESTS_LOCK:
         _PREPROCESSING_CONTEXT = CosyVoice3PreprocessingContext(
             model=model,
+            use_mlx=use_mlx,
             tokenizer=tokenizer,
             speech_tokenizer=speech_tokenizer,
             speaker_encoder=speaker_encoder,
@@ -620,20 +629,17 @@ def _prepare_cosyvoice3_request(
     tokenizer: CosyVoice3Tokenizer,
     state: FunCosyVoice3State,
     reference_artifact: _CosyVoice3ReferenceArtifact | None,
+    use_mlx: bool = False,
 ) -> CosyVoice3PreparedRequest:
     gen_kwargs = state.generation_kwargs
-    device = next(model.parameters()).device
-    dtype = next(model.parameters()).dtype
 
     text_token = tokenizer(state.text)
-    text_token = text_token.to(device=device)
     target_text_token_count = int(text_token.shape[1])
     prompt_text = _build_cosyvoice3_prompt_text(state)
     if prompt_text is not None:
-        prompt_text_token = tokenizer(prompt_text).to(device=device)
+        prompt_text_token = tokenizer(prompt_text)
         text_token = torch.cat([prompt_text_token, text_token], dim=1)
-    with torch.no_grad():
-        text_embed = model.text_embed_tokens(text_token)
+    text_token_ids = [int(token_id) for token_id in text_token[0].tolist()]
 
     if state.ref_audio is not None:
         if reference_artifact is None:
@@ -658,24 +664,43 @@ def _prepare_cosyvoice3_request(
         spk_embedding.clone() if spk_embedding.numel() > 0 else spk_embedding
     )
 
-    # build llm prompt embeddings: [sos, spk_emb, text_embed, task, prompt_speech]
-    prompt_input_embeds = build_llm_prompt_embeddings(
-        text_token=text_token,
-        text_embed=text_embed,
-        prompt_speech_token=llm_prompt_speech_token,
-        speech_embed=model.speech_embedding,
-        embedding=spk_embedding,
-        sos_id=SOS_ID,
-        task_id=TASK_ID,
-        hidden_size=model.config.hidden_size,
-        device=device,
-        dtype=dtype,
-    )
+    llm_prompt_speech_token_ids = [
+        int(token_id) for token_id in llm_prompt_speech_token[0].tolist()
+    ]
+    if use_mlx:
+        # The MLX runner consumes these metadata fields and constructs the
+        # actual [SOS, text, TASK, prompt-speech] embeddings. The scheduler
+        # only needs a length-matched placeholder sequence because radix cache
+        # is disabled for this audio stage.
+        prompt_length = 2 + len(text_token_ids) + len(llm_prompt_speech_token_ids)
+        input_ids_list = [0] * prompt_length
+        prompt_input_embeds = None
+    else:
+        if model is None:
+            raise RuntimeError("Torch CosyVoice3 preprocessing model is missing")
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+        with torch.no_grad():
+            text_embed = model.text_embed_tokens(text_token.to(device=device))
 
-    prompt_input_embeds = (
-        prompt_input_embeds.squeeze(0).detach().to(device=device, dtype=dtype)
-    )
-    input_ids_list = build_embedding_cache_key_ids(prompt_input_embeds)
+        # build llm prompt embeddings: [sos, text_embed, task, prompt_speech]
+        prompt_input_embeds = build_llm_prompt_embeddings(
+            text_token=text_token.to(device=device),
+            text_embed=text_embed,
+            prompt_speech_token=llm_prompt_speech_token.to(device=device),
+            speech_embed=model.speech_embedding,
+            embedding=spk_embedding,
+            sos_id=SOS_ID,
+            task_id=TASK_ID,
+            hidden_size=model.config.hidden_size,
+            device=device,
+            dtype=dtype,
+        )
+
+        prompt_input_embeds = (
+            prompt_input_embeds.squeeze(0).detach().to(device=device, dtype=dtype)
+        )
+        input_ids_list = build_embedding_cache_key_ids(prompt_input_embeds)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
 
     return CosyVoice3PreparedRequest(
@@ -683,6 +708,8 @@ def _prepare_cosyvoice3_request(
         input_ids_list=input_ids_list,
         input_ids=input_ids,
         prompt_input_embeds=prompt_input_embeds,
+        text_token_ids=text_token_ids,
+        llm_prompt_speech_token_ids=llm_prompt_speech_token_ids,
         llm_prompt_speech_token=llm_prompt_speech_token,
         flow_prompt_speech_token=flow_prompt_speech_token,
         flow_prompt_speech_feat=flow_prompt_speech_feat,
@@ -712,6 +739,7 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
             tokenizer=context.tokenizer,
             state=state,
             reference_artifact=reference_artifact,
+            use_mlx=context.use_mlx,
         )
 
     prepared.state.flow_embedding = prepared.flow_embedding
@@ -789,6 +817,8 @@ def build_sglang_cosyvoice3_request(
     req.tokenizer = _COSYVOICE3_NULL_TOKENIZER
     req._input_embeds_are_projected = True
     req._codec_suppress_tokens = None
+    req._cosyvoice3_text_token_ids = list(prepared.text_token_ids)
+    req._cosyvoice3_prompt_speech_token_ids = list(prepared.llm_prompt_speech_token_ids)
 
     data = CosyVoice3SGLangRequestData(
         input_ids=prepared.input_ids,

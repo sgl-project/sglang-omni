@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from pydantic import Field
+
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -14,6 +16,19 @@ from sglang_omni.config import (
 from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
+
+
+class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
+    """Engine-only knobs, including the optional native MLX checkpoint."""
+
+    mlx_model_path: str | None = Field(default=None)
+    mlx_model_revision: str | None = Field(default=None)
+
+
+class FunCosyVoice3EngineStageConfig(EngineStageConfig):
+    factory: FunCosyVoice3EngineFactoryArgs = Field(
+        default_factory=FunCosyVoice3EngineFactoryArgs
+    )
 
 
 class FunCosyVoice3PipelineConfig(PipelineConfig):
@@ -26,7 +41,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     speech_reference_text_excludes_instructions: ClassVar[bool] = True
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "tts_engine": EngineStageConfig,
+        "tts_engine": FunCosyVoice3EngineStageConfig,
     }
 
     @classmethod
@@ -40,11 +55,14 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             next="tts_engine",
         ),
-        EngineStageConfig(
+        FunCosyVoice3EngineStageConfig(
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(device=current_platform.device_type, dtype="bfloat16"),
+            factory=FunCosyVoice3EngineFactoryArgs(
+                device=current_platform.device_type,
+                dtype="bfloat16",
+            ),
             gpu=0,
             next="vocoder",
         ),

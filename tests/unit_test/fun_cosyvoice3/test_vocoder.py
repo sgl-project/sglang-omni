@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,98 @@ class _FakeEstimator(torch.nn.Module):
     def forward(self, *args, **kwargs):
         del args, kwargs
         raise AssertionError("batch adapter should be mocked in vocoder unit tests")
+
+
+def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
+    calls = []
+
+    class _Predictor:
+        def to(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return self
+
+    hift = SimpleNamespace(f0_predictor=_Predictor())
+
+    stages._MpsHiFTAdapter(hift, "mps")
+
+    assert calls == [
+        ((), {"device": "cpu"}),
+        ((), {"dtype": torch.float64}),
+    ]
+
+
+def test_lightweight_loader_skips_llm_and_loads_flow_hift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    observed = {}
+
+    class _Model:
+        def __init__(self) -> None:
+            self.loaded = None
+            self.device = None
+            self.evaluated = False
+
+        def load_state_dict(self, state, strict=True):
+            self.loaded = (state, strict)
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            self.evaluated = True
+            return self
+
+    flow = _Model()
+    hift = _Model()
+
+    def fake_load_hyperpyyaml(handle, overrides):
+        observed.update(config=handle.name, overrides=overrides)
+        return {"flow": flow, "hift": hift}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hyperpyyaml",
+        SimpleNamespace(load_hyperpyyaml=fake_load_hyperpyyaml),
+    )
+    for filename in ("cosyvoice3.yaml", "flow.pt", "hift.pt"):
+        (tmp_path / filename).touch()
+
+    def fake_torch_load(path, *, map_location, weights_only):
+        assert map_location == "cpu"
+        assert weights_only is True
+        if str(path).endswith("flow.pt"):
+            return {"flow_weight": torch.tensor(1)}
+        return {
+            "generator.hift_weight": torch.tensor(2),
+            "unprefixed": torch.tensor(3),
+        }
+
+    monkeypatch.setattr(torch, "load", fake_torch_load)
+
+    loaded_flow, loaded_hift = stages._load_cosyvoice3_flow_hift_lightweight(
+        str(tmp_path),
+        device="cpu",
+    )
+
+    assert isinstance(loaded_flow, stages.FunCosyVoice3Flow)
+    assert loaded_hift is hift
+    assert observed["overrides"] == {
+        "qwen_pretrain_path": str(tmp_path / "CosyVoice-BlankEN"),
+        "llm": None,
+        "hifigan": None,
+    }
+    assert flow.loaded == ({"flow_weight": torch.tensor(1)}, True)
+    assert hift.loaded == (
+        {
+            "hift_weight": torch.tensor(2),
+            "unprefixed": torch.tensor(3),
+        },
+        True,
+    )
+    assert flow.device == hift.device == "cpu"
+    assert flow.evaluated is hift.evaluated is True
 
 
 class _BatchCapableFakeFlow(torch.nn.Module):
@@ -116,6 +209,30 @@ def test_cosyvoice3_vocoder_decode_batch_uses_state_conditioning(monkeypatch) ->
     assert len(results) == 1
     assert results[0][1] == 24000
     assert batch_calls[0][0].prompt_token.tolist() == [[5]]
+
+
+def test_vocoder_autocast_uses_the_flow_device(monkeypatch) -> None:
+    from contextlib import nullcontext
+
+    observed = []
+    monkeypatch.setattr(
+        torch,
+        "autocast",
+        lambda *, device_type, dtype, enabled: observed.append(
+            (device_type, dtype, enabled)
+        )
+        or nullcontext(),
+    )
+    _install_fake_batch_adapter(monkeypatch, [])
+    vocoder = stages._CosyVoice3Vocoder(
+        _BatchCapableFakeFlow(),
+        _FakeHiFT(),
+        compute_dtype=torch.float16,
+    )
+
+    asyncio.run(vocoder.decode_batch([(_state(), torch.tensor([1, 2]))]))
+
+    assert observed == [("cpu", torch.float16, True)]
 
 
 def _state(

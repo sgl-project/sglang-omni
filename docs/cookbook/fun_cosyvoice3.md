@@ -13,12 +13,28 @@ OpenAI-compatible `/v1/audio/speech` endpoint.
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-Fun-CosyVoice3 depends on the `cosyvoice` package:
+Fun-CosyVoice3 depends on the `cosyvoice` package. On Linux:
 
 ```bash
 apt-get update && apt-get install -y sox
+uv venv --python 3.12 .venv
+source .venv/bin/activate
 uv pip install "sglang-omni[fun-cosyvoice3]"
 ```
+
+On Apple Silicon, use the repository installer so the same environment also
+gets pinned SGLang `v0.5.18` from source with its Metal dependencies:
+
+```bash
+brew install sox
+SGLANG_OMNI_EXTRAS=fun-cosyvoice3 ./install.sh
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+The installer uses Homebrew for `ffmpeg@7` and `uv`; `sox` is the additional
+Fun-CosyVoice3 system dependency. Keep `DYLD_LIBRARY_PATH` set in the shell that
+starts `sgl-omni`, so TorchCodec can find the keg-only FFmpeg libraries.
 
 Clone the CosyVoice repository with its Matcha-TTS submodule and add both to `PYTHONPATH`:
 
@@ -51,10 +67,53 @@ hf download FunAudioLLM/Fun-CosyVoice3-0.5B-2512
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several
-minutes while the `tts_engine` captures CUDA graphs.
+The pipeline is `preprocessing → tts_engine → vocoder`. On CUDA, first startup can take
+several minutes while the `tts_engine` captures CUDA graphs.
 
 ```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --port 8000
+```
+
+### Apple Silicon MLX
+
+Set `SGLANG_USE_MLX=1` to run the speech-token Qwen2 model with SGLang's native
+MLX worker. Reference encoding continues to use the checkpoint's ONNX models,
+and Flow/HiFT run with PyTorch on MPS (HiFT's required float64 F0 predictor
+stays on CPU); `mlx-audio` is not a runtime dependency.
+The official checkpoint can be quantized when it is loaded:
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --tts-engine.engine.quantization mlx_q4 \
+  --port 8000
+```
+
+For faster startup, a pre-quantized MLX speech-token model can be supplied
+separately. Keep the official checkpoint as `--model-path`, because it owns the
+ONNX, Flow, and HiFT assets:
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --tts-engine.factory.mlx_model_path \
+    mlx-community/Fun-CosyVoice3-0.5B-2512-4bit \
+  --port 8000
+```
+
+### Apple Silicon Torch/MPS
+
+Without the MLX opt-in, the same pipeline runs the speech-token model and
+vocoder through PyTorch MPS. This path is useful as a correctness baseline and
+does not need a separate checkpoint:
+
+```bash
+unset SGLANG_USE_MLX
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
   --config examples/configs/fun_cosyvoice3_0_5b.yaml \
