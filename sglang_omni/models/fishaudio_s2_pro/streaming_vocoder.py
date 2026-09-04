@@ -468,14 +468,34 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         audio_np: torch.Tensor,
     ) -> StagePayload:
         usage = payload.data.get("usage") or build_usage(state)
-        state.audio_samples = audio_np
-        state.sample_rate = self._codec.sample_rate
-        data = state.to_dict()
+        # The no-chunk streaming fallback retains its legacy stream schema;
+        # only the non-streaming terminal result uses the compact payload.
+        if self._is_streaming_payload(payload):
+            data = {
+                "audio_data": audio_np.tolist(),
+                "sample_rate": self._codec.sample_rate,
+                "modality": "audio",
+            }
+            if usage is not None:
+                data["usage"] = usage
+            if state.finish_reason is not None:
+                data["finish_reason"] = state.finish_reason
+            return StagePayload(
+                request_id=payload.request_id,
+                request=payload.request,
+                data=data,
+            )
+
+        data = audio_waveform_payload(
+            audio_np,
+            sample_rate=self._codec.sample_rate,
+            modality="audio",
+            source_hint="S2-Pro vocoder",
+        )
         if usage is not None:
             data["usage"] = usage
-        data["audio_data"] = audio_np.tolist()
-        data["sample_rate"] = self._codec.sample_rate
-        data["modality"] = "audio"
+        if state.finish_reason is not None:
+            data["finish_reason"] = state.finish_reason
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,
