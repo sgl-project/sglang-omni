@@ -27,6 +27,8 @@ failure_threshold = 3
 
 [http_generation]
 trust_domain = "local"
+buffered_request_max_bytes = 8388608
+buffered_request_total_bytes = 268435456
 streamed_request_max_bytes = 536870912
 connect_timeout_ms = 5000
 request_timeout_ms = 1800000

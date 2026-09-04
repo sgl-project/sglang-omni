@@ -15,6 +15,8 @@ pub(crate) enum AdmissionError {
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub(crate) enum DispatchError {
+    #[error("no configured profile matches the request")]
+    NoEligibleProfile,
     #[error("matching workers are unavailable")]
     Unavailable,
 }

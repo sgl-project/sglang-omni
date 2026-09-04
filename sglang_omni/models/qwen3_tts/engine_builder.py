@@ -29,8 +29,16 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
 
-    def __init__(self, *, attn_implementation: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        attn_implementation: str | None = None,
+        prefill_coalesce_requests: int = 0,
+        prefill_coalesce_wait_ms: float = 60.0,
+    ) -> None:
         self.attn_implementation = attn_implementation
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None
 
@@ -129,6 +137,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "stream_output_builder": self._stream_output_builder,
             "request_build_max_workers": 4,
             "request_build_max_pending": 16,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
     def make_abort_callback(self) -> Any | None:

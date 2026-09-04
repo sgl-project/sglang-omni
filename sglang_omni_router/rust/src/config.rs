@@ -7,9 +7,11 @@ use serde::Deserialize;
 
 use crate::error::ConfigError;
 use crate::worker_pool::profile::{
-    WorkerConfig, generation_cohort_is_homogeneous, validate_identifier, validate_workers,
+    ServiceProfile, WorkerConfig, validate_identifier, validate_workers,
 };
 
+const DEFAULT_BUFFERED_REQUEST_MAX_BYTES: u64 = 8_388_608;
+const DEFAULT_BUFFERED_REQUEST_TOTAL_BYTES: u64 = 268_435_456;
 const DEFAULT_STREAMED_REQUEST_MAX_BYTES: u64 = 536_870_912;
 const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 1_800_000;
@@ -44,6 +46,8 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct HttpGenerationConfig {
     pub(crate) trust_domain: String,
+    pub(crate) buffered_request_max_bytes: u64,
+    pub(crate) buffered_request_total_bytes: u64,
     pub(crate) streamed_request_max_bytes: u64,
     connect_timeout_ms: u64,
     request_timeout_ms: u64,
@@ -55,6 +59,8 @@ impl Default for HttpGenerationConfig {
     fn default() -> Self {
         Self {
             trust_domain: String::from("local"),
+            buffered_request_max_bytes: DEFAULT_BUFFERED_REQUEST_MAX_BYTES,
+            buffered_request_total_bytes: DEFAULT_BUFFERED_REQUEST_TOTAL_BYTES,
             streamed_request_max_bytes: DEFAULT_STREAMED_REQUEST_MAX_BYTES,
             connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
             request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
@@ -75,6 +81,24 @@ impl HttpGenerationConfig {
 
     pub(crate) const fn pool_idle_timeout(&self) -> Duration {
         Duration::from_millis(self.pool_idle_timeout_ms)
+    }
+
+    pub(crate) fn buffered_max_usize(&self) -> Result<usize, ConfigError> {
+        usize::try_from(self.buffered_request_max_bytes).map_err(|_| {
+            ConfigError::invalid(
+                "http_generation.buffered_request_max_bytes",
+                "cannot be represented on this platform",
+            )
+        })
+    }
+
+    pub(crate) fn buffered_total_usize(&self) -> Result<usize, ConfigError> {
+        usize::try_from(self.buffered_request_total_bytes).map_err(|_| {
+            ConfigError::invalid(
+                "http_generation.buffered_request_total_bytes",
+                "cannot be represented on this platform",
+            )
+        })
     }
 }
 
@@ -282,10 +306,34 @@ impl Config {
     fn validate_http_generation(&self) -> Result<(), ConfigError> {
         let generation = &self.http_generation;
         validate_identifier(&generation.trust_domain, "http_generation.trust_domain")?;
-        if !(1..=4_294_967_296).contains(&generation.streamed_request_max_bytes) {
+        if !(1..=67_108_864).contains(&generation.buffered_request_max_bytes) {
+            return Err(ConfigError::invalid(
+                "http_generation.buffered_request_max_bytes",
+                "must be between 1 and 67108864",
+            ));
+        }
+        if generation.buffered_request_total_bytes < generation.buffered_request_max_bytes
+            || generation.buffered_request_total_bytes > 2_147_483_647
+        {
+            return Err(ConfigError::invalid(
+                "http_generation.buffered_request_total_bytes",
+                "must be at least the per-request limit and at most 2147483647",
+            ));
+        }
+        let _buffered_max = generation.buffered_max_usize()?;
+        let buffered_total = generation.buffered_total_usize()?;
+        if buffered_total > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(ConfigError::invalid(
+                "http_generation.buffered_request_total_bytes",
+                "exceeds the platform semaphore permit limit",
+            ));
+        }
+        if generation.streamed_request_max_bytes < generation.buffered_request_max_bytes
+            || generation.streamed_request_max_bytes > 4_294_967_296
+        {
             return Err(ConfigError::invalid(
                 "http_generation.streamed_request_max_bytes",
-                "must be between 1 and 4294967296",
+                "must be at least the buffered limit and at most 4294967296",
             ));
         }
         if !(1..=60_000).contains(&generation.connect_timeout_ms) {
@@ -314,20 +362,16 @@ impl Config {
                 "must be between 1 and 1024",
             ));
         }
-        let members = self
-            .workers
-            .iter()
-            .filter(|worker| worker.trust_domain == generation.trust_domain)
-            .map(|worker| {
-                (
-                    worker.default_model_id.as_str(),
-                    worker.service_profiles.as_slice(),
-                )
-            });
-        if !generation_cohort_is_homogeneous(members) {
+        if !self.workers.iter().any(|worker| {
+            worker.trust_domain == generation.trust_domain
+                && worker
+                    .service_profiles
+                    .iter()
+                    .any(|profile| matches!(profile, ServiceProfile::GenerationHttp { .. }))
+        }) {
             return Err(ConfigError::invalid(
                 "http_generation.trust_domain",
-                "must identify a homogeneous generation worker cohort",
+                "must contain at least one generation worker",
             ));
         }
         Ok(())

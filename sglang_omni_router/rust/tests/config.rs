@@ -38,7 +38,7 @@ impl Drop for TestDir {
 
 fn valid_config(listen: &str, drain_timeout_ms: u64, filter: &str) -> String {
     format!(
-        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 2\nfailure_threshold = 3\n\n[http_generation]\ntrust_domain = \"local\"\nstreamed_request_max_bytes = 16777216\nconnect_timeout_ms = 1000\nrequest_timeout_ms = 5000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
+        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 2\nfailure_threshold = 3\n\n[http_generation]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nbuffered_request_total_bytes = 8388608\nstreamed_request_max_bytes = 16777216\nconnect_timeout_ms = 1000\nrequest_timeout_ms = 5000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
     )
 }
 
@@ -220,8 +220,8 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
     let cases = [
         base.replace("global = 128", "global = 0"),
         base.replace(
-            "streamed_request_max_bytes = 16777216",
-            "streamed_request_max_bytes = 0",
+            "buffered_request_max_bytes = 1048576",
+            "buffered_request_max_bytes = 0",
         ),
         base.replace("connect_timeout_ms = 1000", "connect_timeout_ms = 0"),
         base.replace("pool_max_idle_per_host = 8", "pool_max_idle_per_host = 0"),
@@ -239,8 +239,8 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
             "message_content_forms = []",
         ),
         base.replace(
-            "trust_domain = \"local\"\nstreamed_request_max_bytes",
-            "trust_domain = \"remote\"\nstreamed_request_max_bytes",
+            "trust_domain = \"local\"\nbuffered_request_max_bytes",
+            "trust_domain = \"remote\"\nbuffered_request_max_bytes",
         ),
         base.replace("global = 128", "global = 128\nfuture_limit = 1"),
     ];
@@ -250,34 +250,24 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
 }
 
 #[test]
-fn content_blind_route_requires_a_homogeneous_worker_cohort() {
+fn classified_route_accepts_heterogeneous_worker_profiles() {
     let base = valid_config("127.0.0.1:30000", 30_000, "info");
     let two_workers = append_worker(&base, "worker-b", 8001);
     assert!(load_bytes(two_workers.as_bytes()).is_ok());
 
-    let different_model = two_workers.replacen(
+    let heterogeneous = two_workers.replacen(
         "default_model_id = \"omni\"",
         "default_model_id = \"other\"",
         1,
     );
-    let different_model =
-        different_model.replacen("model_ids = [\"omni\"]", "model_ids = [\"other\"]", 1);
-    let error = load_bytes(different_model.as_bytes())
-        .expect_err("different default models must reject content-blind routing");
-    assert!(matches!(
-        error,
-        ConfigError::InvalidField {
-            field: "http_generation.trust_domain",
-            ..
-        }
-    ));
-
-    let different_profile = two_workers.replacen(
+    let heterogeneous =
+        heterogeneous.replacen("model_ids = [\"omni\"]", "model_ids = [\"other\"]", 1);
+    let heterogeneous = heterogeneous.replacen(
         "input_modalities = [\"text\"]",
         "input_modalities = [\"text\", \"audio\"]",
         1,
     );
-    assert!(load_bytes(different_profile.as_bytes()).is_err());
+    assert!(load_bytes(heterogeneous.as_bytes()).is_ok());
 }
 
 #[test]
@@ -296,8 +286,8 @@ fn worker_fields_are_validated_before_route_cross_checks() {
     ));
 
     let invalid_route = valid_config("127.0.0.1:30000", 30_000, "info").replace(
-        "trust_domain = \"local\"\nstreamed_request_max_bytes",
-        "trust_domain = \"local \"\nstreamed_request_max_bytes",
+        "trust_domain = \"local\"\nbuffered_request_max_bytes",
+        "trust_domain = \"local \"\nbuffered_request_max_bytes",
     );
     let error = load_bytes(invalid_route.as_bytes()).expect_err("invalid route label must fail");
     assert!(matches!(

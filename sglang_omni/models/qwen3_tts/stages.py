@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 from typing import Any
@@ -106,16 +107,80 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_concurrency: int = 8,
+    stream_codec_output: bool = True,
+    load_frontend: bool = False,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    dtype: str = "bfloat16",
+    attn_implementation: str | None = None,
 ) -> ThreadedSimpleScheduler:
-    del model_path
+    if load_frontend:
+        _load_standalone_preprocessing_context(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+        )
     # note (luojiaxuan): preprocessing must admit several requests at once. A
     # serial executor keeps at most one reference-code request in flight, so
     # the speech-tokenizer batcher would only ever see batches of one; the
     # default matches the batcher's max_batch_size.
     return ThreadedSimpleScheduler(
-        preprocess_qwen3_tts_payload,
+        functools.partial(
+            preprocess_qwen3_tts_payload,
+            default_stream_codec_output=stream_codec_output,
+        ),
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
+    )
+
+
+def _load_standalone_preprocessing_context(
+    model_path: str,
+    *,
+    device: str | None,
+    gpu_id: int | None,
+    dtype: str,
+    attn_implementation: str | None,
+) -> None:
+    """Load the prompt frontend for a preprocessing stage outside the engine process."""
+    from transformers import AutoProcessor
+
+    from sglang_omni.models.qwen3_tts import request_builders
+    from sglang_omni.models.qwen3_tts.prompt_frontend import (
+        load_qwen3_tts_prompt_frontend,
+    )
+
+    _register_qwen3_tts_hf_config()
+    try:
+        from qwen_tts import Qwen3TTSModel
+    except ImportError as exc:
+        raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
+
+    checkpoint_dir = _resolve_checkpoint(model_path)
+    device = resolve_device_spec(device, gpu_id)
+    torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
+    logger.info(f"Loading Qwen3-TTS prompt frontend from {checkpoint_dir} on {device}")
+    frontend = load_qwen3_tts_prompt_frontend(
+        checkpoint_dir, device=device, dtype=torch_dtype
+    )
+    frontend.load_speech_tokenizer(
+        _load_qwen3_tts_tokenizer(
+            checkpoint_dir,
+            device=device,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+        )
+    )
+    processor = AutoProcessor.from_pretrained(checkpoint_dir, fix_mistral_regex=True)
+    wrapper = Qwen3TTSModel(
+        model=frontend,
+        processor=processor,
+        generate_defaults=_load_qwen3_tts_generate_defaults(checkpoint_dir),
+    )
+    request_builders.set_qwen3_tts_preprocessing_context(
+        model=frontend, wrapper=wrapper, standalone=True
     )
 
 
@@ -126,12 +191,16 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 60.0,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
     return Qwen3TtsEngineBuilder(
         attn_implementation=attn_implementation,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
     ).build(
         model_path,
         device=device,

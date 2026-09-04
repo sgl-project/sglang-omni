@@ -136,6 +136,7 @@ impl ConfigError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HttpFault {
     MalformedRequest,
+    AmbiguousModel,
     MethodNotAllowed,
     RequestTimeout,
     RequestBodyTooLarge,
@@ -154,7 +155,7 @@ pub(crate) enum HttpFault {
 impl HttpFault {
     const fn status(self) -> StatusCode {
         match self {
-            Self::MalformedRequest => StatusCode::BAD_REQUEST,
+            Self::MalformedRequest | Self::AmbiguousModel => StatusCode::BAD_REQUEST,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::RequestBodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -175,6 +176,7 @@ impl HttpFault {
     const fn code(self) -> &'static str {
         match self {
             Self::MalformedRequest => "malformed_request",
+            Self::AmbiguousModel => "ambiguous_model",
             Self::MethodNotAllowed => "method_not_allowed",
             Self::RequestTimeout => "request_timeout",
             Self::RequestBodyTooLarge => "request_body_too_large",
@@ -194,6 +196,7 @@ impl HttpFault {
     const fn message(self) -> &'static str {
         match self {
             Self::MalformedRequest => "The request is malformed.",
+            Self::AmbiguousModel => "An explicit model is required.",
             Self::MethodNotAllowed => "POST is required for this route.",
             Self::RequestTimeout => "The request body timed out.",
             Self::RequestBodyTooLarge => "The request body is too large.",

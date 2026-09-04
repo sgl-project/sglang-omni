@@ -27,9 +27,20 @@ class Qwen3TTSState(DeclarativeStateBase):
     uploaded_voice_created_at: int | None = None
     x_vector_only_mode: bool = wire(False, codec="bool")
     non_streaming_mode: bool = wire(False, codec="bool")
+    stream_codec_output: bool = wire(True, codec="bool")
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
     seed: int | None = None
     audio_codes: Any | None = wire(None, codec="tensor_list")
     finish_reason: str | None = None
     ref_code_len: int = wire(0, emit="truthy", codec="int")
     audio_samples: Any | None = wire(None, codec="tensor_list")
+    # Note (Jiaxin Deng): set only by a preprocessing stage that runs outside the
+    # engine process; the AR request builder consumes and clears them. tensor_cpu
+    # keeps them on the relay in their own dtype instead of widening bf16 to fp32
+    # and base64 into the control-plane message.
+    prepared_prompt_embeds: Any | None = wire(None, codec="tensor_cpu")
+    prepared_text_tail: Any | None = wire(None, codec="tensor_cpu")
+    prepared_ref_code: Any | None = wire(None, codec="tensor_cpu")
+    prepared_pad_embed: Any | None = wire(None, codec="tensor_cpu")
+    prepared_input_ids: list[int] | None = None
+    prepared_gen_kwargs: dict[str, Any] | None = None

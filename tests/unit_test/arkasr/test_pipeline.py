@@ -91,6 +91,7 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
     assert signature.parameters["pre_lm_max_pending"].default == 32
     assert signature.parameters["enable_encoder_cuda_graph"].default is False
+    assert signature.parameters["stream_emit_interval_s"].default == 0.05
 
 
 def test_arkasr_pre_lm_group_matches_one_encoder_microbatch_by_default():
@@ -186,6 +187,8 @@ def _stub_arkasr_engine_build(
     graph_init_workers: list[object] = []
     adapter_kwargs: dict[str, object] = {}
     encoder_service_kwargs: dict[str, object] = {}
+    stream_builder_calls: list[dict[str, object]] = []
+    stream_output_builder = object()
 
     encoder_batch_sizes: list[int] = []
     model_worker = SimpleNamespace(
@@ -241,6 +244,11 @@ def _stub_arkasr_engine_build(
         "make_arkasr_scheduler_adapters",
         lambda **k: (adapter_kwargs.update(k) or object(), object()),
     )
+    monkeypatch.setattr(
+        request_builders,
+        "make_arkasr_stream_output_builder",
+        lambda **k: stream_builder_calls.append(k) or stream_output_builder,
+    )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
         server_args = SimpleNamespace(context_length=context_length, **overrides)
@@ -283,6 +291,8 @@ def _stub_arkasr_engine_build(
         graph_init_workers=graph_init_workers,
         adapter_kwargs=adapter_kwargs,
         encoder_service_kwargs=encoder_service_kwargs,
+        stream_builder_calls=stream_builder_calls,
+        stream_output_builder=stream_output_builder,
         infra_kwargs_seen=infra_kwargs_seen,
         encoder_batch_sizes=encoder_batch_sizes,
         model_worker=model_worker,
@@ -308,6 +318,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
         async_decode_min_batch_size=4,
         prefill_coalesce_requests=8,
         prefill_coalesce_wait_ms=24.0,
+        stream_emit_interval_s=0.125,
     )
 
     assert stub.graph_init_workers == ([stub.model_worker] if want_cuda_graph else [])
@@ -321,6 +332,13 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert scheduler.prefill_coalesce_wait_ms == 24.0
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
+    assert stub.stream_builder_calls == [
+        {
+            "tokenizer": stub.adapter_kwargs["tokenizer"],
+            "min_emit_interval_s": 0.125,
+        }
+    ]
+    assert scheduler.stream_output_builder is stub.stream_output_builder
     assert stub.adapter_kwargs["merge_factor"] == 7
     assert stub.adapter_kwargs["audio_token_id"] == 4242
     assert stub.adapter_kwargs["max_new_tokens"] == 256
@@ -351,6 +369,13 @@ def test_arkasr_pre_lm_encoder_reaches_request_builder_and_shutdown(
 
     assert stub.adapter_kwargs["audio_encoder_service"] is encoder_service
     assert scheduler.shutdown_callback == encoder_service.close
+    assert scheduler.stream_output_builder is stub.stream_output_builder
+    assert stub.stream_builder_calls == [
+        {
+            "tokenizer": stub.adapter_kwargs["tokenizer"],
+            "min_emit_interval_s": 0.05,
+        }
+    ]
     # Note (Akazaakane): The model-internal bound still applies behind the
     # pre-LM service because the two batch limits are independent.
     assert stub.encoder_batch_sizes == [8]

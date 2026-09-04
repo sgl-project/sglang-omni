@@ -39,6 +39,45 @@ DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 
 
+def _decode_graph_frame_counts(
+    *,
+    left_context: int,
+    initial_chunk_frames: int,
+    followup_stride_ramp: tuple[int, ...],
+    steady_stride: int,
+) -> tuple[int, ...]:
+    """Decode-window frame counts a streaming request can produce.
+
+    A decode spans window_start to window_end, so a chunk of s fresh frames
+    reaching the decoder with e frames already emitted and r reference frames
+    spans r + e + s, minus max(0, r + e - left_context). That collapses to two
+    families:
+
+    * saturated, once r + e has reached left_context: exactly left_context + s,
+      for every stride s the chunk schedule can ask for. The steady stride also
+      jitters with arrival timing, so every fresh-frame count from 1 up to a
+      full steady stride is reachable.
+    * filling, while r + e is still below left_context: r + e + s. With no
+      reference frames that is the running sum of the chunk schedule, and it
+      only ever falls short of the saturated count for the same stride.
+
+    Capturing this whole span keeps the common decodes on the CUDA-graph path
+    instead of the eager fallback.
+    """
+    counts: set[int] = set()
+    cumulative = 0
+    for stride in (initial_chunk_frames, *followup_stride_ramp, steady_stride):
+        if stride <= 0:
+            continue
+        saturated = left_context + stride
+        counts.add(saturated)
+        cumulative += stride
+        counts.add(min(cumulative, saturated))
+    for fresh in range(1, steady_stride + 1):
+        counts.add(left_context + fresh)
+    return tuple(sorted(counts))
+
+
 @dataclass
 class _Qwen3TTSStreamState:
     code_chunks: list[torch.Tensor] = field(default_factory=list)
@@ -454,11 +493,25 @@ class Qwen3TTSStreamingVocoderScheduler(
             if self._enable_stateful_codec_decoder
             else None
         )
+        # note (luojiaxuan): streaming delivers a wide, jittery range of decode
+        # window sizes, not just the exact ramp strides: the startup phase
+        # decodes the accumulating prefix before the left-context buffer fills
+        # (the running sums of the chunk schedule), and steady decodes vary by
+        # a few frames around the stride from arrival timing. Capturing only
+        # left_context + {ramp} left the majority of decodes on the eager path
+        # (measured ~72% eager, 4-5x slower). Capture the whole contiguous span
+        # the scheduler can produce so the hot path stays on the graph.
+        graph_frames = _decode_graph_frame_counts(
+            left_context=int(stream_left_context_frames),
+            initial_chunk_frames=int(initial_chunk_frames),
+            followup_stride_ramp=followup_stride_ramp,
+            steady_stride=int(stream_followup_stride),
+        )
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
             self._decoder,
             device=self._device,
             num_quantizers=num_quantizers,
-            input_frames=int(stream_left_context_frames) + int(initial_chunk_frames),
+            input_frames=graph_frames,
             batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
             enabled=bool(
                 initial_cuda_graph
@@ -466,18 +519,11 @@ class Qwen3TTSStreamingVocoderScheduler(
                 and not self._enable_stateful_codec_decoder
             ),
         )
-        # note (Junnan Li): windows truncated below the full left context
-        # (short or absent reference codes early in a stream) fall back to
-        # eager decode, as the legacy first follow-up already does.
-        followup_frames = tuple(
-            int(stream_left_context_frames) + int(stride)
-            for stride in (*followup_stride_ramp, stream_followup_stride)
-        )
         self._followup_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
             self._decoder,
             device=self._device,
             num_quantizers=num_quantizers,
-            input_frames=followup_frames,
+            input_frames=graph_frames,
             batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
             enabled=bool(
                 followup_cuda_graph
