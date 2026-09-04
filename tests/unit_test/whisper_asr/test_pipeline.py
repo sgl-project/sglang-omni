@@ -176,7 +176,7 @@ def test_whisper_breakable_prefill_graph_policy() -> None:
         max_new_tokens=32,
         mem_fraction_static=0.2,
     )
-    builder.context_length = 1764
+    builder.encoder_token_count = 1500
     merged = build_generation_batch_overrides(
         **builder.generation_defaults(dtype="float16"),
     )
@@ -185,8 +185,18 @@ def test_whisper_breakable_prefill_graph_policy() -> None:
 
     assert builder.supports_breakable_prefill_cuda_graph
     assert merged["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
-    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(1764)
-    assert merged["cuda_graph_max_bs_prefill"] == 1764
+    max_prefill_tokens = merged["max_prefill_tokens"]
+    encoder_tokens, decoder_tokens_per_request = 1500, 224 + 8
+    admitted_requests = max_prefill_tokens // (
+        encoder_tokens + decoder_tokens_per_request
+    )
+    assert admitted_requests == 3
+    expected_cap = admitted_requests * decoder_tokens_per_request
+    assert expected_cap == 696
+    assert merged["cuda_graph_max_bs_prefill"] == expected_cap
+    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
+        expected_cap
+    )
 
 
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
@@ -417,10 +427,13 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4
     assert build_kwargs["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
-    # The prefill ladder is capped by the model context (1988 < max_prefill_tokens).
-    assert build_kwargs["cuda_graph_max_bs_prefill"] == 1500 + 224 + 256 + 8
+    admitted_requests = build_kwargs["max_prefill_tokens"] // (1500 + (224 + 8))
+    assert admitted_requests == 3
+    expected_cap = admitted_requests * (224 + 8)
+    assert expected_cap == 696
+    assert build_kwargs["cuda_graph_max_bs_prefill"] == expected_cap
     assert build_kwargs["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
-        1500 + 224 + 256 + 8
+        expected_cap
     )
     assert len(graph_init_calls) == 1
     assert len(attest_calls) == 1

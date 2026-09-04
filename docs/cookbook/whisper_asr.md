@@ -41,9 +41,12 @@ The graph is captured after SGLang's generation graphs. With pre-LM off, raise `
 
 The decoder body uses SGLang's breakable prefill CUDA Graph backend by default.
 Whisper encoder states and cross-attention K/V are prepared outside the captured
-decoder body. The default capture ladder is bounded by the effective prefill,
-total-token, and model-context limits. Startup logs report the capture cost and
-confirm the active buckets with `prefill CUDA graphs attested`.
+decoder body. The default capture ladder stops at the largest decoder batch
+atomic admission can form: `max_prefill_tokens` divided by one request's
+encoder placeholders plus decoder tokens (1,500 + 232 for every Whisper size),
+times 232 decoder tokens, so 696 with the default 6,144 budget. Startup logs
+report the capture cost and confirm the active buckets with
+`prefill CUDA graphs attested`.
 
 The current benchmark results were collected with
 `cuda_graph_max_bs_prefill=256`. To reproduce that capture profile and limit

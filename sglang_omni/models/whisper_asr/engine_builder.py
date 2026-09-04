@@ -10,6 +10,7 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -21,31 +22,35 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
 
 
-def _clamp_prefill_cuda_graph_max_bs(
-    overrides: dict[str, Any], *, context_length: int | None
-) -> int | None:
-    """Clamp the prefill graph budget to the reachable token limits.
+_TASK_PREFIX_SLACK_TOKENS = 8
+_DECODER_PREFILL_TOKENS_PER_REQUEST = (
+    MAX_PREV_CONTEXT_TOKENS + _TASK_PREFIX_SLACK_TOKENS
+)
 
-    Whisper admits its encoder prefix atomically (``chunked_prefill_size=0``),
-    so the shared policy has no chunk to derive a cap from; bound the ladder by
-    the effective prefill, total-token, and model-context limits instead.
-    Returns ``None`` when no limit is known yet (before model setup), leaving
-    the ladder to SGLang's own derivation.
+
+def _reachable_prefill_cuda_graph_max_bs(
+    overrides: dict[str, Any],
+    *,
+    encoder_token_count: int,
+    max_running_requests: int | None,
+) -> int | None:
+    """Cap the prefill graph ladder at the largest decoder batch admission can form.
+
+    Admission charges each request its encoder placeholders as well, while the
+    graph sees only the admitted requests' decoder tokens.
     """
-    if context_length is None or int(context_length) <= 0:
-        context_length = overrides.get("context_length")
-    caps = [
-        int(value)
-        for value in (
-            overrides.get("cuda_graph_max_bs_prefill"),
-            overrides.get("max_prefill_tokens"),
-            overrides.get("max_total_tokens"),
-            context_length,
-        )
-        if value is not None and int(value) > 0
-    ]
-    if not caps:
+    max_prefill_tokens = overrides.get("max_prefill_tokens")
+    if encoder_token_count < 1 or not max_prefill_tokens or int(max_prefill_tokens) < 1:
         return None
+    per_request = encoder_token_count + _DECODER_PREFILL_TOKENS_PER_REQUEST
+    batch_requests = max(1, int(max_prefill_tokens) // per_request)
+    if max_running_requests is not None and int(max_running_requests) >= 1:
+        batch_requests = min(batch_requests, int(max_running_requests))
+    caps = [batch_requests * _DECODER_PREFILL_TOKENS_PER_REQUEST]
+    for key in ("cuda_graph_max_bs_prefill", "max_prefill_tokens", "max_total_tokens"):
+        value = overrides.get(key)
+        if value is not None and int(value) > 0:
+            caps.append(int(value))
     cap = min(caps)
     overrides["cuda_graph_max_bs_prefill"] = cap
     return cap
@@ -171,10 +176,6 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
 
-        from sglang_omni.models.whisper_asr.request_builders import (
-            MAX_PREV_CONTEXT_TOKENS,
-        )
-
         self.processor = AutoProcessor.from_pretrained(checkpoint_dir)
         self.tokenizer = self.processor.tokenizer
         self.generation_config = GenerationConfig.from_pretrained(checkpoint_dir)
@@ -182,7 +183,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             self.processor.feature_extractor.nb_max_frames // 2
         )
         self.context_length = (
-            self.encoder_token_count + MAX_PREV_CONTEXT_TOKENS + self.max_new_tokens + 8
+            self.encoder_token_count
+            + MAX_PREV_CONTEXT_TOKENS
+            + self.max_new_tokens
+            + _TASK_PREFIX_SLACK_TOKENS
         )
         self.decoder_context_len = int(
             AutoConfig.from_pretrained(checkpoint_dir).max_target_positions or 448
@@ -277,8 +281,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         ):
             return
 
-        cap = _clamp_prefill_cuda_graph_max_bs(
-            overrides, context_length=self.context_length
+        cap = _reachable_prefill_cuda_graph_max_bs(
+            overrides,
+            encoder_token_count=self.encoder_token_count,
+            max_running_requests=overrides.get("max_running_requests"),
         )
         if cap is None:
             return
