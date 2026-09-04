@@ -1,5 +1,8 @@
 name: Runner Smoke
 on:
+  push:
+    branches:
+      - Yuhao/runner-smoke-ci-refactor
   workflow_dispatch:
     inputs:
       slots:
