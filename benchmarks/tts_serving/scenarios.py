@@ -201,7 +201,11 @@ REFERENCE_FAILURES = (
         "resolve/main/en/prompt-wavs/does-not-exist.wav",
     ),
     ("html_url", "https://example.com/"),
-    ("wrong_content_type", "https://www.iana.org/_img/2013.1/iana-logo-header.svg"),
+    (
+        "wrong_content_type",
+        "https://raw.githubusercontent.com/sgl-project/sglang-omni/main/"
+        "docs/_static/image/sgl-omni-logo.svg",
+    ),
     ("unreachable_url", "http://192.0.2.1/seedtts/unreachable.wav"),
     ("disallowed_file", "file:///etc/passwd"),
 )
