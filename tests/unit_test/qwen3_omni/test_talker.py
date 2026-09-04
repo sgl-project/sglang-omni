@@ -512,6 +512,27 @@ def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> Non
     )
 
 
+def test_code_predictor_forward_runs_without_grad_tracking() -> None:
+    grad_enabled = []
+    source = torch.ones(1, requires_grad=True)
+
+    class FakeTalker:
+        def _code_predictor_forward_incremental(self, **_kwargs):
+            grad_enabled.append(torch.is_grad_enabled())
+            return torch.zeros(1, dtype=torch.long), source * 2
+
+    with torch.enable_grad():
+        result_codes, summed_embeddings = Qwen3OmniTalker.code_predictor_forward(
+            FakeTalker(), torch.zeros(1), torch.zeros(1)
+        )
+
+    assert grad_enabled == [False]
+    assert result_codes.requires_grad is False
+    assert summed_embeddings.requires_grad is False
+    assert result_codes.grad_fn is None
+    assert summed_embeddings.grad_fn is None
+
+
 class _FakePredictorLmHead(nn.Module):
     def __init__(self) -> None:
         super().__init__()

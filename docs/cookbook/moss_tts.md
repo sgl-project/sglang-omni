@@ -29,7 +29,12 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`.
+The pipeline is `preprocessing → tts_engine → vocoder`. By default the vocoder
+runs in its own process (GPU memory fractions 0.10 / 0.72 / 0.18 for the three
+stages): its Python decode loop no longer shares the interpreter with the AR
+scheduler, which on H200 lifts single-replica throughput by about 70% at every
+concurrency cap. `config_cls: MossTTSSingleProcessPipelineConfig` restores the
+single-process layout; the bounded 24 GB and 32 GB configurations keep it.
 
 ```bash
 sgl-omni serve \

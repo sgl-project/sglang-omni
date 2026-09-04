@@ -199,6 +199,35 @@ the reduced decode occupancy can offset the prefill savings.
 Leave coalescing disabled for latency-sensitive traffic or workloads where the
 added wait does not produce enough additional batching.
 
+### Process topology
+
+By default all three stages share one process. Per-request reference
+preprocessing (speech-tokenizer encode, speaker embedding, prompt embedding)
+then competes with the AR scheduler and the vocoder for the same interpreter,
+which caps single-replica throughput once concurrency passes ~32. Moving the
+preprocessing stage to its own process removes that contention: the stage
+loads a prompt-only frontend (embedding tables, text projection, predictor
+codec embeddings, speaker encoder) plus the speech tokenizer, together about
+2.2 GB of GPU memory for the extra process on a 1.7B checkpoint, and ships the
+prepared prompt tensors to the engine through the payload. Every GPU stage must
+then declare a memory fraction, and the engine's static fraction has to agree
+with the one it declares:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --preprocessing.process tts_frontend \
+  --preprocessing.gpu 0 \
+  --preprocessing.gpu_memory_fraction 0.05 \
+  --tts_engine.gpu_memory_fraction 0.75 \
+  --tts_engine.engine.mem_fraction_static 0.75 \
+  --vocoder.gpu_memory_fraction 0.12
+```
+
+`--vocoder.process vocoder` composes with it (lower `tts_engine` to 0.72 and
+give the vocoder 0.15). Six SeedTTS samples at a fixed seed produced identical
+PCM in both layouts; the extra process costs its CUDA context plus the frontend
+weights.
 
 ## Synthesizing Speech
 

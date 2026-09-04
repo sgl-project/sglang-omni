@@ -1725,6 +1725,7 @@ class Qwen3OmniTalker(nn.Module):
         attn_output, _ = attn.o_proj(attn_output)
         return attn_output.reshape(batch_size, 1, hidden_size)
 
+    @torch.no_grad()
     def code_predictor_forward(
         self,
         layer0_codes: torch.Tensor,

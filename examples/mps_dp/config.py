@@ -29,6 +29,7 @@ WEIGHT_SHARE_VALIDATED_CONFIGS: dict[str, str] = {
     "HiggsTtsPipelineConfig": "HiggsMultimodalQwen3ForConditionalGeneration",
     "MossTTSLocalPipelineConfig": "MossTTSLocalSGLangModel",
     "MossTTSPipelineConfig": "MossTTSDelaySGLangModel",
+    "MossTTSSingleProcessPipelineConfig": "MossTTSDelaySGLangModel",
     "MossTranscribeDiarizePipelineConfig": (
         "MossTranscribeDiarizeForConditionalGeneration"
     ),

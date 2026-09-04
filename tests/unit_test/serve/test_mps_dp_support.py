@@ -22,7 +22,10 @@ from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
-from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
+from sglang_omni.models.moss_tts.config import (
+    MossTTSPipelineConfig,
+    MossTTSSingleProcessPipelineConfig,
+)
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
@@ -43,6 +46,7 @@ VALIDATED_CONFIG_CLASSES = {
     "HiggsTtsPipelineConfig": HiggsTtsPipelineConfig,
     "MossTTSLocalPipelineConfig": MossTTSLocalPipelineConfig,
     "MossTTSPipelineConfig": MossTTSPipelineConfig,
+    "MossTTSSingleProcessPipelineConfig": MossTTSSingleProcessPipelineConfig,
     "MossTranscribeDiarizePipelineConfig": MossTranscribeDiarizePipelineConfig,
     "Qwen3ASRPipelineConfig": Qwen3ASRPipelineConfig,
     "WhisperASRPipelineConfig": WhisperASRPipelineConfig,

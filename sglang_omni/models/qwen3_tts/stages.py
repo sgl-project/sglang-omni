@@ -108,8 +108,20 @@ def create_preprocessing_executor(
     *,
     max_concurrency: int = 8,
     stream_codec_output: bool = True,
+    load_frontend: bool = False,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    dtype: str = "bfloat16",
+    attn_implementation: str | None = None,
 ) -> ThreadedSimpleScheduler:
-    del model_path
+    if load_frontend:
+        _load_standalone_preprocessing_context(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+        )
     # note (luojiaxuan): preprocessing must admit several requests at once. A
     # serial executor keeps at most one reference-code request in flight, so
     # the speech-tokenizer batcher would only ever see batches of one; the
@@ -121,6 +133,54 @@ def create_preprocessing_executor(
         ),
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
+    )
+
+
+def _load_standalone_preprocessing_context(
+    model_path: str,
+    *,
+    device: str | None,
+    gpu_id: int | None,
+    dtype: str,
+    attn_implementation: str | None,
+) -> None:
+    """Load the prompt frontend for a preprocessing stage outside the engine process."""
+    from transformers import AutoProcessor
+
+    from sglang_omni.models.qwen3_tts import request_builders
+    from sglang_omni.models.qwen3_tts.prompt_frontend import (
+        load_qwen3_tts_prompt_frontend,
+    )
+
+    _register_qwen3_tts_hf_config()
+    try:
+        from qwen_tts import Qwen3TTSModel
+    except ImportError as exc:
+        raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
+
+    checkpoint_dir = _resolve_checkpoint(model_path)
+    device = resolve_device_spec(device, gpu_id)
+    torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
+    logger.info(f"Loading Qwen3-TTS prompt frontend from {checkpoint_dir} on {device}")
+    frontend = load_qwen3_tts_prompt_frontend(
+        checkpoint_dir, device=device, dtype=torch_dtype
+    )
+    frontend.load_speech_tokenizer(
+        _load_qwen3_tts_tokenizer(
+            checkpoint_dir,
+            device=device,
+            dtype=dtype,
+            attn_implementation=attn_implementation,
+        )
+    )
+    processor = AutoProcessor.from_pretrained(checkpoint_dir, fix_mistral_regex=True)
+    wrapper = Qwen3TTSModel(
+        model=frontend,
+        processor=processor,
+        generate_defaults=_load_qwen3_tts_generate_defaults(checkpoint_dir),
+    )
+    request_builders.set_qwen3_tts_preprocessing_context(
+        model=frontend, wrapper=wrapper, standalone=True
     )
 
 
@@ -172,6 +232,7 @@ def create_vocoder_executor(
     initial_batch_wait_ms: int = 2,
     followup_max_batch_size: int = 8,
     followup_batch_wait_ms: int = 1,
+    followup_worker_count: int = 2,
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
@@ -201,6 +262,7 @@ def create_vocoder_executor(
         initial_batch_wait_ms=initial_batch_wait_ms,
         followup_max_batch_size=followup_max_batch_size,
         followup_batch_wait_ms=followup_batch_wait_ms,
+        followup_worker_count=followup_worker_count,
         initial_cuda_graph=initial_cuda_graph,
         enable_deterministic_inference=enable_deterministic_inference,
         followup_cuda_graph=followup_cuda_graph,
