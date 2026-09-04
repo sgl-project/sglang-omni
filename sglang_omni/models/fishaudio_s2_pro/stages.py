@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,8 +56,45 @@ def _configure_preprocessing_threads(worker_count: int) -> int:
     return intraop_threads
 
 
+def _warmup_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
+    """Materialize Fast AR compile variants before serving real requests."""
+    if max_batch_size < 1:
+        raise ValueError("max_batch_size must be >= 1")
+
+    audio_decoder = model._audio_decoder
+    embedding_weight = audio_decoder.embeddings.weight
+    hidden_size = int(embedding_weight.shape[1])
+    batch_sizes = sorted(
+        batch_size
+        for batch_size in {1, 2, 4, 8, 16, 32, max_batch_size}
+        if batch_size <= max_batch_size
+    )
+    warmup_input = torch.zeros(
+        (max_batch_size, 1, hidden_size),
+        device=embedding_weight.device,
+        dtype=embedding_weight.dtype,
+    )
+    num_codebooks = int(audio_decoder.config.num_codebooks)
+
+    audio_decoder.reset_caches()
+    try:
+        with torch.no_grad():
+            for _ in range(2):
+                for batch_size in batch_sizes:
+                    decoder_input = warmup_input[:batch_size]
+                    for codebook_idx in range(num_codebooks):
+                        audio_decoder.forward_kvcached(
+                            decoder_input,
+                            codebook_idx=codebook_idx,
+                        )
+    finally:
+        audio_decoder.reset_caches()
+        if embedding_weight.device.type == "cuda":
+            torch.cuda.synchronize(embedding_weight.device)
+
+
 def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
-    """Compile Fast AR decoder layers while leaving sampling and loop control eager."""
+    """Compile and warm Fast AR layers, falling back to eager on warmup failure."""
     from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
     if max_batch_size < 1:
@@ -68,19 +106,36 @@ def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
         "max-autotune-no-cudagraphs",
     )
     audio_decoder = model._audio_decoder
+    setup_start = time.perf_counter()
     compiled_forward_kvcached_layers = [
-        torch.compile(layer.forward_kvcached, mode=compile_mode)
+        torch.compile(layer.forward_kvcached, mode=compile_mode, dynamic=True)
         for layer in audio_decoder.layers
     ]
     audio_decoder.set_compiled_forward_kvcached_layers(
         compiled_forward_kvcached_layers,
         max_batch_size=max_batch_size,
     )
+    setup_seconds = time.perf_counter() - setup_start
+    warmup_start = time.perf_counter()
+    try:
+        _warmup_s2pro_codebook_decoder(model, max_batch_size=max_batch_size)
+    except Exception:
+        audio_decoder._compiled_forward_kvcached_layers = None
+        audio_decoder._compiled_forward_kvcached_max_bs = 0
+        audio_decoder.reset_caches()
+        logger.exception(
+            "Fish S2-Pro Fast AR compile warmup failed; continuing with eager layers"
+        )
+        return
+    warmup_seconds = time.perf_counter() - warmup_start
     logger.info(
-        "Compiled %d Fast AR decoder layers (mode=%s, max_batch_size=%d)",
+        "Compiled and warmed %d Fast AR decoder layers "
+        "(mode=%s, max_batch_size=%d, setup=%.2fs, warmup=%.2fs)",
         len(compiled_forward_kvcached_layers),
         compile_mode,
         max_batch_size,
+        setup_seconds,
+        warmup_seconds,
     )
 
 

@@ -161,6 +161,15 @@ class SGLangGenerationEngineBuilder(ABC):
             **overrides,
         )
         self.customize_server_args(server_args)
+        if (
+            overrides.get("chunked_prefill_size") is None
+            and get_prefill_cuda_graph_backend(server_args) != CudaGraphBackend.DISABLED
+        ):
+            logger.info(
+                f"{self.model_name}: chunked_prefill_size was unset, SGLang resolved "
+                f"{server_args.chunked_prefill_size}, prefill CUDA graph cap "
+                f"{server_args.cuda_graph_config.prefill.max_bs}"
+            )
         self.validate_before_infrastructure(server_args)
 
         infra_kwargs = dict(self.infra_kwargs())

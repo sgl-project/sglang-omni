@@ -385,11 +385,19 @@ struct RouterProcess {
 #[derive(Clone, Copy)]
 enum GenerationProfile {
     Text,
+    TypedImage,
 }
 
 impl GenerationProfile {
     const fn manifest_fields(self) -> &'static str {
-        "message_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]"
+        match self {
+            Self::Text => {
+                "message_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]"
+            }
+            Self::TypedImage => {
+                "message_content_forms = [\"string\", \"typed_parts\"]\nmedia_placements = [\"typed_parts\"]\ninput_modalities = [\"text\", \"image\"]"
+            }
+        }
     }
 }
 
@@ -419,6 +427,28 @@ impl RouterProcess {
         strategy: &str,
         streamed_request_max_bytes: u64,
     ) -> Self {
+        let workers: Vec<_> = workers
+            .iter()
+            .map(|(worker_id, address, hostname, profile)| {
+                (*worker_id, *address, *hostname, *profile, "omni")
+            })
+            .collect();
+        Self::start_configured_models(
+            &workers,
+            global,
+            timeout_ms,
+            strategy,
+            streamed_request_max_bytes,
+        )
+    }
+
+    fn start_configured_models(
+        workers: &[(&str, SocketAddr, bool, GenerationProfile, &str)],
+        global: u32,
+        timeout_ms: u64,
+        strategy: &str,
+        streamed_request_max_bytes: u64,
+    ) -> Self {
         let reservation = TcpListener::bind("127.0.0.1:0").expect("reserve router address");
         let address = reservation.local_addr().expect("read router address");
         drop(reservation);
@@ -430,7 +460,7 @@ impl RouterProcess {
         fs::create_dir(&directory).expect("create router test directory");
         let config = directory.join("router.toml");
         let mut worker_config = String::new();
-        for (worker_id, worker, hostname, profile) in workers {
+        for (worker_id, worker, hostname, profile, default_model_id) in workers {
             let base_url = if *hostname {
                 format!("http://localhost:{}/", worker.port())
             } else {
@@ -438,13 +468,13 @@ impl RouterProcess {
             };
             let profile_fields = profile.manifest_fields();
             worker_config.push_str(&format!(
-                "\n[[workers]]\nworker_id = \"{worker_id}\"\nbase_url = \"{base_url}\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\n{profile_fields}\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
+                "\n[[workers]]\nworker_id = \"{worker_id}\"\nbase_url = \"{base_url}\"\ntrust_domain = \"local\"\ndefault_model_id = \"{default_model_id}\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"{default_model_id}\"]\n{profile_fields}\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\", \"streaming\"]\n"
             ));
         }
         fs::write(
             &config,
             format!(
-                "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 128\n\n[shutdown]\ndrain_timeout_ms = 2000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"{strategy}\"\n\n[admission]\nglobal = {global}\ngeneration_http = {global}\n\n[health]\ninterval_ms = 100\ntimeout_ms = 50\nsuccess_threshold = 1\nfailure_threshold = 1\n\n[http_generation]\ntrust_domain = \"local\"\nstreamed_request_max_bytes = {streamed_request_max_bytes}\nconnect_timeout_ms = 100\nrequest_timeout_ms = {timeout_ms}\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n{worker_config}"
+                "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 128\n\n[shutdown]\ndrain_timeout_ms = 2000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"{strategy}\"\n\n[admission]\nglobal = {global}\ngeneration_http = {global}\n\n[health]\ninterval_ms = 100\ntimeout_ms = 50\nsuccess_threshold = 1\nfailure_threshold = 1\n\n[http_generation]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nbuffered_request_total_bytes = 2097152\nstreamed_request_max_bytes = {streamed_request_max_bytes}\nconnect_timeout_ms = 100\nrequest_timeout_ms = {timeout_ms}\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n{worker_config}"
             ),
         )
         .expect("write router config");
@@ -852,6 +882,185 @@ fn least_requests_prefers_the_less_occupied_replica() {
     assert_eq!(occupied.captures().len(), 1);
     assert_eq!(available.captures().len(), 2);
     assert_eq!(status(&slow.join().expect("join slow client")), 200);
+}
+
+#[test]
+fn heterogeneous_typed_image_request_reaches_only_the_compatible_worker() {
+    let (text, image) = Worker::start_pair();
+    let router = RouterProcess::start_workers(
+        &[
+            ("worker-a", text.address, false, GenerationProfile::Text),
+            (
+                "worker-b",
+                image.address,
+                false,
+                GenerationProfile::TypedImage,
+            ),
+        ],
+        8,
+        2_000,
+    );
+    let body = br#"{"model":"omni","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]}"#;
+
+    assert_eq!(status(&post(router.address, body, Some("image-id"))), 200);
+    image.wait_for_requests(1);
+    assert!(text.captures().is_empty());
+    let captures = image.captures();
+    assert_eq!(captures.len(), 1);
+    assert_eq!(captures[0].body, body);
+    assert_eq!(header(&captures[0].head, "x-request-id"), Some("image-id"));
+}
+
+#[test]
+fn heterogeneous_classification_preserves_worker_owned_request_semantics() {
+    let (text, image) = Worker::start_pair();
+    let router = RouterProcess::start_workers(
+        &[
+            ("worker-a", text.address, false, GenerationProfile::Text),
+            (
+                "worker-b",
+                image.address,
+                false,
+                GenerationProfile::TypedImage,
+            ),
+        ],
+        8,
+        2_000,
+    );
+    let requests = [
+        br#"{"messages":[]}"#.as_slice(),
+        br#"{"messages":[{"content":[{"type":"vendor_part"}]}]}"#.as_slice(),
+        br#"{"messages":[{"content":"x"}],"stream":"true"}"#.as_slice(),
+        br#"{"messages":[{"content":"x"}],"modalities":["video","text","text"],"audio":{"format":"vendor"}}"#.as_slice(),
+        br#"{"messages":[{"content":"old"}],"messages":[{"content":[{"type":"image"}]}]}"#.as_slice(),
+    ];
+
+    for request in requests {
+        assert_eq!(
+            status(&post(router.address, request, None)),
+            200,
+            "{request:?}"
+        );
+    }
+
+    let mut captures = text.captures();
+    captures.extend(image.captures());
+    assert_eq!(captures.len(), requests.len());
+    for request in requests {
+        assert!(
+            captures.iter().any(|capture| capture.body == request),
+            "request bytes changed: {request:?}"
+        );
+    }
+}
+
+#[test]
+fn heterogeneous_limits_and_unsupported_profiles_fail_before_dispatch() {
+    let (text, image) = Worker::start_pair();
+    let router = RouterProcess::start_workers(
+        &[
+            ("worker-a", text.address, false, GenerationProfile::Text),
+            (
+                "worker-b",
+                image.address,
+                false,
+                GenerationProfile::TypedImage,
+            ),
+        ],
+        8,
+        2_000,
+    );
+
+    let oversized = raw_request(
+        router.address,
+        b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n",
+    )
+    .expect("oversized classified response");
+    assert_eq!(status(&oversized), 413);
+
+    let unsupported = br#"{"model":"omni","messages":[{"content":[{"type":"audio_url"}]}]}"#;
+    assert_eq!(status(&post(router.address, unsupported, None)), 422);
+    assert!(text.captures().is_empty());
+    assert!(image.captures().is_empty());
+}
+
+#[test]
+fn heterogeneous_near_limit_body_is_forwarded_byte_for_byte() {
+    let (text, image) = Worker::start_pair();
+    let router = RouterProcess::start_workers(
+        &[
+            ("worker-a", text.address, false, GenerationProfile::Text),
+            (
+                "worker-b",
+                image.address,
+                false,
+                GenerationProfile::TypedImage,
+            ),
+        ],
+        8,
+        2_000,
+    );
+    let prefix = br#"{"model":"omni","messages":[{"content":[{"type":"image_url"}]}],"vendor":""#;
+    let suffix = br#""}"#;
+    let mut body = Vec::with_capacity(1_048_576);
+    body.extend_from_slice(prefix);
+    body.resize(1_048_576 - suffix.len(), b'x');
+    body.extend_from_slice(suffix);
+
+    assert_eq!(body.len(), 1_048_576);
+    assert_eq!(status(&post(router.address, &body, None)), 200);
+    image.wait_for_requests(1);
+    assert_eq!(image.captures()[0].body, body);
+    assert!(text.captures().is_empty());
+}
+
+#[test]
+fn heterogeneous_default_model_ambiguity_requires_an_explicit_model() {
+    let (first, second) = Worker::start_pair();
+    let router = RouterProcess::start_configured_models(
+        &[
+            (
+                "worker-a",
+                first.address,
+                false,
+                GenerationProfile::Text,
+                "omni",
+            ),
+            (
+                "worker-b",
+                second.address,
+                false,
+                GenerationProfile::Text,
+                "other",
+            ),
+        ],
+        8,
+        2_000,
+        "round_robin",
+        1_048_576,
+    );
+
+    assert_eq!(
+        status(&post(
+            router.address,
+            br#"{"messages":[{"content":"x"}]}"#,
+            None
+        )),
+        400
+    );
+    assert!(first.captures().is_empty());
+    assert!(second.captures().is_empty());
+    assert_eq!(
+        status(&post(
+            router.address,
+            br#"{"model":"omni","messages":[{"content":"x"}]}"#,
+            None,
+        )),
+        200
+    );
+    first.wait_for_requests(1);
+    assert_eq!(first.captures().len(), 1);
+    assert!(second.captures().is_empty());
 }
 
 #[test]

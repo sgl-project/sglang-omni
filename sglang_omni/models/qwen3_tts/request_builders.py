@@ -210,7 +210,9 @@ def cleanup_prepared_qwen3_tts_request(request_id: str) -> None:
         _PREPARED_REQUESTS.pop(str(request_id), None)
 
 
-def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
+def build_qwen3_tts_state(
+    payload: StagePayload, *, default_stream_codec_output: bool = True
+) -> Qwen3TTSState:
     inputs = payload.request.inputs or {}
     params = payload.request.params or {}
     metadata = payload.request.metadata or {}
@@ -246,6 +248,11 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         params=params,
         tts_params=tts_params,
     )
+    stream_codec_output = resolve_stream_codec_output(
+        params=params,
+        tts_params=tts_params,
+        default=default_stream_codec_output,
+    )
     voice = normalize_qwen3_tts_voice(
         tts_params.get("voice") or tts_params.get("speaker") or params.get("voice")
     )
@@ -274,6 +281,8 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         if has_param(tts_params, params, "x_vector_only_mode"):
             raise ValueError("Qwen3-TTS CustomVoice does not accept x_vector_only_mode")
         voice = voice or QWEN3_TTS_DEFAULT_CUSTOM_VOICE
+        # Note (Jiaxin Deng): this is prompt-side text/codec interleaving, not output
+        # transport; codec streaming is resolved independently above.
         non_streaming_mode = True
     elif task_type == QWEN3_TTS_TASK_VOICE_DESIGN:
         if has_param(tts_params, params, "ref_audio") or references_contain_audio(
@@ -315,6 +324,7 @@ def build_qwen3_tts_state(payload: StagePayload) -> Qwen3TTSState:
         ),
         x_vector_only_mode=x_vector_only_mode,
         non_streaming_mode=non_streaming_mode,
+        stream_codec_output=stream_codec_output,
         generation_kwargs=build_generation_kwargs(
             params,
             tts_params=tts_params,
@@ -434,6 +444,24 @@ def resolve_non_streaming_mode(
         if "non_streaming_mode" in source:
             return bool(source["non_streaming_mode"])
     return task_type in (QWEN3_TTS_TASK_CUSTOM_VOICE, QWEN3_TTS_TASK_VOICE_DESIGN)
+
+
+def resolve_stream_codec_output(
+    *,
+    params: dict[str, Any],
+    tts_params: dict[str, Any],
+    default: bool = True,
+) -> bool:
+    # Note (Jiaxin Deng): non_streaming_mode is still honoured as a fallback so the
+    # pre-existing Base escape hatch keeps working; it is not consulted per task
+    # type, which is what let CustomVoice/VoiceDesign lose streaming entirely.
+    for source in (params, tts_params):
+        if "stream_codec_output" in source:
+            return bool(source["stream_codec_output"])
+    for source in (params, tts_params):
+        if "non_streaming_mode" in source:
+            return not bool(source["non_streaming_mode"])
+    return default
 
 
 def normalize_language(language: Any) -> str:
@@ -1060,8 +1088,11 @@ def _prepare_qwen3_tts_request(
     *,
     model: Any,
     wrapper: Any,
+    default_stream_codec_output: bool = True,
 ) -> Qwen3TTSPreparedRequest:
-    state = build_qwen3_tts_state(payload)
+    state = build_qwen3_tts_state(
+        payload, default_stream_codec_output=default_stream_codec_output
+    )
 
     _validate_qwen3_tts_model_task(model, state)
     gen_kwargs = wrapper._merge_generate_kwargs(**state.generation_kwargs)
@@ -1136,7 +1167,9 @@ def _prepare_qwen3_tts_request(
     )
 
 
-def preprocess_qwen3_tts_payload(payload: StagePayload) -> StagePayload:
+def preprocess_qwen3_tts_payload(
+    payload: StagePayload, *, default_stream_codec_output: bool = True
+) -> StagePayload:
     """Run Qwen3-TTS prompt/audio preprocessing outside the AR scheduler."""
 
     with _PREPARED_REQUESTS_LOCK:
@@ -1151,6 +1184,7 @@ def preprocess_qwen3_tts_payload(payload: StagePayload) -> StagePayload:
         payload,
         model=context.model,
         wrapper=context.wrapper,
+        default_stream_codec_output=default_stream_codec_output,
     )
     with _PREPARED_REQUESTS_LOCK:
         _PREPARED_REQUESTS[payload.request_id] = prepared
@@ -1243,7 +1277,7 @@ def build_sglang_qwen3_tts_request(
         subtalker_top_p=float(gen_kwargs.get("subtalker_top_p", 1.0)),
         subtalker_top_k=int(gen_kwargs.get("subtalker_top_k", 50)),
         subtalker_sampling_seed=subtalker_sampling_seed,
-        stream_codec_output=not state.non_streaming_mode,
+        stream_codec_output=state.stream_codec_output,
         engine_start_s=time.perf_counter(),
     )
     data.pending_text_queue = PendingTextTensorQueue.from_tensor(

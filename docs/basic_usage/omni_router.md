@@ -132,7 +132,7 @@ The top-level sections are:
 | `server` | Listener address, accepted-connection limit, and request-head timeout |
 | `shutdown` | Graceful drain deadline |
 | `logging` | Structured log format and tracing filter |
-| `router` | Routing policy, classification concurrency, and optional voice owner |
+| `router` | Routing policy and optional voice owner |
 | `admission` | Global and per-service in-flight limits |
 | `health` | Probe interval, timeout, and transition thresholds |
 | `http_generation` | Chat request limits, trust domain, upstream timeouts, and pool settings |
@@ -149,9 +149,8 @@ DNS worker authorities are resolved when an upstream connection is opened, so
 health probes and new data connections follow DNS changes. Worker membership
 remains static for the process lifetime.
 
-Configuration limits are deployment budgets. Set admission, classification
-concurrency, connection-pool limits, and timeouts from the
-expected workload and worker topology.
+Configuration limits are deployment budgets. Set admission, connection-pool
+limits, and timeouts from the expected workload and worker topology.
 
 ## Supported APIs
 
@@ -194,11 +193,21 @@ body as a backpressured stream.
 Requests that require body-owned routing facts reserve aggregate byte capacity,
 read the body once, and classify the model, content forms, media placement,
 input and output modalities, response format, and stream mode. Classification
-runs under one shared concurrency limit. The original bytes are forwarded
-without reconstructing JSON or multipart content.
+runs on Tokio's blocking pool with execution limited to the available CPU
+parallelism, while the aggregate buffered-byte budget bounds concurrent
+classifier memory. The original bytes are forwarded without reconstructing
+JSON or multipart content.
 
-Classification completes before worker selection, so classification does not
-occupy an upstream connection.
+The direct path is bounded by `streamed_request_max_bytes`. The classified path
+is bounded by `buffered_request_max_bytes` per request and
+`buffered_request_total_bytes` across concurrent requests. Their defaults are
+512 MiB, 8 MiB, and 256 MiB respectively. Requests without an explicit model
+return `ambiguous_model` when compatible workers do not share one default.
+Classified JSON follows the standard JSON number grammar; non-standard `NaN`
+and `Infinity` tokens are rejected.
+
+Classification completes before worker selection, so classification
+does not occupy an upstream connection.
 
 ### Worker selection
 

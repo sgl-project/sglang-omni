@@ -13,7 +13,10 @@ use crate::config::{Config, RoutingStrategy};
 
 pub(crate) use admission::{AdmissionError, AdmissionLease, DispatchError, RequestLease};
 pub(crate) use health::{HealthSupervisor, WorkerHealth};
-pub(crate) use profile::TrustDomain;
+pub(crate) use profile::{
+    ChatAudioFormat, MediaPlacement, MessageContentForm, ModelSelection, ProfileRequirement,
+    RouteRequirement, ServiceClass, TrustDomain,
+};
 pub(crate) use resolver::ResolvedTarget;
 
 use admission::AdmissionController;
@@ -22,7 +25,7 @@ use profile::{
     MAX_WORKERS, RegistrationId, ServiceProfile, WorkerId, generation_cohort_is_homogeneous,
 };
 use resolver::{build_generation_client, build_health_client};
-use selection::Selector;
+use selection::{Selector, SelectorGuard};
 
 /// One static startup registration with independently updated health and load.
 pub(super) struct WorkerRecord {
@@ -38,6 +41,12 @@ pub(super) struct WorkerRecord {
 }
 
 impl WorkerRecord {
+    fn has_profile(&self, requirement: &RouteRequirement) -> bool {
+        self.profiles
+            .iter()
+            .any(|profile| profile.matches(&requirement.profile, &self.default_model_id))
+    }
+
     fn is_routable(&self) -> bool {
         self.health.load() == WorkerHealth::Healthy
     }
@@ -73,6 +82,13 @@ pub(crate) struct WorkerPool {
 
 struct HomogeneousGenerationCohort {
     trust_domain: TrustDomain,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DefaultModelResolution<'a> {
+    NoService,
+    Unique(&'a str),
+    Ambiguous,
 }
 
 /// Startup proof that chat body inspection cannot change the route cohort.
@@ -118,10 +134,11 @@ impl WorkerPool {
             }));
         }
         let homogeneous_generation_http = build_content_blind_generation_cohorts(&records);
+        let selector = Selector::new(config.router.strategy, records.len());
         Ok(Self {
             records,
             admission,
-            selector: Selector::new(config.router.strategy),
+            selector,
             homogeneous_generation_http,
             health_client,
             generation_client,
@@ -146,11 +163,31 @@ impl WorkerPool {
         self.admission.try_admit()
     }
 
+    pub(crate) fn dispatch(
+        &self,
+        admission: AdmissionLease,
+        requirement: &RouteRequirement,
+    ) -> Result<RequestLease, DispatchError> {
+        let mut matching = [false; MAX_WORKERS];
+        for (index, record) in self.records.iter().enumerate() {
+            matching[index] = &record.trust_domain == requirement.trust_domain()
+                && record.has_profile(requirement);
+        }
+        let profile_found = matching[..self.records.len()].contains(&true);
+        self.dispatch_matching(admission, profile_found, |record| {
+            matching[record.registration_id.startup_ordinal()]
+        })
+    }
+
     fn dispatch_matching(
         &self,
         admission: AdmissionLease,
+        profile_found: bool,
         matches: impl Fn(&WorkerRecord) -> bool,
     ) -> Result<RequestLease, DispatchError> {
+        if !profile_found {
+            return Err(DispatchError::NoEligibleProfile);
+        }
         let mut eligible = [0; MAX_WORKERS];
         let mut eligible_count = 0;
         for record in &self.records {
@@ -163,20 +200,27 @@ impl WorkerPool {
             return Err(DispatchError::Unavailable);
         }
         let eligible = &eligible[..eligible_count];
-        let policy_guard = self.selector.least_requests_guard();
+        let mut selector = self.selector.lock();
         let selected = match self.selector.strategy() {
             RoutingStrategy::RoundRobin => {
-                let start = self.selector.start(eligible_count);
-                Arc::clone(&self.records[eligible[start]])
+                let candidates = candidate_set(eligible);
+                selector
+                    .select(&candidates)
+                    .map(|index| Arc::clone(&self.records[index]))
             }
-            RoutingStrategy::LeastRequests => self.select_least_requests(eligible),
-        };
+            RoutingStrategy::LeastRequests => self.select_least_requests(eligible, &mut selector),
+        }
+        .ok_or(DispatchError::Unavailable)?;
         let lease = RequestLease::new(admission, selected);
-        drop(policy_guard);
+        drop(selector);
         Ok(lease)
     }
 
-    fn select_least_requests(&self, eligible: &[usize]) -> Arc<WorkerRecord> {
+    fn select_least_requests(
+        &self,
+        eligible: &[usize],
+        selector: &mut SelectorGuard<'_>,
+    ) -> Option<Arc<WorkerRecord>> {
         let mut minimum = usize::MAX;
         let mut ties = [0; MAX_WORKERS];
         let mut tie_count = 0;
@@ -192,8 +236,32 @@ impl WorkerPool {
                 tie_count += 1;
             }
         }
-        let index = ties[self.selector.start(tie_count)];
-        Arc::clone(&self.records[index])
+        let candidates = candidate_set(&ties[..tie_count]);
+        selector
+            .select(&candidates)
+            .map(|index| Arc::clone(&self.records[index]))
+    }
+
+    pub(crate) fn resolve_default_model_id(
+        &self,
+        trust: &TrustDomain,
+        _service: ServiceClass,
+    ) -> DefaultModelResolution<'_> {
+        let mut resolved = None;
+        for record in &self.records {
+            if &record.trust_domain != trust {
+                continue;
+            }
+            match resolved {
+                None => resolved = Some(record.default_model_id.as_str()),
+                Some(current) if current == record.default_model_id => {}
+                Some(_) => return DefaultModelResolution::Ambiguous,
+            }
+        }
+        resolved.map_or(
+            DefaultModelResolution::NoService,
+            DefaultModelResolution::Unique,
+        )
     }
 
     pub(crate) fn content_blind_generation_http(
@@ -220,10 +288,18 @@ impl WorkerPool {
     }
 }
 
+fn candidate_set(indices: &[usize]) -> [bool; MAX_WORKERS] {
+    let mut candidates = [false; MAX_WORKERS];
+    for &index in indices {
+        candidates[index] = true;
+    }
+    candidates
+}
+
 impl ContentBlindGenerationHttp<'_> {
     pub(crate) fn dispatch(self, admission: AdmissionLease) -> Result<RequestLease, DispatchError> {
         self.pool
-            .dispatch_matching(admission, |record| &record.trust_domain == self.trust)
+            .dispatch_matching(admission, true, |record| &record.trust_domain == self.trust)
     }
 }
 
@@ -263,7 +339,7 @@ mod tests {
     use std::thread;
 
     use super::profile::{
-        ChatAudioFormat, InputModality, MediaPlacement, MessageContentForm, OutputModality,
+        InputModality, MessageContentForm, ModelSelection, OutputModality, ProfileRequirement,
         ServiceProfile, StreamMode,
     };
     use super::*;
@@ -278,6 +354,21 @@ mod tests {
             chat_audio_formats: Vec::new(),
             stream_modes: vec![StreamMode::NonStreaming],
         }
+    }
+
+    fn requirement(model: &str, trust: &str) -> RouteRequirement {
+        RouteRequirement::new(
+            ProfileRequirement::GenerationHttp {
+                model: ModelSelection::Explicit(model.to_owned()),
+                message_content_forms: vec![MessageContentForm::String],
+                media_placements: Vec::new(),
+                input_modalities: vec![InputModality::Text],
+                output_modalities: vec![OutputModality::Text],
+                audio_format: None,
+                stream_mode: StreamMode::NonStreaming,
+            },
+            TrustDomain::new(trust.to_owned()),
+        )
     }
 
     fn record_with_profile(
@@ -319,14 +410,26 @@ mod tests {
             std::time::Duration::from_secs(1),
         )
         .expect("test client");
+        let selector = Selector::new(strategy, records.len());
         WorkerPool {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
             records,
             admission: AdmissionController::new(admission, admission),
-            selector: Selector::new(strategy),
+            selector,
             health_client: client.clone(),
             generation_client: client,
         }
+    }
+
+    fn dispatch_subset(pool: &WorkerPool, ordinals: &[usize]) -> usize {
+        let lease = pool
+            .dispatch_matching(pool.try_admit().expect("admit subset"), true, |record| {
+                ordinals.contains(&record.registration_id.startup_ordinal())
+            })
+            .expect("dispatch subset");
+        let selected = lease.registration_ordinal();
+        drop(lease);
+        selected
     }
 
     #[test]
@@ -435,26 +538,27 @@ mod tests {
     fn round_robin_balances_and_skips_unhealthy_workers() {
         let records = vec![record(0, "local", "omni"), record(1, "local", "omni")];
         let pool = pool(RoutingStrategy::RoundRobin, records.clone(), 8);
-        let trust = TrustDomain::new(String::from("local"));
         let first = pool
-            .content_blind_generation_http(&trust)
-            .expect("homogeneous cohort")
-            .dispatch(pool.try_admit().expect("admit first"))
+            .dispatch(
+                pool.try_admit().expect("admit first"),
+                &requirement("omni", "local"),
+            )
             .expect("first dispatch");
         let second = pool
-            .content_blind_generation_http(&trust)
-            .expect("homogeneous cohort")
-            .dispatch(pool.try_admit().expect("admit second"))
+            .dispatch(
+                pool.try_admit().expect("admit second"),
+                &requirement("omni", "local"),
+            )
             .expect("second dispatch");
         assert_ne!(first.registration_ordinal(), second.registration_ordinal());
         drop(first);
         drop(second);
         records[0].health.store(WorkerHealth::Unhealthy);
         records[1].health.store(WorkerHealth::Unhealthy);
-        let unavailable = pool
-            .content_blind_generation_http(&trust)
-            .expect("homogeneous cohort")
-            .dispatch(pool.try_admit().expect("admit unavailable"));
+        let unavailable = pool.dispatch(
+            pool.try_admit().expect("admit unavailable"),
+            &requirement("omni", "local"),
+        );
         assert!(matches!(unavailable, Err(DispatchError::Unavailable)));
     }
 
@@ -466,18 +570,59 @@ mod tests {
             record(2, "local", "omni"),
         ];
         let pool = pool(RoutingStrategy::RoundRobin, records, 8);
-        let trust = TrustDomain::new(String::from("local"));
         let mut selected = Vec::new();
         for _ in 0..6 {
             let lease = pool
-                .content_blind_generation_http(&trust)
-                .expect("homogeneous cohort")
-                .dispatch(pool.try_admit().expect("admit sparse round robin"))
+                .dispatch(
+                    pool.try_admit().expect("admit sparse round robin"),
+                    &requirement("omni", "local"),
+                )
                 .expect("dispatch sparse round robin");
             selected.push(lease.registration_ordinal());
             drop(lease);
         }
         assert_eq!(selected, [0, 2, 0, 2, 0, 2]);
+    }
+
+    #[test]
+    fn round_robin_rotates_alternating_disjoint_sets() {
+        let pool = pool(
+            RoutingStrategy::RoundRobin,
+            vec![
+                record(0, "local", "omni"),
+                record(1, "local", "omni"),
+                record(2, "local", "omni"),
+                record(3, "local", "omni"),
+            ],
+            8,
+        );
+        let mut selected = Vec::new();
+        for _ in 0..4 {
+            selected.push(dispatch_subset(&pool, &[0, 1]));
+            selected.push(dispatch_subset(&pool, &[2, 3]));
+        }
+
+        assert_eq!(selected, [0, 2, 1, 3, 0, 2, 1, 3]);
+    }
+
+    #[test]
+    fn round_robin_rotates_overlapping_sets_without_starvation() {
+        let pool = pool(
+            RoutingStrategy::RoundRobin,
+            vec![
+                record(0, "local", "omni"),
+                record(1, "local", "omni"),
+                record(2, "local", "omni"),
+            ],
+            8,
+        );
+        let mut selected = Vec::new();
+        for _ in 0..3 {
+            selected.push(dispatch_subset(&pool, &[0, 1]));
+            selected.push(dispatch_subset(&pool, &[1, 2]));
+        }
+
+        assert_eq!(selected, [0, 1, 0, 2, 1, 2]);
     }
 
     #[test]
@@ -533,19 +678,15 @@ mod tests {
         const REQUESTS: usize = 32;
         let records = vec![record(0, "local", "omni"), record(1, "local", "omni")];
         let pool = Arc::new(pool(RoutingStrategy::LeastRequests, records, REQUESTS));
-        let trust = TrustDomain::new(String::from("local"));
         let start = Arc::new(Barrier::new(REQUESTS + 1));
         let mut threads = Vec::new();
         for _ in 0..REQUESTS {
             let pool = Arc::clone(&pool);
             let start = Arc::clone(&start);
-            let trust = trust.clone();
             threads.push(thread::spawn(move || {
                 let admission = pool.try_admit().expect("concurrent admission");
                 start.wait();
-                pool.content_blind_generation_http(&trust)
-                    .expect("homogeneous cohort")
-                    .dispatch(admission)
+                pool.dispatch(admission, &requirement("omni", "local"))
                     .expect("concurrent dispatch")
             }));
         }
@@ -562,17 +703,60 @@ mod tests {
     }
 
     #[test]
+    fn heterogeneous_default_model_routes_to_the_correlated_capable_worker() {
+        let mut multimodal = profile("omni");
+        let ServiceProfile::GenerationHttp {
+            message_content_forms,
+            media_placements,
+            input_modalities,
+            ..
+        } = &mut multimodal;
+        message_content_forms.push(MessageContentForm::TypedParts);
+        media_placements.push(MediaPlacement::TypedParts);
+        input_modalities.push(InputModality::Image);
+        let pool = pool(
+            RoutingStrategy::RoundRobin,
+            vec![
+                record(0, "local", "omni"),
+                record_with_profile(1, "local", "omni", multimodal),
+            ],
+            2,
+        );
+        let requirement = RouteRequirement::new(
+            ProfileRequirement::GenerationHttp {
+                model: ModelSelection::WorkerDefault {
+                    expected_model_id: String::from("omni"),
+                },
+                message_content_forms: vec![MessageContentForm::TypedParts],
+                media_placements: vec![MediaPlacement::TypedParts],
+                input_modalities: vec![InputModality::Text, InputModality::Image],
+                output_modalities: vec![OutputModality::Text],
+                audio_format: None,
+                stream_mode: StreamMode::NonStreaming,
+            },
+            TrustDomain::new(String::from("local")),
+        );
+        let lease = pool
+            .dispatch(
+                pool.try_admit().expect("admit heterogeneous request"),
+                &requirement,
+            )
+            .expect("dispatch heterogeneous default");
+        assert_eq!(lease.registration_ordinal(), 1);
+    }
+
+    #[test]
     fn admission_and_worker_load_release_on_every_drop() {
         let pool = pool(
             RoutingStrategy::RoundRobin,
             vec![record(0, "local", "omni")],
             1,
         );
-        let trust = TrustDomain::new(String::from("local"));
         let lease = pool
-            .content_blind_generation_http(&trust)
-            .expect("homogeneous cohort")
-            .dispatch(pool.try_admit().expect("admit"))
+            .dispatch(
+                pool.try_admit().expect("admit"),
+                &requirement("omni", "local"),
+            )
             .expect("dispatch");
         assert_eq!(pool.admission.available(), (0, 0));
         assert_eq!(pool.records[0].load(), 1);

@@ -78,7 +78,6 @@ pub(crate) fn sanitize_response(
     {
         return Err(HttpFault::UpstreamProtocolError);
     }
-
     let mut result = HeaderMap::new();
     for (name, value) in source {
         if strip_response_header(name, &connection_tokens) || (chunked && name == CONTENT_LENGTH) {
@@ -456,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn response_accepts_valid_success_media_and_rejects_invalid_metadata() {
+    fn response_preserves_valid_media_types_and_rejects_invalid_metadata() {
         let mut plain = HeaderMap::new();
         plain.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
         assert_eq!(
