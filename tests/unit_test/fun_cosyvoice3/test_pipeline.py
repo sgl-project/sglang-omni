@@ -5,7 +5,11 @@ from __future__ import annotations
 import torch
 
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.config.runtime import (
+    resolve_stage_factory_args,
+    resolve_stage_factory_kwargs,
+    resolve_stage_typed_kwargs,
+)
 from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import FunCosyVoice3PipelineConfig
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
@@ -35,7 +39,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     assert CAPABILITIES.supports_streaming_vocoder is False
 
     vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
-    assert vocoder.factory.dtype == "bfloat16"
+    assert vocoder.factory.dtype is None
     assert vocoder.factory.model_extra == {
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 2000,
@@ -68,6 +72,58 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
     args = resolve_stage_typed_kwargs(vocoder)
     assert args["flow_batch_bucket_frames"] == 100
     assert args["flow_batch_admission_frames"] == 4000
+
+
+def test_fun_cosyvoice3_mlx_artifact_defaults_from_engine_to_vocoder() -> None:
+    config = FunCosyVoice3PipelineConfig(model_path="official-model")
+    merged = ConfigManager(config).merge_config(
+        {
+            "tts_engine.factory.mlx_model_path": "mlx-org/cosyvoice3",
+            "tts_engine.factory.mlx_model_revision": "revision-a",
+        }
+    )
+    vocoder = merged.stage_named("vocoder")
+
+    assert resolve_stage_factory_kwargs(vocoder, merged) == {
+        "mlx_model_path": "mlx-org/cosyvoice3",
+        "mlx_model_revision": "revision-a",
+    }
+
+
+def test_fun_cosyvoice3_vocoder_accepts_distinct_typed_mlx_artifact() -> None:
+    config = FunCosyVoice3PipelineConfig(model_path="official-model")
+    merged = ConfigManager(config).merge_config(
+        {
+            "tts_engine.factory.mlx_model_path": "mlx-org/llm",
+            "vocoder.factory.mlx_model_path": "mlx-org/vocoder",
+            "vocoder.factory.mlx_model_revision": "vocoder-revision",
+        }
+    )
+    vocoder = merged.stage_named("vocoder")
+    typed = resolve_stage_typed_kwargs(vocoder)
+
+    assert typed["mlx_model_path"] == "mlx-org/vocoder"
+    assert typed["mlx_model_revision"] == "vocoder-revision"
+    # A distinct artifact must not inherit the engine repository's path.
+    assert resolve_stage_factory_kwargs(vocoder, merged) == {}
+    final_args = resolve_stage_factory_args(vocoder, merged)
+    assert final_args["mlx_model_path"] == "mlx-org/vocoder"
+    assert final_args["mlx_model_revision"] == "vocoder-revision"
+
+
+def test_distinct_vocoder_artifact_does_not_inherit_engine_revision() -> None:
+    config = FunCosyVoice3PipelineConfig(model_path="official-model")
+    merged = ConfigManager(config).merge_config(
+        {
+            "tts_engine.factory.mlx_model_path": "mlx-org/llm",
+            "tts_engine.factory.mlx_model_revision": "llm-revision",
+            "vocoder.factory.mlx_model_path": "mlx-org/vocoder",
+        }
+    )
+    final_args = resolve_stage_factory_args(merged.stage_named("vocoder"), merged)
+
+    assert final_args["mlx_model_path"] == "mlx-org/vocoder"
+    assert "mlx_model_revision" not in final_args
 
 
 def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:

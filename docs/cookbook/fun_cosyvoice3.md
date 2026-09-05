@@ -13,12 +13,28 @@ OpenAI-compatible `/v1/audio/speech` endpoint.
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-Fun-CosyVoice3 depends on the `cosyvoice` package:
+Fun-CosyVoice3 depends on the `cosyvoice` package. On Linux:
 
 ```bash
 apt-get update && apt-get install -y sox
+uv venv --python 3.12 .venv
+source .venv/bin/activate
 uv pip install "sglang-omni[fun-cosyvoice3]"
 ```
+
+On Apple Silicon, use the repository installer so the same environment also
+gets pinned SGLang `v0.5.18` from source with its Metal dependencies:
+
+```bash
+brew install sox
+SGLANG_OMNI_EXTRAS=fun-cosyvoice3 ./install.sh
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+The installer uses Homebrew for `ffmpeg@7` and `uv`; `sox` is the additional
+Fun-CosyVoice3 system dependency. Keep `DYLD_LIBRARY_PATH` set in the shell that
+starts `sgl-omni`, so TorchCodec can find the keg-only FFmpeg libraries.
 
 Clone the CosyVoice repository with its Matcha-TTS submodule and add both to `PYTHONPATH`:
 
@@ -51,8 +67,8 @@ hf download FunAudioLLM/Fun-CosyVoice3-0.5B-2512
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several
-minutes while the `tts_engine` captures CUDA graphs.
+The pipeline is `preprocessing → tts_engine → vocoder`. On CUDA, first startup can take
+several minutes while the `tts_engine` captures CUDA graphs.
 
 ```bash
 sgl-omni serve \
@@ -61,15 +77,70 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Apple Silicon MLX
+
+Set `SGLANG_USE_MLX=1` to run the speech-token Qwen2 model, Flow/DiT, and HiFT
+with native MLX. Reference encoding continues to use the official checkpoint's
+ONNX assets. Keep that checkpoint as `--model-path`, and provide the converted
+MLX artifact separately; the converted artifact contains the Qwen2, Flow, and
+HiFT weights but not the preprocessing assets. `mlx-audio` is not a runtime
+dependency.
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --tts-engine.factory.mlx_model_path \
+    mlx-community/Fun-CosyVoice3-0.5B-2512-4bit \
+  --port 8000
+```
+
+The pipeline passes `tts_engine.factory.mlx_model_path` to the MLX vocoder by
+default, so the common launch only needs one artifact override. Use
+`vocoder.factory.mlx_model_path` only when the Flow/HiFT weights live in a
+different converted artifact. Both paths also accept a corresponding
+`mlx_model_revision` override.
+
+The native vocoder currently accepts the single-file `config.json` plus
+`model.safetensors` layout shown above, with `flow.*` and either public
+`hifigan.*` or canonical sanitized `hift.*` weights. Raw `flow.pt`/`hift.pt`
+and unsanitized converted weights are not loaded by this path. Its compute
+dtype comes from the converted artifact (the example artifact is FP16); an
+explicit `vocoder.factory.dtype` is only accepted when it matches that dtype.
+The MLX vocoder also requires the stage device to remain MPS.
+The validated public artifact revision is
+`55a6713d54751f1ec2645aa11294676f2067202a`; set it with
+`--tts-engine.factory.mlx_model_revision` when a reproducible model snapshot is
+required.
+
+### Apple Silicon Torch/MPS
+
+Without the MLX opt-in, the same pipeline runs the speech-token model and
+vocoder through PyTorch MPS. This path is useful as a correctness baseline and
+does not need a separate checkpoint. Both Apple runners apply CosyVoice3's
+repetition-aware sampling (a recent-ten-token redraw); the Torch/MPS runner uses
+an eager MPS-safe fallback because the pinned SGLang seeded sampler's float64
+path is unavailable on MPS.
+
+```bash
+unset SGLANG_USE_MLX
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --port 8000
+```
+
 ### Flow Decoder Batching
 
-The buffered vocoder uses the batch-capable `FunCosyVoice3Flow.inference` API for every
+The Torch vocoder uses the batch-capable `FunCosyVoice3Flow.inference` API for every
 request. `SimpleScheduler` collects up to 8 requests for at most 2 ms, then the vocoder
 groups requests by total mel length in 50-frame buckets. Every bucket, including a
 single-request bucket, calls the same built-in Flow inference method; packing, padding,
 masking, CFM Euler/CFG, and output unpadding are handled inside the Flow implementation.
 The 50-frame default matches the current DiT estimator's static chunk size; a larger bucket
 can combine more requests at the cost of additional padding, compute, and peak GPU memory.
+The native MLX Flow currently supports batch size 1 and rejects a larger
+`vocoder.factory.max_batch_size` at startup.
 
 The scheduler uses a bucket-rounded Flow admission budget, configured by
 `flow_batch_admission_frames` (2,000 by default). It controls whether a later request joins the
@@ -270,8 +341,8 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 | `speed` | `1.0` | Playback speed multiplier |
 | `temperature` | `0.7` | Sampling temperature |
 | `top_p` | `0.8` | Top-p sampling |
-| `top_k` | `20` | Top-k sampling |
-| `repetition_penalty` | `1.1` | Repetition penalty |
+| `top_k` | `25` | Top-k sampling (matches CosyVoice3's RAS sampler) |
+| `repetition_penalty` | `1.0` | Optional additional repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Reserved for the planned incremental decoder; current decode is buffered |
