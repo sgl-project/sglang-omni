@@ -233,7 +233,7 @@ def create_tts_engine_executor(
     n_gpu_layers: int = -1,
 ) -> SimpleScheduler:
     try:
-        from llama_cpp import LLAMA_SPLIT_MODE_NONE, Llama
+        from llama_cpp import LLAMA_DEFAULT_SEED, LLAMA_SPLIT_MODE_NONE, Llama
     except ImportError as exc:
         raise RuntimeError(
             "Audar-TTS requires the 'audar-tts' optional dependencies"
@@ -272,8 +272,7 @@ def create_tts_engine_executor(
             raise ValueError("Audar-TTS prompt exceeds the llama.cpp context window")
         llm.reset()
         seed = state.generation_kwargs.get("seed")
-        if seed is not None:
-            llm.set_seed(int(seed))
+        llm.set_seed(int(seed) if seed is not None else LLAMA_DEFAULT_SEED)
 
         generated: list[int] = []
         pieces: list[str] = []

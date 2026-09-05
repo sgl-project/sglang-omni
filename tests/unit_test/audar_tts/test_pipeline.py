@@ -732,6 +732,7 @@ def test_llama_cpp_stage_matches_official_generation_loop(
             self.kwargs = kwargs
             self.generate_kwargs: dict[str, Any] | None = None
             self.seed: int | None = None
+            self.seed_calls: list[int] = []
             self.reset_calls = 0
             FakeLlama.instance = self
 
@@ -753,6 +754,7 @@ def test_llama_cpp_stage_matches_official_generation_loop(
 
         def set_seed(self, seed: int) -> None:
             self.seed = seed
+            self.seed_calls.append(seed)
 
         def reset(self) -> None:
             self.reset_calls += 1
@@ -760,7 +762,11 @@ def test_llama_cpp_stage_matches_official_generation_loop(
     monkeypatch.setitem(
         sys.modules,
         "llama_cpp",
-        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+        types.SimpleNamespace(
+            LLAMA_DEFAULT_SEED=0xFFFFFFFF,
+            LLAMA_SPLIT_MODE_NONE=0,
+            Llama=FakeLlama,
+        ),
     )
     monkeypatch.setattr(stages, "_resolve_gguf", lambda *args: "/model.gguf")
     payload = make_payload(
@@ -795,6 +801,22 @@ def test_llama_cpp_stage_matches_official_generation_loop(
         "top_p": 0.9,
         "repeat_penalty": 1.1,
     }
+
+    unseeded_payload = make_payload(
+        state=AudarTTSState(
+            prompt="prompt",
+            generation_kwargs={
+                "max_new_tokens": 16,
+                "temperature": 1.0,
+                "top_k": 40,
+                "top_p": 0.9,
+                "repetition_penalty": 1.1,
+            },
+        )
+    )
+    scheduler._fn(unseeded_payload)
+
+    assert FakeLlama.instance.seed_calls == [23, 0xFFFFFFFF]
     assert scheduler._max_concurrency == 1
 
 
