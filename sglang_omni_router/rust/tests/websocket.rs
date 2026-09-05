@@ -73,6 +73,8 @@ struct WorkerState {
 struct SetupDeadlineWorkerState {
     speech_attempts: Arc<AtomicUsize>,
     realtime_attempts: Arc<AtomicUsize>,
+    speech_early_frames: Arc<AtomicUsize>,
+    realtime_early_frames: Arc<AtomicUsize>,
     speech_close_code: Arc<AtomicUsize>,
     realtime_close_code: Arc<AtomicUsize>,
     health_probes: Arc<AtomicUsize>,
@@ -230,10 +232,9 @@ async fn setup_deadline_speech_worker(
             }
             return;
         }
-        if uri.query() == Some("case=early")
-            && !matches!(socket.next().await, Some(Ok(Message::Text(_))))
-        {
-            return;
+        let early = uri.query() == Some("case=early");
+        if early {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         if socket
             .send(Message::Text(
@@ -243,6 +244,28 @@ async fn setup_deadline_speech_worker(
             .is_err()
         {
             return;
+        }
+        if early {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) = socket.next().await
+            else {
+                return;
+            };
+            state.speech_early_frames.fetch_add(1, Ordering::Relaxed);
+            let bytes = match message {
+                Message::Text(text) => text.len(),
+                Message::Binary(bytes) => bytes.len(),
+                _ => unreachable!(),
+            };
+            if socket
+                .send(Message::Text(
+                    format!(r#"{{"type":"early.received","bytes":{bytes}}}"#).into(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
         }
         while let Some(message) = socket.next().await {
             match message {
@@ -277,10 +300,9 @@ async fn setup_deadline_realtime_worker(
             }
             return;
         }
-        if uri.query() == Some("case=early")
-            && !matches!(socket.next().await, Some(Ok(Message::Text(_))))
-        {
-            return;
+        let early = uri.query() == Some("case=early");
+        if early {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         if socket
             .send(Message::Text(
@@ -290,6 +312,23 @@ async fn setup_deadline_realtime_worker(
             .is_err()
         {
             return;
+        }
+        if early {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                return;
+            };
+            state.realtime_early_frames.fetch_add(1, Ordering::Relaxed);
+            let bytes = text.len();
+            if socket
+                .send(Message::Text(
+                    format!(r#"{{"type":"early.received","bytes":{bytes}}}"#).into(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
         }
         while let Some(message) = socket.next().await {
             match message {
@@ -744,6 +783,8 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
     let state = SetupDeadlineWorkerState {
         speech_attempts: Arc::new(AtomicUsize::new(0)),
         realtime_attempts: Arc::new(AtomicUsize::new(0)),
+        speech_early_frames: Arc::new(AtomicUsize::new(0)),
+        realtime_early_frames: Arc::new(AtomicUsize::new(0)),
         speech_close_code: Arc::new(AtomicUsize::new(0)),
         realtime_close_code: Arc::new(AtomicUsize::new(0)),
         health_probes: Arc::new(AtomicUsize::new(0)),
@@ -787,12 +828,10 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         .await
         .expect("send early-frame speech configuration");
     early_speech
-        .send(ClientMessage::Text(
-            r#"{"type":"input.text","text":"early"}"#.into(),
-        ))
+        .send(ClientMessage::Binary(vec![7; 15 * 1_024 * 1_024].into()))
         .await
         .expect("send speech frame before session.configured");
-    let configured = tokio::time::timeout(Duration::from_secs(1), early_speech.next())
+    let configured = tokio::time::timeout(Duration::from_secs(5), early_speech.next())
         .await
         .expect("early speech frame reaches the worker during setup")
         .expect("speech configured event")
@@ -803,6 +842,15 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         configured,
         r#"{"type":"session.configured","worker":"reused"}"#
     );
+    let received = tokio::time::timeout(Duration::from_secs(5), early_speech.next())
+        .await
+        .expect("worker receives the complete early speech frame")
+        .expect("speech early-frame acknowledgement")
+        .expect("valid speech early-frame acknowledgement")
+        .into_text()
+        .expect("speech early-frame acknowledgement text");
+    assert_eq!(received, r#"{"type":"early.received","bytes":15728640}"#);
+    assert_eq!(state.speech_early_frames.load(Ordering::Relaxed), 1);
     early_speech.close(None).await.expect("close early speech");
     drop(early_speech);
 
@@ -901,13 +949,12 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
 
     let realtime_url = format!("ws://{router_address}/v1/realtime");
     let mut early_realtime = connect_with_retry(&format!("{realtime_url}?case=early")).await;
+    let early_realtime_payload = "x".repeat(15 * 1_024 * 1_024);
     early_realtime
-        .send(ClientMessage::Text(
-            r#"{"type":"session.update","session":{}}"#.into(),
-        ))
+        .send(ClientMessage::Text(early_realtime_payload.into()))
         .await
         .expect("send realtime frame before session.created");
-    let created = tokio::time::timeout(Duration::from_secs(1), early_realtime.next())
+    let created = tokio::time::timeout(Duration::from_secs(5), early_realtime.next())
         .await
         .expect("early realtime frame reaches the worker during setup")
         .expect("realtime created event")
@@ -918,6 +965,15 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         created,
         r#"{"type":"session.created","session":{"model":"omni"}}"#
     );
+    let received = tokio::time::timeout(Duration::from_secs(5), early_realtime.next())
+        .await
+        .expect("worker receives the complete early realtime frame")
+        .expect("realtime early-frame acknowledgement")
+        .expect("valid realtime early-frame acknowledgement")
+        .into_text()
+        .expect("realtime early-frame acknowledgement text");
+    assert_eq!(received, r#"{"type":"early.received","bytes":15728640}"#);
+    assert_eq!(state.realtime_early_frames.load(Ordering::Relaxed), 1);
     early_realtime
         .close(None)
         .await

@@ -342,29 +342,54 @@ impl SessionSupervisor {
         } else if initial_drain == DrainState::Draining {
             SetupOutcome::Terminal(RelayTerminal::Draining)
         } else {
-            let client_to_worker =
-                client_to_worker(&mut downstream_stream, &mut upstream_sink, protocol);
-            let worker_event = next_worker_application(&mut upstream_stream);
-            tokio::pin!(client_to_worker, worker_event);
-            tokio::select! {
-                biased;
-                _ = tokio::time::sleep_until(deadline) => {
-                    SetupOutcome::Terminal(RelayTerminal::SetupDeadline {
-                        code: 1011,
-                        reason: timeout_reason,
-                    })
-                }
-                terminal = &mut client_to_worker => SetupOutcome::Terminal(terminal),
-                event = &mut worker_event => SetupOutcome::Worker(event),
-                changed = drain.changed() => {
-                    let terminal = if changed.is_err()
-                        || *drain.borrow() == DrainState::Forced
-                    {
-                        RelayTerminal::Forced
-                    } else {
-                        RelayTerminal::Draining
-                    };
-                    SetupOutcome::Terminal(terminal)
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep_until(deadline) => {
+                        break SetupOutcome::Terminal(RelayTerminal::SetupDeadline {
+                            code: 1011,
+                            reason: timeout_reason,
+                        });
+                    }
+                    changed = drain.changed() => {
+                        let terminal = if changed.is_err()
+                            || *drain.borrow() == DrainState::Forced
+                        {
+                            RelayTerminal::Forced
+                        } else {
+                            RelayTerminal::Draining
+                        };
+                        break SetupOutcome::Terminal(terminal);
+                    }
+                    event = next_worker_application(&mut upstream_stream) => {
+                        break SetupOutcome::Worker(event);
+                    }
+                    message = downstream_stream.next() => {
+                        let forward = forward_client_message(message, &mut upstream_sink, protocol);
+                        tokio::pin!(forward);
+                        let terminal = tokio::select! {
+                            biased;
+                            _ = tokio::time::sleep_until(deadline) => {
+                                Some(RelayTerminal::SetupDeadline {
+                                    code: 1011,
+                                    reason: timeout_reason,
+                                })
+                            }
+                            changed = drain.changed() => {
+                                Some(if changed.is_err()
+                                    || *drain.borrow() == DrainState::Forced
+                                {
+                                    RelayTerminal::Forced
+                                } else {
+                                    RelayTerminal::Draining
+                                })
+                            }
+                            terminal = &mut forward => terminal,
+                        };
+                        if let Some(terminal) = terminal {
+                            break SetupOutcome::Terminal(terminal);
+                        }
+                    }
                 }
             }
         };
@@ -510,41 +535,51 @@ async fn client_to_worker(
     protocol: RelayProtocol,
 ) -> RelayTerminal {
     loop {
-        match downstream.next().await {
-            Some(Ok(DownstreamMessage::Text(text))) => {
-                let Ok(text) = super::downstream_text_to_upstream(text) else {
-                    return RelayTerminal::ClientViolation {
-                        code: 1007,
-                        reason: "invalid text payload",
-                    };
-                };
-                if upstream.send(UpstreamMessage::Text(text)).await.is_err() {
-                    return RelayTerminal::WorkerGone;
-                }
-            }
-            Some(Ok(DownstreamMessage::Binary(bytes))) if protocol.accepts_client_binary() => {
-                if upstream.send(UpstreamMessage::Binary(bytes)).await.is_err() {
-                    return RelayTerminal::WorkerGone;
-                }
-            }
-            Some(Ok(DownstreamMessage::Binary(_))) => {
-                return RelayTerminal::ClientViolation {
-                    code: 1003,
-                    reason: "binary messages are unsupported",
-                };
-            }
-            Some(Ok(DownstreamMessage::Close(frame))) => {
-                return RelayTerminal::ClientClose(frame);
-            }
-            Some(Ok(DownstreamMessage::Ping(_) | DownstreamMessage::Pong(_))) => {}
-            Some(Err(error)) if super::websocket_message_too_large(&error) => {
-                return RelayTerminal::ClientViolation {
-                    code: 1009,
-                    reason: "message too large",
-                };
-            }
-            Some(Err(_)) | None => return RelayTerminal::ClientGone,
+        if let Some(terminal) =
+            forward_client_message(downstream.next().await, upstream, protocol).await
+        {
+            return terminal;
         }
+    }
+}
+
+async fn forward_client_message(
+    message: Option<Result<DownstreamMessage, axum::Error>>,
+    upstream: &mut UpstreamSink,
+    protocol: RelayProtocol,
+) -> Option<RelayTerminal> {
+    match message {
+        Some(Ok(DownstreamMessage::Text(text))) => {
+            let Ok(text) = super::downstream_text_to_upstream(text) else {
+                return Some(RelayTerminal::ClientViolation {
+                    code: 1007,
+                    reason: "invalid text payload",
+                });
+            };
+            upstream
+                .send(UpstreamMessage::Text(text))
+                .await
+                .err()
+                .map(|_| RelayTerminal::WorkerGone)
+        }
+        Some(Ok(DownstreamMessage::Binary(bytes))) if protocol.accepts_client_binary() => upstream
+            .send(UpstreamMessage::Binary(bytes))
+            .await
+            .err()
+            .map(|_| RelayTerminal::WorkerGone),
+        Some(Ok(DownstreamMessage::Binary(_))) => Some(RelayTerminal::ClientViolation {
+            code: 1003,
+            reason: "binary messages are unsupported",
+        }),
+        Some(Ok(DownstreamMessage::Close(frame))) => Some(RelayTerminal::ClientClose(frame)),
+        Some(Ok(DownstreamMessage::Ping(_) | DownstreamMessage::Pong(_))) => None,
+        Some(Err(error)) if super::websocket_message_too_large(&error) => {
+            Some(RelayTerminal::ClientViolation {
+                code: 1009,
+                reason: "message too large",
+            })
+        }
+        Some(Err(_)) | None => Some(RelayTerminal::ClientGone),
     }
 }
 
