@@ -417,5 +417,27 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                     ),
                 )
 
+    def load_kv_cache_scales(self, quantization_param_path: str) -> None:
+        """Delegate FP8 KV scale loading to the Qwen3 decoder.
+
+        Note: (Jiaxin Deng) the upstream JSON loader assigns Python floats,
+        but the FA3 decode path calls .expand() on the scales; convert to
+        0-d tensors so fp8_e4m3 KV works instead of crashing at decode.
+        """
+        self.language_model.load_kv_cache_scales(quantization_param_path)
+        device = next(self.language_model.parameters()).device
+        for layer in self.language_model.model.layers:
+            attn = layer.self_attn.attn
+            if isinstance(attn.k_scale, float):
+                attn.k_scale_float = attn.k_scale
+                attn.k_scale = torch.tensor(
+                    attn.k_scale, dtype=torch.float32, device=device
+                )
+            if isinstance(attn.v_scale, float):
+                attn.v_scale_float = attn.v_scale
+                attn.v_scale = torch.tensor(
+                    attn.v_scale, dtype=torch.float32, device=device
+                )
+
 
 EntryClass = MossTranscribeDiarizeForConditionalGeneration
