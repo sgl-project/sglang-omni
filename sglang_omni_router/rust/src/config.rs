@@ -23,7 +23,7 @@ const SCHEMA_VERSION: u32 = 1;
 const MAX_GLOBAL_ADMISSION: u32 = 1_000_000;
 const MAX_CLASS_ADMISSION: u32 = 65_535;
 const DEFAULT_WS_CONNECT_TIMEOUT_MS: u64 = 10_000;
-const DEFAULT_WS_WORKER_SETUP_TIMEOUT_MS: u64 = DEFAULT_REQUEST_TIMEOUT_MS;
+const DEFAULT_WS_WORKER_SETUP_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_WS_SPEECH_CONFIG_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_WS_CLOSE_TIMEOUT_MS: u64 = 5_000;
 
@@ -537,19 +537,15 @@ impl Config {
                 "websocket.speech_config_timeout_ms",
                 websocket.speech_config_timeout_ms,
             ),
+            (
+                "websocket.worker_setup_timeout_ms",
+                websocket.worker_setup_timeout_ms,
+            ),
             ("websocket.close_timeout_ms", websocket.close_timeout_ms),
         ] {
             if !(1..=60_000).contains(&value) {
                 return Err(ConfigError::invalid(field, "must be between 1 and 60000"));
             }
-        }
-        if websocket.worker_setup_timeout_ms < websocket.connect_timeout_ms
-            || websocket.worker_setup_timeout_ms > 3_600_000
-        {
-            return Err(ConfigError::invalid(
-                "websocket.worker_setup_timeout_ms",
-                "must be at least connect_timeout_ms and at most 3600000",
-            ));
         }
         if let Some(route) = websocket.speech.as_ref() {
             self.validate_websocket_route(

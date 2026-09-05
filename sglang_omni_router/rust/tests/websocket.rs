@@ -209,22 +209,30 @@ async fn realtime_worker(
 
 async fn setup_deadline_speech_worker(
     State(state): State<SetupDeadlineWorkerState>,
+    uri: Uri,
     upgrade: WebSocketUpgrade,
 ) -> impl axum::response::IntoResponse {
     upgrade.on_upgrade(move |mut socket| async move {
         let Some(Ok(Message::Text(_config))) = socket.next().await else {
             return;
         };
-        if state.speech_attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+        state.speech_attempts.fetch_add(1, Ordering::Relaxed);
+        if uri.query() == Some("case=stall") {
             while let Some(message) = socket.next().await {
-                if let Ok(Message::Close(Some(frame))) = message {
-                    state
-                        .speech_close_code
-                        .store(usize::from(frame.code), Ordering::Relaxed);
-                    let _closed = socket.send(Message::Close(Some(frame))).await;
+                if let Ok(Message::Close(frame)) = message {
+                    state.speech_close_code.store(
+                        frame.as_ref().map_or(1000, |frame| usize::from(frame.code)),
+                        Ordering::Relaxed,
+                    );
+                    let _closed = socket.send(Message::Close(frame)).await;
                     break;
                 }
             }
+            return;
+        }
+        if uri.query() == Some("case=early")
+            && !matches!(socket.next().await, Some(Ok(Message::Text(_))))
+        {
             return;
         }
         if socket
@@ -251,19 +259,27 @@ async fn setup_deadline_speech_worker(
 
 async fn setup_deadline_realtime_worker(
     State(state): State<SetupDeadlineWorkerState>,
+    uri: Uri,
     upgrade: WebSocketUpgrade,
 ) -> impl axum::response::IntoResponse {
     upgrade.on_upgrade(move |mut socket| async move {
-        if state.realtime_attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+        state.realtime_attempts.fetch_add(1, Ordering::Relaxed);
+        if uri.query() == Some("case=stall") {
             while let Some(message) = socket.next().await {
-                if let Ok(Message::Close(Some(frame))) = message {
-                    state
-                        .realtime_close_code
-                        .store(usize::from(frame.code), Ordering::Relaxed);
-                    let _closed = socket.send(Message::Close(Some(frame))).await;
+                if let Ok(Message::Close(frame)) = message {
+                    state.realtime_close_code.store(
+                        frame.as_ref().map_or(1000, |frame| usize::from(frame.code)),
+                        Ordering::Relaxed,
+                    );
+                    let _closed = socket.send(Message::Close(frame)).await;
                     break;
                 }
             }
+            return;
+        }
+        if uri.query() == Some("case=early")
+            && !matches!(socket.next().await, Some(Ok(Message::Text(_))))
+        {
             return;
         }
         if socket
@@ -749,7 +765,7 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
             .replace("connect_timeout_ms = 5000", "connect_timeout_ms = 100")
             .replace(
                 "worker_setup_timeout_ms = 5000",
-                "worker_setup_timeout_ms = 500",
+                "worker_setup_timeout_ms = 2000",
             ),
     );
     let child = Command::new(env!("CARGO_BIN_EXE_sgl-omni-router"))
@@ -765,14 +781,80 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
 
     let speech_url = format!("ws://{router_address}/v1/audio/speech/stream");
     let speech_config = r#"{"type":"session.config","model":"omni","response_format":"pcm"}"#;
-    let mut stalled_speech = connect_with_retry(&speech_url).await;
+    let mut early_speech = connect_with_retry(&format!("{speech_url}?case=early")).await;
+    early_speech
+        .send(ClientMessage::Text(speech_config.into()))
+        .await
+        .expect("send early-frame speech configuration");
+    early_speech
+        .send(ClientMessage::Text(
+            r#"{"type":"input.text","text":"early"}"#.into(),
+        ))
+        .await
+        .expect("send speech frame before session.configured");
+    let configured = tokio::time::timeout(Duration::from_secs(1), early_speech.next())
+        .await
+        .expect("early speech frame reaches the worker during setup")
+        .expect("speech configured event")
+        .expect("valid speech configured event")
+        .into_text()
+        .expect("speech configured text");
+    assert_eq!(
+        configured,
+        r#"{"type":"session.configured","worker":"reused"}"#
+    );
+    early_speech.close(None).await.expect("close early speech");
+    drop(early_speech);
+
+    state.speech_close_code.store(0, Ordering::Relaxed);
+    let mut disconnected_speech = connect_with_retry(&format!("{speech_url}?case=stall")).await;
+    disconnected_speech
+        .send(ClientMessage::Text(speech_config.into()))
+        .await
+        .expect("send configuration before speech disconnect");
+    wait_for_worker_attempt(&state.speech_attempts, 2).await;
+    disconnected_speech
+        .close(None)
+        .await
+        .expect("disconnect during speech setup");
+    drop(disconnected_speech);
+    wait_for_worker_attempt(&state.speech_close_code, 1000).await;
+
+    let mut reused_speech = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut socket = connect_with_retry(&speech_url).await;
+        socket
+            .send(ClientMessage::Text(speech_config.into()))
+            .await
+            .expect("send configuration after speech disconnect");
+        let configured = socket
+            .next()
+            .await
+            .expect("speech configured event")
+            .expect("valid speech configured event")
+            .into_text()
+            .expect("speech configured text");
+        assert_eq!(
+            configured,
+            r#"{"type":"session.configured","worker":"reused"}"#
+        );
+        socket
+    })
+    .await
+    .expect("speech capacity is reusable before the two-second setup deadline");
+    reused_speech
+        .close(None)
+        .await
+        .expect("close reused speech");
+    drop(reused_speech);
+
+    state.speech_close_code.store(0, Ordering::Relaxed);
+    let mut stalled_speech = connect_with_retry(&format!("{speech_url}?case=stall")).await;
     stalled_speech
         .send(ClientMessage::Text(speech_config.into()))
         .await
         .expect("send configuration to stalled speech worker");
-    wait_for_worker_attempt(&state.speech_attempts, 1).await;
-    assert_eq!(state.speech_attempts.load(Ordering::Relaxed), 1);
-    let speech_close = tokio::time::timeout(Duration::from_secs(2), stalled_speech.next())
+    wait_for_worker_attempt(&state.speech_attempts, 4).await;
+    let speech_close = tokio::time::timeout(Duration::from_secs(3), stalled_speech.next())
         .await
         .expect("setup deadline closes downstream speech")
         .expect("speech close frame")
@@ -789,12 +871,12 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
     );
     drop(stalled_speech);
 
-    let mut reused_speech = tokio::time::timeout(Duration::from_secs(1), async {
+    let mut after_timeout_speech = tokio::time::timeout(Duration::from_secs(1), async {
         let mut socket = connect_with_retry(&speech_url).await;
         socket
             .send(ClientMessage::Text(speech_config.into()))
             .await
-            .expect("send configuration after disconnected speech setup");
+            .expect("send configuration after speech setup timeout");
         let configured = socket
             .next()
             .await
@@ -809,34 +891,48 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         socket
     })
     .await
-    .expect("speech admission and exact capacity are reusable after the 500ms setup deadline");
-    reused_speech
+    .expect("speech capacity is reusable after the setup deadline");
+    after_timeout_speech
         .close(None)
         .await
-        .expect("close reused speech");
-    drop(reused_speech);
-    assert_eq!(state.speech_attempts.load(Ordering::Relaxed), 2);
+        .expect("close speech after timeout");
+    drop(after_timeout_speech);
+    assert_eq!(state.speech_attempts.load(Ordering::Relaxed), 5);
 
     let realtime_url = format!("ws://{router_address}/v1/realtime");
-    let mut stalled_realtime = connect_with_retry(&realtime_url).await;
-    wait_for_worker_attempt(&state.realtime_attempts, 1).await;
-    assert_eq!(state.realtime_attempts.load(Ordering::Relaxed), 1);
-    let realtime_close = tokio::time::timeout(Duration::from_secs(2), stalled_realtime.next())
+    let mut early_realtime = connect_with_retry(&format!("{realtime_url}?case=early")).await;
+    early_realtime
+        .send(ClientMessage::Text(
+            r#"{"type":"session.update","session":{}}"#.into(),
+        ))
         .await
-        .expect("setup deadline closes downstream realtime")
-        .expect("realtime close frame")
-        .expect("valid realtime close frame");
-    assert!(matches!(
-        realtime_close,
-        ClientMessage::Close(Some(frame)) if u16::from(frame.code) == 1011
-    ));
-    wait_for_worker_attempt(&state.realtime_close_code, 1011).await;
+        .expect("send realtime frame before session.created");
+    let created = tokio::time::timeout(Duration::from_secs(1), early_realtime.next())
+        .await
+        .expect("early realtime frame reaches the worker during setup")
+        .expect("realtime created event")
+        .expect("valid realtime created event")
+        .into_text()
+        .expect("realtime created text");
     assert_eq!(
-        state.health_probes.load(Ordering::Relaxed),
-        initial_health_probes,
-        "a worker application timeout must not trigger a health probe"
+        created,
+        r#"{"type":"session.created","session":{"model":"omni"}}"#
     );
-    drop(stalled_realtime);
+    early_realtime
+        .close(None)
+        .await
+        .expect("close early realtime");
+    drop(early_realtime);
+
+    state.realtime_close_code.store(0, Ordering::Relaxed);
+    let mut disconnected_realtime = connect_with_retry(&format!("{realtime_url}?case=stall")).await;
+    wait_for_worker_attempt(&state.realtime_attempts, 2).await;
+    disconnected_realtime
+        .close(None)
+        .await
+        .expect("disconnect during realtime setup");
+    drop(disconnected_realtime);
+    wait_for_worker_attempt(&state.realtime_close_code, 1000).await;
 
     let mut reused_realtime = tokio::time::timeout(Duration::from_secs(1), async {
         let mut socket = connect_with_retry(&realtime_url).await;
@@ -854,13 +950,56 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         socket
     })
     .await
-    .expect("realtime admission and exact capacity are reusable after the 500ms setup deadline");
+    .expect("realtime capacity is reusable before the two-second setup deadline");
     reused_realtime
         .close(None)
         .await
         .expect("close reused realtime");
     drop(reused_realtime);
-    assert_eq!(state.realtime_attempts.load(Ordering::Relaxed), 2);
+
+    state.realtime_close_code.store(0, Ordering::Relaxed);
+    let mut stalled_realtime = connect_with_retry(&format!("{realtime_url}?case=stall")).await;
+    wait_for_worker_attempt(&state.realtime_attempts, 4).await;
+    let realtime_close = tokio::time::timeout(Duration::from_secs(3), stalled_realtime.next())
+        .await
+        .expect("setup deadline closes downstream realtime")
+        .expect("realtime close frame")
+        .expect("valid realtime close frame");
+    assert!(matches!(
+        realtime_close,
+        ClientMessage::Close(Some(frame)) if u16::from(frame.code) == 1011
+    ));
+    wait_for_worker_attempt(&state.realtime_close_code, 1011).await;
+    assert_eq!(
+        state.health_probes.load(Ordering::Relaxed),
+        initial_health_probes,
+        "a worker application timeout must not trigger a health probe"
+    );
+    drop(stalled_realtime);
+
+    let mut after_timeout_realtime = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut socket = connect_with_retry(&realtime_url).await;
+        let created = socket
+            .next()
+            .await
+            .expect("realtime created event")
+            .expect("valid realtime created event")
+            .into_text()
+            .expect("realtime created text");
+        assert_eq!(
+            created,
+            r#"{"type":"session.created","session":{"model":"omni"}}"#
+        );
+        socket
+    })
+    .await
+    .expect("realtime capacity is reusable after the setup deadline");
+    after_timeout_realtime
+        .close(None)
+        .await
+        .expect("close realtime after timeout");
+    drop(after_timeout_realtime);
+    assert_eq!(state.realtime_attempts.load(Ordering::Relaxed), 5);
 
     worker_task.abort();
     let _joined = worker_task.await;

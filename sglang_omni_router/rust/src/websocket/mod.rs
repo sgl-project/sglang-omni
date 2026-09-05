@@ -341,18 +341,23 @@ async fn run_speech(
             return;
         }
     }
-    let first = {
-        let upstream = supervisor.upstream_mut();
-        setup_until(
-            &mut drain,
+    let Some((next_supervisor, next_downstream, first)) = supervisor
+        .wait_for_worker_event(
+            downstream,
             worker_deadline,
-            next_worker_application(upstream),
+            &gateway.policy,
+            RelayProtocol::Speech,
+            "upstream setup failure",
         )
         .await
+    else {
+        return;
     };
+    supervisor = next_supervisor;
+    downstream = next_downstream;
     let text = match first {
-        Ok(Some(Ok(UpstreamMessage::Text(text)))) if is_speech_setup_event(text.as_bytes()) => text,
-        Ok(_) => {
+        Some(Ok(UpstreamMessage::Text(text))) if is_speech_setup_event(text.as_bytes()) => text,
+        _ => {
             supervisor.request_immediate_probe();
             supervisor
                 .close_setup(
@@ -363,19 +368,6 @@ async fn run_speech(
                     &mut drain,
                 )
                 .await;
-            return;
-        }
-        Err(termination) => {
-            close_supervised_setup_termination(
-                supervisor,
-                &mut downstream,
-                &gateway.policy,
-                &mut drain,
-                termination,
-                1011,
-                "upstream setup failure",
-            )
-            .await;
             return;
         }
     };
@@ -506,22 +498,27 @@ async fn run_realtime(
 ) {
     let mut drain = supervisor.drain_receiver();
     let worker_deadline = Instant::now() + gateway.policy.worker_setup_timeout();
-    let first = {
-        let upstream = supervisor.upstream_mut();
-        setup_until(
-            &mut drain,
+    let Some((next_supervisor, next_downstream, first)) = supervisor
+        .wait_for_worker_event(
+            downstream,
             worker_deadline,
-            next_worker_application(upstream),
+            &gateway.policy,
+            RelayProtocol::Realtime,
+            "invalid session.created",
         )
         .await
+    else {
+        return;
     };
+    supervisor = next_supervisor;
+    downstream = next_downstream;
     let text = match first {
-        Ok(Some(Ok(UpstreamMessage::Text(text))))
+        Some(Ok(UpstreamMessage::Text(text)))
             if parse_event_kind(text.as_bytes()) == Some(EventKind::SessionCreated) =>
         {
             text
         }
-        Ok(_) => {
+        _ => {
             supervisor.request_immediate_probe();
             supervisor
                 .close_setup(
@@ -532,19 +529,6 @@ async fn run_realtime(
                     &mut drain,
                 )
                 .await;
-            return;
-        }
-        Err(termination) => {
-            close_supervised_setup_termination(
-                supervisor,
-                &mut downstream,
-                &gateway.policy,
-                &mut drain,
-                termination,
-                1011,
-                "invalid session.created",
-            )
-            .await;
             return;
         }
     };
@@ -730,19 +714,6 @@ fn websocket_message_too_large(error: &axum::Error) -> bool {
                 )
             )
         })
-}
-
-async fn next_worker_application(
-    upstream: &mut upstream::UpstreamSocket,
-) -> Option<Result<UpstreamMessage, tokio_tungstenite::tungstenite::Error>> {
-    loop {
-        match upstream.next().await {
-            Some(Ok(
-                UpstreamMessage::Ping(_) | UpstreamMessage::Pong(_) | UpstreamMessage::Frame(_),
-            )) => {}
-            other => return other,
-        }
-    }
 }
 
 fn admission_fault(error: AdmissionError) -> HttpFault {

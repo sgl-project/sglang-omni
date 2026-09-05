@@ -6,6 +6,8 @@ use axum::extract::ws::{
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Notify, watch};
+use tokio::time::Instant;
+use tokio_tungstenite::tungstenite::Error as UpstreamError;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode as UpstreamCloseCode;
 use tokio_tungstenite::tungstenite::protocol::{
     CloseFrame as UpstreamClose, Message as UpstreamMessage,
@@ -20,12 +22,18 @@ type DownstreamSink = SplitSink<WebSocket, DownstreamMessage>;
 type DownstreamStream = SplitStream<WebSocket>;
 type UpstreamSink = SplitSink<UpstreamSocket, UpstreamMessage>;
 type UpstreamStream = SplitStream<UpstreamSocket>;
+pub(super) type WorkerEvent = Option<Result<UpstreamMessage, UpstreamError>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DrainState {
     Serving,
     Draining,
     Forced,
+}
+
+enum SetupOutcome {
+    Worker(WorkerEvent),
+    Terminal(RelayTerminal),
 }
 
 struct TrackerState {
@@ -167,6 +175,10 @@ enum RelayTerminal {
     },
     Draining,
     Forced,
+    SetupDeadline {
+        code: CloseCode,
+        reason: &'static str,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -263,7 +275,6 @@ impl SessionSupervisor {
             upstream,
         } = self;
         let mut drain = registration.drain.clone();
-        let _registration = registration;
         let (mut downstream_sink, mut downstream_stream) = downstream.split();
         let (mut upstream_sink, mut upstream_stream) = upstream.split();
 
@@ -295,93 +306,200 @@ impl SessionSupervisor {
         let Ok(mut downstream) = downstream_sink.reunite(downstream_stream) else {
             return;
         };
-        let Ok(mut upstream) = upstream_sink.reunite(upstream_stream) else {
+        let Ok(upstream) = upstream_sink.reunite(upstream_stream) else {
             return;
         };
+
+        Self {
+            registration,
+            lease,
+            upstream,
+        }
+        .finish_terminal(&mut downstream, terminal, policy, &mut drain)
+        .await;
+    }
+
+    pub(super) async fn wait_for_worker_event(
+        self,
+        downstream: WebSocket,
+        deadline: Instant,
+        policy: &WebsocketConfig,
+        protocol: RelayProtocol,
+        timeout_reason: &'static str,
+    ) -> Option<(Self, WebSocket, WorkerEvent)> {
+        let Self {
+            registration,
+            lease,
+            upstream,
+        } = self;
+        let mut drain = registration.drain.clone();
+        let (downstream_sink, mut downstream_stream) = downstream.split();
+        let (mut upstream_sink, mut upstream_stream) = upstream.split();
+
+        let initial_drain = *drain.borrow();
+        let outcome = if initial_drain == DrainState::Forced {
+            SetupOutcome::Terminal(RelayTerminal::Forced)
+        } else if initial_drain == DrainState::Draining {
+            SetupOutcome::Terminal(RelayTerminal::Draining)
+        } else {
+            let client_to_worker =
+                client_to_worker(&mut downstream_stream, &mut upstream_sink, protocol);
+            let worker_event = next_worker_application(&mut upstream_stream);
+            tokio::pin!(client_to_worker, worker_event);
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    SetupOutcome::Terminal(RelayTerminal::SetupDeadline {
+                        code: 1011,
+                        reason: timeout_reason,
+                    })
+                }
+                terminal = &mut client_to_worker => SetupOutcome::Terminal(terminal),
+                event = &mut worker_event => SetupOutcome::Worker(event),
+                changed = drain.changed() => {
+                    let terminal = if changed.is_err()
+                        || *drain.borrow() == DrainState::Forced
+                    {
+                        RelayTerminal::Forced
+                    } else {
+                        RelayTerminal::Draining
+                    };
+                    SetupOutcome::Terminal(terminal)
+                }
+            }
+        };
+
+        let Ok(downstream) = downstream_sink.reunite(downstream_stream) else {
+            return None;
+        };
+        let Ok(upstream) = upstream_sink.reunite(upstream_stream) else {
+            return None;
+        };
+        let supervisor = Self {
+            registration,
+            lease,
+            upstream,
+        };
+        match outcome {
+            SetupOutcome::Worker(event) => Some((supervisor, downstream, event)),
+            SetupOutcome::Terminal(terminal) => {
+                let mut downstream = downstream;
+                supervisor
+                    .finish_terminal(&mut downstream, terminal, policy, &mut drain)
+                    .await;
+                None
+            }
+        }
+    }
+
+    async fn finish_terminal(
+        mut self,
+        downstream: &mut WebSocket,
+        terminal: RelayTerminal,
+        policy: &WebsocketConfig,
+        drain: &mut watch::Receiver<DrainState>,
+    ) {
+        let upstream = &mut self.upstream;
 
         match terminal {
             RelayTerminal::ClientClose(frame) => {
                 let converted = frame.and_then(downstream_close_to_upstream);
                 bounded_close(
-                    &mut downstream,
-                    &mut upstream,
+                    downstream,
+                    upstream,
                     None,
                     Some(UpstreamMessage::Close(converted)),
                     ClosePlan::Both,
                     policy.close_timeout(),
-                    &mut drain,
+                    drain,
                 )
                 .await;
             }
             RelayTerminal::WorkerClose(frame) => {
                 let converted = frame.and_then(upstream_close_to_downstream);
                 bounded_close(
-                    &mut downstream,
-                    &mut upstream,
+                    downstream,
+                    upstream,
                     Some(DownstreamMessage::Close(converted)),
                     None,
                     ClosePlan::Both,
                     policy.close_timeout(),
-                    &mut drain,
+                    drain,
                 )
                 .await;
             }
             RelayTerminal::ClientGone => {
-                close_upstream(
-                    &mut downstream,
-                    &mut upstream,
-                    policy.close_timeout(),
-                    &mut drain,
-                )
-                .await;
+                close_upstream(downstream, upstream, policy.close_timeout(), drain).await;
             }
             RelayTerminal::WorkerGone => {
-                lease.request_immediate_probe();
+                self.lease.request_immediate_probe();
                 close_downstream(
-                    &mut downstream,
-                    &mut upstream,
+                    downstream,
+                    upstream,
                     1011,
                     "upstream connection lost",
                     policy.close_timeout(),
-                    &mut drain,
+                    drain,
                 )
                 .await;
             }
             RelayTerminal::ClientViolation { code, reason } => {
                 terminate_both(
-                    &mut downstream,
-                    &mut upstream,
+                    downstream,
+                    upstream,
                     code,
                     reason,
                     policy.close_timeout(),
-                    &mut drain,
+                    drain,
                 )
                 .await;
             }
             RelayTerminal::WorkerViolation { code, reason } => {
-                lease.request_immediate_probe();
+                self.lease.request_immediate_probe();
                 terminate_both(
-                    &mut downstream,
-                    &mut upstream,
+                    downstream,
+                    upstream,
                     code,
                     reason,
                     policy.close_timeout(),
-                    &mut drain,
+                    drain,
                 )
                 .await;
             }
             RelayTerminal::Draining => {
                 terminate_both(
-                    &mut downstream,
-                    &mut upstream,
+                    downstream,
+                    upstream,
                     1012,
                     "service restart",
                     policy.close_timeout(),
-                    &mut drain,
+                    drain,
                 )
                 .await;
             }
             RelayTerminal::Forced => {}
+            RelayTerminal::SetupDeadline { code, reason } => {
+                terminate_both(
+                    downstream,
+                    upstream,
+                    code,
+                    reason,
+                    policy.close_timeout(),
+                    drain,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+async fn next_worker_application(upstream: &mut UpstreamStream) -> WorkerEvent {
+    loop {
+        match upstream.next().await {
+            Some(Ok(
+                UpstreamMessage::Ping(_) | UpstreamMessage::Pong(_) | UpstreamMessage::Frame(_),
+            )) => {}
+            other => return other,
         }
     }
 }
