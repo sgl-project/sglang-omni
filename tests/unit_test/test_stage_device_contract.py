@@ -24,6 +24,9 @@ _MODELS = sorted(
 # Every stage that relies on device=None. Adding one means adding a test below that
 # proves the factory resolves it.
 _NONE_DEVICE_STAGES = {
+    ("moss_tts", "preprocessing"),
+    ("moss_tts", "tts_engine"),
+    ("moss_tts", "vocoder"),
     ("qwen3_asr", "asr"),
     ("qwen3_omni", "audio_encoder"),
     ("qwen3_omni", "code2wav"),
