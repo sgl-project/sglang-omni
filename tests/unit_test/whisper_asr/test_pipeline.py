@@ -199,6 +199,26 @@ def test_whisper_breakable_prefill_graph_policy() -> None:
     )
 
 
+def test_whisper_prefill_graph_cap_covers_shorter_request_batches() -> None:
+    builder = whisper_asr_builder.WhisperASREngineBuilder(
+        max_running_requests=3,
+        max_new_tokens=256,
+        mem_fraction_static=0.2,
+    )
+    builder.encoder_token_count = 1500
+    merged = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="float16"),
+        server_args_overrides={"max_prefill_tokens": 5120},
+    )
+
+    builder.adjust_overrides(merged)
+
+    assert merged["cuda_graph_max_bs_prefill"] == 620
+    assert 3 * 192 <= merged["cuda_graph_max_bs_prefill"]
+    assert 3 * 192 in merged["cuda_graph_bs_prefill"]
+    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(620)
+
+
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
