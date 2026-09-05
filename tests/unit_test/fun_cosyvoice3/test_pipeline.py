@@ -40,6 +40,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 2000,
         "enable_dit_torch_compile": False,
+        "enable_flow_cuda_graph": False,
     }
 
     build_compiled_process_topology(config)
@@ -56,6 +57,7 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         {
             "vocoder.factory.flow_batch_bucket_frames": 100,
             "vocoder.factory.flow_batch_admission_frames": 4000,
+            "vocoder.factory.enable_flow_cuda_graph": True,
         }
     )
     vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
@@ -64,10 +66,12 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
         "flow_batch_bucket_frames": 100,
         "flow_batch_admission_frames": 4000,
         "enable_dit_torch_compile": False,
+        "enable_flow_cuda_graph": True,
     }
     args = resolve_stage_typed_kwargs(vocoder)
     assert args["flow_batch_bucket_frames"] == 100
     assert args["flow_batch_admission_frames"] == 4000
+    assert args["enable_flow_cuda_graph"] is True
 
 
 def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:

@@ -58,6 +58,8 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 flow_batch_admission_frames=2000,
                 # Opt-in; off by default (one-time startup compile cost).
                 enable_dit_torch_compile=False,
+                # Opt-in; off by default (startup graph capture cost).
+                enable_flow_cuda_graph=False,
             ),
             gpu=0,
             terminal=True,

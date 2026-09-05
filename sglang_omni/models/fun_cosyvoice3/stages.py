@@ -38,6 +38,42 @@ _AUTOCAST_DTYPES: dict[str, torch.dtype | None] = {
     "bfloat16": torch.bfloat16,
 }
 
+# Trace-selected exact (batch size, q16 mel frames) keys; batch size is never padded.
+_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES: tuple[tuple[int, int], ...] = (
+    (1, 288),
+    (1, 304),
+    (1, 320),
+    (1, 336),
+    (1, 352),
+    (1, 368),
+    (1, 384),
+    (1, 400),
+    (1, 416),
+    (1, 432),
+    (1, 448),
+    (1, 464),
+    (1, 480),
+    (1, 496),
+    (1, 512),
+    (1, 528),
+    (1, 544),
+    (1, 560),
+    (1, 576),
+    (1, 592),
+    (1, 608),
+    (1, 640),
+    (1, 656),
+    (1, 672),
+    (2, 368),
+    (2, 384),
+    (2, 400),
+    (2, 448),
+    (2, 496),
+    (2, 544),
+    (2, 560),
+    (3, 448),
+)
+
 _COSYVOICE_INSTALL_HINT = (
     "Fun-CosyVoice3 support requires the `cosyvoice` package. "
     "Clone the official repository and set PYTHONPATH, or install it "
@@ -222,8 +258,213 @@ def _solve_flow_euler(
     return x.float()
 
 
+def _flow_t_span(
+    decoder: Any, *, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
+    t_span = torch.linspace(0, 1, 11, device=device, dtype=dtype)
+    if decoder.t_scheduler == "cosine":
+        t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
+    return t_span
+
+
+def _align_flow_cuda_graph_frames(frames: int) -> int:
+    return (frames + 15) // 16 * 16
+
+
+def _graph_safe_nonstreaming_chunk_mask(
+    xs: torch.Tensor,
+    masks: torch.Tensor,
+    use_dynamic_chunk: bool,
+    use_dynamic_left_chunk: bool,
+    decoding_chunk_size: int,
+    static_chunk_size: int,
+    num_decoding_left_chunks: int,
+    enable_full_context: bool = True,
+) -> torch.Tensor:
+    if use_dynamic_chunk or static_chunk_size > 0:
+        raise RuntimeError(
+            "CUDA graph mask workaround only supports buffered non-streaming Flow"
+        )
+    empty_rows = masks.sum(dim=-1, keepdim=True) == 0
+    torch._dynamo.graph_break()
+    masks.masked_fill_(empty_rows, True)
+    return masks
+
+
+def _enable_flow_cuda_graph_dit_compat() -> None:
+    """Install the graph-safe buffered DiT mask helper for process lifetime."""
+    from cosyvoice.flow.DiT import dit as dit_module
+
+    dit_module.add_optional_chunk_mask = _graph_safe_nonstreaming_chunk_mask
+
+
+@dataclass
+class _CapturedFlowCudaGraph:
+    graph: torch.cuda.CUDAGraph
+    static_inputs: tuple[torch.Tensor, ...]
+    static_output: torch.Tensor
+
+
+class _FlowCudaGraphRunner:
+    """Startup-captured, independently replayable Flow graphs."""
+
+    def __init__(
+        self,
+        flow: Any,
+        *,
+        device: torch.device,
+        compute_dtype: torch.dtype,
+    ) -> None:
+        self._flow = flow
+        self._device = torch.device(device)
+        self._compute_dtype = compute_dtype
+        self._graphs: dict[tuple[int, int], _CapturedFlowCudaGraph] = {}
+
+    def _capture_inputs(self, batch_size: int, frames: int) -> tuple[torch.Tensor, ...]:
+        model_device, parameter_dtype = _flow_device_and_dtype(self._flow)
+        decoder = self._flow.decoder
+        noise = decoder.rand_noise
+        channels = int(self._flow.output_size)
+        if (
+            noise.ndim != 3
+            or noise.shape[0] != 1
+            or noise.shape[1] != channels
+            or noise.shape[2] < frames
+        ):
+            raise ValueError(
+                "Flow CUDA graph capture needs rand_noise with shape "
+                f"[1, {channels}, >= {frames}], got {tuple(noise.shape)}"
+            )
+        x = noise[:, :, :frames].to(device=model_device, dtype=parameter_dtype)
+        x = x.expand(batch_size, -1, -1).clone()
+        t_span = _flow_t_span(decoder, device=model_device, dtype=parameter_dtype)
+        mu = torch.zeros_like(x)
+        mask = torch.ones(
+            batch_size, 1, frames, device=model_device, dtype=parameter_dtype
+        )
+        speaker_dim = int(self._flow.spk_embed_affine_layer.out_features)
+        spks = torch.zeros(
+            batch_size, speaker_dim, device=model_device, dtype=self._compute_dtype
+        )
+        cond = torch.zeros_like(x)
+        return x, t_span, mu, mask, spks, cond
+
+    def _capture_one(self, batch_size: int, frames: int) -> _CapturedFlowCudaGraph:
+        static_inputs = self._capture_inputs(batch_size, frames)
+
+        def _forward() -> torch.Tensor:
+            return _solve_flow_euler(self._flow.decoder, *static_inputs)
+
+        stream = torch.cuda.Stream(device=self._device)
+        stream.wait_stream(torch.cuda.current_stream(self._device))
+        with (
+            torch.cuda.stream(stream),
+            torch.autocast(device_type="cuda", dtype=self._compute_dtype),
+        ):
+            _forward()
+        stream.synchronize()
+
+        graph = torch.cuda.CUDAGraph()
+        with (
+            torch.cuda.graph(
+                graph,
+                stream=stream,
+                capture_error_mode="thread_local",
+            ),
+            torch.autocast(device_type="cuda", dtype=self._compute_dtype),
+        ):
+            static_output = _forward()
+        stream.synchronize()
+        return _CapturedFlowCudaGraph(graph, static_inputs, static_output)
+
+    @torch.inference_mode()
+    def capture(self, capture_shapes: Sequence[tuple[int, int]]) -> None:
+        graphs: dict[tuple[int, int], _CapturedFlowCudaGraph] = {}
+        with torch.cuda.device(self._device):
+            for key in capture_shapes:
+                graphs[key] = self._capture_one(*key)
+        self._graphs = graphs
+
+    @staticmethod
+    def _matches(
+        static_inputs: tuple[torch.Tensor, ...],
+        inputs: tuple[torch.Tensor, ...],
+    ) -> bool:
+        return all(
+            static.shape == value.shape
+            and static.dtype == value.dtype
+            and static.device == value.device
+            for static, value in zip(static_inputs, inputs, strict=True)
+        )
+
+    @staticmethod
+    def _right_pad_time(
+        value: torch.Tensor, actual_frames: int, bucket_frames: int
+    ) -> torch.Tensor:
+        padding = bucket_frames - actual_frames
+        if padding == 0:
+            return value
+        return F.pad(value, (0, padding), mode="constant", value=0)
+
+    @torch.inference_mode()
+    def run(
+        self,
+        x: torch.Tensor,
+        t_span: torch.Tensor,
+        mu: torch.Tensor,
+        mask: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if x.ndim != 3:
+            return None
+        batch_size, actual_frames = int(x.shape[0]), int(x.shape[2])
+        bucket_frames = _align_flow_cuda_graph_frames(actual_frames)
+        captured = self._graphs.get((batch_size, bucket_frames))
+        if captured is None:
+            return None
+
+        time_inputs = (x, mu, mask, cond)
+        if any(
+            value.ndim == 0 or value.shape[-1] != actual_frames for value in time_inputs
+        ):
+            return None
+        inputs = (
+            self._right_pad_time(x, actual_frames, bucket_frames),
+            t_span,
+            self._right_pad_time(mu, actual_frames, bucket_frames),
+            self._right_pad_time(mask, actual_frames, bucket_frames),
+            spks,
+            self._right_pad_time(cond, actual_frames, bucket_frames),
+        )
+        if not self._matches(captured.static_inputs, inputs):
+            return None
+        try:
+            with (
+                torch.cuda.device(self._device),
+                torch.autocast(device_type="cuda", dtype=self._compute_dtype),
+            ):
+                for static, value in zip(captured.static_inputs, inputs, strict=True):
+                    static.copy_(value)
+                captured.graph.replay()
+                return captured.static_output[..., :actual_frames].clone()
+        except Exception:
+            self._graphs.clear()
+            logger.exception(
+                "Fun-CosyVoice3 Flow CUDA graph replay failed for batch=%d "
+                "frames=%d; disabled all Flow CUDA graphs",
+                batch_size,
+                bucket_frames,
+            )
+            raise
+
+
 @torch.inference_mode()
-def _generate_flow(flow: Any, packed: _PackedFlowBatch) -> torch.Tensor:
+def _generate_flow(
+    flow: Any,
+    packed: _PackedFlowBatch,
+    cuda_graph_runner: _FlowCudaGraphRunner | None = None,
+) -> torch.Tensor:
     embedding = flow.spk_embed_affine_layer(F.normalize(packed.embedding, dim=1))
     token_embedding = flow.input_embedding(torch.clamp(packed.token, min=0))
     h = flow.pre_lookahead_layer(
@@ -258,9 +499,11 @@ def _generate_flow(flow: Any, packed: _PackedFlowBatch) -> torch.Tensor:
         .expand(batch_size, -1, -1)
         .clone()
     )
-    t_span = torch.linspace(0, 1, 11, device=mu.device, dtype=mu.dtype)
-    if decoder.t_scheduler == "cosine":
-        t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
+    t_span = _flow_t_span(decoder, device=mu.device, dtype=mu.dtype)
+    if cuda_graph_runner is not None:
+        generated = cuda_graph_runner.run(z, t_span, mu, mask, embedding, cond)
+        if generated is not None:
+            return generated
     return _solve_flow_euler(decoder, z, t_span, mu, mask, embedding, cond)
 
 
@@ -269,6 +512,7 @@ class FunCosyVoice3Flow:
 
     def __init__(self, flow: Any) -> None:
         self._flow = flow
+        self._cuda_graph_runner: _FlowCudaGraphRunner | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._flow, name)
@@ -284,10 +528,13 @@ class FunCosyVoice3Flow:
         self._flow.eval()
         return self
 
+    def attach_cuda_graph_runner(self, runner: _FlowCudaGraphRunner) -> None:
+        self._cuda_graph_runner = runner
+
     @torch.inference_mode()
     def inference(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated = _generate_flow(self._flow, packed)
+        generated = _generate_flow(self._flow, packed, self._cuda_graph_runner)
         outputs: list[torch.Tensor] = []
         for index, prompt_frames in enumerate(packed.prompt_mel_lengths):
             mel = generated[
@@ -318,7 +565,7 @@ def _load_cosyvoice3_flow_hift(
     checkpoint_dir: str,
     device: str,
     fp16: bool = False,
-) -> tuple[Any, Any]:
+) -> tuple[FunCosyVoice3Flow, Any]:
     try:
         from cosyvoice.cli.cosyvoice import CosyVoice3
     except ImportError as exc:
@@ -623,6 +870,7 @@ def create_vocoder_executor(
     flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
     enable_dit_torch_compile: bool = False,
+    enable_flow_cuda_graph: bool = False,
 ) -> SimpleScheduler:
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
@@ -639,8 +887,51 @@ def create_vocoder_executor(
         device=device,
         fp16=(dtype == "float16"),
     )
+
+    flow = flow if isinstance(flow, FunCosyVoice3Flow) else FunCosyVoice3Flow(flow)
+    flow_cg_enabled = (
+        enable_flow_cuda_graph
+        and device.split(":", 1)[0] == "cuda"
+        and compute_dtype == torch.bfloat16
+    )
+    if enable_flow_cuda_graph and not flow_cg_enabled:
+        logger.warning(
+            "Fun-CosyVoice3 Flow CUDA graphs are disabled: the validated "
+            "path requires a CUDA device with the bfloat16 vocoder configuration"
+        )
+
+    if flow_cg_enabled:
+        try:
+            _enable_flow_cuda_graph_dit_compat()
+        except Exception as exc:
+            logger.warning(
+                "Fun-CosyVoice3 Flow CUDA graphs are disabled because the "
+                "graph-safe DiT mask helper could not be installed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            flow_cg_enabled = False
+
     if enable_dit_torch_compile:
         _compile_dit_backbone(flow, compute_dtype=compute_dtype)
+
+    if flow_cg_enabled:
+        try:
+            runner = _FlowCudaGraphRunner(
+                flow,
+                device=torch.device(device),
+                compute_dtype=cast(torch.dtype, compute_dtype),
+            )
+            runner.capture(_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES)
+        except Exception as exc:
+            logger.warning(
+                "Fun-CosyVoice3 Flow CUDA graph startup failed (%s: %s); "
+                "using the normal solver",
+                type(exc).__name__,
+                exc,
+            )
+        else:
+            flow.attach_cuda_graph_runner(runner)
 
     vocoder = _CosyVoice3Vocoder(
         flow,

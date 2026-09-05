@@ -149,6 +149,25 @@ sgl-omni serve \
   --port 8000
 ```
 
+### CUDA Graphs for the Flow solver
+
+Flow CUDA Graph support is opt-in and defaults to off. The validated path targets CUDA
+with the BF16 vocoder configuration. Graphs are captured at startup; unsupported or
+nonresident requests use normal execution. There is no request-time graph capture.
+Resident graphs keep CUDA Graph memory pools alive, so enabling this option uses
+additional GPU memory; ensure sufficient headroom for colocated serving.
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --vocoder.factory.enable_flow_cuda_graph true \
+  --port 8000
+```
+
+`enable_dit_torch_compile` and `enable_flow_cuda_graph` are independent flags; enabling
+both uses the compiled DiT with the startup-captured Flow solver graphs.
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
