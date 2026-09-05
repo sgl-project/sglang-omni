@@ -138,9 +138,7 @@ class LazyGenerator:
             prompt = generator.build_icl_prompt(text, audio, ref_text, language)
             mx.eval(prompt.input_embeds, prompt.ref_codes)
             prefill_seconds = time.perf_counter() - started
-            reference_cached = (
-                generator.cached_reference_count == references_before
-            )
+            reference_cached = generator.cached_reference_count == references_before
 
             started = time.perf_counter()
             frames = []
