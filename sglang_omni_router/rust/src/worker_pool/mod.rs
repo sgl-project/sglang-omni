@@ -1516,6 +1516,16 @@ mod tests {
             Err(DispatchError::Overloaded)
         ));
         drop(preferred);
+
+        beta.health.store(WorkerHealth::Unhealthy);
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("unhealthy admission"),
+                &requirement,
+            ),
+            Err(DispatchError::Unavailable)
+        ));
         assert_eq!((alpha.load(), beta.load()), (0, 0));
     }
 
