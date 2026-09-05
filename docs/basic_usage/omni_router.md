@@ -263,8 +263,9 @@ the complete session. Each frame awaits its destination send, preserving frame
 type and order without relay tasks or application queues. Both links use a 16
 MiB message bound. Speech configuration, upstream transport setup, the first
 worker event, and close convergence use separate deadlines. Application-level
-idle behavior remains worker-owned. A realtime `model` query prefers a matching
-worker default and falls back to any compatible worker in the trust domain.
+idle behavior remains worker-owned. A realtime `model` query requires a worker
+with the matching default; an omitted model can use any compatible worker in
+the trust domain.
 Speech configuration is replayed byte-for-byte; the router extracts routing
 facts while the worker owns protocol-value validation.
 

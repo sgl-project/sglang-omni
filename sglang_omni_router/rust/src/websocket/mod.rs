@@ -448,18 +448,14 @@ pub(crate) async fn realtime(
         return HttpFault::RouterUnavailable.into_response();
     };
     let mut drain = registration.drain_receiver();
-    let requirement = RouteRequirement::new(ProfileRequirement::RealtimeWebsocket, trust);
-    let lease =
-        match gateway
-            .pool
-            .dispatch_realtime_session(admission, &requirement, model.as_deref())
-        {
-            Ok(lease) => lease,
-            Err(error) => {
-                drop(registration);
-                return dispatch_fault(error).into_response();
-            }
-        };
+    let requirement = RouteRequirement::new(ProfileRequirement::RealtimeWebsocket { model }, trust);
+    let lease = match gateway.pool.dispatch_session(admission, &requirement) {
+        Ok(lease) => lease,
+        Err(error) => {
+            drop(registration);
+            return dispatch_fault(error).into_response();
+        }
+    };
     let connect_deadline = Instant::now() + gateway.policy.connect_timeout();
     let connected = setup_until(
         &mut drain,
@@ -1364,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_query_is_an_optional_worker_preference() {
+    fn realtime_query_is_an_optional_worker_requirement() {
         let explicit = |query: &str| {
             let uri: Uri = format!("/v1/realtime?{query}")
                 .parse()

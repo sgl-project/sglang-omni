@@ -269,29 +269,6 @@ impl WorkerPool {
         admission: AdmissionLease,
         requirement: &RouteRequirement,
     ) -> Result<RequestLease, DispatchError> {
-        self.dispatch_session_preferred(admission, requirement, None)
-    }
-
-    pub(crate) fn dispatch_realtime_session(
-        &self,
-        admission: AdmissionLease,
-        requirement: &RouteRequirement,
-        preferred_model: Option<&str>,
-    ) -> Result<RequestLease, DispatchError> {
-        if admission.class() != CapacityClass::RealtimeWebsocket
-            || requirement.capacity_class() != CapacityClass::RealtimeWebsocket
-        {
-            return Err(DispatchError::Internal);
-        }
-        self.dispatch_session_preferred(admission, requirement, preferred_model)
-    }
-
-    fn dispatch_session_preferred(
-        &self,
-        admission: AdmissionLease,
-        requirement: &RouteRequirement,
-        preferred_model: Option<&str>,
-    ) -> Result<RequestLease, DispatchError> {
         let class = admission.class();
         if class != requirement.capacity_class() || session_capacity_index(class).is_none() {
             return Err(DispatchError::Internal);
@@ -301,8 +278,6 @@ impl WorkerPool {
         let mut healthy_found = false;
         let mut eligible = [0; MAX_WORKERS];
         let mut eligible_count = 0;
-        let mut preferred = [0; MAX_WORKERS];
-        let mut preferred_count = 0;
         let mut voice_policies = 0;
         let requires_default_resolution = requirement.profile.requires_default_resolution();
         let mut resolved_default = None;
@@ -338,12 +313,6 @@ impl WorkerPool {
                 let index = record.registration_id.startup_ordinal();
                 eligible[eligible_count] = index;
                 eligible_count += 1;
-                if preferred_model
-                    .is_some_and(|model| record.default_model_id.as_deref() == Some(model))
-                {
-                    preferred[preferred_count] = index;
-                    preferred_count += 1;
-                }
             }
         }
         if requirement.profile.has_named_voice() && voice_policies.count_ones() > 1 {
@@ -359,11 +328,7 @@ impl WorkerPool {
             return Err(DispatchError::Overloaded);
         }
 
-        let eligible = if preferred_count == 0 {
-            &eligible[..eligible_count]
-        } else {
-            &preferred[..preferred_count]
-        };
+        let eligible = &eligible[..eligible_count];
         let selected = match self.selector.strategy() {
             RoutingStrategy::RoundRobin => {
                 let candidates = candidate_set(eligible);
@@ -1472,7 +1437,7 @@ mod tests {
         let mut pool = pool(RoutingStrategy::LeastRequests, vec![Arc::clone(&record)], 2);
         pool.admission = AdmissionController::new(2, [None, None, None, None, None, Some(2)]);
         let requirement = RouteRequirement::new(
-            ProfileRequirement::RealtimeWebsocket,
+            ProfileRequirement::RealtimeWebsocket { model: None },
             TrustDomain::new(String::from("local")),
         );
 
@@ -1507,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    fn realtime_preference_falls_back_when_the_preferred_worker_is_full() {
+    fn realtime_explicit_model_never_falls_back_when_its_worker_is_full() {
         let build_record = |ordinal, model| {
             let mut record =
                 record_with_profile(ordinal, "local", model, ServiceProfile::RealtimeWebsocket);
@@ -1527,30 +1492,30 @@ mod tests {
         );
         pool.admission = AdmissionController::new(2, [None, None, None, None, None, Some(2)]);
         let requirement = RouteRequirement::new(
-            ProfileRequirement::RealtimeWebsocket,
+            ProfileRequirement::RealtimeWebsocket {
+                model: Some(String::from("omni-beta")),
+            },
             TrustDomain::new(String::from("local")),
         );
 
         let preferred = pool
-            .dispatch_realtime_session(
+            .dispatch_session(
                 pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
                     .expect("preferred admission"),
                 &requirement,
-                Some("omni-beta"),
             )
-            .expect("select preferred worker");
+            .expect("select explicitly requested worker");
         assert_eq!(preferred.registration_ordinal(), 1);
 
-        let fallback = pool
-            .dispatch_realtime_session(
+        assert!(matches!(
+            pool.dispatch_session(
                 pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
-                    .expect("fallback admission"),
+                    .expect("second admission"),
                 &requirement,
-                Some("omni-beta"),
-            )
-            .expect("fall back to an available worker");
-        assert_eq!(fallback.registration_ordinal(), 0);
-        drop((preferred, fallback));
+            ),
+            Err(DispatchError::Overloaded)
+        ));
+        drop(preferred);
         assert_eq!((alpha.load(), beta.load()), (0, 0));
     }
 

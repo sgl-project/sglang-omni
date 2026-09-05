@@ -1116,7 +1116,7 @@ async fn heterogeneous_websocket_routing_follows_request_facts() {
 
     let (mut unspecified, _) = connect_async(format!("ws://{router_address}/v1/realtime"))
         .await
-        .expect("select a realtime worker without a model preference");
+        .expect("select a realtime worker without a model requirement");
     let created = unspecified
         .next()
         .await
@@ -1163,26 +1163,16 @@ async fn heterogeneous_websocket_routing_follows_request_facts() {
     let _closed = beta.next().await;
     drop(beta);
 
-    let fallback_path = "/v1/realtime?model=unknown";
-    let (mut fallback, _) = connect_async(format!("ws://{router_address}{fallback_path}"))
+    let failure = connect_async(format!("ws://{router_address}/v1/realtime?model=unknown"))
         .await
-        .expect("fall back when no worker default matches the preference");
-    let created = fallback
-        .next()
-        .await
-        .expect("fallback session.created")
-        .expect("valid fallback event")
-        .into_text()
-        .expect("fallback event text");
-    assert!(created.contains(r#""model":"omni-alpha""#));
-    assert_eq!(
-        alpha_paths.lock().await.as_slice(),
-        ["/v1/realtime", fallback_path]
-    );
-    fallback.close(None).await.expect("close fallback session");
-    let _closed = fallback.next().await;
-    drop(fallback);
-    assert_eq!(handshakes.load(Ordering::Relaxed), 3);
+        .expect_err("an unknown explicit model must not fall back");
+    assert!(matches!(
+        failure,
+        tokio_tungstenite::tungstenite::Error::Http(response)
+            if response.status() == StatusCode::UNPROCESSABLE_ENTITY
+    ));
+    assert_eq!(alpha_paths.lock().await.as_slice(), ["/v1/realtime"]);
+    assert_eq!(handshakes.load(Ordering::Relaxed), 2);
 
     alpha_task.abort();
     beta_task.abort();

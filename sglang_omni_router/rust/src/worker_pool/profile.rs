@@ -320,7 +320,9 @@ pub(crate) enum ProfileRequirement {
         reference_forms: Vec<ReferenceForm>,
         named_voice: bool,
     },
-    RealtimeWebsocket,
+    RealtimeWebsocket {
+        model: Option<String>,
+    },
 }
 
 /// Preserves whether the caller selected a model or relied on a worker default.
@@ -404,7 +406,7 @@ impl ProfileRequirement {
             Self::SpeechBatch { .. } => ServiceClass::SpeechBatch,
             Self::TranscriptionHttp { .. } => ServiceClass::TranscriptionHttp,
             Self::SpeechWebsocket { .. } => ServiceClass::SpeechWebsocket,
-            Self::RealtimeWebsocket => ServiceClass::RealtimeWebsocket,
+            Self::RealtimeWebsocket { .. } => ServiceClass::RealtimeWebsocket,
         }
     }
 
@@ -417,7 +419,7 @@ impl ProfileRequirement {
             Self::SpeechBatch { models, .. } => {
                 models.iter().any(ModelSelection::requires_resolution)
             }
-            Self::RealtimeWebsocket => false,
+            Self::RealtimeWebsocket { .. } => false,
         }
     }
 
@@ -428,7 +430,7 @@ impl ProfileRequirement {
             | Self::SpeechWebsocket { named_voice, .. } => *named_voice,
             Self::GenerationHttp { .. }
             | Self::TranscriptionHttp { .. }
-            | Self::RealtimeWebsocket => false,
+            | Self::RealtimeWebsocket { .. } => false,
         }
     }
 }
@@ -848,7 +850,7 @@ impl ServiceProfile {
                     stream_modes,
                     tasks,
                     reference_forms,
-                    ..
+                    voice_name_policy,
                 },
                 ProfileRequirement::SpeechWebsocket {
                     model,
@@ -856,16 +858,23 @@ impl ServiceProfile {
                     stream_mode,
                     task,
                     reference_forms: required_references,
-                    ..
+                    named_voice,
                 },
             ) => {
                 model.matches_profile_models(model_ids, worker_default)
                     && response_format.is_none_or(|format| response_formats.contains(&format))
                     && stream_modes.contains(stream_mode)
                     && task.is_none_or(|task| tasks.contains(&task))
-                    && contains_all(reference_forms, required_references)
+                    && matches_speech_references(
+                        reference_forms,
+                        required_references,
+                        *named_voice,
+                        *voice_name_policy,
+                    )
             }
-            (Self::RealtimeWebsocket, ProfileRequirement::RealtimeWebsocket) => true,
+            (Self::RealtimeWebsocket, ProfileRequirement::RealtimeWebsocket { model }) => model
+                .as_deref()
+                .is_none_or(|model| worker_default == Some(model)),
             _ => false,
         }
     }
@@ -1433,8 +1442,8 @@ mod tests {
     }
 
     #[test]
-    fn named_voice_websocket_keeps_reference_matching_independent() {
-        let row = ServiceProfile::SpeechWebsocket {
+    fn named_voice_websocket_uses_the_profile_voice_policy() {
+        let mut row = ServiceProfile::SpeechWebsocket {
             model_ids: vec![String::from("tts")],
             response_formats: vec![SpeechResponseFormat::Pcm],
             stream_modes: vec![StreamMode::Streaming],
@@ -1457,5 +1466,24 @@ mod tests {
             Some("tts")
         ));
         assert!(!row.matches(&requirement(vec![ReferenceForm::None], false), Some("tts")));
+
+        if let ServiceProfile::SpeechWebsocket {
+            voice_name_policy, ..
+        } = &mut row
+        {
+            *voice_name_policy = VoiceNamePolicy::Preset;
+        }
+        assert!(!row.matches(&requirement(Vec::new(), true), Some("tts")));
+        if let ServiceProfile::SpeechWebsocket {
+            reference_forms, ..
+        } = &mut row
+        {
+            reference_forms.push(ReferenceForm::None);
+        }
+        assert!(row.matches(&requirement(Vec::new(), true), Some("tts")));
+        assert!(row.matches(
+            &requirement(vec![ReferenceForm::Direct], false),
+            Some("tts")
+        ));
     }
 }
