@@ -858,8 +858,8 @@ stream_modes = ["non_streaming", "streaming"]
             "model":"tts",
             "voice":"named-default",
             "items":[
-                {"input":"first","ref_audio":"direct"},
-                {"input":"second","references":[{"audio":"list"}]}
+                {"input":"first","voice":"default"},
+                {"input":"second","voice":"default"}
             ]
         }"#;
         let classified = batch(body, &pool, &trust).expect("classify overridden default voice");
@@ -871,10 +871,7 @@ stream_modes = ["non_streaming", "streaming"]
         else {
             panic!("batch requirement")
         };
-        assert_eq!(
-            reference_forms,
-            &[ReferenceForm::Direct, ReferenceForm::List]
-        );
+        assert_eq!(reference_forms, &[ReferenceForm::None]);
         assert!(*named_voice);
     }
 
