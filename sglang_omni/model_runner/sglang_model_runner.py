@@ -417,7 +417,12 @@ class SGLModelRunner(ModelRunner):
         # driver so KV-pool profiling and later replicas see the freed memory.
         torch.cuda.empty_cache()
 
-    def init_cuda_graphs(self, capture_decode_cuda_graph: bool = True):
+    def init_cuda_graphs(
+        self,
+        capture_decode_cuda_graph: bool = True,
+        *,
+        defer_post_capture_kv_resize: bool = False,
+    ):
         """Re-verify shared weights and finish post-capture KV sizing.
 
         Followers: catches any load-path step that re-created a parameter
@@ -441,7 +446,10 @@ class SGLModelRunner(ModelRunner):
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         result = super().init_cuda_graphs(capture_decode_cuda_graph)
-        if self.token_to_kv_pool.post_capture_active:
+        if (
+            self.token_to_kv_pool.post_capture_active
+            and not defer_post_capture_kv_resize
+        ):
             self.post_capture_resize_kv_pool()
         return result
 

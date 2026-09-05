@@ -163,20 +163,28 @@ def test_qwen_thinker_stream_builder_suppresses_talker_for_text_output():
     assert [msg.target for msg in messages] == ["decode"]
 
 
-def test_qwen_thinker_stream_builder_keeps_talker_for_audio_output():
-    builder = make_thinker_stream_output_builder()
+@pytest.mark.parametrize("token_only", [False, True])
+def test_qwen_thinker_stream_builder_keeps_talker_for_audio_output(token_only):
+    builder = make_thinker_stream_output_builder(talker_stream_token_only=token_only)
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=_thinker_stage_payload(["audio"]),
+        model_inputs={},
+        capture_model_output_keys=(),
     )
     req_output = SimpleNamespace(
         data=11,
-        extra={"hidden_states": torch.tensor([[1.0, 2.0]])},
+        extra={} if token_only else {"hidden_states": torch.tensor([[1.0, 2.0]])},
     )
 
     messages = builder("req-1", req_data, req_output)
 
     assert [msg.target for msg in messages] == ["decode", "talker_ar"]
+    if token_only:
+        assert messages[1].data.tolist() == [11]
+        assert messages[1].data.dtype == torch.long
+        assert messages[1].data.device.type == "cpu"
+        assert messages[1].metadata == {"token_id": 11}
 
 
 def test_qwen_thinker_stream_builder_keeps_talker_when_modalities_missing():

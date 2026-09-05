@@ -944,7 +944,9 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         "make_thinker_scheduler_adapters",
         lambda **kwargs: (object(), object()),
     )
-    monkeypatch.setattr(request_builders, "make_thinker_stream_output_builder", object)
+    monkeypatch.setattr(
+        request_builders, "make_thinker_stream_output_builder", SimpleNamespace
+    )
     monkeypatch.setattr(
         request_builders, "should_generate_audio_output", lambda payload: False
     )
@@ -988,6 +990,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         [] if speech_enabled else [(model_worker, output_proc)]
     )
     assert scheduler.server_args is server_args
+    assert scheduler.stream_output_builder.talker_stream_token_only is False
 
 
 @pytest.mark.parametrize("speech_enabled", [False, True])
@@ -1054,7 +1057,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda runner, args: attest_calls.append((runner, args)),
+        lambda runner, args, **kwargs: attest_calls.append((runner, args)),
     )
     monkeypatch.setattr(
         hf_transformers_utils, "get_tokenizer", lambda *a, **k: object()
@@ -1064,7 +1067,9 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
         "make_thinker_scheduler_adapters",
         lambda **kwargs: (object(), object()),
     )
-    monkeypatch.setattr(request_builders, "make_thinker_stream_output_builder", object)
+    monkeypatch.setattr(
+        request_builders, "make_thinker_stream_output_builder", SimpleNamespace
+    )
     monkeypatch.setattr(
         request_builders,
         "should_generate_audio_output",
@@ -1101,6 +1106,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     assert callable(output_args["should_emit_hidden"])
     assert qwen_runner_calls == [(model_worker, output_proc)]
     assert scheduler.server_args is server_args
+    assert scheduler.stream_output_builder.talker_stream_token_only is False
 
 
 def test_qwen_broadcast_and_dotted_conflict_is_never_silent() -> None:
@@ -1291,6 +1297,56 @@ def test_qwen_factory_signatures_keep_reserve_thinker_only() -> None:
 
     assert thinker_sig.parameters["encoder_mem_reserve"].default == 0.05
     assert "encoder_mem_reserve" not in talker_sig.parameters
+
+
+def test_qwen_thinker_factory_forwards_token_only_dflash_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sglang_omni.platforms as platforms
+
+    config = ConfigManager(
+        Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    ).merge_config(
+        [
+            ("thinker.factory.talker_stream_token_only", "true"),
+            ("thinker.factory.capture_speech_hidden_states", "false"),
+            ("thinker.engine.speculative_algorithm", "DFLASH"),
+            ("thinker.engine.speculative_draft_model_path", "draft"),
+            ("thinker.engine.mem_fraction_static", "0.70"),
+        ]
+    )
+    factory_args = resolve_stage_factory_args(_stage(config, "thinker"), config)
+    factory_args["total_gpu_memory_fraction"] = 0.70
+    monkeypatch.setattr(
+        platforms,
+        "current_platform",
+        SimpleNamespace(enable_thinker_decode_graph=lambda: True),
+    )
+    monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 0)
+    monkeypatch.setattr(qwen_stages, "get_process_gpu_memory_bytes", lambda gpu_id: 0)
+    monkeypatch.setattr(
+        qwen_stages,
+        "build_sglang_server_args",
+        lambda model_path, **kwargs: SimpleNamespace(model_path=model_path, **kwargs),
+    )
+    monkeypatch.setattr(
+        qwen_stages, "validate_generation_batch_policy", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        qwen_stages,
+        "create_thinker_scheduler",
+        lambda server_args, gpu_id, **kwargs: SimpleNamespace(
+            server_args=server_args, **kwargs
+        ),
+    )
+
+    scheduler = qwen_stages.create_sglang_thinker_executor_from_config(**factory_args)
+
+    assert scheduler.speech_enabled is True
+    assert scheduler.talker_stream_token_only is True
+    assert scheduler.capture_speech_hidden_states is False
+    assert scheduler.server_args.speculative_algorithm == "DFLASH"
+    assert scheduler.server_args.speculative_draft_model_path == "draft"
 
 
 def test_qwen_mm_aggregate_keeps_lightweight_inputs_and_prunes_after_merge() -> None:

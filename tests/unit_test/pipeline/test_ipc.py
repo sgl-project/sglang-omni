@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import time
 from pathlib import Path
 from types import FrameType, SimpleNamespace
 from unittest.mock import AsyncMock
@@ -279,6 +280,112 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
     assert first_group.channels_closed
     assert second_group.channels_closed
     assert list(tmp_path.iterdir()) == []
+
+
+def _starting_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    entered = asyncio.Event()
+    coordinator = _FakeCoordinator()
+
+    class StartingGroup:
+        process_specs = [SimpleNamespace(process_name="starting-worker")]
+        processes = []
+        channels_closed = False
+
+        def spawn(self, ctx) -> None:
+            # note(wenyao): A real CPU child exposes orphaning without loading a model.
+            child = ctx.Process(target=time.sleep, args=(60,), daemon=True)
+            child.start()
+            self.processes = [child]
+
+        async def wait_ready(self, timeout: float) -> None:
+            entered.set()
+            await asyncio.Event().wait()
+
+        def close_control_channels(self) -> None:
+            self.channels_closed = True
+
+    group = StartingGroup()
+    monkeypatch.setattr(mp_runner, "Coordinator", lambda *a, **k: coordinator)
+    monkeypatch.setattr(mp_runner, "_build_stage_groups", lambda *a, **k: [group])
+    runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
+    assert runner._config.mps == "off"
+    return runner, group, entered, coordinator
+
+
+@pytest.mark.asyncio
+async def test_mp_runner_cancellation_reaps_starting_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, group, entered, coordinator = _starting_runner(tmp_path, monkeypatch)
+    startup = asyncio.create_task(runner.start())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        startup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await startup
+
+        assert not group.processes[0].is_alive()
+        assert group.processes[0].exitcode is not None
+        assert group.channels_closed and coordinator.stopped
+        assert runner._completion_task is None
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        # note(wenyao): Reap the owned child even when the regression assertion fails.
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
+        await runner._cleanup_on_failure()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+async def test_launcher_signal_during_startup_reaps_children(
+    sig: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sglang_omni.serve import launcher
+
+    runner, group, entered, coordinator = _starting_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", lambda config: runner)
+    stopping, release = asyncio.Event(), asyncio.Event()
+
+    async def stop_coordinator():
+        stopping.set()
+        await release.wait()
+        coordinator.stopped = True
+
+    monkeypatch.setattr(coordinator, "stop", stop_coordinator)
+    forwarded = []
+    original = signal.getsignal(sig)
+
+    def previous_handler(signum, frame):
+        # note(wenyao): Record an uncaught startup signal instead of killing pytest.
+        forwarded.append(signum)
+
+    signal.signal(sig, previous_handler)
+    startup = asyncio.create_task(launcher._run_server(_make_config(tmp_path)))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        signal.raise_signal(sig)
+        assert not forwarded
+        await asyncio.wait_for(stopping.wait(), timeout=5)
+        # note(wenyao): A repeated interrupt must not cut short owned cleanup.
+        signal.raise_signal(sig)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await startup
+
+        assert not group.processes[0].is_alive()
+        assert group.processes[0].exitcode is not None
+        assert group.channels_closed and coordinator.stopped
+        assert list(tmp_path.iterdir()) == []
+        assert not forwarded
+        assert signal.getsignal(sig) is previous_handler
+    finally:
+        release.set()
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
+        await runner._cleanup_on_failure()
+        signal.signal(sig, original)
 
 
 @pytest.mark.asyncio

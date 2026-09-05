@@ -42,6 +42,9 @@ from sglang_omni.pipeline.stage_workers import (
     StageWorkerProcessSpec,
 )
 from sglang_omni.utils.imports import import_string
+from sglang_omni.utils.misc import (
+    finish_despite_cancellation as _finish_despite_cancellation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -443,28 +446,6 @@ class _NcclPortAllocator:
                 continue
 
 
-async def _finish_despite_cancellation(coro) -> None:
-    """Run *coro* to completion, then re-raise any cancellation it absorbed."""
-
-    task = asyncio.ensure_future(coro)
-    cancelled: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
-        except BaseException:
-            break
-    try:
-        task.result()
-    except BaseException as error:
-        if cancelled is not None and not isinstance(error, asyncio.CancelledError):
-            raise cancelled from error
-        raise
-    if cancelled is not None:
-        raise cancelled
-
-
 class MultiProcessPipelineRunner:
 
     def __init__(self, config: PipelineConfig):
@@ -618,7 +599,8 @@ class MultiProcessPipelineRunner:
                 total_procs,
             )
 
-        except Exception as startup_error:
+        except BaseException as startup_error:
+            # note(wenyao): Cancellation owns the same children and IPC as a startup error.
             process_start_attempts: set[str] | None = None
             if self._mps is not None:
                 process_start_attempts = self._process_start_attempts()
@@ -626,19 +608,6 @@ class MultiProcessPipelineRunner:
                 await self._cleanup_on_failure()
             finally:
                 if self._mps is not None:
-                    try:
-                        await self._close_mps(
-                            process_start_attempts=process_start_attempts
-                        )
-                    except BaseException as cleanup_error:
-                        raise startup_error from cleanup_error
-            raise
-        except BaseException as startup_error:
-            if self._mps is not None:
-                process_start_attempts = self._process_start_attempts()
-                try:
-                    await self._cleanup_on_failure()
-                finally:
                     try:
                         await self._close_mps(
                             process_start_attempts=process_start_attempts

@@ -280,6 +280,8 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         )
 
         scheduler = object.__new__(OmniScheduler)
+        scheduler.tp_size = 1
+        scheduler._stop_requested = False
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
         scheduler._prefill_start_done = {"req-active"}
@@ -322,13 +324,16 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
     asyncio.run(_run())
 
 
-def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
-    monkeypatch, caplog
+@pytest.mark.parametrize("cancel", [False, True])
+def test_stage_stop_waits_for_scheduler_even_when_cancelled(
+    monkeypatch, cancel
 ) -> None:
     async def _run() -> None:
         entered = threading.Event()
         release = threading.Event()
         scheduler = object.__new__(OmniScheduler)
+        scheduler.tp_size = 1
+        scheduler._stop_requested = False
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
         scheduler._prefill_start_done = set()
@@ -344,28 +349,65 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
             release.wait()
 
         scheduler._event_loop_normal = run_loop
-        stage_obj = make_stage(scheduler=scheduler)
+        relay = FakeRelay()
+        stage_obj = make_stage(scheduler=scheduler, relay=relay)
+        # note(wenyao): Accelerate the old timeout for RED; the fixed join has no local deadline.
         monkeypatch.setattr(
             stage_runtime_module,
             "_SCHEDULER_THREAD_JOIN_TIMEOUT_S",
             0.01,
+            raising=False,
         )
 
         await stage_obj.start()
         assert await asyncio.to_thread(entered.wait, 1.0)
 
+        stop_task = asyncio.create_task(stage_obj.stop())
         try:
-            # Shutdown must not start failing because of this join; the stage
-            # only waits so the scheduler thread can flush its terminal events.
-            with caplog.at_level(logging.WARNING):
-                await stage_obj.stop()
-            assert "scheduler thread did not stop within" in caplog.text
-            assert stage_obj._scheduler_thread is not None
+            await asyncio.sleep(0.05)
+            if cancel:
+                stop_task.cancel()
+                await asyncio.sleep(0)
+                stop_task.cancel()
+                await asyncio.sleep(0)
+            assert not stop_task.done()
             assert stage_obj._scheduler_thread.is_alive()
+            assert not stage_obj.control_plane.closed and not relay.closed
+            release.set()
+            if cancel:
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(stop_task, timeout=1)
+            else:
+                await asyncio.wait_for(stop_task, timeout=1)
+            assert stage_obj._scheduler_thread is None
+            assert stage_obj.control_plane.closed and relay.closed
         finally:
             release.set()
-            if stage_obj._scheduler_thread is not None:
-                await asyncio.to_thread(stage_obj._scheduler_thread.join, 1.0)
+            await asyncio.gather(stop_task, return_exceptions=True)
+
+    asyncio.run(_run())
+
+
+def test_stage_stop_closes_io_when_scheduler_thread_never_started(monkeypatch) -> None:
+    async def _run() -> None:
+        relay = FakeRelay()
+        stage_obj = make_stage(relay=relay)
+
+        def fail_start(_thread) -> None:
+            raise RuntimeError("scheduler thread start failed")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", fail_start)
+            with pytest.raises(RuntimeError, match="scheduler thread start failed"):
+                await stage_obj.start()
+        assert stage_obj._scheduler_thread.ident is None
+        try:
+            await stage_obj.stop()
+            assert stage_obj._scheduler_thread is None
+            assert stage_obj.control_plane.closed and relay.closed
+        finally:
+            stage_obj.control_plane.close()
+            await stage_obj._comm.close()
 
     asyncio.run(_run())
 

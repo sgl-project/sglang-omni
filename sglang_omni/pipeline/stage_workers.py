@@ -443,6 +443,14 @@ def stage_process_main(
         if startup_error_channel is not None:
             startup_error_channel.put(traceback_text)
         sys.exit(1)
+    else:
+        # note(wenyao): Normal exit must release groups after scheduler threads stop.
+        _destroy_torch_distributed_process_group(log)
+        import torch
+
+        # note(wenyao): Collect retired IPC exports before Torch's global teardown.
+        if torch.cuda.is_initialized():
+            torch.cuda.ipc_collect()
 
 
 def _run_process(
@@ -550,11 +558,11 @@ def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         import torch.distributed as dist
 
         if dist.is_available() and dist.is_initialized():
-            log.warning("Destroying torch.distributed process group after failure")
+            log.info("Destroying torch.distributed process group")
             dist.destroy_process_group()
     except Exception as exc:
         log.warning(
-            "torch.distributed cleanup failed after stage process failure: %s",
+            "torch.distributed cleanup failed after stage process exit: %s",
             exc,
             exc_info=True,
         )

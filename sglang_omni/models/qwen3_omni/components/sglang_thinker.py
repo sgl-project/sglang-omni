@@ -67,12 +67,26 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 prefix=add_prefix("lm_head", prefix),
             )
         self.logits_processor = LogitsProcessor(self.config)
+        self.capture_aux_hidden_states = False
         self._fused_rope_gate = install_thinker_fused_rope(self.model)
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
         # Existing Qwen thinker runner/hook code expects model.thinker.model.
         return self
+
+    def get_input_embeddings(self) -> nn.Module:
+        return self.model.embed_tokens
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        if layer_ids is None:
+            raise ValueError(
+                "DFLASH requires explicit layer_ids for aux hidden capture"
+            )
+        self.capture_aux_hidden_states = True
+        self.model.set_dflash_layers_to_capture(
+            [layer_id + 1 for layer_id in layer_ids]
+        )
 
     def forward(
         self,
@@ -99,11 +113,15 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             pp_proxy_tensors=pp_proxy_tensors,
             input_deepstack_embeds=input_deepstack_embeds,
         )
+        aux_hidden_states = None
+        if self.capture_aux_hidden_states:
+            hidden_states, aux_hidden_states = hidden_states
         return self.logits_processor(
             input_ids,
             hidden_states,
             self.lm_head,
             forward_batch,
+            aux_hidden_states,
         )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:

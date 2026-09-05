@@ -265,7 +265,9 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
     return smallest, source
 
 
-def attest_prefill_cuda_graphs(model_runner: Any, server_args: Any) -> None:
+def attest_prefill_cuda_graphs(
+    model_runner: Any, server_args: Any, *, require_input_embeds: bool = True
+) -> None:
     """Assert captured prefill graphs match an explicit or realized policy.
 
     An operator-locked backend must materialize or fail startup. An unlocked
@@ -305,7 +307,7 @@ def attest_prefill_cuda_graphs(model_runner: Any, server_args: Any) -> None:
             f"policy: declared={expected_buckets}, "
             f"captured={list(runner.capture_num_tokens)}"
         )
-    if not runner.buffer_registry.has_slot("input_embeds"):
+    if require_input_embeds and not runner.buffer_registry.has_slot("input_embeds"):
         raise RuntimeError(
             "prefill CUDA graph runner has no input_embeds slot; "
             "enable_prefill_input_embeds did not reach the model config "

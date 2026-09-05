@@ -39,7 +39,9 @@ def _describe_sglang_runtime_configuration(
     )
 
 
-def init_sglang_cuda_graphs(model_worker: Any) -> None:
+def init_sglang_cuda_graphs(
+    model_worker: Any, *, defer_post_capture_kv_resize: bool = False
+) -> None:
     """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
     from sglang.srt.utils.tensor_bridge import use_mlx
 
@@ -47,10 +49,13 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
         # note (yexiaodong): The MLX stub has no Torch graph lifecycle because
         # native MLX lazy evaluation owns graph execution.
         return
+    graph_kwargs = (
+        {"defer_post_capture_kv_resize": True} if defer_post_capture_kv_resize else {}
+    )
     if not model_worker.enable_prefill_input_embeds:
         # Required even when graphs are disabled: SGLang installs its eager
         # phase runner from init_cuda_graphs().
-        model_worker.model_runner.init_cuda_graphs()
+        model_worker.model_runner.init_cuda_graphs(**graph_kwargs)
         return
 
     model_config = model_worker.model_config
@@ -60,7 +65,7 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
     # the upstream input_embeds replay buffer.
     model_config.is_multimodal = True
     try:
-        model_worker.model_runner.init_cuda_graphs()
+        model_worker.model_runner.init_cuda_graphs(**graph_kwargs)
     finally:
         model_config.is_multimodal = original_is_multimodal
 
@@ -107,6 +112,7 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
+    speculative: bool = False,
 ):
     """Create SGLang worker, memory pools, and tree cache."""
     # ModelRunner.__init__ publishes server_args as the process-wide runtime
@@ -118,6 +124,19 @@ def create_sglang_infrastructure(
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
     from sglang_omni.scheduling.sglang_backend import create_tree_cache
     from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+
+    if speculative:
+        from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+
+        algorithm = SpeculativeAlgorithm.from_string(server_args.speculative_algorithm)
+        if not algorithm.is_dflash():
+            raise ValueError(
+                "Omni speculative infrastructure currently requires DFLASH"
+            )
+        if defer_cuda_graph_capture:
+            raise ValueError(
+                "Speculative infrastructure must initialize both workers' graphs"
+            )
 
     if get_context().is_config_namespace_published("model"):
         raise RuntimeError(
@@ -140,6 +159,8 @@ def create_sglang_infrastructure(
     from sglang.srt.utils.tensor_bridge import use_mlx
 
     if use_mlx():
+        if speculative:
+            raise ValueError("Omni DFLASH requires the SGLang CUDA backend")
         # Note (Jiaxin Deng): the MLX worker sizes no SGLang KV pool, so a
         # declared byte budget could only be ignored; refuse instead.
         if kv_cache_bytes is not None:
@@ -177,11 +198,40 @@ def create_sglang_infrastructure(
 
     # Phase order follows upstream Scheduler.init_model_worker().
     model_runner = model_worker.model_runner
+    draft_worker = None
+    if speculative:
+        from sglang_omni.model_runner.speculative_target_worker import (
+            SpeculativeTargetWorker,
+        )
+
+        draft_worker = algorithm.create_worker(server_args)(
+            server_args=server_args,
+            gpu_id=gpu_id,
+            ps=model_runner.ps,
+            nccl_port=model_runner.dist_port,
+            target_worker=SpeculativeTargetWorker(model_worker),
+        )
+
     model_runner.alloc_memory_pool()
+    if draft_worker is not None:
+        draft_worker.alloc_memory_pool(
+            memory_pool_config=model_runner.memory_pool_config,
+            req_to_token_pool=model_runner.req_to_token_pool,
+            token_to_kv_pool_allocator=model_runner.token_to_kv_pool_allocator,
+        )
+        draft_worker.init_hicache_draft_plan()
     model_runner.init_attention_backends()
+    if draft_worker is not None:
+        draft_worker.init_attention_backends()
 
     if not defer_cuda_graph_capture:
-        init_sglang_cuda_graphs(model_worker)
+        if draft_worker is None:
+            init_sglang_cuda_graphs(model_worker)
+        else:
+            init_sglang_cuda_graphs(model_worker, defer_post_capture_kv_resize=True)
+            draft_worker.init_cuda_graphs()
+            if model_runner.token_to_kv_pool.post_capture_active:
+                model_runner.post_capture_resize_kv_pool()
 
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
 
@@ -192,13 +242,14 @@ def create_sglang_infrastructure(
         server_args.page_size,
     )
 
-    return (
+    infrastructure = (
         model_worker,
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
         model_worker.model_config,
     )
+    return (*infrastructure, draft_worker) if speculative else infrastructure
 
 
 # note (luojiaxuan): Some Omni generation stages cannot capture CUDA graphs

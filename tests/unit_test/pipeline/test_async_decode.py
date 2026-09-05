@@ -817,7 +817,8 @@ def test_custom_logit_processor_transitions_async_sync_async():
         return "sched_output", "pending_step"
 
     s._run_batch_launch = launch_async
-    s._resolve_and_process = lambda *args: events.append("resolve N")
+    resolve_events = iter(("resolve N", "resolve N+2"))
+    s._resolve_and_process = lambda *args: events.append(next(resolve_events))
     s.run_batch = lambda batch: events.append("run sync N+1") or object()
     s.process_batch_result = lambda batch, result: None
 
@@ -841,7 +842,9 @@ def test_custom_logit_processor_transitions_async_sync_async():
         "resolve N",
         "run sync N+1",
         "launch async N+2",
+        "resolve N+2",
     ]
+    assert s._async_pending is None
 
 
 @pytest.mark.parametrize(
@@ -909,7 +912,9 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     s.is_mixed_chunk = True
     s.running_batch.batch_is_full = True
     s.waiting_queue = [object()]
-    s._resolve_and_process = lambda *args: events.append("resolve")
+    s._resolve_and_process = lambda batch, *_: events.append(
+        "resolve previous" if batch is pending_batch else "resolve final"
+    )
 
     def launch(batch):
         events.append("launch")
@@ -925,7 +930,13 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     s.get_next_batch_to_run = get_next_batch_to_run
     s._event_loop_async_decode()
 
-    assert events == [("schedule", True), "launch", "resolve"]
+    assert events == [
+        ("schedule", True),
+        "launch",
+        "resolve previous",
+        "resolve final",
+    ]
+    assert s._async_pending is None
 
 
 # ---------------------------------------------------------------------------
@@ -1123,10 +1134,11 @@ def test_async_path_resolve_failure_calls_handle_batch_failure():
     s.get_next_batch_to_run = gnb
     s._event_loop_async_decode()
 
-    assert failures == [(prev_batch, RuntimeError, "resolve boom")]
-    # launch succeeded; _async_pending was rotated to the new batch.
-    assert s._async_pending is not None
-    assert s._async_pending[0] is new_batch
+    assert failures == [
+        (prev_batch, RuntimeError, "resolve boom"),
+        (new_batch, RuntimeError, "resolve boom"),
+    ]
+    assert s._async_pending is None
 
 
 def test_drain_resolve_failure_calls_handle_batch_failure():

@@ -103,7 +103,6 @@ class _UpstreamAbortSender:
         self._scheduler = scheduler
 
     def send_output(self, msg: Any, req: Any = None) -> None:
-        del req
         if not isinstance(msg, AbortReq):
             raise RuntimeError(
                 f"Unexpected upstream scheduler IPC output: {type(msg).__name__}"
@@ -122,6 +121,9 @@ class _UpstreamAbortSender:
         scheduler = self._scheduler
         scheduler._emit_request_error(request_id, RuntimeError(message))
         scheduler.abort(request_id, defer_running_cleanup=False)
+        if req is not None:
+            # note(wenyao): Upstream clears the parked chunk before notifying us.
+            _detach_request_data(req)
 
 
 class _OmniIpcChannels:
@@ -178,6 +180,7 @@ class OmniScheduler:
         model_config: Any,
         *,
         model_runner: Any = None,
+        speculative_worker: Any = None,
         request_builder: Callable | None = None,
         result_adapter: Callable | None = None,
         stream_output_builder: Callable | None = None,
@@ -427,14 +430,31 @@ class OmniScheduler:
         )
         self.current_scheduler_metrics_enabled = False
 
-        # Speculative decoding (disabled)
         from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-        self.spec_algorithm = SpeculativeAlgorithm.NONE
+        self.spec_algorithm = SpeculativeAlgorithm.from_string(
+            server_args.speculative_algorithm
+        )
         self.dllm_config = None
-        self.draft_worker = None
+        self.draft_worker = speculative_worker
+        self._native_speculative = speculative_worker is not None
         self._execution_bridge = None
-        if model_runner is not None:
+        if self._native_speculative:
+            if not self.spec_algorithm.is_dflash():
+                raise ValueError("Omni native speculation currently requires DFLASH")
+            if enable_overlap or enable_async_decode or model_runner is not None:
+                raise ValueError(
+                    "Omni DFLASH requires synchronous native worker execution"
+                )
+            self.model_worker = speculative_worker
+            self.future_map = self.spec_algorithm.create_future_map(
+                self.device, self.req_to_token_pool, needs_cpu_seq_lens=True
+            )
+        elif not self.spec_algorithm.is_none():
+            raise ValueError(
+                "Speculative decoding requires a native speculative worker"
+            )
+        elif model_runner is not None:
             self.bind_model_runner(model_runner)
 
         # Subsystem stubs
@@ -485,6 +505,7 @@ class OmniScheduler:
         self._init_upstream_scheduler_components()
 
         self._running = False
+        self._stop_requested = False
         self._aborted_request_ids: set[str] = set()
         self._aborted_request_id_order: deque[str] = deque()
         # Normal completion closes stream ingress for the request. Keep a
@@ -814,13 +835,20 @@ class OmniScheduler:
         if self.tp_size == 1:
             return self._drain_local_inbox()
 
-        recv_msgs = self._drain_local_inbox() if self.is_entry_rank else []
-        return broadcast_pyobj(
+        recv_msgs = []
+        if self.is_entry_rank:
+            recv_msgs = [None] if self._stop_requested else self._drain_local_inbox()
+        recv_msgs = broadcast_pyobj(
             recv_msgs,
             self.tp_group.rank,
             self.tp_cpu_group,
             src=self.tp_group.ranks[0],
         )
+        # note(wenyao): Every TP rank leaves the same input collective before exit.
+        if recv_msgs == [None]:
+            self._running = False
+            return []
+        return recv_msgs
 
     def _drain_local_inbox(self) -> list[IncomingMessage]:
         recv_msgs: list[IncomingMessage] = []
@@ -1401,6 +1429,8 @@ class OmniScheduler:
         a ``GenerationBatchResult``.  We bridge the two formats here.
         """
         del pp_proxy_tensors
+        if getattr(self, "_native_speculative", False):
+            return self._run_speculative_batch(batch)
         self._emit_prefill_start_for_batch(batch)
         self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
@@ -1408,6 +1438,57 @@ class OmniScheduler:
         self._emit_prefill_end_for_batch(batch)
         self._emit_stream_output(sched_output, mr_output)
         return self._make_batch_result(mr_output)
+
+    def _run_speculative_batch(self, batch):
+        """Keep the upstream synchronous draft/verify and acceptance contract."""
+        from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+
+        self._emit_prefill_start_for_batch(batch)
+        self._stamp_batch_launch(batch)
+        resolve_forward_inputs(batch, self.future_map)
+        with self._forward_isolation(batch, overlap=False):
+            result = self.model_worker.forward_batch_generation(batch)
+        batch.spec_info = result.next_draft_input
+        if result.new_seq_lens is not None:
+            batch.seq_lens = result.new_seq_lens
+            if batch.seq_lens_cpu is not None:
+                batch.seq_lens_cpu = result.new_seq_lens.to("cpu")
+                batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
+        batch.input_ids = None
+        self.update_cache_from_scheduler(batch, result)
+        result.copy_done = self.device_module.Event()
+        result.copy_to_cpu(
+            return_logprob=batch.return_logprob,
+            return_hidden_states=batch.return_hidden_states,
+        )
+        self._emit_prefill_end_for_batch(batch)
+        return result
+
+    def _emit_accepted_tokens(self, req) -> None:
+        """Send only committed, stop-trimmed tokens after upstream acceptance."""
+        from sglang_omni.scheduling.types import RequestOutput
+
+        with self._request_admission_lock:
+            if (
+                req.rid in self._aborted_request_ids
+                or isinstance(req.finished_reason, FINISH_ABORT)
+                or req._omni_terminal_claimed
+                or req._omni_data is None
+                or req.inflight_middle_chunks > 0
+            ):
+                return
+            tokens = req.output_ids_through_stop
+            cursor = getattr(req, "_omni_emitted_token_count", 0)
+            if cursor > len(tokens):
+                raise RuntimeError("Committed speculative output shrank after emission")
+            if self._stream_output_builder is not None:
+                for token in tokens[cursor:]:
+                    output = RequestOutput(request_id=req.rid, data=int(token))
+                    self._put_stream_messages(
+                        req.rid,
+                        self._stream_output_builder(req.rid, req._omni_data, output),
+                    )
+            req._omni_emitted_token_count = len(tokens)
 
     def _build_sched_output(self, batch):
         """Wrap a ScheduleBatch into the SchedulerOutput the model runner
@@ -1591,6 +1672,8 @@ class OmniScheduler:
         for req in reqs:
             if skip_req is not None and req is skip_req:
                 continue
+            if getattr(self, "_native_speculative", False):
+                self._emit_accepted_tokens(req)
             if not req.finished():
                 continue
 
@@ -1636,7 +1719,11 @@ class OmniScheduler:
                 model_runner = self._model_runner
                 if model_runner is not None:
                     model_runner.on_request_finished(rid, data)
-                data.output_ids = list(req.output_ids)
+                data.output_ids = list(
+                    req.output_ids_through_stop
+                    if getattr(self, "_native_speculative", False)
+                    else req.output_ids
+                )
                 data.weight_version = get_serving().weight_version
                 finished_reason = req.finished_reason
                 data.finish_reason = (
@@ -1724,8 +1811,11 @@ class OmniScheduler:
             self._dirty_deferred_request_ids.add(request_id)
 
     def start(self) -> None:
-        self._scheduler_thread_id = threading.get_ident()
-        self._running = True
+        with self._shutdown_lock:
+            if self._stop_requested:
+                return
+            self._scheduler_thread_id = threading.get_ident()
+            self._running = True
         model_path_status = "error"
         try:
             if self.enable_async_decode:
@@ -1736,21 +1826,30 @@ class OmniScheduler:
                 self._event_loop_normal()
             model_path_status = "aborted"
         finally:
-            self._emit_remaining_model_path_ends(status=model_path_status)
-            self._scheduler_thread_id = None
+            self._running = False
             try:
-                self._shutdown_request_build_executor()
+                self._emit_remaining_model_path_ends(status=model_path_status)
+                try:
+                    self._shutdown_request_build_executor()
+                finally:
+                    self._discard_pending_request_admissions()
+                    self._shutdown_resources()
             finally:
-                self._discard_pending_request_admissions()
-                self._shutdown_resources()
+                self._scheduler_thread_id = None
 
     def event_loop(self) -> None:
         self.start()
 
     def stop(self) -> None:
-        self._running = False
-        self._discard_pending_request_admissions()
-        self._shutdown_resources()
+        with self._shutdown_lock:
+            self._stop_requested = True
+            active = self._scheduler_thread_id is not None
+            if not active or self.tp_size == 1:
+                self._running = False
+        # note(wenyao): Active threads own cleanup after their last forward/collective.
+        if not active:
+            self._discard_pending_request_admissions()
+            self._shutdown_resources()
 
     def _discard_pending_request_admissions(self) -> None:
         with self._request_admission_lock:
@@ -1885,6 +1984,22 @@ class OmniScheduler:
         self, action: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         payload = dict(payload or {})
+        if getattr(self, "_native_speculative", False) and action in (
+            ADMIN_UPDATE_WEIGHTS_FROM_DISK,
+            ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
+            ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
+            ADMIN_INIT_WEIGHTS_UPDATE_GROUP,
+            ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
+        ):
+            message = (
+                "Live weight updates are unsupported with native speculative decoding"
+            )
+            return {
+                "success": False,
+                "message": message,
+                "error": message,
+                "data": {"unsupported": True},
+            }
         if action == ADMIN_MODEL_INFO:
             return self._admin_model_info()
         if action == ADMIN_PAUSE_GENERATION:
@@ -1911,6 +2026,8 @@ class OmniScheduler:
 
     def _admin_model_info(self) -> dict[str, Any]:
         info = self.model_worker.model_info()
+        if getattr(self, "_native_speculative", False):
+            info["supports_weight_update"] = False
         with self._request_admission_lock:
             request_build_pending = len(self._pending_request_builds)
             request_admission_pending = len(self._pending_request_admissions)
@@ -2163,6 +2280,9 @@ class OmniScheduler:
                 rid = req.rid
                 if rid is not None:
                     request_ids.add(rid)
+            chunked_req = self.chunked_req
+            if chunked_req is not None and not chunked_req.finished():
+                request_ids.add(chunked_req.rid)
         for batch in (
             self.running_batch,
             self.cur_batch,
@@ -2223,7 +2343,22 @@ class OmniScheduler:
         torch.cuda.empty_cache()
 
     def _mark_running_request_aborted(self, request_id: str) -> bool:
-        marked = False
+        pending = self._pending_chunked_abort_req
+        # note(wenyao): The drain owns cleanup until it clears this marker,
+        # including when a duplicate abort arrives during its KV release.
+        marked = pending is not None and pending.rid == request_id
+        chunked_req = self.chunked_req
+        if (
+            chunked_req is not None
+            and chunked_req.rid == request_id
+            and not chunked_req.finished()
+            and not chunked_req.is_retracted
+        ):
+            # note(wenyao): A parked chunk can be absent from every batch. Let
+            # upstream release it at the next safe scheduling boundary.
+            self._pending_chunked_abort_req = chunked_req
+            chunked_req.to_finish = FINISH_ABORT()
+            marked = True
         seen: set[int] = set()
         for batch in (
             self.running_batch,
@@ -2272,6 +2407,13 @@ class OmniScheduler:
                     continue
                 seen.add(id(req))
                 self._release_request_kv_cache(req)
+        chunked_req = self.chunked_req
+        if chunked_req is not None and chunked_req.rid == request_id:
+            self._release_request_kv_cache(chunked_req)
+            self.chunked_req = None
+            if self._pending_chunked_abort_req is chunked_req:
+                self._pending_chunked_abort_req = None
+            _detach_request_data(chunked_req)
 
     def _release_request_kv_cache(self, req: Any) -> None:
         if req.req_pool_idx is None and req.mamba_pool_idx is None:
@@ -2288,6 +2430,8 @@ class OmniScheduler:
         while self._running:
             self._process_admin_requests()
             recv_reqs = self.recv_requests()
+            if not self._running:
+                break
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
@@ -2503,6 +2647,8 @@ class OmniScheduler:
         while self._running:
             self._process_admin_requests()
             recv_reqs = self.recv_requests()
+            if not self._running:
+                break
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
             if self._engine_paused:
@@ -2578,6 +2724,9 @@ class OmniScheduler:
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
                 self.self_check_during_busy()
+
+        # note(wenyao): TP1 can be stopped while a launch is still publishing its step.
+        self._resolve_pending_async()
 
     def _drain_inbox_for_request(self, request_id: str) -> None:
         retained: list[IncomingMessage] = []

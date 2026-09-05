@@ -503,3 +503,101 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
     captured.clear()
     bootstrap.create_sglang_infrastructure(server_args, 0)
     assert captured["kv_cache_bytes"] is None
+
+
+def test_dflash_loads_both_models_before_allocating_shared_pools(monkeypatch):
+    from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+
+    from sglang_omni.model_runner import speculative_target_worker
+
+    events = []
+
+    class Runner:
+        ps = object()
+        dist_port = 30299
+        nccl_port = 39999
+        memory_pool_config = object()
+        req_to_token_pool = object()
+        token_to_kv_pool_allocator = object()
+        token_to_kv_pool = SimpleNamespace(post_capture_active=True)
+
+        def alloc_memory_pool(self):
+            events.append("target_pool")
+
+        def init_attention_backends(self):
+            events.append("target_attention")
+
+        def init_cuda_graphs(self, *, defer_post_capture_kv_resize=False):
+            assert defer_post_capture_kv_resize
+            events.append("target_graphs")
+
+        def post_capture_resize_kv_pool(self):
+            events.append("post_capture")
+
+    class Worker:
+        model_config = SimpleNamespace(is_multimodal=False)
+        enable_prefill_input_embeds = False
+
+        def __init__(self, **kwargs):
+            events.append("target_weights")
+            self.model_runner = Runner()
+
+        def get_memory_pool(self):
+            return (
+                self.model_runner.req_to_token_pool,
+                self.model_runner.token_to_kv_pool_allocator,
+            )
+
+    class Draft:
+        def __init__(self, **kwargs):
+            events.append("draft_weights")
+            self.target = kwargs["target_worker"]
+            assert kwargs["ps"] is self.target.model_runner.ps
+            assert kwargs["nccl_port"] == 30299
+
+        def alloc_memory_pool(self, **kwargs):
+            events.append("draft_pool")
+            runner = self.target.model_runner
+            assert kwargs == dict(
+                memory_pool_config=runner.memory_pool_config,
+                req_to_token_pool=runner.req_to_token_pool,
+                token_to_kv_pool_allocator=runner.token_to_kv_pool_allocator,
+            )
+
+        def init_hicache_draft_plan(self):
+            events.append("draft_hicache")
+
+        def init_attention_backends(self):
+            events.append("draft_attention")
+
+        def init_cuda_graphs(self):
+            events.append("draft_graphs")
+
+    monkeypatch.setattr(
+        bootstrap, "_describe_sglang_runtime_configuration", lambda *_: "test"
+    )
+    monkeypatch.setattr(model_worker_module, "ModelWorker", Worker)
+    monkeypatch.setattr(
+        speculative_target_worker, "SpeculativeTargetWorker", lambda worker: worker
+    )
+    monkeypatch.setattr(SpeculativeAlgorithm, "create_worker", lambda *_: Draft)
+    monkeypatch.setattr(sglang_backend, "create_tree_cache", lambda *_: "tree")
+    result = bootstrap.create_sglang_infrastructure(
+        SimpleNamespace(speculative_algorithm="DFLASH", page_size=1),
+        0,
+        speculative=True,
+    )
+    assert len(result) == 6
+    assert result[-1].target is result[0]
+    assert events == [
+        "target_weights",
+        "draft_weights",
+        "target_pool",
+        "draft_pool",
+        "draft_hicache",
+        "target_attention",
+        "draft_attention",
+        "target_graphs",
+        "draft_graphs",
+        "post_capture",
+    ]

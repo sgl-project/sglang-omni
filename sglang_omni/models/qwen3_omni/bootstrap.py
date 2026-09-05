@@ -6,11 +6,73 @@ from __future__ import annotations
 from typing import Any
 
 
+def _validate_thinker_stream_options(
+    *,
+    speech_enabled: bool,
+    talker_stream_token_only: bool,
+    capture_speech_hidden_states: bool = True,
+    enable_return_hidden_states: bool = False,
+) -> None:
+    if not isinstance(talker_stream_token_only, bool):
+        raise ValueError("talker_stream_token_only must be a boolean")
+    if not isinstance(capture_speech_hidden_states, bool):
+        raise ValueError("capture_speech_hidden_states must be a boolean")
+    if not capture_speech_hidden_states and not talker_stream_token_only:
+        raise ValueError(
+            "Disabling speech hidden capture requires talker_stream_token_only=True"
+        )
+    if not capture_speech_hidden_states and enable_return_hidden_states:
+        raise ValueError(
+            "capture_speech_hidden_states=False is incompatible with "
+            "enable_return_hidden_states=True"
+        )
+    if talker_stream_token_only and not speech_enabled:
+        raise ValueError("talker_stream_token_only requires speech_enabled=True")
+
+
+def _configure_thinker_speculation(
+    server_args: Any,
+    *,
+    speech_enabled: bool,
+    talker_stream_token_only: bool,
+    capture_speech_hidden_states: bool,
+) -> bool:
+    algorithm = getattr(server_args, "speculative_algorithm", None)
+    if algorithm is None:
+        return False
+    if algorithm != "DFLASH":
+        raise ValueError("Qwen3-Omni thinker supports only DFLASH speculative decoding")
+    if (
+        not speech_enabled
+        or not talker_stream_token_only
+        or capture_speech_hidden_states
+    ):
+        raise ValueError(
+            "DFLASH requires speech_enabled=True, talker_stream_token_only=True, "
+            "and capture_speech_hidden_states=False"
+        )
+    if not getattr(server_args, "speculative_draft_model_path", None):
+        raise ValueError("DFLASH requires speculative_draft_model_path")
+    from sglang_omni.vendor.sglang.server_args import override_server_args
+
+    # note(wenyao): Native draft/verify owns its batch mutations; Omni's
+    # one-token lookahead and upstream overlap must not run this path.
+    override_server_args(
+        server_args,
+        "qwen3_omni.dflash",
+        disable_overlap_schedule=True,
+        enable_multimodal=False,
+    )
+    return True
+
+
 def create_thinker_scheduler(
     server_args: Any,
     gpu_id: int = 0,
     *,
     speech_enabled: bool = False,
+    talker_stream_token_only: bool = False,
+    capture_speech_hidden_states: bool = True,
     tp_rank: int = 0,
     nccl_port: int | None = None,
     total_gpu_memory_fraction: float | None = None,
@@ -21,6 +83,23 @@ def create_thinker_scheduler(
     prefill_coalesce_when_idle: bool = False,
 ):
     """Create the Qwen thinker scheduler."""
+    _validate_thinker_stream_options(
+        speech_enabled=speech_enabled,
+        talker_stream_token_only=talker_stream_token_only,
+        capture_speech_hidden_states=capture_speech_hidden_states,
+        enable_return_hidden_states=getattr(
+            server_args, "enable_return_hidden_states", False
+        ),
+    )
+    speculative_enabled = _configure_thinker_speculation(
+        server_args,
+        speech_enabled=speech_enabled,
+        talker_stream_token_only=talker_stream_token_only,
+        capture_speech_hidden_states=capture_speech_hidden_states,
+    )
+    if speculative_enabled:
+        enable_async_decode = False
+
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -44,10 +123,14 @@ def create_thinker_scheduler(
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
     from sglang_omni.utils import cuda_graph_batch_validator
 
-    capture_hidden_layers = [0, 24] if speech_enabled else None
-    capture_hidden = speech_enabled
+    capture_hidden = speech_enabled and capture_speech_hidden_states
+    capture_hidden_layers = [0, 24] if capture_hidden else None
     prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
-    enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
+    # note(wenyao): Native text speculation feeds token IDs; only the custom
+    # Omni runner populates the embedding buffer captured by breakable prefill.
+    enable_prefill_input_embeds = (
+        prefill_graph_backend == CudaGraphBackend.BREAKABLE and not speculative_enabled
+    )
     want_cuda_graph = not bool(server_args.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
 
@@ -61,6 +144,7 @@ def create_thinker_scheduler(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         defer_cuda_graph_capture=defer_cuda_graph_capture,
         enable_prefill_input_embeds=enable_prefill_input_embeds,
+        speculative=speculative_enabled,
     )
 
     (
@@ -69,7 +153,8 @@ def create_thinker_scheduler(
         req_to_token_pool,
         token_to_kv_pool_allocator,
         model_config,
-    ) = infrastructure
+    ) = infrastructure[:5]
+    speculative_worker = infrastructure[5] if speculative_enabled else None
 
     if defer_cuda_graph_capture:
         # Deferring capture must not also skip the omni wrapper: without it the
@@ -79,23 +164,27 @@ def create_thinker_scheduler(
 
     if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
         cuda_graph_batch_validator.attest_prefill_cuda_graphs(
-            model_worker.model_runner, server_args
+            model_worker.model_runner,
+            server_args,
+            require_input_embeds=enable_prefill_input_embeds,
         )
 
     def _should_generate_qwen_audio_output(request: Any) -> bool:
         return should_generate_audio_output(request.data.stage_payload)
 
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=capture_hidden,
-        capture_hidden_layers=capture_hidden_layers,
-        model=model_worker.model_runner.model if capture_hidden_layers else None,
-        should_emit_hidden=_should_generate_qwen_audio_output,
-    )
+    model_runner = None
+    if not speculative_enabled:
+        output_proc = SGLangOutputProcessor(
+            capture_hidden=capture_hidden,
+            capture_hidden_layers=capture_hidden_layers,
+            model=model_worker.model_runner.model if capture_hidden_layers else None,
+            should_emit_hidden=_should_generate_qwen_audio_output,
+        )
 
-    if speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
-        model_runner = ThinkerModelRunner(model_worker, output_proc)
-    else:
-        model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
+        if speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
+            model_runner = ThinkerModelRunner(model_worker, output_proc)
+        else:
+            model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
 
     tokenizer = get_tokenizer(
         model_config.model_path,
@@ -106,8 +195,12 @@ def create_thinker_scheduler(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
+        require_token_only_talker_input=not capture_speech_hidden_states,
+        require_dflash_compatible_request=speculative_enabled,
     )
-    stream_output_builder = make_thinker_stream_output_builder()
+    stream_output_builder = make_thinker_stream_output_builder(
+        talker_stream_token_only=talker_stream_token_only
+    )
 
     return OmniScheduler(
         tp_worker=model_worker,
@@ -117,6 +210,7 @@ def create_thinker_scheduler(
         server_args=server_args,
         model_config=model_config,
         model_runner=model_runner,
+        speculative_worker=speculative_worker,
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,

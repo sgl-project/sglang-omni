@@ -51,10 +51,10 @@ from sglang_omni.proto import (
 )
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.utils.misc import finish_despite_cancellation
 
 logger = logging.getLogger(__name__)
 
-_SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
 _OUTBOX_DRAIN_BATCH_SIZE = 64
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
@@ -248,6 +248,9 @@ class Stage:
         logger.info("Stage %s started", self.name)
 
     async def stop(self) -> None:
+        await finish_despite_cancellation(self._stop())
+
+    async def _stop(self) -> None:
         self._running = False
         cleanup_error: Exception | None = None
 
@@ -274,30 +277,13 @@ class Stage:
                 self.scheduler.stop()
             except Exception as exc:
                 _record_cleanup_error("scheduler", exc)
-            # Note: (Jiaxin Deng) the scheduler thread emits its terminal
-            # model-path events from its own finally, and the MPS validation
-            # stage reads those files right after stop() returns, so wait for
-            # the thread instead of letting a daemon thread be reclaimed at
-            # process exit. A slow thread is logged, not fatal: shutdown
-            # correctness must not start depending on this timeout.
+            # note(wenyao): The parent owns the hard process timeout. Torch groups and
+            # IPC must outlive every scheduler forward, including during cancellation.
             scheduler_thread = self._scheduler_thread
             if scheduler_thread is not None:
-                try:
-                    await asyncio.to_thread(
-                        scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
-                    )
-                except Exception as exc:
-                    _record_cleanup_error("scheduler thread", exc)
-                else:
-                    if scheduler_thread.is_alive():
-                        logger.warning(
-                            "Stage %s scheduler thread did not stop within %gs",
-                            self.name,
-                            _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
-                        )
-                    else:
-                        self._scheduler_thread = None
+                if scheduler_thread.ident is not None:
+                    await asyncio.to_thread(scheduler_thread.join)
+                self._scheduler_thread = None
         try:
             self.control_plane.close()
         except Exception as exc:
