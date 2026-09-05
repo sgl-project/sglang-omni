@@ -22,6 +22,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         num_steps: int = 4,
         max_audio_patches: int = 500,
         max_running_requests: int = 16,
+        enable_acoustic_tail_batch_padding: bool = False,
     ) -> None:
         from sglang_omni.models.dots_tts.hf_config import DOTS_TTS_MODEL_ARCH_OVERRIDE
 
@@ -30,6 +31,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         self.num_steps = int(num_steps)
         self.max_audio_patches = int(max_audio_patches)
         self.max_running_requests = int(max_running_requests)
+        if not isinstance(enable_acoustic_tail_batch_padding, bool):
+            raise TypeError("enable_acoustic_tail_batch_padding must be a boolean")
+        self.enable_acoustic_tail_batch_padding = enable_acoustic_tail_batch_padding
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
         self._model_runner: Any | None = None
@@ -120,6 +124,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 nfe=self.num_steps,
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
+                pad_to_bucket=self.enable_acoustic_tail_batch_padding,
             )
         if max_running_requests == 1:
             tail_backend = (
@@ -131,11 +136,12 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             tail_backend = model.flow._tail.backend
         logger.info(
             "dots.tts latent engine backend: %s (optimize=%s, "
-            "max_running_requests=%d, num_steps=%d)",
+            "max_running_requests=%d, num_steps=%d, batch_padding=%s)",
             tail_backend,
             self.optimize,
             max_running_requests,
             self.num_steps,
+            self.enable_acoustic_tail_batch_padding,
         )
         logger.info(
             "dots.tts backbone decode: %s",

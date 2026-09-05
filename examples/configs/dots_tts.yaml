@@ -21,6 +21,8 @@ stages:
   latent_engine:
     factory:
       optimize: true
+      # Adds reserved state storage; keep opt-in until workload qualification.
+      enable_acoustic_tail_batch_padding: false
     engine:
       mem_fraction_static: 0.20
       max_running_requests: 16

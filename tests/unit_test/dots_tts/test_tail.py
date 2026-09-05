@@ -98,6 +98,7 @@ def _build_tail(
     dtype: torch.dtype = torch.float32,
     patch_capacity: int = 8,
     optimize: bool = False,
+    pad_to_bucket: bool = False,
 ):
     encoder = _patch_encoder().to(device=device, dtype=dtype)
     with torch.no_grad():
@@ -120,6 +121,112 @@ def _build_tail(
         device=device,
         dtype=dtype,
         optimize=optimize,
+        pad_to_bucket=pad_to_bucket,
+    )
+
+
+def _copy_live_state(source, destination) -> None:
+    slots = source.spec.num_slots
+    slot_dims = {
+        "_dit_k": 2,
+        "_dit_v": 2,
+        "_encoder_k": 1,
+        "_encoder_v": 1,
+        "_encoder_conv_tail": 0,
+        "_window": 0,
+        "_all_mods": 1,
+    }
+    for name, slot_dim in slot_dims.items():
+        source_value = getattr(source, name)
+        source_value.normal_(0, 0.05)
+        destination_value = getattr(destination, name)
+        live = [slice(None)] * source_value.ndim
+        live[slot_dim] = slice(0, slots)
+        destination_value[tuple(live)].copy_(source_value)
+
+
+def _assert_live_state_close(actual, expected) -> None:
+    slots = expected.spec.num_slots
+    slot_dims = {
+        "_dit_k": 2,
+        "_dit_v": 2,
+        "_encoder_k": 1,
+        "_encoder_v": 1,
+        "_encoder_conv_tail": 0,
+        "_window": 0,
+        "_all_mods": 1,
+    }
+    for name, slot_dim in slot_dims.items():
+        actual_value = getattr(actual, name)
+        expected_value = getattr(expected, name)
+        live = [slice(None)] * expected_value.ndim
+        live[slot_dim] = slice(0, slots)
+        torch.testing.assert_close(
+            actual_value[tuple(live)],
+            expected_value,
+            rtol=2e-2,
+            atol=2e-2,
+        )
+    for slot in range(slots):
+        assert torch.equal(
+            actual._generators[slot].get_state(),
+            expected._generators[slot].get_state(),
+        )
+    assert actual._fm_seq_len == expected._fm_seq_len
+    assert actual._encoder_seq_len == expected._encoder_seq_len
+
+
+def _fill_reserved_state(acoustic_tail, value: float) -> None:
+    slot = acoustic_tail.spec.num_slots
+    slot_dims = {
+        "_dit_k": 2,
+        "_dit_v": 2,
+        "_encoder_k": 1,
+        "_encoder_v": 1,
+        "_encoder_conv_tail": 0,
+        "_window": 0,
+        "_all_mods": 1,
+    }
+    for name, slot_dim in slot_dims.items():
+        tensor = getattr(acoustic_tail, name)
+        reserved = [slice(None)] * tensor.ndim
+        reserved[slot_dim] = slot
+        tensor[tuple(reserved)].fill_(value)
+
+
+@pytest.mark.parametrize(
+    ("slots", "enabled", "expected"),
+    [
+        (1, False, (1,)),
+        (8, False, (1, 8)),
+        (12, False, (1, 8)),
+        (12, True, (1, 8, 12)),
+        (24, True, (1, 8, 16, 24)),
+        (32, True, (1, 8, 16, 32)),
+    ],
+)
+def test_graph_batch_buckets_include_deployment_maximum(
+    slots: int, enabled: bool, expected: tuple[int, ...]
+) -> None:
+    assert tail.graph_batch_buckets(slots, include_maximum=enabled) == expected
+
+
+@pytest.mark.parametrize("optimize", [False, True])
+def test_padding_request_does_not_allocate_on_cpu(optimize: bool) -> None:
+    acoustic_tail = _build_tail(
+        _TailModel().eval(),
+        slots=12,
+        patch_capacity=33,
+        optimize=optimize,
+        pad_to_bucket=True,
+    )
+
+    assert acoustic_tail._cuda_graph_enabled is False
+    assert acoustic_tail._pad_to_bucket is False
+    assert acoustic_tail._graph_batch_buckets == (1, 8)
+    assert acoustic_tail._window.shape[0] == 12
+    assert (
+        acoustic_tail._pool_memory_estimate(acoustic_tail._mods_width).num_slots == 12
     )
 
 
@@ -383,7 +490,10 @@ def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
 
 
 @pytest.mark.accelerator
-def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
+@pytest.mark.parametrize("slots", [1, 8])
+def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order(
+    slots: int,
+) -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
     torch.manual_seed(1234)
@@ -394,10 +504,55 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     torch.manual_seed(9)
     eager = _build_tail(
         eager_model,
-        slots=8,
+        slots=slots,
         device=device,
         dtype=dtype,
         patch_capacity=33,
+    )
+    torch.manual_seed(9)
+    graph = _build_tail(
+        graph_model,
+        slots=slots,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+    )
+
+    _copy_live_state(eager, graph)
+    for slot in range(slots):
+        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
+        eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = 4
+        eager.initialize_slot_rng(slot, 100 + slot)
+        graph.initialize_slot_rng(slot, 100 + slot)
+
+    slot_order = [0] if slots == 1 else [7, 2, 5, 0, 6, 1, 4, 3]
+    hidden = torch.randn(slots, FM_HIDDEN, device=device, dtype=dtype)
+    eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
+    graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
+    torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
+
+    latent = torch.randn(slots, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
+    eager_feedback = eager.encode_feedback(slot_order, latent)
+    graph_feedback = graph.encode_feedback(slot_order, latent)
+    torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
+    assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
+    assert not graph._graph_misses
+    assert graph._dit_contiguous_view_steps == NFE
+
+
+@pytest.mark.accelerator
+def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    dtype = torch.bfloat16
+    eager_model = _TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = _build_tail(
+        eager_model, slots=8, device=device, dtype=dtype, patch_capacity=33
     )
     torch.manual_seed(9)
     graph = _build_tail(
@@ -407,36 +562,73 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
         dtype=dtype,
         patch_capacity=33,
         optimize=True,
+        pad_to_bucket=True,
     )
 
-    for name in (
-        "_dit_k",
-        "_dit_v",
-        "_encoder_k",
-        "_encoder_v",
-        "_encoder_conv_tail",
-        "_window",
-        "_all_mods",
-    ):
-        eager_value = getattr(eager, name)
-        eager_value.normal_(0, 0.05)
-        getattr(graph, name).copy_(eager_value)
+    _copy_live_state(eager, graph)
+    assert [eager.acquire_slot() for _ in range(8)] == list(range(8))
+    assert [graph.acquire_slot() for _ in range(8)] == list(range(8))
     for slot in range(8):
-        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
-        eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = 4
+        fm_length = 52 if slot in {5, 7} else 15
+        encoder_length = 18 if slot in {5, 7} else 4
+        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = fm_length
+        eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = encoder_length
         eager.initialize_slot_rng(slot, 100 + slot)
         graph.initialize_slot_rng(slot, 100 + slot)
 
-    slots = [7, 2, 5, 0, 6, 1, 4, 3]
-    hidden = torch.randn(8, FM_HIDDEN, device=device, dtype=dtype)
-    eager_latent = eager.sample_patches(slots, fm_hidden_rows=hidden)
-    graph_latent = graph.sample_patches(slots, fm_hidden_rows=hidden)
-    torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
+    # A -> B -> A stresses repeated reuse of the shared filler row with
+    # different live members. Repeated updates also cross context capacities.
+    schedules = ([3, 0, 4, 1, 2], [7, 5], [3, 0, 4, 1, 2])
+    for replay_index, slot_order in enumerate(schedules):
+        _fill_reserved_state(graph, 0.25 + replay_index)
+        hidden = torch.randn(len(slot_order), FM_HIDDEN, device=device, dtype=dtype)
+        eager_latent = eager.sample_patches(slot_order, fm_hidden_rows=hidden)
+        graph_latent = graph.sample_patches(slot_order, fm_hidden_rows=hidden)
+        torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
 
-    latent = torch.randn(8, PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype)
-    eager_feedback = eager.encode_feedback(slots, latent)
-    graph_feedback = graph.encode_feedback(slots, latent)
-    torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
-    assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
+        latent = torch.randn(
+            len(slot_order), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+        )
+        eager_feedback = eager.encode_feedback(slot_order, latent)
+        graph_feedback = graph.encode_feedback(slot_order, latent)
+        torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
+        _assert_live_state_close(graph, eager)
+
+    assert graph._graph_padded_replays == {"meanflow": 3, "semantic_encoder": 3}
     assert not graph._graph_misses
-    assert graph._dit_contiguous_view_steps == NFE
+
+    # Filler rows write into the reserved pool row past the slot range, so no
+    # allocatable slot ever sees them: a real slot that sat out the padded
+    # batch must still match the eager twin exactly afterwards.
+    assert graph._pad_bin_slot == 8
+    assert graph._dit_k.shape[2] == 9  # 8 slots + 1 reserved row
+    assert eager._window.shape[0] == 8
+    bystander = 7
+    assert bystander not in slot_order
+    hidden_one = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    eager_one = eager.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    graph_one = graph.sample_patches([bystander], fm_hidden_rows=hidden_one)
+    torch.testing.assert_close(graph_one, eager_one, rtol=2e-2, atol=2e-2)
+
+    # Release/reacquire a real row, reseed it, and prove the reserved row did
+    # not leak state into its next owner.
+    eager.release_slot(bystander)
+    graph.release_slot(bystander)
+    assert eager.acquire_slot() == graph.acquire_slot() == bystander
+    grid = torch.linspace(0.0, 1.0, NFE + 1, device=device, dtype=dtype)
+    g_cond = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    mods = eager.dit.build_mods(grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond)
+    history = torch.randn(
+        2 * eager.spec.unit_len, FM_HIDDEN, device=device, dtype=dtype
+    )
+    for acoustic_tail in (eager, graph):
+        acoustic_tail.seed_fm_history(bystander, fm_rows=history, all_mods=mods)
+        acoustic_tail.initialize_slot_rng(bystander, 999)
+    hidden_one = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    torch.testing.assert_close(
+        graph.sample_patches([bystander], fm_hidden_rows=hidden_one),
+        eager.sample_patches([bystander], fm_hidden_rows=hidden_one),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+    _assert_live_state_close(graph, eager)
