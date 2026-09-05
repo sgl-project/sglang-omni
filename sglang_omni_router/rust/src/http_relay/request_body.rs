@@ -44,19 +44,33 @@ impl SharedUploadState {
     }
 }
 
-/// One already-classified request body retaining the shared byte budget
-/// until Reqwest consumes or drops the body.
+struct BudgetedBytes {
+    data: Bytes,
+    _budget: OwnedSemaphorePermit,
+}
+
+impl AsRef<[u8]> for BudgetedBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+}
+
+/// One already-classified request body whose shared byte budget follows the
+/// payload into the upstream transport.
 pub(crate) struct BufferedBody {
     data: Option<Bytes>,
-    _budget: Option<OwnedSemaphorePermit>,
 }
 
 impl BufferedBody {
     pub(crate) fn new(data: Bytes, budget: Option<OwnedSemaphorePermit>) -> Self {
-        Self {
-            data: Some(data),
-            _budget: budget,
-        }
+        let data = match budget {
+            Some(budget) => Bytes::from_owner(BudgetedBytes {
+                data,
+                _budget: budget,
+            }),
+            None => data,
+        };
+        Self { data: Some(data) }
     }
 }
 
@@ -209,10 +223,11 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::{DirectRequestBody, HttpFault, SharedUploadState, UploadState};
+    use super::{BufferedBody, DirectRequestBody, HttpFault, SharedUploadState, UploadState};
     use axum::body::Body;
     use bytes::{Bytes, BytesMut};
     use http_body::{Body as _, Frame};
+    use tokio::sync::Semaphore;
 
     struct Frames(VecDeque<Result<Frame<Bytes>, io::Error>>);
 
@@ -275,6 +290,108 @@ mod tests {
         assert_eq!(short, UploadState::Failed(HttpFault::MalformedRequest));
         let (_, long) = drive(Body::from("abcd"), 3).await;
         assert_eq!(long, UploadState::Failed(HttpFault::RequestBodyTooLarge));
+    }
+
+    #[test]
+    fn buffered_upload_budget_follows_the_last_payload_reference() {
+        let budget = Arc::new(Semaphore::new(4));
+        let permit = Arc::clone(&budget)
+            .try_acquire_many_owned(4)
+            .expect("reserve buffered payload");
+        let mut body = BufferedBody::new(Bytes::from_static(b"data"), Some(permit));
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        let frame = Pin::new(&mut body).poll_frame(&mut context);
+        assert!(matches!(&frame, Poll::Ready(Some(Ok(_)))));
+        let Poll::Ready(Some(Ok(frame))) = frame else {
+            return;
+        };
+        let payload = frame.into_data().expect("buffered data frame");
+        let slice = payload.slice(1..);
+        drop(body);
+        assert_eq!(budget.available_permits(), 0);
+
+        drop(payload);
+        assert_eq!(budget.available_permits(), 0);
+        drop(slice);
+        assert_eq!(budget.available_permits(), 4);
+    }
+
+    #[tokio::test]
+    async fn stalled_upstream_retains_buffered_budget_until_send_is_cancelled() {
+        const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled upstream");
+        let address = listener
+            .local_addr()
+            .expect("read stalled upstream address");
+        let (body_seen_tx, body_seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _peer) = listener.accept().expect("accept stalled upload");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("bound stalled upload read");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let count = stream.read(&mut chunk).expect("read stalled upload");
+                assert_ne!(count, 0, "stalled upload closed before its body");
+                request.extend_from_slice(&chunk[..count]);
+                if request
+                    .windows(4)
+                    .position(|part| part == b"\r\n\r\n")
+                    .is_some_and(|head_end| request.len() > head_end + 4)
+                {
+                    let _sent = body_seen_tx.send(());
+                    break;
+                }
+            }
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release stalled upstream");
+        });
+
+        let budget = Arc::new(Semaphore::new(PAYLOAD_BYTES));
+        let permits = u32::try_from(PAYLOAD_BYTES).expect("payload fits semaphore permit count");
+        let permit = Arc::clone(&budget)
+            .try_acquire_many_owned(permits)
+            .expect("reserve complete buffered payload");
+        let body = BufferedBody::new(Bytes::from(vec![0_u8; PAYLOAD_BYTES]), Some(permit));
+        let client = reqwest::Client::builder()
+            .http1_only()
+            .build()
+            .expect("build stalled upstream client");
+        let send = tokio::spawn(async move {
+            client
+                .post(format!("http://{address}/upload"))
+                .header("content-length", PAYLOAD_BYTES)
+                .body(reqwest::Body::wrap(body))
+                .send()
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), body_seen_rx)
+            .await
+            .expect("upstream observed request body")
+            .expect("stalled upstream stayed available");
+        let held_while_queued = budget.available_permits() == 0
+            && Arc::clone(&budget).try_acquire_many_owned(permits).is_err();
+
+        send.abort();
+        let _cancelled = send.await;
+        release_tx.send(()).expect("release stalled upstream");
+        server.join().expect("join stalled upstream");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while budget.available_permits() != PAYLOAD_BYTES {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled upload released its budget");
+
+        assert!(held_while_queued);
     }
 
     #[tokio::test]
