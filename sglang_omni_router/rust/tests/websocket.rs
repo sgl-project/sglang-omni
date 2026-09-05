@@ -341,7 +341,7 @@ service = "speech_websocket"
 model_ids = ["omni"]
 response_formats = ["pcm"]
 stream_modes = ["non_streaming", "streaming"]
-tasks = ["voice_clone"]
+tasks = ["text_to_speech"]
 reference_forms = ["none"]
 voice_name_policy = "preset"
 
@@ -396,20 +396,6 @@ async fn wait_ready(address: SocketAddr) {
             "router did not become ready"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
-async fn rejected_websocket_status(url: String) -> StatusCode {
-    match connect_async(url).await {
-        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
-            assert!(
-                response.headers().contains_key("x-request-id"),
-                "rejected WebSocket handshake must retain the process request context"
-            );
-            response.status()
-        }
-        Ok((_socket, _response)) => panic!("WebSocket unexpectedly succeeded"),
-        Err(error) => panic!("unexpected WebSocket failure: {error}"),
     }
 }
 
@@ -887,6 +873,35 @@ struct HeterogeneousWorkerState {
     paths: Arc<Mutex<Vec<String>>>,
 }
 
+async fn heterogeneous_speech_worker(
+    State(state): State<HeterogeneousWorkerState>,
+    upgrade: WebSocketUpgrade,
+) -> impl axum::response::IntoResponse {
+    upgrade.on_upgrade(move |mut socket| async move {
+        let Some(Ok(Message::Text(_config))) = socket.next().await else {
+            return;
+        };
+        let configured = format!(
+            r#"{{"type":"session.configured","worker":"{}"}}"#,
+            state.model
+        );
+        if socket.send(Message::Text(configured.into())).await.is_err() {
+            return;
+        }
+        while let Some(message) = socket.next().await {
+            match message {
+                Ok(Message::Close(frame)) => {
+                    let _closed = socket.send(Message::Close(frame)).await;
+                    return;
+                }
+                Ok(Message::Text(_) | Message::Binary(_) | Message::Ping(_) | Message::Pong(_)) => {
+                }
+                Err(_) => return,
+            }
+        }
+    })
+}
+
 async fn heterogeneous_realtime_worker(
     State(state): State<HeterogeneousWorkerState>,
     uri: Uri,
@@ -922,7 +937,7 @@ async fn heterogeneous_realtime_worker(
 }
 
 fn heterogeneous_router_config(router: SocketAddr, alpha: SocketAddr, beta: SocketAddr) -> String {
-    let worker = |id: &str, model: &str, address: SocketAddr| {
+    let worker = |id: &str, model: &str, address: SocketAddr, task: &str, references: &str| {
         format!(
             r#"
 [[workers]]
@@ -932,7 +947,17 @@ trust_domain = "local"
 default_model_id = "{model}"
 
 [workers.capacity]
+speech_websocket = 1
 realtime_websocket = 1
+
+[[workers.service_profiles]]
+service = "speech_websocket"
+model_ids = ["{model}", "tts"]
+response_formats = ["pcm"]
+stream_modes = ["non_streaming", "streaming"]
+tasks = ["{task}"]
+reference_forms = ["{references}"]
+voice_name_policy = "preset"
 
 [[workers.service_profiles]]
 service = "realtime_websocket"
@@ -957,6 +982,7 @@ strategy = "round_robin"
 
 [admission]
 global = 2
+speech_websocket = 2
 realtime_websocket = 2
 
 [health]
@@ -965,17 +991,20 @@ timeout_ms = 50
 success_threshold = 1
 failure_threshold = 1
 
+[websocket.speech]
+trust_domain = "local"
+
 [websocket.realtime]
 trust_domain = "local"
 {}{}
 "#,
-        worker("alpha", "omni-alpha", alpha),
-        worker("beta", "omni-beta", beta)
+        worker("alpha", "omni-alpha", alpha, "text_to_speech", "none"),
+        worker("beta", "omni-beta", beta, "voice_clone", "direct")
     )
 }
 
 #[tokio::test]
-async fn realtime_model_prefers_an_exact_worker_and_falls_back_within_the_domain() {
+async fn heterogeneous_websocket_routing_follows_request_facts() {
     let alpha_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind alpha worker");
@@ -1002,6 +1031,7 @@ async fn realtime_model_prefers_an_exact_worker_and_falls_back_within_the_domain
             alpha_listener,
             Router::new()
                 .route("/health", get(health))
+                .route("/v1/audio/speech/stream", get(heterogeneous_speech_worker))
                 .route("/v1/realtime", get(heterogeneous_realtime_worker))
                 .with_state(alpha_state),
         )
@@ -1013,6 +1043,7 @@ async fn realtime_model_prefers_an_exact_worker_and_falls_back_within_the_domain
             beta_listener,
             Router::new()
                 .route("/health", get(health))
+                .route("/v1/audio/speech/stream", get(heterogeneous_speech_worker))
                 .route("/v1/realtime", get(heterogeneous_realtime_worker))
                 .with_state(beta_state),
         )
@@ -1040,10 +1071,49 @@ async fn realtime_model_prefers_an_exact_worker_and_falls_back_within_the_domain
     let _child = ChildGuard(child);
     wait_ready(router_address).await;
 
-    assert_eq!(
-        rejected_websocket_status(format!("ws://{router_address}/v1/audio/speech/stream")).await,
-        StatusCode::NOT_FOUND
-    );
+    let speech_url = format!("ws://{router_address}/v1/audio/speech/stream");
+    let (mut custom, _) = connect_async(&speech_url)
+        .await
+        .expect("connect text-only speech session");
+    custom
+        .send(ClientMessage::Text(
+            r#"{"type":"session.config","model":"tts","voice":"default"}"#.into(),
+        ))
+        .await
+        .expect("send text-only speech configuration");
+    let configured = custom
+        .next()
+        .await
+        .expect("CustomVoice configured event")
+        .expect("valid CustomVoice configured event")
+        .into_text()
+        .expect("CustomVoice configured text");
+    assert!(configured.contains(r#""worker":"omni-alpha""#));
+    custom.close(None).await.expect("close CustomVoice session");
+    let _closed = custom.next().await;
+    drop(custom);
+
+    let (mut base, _) = connect_async(&speech_url)
+        .await
+        .expect("connect voice-clone speech session");
+    base.send(ClientMessage::Text(
+        r#"{"type":"session.config","model":"tts","task_type":"Base","ref_audio":"reference"}"#
+            .into(),
+    ))
+    .await
+    .expect("send Base speech configuration");
+    let configured = base
+        .next()
+        .await
+        .expect("Base configured event")
+        .expect("valid Base configured event")
+        .into_text()
+        .expect("Base configured text");
+    assert!(configured.contains(r#""worker":"omni-beta""#));
+    base.close(None).await.expect("close Base session");
+    let _closed = base.next().await;
+    drop(base);
+
     let (mut unspecified, _) = connect_async(format!("ws://{router_address}/v1/realtime"))
         .await
         .expect("select a realtime worker without a model preference");

@@ -816,13 +816,11 @@ fn speech_requirement(
     } else {
         StreamMode::NonStreaming
     };
-    let task = classify_task(
-        fields
-            .task
-            .as_ref()
-            .and_then(Option::as_deref)
-            .unwrap_or("Base"),
-    );
+    let task = fields
+        .task
+        .as_ref()
+        .and_then(Option::as_deref)
+        .and_then(classify_task);
     let mut references = reference_forms(&fields);
     let named_voice = classify_named_voice(&fields, &references);
     if named_voice {
@@ -1268,6 +1266,21 @@ mod tests {
             panic!("speech websocket requirement")
         };
         assert_eq!(*response_format, None);
+        assert_eq!(*task, None);
+
+        let base = parse_speech_config(
+            br#"{"type":"session.config","task_type":"Base","ref_audio":"reference"}"#,
+        )
+        .expect("Base speech configuration");
+        let base = speech_requirement(
+            base,
+            ModelSelection::Explicit(String::from("tts")),
+            &TrustDomain::new(String::from("local")),
+        )
+        .expect("Base speech requirement");
+        let ProfileRequirement::SpeechWebsocket { task, .. } = base.profile() else {
+            panic!("speech websocket requirement")
+        };
         assert_eq!(*task, Some(SpeechTask::VoiceClone));
 
         let custom = parse_speech_config(
