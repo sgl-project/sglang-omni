@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import logging
+from collections import Counter
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -440,3 +442,44 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph._graph_misses
     assert graph._dit_contiguous_view_steps == NFE
+
+
+def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
+    torch.manual_seed(7)
+    model = _TailModel().eval()
+    acoustic_tail = _build_tail(model, slots=1, patch_capacity=60)
+    unit = acoustic_tail.spec.unit_len
+    g_cond = torch.randn(1, FM_HIDDEN)
+    grid = torch.linspace(0.0, 1.0, NFE + 1)
+    mods = acoustic_tail.dit.build_mods(
+        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
+    )
+    slot = acoustic_tail.acquire_slot()
+    acoustic_tail.seed_fm_history(
+        slot, fm_rows=torch.randn(3 * unit, FM_HIDDEN), all_mods=mods
+    )
+
+    with caplog.at_level(logging.INFO, logger=tail.logger.name):
+        for step in range(50):
+            latent = acoustic_tail.sample_patches(
+                [slot], fm_hidden_rows=torch.randn(1, FM_HIDDEN)
+            )
+            acoustic_tail.encode_feedback([slot], latent)
+            acoustic_tail.note_decode_cycle()
+            if step == 48:
+                assert not [
+                    r for r in caplog.records if "tail graph counters" in r.getMessage()
+                ]
+
+    records = [r for r in caplog.records if "tail graph counters" in r.getMessage()]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "steps=50" in message
+    assert "meanflow_replays=0" in message
+    assert "meanflow_misses=50" in message
+    assert "semantic_encoder_replays=0" in message
+    assert "semantic_encoder_misses=50" in message
+    assert acoustic_tail._graph_misses == Counter(
+        {"meanflow": 50, "semantic_encoder": 50}
+    )
+    assert acoustic_tail._graph_replays == Counter()

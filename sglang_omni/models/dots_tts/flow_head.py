@@ -661,6 +661,7 @@ class DotsTTSFlowHead(nn.Module):
             slots,
             patch_encoder_input,
         )
+        self._tail.note_decode_cycle()
         self._stage_batched_eos(eos_hits)
         results = []
         for row, state in enumerate(states):
