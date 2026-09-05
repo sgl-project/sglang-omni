@@ -1,6 +1,9 @@
 import ast
 import importlib.util
+import subprocess
 from pathlib import Path
+
+import yaml
 
 TUNE_PATH = (
     Path(__file__).resolve().parents[2] / ".claude/skills/tune-ci-thresholds/tune.py"
@@ -57,6 +60,60 @@ def test_gpu_cleanup_is_scoped_to_explicit_targets(monkeypatch, tmp_path):
     cmd, kwargs = calls[0]
     assert cmd[-1] == "--kill-orphans"
     assert kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "2,3"
+
+
+def test_post_stage_cleanup_only_downgrades_memory_timeout():
+    action_path = (
+        Path(__file__).resolve().parents[2]
+        / ".github/actions/omni-post-stage/action.yaml"
+    )
+    action = yaml.safe_load(action_path.read_text())
+    kill_step = next(
+        step for step in action["runs"]["steps"] if step["name"] == "Kill GPU processes"
+    )
+
+    run = kill_step["run"]
+    assert "cleanup_status=$?" in run
+    assert 'if [ "${cleanup_status}" -eq 1 ]; then' in run
+    assert "::warning::Post-stage GPU cleanup did not reach" in run
+    assert 'elif [ "${cleanup_status}" -ne 0 ]; then' in run
+    assert 'exit "${cleanup_status}"' in run
+
+
+def test_post_stage_cleanup_exit_status_policy():
+    action_path = (
+        Path(__file__).resolve().parents[2]
+        / ".github/actions/omni-post-stage/action.yaml"
+    )
+    action = yaml.safe_load(action_path.read_text())
+    run = next(
+        step["run"]
+        for step in action["runs"]["steps"]
+        if step["name"] == "Kill GPU processes"
+    )
+    cleanup_command = "bash .github/scripts/delete_gpu_process.sh --kill-orphans"
+
+    for cleanup_status, expected_status in ((0, 0), (1, 0), (2, 2)):
+        simulated_run = run.replace(cleanup_command, f"bash -c 'exit {cleanup_status}'")
+        result = subprocess.run(
+            ["bash", "-c", simulated_run], capture_output=True, text=True
+        )
+
+        assert result.returncode == expected_status
+        assert ("::warning::" in result.stdout) is (cleanup_status == 1)
+
+
+def test_gpu_cleanup_timeout_prints_diagnostics_before_failing():
+    script_path = (
+        Path(__file__).resolve().parents[2] / ".github/scripts/delete_gpu_process.sh"
+    )
+    script = script_path.read_text()
+
+    assert "_print_gpu_cleanup_diagnostics" in script
+    assert "Timed out waiting for GPU memory.used" in script
+    assert script.index("_print_gpu_cleanup_diagnostics") < script.rindex(
+        "Timed out waiting for GPU memory.used"
+    )
 
 
 def test_metric_statistics_retains_outlier_and_reports_dispersion():
