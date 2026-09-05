@@ -249,7 +249,9 @@ def serialize_direct_cuda_ipc_stream_chunk(
 
 
 _INLINE_STREAM_CHUNK_TYPE = "InlineStreamChunk"
-_INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
+INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
+# Backward-compatible alias for existing internal callers and tests.
+_INLINE_STREAM_CHUNK_BYTES_LIMIT = INLINE_STREAM_CHUNK_BYTES_LIMIT
 
 
 def serialize_inline_stream_chunk(
@@ -259,13 +261,13 @@ def serialize_inline_stream_chunk(
         return None
     if _contains_cuda_tensor(metadata) or _contains_cpu_tensor(metadata):
         return None
-    if data.element_size() * data.numel() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if data.element_size() * data.numel() > INLINE_STREAM_CHUNK_BYTES_LIMIT:
         return None
     data = data.detach()
-    if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if data.untyped_storage().nbytes() > INLINE_STREAM_CHUNK_BYTES_LIMIT:
         data = data.clone(memory_format=torch.contiguous_format)
     payload = pickle.dumps((data, metadata))
-    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if len(payload) > INLINE_STREAM_CHUNK_BYTES_LIMIT:
         return None
     return {
         "_type": _INLINE_STREAM_CHUNK_TYPE,
@@ -293,10 +295,10 @@ def deserialize_inline_stream_chunk(
             f"inline stream chunk payload must be bytes, got "
             f"{type(payload).__name__}"
         )
-    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+    if len(payload) > INLINE_STREAM_CHUNK_BYTES_LIMIT:
         raise ValueError(
             "inline stream chunk payload exceeds "
-            f"{_INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
+            f"{INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
         )
     data, metadata = pickle.loads(payload)
     if not isinstance(data, torch.Tensor):

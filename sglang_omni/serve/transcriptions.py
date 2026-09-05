@@ -265,11 +265,14 @@ def _assemble_chunked_response(
         stream=False,
         endpoint_path=TRANSCRIPTIONS_ENDPOINT,
     )
-    if normalized_response_format == "text":
-        return PlainTextResponse(text)
-
     adapter = speech_to_text.resolve_speech_to_text_adapter(architectures)
-    text = adapter.postprocess_text(text)
+    raw_text = text
+    language = adapter.resolve_language(raw_text, language)
+    if normalized_response_format == "text":
+        return PlainTextResponse(adapter.postprocess_plain_text(raw_text))
+
+    text = adapter.postprocess_text(raw_text)
+
     duration_s = plan.duration_s
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None

@@ -95,6 +95,23 @@ def test_streaming_simple_scheduler_batches_non_streaming_requests() -> None:
     assert [msg.request_id for msg in _drain_results(scheduler)] == ["a", "b", "c"]
 
 
+def test_non_streaming_batch_isolates_per_request_exceptions() -> None:
+    scheduler = _TestStreamingScheduler(max_batch_size=2)
+    scheduler._batch_fn = lambda payloads: [payloads[0], ValueError("bad item")]
+
+    scheduler._handle_new_request_batch(
+        [
+            IncomingMessage("good", "new_request", _payload("good")),
+            IncomingMessage("bad", "new_request", _payload("bad")),
+        ]
+    )
+
+    outputs = {message.request_id: message for message in _drain_results(scheduler)}
+    assert outputs["good"].type == "result"
+    assert outputs["bad"].type == "error"
+    assert isinstance(outputs["bad"].data, ValueError)
+
+
 def test_non_streaming_batch_skips_done_before_later_payloads() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=3)
     first = IncomingMessage("a", "new_request", _payload("a"))

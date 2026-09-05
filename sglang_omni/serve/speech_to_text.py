@@ -330,10 +330,14 @@ def assemble_speech_to_text_response(
         endpoint_path=endpoint_path,
         response_formats=response_formats,
     )
-    if normalized_response_format == "text":
-        return PlainTextResponse(text)
-
     adapter = resolve_speech_to_text_adapter(architectures)
+    raw_text = text
+    language = adapter.resolve_language(raw_text, language)
+    if normalized_response_format == "text":
+        return PlainTextResponse(adapter.postprocess_plain_text(raw_text))
+
+    text = adapter.postprocess_text(raw_text)
+
     if (
         normalized_response_format in SEGMENT_RESPONSE_FORMATS
         and not adapter.supports_segment_timestamps
@@ -345,8 +349,6 @@ def assemble_speech_to_text_response(
                 "segment-timestamp capability"
             ),
         )
-    raw_text = text
-    text = adapter.postprocess_text(raw_text)
     if duration_s is None:
         duration_s = probe_audio_duration(audio_bytes)
     usage = (
