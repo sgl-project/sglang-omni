@@ -116,6 +116,14 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del gpu_id, server_args
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            self._setup_mlx_model(
+                model_worker=model_worker, checkpoint_dir=checkpoint_dir
+            )
+            return
+
         from qwen_tts import Qwen3TTSModel
         from transformers import AutoProcessor
 
@@ -141,6 +149,33 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         request_builders.set_qwen3_tts_preprocessing_context(
             model=model,
             wrapper=self.wrapper,
+        )
+
+    def _setup_mlx_model(self, *, model_worker: Any, checkpoint_dir: str) -> None:
+        """Register MLX-native preprocessing.
+
+        The engine's model here is the MLX talker, which has none of the Torch
+        prompt builders and cannot hold a Torch speech tokenizer, so prompts are
+        assembled from the MLX talker instead.
+        """
+        from transformers import AutoTokenizer
+
+        from sglang_omni.models.qwen3_tts.mlx.preprocessing import (
+            Qwen3TTSMlxPreprocessor,
+        )
+
+        talker = model_worker._mlx_runner.model
+        self.wrapper = None
+        preprocessor = Qwen3TTSMlxPreprocessor(
+            talker,
+            talker.model_config,
+            AutoTokenizer.from_pretrained(checkpoint_dir),
+            checkpoint_dir=checkpoint_dir,
+        )
+        request_builders.set_qwen3_tts_preprocessing_context(
+            model=talker,
+            wrapper=None,
+            mlx_preprocessor=preprocessor,
         )
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
@@ -169,6 +204,18 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            # The MLX talker keeps its own frame state, so it needs a different
+            # bridge than the Torch AR stage.
+            scheduler_runner_mod = importlib.import_module(
+                "sglang_omni.models.qwen3_tts.mlx.scheduler_runner"
+            )
+            return scheduler_runner_mod.Qwen3TTSMlxSchedulerModelRunner(
+                model_worker, output_proc
+            )
+
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.qwen3_tts.model_runner"
         )

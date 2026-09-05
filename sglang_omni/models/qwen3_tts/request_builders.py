@@ -163,6 +163,9 @@ class Qwen3TTSPreprocessingContext:
     # Note (Jiaxin Deng): True when preprocessing runs outside the engine process,
     # so prepared tensors travel in the payload instead of the module registry.
     standalone: bool = False
+    # Set only on the MLX path, where the engine's model is the MLX talker and
+    # has none of the Torch prompt builders.
+    mlx_preprocessor: Any = None
 
 
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
@@ -174,17 +177,25 @@ _PREPARED_REQUESTS_LOCK = threading.Lock()
 
 
 def set_qwen3_tts_preprocessing_context(
-    *, model: Any, wrapper: Any, standalone: bool = False
+    *,
+    model: Any,
+    wrapper: Any,
+    standalone: bool = False,
+    mlx_preprocessor: Any = None,
 ) -> None:
     """Register model objects used by the preprocessing stage."""
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
+        if mlx_preprocessor is None:
+            # The ad-hoc reference service encodes reference audio with the Torch
+            # speech tokenizer; the MLX preprocessor owns that itself.
+            _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
             standalone=standalone,
+            mlx_preprocessor=mlx_preprocessor,
         )
         _PREPARED_REQUESTS.clear()
 
@@ -1114,10 +1125,24 @@ def _prepare_qwen3_tts_request(
     model: Any,
     wrapper: Any,
     default_stream_codec_output: bool = True,
+    mlx_preprocessor: Any = None,
 ) -> Qwen3TTSPreparedRequest:
     state = build_qwen3_tts_state(
         payload, default_stream_codec_output=default_stream_codec_output
     )
+
+    if mlx_preprocessor is not None:
+        from sglang_omni.models.qwen3_tts.mlx.preprocessing import (
+            build_mlx_prepared_request,
+        )
+
+        return build_mlx_prepared_request(
+            mlx_preprocessor,
+            state,
+            gen_kwargs=mlx_preprocessor.merge_generate_kwargs(
+                **state.generation_kwargs
+            ),
+        )
 
     _validate_qwen3_tts_model_task(model, state)
     gen_kwargs = wrapper._merge_generate_kwargs(**state.generation_kwargs)
@@ -1210,6 +1235,7 @@ def preprocess_qwen3_tts_payload(
         model=context.model,
         wrapper=context.wrapper,
         default_stream_codec_output=default_stream_codec_output,
+        mlx_preprocessor=context.mlx_preprocessor,
     )
     if context.standalone:
         return _store_prepared_qwen3_tts_payload(payload, prepared)
