@@ -20,7 +20,13 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     unused; the ids are set to -1 (matching no token).
     """
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self,
+        tp_worker: Any,
+        output_processor: Any,
+        *,
+        speech_enabled: bool = True,
+    ):
         # Skip ThinkerModelRunner.__init__ (it requires hf_config.thinker_config)
         # but keep its grandparent initialization.
         super(ThinkerModelRunner, self).__init__(tp_worker, output_processor)
@@ -31,6 +37,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self._embed_tokens = self._text_model.embed_tokens
         self._th_host_bufs = None
         self._th_slot = 0
+        self._speech_enabled = bool(speech_enabled)
 
         self._image_token_id = -1
         self._video_token_id = -1
@@ -43,21 +50,30 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     # FULL (enable_return_hidden_states) and their can_run gate requires an
     # exact hidden-mode match; for decode both modes return the same rows, and
     # post_process_outputs keeps only the last row per request anyway.
+    #
+    # Note (ruoyu): the text-only pipeline has no talker, and its bootstrap
+    # captures decode graphs without hidden states. Requesting FULL there
+    # fails the same exact-match gate the other way round, so every decode
+    # step of the text pipeline ran eager. Only ask for hidden states when a
+    # talker exists to consume them.
+    def _requested_capture_hidden_mode(self) -> Any:
+        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
+        if self._speech_enabled:
+            return CaptureHiddenMode.FULL
+        return CaptureHiddenMode.NULL
+
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: Any, requests: list
     ) -> Any:
         del schedule_batch, requests
-        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
-
-        return CaptureHiddenMode.FULL
+        return self._requested_capture_hidden_mode()
 
     def requested_capture_hidden_mode_decode(
         self, schedule_batch: Any, requests: list
     ) -> Any:
         del schedule_batch, requests
-        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
-
-        return CaptureHiddenMode.FULL
+        return self._requested_capture_hidden_mode()
 
     def post_process_outputs(
         self,

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 import numpy as np
 import torch
@@ -59,6 +60,13 @@ class MiniCPMOCode2Wav(nn.Module):
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
             prompt_wav = default_wav if os.path.isfile(default_wav) else None
         self._prompt_wav = prompt_wav
+        # Note (ruoyu): the stage runs this vocoder from several worker threads
+        # (SimpleScheduler max_concurrency). Token2wav's prompt cache is the
+        # only shared mutable state on the hot path, so build it once here
+        # instead of lazily on the first request, and guard the fallback.
+        self._prompt_cache_lock = threading.Lock()
+        if self._prompt_wav is not None:
+            self.token2wav.cache = self.token2wav._prepare_prompt(self._prompt_wav)
 
     @torch.inference_mode()
     def forward(
@@ -93,7 +101,9 @@ class MiniCPMOCode2Wav(nn.Module):
         want the raw waveform anyway."""
         t2w = self.token2wav
         if t2w.cache is None:
-            t2w.cache = t2w._prepare_prompt(prompt_wav)
+            with self._prompt_cache_lock:
+                if t2w.cache is None:
+                    t2w.cache = t2w._prepare_prompt(prompt_wav)
         (
             prompt_speech_tokens,
             prompt_speech_tokens_lens,

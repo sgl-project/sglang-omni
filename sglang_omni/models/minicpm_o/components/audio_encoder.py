@@ -10,6 +10,7 @@ pool, then per-audio trimming to the pooled feature lengths.
 
 from __future__ import annotations
 
+import functools
 import logging
 
 import torch
@@ -26,16 +27,27 @@ from sglang_omni.models.weight_loader import (
 logger = logging.getLogger(__name__)
 
 
+@functools.lru_cache(maxsize=16)
+def _subsequent_chunk_mask_cached(
+    size: int, chunk_size: int, device_str: str
+) -> torch.Tensor:
+    # Note (ruoyu): the remote code builds this (size, size) mask with a Python
+    # loop over every frame on every forward; the mask only depends on the
+    # padded frame count and the chunk length, which take one or two distinct
+    # values in serving (30 s whisper windows). Build it once per shape with
+    # a broadcast compare and memoize per device.
+    device = torch.device(device_str)
+    idx = torch.arange(size, device=device)
+    ending = torch.clamp((idx // chunk_size + 1) * chunk_size, max=size)
+    return idx.unsqueeze(0) < ending.unsqueeze(1)
+
+
 def _subsequent_chunk_mask(
     size: int, chunk_size: int, device: torch.device
 ) -> torch.Tensor:
     """Chunked-causal mask: each frame attends to all frames up to the end of
     its own chunk (streaming whisper convention from the remote code)."""
-    ret = torch.zeros(size, size, device=device, dtype=torch.bool)
-    for i in range(size):
-        ending = min((i // chunk_size + 1) * chunk_size, size)
-        ret[i, :ending] = True
-    return ret
+    return _subsequent_chunk_mask_cached(int(size), int(chunk_size), str(device))
 
 
 def _shim_whisper_attention_returns(apm: nn.Module) -> None:
@@ -113,6 +125,11 @@ class MiniCPMOAudioEncoder(nn.Module):
         after_cnn = (input_lengths - 1) // 2 + 1
         after_pool = (after_cnn - self.audio_pool_step) // self.audio_pool_step + 1
         return after_pool.to(dtype=torch.int32)
+
+    def pooled_feature_lens(self, audio_feature_lens: torch.Tensor) -> torch.Tensor:
+        """Output rows per mel chunk; the stage uses it to split a batched
+        forward's flat ``audio_embeds`` back into per-request slices."""
+        return self._feature_lens_after_pooling(audio_feature_lens.reshape(-1))
 
     @torch.no_grad()
     def forward(

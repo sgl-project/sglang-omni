@@ -212,7 +212,9 @@ def create_thinker_scheduler(
         model=None,
         should_emit_hidden=_should_emit_hidden if speech_enabled else None,
     )
-    model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc)
+    model_runner = MiniCPMOThinkerModelRunner(
+        model_worker, output_proc, speech_enabled=speech_enabled
+    )
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     request_builder, result_adapter = make_thinker_scheduler_adapters(
