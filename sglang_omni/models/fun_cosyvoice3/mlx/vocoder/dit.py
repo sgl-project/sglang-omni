@@ -66,9 +66,11 @@ def apply_rotary_pos_emb(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
     x_rot, x_pass = x[..., :rot_dim], x[..., rot_dim:]
     cos = cos[None]
     sin = sin[None]
-    x_rot = (
-        x_rot.astype(mx.float32) * cos + _rotate_half(x_rot).astype(mx.float32) * sin
-    ).astype(x.dtype)
+    # MLX promotes the multiply/add to the table dtype while preserving the
+    # model's fp16 result. Avoiding explicit fp32 casts keeps the rotary path
+    # on the fused Metal kernels; the converted CosyVoice3 artifact produces
+    # the same mel values as the casted path.
+    x_rot = (x_rot * cos + _rotate_half(x_rot) * sin).astype(x.dtype)
     return mx.concatenate([x_rot, x_pass], axis=-1)
 
 
