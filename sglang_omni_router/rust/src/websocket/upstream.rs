@@ -7,7 +7,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig as TungsteniteConf
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 
 use crate::request_id::REQUEST_ID_HEADER;
-use crate::worker_pool::ResolvedTarget;
+use crate::worker_pool::{ConnectTarget, ResolvedTarget};
 
 pub(super) type UpstreamSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -54,13 +54,18 @@ pub(super) async fn connect(
         .map_err(|_source| ConnectError::InvalidRequest)?;
     headers.apply(request.headers_mut());
 
-    let authority = target
-        .connect_authority()
+    let connect_target = target
+        .connect_target()
         .ok_or(ConnectError::InvalidRequest)?;
-    let tcp = tokio::time::timeout_at(setup_deadline, TcpStream::connect(authority))
-        .await
-        .map_err(|_elapsed| ConnectError::SetupTimeout)?
-        .map_err(|_source| ConnectError::Connect)?;
+    let tcp = tokio::time::timeout_at(setup_deadline, async move {
+        match connect_target {
+            ConnectTarget::Socket(address) => TcpStream::connect(address).await,
+            ConnectTarget::Host(host, port) => TcpStream::connect((host, port)).await,
+        }
+    })
+    .await
+    .map_err(|_elapsed| ConnectError::SetupTimeout)?
+    .map_err(|_source| ConnectError::Connect)?;
     tcp.set_nodelay(true)
         .map_err(|_source| ConnectError::Connect)?;
     let config = TungsteniteConfig::default().max_message_size(Some(super::MAX_MESSAGE_BYTES));
@@ -194,5 +199,50 @@ mod tests {
         assert_eq!(observed.3.as_deref(), Some("https://Client.Example:8443"));
         let _closed = socket.close(None).await;
         server.await.expect("join pinned websocket fixture");
+    }
+
+    #[tokio::test]
+    async fn ipv6_literal_connects_and_preserves_authority() {
+        let listener = TcpListener::bind("[::1]:0")
+            .await
+            .expect("bind IPv6 websocket fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let (observed_sender, observed_receiver) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept IPv6 websocket");
+            let mut sender = Some(observed_sender);
+            let mut socket =
+                accept_hdr_async(stream, move |request: &Request, response: Response| {
+                    if let Some(sender) = sender.take() {
+                        let host = request
+                            .headers()
+                            .get(HOST)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_owned);
+                        let _sent = sender.send(host);
+                    }
+                    Ok(response)
+                })
+                .await
+                .expect("accept IPv6 websocket handshake");
+            let _closed = socket.close(None).await;
+        });
+        let target =
+            ResolvedTarget::from_parts(&format!("http://[::1]:{}/", address.port()), "/health")
+                .expect("valid IPv6 target");
+        let headers = HandshakeHeaders::new(HeaderValue::from_static("request-3"), None);
+
+        let policy = WebsocketConfig::default();
+        let setup_deadline = tokio::time::Instant::now() + policy.connect_timeout();
+        let mut socket = connect(&target, "/v1/realtime", None, &headers, setup_deadline)
+            .await
+            .expect("connect through IPv6 literal");
+        let observed = observed_receiver.await.expect("observe IPv6 handshake");
+        assert_eq!(
+            observed.as_deref(),
+            Some(format!("[::1]:{}", address.port()).as_str())
+        );
+        let _closed = socket.close(None).await;
+        server.await.expect("join IPv6 websocket fixture");
     }
 }

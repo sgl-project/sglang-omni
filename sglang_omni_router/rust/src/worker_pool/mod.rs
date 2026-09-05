@@ -20,7 +20,7 @@ pub(crate) use profile::{
     ProfileRequirement, ReferenceForm, RouteRequirement, ServiceClass, SpeechResponseFormat,
     SpeechTask, SpeechToTextTask, StreamMode, TranscriptionResponseFormat, TrustDomain,
 };
-pub(crate) use resolver::ResolvedTarget;
+pub(crate) use resolver::{ConnectTarget, ResolvedTarget};
 
 use admission::AdmissionController;
 use health::AtomicHealth;

@@ -1,3 +1,4 @@
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use reqwest::redirect::Policy;
@@ -10,6 +11,12 @@ use super::profile::WorkerConfig;
 pub(crate) struct ResolvedTarget {
     base_url: Url,
     health_url: Url,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConnectTarget<'a> {
+    Socket(SocketAddr),
+    Host(&'a str, u16),
 }
 
 impl ResolvedTarget {
@@ -64,11 +71,17 @@ impl ResolvedTarget {
         Some(url)
     }
 
-    pub(crate) fn connect_authority(&self) -> Option<(&str, u16)> {
-        Some((
-            self.base_url.host_str()?,
-            self.base_url.port_or_known_default()?,
-        ))
+    pub(crate) fn connect_target(&self) -> Option<ConnectTarget<'_>> {
+        let host = self.base_url.host_str()?;
+        let port = self.base_url.port_or_known_default()?;
+        let literal = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        match literal.parse::<IpAddr>() {
+            Ok(address) => Some(ConnectTarget::Socket(SocketAddr::new(address, port))),
+            Err(_) => Some(ConnectTarget::Host(host, port)),
+        }
     }
 }
 
@@ -115,7 +128,9 @@ pub(super) fn build_http_client(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::ResolvedTarget;
+    use std::net::SocketAddr;
+
+    use super::{ConnectTarget, ResolvedTarget};
 
     #[test]
     fn worker_origins_are_strict_and_dns_names_are_valid() {
@@ -140,7 +155,26 @@ mod tests {
             "http://worker.invalid/health"
         );
 
-        assert!(ResolvedTarget::from_parts("https://127.0.0.1/", "/health").is_some());
-        assert!(ResolvedTarget::from_parts("http://[::1]:18080/", "/health").is_some());
+        let ipv4 =
+            ResolvedTarget::from_parts("https://127.0.0.1/", "/health").expect("valid IPv4 target");
+        assert_eq!(
+            ipv4.connect_target(),
+            Some(ConnectTarget::Socket(
+                "127.0.0.1:443".parse::<SocketAddr>().expect("IPv4 socket")
+            ))
+        );
+
+        let ipv6 = ResolvedTarget::from_parts("http://[::1]:18080/", "/health")
+            .expect("valid IPv6 target");
+        assert_eq!(
+            ipv6.connect_target(),
+            Some(ConnectTarget::Socket(
+                "[::1]:18080".parse::<SocketAddr>().expect("IPv6 socket")
+            ))
+        );
+        assert_eq!(
+            hostname.connect_target(),
+            Some(ConnectTarget::Host("worker.invalid", 80))
+        );
     }
 }
