@@ -50,7 +50,7 @@ from sglang_omni.vendor.sglang.server_args import get_global_server_args
 logger = logging.getLogger(__name__)
 
 QTTS_PREDICTOR_GRAPH_ENV = "SGLANG_OMNI_QTTS_PREDICTOR_GRAPH"
-_PREDICTOR_GRAPH_MAX_KEYS = 32
+_PREDICTOR_GRAPH_MAX_LAZY_KEYS = 32
 _PREDICTOR_GRAPH_MAX_FAILURES = 8
 _PREDICTOR_GRAPH_WARMUP_PASSES = 2
 # Note: (Jiaxin Deng) 50 is on the ladder because it is the family checkpoint
@@ -968,6 +968,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self._predictor_graph_capacity_fallback_count = 0
         self._predictor_graph_capacity_warned = False
         self._predictor_graph_capture_count = 0
+        self._predictor_graph_startup_count = 0
         self._predictor_graph_pool = None
         self._predictor_capture_stream: torch.cuda.Stream | None = None
         _bind_default_weight_loaders(self)
@@ -1264,7 +1265,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         """Capture the bucket ladder of the signatures a batch gets when its rows
         sample with these values, with and without argmax rows mixed in. Buckets
         go in descending order so the smaller ones reuse the pool of the larger
-        ones."""
+        ones. The set is captured whole and the lazy capture budget counts only
+        keys beyond it. The mixed signature skips bucket 1: a mixed batch holds
+        a sampled row and an argmax row."""
         if self._predictor_graph_enabled is None:
             self._predictor_graph_enabled = self._resolve_predictor_graph_enabled()
         if not self._predictor_graph_enabled:
@@ -1285,15 +1288,16 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         captured_before = len(self._predictor_graphs)
         for signature in signatures:
             for bucket_size in reversed(self._predictor_graph_batch_sizes):
+                if signature[4] and bucket_size < 2:
+                    continue
                 key = (bucket_size, *signature)
                 if key in self._predictor_graphs:
                     continue
-                if len(self._predictor_graphs) >= _PREDICTOR_GRAPH_MAX_KEYS:
-                    break
                 self._predictor_graphs[key] = self._capture_predictor_graph(
                     bucket_size, signature
                 )
                 self._predictor_graph_capture_count += 1
+                self._predictor_graph_startup_count += 1
         captured = len(self._predictor_graphs) - captured_before
         elapsed_s = time.perf_counter() - started
         logger.info(
@@ -1404,14 +1408,18 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             return None
         graph = self._predictor_graphs.get(key)
         if graph is None:
-            if len(self._predictor_graphs) >= _PREDICTOR_GRAPH_MAX_KEYS:
+            lazy_keys = (
+                len(self._predictor_graphs) - self._predictor_graph_startup_count
+            )
+            if lazy_keys >= _PREDICTOR_GRAPH_MAX_LAZY_KEYS:
                 self._predictor_graph_capacity_fallback_count += 1
                 if not self._predictor_graph_capacity_warned:
                     self._predictor_graph_capacity_warned = True
                     logger.warning(
-                        "Qwen3-TTS predictor CUDA graph cache reached %d keys; "
-                        "falling back to eager execution for uncached key=%s",
-                        _PREDICTOR_GRAPH_MAX_KEYS,
+                        "Qwen3-TTS predictor CUDA graph cache holds %d keys beyond "
+                        "the startup set; falling back to eager execution for "
+                        "uncached key=%s",
+                        lazy_keys,
                         key,
                     )
                 return None

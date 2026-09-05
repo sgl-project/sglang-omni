@@ -187,6 +187,7 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker._predictor_graph_capacity_fallback_count = 0
     talker._predictor_graph_capacity_warned = False
     talker._predictor_graph_capture_count = 0
+    talker._predictor_graph_startup_count = 0
     talker._predictor_graph_pool = None
     talker._predictor_capture_stream = None
     return talker
@@ -963,7 +964,7 @@ def test_graph_key_cache_capacity_fallback_without_eviction(
     device = torch.device("cuda")
     talker = _build_talker(device)
     layer0, hidden, positions = _step_inputs(2, device)
-    monkeypatch.setattr(sglang_model_module, "_PREDICTOR_GRAPH_MAX_KEYS", 2)
+    monkeypatch.setattr(sglang_model_module, "_PREDICTOR_GRAPH_MAX_LAZY_KEYS", 2)
 
     def assert_graph_matches(requests) -> None:
         talker.prepare_decode_buffers(requests)
@@ -1113,18 +1114,22 @@ def test_failed_capture_restores_the_current_stream(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.accelerator
-def test_startup_capture_builds_the_ladder_for_one_signature():
+def test_startup_capture_builds_the_ladder_for_both_sampled_signatures():
     device = torch.device("cuda")
     talker = _build_talker(device)
-    signatures = [("sampled", 8, False, False, mixed) for mixed in (False, True)]
-
-    assert talker.capture_predictor_graphs(
-        do_sample=True, top_k=5, top_p=1.0
-    ) == 2 * len(BUCKETS)
-    assert set(talker._predictor_graphs) == {
-        (bucket, *signature) for signature in signatures for bucket in BUCKETS
+    all_sampled = ("sampled", 8, False, False, False)
+    mixed = ("sampled", 8, False, False, True)
+    expected_keys = {(bucket, *all_sampled) for bucket in BUCKETS} | {
+        (bucket, *mixed) for bucket in BUCKETS if bucket >= 2
     }
+
+    assert talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0) == len(
+        expected_keys
+    )
+    assert set(talker._predictor_graphs) == expected_keys
+    assert talker._predictor_graph_startup_count == len(expected_keys)
     assert talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0) == 0
+    assert talker._predictor_graph_startup_count == len(expected_keys)
 
     for batch_size in BUCKETS:
         talker.prepare_decode_buffers(_uniform_requests(batch_size, top_k=5))
@@ -1141,7 +1146,40 @@ def test_startup_capture_builds_the_ladder_for_one_signature():
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
-    assert len(talker._predictor_graphs) == 2 * len(BUCKETS)
+    assert len(talker._predictor_graphs) == len(expected_keys)
+
+
+@pytest.mark.accelerator
+def test_startup_set_stays_outside_the_lazy_capture_budget(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    monkeypatch.setattr(sglang_model_module, "_PREDICTOR_GRAPH_MAX_LAZY_KEYS", 1)
+    startup = talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0)
+    assert startup > 1
+    layer0, hidden, positions = _step_inputs(2, device)
+
+    def assert_graph_matches(requests) -> None:
+        talker.prepare_decode_buffers(requests)
+        eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+        assert torch.equal(graph_codes, eager_codes)
+        assert torch.equal(graph_embeds, eager_embeds)
+
+    assert_graph_matches(_uniform_requests(2, top_k=3))
+    assert len(talker._predictor_graphs) == startup + 1
+    assert talker._predictor_graph_capacity_fallback_count == 0
+
+    assert_graph_matches(_uniform_requests(2, dosample=False))
+    assert len(talker._predictor_graphs) == startup + 1
+    assert talker._predictor_graph_capacity_fallback_count == 1
+
+    assert_graph_matches(_uniform_requests(2, top_k=5))
+    assert_graph_matches([_request(top_k=5), _request(dosample=False)])
+    assert len(talker._predictor_graphs) == startup + 1
+    assert talker._predictor_graph_capture_count == startup + 1
+    assert talker._predictor_graph_capacity_fallback_count == 1
 
 
 @pytest.mark.accelerator
