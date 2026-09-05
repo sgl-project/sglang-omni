@@ -207,6 +207,17 @@ def _patched_spawn_env(
                 os.environ[key] = value
 
 
+def _read_startup_error(channel: Any, timeout: float | None = None) -> str | None:
+    """Return a child's startup traceback, or None if it reported none yet."""
+    try:
+        if timeout is None:
+            return channel.get_nowait()
+        return channel.get(timeout=timeout)
+    except (queue.Empty, EOFError, OSError, ValueError):
+        # ValueError/OSError: the child closed the queue as it exited.
+        return None
+
+
 class StageGroup:
     """Lifecycle manager for one or more OS processes in a topology group."""
 
@@ -330,14 +341,30 @@ class StageGroup:
                         f"Process {process_label} did not become ready "
                         f"within {timeout:.0f}s{details}"
                     )
+                # Note (Audrey Zheng): read the channel before testing
+                # liveness. A child that reports a factory error exits
+                # immediately after, so a liveness-first order races the
+                # report and loses it.
+                traceback_text = _read_startup_error(startup_error_channel)
+                if traceback_text is not None:
+                    raise RuntimeError(
+                        f"Process {process_label} failed during startup "
+                        f"(exit code {proc.exitcode})"
+                        f"\nStartup failure detail:\n{traceback_text}"
+                    )
+
                 if not proc.is_alive():
-                    details = ""
-                    try:
-                        traceback_text = startup_error_channel.get(timeout=0.2)
-                    except queue.Empty:
-                        pass
-                    else:
-                        details = f"\nStartup failure detail:\n{traceback_text}"
+                    # The child puts the traceback on a feeder thread and then
+                    # exits, so the bytes can still be in flight here. Wait
+                    # briefly rather than report a bare exit code.
+                    traceback_text = _read_startup_error(
+                        startup_error_channel, timeout=0.2
+                    )
+                    details = (
+                        ""
+                        if traceback_text is None
+                        else f"\nStartup failure detail:\n{traceback_text}"
+                    )
                     raise RuntimeError(
                         f"Process {process_label} died during startup "
                         f"(exit code {proc.exitcode}){details}"
