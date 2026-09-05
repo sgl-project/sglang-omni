@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -13,6 +13,9 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.scheduling.messages import OutgoingMessage
+
+if TYPE_CHECKING:
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 
 class QwenTalkerModelRunner(ModelRunner):
@@ -383,7 +386,7 @@ class QwenTalkerModelRunner(ModelRunner):
         feedback_mask[rows_t] = True
 
     @staticmethod
-    def _data_has_next_decode_input(data: Any) -> bool:
+    def _data_has_next_decode_input(data: SGLangARRequestData | None) -> bool:
         if data is None:
             return False
         if not data.pending_feedback_queue:
@@ -418,7 +421,7 @@ class QwenTalkerModelRunner(ModelRunner):
         return None
 
     @staticmethod
-    def _decode_input_history(data: Any) -> list[torch.Tensor]:
+    def _decode_input_history(data: SGLangARRequestData) -> list[torch.Tensor]:
         history = data.decode_input_embeds
         if history is None:
             history = []
@@ -426,7 +429,9 @@ class QwenTalkerModelRunner(ModelRunner):
         return history
 
     @staticmethod
-    def _append_decode_input_history(data: Any, row: torch.Tensor) -> None:
+    def _append_decode_input_history(
+        data: SGLangARRequestData, row: torch.Tensor
+    ) -> None:
         QwenTalkerModelRunner._decode_input_history(data).append(row.detach())
 
     @staticmethod
@@ -447,10 +452,12 @@ class QwenTalkerModelRunner(ModelRunner):
 
     @staticmethod
     def _peek_next_decode_inputs(
-        data: Any,
+        data: SGLangARRequestData,
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
-        """The feedback row and the text row of the next decode input, or None
-        while either is still missing."""
+        """The feedback row and the text row of the next decode input. None
+        while the feedback row is missing, or while the text row is missing
+        and the text stream is still open. After the stream has closed, the
+        pad embedding stands in for the text row."""
         feedback = QwenTalkerModelRunner._peek_left(data.pending_feedback_queue)
         if feedback is None:
             return None
@@ -462,14 +469,14 @@ class QwenTalkerModelRunner(ModelRunner):
         return feedback, next_text
 
     @staticmethod
-    def _pop_next_decode_inputs(data: Any) -> None:
+    def _pop_next_decode_inputs(data: SGLangARRequestData) -> None:
         QwenTalkerModelRunner._pop_left(data.pending_feedback_queue)
         QwenTalkerModelRunner._pop_left(data.pending_text_queue)
 
     @staticmethod
     def _combine_feedback_with_next_text(
         *,
-        data: Any,
+        data: SGLangARRequestData,
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor | None:
