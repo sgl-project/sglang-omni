@@ -217,6 +217,10 @@ class ModelWorker:
             kv_pool.size,
         )
 
+    @property
+    def is_hybrid_swa(self) -> bool:
+        return self.model_runner.is_hybrid_swa
+
     def get_tp_group(self):
         return self.model_runner.tp_group
 

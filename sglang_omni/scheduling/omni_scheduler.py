@@ -25,8 +25,10 @@ from itertools import islice
 from typing import Any, Callable
 
 import torch
+from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
+from sglang.srt.managers.disagg_service import start_disagg_service
 from sglang.srt.managers.io_struct import AbortReq
 from sglang.srt.managers.schedule_batch import (
     FINISH_ABORT,
@@ -412,9 +414,13 @@ class OmniScheduler:
         # Feature flags (all disabled)
         self.enable_lora = False
         self.enable_pdmux = False
+        # Read by upstream init_disaggregation() before it checks the mode.
+        self.enable_unified_memory = False
         self.enable_metrics = server_args.enable_metrics
         self.enable_trace = False
         self.enable_hierarchical_cache = False
+        # Read by upstream process_decode_queue() in decode mode.
+        self.enable_decode_hicache = False
         self.enable_hicache_storage = False
         self.enable_kv_cache_events = False
         self.is_generation = True
@@ -449,9 +455,8 @@ class OmniScheduler:
         self.require_mlp_sync = False
         self.abort_on_priority_when_disabled = False
 
-        # Disaggregation / hybrid (disabled)
-        from sglang.srt.disaggregation.utils import DisaggregationMode
-
+        # Placeholder until init_disaggregation() below installs the real
+        # mode and queues.
         self.disaggregation_mode = DisaggregationMode.NULL
         self.is_hybrid_swa = False
         self.is_hybrid_ssm = False
@@ -467,6 +472,7 @@ class OmniScheduler:
         self.tp_cpu_group = None
         self.attn_tp_group = None
         self.attn_tp_cpu_group = None
+        self.attn_cp_cpu_group = None
         self.cpu_group = None
         self.entry_rank = 0
         self.is_entry_rank = self.tp_rank == 0
@@ -482,6 +488,15 @@ class OmniScheduler:
         self.ipc_channels = _OmniIpcChannels(self)
         self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
         self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        # Upstream starts this in TokenizerManager, which Omni lacks. It must
+        # listen before init_disaggregation() constructs the prefill KV
+        # manager, which registers to it synchronously; None outside PREFILL.
+        self.bootstrap_server = (
+            start_disagg_service(self.server_args) if self.is_entry_rank else None
+        )
+        # Upstream Scheduler method (via __getattr__); installs the real
+        # disaggregation mode and the four disagg_* queues (None in NULL mode).
+        self.init_disaggregation()
         self._init_upstream_scheduler_components()
 
         self._running = False
@@ -646,10 +661,18 @@ class OmniScheduler:
             get_waiting_queue=lambda: self.waiting_queue,
             get_stats=lambda: self.metrics_reporter.stats,
             get_chunked_req=lambda: self.chunked_req,
-            get_disagg_prefill_bootstrap_queue=lambda: empty_queue,
-            get_disagg_prefill_inflight_queue=lambda: [],
-            get_disagg_decode_prealloc_queue=lambda: empty_queue,
-            get_disagg_decode_transfer_queue=lambda: empty_queue,
+            get_disagg_prefill_bootstrap_queue=lambda: (
+                self.disagg_prefill_bootstrap_queue or empty_queue
+            ),
+            get_disagg_prefill_inflight_queue=lambda: (
+                self.disagg_prefill_inflight_queue or []
+            ),
+            get_disagg_decode_prealloc_queue=lambda: (
+                self.disagg_decode_prealloc_queue or empty_queue
+            ),
+            get_disagg_decode_transfer_queue=lambda: (
+                self.disagg_decode_transfer_queue or empty_queue
+            ),
             get_spec_total_num_accept_tokens=lambda: (
                 self.metrics_reporter.spec_total_num_accept_tokens
             ),
@@ -749,6 +772,11 @@ class OmniScheduler:
         self.tp_cpu_group = self.tp_group.cpu_group
         self.attn_tp_group = tp_worker.get_attention_tp_group()
         self.attn_tp_cpu_group = tp_worker.get_attention_tp_cpu_group()
+        if self.attn_cp_size != 1:
+            raise NotImplementedError("OmniScheduler does not support attn_cp_size > 1")
+        # With cp_size == 1, the disagg CP all-reduce is a no-op over values
+        # already reduced across the TP group, so the TP group stands in.
+        self.attn_cp_cpu_group = self.attn_tp_cpu_group
 
         if enable_dp_attention:
             self.cpu_group = self.attn_tp_cpu_group
@@ -1178,6 +1206,13 @@ class OmniScheduler:
             if ingress.done and not pending_stream_done:
                 self._mark_stream_done(req_data)
 
+        # PD bootstrap metadata rides in on the generic params dict, keyed by
+        # the same names as the upstream sglang-router contract.
+        disagg_params = payload.request.params or {}
+        req.bootstrap_host = disagg_params.get("bootstrap_host")
+        req.bootstrap_port = disagg_params.get("bootstrap_port")
+        req.bootstrap_room = disagg_params.get("bootstrap_room")
+
         def enqueue_if_live() -> None:
             if req_id in self._aborted_request_ids:
                 return
@@ -1202,7 +1237,16 @@ class OmniScheduler:
             req._coalesce_enqueue_t = time.perf_counter()
             req._omni_terminal_claimed = False
             req._omni_data = req_data
-            self.waiting_queue.append(req)
+            # Disagg workers admit through their role's queue; NULL mode
+            # keeps the plain waiting_queue.
+            if self.disaggregation_mode == DisaggregationMode.PREFILL:
+                self.disagg_prefill_bootstrap_queue.add(
+                    req, self.model_config.num_key_value_heads
+                )
+            elif self.disaggregation_mode == DisaggregationMode.DECODE:
+                self.disagg_decode_prealloc_queue.add(req, is_retracted=False)
+            else:
+                self.waiting_queue.append(req)
 
         if request_admission_lock_held:
             enqueue_if_live()
@@ -1728,7 +1772,19 @@ class OmniScheduler:
         self._running = True
         model_path_status = "error"
         try:
-            if self.enable_async_decode:
+            if self.disaggregation_mode != DisaggregationMode.NULL and (
+                self.enable_overlap or self.enable_async_decode
+            ):
+                raise NotImplementedError(
+                    "PD disaggregation only supports the normal event loop; "
+                    "overlap and async-decode scheduling are not wired up "
+                    "for disagg mode yet."
+                )
+            if self.disaggregation_mode == DisaggregationMode.PREFILL:
+                self._event_loop_normal_disagg_prefill()
+            elif self.disaggregation_mode == DisaggregationMode.DECODE:
+                self._event_loop_normal_disagg_decode()
+            elif self.enable_async_decode:
                 self._event_loop_async_decode()
             elif self.enable_overlap:
                 self._event_loop_overlap()
@@ -2310,6 +2366,91 @@ class OmniScheduler:
             self.last_batch = batch
             if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
                 self.self_check_during_busy()
+
+    def _event_loop_normal_disagg_prefill(self) -> None:
+        """_event_loop_normal with batch selection and post-batch bookkeeping
+        going through the upstream disagg-prefill state machine."""
+        while self._running:
+            self._process_admin_requests()
+            recv_reqs = self.recv_requests()
+            recv_reqs.extend(self._take_deferred_request_payloads())
+            self.process_input_requests(recv_reqs)
+            if self._engine_paused:
+                self._process_admin_requests()
+                time.sleep(0.001)
+                continue
+
+            # Only requests whose KV-sender handshake with the decode side
+            # completed are eligible for batch selection.
+            self.waiting_queue.extend(
+                self.disagg_prefill_bootstrap_queue.pop_bootstrapped()
+            )
+
+            plan = self.get_next_disagg_prefill_batch_to_run(
+                running_batch=self.running_batch, last_batch=self.last_batch
+            )
+            self.running_batch = plan.running_batch
+            batch = plan.batch_to_run
+            # The disagg selectors skip prepare_for_forward(); apply it here.
+            batch = self.ngram_embedding_manager.prepare_for_forward(
+                batch, chunked_req=self.chunked_req
+            )
+            self.cur_batch = batch
+            self.cur_batch_for_debug = batch
+
+            if batch:
+                result = self.run_batch(batch)
+                if result is not _FAILED_BATCH_RESULT:
+                    self.process_batch_result(batch, result)
+            else:
+                self._sched_idled = True
+                self.self_check_during_idle()
+                self._sleep_during_idle()
+
+            # A finished forward only starts the KV send; poll so completed
+            # transfers free their requests even on batchless iterations.
+            self.process_disagg_prefill_inflight_queue()
+            self.last_batch = batch
+
+    def _event_loop_normal_disagg_decode(self) -> None:
+        """_event_loop_normal with batch selection and pre-batch bookkeeping
+        going through the upstream disagg-decode state machine."""
+        while self._running:
+            self._process_admin_requests()
+            recv_reqs = self.recv_requests()
+            recv_reqs.extend(self._take_deferred_request_payloads())
+            self.process_input_requests(recv_reqs)
+            if self._engine_paused:
+                self._process_admin_requests()
+                time.sleep(0.001)
+                continue
+
+            # Polls in-flight KV receives and advances finished requests
+            # through the prealloc and transfer queues.
+            self.process_decode_queue()
+
+            plan = self.get_next_disagg_decode_batch_to_run(
+                running_batch=self.running_batch
+            )
+            self.running_batch = plan.running_batch
+            batch = plan.batch_to_run
+            # The disagg selectors skip prepare_for_forward(); apply it here.
+            batch = self.ngram_embedding_manager.prepare_for_forward(
+                batch, chunked_req=self.chunked_req
+            )
+            self.cur_batch = batch
+            self.cur_batch_for_debug = batch
+
+            if batch:
+                result = self.run_batch(batch)
+                if result is not _FAILED_BATCH_RESULT:
+                    self.process_batch_result(batch, result)
+            else:
+                self._sched_idled = True
+                self.self_check_during_idle()
+                self._sleep_during_idle()
+
+            self.last_batch = batch
 
     def _event_loop_overlap(self) -> None:
         # Model runners read Req.inflight_middle_chunks at forward time under

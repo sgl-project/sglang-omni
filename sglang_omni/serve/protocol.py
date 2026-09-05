@@ -94,6 +94,12 @@ class ChatCompletionRequest(BaseModel):
     talker_repetition_penalty: float | None = None
     talker_max_new_tokens: int | None = None
 
+    # PD disaggregation: a PD-aware proxy points these at the prefill
+    # instance's bootstrap server plus a room id shared by the paired requests.
+    bootstrap_host: str | None = None
+    bootstrap_port: int | None = None
+    bootstrap_room: int | None = None
+
     # Misc
     request_id: str | None = None
     user: str | None = None

@@ -468,7 +468,7 @@ def test_enqueue_built_request_honors_max_queued_requests(monkeypatch) -> None:
     for req in (first, second):
         OmniScheduler._enqueue_built_request(
             scheduler,
-            SimpleNamespace(request_id=req.rid),
+            SimpleNamespace(request_id=req.rid, request=SimpleNamespace(params=None)),
             False,
             SimpleNamespace(req=req, enforce_request_limits=False),
         )
@@ -1795,9 +1795,12 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
         "sglang_omni.scheduling.omni_scheduler._emit_model_path_start",
         model_path_starts.append,
     )
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
     scheduler.waiting_queue = []
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler._pending_stream_ingress = {}
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()
@@ -1918,6 +1921,18 @@ def _construct_omni_scheduler(
         "sglang.srt.runtime_context.get_context",
         lambda: runtime_context,
     )
+    # __init__ calls the real upstream init_disaggregation() unconditionally
+    # (resolved via __getattr__); it reads mode/backend off get_disagg()
+    # instead of server_args directly, even for NULL mode.
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler.get_disagg",
+        lambda: SimpleNamespace(
+            disaggregation_mode="null",
+            disaggregation_transfer_backend="mooncake",
+            language_only=False,
+            encoder_transfer_backend="auto",
+        ),
+    )
     tp_worker = SimpleNamespace(
         gpu_id=0,
         tp_rank=0,
@@ -1930,6 +1945,8 @@ def _construct_omni_scheduler(
         device=torch.device("cpu"),
     )
     server_args = SimpleNamespace(
+        disaggregation_mode="null",
+        disaggregation_transfer_backend="mooncake",
         tp_size=1,
         pp_size=1,
         dp_size=1,
@@ -1968,7 +1985,7 @@ def _construct_omni_scheduler(
         req_to_token_pool=None,
         token_to_kv_pool_allocator=None,
         server_args=server_args,
-        model_config=SimpleNamespace(),
+        model_config=SimpleNamespace(hf_config=SimpleNamespace()),
         **kwargs,
     )
 
@@ -2098,6 +2115,15 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         "sglang.srt.runtime_context.get_context",
         lambda: SimpleNamespace(override=_override),
     )
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler.get_disagg",
+        lambda: SimpleNamespace(
+            disaggregation_mode="null",
+            disaggregation_transfer_backend="mooncake",
+            language_only=False,
+            encoder_transfer_backend="auto",
+        ),
+    )
 
     observed = []
 
@@ -2125,6 +2151,8 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         device=torch.device("cpu"),
     )
     server_args = SimpleNamespace(
+        disaggregation_mode="null",
+        disaggregation_transfer_backend="mooncake",
         tp_size=1,
         pp_size=1,
         dp_size=1,
@@ -2163,7 +2191,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         req_to_token_pool=None,
         token_to_kv_pool_allocator=None,
         server_args=server_args,
-        model_config=SimpleNamespace(),
+        model_config=SimpleNamespace(hf_config=SimpleNamespace()),
         model_runner=None if bind_late else model_runner,
         enable_overlap=enable_overlap,
         enable_async_decode=enable_async_decode,
@@ -2195,6 +2223,8 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
         device=torch.device("cpu"),
     )
     server_args = SimpleNamespace(
+        disaggregation_mode="null",
+        disaggregation_transfer_backend="mooncake",
         tp_size=1,
         pp_size=1,
         dp_size=1,
@@ -2321,9 +2351,12 @@ def test_omni_scheduler_start_closes_active_model_paths(
         "_emit_model_path_end",
         lambda rid, *, status: model_path_ends.append((rid, status)),
     )
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_async_decode = False
     scheduler.enable_overlap = False
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler._prefill_start_done = {"req-1", "req-2"}
     scheduler._prefill_end_done = set()
     scheduler._request_build_executor = None
@@ -2425,9 +2458,12 @@ def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
 
 def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     """Preserves upstream max_new_tokens clamping for custom request builders."""
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
     scheduler.waiting_queue = []
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler._pending_stream_ingress = {}
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()
@@ -2463,9 +2499,12 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
 
 def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
     """Clamp requests that pass the surface KV check but cannot be prefetched."""
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
     scheduler.waiting_queue = []
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler._pending_stream_ingress = {}
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()
@@ -2637,9 +2676,12 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
 
 def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None:
     """Keeps existing OmniScheduler users on their original request semantics."""
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
     scheduler.waiting_queue = []
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler._pending_stream_ingress = {}
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()

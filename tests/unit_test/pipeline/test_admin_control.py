@@ -332,10 +332,12 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
         grammar_queue=[], clear=lambda: reset_calls.append("grammar")
     )
     scheduler.disaggregation_mode = None
+    scheduler.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
     scheduler.enable_hierarchical_cache = False
     scheduler.tree_cache = SimpleNamespace(reset=lambda: reset_calls.append("tree"))
     scheduler.req_to_token_pool = SimpleNamespace(
-        clear=lambda: reset_calls.append("req_pool")
+        clear=lambda: reset_calls.append("req_pool"),
+        reset_aux_cache_allocator=lambda: None,
     )
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(
         clear=lambda: reset_calls.append("kv_pool")

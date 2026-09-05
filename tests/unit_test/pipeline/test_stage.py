@@ -9,6 +9,7 @@ import threading
 
 import pytest
 import torch
+from sglang.srt.disaggregation.utils import DisaggregationMode
 
 import sglang_omni.platforms as platforms
 from sglang_omni.comm import stage_io
@@ -280,6 +281,7 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         )
 
         scheduler = object.__new__(OmniScheduler)
+        scheduler.disaggregation_mode = DisaggregationMode.NULL
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
         scheduler._prefill_start_done = {"req-active"}
@@ -329,6 +331,7 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         entered = threading.Event()
         release = threading.Event()
         scheduler = object.__new__(OmniScheduler)
+        scheduler.disaggregation_mode = DisaggregationMode.NULL
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
         scheduler._prefill_start_done = set()
