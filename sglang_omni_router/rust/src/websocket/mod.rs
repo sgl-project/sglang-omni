@@ -1211,7 +1211,7 @@ mod tests {
     #[test]
     fn speech_requirement_preserves_every_selection_dimension() {
         let fields = parse_speech_config(
-            br#"{"type":"session.config","model":"tts","response_format":"pcm","stream_audio":true,"task_type":"CustomVoice","voice":"named","ref_audio":"direct","references":[{"audio":"list"},{"vq_codes":[1]}],"split_granularity":"clause"}"#,
+            br#"{"type":"session.config","model":"tts","response_format":"pcm","stream_audio":true,"task_type":"Base","voice":"named","ref_audio":"direct","references":[{"audio":"list"},{"vq_codes":[1]}],"split_granularity":"clause"}"#,
         )
         .expect("valid mixed speech configuration");
         let requirement = speech_requirement(
@@ -1268,6 +1268,21 @@ mod tests {
             panic!("speech websocket requirement")
         };
         assert_eq!(*response_format, None);
+        assert_eq!(*task, Some(SpeechTask::VoiceClone));
+
+        let custom = parse_speech_config(
+            br#"{"type":"session.config","task_type":"CustomVoice","voice":"Vivian"}"#,
+        )
+        .expect("CustomVoice speech configuration");
+        let custom = speech_requirement(
+            custom,
+            ModelSelection::Explicit(String::from("tts")),
+            &TrustDomain::new(String::from("local")),
+        )
+        .expect("CustomVoice speech requirement");
+        let ProfileRequirement::SpeechWebsocket { task, .. } = custom.profile() else {
+            panic!("speech websocket requirement")
+        };
         assert_eq!(*task, Some(SpeechTask::TextToSpeech));
 
         let unknown = parse_speech_config(

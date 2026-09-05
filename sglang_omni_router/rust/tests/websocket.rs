@@ -341,7 +341,7 @@ service = "speech_websocket"
 model_ids = ["omni"]
 response_formats = ["pcm"]
 stream_modes = ["non_streaming", "streaming"]
-tasks = ["text_to_speech"]
+tasks = ["voice_clone"]
 reference_forms = ["none"]
 voice_name_policy = "preset"
 
