@@ -339,15 +339,12 @@ def _attach_flow_estimator_trt(
     flow: Any,
     checkpoint_dir: str,
     device: str,
-    *,
-    max_cfg_batch: int,
 ) -> None:
     from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
         build_flow_estimator_trt,
         resolve_flow_estimator_onnx,
     )
 
-    # note (guozhihao-224): TensorRT is NVIDIA-only; NPU uses a separate graph path.
     if str(device).split(":", 1)[0].lower() != "cuda":
         raise RuntimeError(
             "enable_flow_estimator_trt requires a CUDA vocoder device, "
@@ -360,11 +357,7 @@ def _attach_flow_estimator_trt(
         )
 
     onnx_path = resolve_flow_estimator_onnx(checkpoint_dir)
-    wrapper = build_flow_estimator_trt(
-        onnx_path,
-        device,
-        max_batch=max_cfg_batch,
-    )
+    wrapper = build_flow_estimator_trt(onnx_path, device)
     # note (guozhihao-224): CosyVoice registers estimator as an nn.Module child;
     # delete first so assigning the TRT wrapper does not raise TypeError.
     del flow.decoder.estimator
@@ -382,7 +375,6 @@ def _load_cosyvoice3_flow_hift(
     fp16: bool = False,
     *,
     enable_flow_estimator_trt: bool = False,
-    trt_max_cfg_batch: int = 2,
 ) -> tuple[Any, Any]:
     try:
         from cosyvoice.cli.cosyvoice import CosyVoice3
@@ -397,12 +389,7 @@ def _load_cosyvoice3_flow_hift(
     del cv.model.llm
     wrapped = FunCosyVoice3Flow(flow)
     if enable_flow_estimator_trt:
-        _attach_flow_estimator_trt(
-            wrapped,
-            checkpoint_dir,
-            device,
-            max_cfg_batch=trt_max_cfg_batch,
-        )
+        _attach_flow_estimator_trt(wrapped, checkpoint_dir, device)
     return wrapped, hift
 
 
@@ -426,7 +413,7 @@ def _run_dit_estimator(
     param = next(estimator.parameters())
     device, dtype = param.device, param.dtype
     t = int(mel_frames)
-    # CFG batch 2, mel dim 80 (proj_out.out_features for the pinned checkpoint).
+    # note (guozhihao-224): CFG batch 2; mel dim 80 matches pinned checkpoint proj_out.
     x = torch.randn(2, 80, t, device=device, dtype=dtype)
     mask = torch.ones(2, 1, t, device=device, dtype=dtype)
     mu = torch.randn(2, 80, t, device=device, dtype=dtype)
@@ -716,15 +703,11 @@ def create_vocoder_executor(
             f"expected one of {sorted(_AUTOCAST_DTYPES)}"
         )
     compute_dtype = _AUTOCAST_DTYPES[dtype]
-    # note (guozhihao-224): packed Flow CFG batch is 2 * request_batch; size the
-    # engine to the scheduler max so a fitting ONNX can enqueue once.
-    trt_max_cfg_batch = max(2, 2 * int(max_batch_size))
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
         device=device,
         fp16=(dtype == "float16"),
         enable_flow_estimator_trt=enable_flow_estimator_trt,
-        trt_max_cfg_batch=trt_max_cfg_batch,
     )
     if enable_dit_torch_compile:
         _compile_dit_backbone(flow, compute_dtype=compute_dtype)

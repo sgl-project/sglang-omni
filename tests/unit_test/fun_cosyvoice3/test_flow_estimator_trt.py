@@ -8,6 +8,11 @@ import pytest
 import torch
 
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
+    _CFG_BATCH,
+    _MEL_DIM,
+    _cfg_pair_shapes,
+    _dynamic_shapes,
+    _require_cfg_pair_inputs,
     execute_flow_estimator,
     is_flow_estimator_trt,
     resolve_flow_estimator_onnx,
@@ -46,6 +51,61 @@ def test_resolve_flow_estimator_onnx_missing(tmp_path: Path) -> None:
         resolve_flow_estimator_onnx(str(tmp_path))
 
 
+def test_dynamic_shapes_keep_official_cfg_batch() -> None:
+    for time in (4, 500, 3000):
+        shapes = _dynamic_shapes(time)
+        assert list(shapes) == ["x", "mask", "mu", "cond"]
+        assert all(shape[0] == _CFG_BATCH for shape in shapes.values())
+        assert shapes["x"] == (_CFG_BATCH, _MEL_DIM, time)
+        assert shapes["mask"] == (_CFG_BATCH, 1, time)
+
+
+def test_cfg_pair_shapes_match_official_layout() -> None:
+    shapes = _cfg_pair_shapes(16)
+    assert shapes["t"] == (_CFG_BATCH,)
+    assert shapes["spks"] == (_CFG_BATCH, _MEL_DIM)
+    assert shapes["x"] == (_CFG_BATCH, _MEL_DIM, 16)
+
+
+def test_require_cfg_pair_inputs_accepts_official_layout() -> None:
+    frames = 16
+    x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
+    mask = torch.ones(_CFG_BATCH, 1, frames)
+    mu = torch.zeros_like(x)
+    t = torch.zeros(_CFG_BATCH)
+    spks = torch.zeros(_CFG_BATCH, _MEL_DIM)
+    cond = torch.zeros_like(x)
+    assert _require_cfg_pair_inputs(x, mask, mu, t, spks, cond) == _cfg_pair_shapes(
+        frames
+    )
+
+
+def test_require_cfg_pair_inputs_rejects_wrong_t_or_spks() -> None:
+    frames = 8
+    x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
+    mask = torch.ones(_CFG_BATCH, 1, frames)
+    mu = torch.zeros_like(x)
+    cond = torch.zeros_like(x)
+    with pytest.raises(ValueError, match=r"input t has shape"):
+        _require_cfg_pair_inputs(
+            x, mask, mu, torch.zeros(4), torch.zeros(_CFG_BATCH, _MEL_DIM), cond
+        )
+    with pytest.raises(ValueError, match=r"input spks has shape"):
+        _require_cfg_pair_inputs(
+            x, mask, mu, torch.zeros(_CFG_BATCH), torch.zeros(4, _MEL_DIM), cond
+        )
+
+
+def test_canonicalize_device_equates_cuda_and_cuda0(monkeypatch) -> None:
+    from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
+        _canonicalize_device,
+    )
+
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    assert _canonicalize_device("cuda") == torch.device("cuda:0")
+    assert _canonicalize_device("cuda:0") == torch.device("cuda:0")
+
+
 def test_execute_flow_estimator_rejects_odd_cfg_batch() -> None:
     x = torch.zeros(3, 4, 8)
     dummy = torch.zeros_like(x)
@@ -56,8 +116,6 @@ def test_execute_flow_estimator_rejects_odd_cfg_batch() -> None:
 
 
 def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
-    # note (guozhihao-224): packed CFG is [cond_0..cond_B, uncond_0..uncond_B];
-    # chunking must keep each request pair, not rows 0..1.
     estimator = _ExecuteTRT(max_batch=2)
     x = torch.tensor(
         [

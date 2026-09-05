@@ -13,11 +13,7 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-_DYNAMIC_INPUTS = ("x", "mask", "mu", "cond")
-_ALL_INPUTS = ("x", "mask", "mu", "t", "spks", "cond")
-_MIN_TIME = 4
-_OPT_TIME = 500
-_MAX_TIME = 3000
+_CFG_BATCH = 2
 _MEL_DIM = 80
 _DEFAULT_ONNX_CANDIDATES = (
     "flow.decoder.estimator.fp32.onnx",
@@ -44,11 +40,11 @@ def resolve_flow_estimator_onnx(checkpoint_dir: str) -> str:
             return path
     tried = ", ".join(_DEFAULT_ONNX_CANDIDATES)
     raise FileNotFoundError(
-        f"No Flow estimator ONNX found under {checkpoint_dir!r}; " f"looked for {tried}"
+        f"No Flow estimator ONNX found under {checkpoint_dir!r}; looked for {tried}"
     )
 
 
-def _resolve_plan_path(onnx_path: str, *, max_batch: int) -> str:
+def _resolve_plan_path(onnx_path: str) -> str:
     cache_dir = os.environ.get("COSYVOICE3_TRT_CACHE") or os.path.join(
         os.path.expanduser("~"), ".cache", "sglang-omni", "cosyvoice3_trt"
     )
@@ -62,49 +58,71 @@ def _resolve_plan_path(onnx_path: str, *, max_batch: int) -> str:
     st = os.stat(onnx_path)
     key = (
         f"{os.path.abspath(onnx_path)}|{st.st_size}|{int(st.st_mtime)}|"
-        f"{dev_name}|trt{trt.__version__}|maxb{max_batch}"
+        f"{dev_name}|trt{trt.__version__}|maxb{_CFG_BATCH}"
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:16]
     return os.path.join(cache_dir, f"flow_estimator_{digest}.plan")
 
 
-def _even_cfg_batch(n: int) -> int:
-    n = max(2, int(n))
-    return n + (n % 2)
+def _dynamic_shapes(time: int) -> dict[str, tuple[int, ...]]:
+    # note (guozhihao-224): official ONNX freezes CFG batch=2 and static t/spks;
+    # only profile the time dim on x/mask/mu/cond.
+    return {
+        "x": (_CFG_BATCH, _MEL_DIM, time),
+        "mask": (_CFG_BATCH, 1, time),
+        "mu": (_CFG_BATCH, _MEL_DIM, time),
+        "cond": (_CFG_BATCH, _MEL_DIM, time),
+    }
 
 
-def _dit_shapes(batch: int, time: int) -> tuple[tuple[int, ...], ...]:
-    return (
-        (batch, _MEL_DIM, time),
-        (batch, 1, time),
-        (batch, _MEL_DIM, time),
-        (batch, _MEL_DIM, time),
-    )
+def _cfg_pair_shapes(frames: int) -> dict[str, tuple[int, ...]]:
+    return {
+        "x": (_CFG_BATCH, _MEL_DIM, frames),
+        "mask": (_CFG_BATCH, 1, frames),
+        "mu": (_CFG_BATCH, _MEL_DIM, frames),
+        "t": (_CFG_BATCH,),
+        "spks": (_CFG_BATCH, _MEL_DIM),
+        "cond": (_CFG_BATCH, _MEL_DIM, frames),
+    }
 
 
-def _profile_shapes(max_batch: int) -> tuple[tuple, tuple, tuple]:
-    cfg_batch = _even_cfg_batch(max_batch)
-    opt_batch = _even_cfg_batch(min(cfg_batch, 8))
-    return (
-        _dit_shapes(2, _MIN_TIME),
-        _dit_shapes(opt_batch, _OPT_TIME),
-        _dit_shapes(cfg_batch, _MAX_TIME),
-    )
+def _require_cfg_pair_inputs(
+    x: torch.Tensor,
+    mask: torch.Tensor,
+    mu: torch.Tensor,
+    t: torch.Tensor,
+    spks: torch.Tensor,
+    cond: torch.Tensor,
+) -> dict[str, tuple[int, ...]]:
+    shapes = _cfg_pair_shapes(int(x.shape[2]))
+    for (name, want), tensor in zip(
+        shapes.items(), (x, mask, mu, t, spks, cond), strict=True
+    ):
+        got = tuple(tensor.shape)
+        if got != want:
+            raise ValueError(
+                f"Flow-estimator TensorRT input {name} has shape {got}, "
+                f"expected {want}"
+            )
+    return shapes
 
 
 def _convert_onnx_to_trt(
     onnx_path: str,
     plan_path: str,
     *,
-    max_batch: int,
     strongly_typed: bool,
 ) -> None:
     import tensorrt as trt
 
+    min_time, opt_time, max_time = 4, 500, 3000
     logger.info(
-        "Building Flow-estimator TensorRT engine from %s (batch 2..%d, %s)",
+        "Building Flow-estimator TensorRT engine from %s "
+        "(CFG batch=%d, time %d..%d, %s)",
         onnx_path,
-        max_batch,
+        _CFG_BATCH,
+        min_time,
+        max_time,
         "strongly-typed/fp16" if strongly_typed else "fp32+FP16",
     )
     trt_logger = _trt_logger()
@@ -126,27 +144,31 @@ def _convert_onnx_to_trt(
     if not strongly_typed:
         config.set_flag(trt.BuilderFlag.FP16)
 
-    min_shapes, opt_shapes, max_shapes = _profile_shapes(max_batch)
     profile = builder.create_optimization_profile()
-    # note (guozhihao-224): official ONNX keeps t and spks static. Profiling
-    # them breaks the CFG=2 fallback even when x/mask/mu/cond are dynamic.
-    for name, mn, op, mx in zip(
-        _DYNAMIC_INPUTS, min_shapes, opt_shapes, max_shapes, strict=True
-    ):
-        profile.set_shape(name, mn, op, mx)
+    mins = _dynamic_shapes(min_time)
+    opts = _dynamic_shapes(opt_time)
+    maxs = _dynamic_shapes(max_time)
+    for name in mins:
+        profile.set_shape(name, mins[name], opts[name], maxs[name])
     config.add_optimization_profile(profile)
 
     engine_bytes = builder.build_serialized_network(network, config)
     if engine_bytes is None:
         raise RuntimeError(
-            f"TensorRT failed to build Flow-estimator engine from {onnx_path} "
-            f"(max_batch={max_batch})"
+            f"TensorRT failed to build Flow-estimator engine from {onnx_path}"
         )
     tmp = plan_path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(engine_bytes)
     os.replace(tmp, plan_path)
     logger.info("Wrote Flow-estimator TensorRT engine to %s", plan_path)
+
+
+def _canonicalize_device(device: str | torch.device) -> torch.device:
+    dev = torch.device(device)
+    if dev.type == "cuda" and dev.index is None:
+        return torch.device("cuda", torch.cuda.current_device())
+    return dev
 
 
 class FlowEstimatorTRT:
@@ -156,15 +178,12 @@ class FlowEstimatorTRT:
         device: str | torch.device,
         *,
         io_dtype: torch.dtype,
-        max_batch: int,
         trt_concurrent: int = 1,
     ) -> None:
-        if max_batch < 2:
-            raise ValueError(f"max_batch must be >= 2 (CFG pair), got {max_batch}")
         self.trt_engine = engine
         self.io_dtype = io_dtype
-        self.max_batch = int(max_batch)
-        self.device = torch.device(device)
+        self.max_batch = _CFG_BATCH
+        self.device = _canonicalize_device(device)
         self._pool: queue.Queue = queue.Queue(maxsize=trt_concurrent)
         for _ in range(trt_concurrent):
             ctx = engine.create_execution_context()
@@ -204,11 +223,12 @@ def _enqueue_once(
     spks: torch.Tensor,
     cond: torch.Tensor,
 ) -> torch.Tensor:
-    if torch.device(x.device) != estimator.device:
+    if _canonicalize_device(x.device) != estimator.device:
         raise RuntimeError(
             "Flow-estimator TensorRT device is "
             f"{estimator.device}, got tensors on {x.device}"
         )
+    shapes = _require_cfg_pair_inputs(x, mask, mu, t, spks, cond)
     [context, stream], trt_engine = estimator.acquire_estimator()
     caller_stream = torch.cuda.current_stream(estimator.device)
     stream.wait_stream(caller_stream)
@@ -219,8 +239,8 @@ def _enqueue_once(
                 for tensor in (x, mask, mu, t, spks, cond)
             )
             out = torch.empty_like(inputs[0])
-            for name, tensor in zip(_ALL_INPUTS, inputs, strict=True):
-                context.set_input_shape(name, tuple(tensor.shape))
+            for name, shape in shapes.items():
+                context.set_input_shape(name, shape)
             bound = (*inputs, out)
             for index, tensor in enumerate(bound):
                 context.set_tensor_address(
@@ -286,8 +306,8 @@ def execute_flow_estimator(
     if cfg_batch <= max_batch:
         return _run_estimator(estimator, x, mask, mu, t, spks, cond)
 
-    # note (guozhihao-224): packed CFG is [cond_0..cond_B, uncond_0..uncond_B].
-    # Slice by request pair; taking the first N rows mixes two conditionals.
+    # note (guozhihao-224): packed CFG is [cond_0..B, uncond_0..B]; chunk by
+    # request pair (slicing the first N rows mixes two conditionals).
     request_batch = cfg_batch // 2
     max_requests = max(1, max_batch // 2)
     out = torch.empty_like(x)
@@ -315,7 +335,6 @@ def build_flow_estimator_trt(
     onnx_path: str,
     device: str | torch.device,
     *,
-    max_batch: int = 2,
     trt_concurrent: int = 1,
 ) -> FlowEstimatorTRT:
     try:
@@ -326,54 +345,28 @@ def build_flow_estimator_trt(
             "Install NVIDIA TensorRT in the serving environment."
         ) from exc
 
-    if max_batch < 2:
-        raise ValueError(f"max_batch must be >= 2, got {max_batch}")
     strongly_typed = _is_fp16_onnx(onnx_path)
     io_dtype = torch.float16 if strongly_typed else torch.float32
-    # note (guozhihao-224): bundled ONNX often freezes CFG batch at 2. Packed
-    # Flow then enqueues one request pair at a time.
-    attempts = (max_batch,) if max_batch == 2 else (max_batch, 2)
-    last_error: Exception | None = None
-    for batch in attempts:
-        plan_path = _resolve_plan_path(onnx_path, max_batch=batch)
-        try:
-            if not os.path.exists(plan_path) or os.path.getsize(plan_path) == 0:
-                _convert_onnx_to_trt(
-                    onnx_path,
-                    plan_path,
-                    max_batch=batch,
-                    strongly_typed=strongly_typed,
-                )
-            runtime = trt.Runtime(_trt_logger())
-            with open(plan_path, "rb") as f:
-                engine = runtime.deserialize_cuda_engine(f.read())
-            if engine is None:
-                raise RuntimeError(
-                    f"Failed to deserialize Flow-estimator TensorRT engine {plan_path}"
-                )
-            logger.info(
-                "Loaded Flow-estimator TensorRT engine (%s, %.1f MiB, max_batch=%d)",
-                plan_path,
-                os.path.getsize(plan_path) / (1 << 20),
-                batch,
-            )
-            return FlowEstimatorTRT(
-                engine,
-                device,
-                io_dtype=io_dtype,
-                max_batch=batch,
-                trt_concurrent=trt_concurrent,
-            )
-        except Exception as exc:
-            last_error = exc
-            if batch != 2:
-                logger.warning(
-                    "Flow-estimator TRT build with max_batch=%d failed (%s: %s); "
-                    "retrying with official CFG batch=2",
-                    batch,
-                    type(exc).__name__,
-                    exc,
-                )
-                continue
-            raise
-    raise RuntimeError("Flow-estimator TensorRT build failed") from last_error
+    plan_path = _resolve_plan_path(onnx_path)
+    if not os.path.exists(plan_path) or os.path.getsize(plan_path) == 0:
+        _convert_onnx_to_trt(onnx_path, plan_path, strongly_typed=strongly_typed)
+
+    runtime = trt.Runtime(_trt_logger())
+    with open(plan_path, "rb") as f:
+        engine = runtime.deserialize_cuda_engine(f.read())
+    if engine is None:
+        raise RuntimeError(
+            f"Failed to deserialize Flow-estimator TensorRT engine {plan_path}"
+        )
+    logger.info(
+        "Loaded Flow-estimator TensorRT engine (%s, %.1f MiB, max_batch=%d)",
+        plan_path,
+        os.path.getsize(plan_path) / (1 << 20),
+        _CFG_BATCH,
+    )
+    return FlowEstimatorTRT(
+        engine,
+        device,
+        io_dtype=io_dtype,
+        trt_concurrent=trt_concurrent,
+    )

@@ -382,7 +382,6 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
                 "enable_flow_estimator_trt": kwargs.get(
                     "enable_flow_estimator_trt", False
                 ),
-                "trt_max_cfg_batch": kwargs.get("trt_max_cfg_batch"),
             }
         )
         return fake_flow, fake_hift
@@ -412,7 +411,6 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         "device": "cpu",
         "fp16": True,
         "enable_flow_estimator_trt": False,
-        "trt_max_cfg_batch": 12,
     }
 
 
@@ -425,7 +423,6 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
         captured.update(
             {
                 "enable_flow_estimator_trt": kwargs.get("enable_flow_estimator_trt"),
-                "trt_max_cfg_batch": kwargs.get("trt_max_cfg_batch"),
             }
         )
         return _BatchCapableFakeFlow(), _FakeHiFT()
@@ -441,7 +438,6 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
 
     assert captured == {
         "enable_flow_estimator_trt": True,
-        "trt_max_cfg_batch": 8,
     }
 
 
@@ -457,9 +453,7 @@ def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
 def test_attach_flow_estimator_trt_requires_cuda(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(RuntimeError, match="requires NVIDIA CUDA"):
-        stages._attach_flow_estimator_trt(
-            object(), "/checkpoint", "cuda:0", max_cfg_batch=2
-        )
+        stages._attach_flow_estimator_trt(object(), "/checkpoint", "cuda:0")
 
 
 @pytest.mark.parametrize("device", ["cpu", "npu:0", "xpu:0"])
@@ -468,9 +462,7 @@ def test_attach_flow_estimator_trt_rejects_non_cuda_device(
 ) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     with pytest.raises(RuntimeError, match="CUDA vocoder device"):
-        stages._attach_flow_estimator_trt(
-            object(), "/checkpoint", device, max_cfg_batch=2
-        )
+        stages._attach_flow_estimator_trt(object(), "/checkpoint", device)
 
 
 def test_create_vocoder_executor_rejects_non_positive_admission_budget(

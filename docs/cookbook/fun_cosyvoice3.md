@@ -156,10 +156,10 @@ The same `flow.decoder.estimator` can be replaced with a TensorRT engine built
 from the checkpoint's bundled ONNX (`flow.decoder.estimator.fp32.onnx` is
 preferred). This is opt-in: TensorRT is not a `sglang-omni` extra, first
 startup builds and caches a `.plan` under `COSYVOICE3_TRT_CACHE` or
-`~/.cache/sglang-omni/cosyvoice3_trt`, and the official CosyVoice ONNX uses a
-CFG batch of 2. Packed Flow (CFG batch = `2 * request_batch`) still works; the
-runtime chunks request-wise cond/uncond pairs when the engine cannot take the
-full packed batch.
+`~/.cache/sglang-omni/cosyvoice3_trt`, and the official CosyVoice ONNX freezes
+CFG batch at 2 (t and spks are static; only the mel time dim is dynamic).
+Packed Flow (CFG batch = `2 * request_batch`) still works by chunking
+request-wise cond/uncond pairs into that CFG=2 engine.
 
 TensorRT and `torch.compile` both replace the same DiT, so they are mutually
 exclusive. Enable only one:
@@ -172,8 +172,6 @@ sgl-omni serve \
   --port 8000
 ```
 
-A vocoder-only A/B of eager vs `torch.compile` vs TensorRT is
-`python -m benchmarks.eval.benchmark_fun_cosyvoice3_flow_ab`.
 On one H200, packed Flow + HiFT (80 target tokens, 25 prompt tokens,
 6 timed iters after 2 warmups) was:
 
