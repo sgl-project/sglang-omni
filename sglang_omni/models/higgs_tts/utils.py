@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,39 @@ EOC_ID = 1025
 # Note (Akazaakane): codec reuse is process-scoped. Colocated stages share one
 # cached instance; stages assigned to separate processes load one copy each.
 _CODEC_CACHE: dict[tuple[str, str, str], HiggsAudioCodec] = {}
+
+# URL reference downloads abort past this size: an admissible reference is at
+# most ~80 s of audio (a few MB even as 48 kHz stereo WAV), so anything this
+# large can only fail later — stop paying for the transfer up front.
+_MAX_REF_DOWNLOAD_BYTES = (
+    int(os.environ.get("HIGGS_MAX_REF_DOWNLOAD_MB", "64")) * 1024 * 1024
+)
+
+
+def _download_capped(url: str) -> bytes:
+    """Stream a reference-audio URL, aborting once the cap is exceeded."""
+    client = global_http_connection.get_sync_client()
+    with client.stream("GET", url) as response:
+        response.raise_for_status()
+        declared = response.headers.get("content-length")
+        if declared is not None and int(declared) > _MAX_REF_DOWNLOAD_BYTES:
+            raise ValueError(
+                f"reference audio at {url!r} is {int(declared)} bytes, over "
+                f"the {_MAX_REF_DOWNLOAD_BYTES}-byte limit "
+                f"(HIGGS_MAX_REF_DOWNLOAD_MB)."
+            )
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > _MAX_REF_DOWNLOAD_BYTES:
+                raise ValueError(
+                    f"reference audio download from {url!r} exceeded the "
+                    f"{_MAX_REF_DOWNLOAD_BYTES}-byte limit "
+                    f"(HIGGS_MAX_REF_DOWNLOAD_MB); aborted."
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
@@ -96,6 +130,30 @@ def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
     return codec
 
 
+def collected_output_codes(data: Any) -> torch.Tensor:
+    """Decoded codes for a finished request as ``[T, num_codebooks]``.
+
+    Two storage paths exist: the preallocated ``output_code_buffer`` the model
+    runner normally fills, and the ``output_codes`` list it falls back to for
+    request objects that lack the buffer fields. Readers must consult both --
+    checking only the list silently sees an empty result for every ordinary
+    request (this is how the reference-fusion calibration path came to
+    believe its own synthesis had produced nothing).
+    """
+    # getattr, not attribute access: ``_append_output_code`` also tolerates
+    # request objects without the buffer fields and falls back to the list
+    # for them, so a reader that assumed the fields exist would raise on
+    # exactly the objects that path is meant to serve.
+    buffer = getattr(data, "output_code_buffer", None)
+    count = int(getattr(data, "output_code_count", 0) or 0)
+    if buffer is not None and count > 0:
+        return buffer[:count].to(torch.long)
+    codes = getattr(data, "output_codes", None)
+    if codes:
+        return torch.stack(list(codes), dim=0).to(torch.long)
+    return torch.empty((0, int(getattr(data, "num_codebooks", 8))), dtype=torch.long)
+
+
 def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
     """Coerce client-supplied ``reference_codes`` to a ``[T, N]`` int64 tensor."""
     if raw is None:
@@ -107,7 +165,18 @@ def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
         raise ValueError(
             f"reference_codes must have shape [T, {num_codebooks}], got {tuple(t.shape)}"
         )
-    return t.to(torch.long)
+    t = t.to(torch.long)
+    # Codec values live in [0, 1025] (1024 data + BOC/EOC). Reject out-of-range
+    # values here with an actionable message: downstream they would either
+    # break the uint16 fingerprint packing or, worse, index the codec
+    # embedding table out of bounds on the GPU (device-side assert).
+    lo, hi = int(t.min()), int(t.max())
+    if lo < 0 or hi > EOC_ID:
+        raise ValueError(
+            f"reference_codes values must be within [0, {EOC_ID}], got "
+            f"min={lo}, max={hi}"
+        )
+    return t
 
 
 def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
@@ -119,9 +188,7 @@ def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
 
     def _load_path_or_url(src: str | Path) -> tuple[np.ndarray, int]:
         if isinstance(src, str) and _is_url(src):
-            response = global_http_connection.get_sync_client().get(src)
-            response.raise_for_status()
-            audio, sr = io.load_bytes(response.content)
+            audio, sr = io.load_bytes(_download_capped(src))
         else:
             audio, sr = io.load_file(Path(src))
         return np.asarray(audio, dtype=np.float32), int(sr)
@@ -148,6 +215,7 @@ __all__ = [
     "BOC_ID",
     "EOC_ID",
     "apply_delay_pattern",
+    "collected_output_codes",
     "delay_pattern_action_mask",
     "get_or_load_codec",
     "load_audio_to_24k",

@@ -320,6 +320,17 @@ class SpeechReference(BaseModel):
     media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
+    # Voice fusion: per-reference blend weight. When >= 2 references are given
+    # and at least one carries a weight, the request is treated as a
+    # voice-fusion request — the references' output distributions are blended
+    # at every decode step (see higgs_tts fusion.py) rather than the legacy
+    # "first reference wins" behavior; references that omit weight default to
+    # 1.0. Weights need not sum to 1; only their ratio matters. Absent from
+    # every reference → ordinary single-voice.
+    weight: float | None = None
+    # Pre-encoded reference codes ([T, num_codebooks]) as an alternative to audio.
+    # Alias surfaced for the fusion path, which reads ``reference_codes``.
+    reference_codes: list[list[int]] | None = None
 
 
 class CreateSpeechRequest(BaseModel):

@@ -61,6 +61,7 @@ def _build_runner(
     runner._async_query_hit = 0
     runner._async_query_miss = 0
     runner.model = SimpleNamespace(
+        has_any_fusion=lambda: False,
         _cg_row_indices=torch.arange(n),
         _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
         _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
@@ -320,6 +321,7 @@ def test_async_real_pinned_path_matches_sync():
         runner._async_query_hit = 0
         runner._async_query_miss = 0
         runner.model = SimpleNamespace(
+            has_any_fusion=lambda: False,
             _cg_row_indices=torch.arange(n, device=dev),
             _cg_active_delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
             _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),

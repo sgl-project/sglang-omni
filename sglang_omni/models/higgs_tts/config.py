@@ -48,7 +48,20 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_audio_encoder_executor",
             factory=FactoryArgs(device="cuda"),
             gpu=0,
-            gpu_memory_fraction=0.03,
+            # 0.03 (737 MiB on a 24 GiB card) was sized for encoding one
+            # reference at a time. Measured peak allocation for a single
+            # encode, codec weights excluded, is 533 MiB at the 30 s trim
+            # ceiling -- so serial encoding fit, with little to spare, and two
+            # concurrent encodes (730 MiB measured) did not. That is exactly
+            # what production hit: CUBLAS_STATUS_ALLOC_FAILED on the clone and
+            # blend paths only, never on default-voice requests, which encode
+            # no reference at all.
+            #
+            # 0.12 is 2948 MiB on that card, sized against the worst case
+            # the gateway schema admits rather than a typical one: sixteen
+            # references at the 80 s cap, none of them cropped, peak at
+            # 2966 MiB above idle and leave the card 975 MiB free.
+            gpu_memory_fraction=0.12,
             next="tts_engine",
         ),
         EngineStageConfig(
@@ -59,7 +72,12 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 device="cuda", max_new_tokens=2048, enable_async_decode=True
             ),
             gpu=0,
-            gpu_memory_fraction=0.85,
+            # Yields what the audio_encoder above needs, and leaves the card
+            # with headroom rather than running to the last megabyte: at 0.79
+            # a sixteen-reference build still tripped a recoverable allocator
+            # OOM. It costs KV cache and nothing else -- 64k tokens remain
+            # against a 2048-token generation cap.
+            gpu_memory_fraction=0.73,
             next="vocoder",
             stream_to=["vocoder"],
         ),

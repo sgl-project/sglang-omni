@@ -30,6 +30,23 @@ class HiggsTtsState(DeclarativeStateBase):
     uploaded_voice_name: str | None = None
     uploaded_voice_created_at: int | None = None
 
+    # voice fusion: when set, this request is conditioned on multiple reference
+    # voices blended at the output-distribution layer (see fusion.py). Each entry
+    # is ``{"codes_delayed": list[list[int]], "weight": float,
+    # "reference_text": str | None}`` — one per reference voice. The request
+    # builder fans this out into N sibling requests sharing a fusion group id;
+    # ``reference_codes_delayed`` above stays None for the fusion case (each
+    # sibling carries its own slice). ``None``/len<2 → ordinary single-voice path.
+    fusion_refs: list[dict[str, Any]] | None = None
+
+    # Reference-space fusion build parameters (mode "reference", the default):
+    # ``{"cal_text": str, "final_prompt_prefix": list[int],
+    # "final_prompt_suffix": list[int]}``. The engine assembles the real
+    # request's prompt as ``prefix + [-100] * len(hybrid_ref) + suffix`` once
+    # the hybrid reference exists (its frame count is unknown before then).
+    # ``None`` in the legacy "logits" sibling-blend mode.
+    fusion_build: dict[str, Any] | None = None
+
     num_codebooks: int = 8
     codebook_size: int = 1026  # 1024 data + <|boc|> + <|eoc|>
 

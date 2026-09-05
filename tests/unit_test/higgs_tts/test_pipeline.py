@@ -374,7 +374,8 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
     assert captured["overrides"]["cuda_graph_backend_prefill"] == "breakable"
     assert captured["overrides"][
         "cuda_graph_bs_prefill"
-    ] == build_default_prefill_cuda_graph_bs(512)
+    ] == build_default_prefill_cuda_graph_bs(1024)
+    assert captured["overrides"]["max_prefill_tokens"] == 4096
     assert captured["server_args"].cuda_graph_config.prefill.backend == "breakable"
     assert ("prefill", "backend") not in captured[
         "server_args"
@@ -485,7 +486,14 @@ def test_higgs_tts_engine_prefill_backend_policy() -> None:
 
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["cuda_graph_backend_prefill"] == "breakable"
-    assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
+    # 1024-token capture budget: a ~40 s reference (25 codec frames/s) plus
+    # target text prefills fully inside the graph.
+    assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
+        1024
+    )
+    # One prefill forward caps at 4096 extend tokens so streaming decodes are
+    # stalled for at most half the previous worst case.
+    assert defaults["max_prefill_tokens"] == 4096
 
     server_args = SimpleNamespace(
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
@@ -725,7 +733,10 @@ def test_higgs_audio_encoder_uses_reference_code_cache(monkeypatch) -> None:
 
         def __init__(self) -> None:
             self.calls = 0
-            self.model = SimpleNamespace(acoustic_encoder=torch.nn.Identity())
+            self.model = SimpleNamespace(
+                acoustic_encoder=torch.nn.Identity(),
+                semantic_model=torch.nn.Identity(),
+            )
 
         def encode_reference(self, waveform, sample_rate: int) -> torch.Tensor:
             self.calls += 1
@@ -796,7 +807,10 @@ def test_higgs_audio_encoder_uses_shared_cache_for_uploaded_voice(
 
         def __init__(self) -> None:
             self.calls = 0
-            self.model = SimpleNamespace(acoustic_encoder=torch.nn.Identity())
+            self.model = SimpleNamespace(
+                acoustic_encoder=torch.nn.Identity(),
+                semantic_model=torch.nn.Identity(),
+            )
 
         def encode_reference(self, waveform, sample_rate: int) -> torch.Tensor:
             self.calls += 1
@@ -983,6 +997,7 @@ def test_higgs_model_runner_marks_sampler_finish() -> None:
     runner._outbox = None
     runner._vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
+        has_any_fusion=lambda: False,
         _rid_to_row={"req": 0},
         _output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
         _sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
@@ -1019,6 +1034,7 @@ def test_higgs_model_runner_emits_latched_stream_metadata() -> None:
     runner._outbox = queue.Queue()
     runner._vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
+        has_any_fusion=lambda: False,
         _rid_to_row={"req": 0},
         _output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
         _sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
@@ -1307,6 +1323,7 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     runner._outbox = None
     runner._vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
+        has_any_fusion=lambda: False,
         _cg_row_indices=torch.tensor([0]),
         _cg_active_delay_count=torch.tensor([8], dtype=torch.int32),
         _cg_active_eoc_countdown=torch.tensor([0], dtype=torch.int32),
@@ -1361,6 +1378,7 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     runner._outbox = None
     runner._vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
+        has_any_fusion=lambda: False,
         _cg_row_indices=torch.arange(n),
         _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
         _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
@@ -1435,6 +1453,7 @@ def test_higgs_model_runner_collects_rollout_logprobs_only_when_requested() -> N
     logits = torch.randn(n, k, vocab)
 
     runner.model = SimpleNamespace(
+        has_any_fusion=lambda: False,
         modality_head=SimpleNamespace(
             generate=lambda hidden: logits[: hidden.shape[0]]
         ),
@@ -1494,6 +1513,7 @@ def test_higgs_model_runner_skips_already_finished_eager_request() -> None:
     runner._outbox = None
     runner._vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
+        has_any_fusion=lambda: False,
         _rid_to_row={"req": 0},
         _output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
         _sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),

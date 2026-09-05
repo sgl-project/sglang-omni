@@ -63,6 +63,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.model: Any | None = None
+        self.checkpoint_dir: str | None = None
 
     def generation_defaults(
         self,
@@ -84,9 +85,16 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
                 else 0.85
             ),
             "chunked_prefill_size": 8192,
-            # Qualified capture budget; longer prefills run eager.
+            # Cap one prefill forward at 4096 extend tokens (was the 16384
+            # server default): with overlap scheduling disabled, every prefill
+            # batch stalls all in-flight decodes, so halving the batch budget
+            # halves the worst-case streaming hiccup. Single requests are never
+            # chunked by this (input caps at context_length - max_new_tokens).
+            "max_prefill_tokens": 4096,
+            # Qualified capture budget; longer prefills run eager. 1024 tokens
+            # covers a ~40 s reference (25 codec frames/s) plus target text.
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
-            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(512),
+            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(1024),
             "dtype": "bfloat16",
         }
 
@@ -122,7 +130,8 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del checkpoint_dir, device, gpu_id, server_args
+        del device, gpu_id, server_args
+        self.checkpoint_dir = checkpoint_dir
         self.model = model_worker.model_runner.model
         higgs_utils.truncate_rope_to_bf16(self.model)
 
@@ -137,8 +146,8 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.HiggsTTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
-        del model
         return request_builders.make_higgs_scheduler_adapters(
+            model,
             max_new_tokens_cap=self.max_new_tokens,
             stream_stride=self.stream_stride,
             stream_followup_stride=self.stream_followup_stride,
@@ -163,3 +172,12 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)
+        # Reference-space fusion: the orchestrator needs the scheduler (to
+        # enqueue calibration retries + the real request) and the checkpoint
+        # dir (to lazily load the CPU codec used on cold builds).
+        from sglang_omni.models.higgs_tts import fusion_reference
+
+        assert self.model is not None
+        fusion_reference.get_orchestrator(self.model).bind(
+            scheduler, self.checkpoint_dir
+        )

@@ -68,5 +68,30 @@ class HiggsTokenizerAdapter:
         ids.append(self.audio_id)
         return ids
 
+    def build_prompt_parts(
+        self,
+        prompt_text: str,
+        *,
+        reference_text: str | None = None,
+    ) -> tuple[list[int], list[int]]:
+        """Voice-clone prompt split around the ref-audio placeholder block.
+
+        Returns ``(prefix, suffix)`` such that
+        ``prefix + [AUDIO_PLACEHOLDER_ID] * num_ref_tokens + suffix`` equals
+        ``build_prompt(prompt_text, num_ref_tokens=N, reference_text=...)``
+        for any N > 0. Used by reference-space fusion, where the reference's
+        frame count is only known after the hybrid reference is built inside
+        the engine stage (which has no tokenizer).
+        """
+        prefix: list[int] = [self.tts_id]
+        if reference_text and self.ref_text_id is not None:
+            prefix.append(self.ref_text_id)
+            prefix.extend(self._tok.encode(reference_text, add_special_tokens=False))
+        prefix.append(self.ref_audio_id)
+        suffix: list[int] = [self.text_id]
+        suffix.extend(self._tok.encode(prompt_text, add_special_tokens=False))
+        suffix.append(self.audio_id)
+        return prefix, suffix
+
 
 __all__ = ["AUDIO_PLACEHOLDER_ID", "HiggsTokenizerAdapter"]
