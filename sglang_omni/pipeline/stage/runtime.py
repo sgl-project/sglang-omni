@@ -1789,6 +1789,23 @@ class Stage:
     def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
         if msg.enable_torch and not TorchProfiler.is_active():
+            if (
+                os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1"
+                and self._active_requests
+            ):
+                # torch's PythonTracer replays every live thread's Python
+                # frames on start; with another thread mid-forward this can
+                # self-deadlock on the GIL and hang the stage process (#1779).
+                logger.warning(
+                    "Stage %s: starting torch profiler with "
+                    "SGLANG_TORCH_PROFILER_WITH_STACK=1 while %d request(s) "
+                    "are in flight. Stack capture on a busy server can "
+                    "deadlock the stage process (torch PythonTracer GIL "
+                    "issue, see #1779). If this start hangs, profile an idle "
+                    "server or unset SGLANG_TORCH_PROFILER_WITH_STACK.",
+                    self.name,
+                    len(self._active_requests),
+                )
             base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
             template = f"{base_tpl}_pid{os.getpid()}"
             prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
