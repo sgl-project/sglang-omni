@@ -35,6 +35,10 @@ DEFAULT_QWEN3_TTS_STREAM_STRIDE = 16
 DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE = 8
 DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE = 8
 DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
+# note (luojiaxuan): the first chunks ramp 1 -> 2 -> 4 before the steady
+# stride. A one-frame first chunk emits audio after a single AR step instead
+# of eight, and the ramp restores a full playback cushion within four chunks.
+DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 
@@ -422,6 +426,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             raise ValueError("stream_initial_followup_stride must be > 0")
         if initial_chunk_frames is not None and initial_chunk_frames < 0:
             raise ValueError("initial_chunk_frames must be >= 0")
+        ramp_in_effect = False
         if stream_chunk_ramp is not None:
             # note (Junnan Li): the ramp is the generalized form of the two
             # legacy knobs; a mixed configuration has no single source of
@@ -453,6 +458,14 @@ class Qwen3TTSStreamingVocoderScheduler(
                 raise ValueError("stream_chunk_ramp[0] must be <= stream_stride")
             initial_chunk_frames = chunk_ramp[0]
             followup_stride_ramp = chunk_ramp[1:]
+            ramp_in_effect = True
+        elif initial_chunk_frames is None and stream_initial_followup_stride is None:
+            initial_chunk_frames = DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP[0]
+            followup_stride_ramp = tuple(
+                min(stride, stream_followup_stride)
+                for stride in DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP[1:]
+            )
+            ramp_in_effect = True
         else:
             if initial_chunk_frames is None:
                 initial_chunk_frames = DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES
@@ -551,7 +564,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._followup_stride_ramp = tuple(
             int(stride) for stride in followup_stride_ramp
         )
-        self._chunk_ramp_configured = stream_chunk_ramp is not None
+        # note (luojiaxuan): a ramp is cursored by emitted frames whether it came
+        # from the parameter or from the shipped default; the legacy branch only
+        # fits the single follow-up stride schedule.
+        self._chunk_ramp_configured = ramp_in_effect
         self._initial_max_batch_size = int(initial_max_batch_size)
         self._initial_batch_wait_s = float(initial_batch_wait_ms) / 1000.0
         self._followup_max_batch_size = int(followup_max_batch_size)

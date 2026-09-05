@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import sys
 import threading
 import time
 import types
 from collections import deque
+from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
 
@@ -299,12 +301,19 @@ def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
     assert vocoder["followup_cuda_graph"] is False
 
 
-def test_qwen3_tts_breakable_prefill_is_compatible_but_not_default_enabled() -> None:
-    """Compatibility permits explicit opt-in without changing shipped defaults."""
+def test_qwen3_tts_breakable_prefill_enabled_by_default(tmp_path: Path) -> None:
     from sglang_omni.models.qwen3_tts import CAPABILITIES
-    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+    from sglang_omni.models.qwen3_tts.engine_builder import (
+        QWEN3_TTS_PREFILL_CUDA_GRAPH_BS,
+        Qwen3TtsEngineBuilder,
+    )
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        build_default_prefill_cuda_graph_bs,
+    )
 
     builder = Qwen3TtsEngineBuilder()
+    builder.checkpoint_dir = _qwen3_tts_checkpoint(tmp_path, "custom_voice")
     defaults = builder.generation_defaults(dtype="bfloat16")
 
     assert CAPABILITIES.supports_breakable_prefill_cuda_graph is True
@@ -312,9 +321,54 @@ def test_qwen3_tts_breakable_prefill_is_compatible_but_not_default_enabled() -> 
         type(builder).supports_breakable_prefill_cuda_graph
         is CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
-    assert "cuda_graph_backend_prefill" not in defaults
-    assert "cuda_graph_bs_prefill" not in defaults
+    assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
+    assert defaults["cuda_graph_bs_prefill"] == list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
+    # A 1-token prefill is the only shape the shared ladder sends back to eager,
+    # so the 1 bucket is what this default adds; 2 and 3 replay inside bucket 4.
+    ladder = defaults["cuda_graph_bs_prefill"]
+    assert ladder[0] == 1
+    assert ladder[1:] == build_default_prefill_cuda_graph_bs(512)
+    assert all(
+        next(b for b in ladder if b >= tokens) <= 2 * tokens for tokens in (1, 2, 3, 4)
+    )
     assert defaults["disable_cuda_graph"] is False
+
+
+def _qwen3_tts_checkpoint(tmp_path: Path, model_type: str | None) -> str:
+    """A checkpoint dir carrying only what the builder reads."""
+    directory = tmp_path / (model_type or "unmarked")
+    directory.mkdir(parents=True, exist_ok=True)
+    config = {} if model_type is None else {"tts_model_type": model_type}
+    (directory / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    return str(directory)
+
+
+def test_qwen3_tts_breakable_prefill_is_scoped_to_the_measured_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """Only CustomVoice was measured, and the signal is the config not the path."""
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    def _defaults(model_type: str | None) -> dict:
+        builder = Qwen3TtsEngineBuilder()
+        builder.checkpoint_dir = _qwen3_tts_checkpoint(tmp_path, model_type)
+        return builder.generation_defaults(dtype="bfloat16")
+
+    assert "cuda_graph_backend_prefill" in _defaults("custom_voice")
+    for model_type in ("base", "voice_design", None):
+        assert "cuda_graph_backend_prefill" not in _defaults(model_type), model_type
+
+    # A directory name carries no signal: this Base checkpoint has none.
+    unnamed = Qwen3TtsEngineBuilder()
+    unnamed.checkpoint_dir = _qwen3_tts_checkpoint(tmp_path / "srv", "base")
+    assert "cuda_graph_backend_prefill" not in unnamed.generation_defaults(
+        dtype="bfloat16"
+    )
+
+    # The admission-defaults path builds a bare builder with no checkpoint.
+    bare = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
+    assert "cuda_graph_backend_prefill" not in bare
+    assert bare["max_running_requests"] == 16
 
 
 def test_qwen3_tts_breakable_prefill_breaks_around_qk_norm_rope(
@@ -1606,10 +1660,10 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         max_batch_wait_ms=3,
     )
     assert warmed_schedulers == [scheduler]
-    assert scheduler.create_stream_state("request").initial_chunk_frames == 8
+    assert scheduler.create_stream_state("request").initial_chunk_frames == 1
     assert scheduler._stream_left_context_frames == 16
     assert scheduler._stream_followup_stride == 8
-    assert scheduler._followup_stride_ramp == (8,)
+    assert scheduler._followup_stride_ramp == (2, 4)
     assert scheduler._initial_max_batch_size == 32
     assert scheduler._initial_batch_wait_s == pytest.approx(0.002)
     assert scheduler._followup_max_batch_size == 8
@@ -2212,16 +2266,74 @@ def test_qwen3_tts_vocoder_serializes_followup_batch_collection() -> None:
     assert not first.is_alive()
 
 
-def test_qwen3_tts_streaming_vocoder_default_initial_chunk_is_continuity_safe() -> None:
+def test_qwen3_tts_streaming_vocoder_default_chunk_ramp() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
+    )
+    left = scheduler._stream_left_context_frames
+
+    # Shipped ramp is 1 -> 2 -> 4 before the steady stride, so first audio
+    # leaves after a single AR step.
+    assert scheduler.create_stream_state("request").initial_chunk_frames == 1
+    assert scheduler._followup_stride_ramp == (2, 4)
+    # Drive the real stride selection instead of re-deriving it: the shipped
+    # ramp has to be cursored like a configured one, otherwise the legacy
+    # branch runs 1, 2, 8 and the third window is never captured.
+    state = scheduler.create_stream_state("request")
+    strides, emitted = [], 0
+    for index in range(6):
+        stride = (
+            state.initial_chunk_frames
+            if index == 0
+            else scheduler._next_followup_stride(state)
+        )
+        strides.append(stride)
+        emitted += stride
+        state.emitted_generated_frames = emitted
+        state.decoded_chunks = index + 1
+    assert strides == [1, 2, 4, 8, 8, 8]
+
+    captured = set(scheduler._initial_decode_graphs._input_frames)
+    windows, emitted = [], 0
+    for stride in strides:
+        generated = emitted + stride
+        windows.append(generated - max(0, emitted - left))
+        emitted = generated
+    assert not set(windows) - captured, (
+        f"uncaptured decode windows {sorted(set(windows) - captured)} "
+        f"for schedule {strides}"
+    )
+    assert scheduler._followup_decode_graphs._input_frames == (
+        scheduler._initial_decode_graphs._input_frames
+    )
+
+
+def test_qwen3_tts_stream_initial_followup_stride_keeps_legacy_first_chunk() -> None:
+    """Setting only the follow-up stride must not inherit the ramp's first chunk."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_initial_followup_stride=4,
+    )
+
+    assert scheduler.create_stream_state("request").initial_chunk_frames == 8
+    assert scheduler._followup_stride_ramp == (4,)
+    assert scheduler._chunk_ramp_configured is False
+
+
+def test_qwen3_tts_explicit_initial_chunk_frames_keeps_legacy_ramp() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        initial_chunk_frames=8,
     )
 
     left = scheduler._stream_left_context_frames
     # Startup prefix sums plus the steady jitter band left+1..left+stride.
     expected = tuple(sorted({8} | {left + f for f in range(0, 9)}))
     assert scheduler.create_stream_state("request").initial_chunk_frames == 8
+    assert scheduler._followup_stride_ramp == (8,)
     assert scheduler._initial_decode_graphs._input_frames == expected
     assert scheduler._followup_decode_graphs._input_frames == expected
 
@@ -2527,6 +2639,9 @@ def test_qwen3_tts_short_request_final_flush_decodes_synchronously() -> None:
         _FakeQwen3TTSTokenizer(),
         device="cpu",
         async_decode=True,
+        # note (luojiaxuan): the threshold is pinned so the two frames below
+        # stay short of it whatever the shipped first-chunk size is.
+        initial_chunk_frames=8,
     )
     payload = make_payload(inputs="short", params={"stream": True})
     scheduler._on_streaming_new_request(payload.request_id, payload)
@@ -3065,6 +3180,9 @@ def test_qwen3_tts_streaming_vocoder_uses_steady_followup_stride() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
+        # note (luojiaxuan): a single-entry ramp leaves no ramp strides, so
+        # follow-ups go straight to the steady stride this test is about.
+        stream_chunk_ramp=(8,),
     )
     payload = make_payload(inputs="target", params={"stream": True})
     scheduler._on_streaming_new_request(payload.request_id, payload)
@@ -3441,6 +3559,10 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
+        # note (luojiaxuan): the utterance has to sit below the first chunk to
+        # reach the final-flush path, which needs a first chunk wider than one
+        # frame to be expressible.
+        stream_chunk_ramp=(8,),
     )
     generated_frames = scheduler._default_initial_chunk_frames - 1
     assert generated_frames > 0

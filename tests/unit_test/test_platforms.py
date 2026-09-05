@@ -204,3 +204,46 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True
     assert CPUOmniPlatform().enable_thinker_decode_graph() is True
+
+
+def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
+    """The accelerators that capture name a backend; the rest answer None.
+
+    NPU, CPU and Apple keep the base None: before this hook they would have run
+    a CUDA capture path and failed inside it.
+    """
+    from sglang_omni.platforms.apple import AppleOmniPlatform
+    from sglang_omni.platforms.device_graph import (
+        CudaDeviceGraphBackend,
+        XpuDeviceGraphBackend,
+    )
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+    from sglang_omni.platforms.npu import NPUOmniPlatform
+
+    expected = {
+        CUDAOmniPlatform: CudaDeviceGraphBackend,
+        ROCMOmniPlatform: CudaDeviceGraphBackend,
+        MUSAOmniPlatform: CudaDeviceGraphBackend,
+        xpu_platform.XPUOmniPlatform: XpuDeviceGraphBackend,
+        NPUOmniPlatform: None,
+        CPUOmniPlatform: None,
+        AppleOmniPlatform: None,
+        OmniPlatform: None,
+    }
+    for platform_class, backend_class in expected.items():
+        platform = platform_class()
+        device = SimpleNamespace(type=platform.device_type)
+        backend = platform.get_device_graph_backend(device)
+        if backend_class is None:
+            assert backend is None, platform_class.__name__
+        else:
+            assert isinstance(backend, backend_class), platform_class.__name__
+
+
+def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
+    """A caller holding a tensor's device does not have to check that first."""
+    platform = CUDAOmniPlatform()
+
+    assert platform.get_device_graph_backend(torch.device("xpu", 0)) is None
+    assert platform.get_device_graph_backend(torch.device("meta")) is None
+    assert platform.get_device_graph_backend(torch.device("cpu")) is None
