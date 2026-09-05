@@ -4,9 +4,40 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from importlib import import_module
+from typing import Any, Callable
 
 from sglang_omni.model_runner.base import ModelRunner
+
+# note: Runner factories are registered as ``module:attribute`` strings and
+# imported on demand. Their modules import ``mlx`` at module scope, so eager
+# imports here would pull MLX into every platform's worker startup.
+_MLX_RUNNER_FACTORIES: dict[str, str] = {
+    "Qwen3ASRForConditionalGeneration": (
+        "sglang_omni.models.qwen3_asr.mlx.runner:make_qwen3_asr_mlx_runner_class"
+    ),
+    "Qwen3TTSTalker": (
+        "sglang_omni.models.qwen3_tts.mlx.runner:make_qwen3_tts_mlx_runner_class"
+    ),
+}
+
+
+def register_mlx_runner_factory(model_arch: str, factory_path: str) -> None:
+    """Register an ``module:attribute`` runner factory for one architecture."""
+    _MLX_RUNNER_FACTORIES[model_arch] = factory_path
+
+
+def resolve_mlx_runner_factory(model_arch: str | None) -> Callable[[], type]:
+    """Import the registered runner-class factory for ``model_arch``."""
+    factory_path = _MLX_RUNNER_FACTORIES.get(model_arch)
+    if factory_path is None:
+        supported = ", ".join(sorted(_MLX_RUNNER_FACTORIES))
+        raise NotImplementedError(
+            f"Omni's MLX worker has no runner for architecture {model_arch!r}; "
+            f"supported architectures: {supported}"
+        )
+    module_name, _, attribute = factory_path.partition(":")
+    return getattr(import_module(module_name), attribute)
 
 
 @dataclass(slots=True)
@@ -169,11 +200,7 @@ def create_mlx_model_worker(
     tp_rank: int = 0,
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
-    if config.model_arch_override != "Qwen3ASRForConditionalGeneration":
-        raise NotImplementedError(
-            "Omni's MLX worker currently supports only "
-            "Qwen3ASRForConditionalGeneration"
-        )
+    make_runner_class = resolve_mlx_runner_factory(config.model_arch_override)
 
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
@@ -182,16 +209,14 @@ def create_mlx_model_worker(
     from sglang.srt.runtime_context import publish
     from sglang.srt.server_args import PortArgs
 
-    from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
-
-    class OmniQwen3ASRMlxWorker(MlxTpModelWorker):
+    class OmniMlxWorker(MlxTpModelWorker):
         @property
         def tp_rank(self) -> int:
             return self.ps.tp_rank
 
         def _init_model_runner(self):
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
-            runner_class = make_qwen3_asr_mlx_runner_class()
+            runner_class = make_runner_class()
             init_kwargs = {
                 "model_path": self.server_args.model_path,
                 "trust_remote_code": self.server_args.trust_remote_code,
@@ -269,7 +294,7 @@ def create_mlx_model_worker(
     # note (yexiaodong): MlxTpModelWorker reads the split runtime configuration
     # while building its model config, before the bookkeeping stub exists.
     publish(server_args, role="scheduler")
-    return OmniQwen3ASRMlxWorker(
+    return OmniMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
         ps=ps,
