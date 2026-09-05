@@ -63,7 +63,12 @@ jobs:
         with:
           filters: |
             xpu:
-              - 'sglang_omni/**'
+              # The XPU suites import sglang_omni.platforms and
+              # sglang_omni.utils.device only; scope the trigger to that
+              # surface so unrelated model or docs changes do not occupy an
+              # XPU runner.
+              - 'sglang_omni/platforms/**'
+              - 'sglang_omni/utils/device.py'
               - 'tests/unit_test/xpu/**'
               - 'pyproject_xpu.toml'
               - 'scripts/xpu/**'
