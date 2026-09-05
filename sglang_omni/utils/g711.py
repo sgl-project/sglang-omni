@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import io
-
-import soundfile as sf
+import struct
 
 from sglang_omni.utils.audio import is_riff_wav, is_sun_au
 
@@ -16,8 +14,9 @@ G711_SAMPLE_RATE = 8000
 MULAW = "mulaw"
 ALAW = "alaw"
 
-# libsndfile subtype names; it decodes and encodes both laws for us.
-_SOUNDFILE_SUBTYPES = {MULAW: "ULAW", ALAW: "ALAW"}
+# WAVE format tags, registered in RFC 2361 (WAVE_FORMAT_ALAW = 0x0006,
+# WAVE_FORMAT_MULAW = 0x0007): https://www.rfc-editor.org/rfc/rfc2361
+_WAV_FORMAT_TAGS = {MULAW: 7, ALAW: 6}
 
 # Media types telephony providers and SIP stacks attach to raw G.711 bytes.
 # audio/basic is 8 kHz µ-law per RFC 2046 section 4.3:
@@ -64,21 +63,39 @@ def resolve_g711_encoding(
 def wrap_g711_as_wav(
     data: bytes, encoding: str, sample_rate: int = G711_SAMPLE_RATE
 ) -> bytes:
-    """Put headerless G.711 bytes into a WAV container of the same encoding."""
+    """Put a WAV header in front of headerless G.711 bytes."""
     if is_riff_wav(data) or is_sun_au(data):
         return data
     try:
-        subtype = _SOUNDFILE_SUBTYPES[encoding]
+        fmt_tag = _WAV_FORMAT_TAGS[encoding]
     except KeyError:
         raise ValueError(f"Unsupported G.711 encoding: {encoding!r}") from None
-    pcm, _ = sf.read(
-        io.BytesIO(data),
-        samplerate=sample_rate,
-        channels=1,
-        subtype=subtype,
-        format="RAW",
-        dtype="float32",
+    channels = 1
+    bits_per_sample = 8
+    block_align = channels * bits_per_sample // 8
+    fmt_chunk = struct.pack(
+        "<HHIIHHH",
+        fmt_tag,
+        channels,
+        sample_rate,
+        sample_rate * block_align,
+        block_align,
+        bits_per_sample,
+        0,  # cbSize: no extra format bytes
     )
-    buffer = io.BytesIO()
-    sf.write(buffer, pcm, sample_rate, subtype=subtype, format="WAV")
-    return buffer.getvalue()
+    fact_chunk = struct.pack("<I", len(data) // block_align)
+    padding = b"\x00" if len(data) % 2 else b""
+    body = (
+        b"WAVE"
+        + b"fmt "
+        + struct.pack("<I", len(fmt_chunk))
+        + fmt_chunk
+        + b"fact"
+        + struct.pack("<I", len(fact_chunk))
+        + fact_chunk
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
+        + padding
+    )
+    return b"RIFF" + struct.pack("<I", len(body)) + body

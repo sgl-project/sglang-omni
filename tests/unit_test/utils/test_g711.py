@@ -95,3 +95,24 @@ def test_wrap_leaves_sun_au_untouched() -> None:
 def test_wrap_rejects_unknown_encoding() -> None:
     with pytest.raises(ValueError, match="Unsupported G.711 encoding"):
         wrap_g711_as_wav(b"\x00", "pcm16")
+
+
+def test_wrap_copies_the_payload_verbatim_with_a_fact_chunk() -> None:
+    payload = bytes(range(256)) * 4
+    wav = wrap_g711_as_wav(payload, MULAW)
+
+    fmt_tag, channels, sample_rate, _, block_align, bits = struct.unpack(
+        "<HHIIHH", wav[20:36]
+    )
+    assert (fmt_tag, channels, sample_rate, block_align, bits) == (7, 1, 8000, 1, 8)
+    fact_at = wav.index(b"fact")
+    assert struct.unpack("<II", wav[fact_at + 4 : fact_at + 12]) == (4, len(payload))
+    assert wav.index(b"data") > fact_at
+    assert wav.endswith(payload)
+
+
+def test_wrap_pads_odd_payloads_to_keep_riff_chunks_aligned() -> None:
+    wav = wrap_g711_as_wav(b"\xff" * 3, ALAW)
+
+    assert struct.unpack("<I", wav[4:8])[0] == len(wav) - 8
+    assert len(wav) % 2 == 0

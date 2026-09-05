@@ -232,3 +232,21 @@ async def test_read_keeps_sun_au_declared_as_audio_basic_intact() -> None:
 
     assert audio_bytes is au
     assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("content_type", ["audio/basic", "audio/PCMA"])
+@pytest.mark.asyncio
+async def test_probe_measures_wrapped_g711_without_the_av_fallback(
+    monkeypatch, content_type
+) -> None:
+    monkeypatch.setattr(
+        speech_to_text,
+        "_av_duration",
+        lambda audio_bytes: pytest.fail("fell back to av for a G.711 upload"),
+    )
+
+    audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+        _Upload(b"\xff" * 12000, content_type, "call.bin")
+    )
+
+    assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.5)
