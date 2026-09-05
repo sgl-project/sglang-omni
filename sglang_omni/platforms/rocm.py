@@ -13,10 +13,16 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 
 class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
     """ROCm policy with PyTorch's CUDA-compatible HIP device surface."""
+
+    def _get_device_graph_backend(self) -> DeviceGraphBackend:
+        from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
+
+        return CudaDeviceGraphBackend()
 
     def get_stage_process_env(
         self,
@@ -27,7 +33,11 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             return {}
 
         source_env = env if env is not None else os.environ
-        original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
+        hip_visible = source_env.get("HIP_VISIBLE_DEVICES")
+        visibility_var = (
+            "HIP_VISIBLE_DEVICES" if hip_visible else "CUDA_VISIBLE_DEVICES"
+        )
+        original_visible = source_env.get(visibility_var)
         if spec.gpu_id is None:
             raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
         if original_visible:
@@ -35,17 +45,23 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             if spec.gpu_id >= len(visible_devices):
                 raise ValueError(
                     f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
-                    f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
+                    f"but {visibility_var} only exposes {visible_devices}"
                 )
             mapped_gpu = visible_devices[spec.gpu_id]
         else:
             mapped_gpu = str(spec.gpu_id)
 
-        return {
+        env_updates = {
             "CUDA_VISIBLE_DEVICES": mapped_gpu,
             "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         }
+        if hip_visible:
+            # Note (zijiecode): the HIP runtime prefers HIP_VISIBLE_DEVICES over the
+            # CUDA alias, so the child must be narrowed through it; the alias
+            # is kept for the startup lock and SGLang's physical-device helpers.
+            env_updates["HIP_VISIBLE_DEVICES"] = mapped_gpu
+        return env_updates
 
     def get_intra_node_transport(self):
         from sglang_omni.comm.data_ref import TransportKind
