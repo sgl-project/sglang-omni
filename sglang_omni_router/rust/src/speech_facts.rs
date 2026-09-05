@@ -162,8 +162,8 @@ pub(crate) fn response_format(value: &str) -> Option<SpeechResponseFormat> {
 pub(crate) fn task(value: &str) -> Option<SpeechTask> {
     let normalized = value.trim().replace(['_', '-'], "").to_ascii_lowercase();
     match normalized.as_str() {
-        "base" => Some(SpeechTask::TextToSpeech),
-        "customvoice" => Some(SpeechTask::VoiceClone),
+        "base" => Some(SpeechTask::VoiceClone),
+        "customvoice" => Some(SpeechTask::TextToSpeech),
         "voicedesign" => Some(SpeechTask::VoiceDesign),
         _ => None,
     }

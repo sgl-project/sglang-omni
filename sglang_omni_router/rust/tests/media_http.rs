@@ -263,6 +263,14 @@ struct RouterProcess {
 
 impl RouterProcess {
     fn start(routes: &[MediaRoute], workers: &[(&Worker, bool)]) -> Self {
+        let worker_refs = workers
+            .iter()
+            .map(|(worker, _alternate)| *worker)
+            .collect::<Vec<_>>();
+        Self::start_with(&worker_refs, |address| config(address, routes, workers))
+    }
+
+    fn start_with(workers: &[&Worker], build_config: impl FnOnce(SocketAddr) -> String) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("reserve router port");
         let address = listener.local_addr().expect("read router port");
         drop(listener);
@@ -273,8 +281,7 @@ impl RouterProcess {
         ));
         fs::create_dir(&directory).expect("create media router directory");
         let config_path = directory.join("router.toml");
-        fs::write(&config_path, config(address, routes, workers))
-            .expect("write media router config");
+        fs::write(&config_path, build_config(address)).expect("write media router config");
         let binary = env!("CARGO_BIN_EXE_sgl-omni-router");
         let child = Command::new(binary)
             .arg("--config")
@@ -290,7 +297,7 @@ impl RouterProcess {
             directory,
         };
         process.wait_ready();
-        for (worker, _) in workers {
+        for worker in workers {
             worker.wait_health_completed();
         }
         process
@@ -319,14 +326,8 @@ impl Drop for RouterProcess {
 }
 
 fn config(address: SocketAddr, routes: &[MediaRoute], workers: &[(&Worker, bool)]) -> String {
-    let enabled_routes = routes
-        .iter()
-        .map(|route| format!("\"{}\"", route.route_name()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut output = format!(
-        "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 64\n\n[shutdown]\ndrain_timeout_ms = 5000\n\n[logging]\nformat = \"json\"\nfilter = \"error\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 32\nspeech_http = 8\ntranscription_http = 8\nspeech_batch = 16\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 4096\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 1000\npool_max_idle_per_host = 4\n\n[http_media]\nroutes = [{enabled_routes}]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1024\nstreamed_request_max_bytes = 8192\nrequest_timeout_ms = 5000\n"
-    );
+    let mut output = config_header(address, routes);
+    let all_speech_tasks = "[\"text_to_speech\", \"voice_clone\", \"voice_design\"]";
     for (index, (worker, alternate)) in workers.iter().enumerate() {
         let speech_formats = if *alternate {
             "[\"mp3\"]"
@@ -348,19 +349,36 @@ fn config(address: SocketAddr, routes: &[MediaRoute], workers: &[(&Worker, bool)
                 *route,
                 speech_formats,
                 speech_to_text_formats,
+                all_speech_tasks,
             ));
         }
     }
     output
 }
 
-fn media_profile(route: MediaRoute, speech_formats: &str, speech_to_text_formats: &str) -> String {
+fn config_header(address: SocketAddr, routes: &[MediaRoute]) -> String {
+    let enabled_routes = routes
+        .iter()
+        .map(|route| format!("\"{}\"", route.route_name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "schema_version = 1\n\n[server]\nlisten = \"{address}\"\nmax_connections = 64\n\n[shutdown]\ndrain_timeout_ms = 5000\n\n[logging]\nformat = \"json\"\nfilter = \"error\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 32\nspeech_http = 8\ntranscription_http = 8\nspeech_batch = 16\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 4096\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 1000\npool_max_idle_per_host = 4\n\n[http_media]\nroutes = [{enabled_routes}]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1024\nstreamed_request_max_bytes = 8192\nrequest_timeout_ms = 5000\n"
+    )
+}
+
+fn media_profile(
+    route: MediaRoute,
+    speech_formats: &str,
+    speech_to_text_formats: &str,
+    speech_tasks: &str,
+) -> String {
     match route {
         MediaRoute::Speech => format!(
-            "[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = {speech_formats}\nstream_modes = [\"non_streaming\"]\ntasks = [\"text_to_speech\", \"voice_clone\", \"voice_design\"]\nreference_forms = [\"none\", \"direct\", \"list\", \"vq_codes\"]\nvoice_name_policy = \"preset\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = [\"text_to_speech\", \"voice_clone\", \"voice_design\"]\nreference_forms = [\"none\", \"direct\", \"list\", \"vq_codes\"]\nvoice_name_policy = \"preset\"\n"
+            "[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = {speech_formats}\nstream_modes = [\"non_streaming\"]\ntasks = {speech_tasks}\nreference_forms = [\"none\", \"direct\", \"list\", \"vq_codes\"]\nvoice_name_policy = \"preset\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = {speech_tasks}\nreference_forms = [\"none\", \"direct\", \"list\", \"vq_codes\"]\nvoice_name_policy = \"preset\"\n"
         ),
-        MediaRoute::SpeechBatch => String::from(
-            "[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"mp3\", \"opus\", \"aac\", \"flac\", \"wav\", \"pcm\"]\ntasks = [\"text_to_speech\", \"voice_clone\", \"voice_design\"]\nreference_forms = [\"none\", \"direct\", \"list\", \"vq_codes\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 16\n",
+        MediaRoute::SpeechBatch => format!(
+            "[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"mp3\", \"opus\", \"aac\", \"flac\", \"wav\", \"pcm\"]\ntasks = {speech_tasks}\nreference_forms = [\"none\", \"direct\", \"list\", \"vq_codes\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 16\n",
         ),
         MediaRoute::Transcription => format!(
             "[[workers.service_profiles]]\nservice = \"transcription_http\"\nmodel_ids = [\"tts\", \"asr\"]\ntask = \"transcribe\"\nresponse_formats = {speech_to_text_formats}\nstream_modes = [\"non_streaming\", \"streaming\"]\n",
@@ -369,6 +387,24 @@ fn media_profile(route: MediaRoute, speech_formats: &str, speech_to_text_formats
             "[[workers.service_profiles]]\nservice = \"transcription_http\"\nmodel_ids = [\"tts\", \"asr\"]\ntask = \"translate\"\nresponse_formats = {speech_to_text_formats}\nstream_modes = [\"non_streaming\", \"streaming\"]\n",
         ),
     }
+}
+
+fn qwen_task_config(address: SocketAddr, custom: &Worker, base: &Worker) -> String {
+    let routes = [MediaRoute::Speech];
+    let mut output = config_header(address, &routes);
+    for (index, (worker, task, references, voice_policy)) in [
+        (custom, "text_to_speech", "[\"none\"]", "preset"),
+        (base, "voice_clone", "[\"direct\", \"list\"]", "uploaded"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        output.push_str(&format!(
+            "\n[[workers]]\nworker_id = \"qwen-{index}\"\nbase_url = \"http://{}\"\ntrust_domain = \"local\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"wav\"]\nstream_modes = [\"non_streaming\"]\ntasks = [\"{task}\"]\nreference_forms = {references}\nvoice_name_policy = \"{voice_policy}\"\n",
+            worker.address
+        ));
+    }
+    output
 }
 
 #[test]
@@ -605,6 +641,43 @@ fn relays_all_media_routes_with_exact_bytes_headers_and_large_direct_uploads() {
     );
     assert!(response.starts_with(b"HTTP/1.1 200"));
     assert_eq!(capture.body, large_multipart);
+}
+
+#[test]
+fn qwen_task_types_select_the_matching_worker_profile() {
+    let _guard = socket_guard();
+    let custom = Worker::start();
+    let base = Worker::start();
+    let router = RouterProcess::start_with(&[&custom, &base], |address| {
+        qwen_task_config(address, &custom, &base)
+    });
+
+    let custom_request =
+        br#"{"model":"tts","input":"hello","task_type":"CustomVoice","voice":"Vivian"}"#;
+    let response = request(
+        router.address,
+        "POST",
+        MediaRoute::Speech.path(),
+        Some("application/json"),
+        custom_request,
+    )
+    .expect("CustomVoice response");
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    assert_eq!(custom.captures().len(), 1);
+    assert!(base.captures().is_empty());
+
+    let base_request = br#"{"model":"tts","input":"hello","task_type":"Base","ref_audio":"data:audio/wav;base64,AA=="}"#;
+    let response = request(
+        router.address,
+        "POST",
+        MediaRoute::Speech.path(),
+        Some("application/json"),
+        base_request,
+    )
+    .expect("Base response");
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    assert_eq!(base.captures().len(), 1);
+    assert_eq!(custom.captures().len(), 1);
 }
 
 fn roundtrip(

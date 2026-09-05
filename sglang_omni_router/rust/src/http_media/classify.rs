@@ -479,7 +479,9 @@ mod tests {
         StreamMode, TrustDomain, WorkerPool,
     };
 
-    use super::{HttpFault, batch, batch_with_hints, merge_stream, speech, speech_with_hints};
+    use super::{
+        HttpFault, batch, batch_with_hints, classify_task, merge_stream, speech, speech_with_hints,
+    };
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -595,7 +597,7 @@ stream_modes = ["non_streaming", "streaming"]
             };
             assert_eq!(*response_format, expected);
         }
-        let mixed = br#"{"model":"tts","input":"x","response_format":"pcm","stream":true,"task_type":"CustomVoice","ref_audio":"direct","references":[{"audio_path":"list"},{"vq_codes":[1]}]}"#;
+        let mixed = br#"{"model":"tts","input":"x","response_format":"pcm","stream":true,"task_type":"Base","ref_audio":"direct","references":[{"audio_path":"list"},{"vq_codes":[1]}]}"#;
         let classified = speech(mixed, &pool, &trust).expect("classify mixed speech");
         let ProfileRequirement::SpeechHttp {
             stream_mode,
@@ -624,6 +626,54 @@ stream_modes = ["non_streaming", "streaming"]
             panic!("speech requirement")
         };
         assert_eq!(model.expected_model_id(), Some("tts"));
+    }
+
+    #[test]
+    fn qwen_task_types_follow_worker_capabilities() {
+        for (value, expected) in [
+            ("Base", SpeechTask::VoiceClone),
+            (" base ", SpeechTask::VoiceClone),
+            ("CustomVoice", SpeechTask::TextToSpeech),
+            ("custom_voice", SpeechTask::TextToSpeech),
+            ("VoiceDesign", SpeechTask::VoiceDesign),
+            ("voice-design", SpeechTask::VoiceDesign),
+        ] {
+            assert_eq!(classify_task(value), Some(expected));
+        }
+        assert_eq!(classify_task("future"), None);
+
+        let pool = pool();
+        let trust = TrustDomain::new(String::from("local"));
+        for (task_type, expected) in [
+            ("Base", SpeechTask::VoiceClone),
+            ("CustomVoice", SpeechTask::TextToSpeech),
+        ] {
+            let body = format!(r#"{{"model":"tts","input":"x","task_type":"{task_type}"}}"#);
+            let classified = speech(body.as_bytes(), &pool, &trust).expect("classify Qwen task");
+            let ProfileRequirement::SpeechHttp { task, .. } = classified.requirement.profile()
+            else {
+                panic!("speech requirement")
+            };
+            assert_eq!(*task, Some(expected));
+        }
+
+        let classified = batch(
+            br#"{
+                "model":"tts",
+                "task_type":"CustomVoice",
+                "items":[
+                    {"input":"preset"},
+                    {"input":"clone","task_type":"Base","ref_audio":"reference"}
+                ]
+            }"#,
+            &pool,
+            &trust,
+        )
+        .expect("classify inherited and overridden Qwen tasks");
+        let ProfileRequirement::SpeechBatch { tasks, .. } = classified.requirement.profile() else {
+            panic!("speech batch requirement")
+        };
+        assert_eq!(tasks, &[SpeechTask::TextToSpeech, SpeechTask::VoiceClone]);
     }
 
     #[test]
@@ -683,7 +733,7 @@ stream_modes = ["non_streaming", "streaming"]
         assert_eq!(model.expected_model_id(), Some("tts"));
         assert_eq!(*response_format, SpeechResponseFormat::Pcm);
         assert_eq!(*stream_mode, StreamMode::Streaming);
-        assert_eq!(*task, Some(SpeechTask::TextToSpeech));
+        assert_eq!(*task, Some(SpeechTask::VoiceClone));
         assert!(*named_voice);
 
         let final_invalid = speech(br#"{"model":"tts","model":7,"input":"x"}"#, &pool, &trust)
@@ -784,7 +834,7 @@ stream_modes = ["non_streaming", "streaming"]
             response_formats,
             &[SpeechResponseFormat::Wav, SpeechResponseFormat::Mp3]
         );
-        assert_eq!(tasks, &[SpeechTask::TextToSpeech, SpeechTask::VoiceDesign]);
+        assert_eq!(tasks, &[SpeechTask::VoiceClone, SpeechTask::VoiceDesign]);
         assert_eq!(
             reference_forms,
             &[
