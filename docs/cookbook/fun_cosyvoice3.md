@@ -117,7 +117,10 @@ required.
 
 Without the MLX opt-in, the same pipeline runs the speech-token model and
 vocoder through PyTorch MPS. This path is useful as a correctness baseline and
-does not need a separate checkpoint:
+does not need a separate checkpoint. Both Apple runners apply CosyVoice3's
+repetition-aware sampling (a recent-ten-token redraw); the Torch/MPS runner uses
+an eager MPS-safe fallback because the pinned SGLang seeded sampler's float64
+path is unavailable on MPS.
 
 ```bash
 unset SGLANG_USE_MLX

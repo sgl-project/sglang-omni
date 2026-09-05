@@ -120,7 +120,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
 ) -> None:
     from contextlib import nullcontext
 
-    sampling_info = SimpleNamespace(sampling_seed=None)
+    sampling_info = SimpleNamespace(sampling_seed=None, is_all_greedy=True)
     sampled_with = []
 
     class _Runner(FunCosyVoice3ModelRunner):
@@ -135,6 +135,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
             forward_batch.sampling_info.sampling_seed = torch.tensor([7])
 
     runner = object.__new__(_Runner)
+    runner._cosyvoice3_recent_tokens = {}
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(
             sample=lambda logits_output, forward_batch: sampled_with.append(
@@ -159,6 +160,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
         or nullcontext(),
     )
     request = SimpleNamespace(
+        request_id="req",
         data=SimpleNamespace(
             return_logprob=False,
             req=SimpleNamespace(
@@ -166,7 +168,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
                 output_ids=[1, 2],
                 sampling_params=SimpleNamespace(sampling_seed=7),
             ),
-        )
+        ),
     )
     logits_output = SimpleNamespace(
         next_token_logits=SimpleNamespace(
@@ -188,6 +190,75 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
     assert manual_seeds == [(7 + 4 * 0x9E3779B1) & SAMPLING_SEED_MASK]
     assert compiler_stances == ["force_eager"]
     assert forked_devices == [([0], "mps")]
+
+
+def test_cosyvoice3_torch_mps_ras_redraws_recent_speech_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner._cosyvoice3_recent_tokens = {"req": [4, 7, 9]}
+    sampling_info = SimpleNamespace(is_all_greedy=False)
+    logits_output = SimpleNamespace(
+        next_token_logits=torch.tensor(
+            [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]]
+        ),
+        next_token_logprobs=torch.tensor([-0.1]),
+    )
+    sampled = []
+
+    def fake_multinomial(probs, num_samples):
+        sampled.append((probs, num_samples))
+        return torch.tensor([[6]], dtype=torch.long)
+
+    monkeypatch.setattr(torch, "multinomial", fake_multinomial)
+    request = SimpleNamespace(request_id="req")
+
+    result = runner._apply_ras_fallback(
+        logits_output,
+        torch.tensor([9], dtype=torch.int32),
+        sampling_info,
+        [request],
+    )
+
+    assert result.tolist() == [6]
+    assert len(sampled) == 1
+    assert sampled[0][1] == 1
+    assert sampled[0][0][0, 9].item() == 0.0
+    assert runner._cosyvoice3_recent_tokens["req"][-1] == 6
+    assert torch.equal(
+        logits_output.next_token_logprobs,
+        torch.log(torch.tensor([0.7])),
+    )
+
+
+def test_cosyvoice3_torch_mps_ras_keeps_non_repeated_token() -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner._cosyvoice3_recent_tokens = {"req": [4, 7, 9]}
+    sampling_info = SimpleNamespace(is_all_greedy=False)
+    logits_output = SimpleNamespace(
+        next_token_logits=torch.ones((1, VOCAB_SIZE), dtype=torch.float32),
+        next_token_logprobs=None,
+    )
+    request = SimpleNamespace(request_id="req")
+
+    result = runner._apply_ras_fallback(
+        logits_output,
+        torch.tensor([6], dtype=torch.int32),
+        sampling_info,
+        [request],
+    )
+
+    assert result.tolist() == [6]
+    assert runner._cosyvoice3_recent_tokens["req"][-1] == 6
+
+
+def test_cosyvoice3_torch_mps_clears_ras_history_on_finish() -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner._cosyvoice3_recent_tokens = {"req": [1], "keep": [2]}
+
+    runner.on_request_finished("req", None)
+
+    assert runner._cosyvoice3_recent_tokens == {"keep": [2]}
 
 
 def test_cosyvoice3_load_weights_maps_custom_and_backbone_keys(
