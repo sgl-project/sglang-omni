@@ -8,6 +8,7 @@ import pytest
 import torch
 import torch.nn as nn
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
+from sglang.srt.server_args import ServerArgs
 from transformers import WhisperConfig
 
 import sglang_omni.model_runner.base as model_runner_base
@@ -51,6 +52,11 @@ def _tiny_config():
         vocab_size=256,
         audio_token_id=151663,
     )
+
+
+def _sglang_prefill_ladder(max_bs: int) -> list[int]:
+    unresolved = ServerArgs.__new__(ServerArgs)
+    return ServerArgs._generate_prefill_cuda_graph_batch_sizes(unresolved, max_bs)
 
 
 def test_arkasr_config_registered():
@@ -177,6 +183,7 @@ def _stub_arkasr_engine_build(
     *,
     want_cuda_graph: bool,
     encoder_service: object,
+    resolved_chunked_prefill_size: int | None = None,
 ) -> SimpleNamespace:
     """Stub every out-of-process dependency of ArkasrEngineBuilder.build().
 
@@ -189,6 +196,7 @@ def _stub_arkasr_engine_build(
     encoder_service_kwargs: dict[str, object] = {}
     stream_builder_calls: list[dict[str, object]] = []
     stream_output_builder = object()
+    build_kwargs: dict[str, object] = {}
 
     encoder_batch_sizes: list[int] = []
     model_worker = SimpleNamespace(
@@ -251,14 +259,54 @@ def _stub_arkasr_engine_build(
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
-        server_args = SimpleNamespace(context_length=context_length, **overrides)
+        build_kwargs.update(overrides)
+        flat = dict(overrides)
+        if (
+            resolved_chunked_prefill_size is not None
+            and flat.get("chunked_prefill_size") is None
+        ):
+            flat["chunked_prefill_size"] = resolved_chunked_prefill_size
+        for name, default in (
+            ("attn_cp_size", 1),
+            ("dcp_size", 1),
+            ("lora_paths", None),
+            ("enable_lora", None),
+            ("moe_a2a_backend", "none"),
+        ):
+            flat.setdefault(name, default)
+        server_args = SimpleNamespace(context_length=context_length, **flat)
+        prefill_backend = (
+            overrides.get("cuda_graph_backend_prefill", "disabled")
+            if resolved_chunked_prefill_size is not None
+            else "disabled"
+        )
+        prefill_bs = overrides.get("cuda_graph_bs_prefill")
+        prefill_max_bs = overrides.get("cuda_graph_max_bs_prefill")
+        if resolved_chunked_prefill_size is not None:
+            if prefill_max_bs is None:
+                prefill_max_bs = server_args.chunked_prefill_size
+            if prefill_bs is None:
+                prefill_bs = _sglang_prefill_ladder(prefill_max_bs)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
             ),
-            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            prefill=SimpleNamespace(
+                backend=prefill_backend,
+                bs=prefill_bs,
+                max_bs=prefill_max_bs,
+            ),
         )
+        server_args._cuda_graph_config_locked = {
+            ("prefill", field)
+            for field, key in (
+                ("backend", "cuda_graph_backend_prefill"),
+                ("bs", "cuda_graph_bs_prefill"),
+                ("max_bs", "cuda_graph_max_bs_prefill"),
+            )
+            if key in overrides
+        }
         return server_args
 
     monkeypatch.setattr(
@@ -296,7 +344,33 @@ def _stub_arkasr_engine_build(
         infra_kwargs_seen=infra_kwargs_seen,
         encoder_batch_sizes=encoder_batch_sizes,
         model_worker=model_worker,
+        build_kwargs=build_kwargs,
     )
+
+
+def test_arkasr_prefill_graph_uses_resolved_auto_chunk_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub = _stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+        resolved_chunked_prefill_size=2048,
+    )
+
+    scheduler = create_sglang_arkasr_executor(
+        "AutoArk-AI/ARK-ASR-3B",
+        server_args_overrides={"chunked_prefill_size": None},
+    )
+
+    prefill = scheduler.server_args.cuda_graph_config.prefill
+    assert stub.build_kwargs["chunked_prefill_size"] is None
+    assert "cuda_graph_bs_prefill" not in stub.build_kwargs
+    assert "cuda_graph_max_bs_prefill" not in stub.build_kwargs
+    assert list(prefill.bs) == _sglang_prefill_ladder(2048)
+    assert prefill.max_bs == 2048
+    assert ("prefill", "bs") not in scheduler.server_args._cuda_graph_config_locked
+    assert stub.infra_kwargs_seen["enable_prefill_input_embeds"] is True
 
 
 @pytest.mark.parametrize("want_cuda_graph", [True, False])
@@ -502,6 +576,16 @@ def test_ark_get_audio_feature_batched_matches_serial_and_uses_one_encoder_call(
         48,
     )
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
+
+
+def test_ark_get_audio_feature_does_not_build_an_autograd_graph():
+    model = _tiny_ark_audio_mm_model()
+    item = _ark_audio_item(torch.randn(1, 8, 18), 18, hash_id=99)
+
+    output = model.get_audio_feature([item])
+
+    assert output.grad_fn is None
+    assert not output.requires_grad
 
 
 def test_ark_get_audio_feature_splits_large_batches_in_order():

@@ -512,6 +512,27 @@ def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> Non
     )
 
 
+def test_code_predictor_forward_runs_without_grad_tracking() -> None:
+    grad_enabled = []
+    source = torch.ones(1, requires_grad=True)
+
+    class FakeTalker:
+        def _code_predictor_forward_incremental(self, **_kwargs):
+            grad_enabled.append(torch.is_grad_enabled())
+            return torch.zeros(1, dtype=torch.long), source * 2
+
+    with torch.enable_grad():
+        result_codes, summed_embeddings = Qwen3OmniTalker.code_predictor_forward(
+            FakeTalker(), torch.zeros(1), torch.zeros(1)
+        )
+
+    assert grad_enabled == [False]
+    assert result_codes.requires_grad is False
+    assert summed_embeddings.requires_grad is False
+    assert result_codes.grad_fn is None
+    assert summed_embeddings.grad_fn is None
+
+
 class _FakePredictorLmHead(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -640,9 +661,8 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
-    # SGLang 0.5.15 constructs nested model buffers while its outer runner is
-    # in inference mode. Replaying later from a no-grad capture must still be
-    # allowed to update those inference tensors in place.
+    # Note (zijiecode): SGLang runs the predictor from inference mode, so capture
+    # and replay are exercised in that mode here as well.
     with torch.inference_mode():
         talker.code_predictor_forward(layer0_codes, talker_hidden)
         torch.cuda.synchronize()
@@ -2410,3 +2430,25 @@ def test_talker_prefill_forward_invalidates_next_decode_reuse() -> None:
     )
 
     assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(("is_rocm", "expected"), [(True, False), (False, True)])
+def test_qwen_predictor_decode_graph_skips_outer_sglang_capture_on_rocm(
+    monkeypatch: pytest.MonkeyPatch, is_rocm: bool, expected: bool
+) -> None:
+    """SGLang's warmup forwards run inside model_capture_mode() before the
+    stream capture starts; ROCm keeps the predictor eager there, CUDA does not."""
+    monkeypatch.setattr(talker_module, "get_is_capture_mode", lambda: True)
+    monkeypatch.setattr(talker_module.current_platform, "is_rocm", lambda: is_rocm)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    talker = object.__new__(Qwen3OmniTalker)
+
+    assert (
+        talker._can_use_predictor_decode_graph(
+            layer0_codes=SimpleNamespace(dtype=torch.int, is_cuda=True),
+            talker_hidden=SimpleNamespace(is_cuda=True),
+            seq_len=1,
+        )
+        is expected
+    )

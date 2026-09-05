@@ -16,6 +16,8 @@ from sglang_omni.pipeline.stage_workers import (
     _patched_spawn_env,
 )
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.rocm import ROCMOmniPlatform
+from sglang_omni.utils.gpu_memory import get_gpu_startup_lock_path
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
@@ -207,6 +209,35 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
 
 
+def test_rocm_tp_child_keeps_parent_mapped_hip_visible_device(monkeypatch) -> None:
+    """ROCm TP children normalize the single HIP-visible card to local cuda:0."""
+    monkeypatch.setattr(stage_workers, "current_platform", ROCMOmniPlatform())
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "5")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5")
+    monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    spec = StageLaunchConfig(
+        stage_name="thinker",
+        role="follower",
+        tp_rank=1,
+        tp_size=2,
+        gpu_id=1,
+        factory_arg_defaults={"gpu_id": 1},
+        comm_config={"gpu_id": 1},
+    )
+    log = _RecordingLog()
+
+    stage_workers._prepare_accelerator_environment(spec, log)
+
+    assert spec.gpu_id == 0
+    assert spec.placement_gpu_id == 1
+    assert spec.factory_arg_defaults["gpu_id"] == 0
+    assert spec.comm_config["gpu_id"] == 0
+    assert os.environ["HIP_VISIBLE_DEVICES"] == "5"
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "5"
+    assert any("CUDA_VISIBLE_DEVICES=5" in message for message in log.messages)
+    assert get_gpu_startup_lock_path(spec.gpu_id).name.endswith("_gpu_5_startup.lock")
+
+
 def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> None:
     monkeypatch.delenv("SGLANG_TEST_STAGE_ENV", raising=False)
     spec = StageLaunchConfig(
@@ -247,6 +278,20 @@ def test_spawn_env_combines_stage_defaults_with_tp_visible_device(monkeypatch) -
 
     assert "SGLANG_TEST_STAGE_ENV" not in os.environ
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "3,4"
+
+
+def test_rocm_spawn_env_maps_rank_through_hip_visible_devices(monkeypatch) -> None:
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "3,5")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(stage_workers, "current_platform", ROCMOmniPlatform())
+
+    with _patched_spawn_env(_worker_spec(_tp_spec(gpu_id=1))):
+        assert os.environ["HIP_VISIBLE_DEVICES"] == "5"
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "5"
+        assert os.environ["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
+
+    assert os.environ["HIP_VISIBLE_DEVICES"] == "3,5"
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
 class _RecordingLog:
@@ -371,6 +416,40 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     assert [stage.scheduler.gpu_id for stage in stages] == [0, 0]
     assert set_device_calls == [0, 0]
     assert seen_gpu_ids == [0, 0]
+
+
+def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
+    """A TP child narrowed to one card locks through its local gpu_id.
+
+    The lock path resolves the physical card via CUDA_VISIBLE_DEVICES, so the
+    pre-narrowing placement id must not be used: it would index past the
+    single visible device.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    seen_gpu_ids: list[int] = []
+
+    @contextmanager
+    def _fake_lock(gpu_id: int):
+        seen_gpu_ids.append(gpu_id)
+        yield get_gpu_startup_lock_path(gpu_id)
+
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
+    spec = StageLaunchConfig(
+        stage_name="thinker",
+        role="follower",
+        tp_rank=1,
+        tp_size=2,
+        placement_gpu_id=1,
+        gpu_id=0,
+        factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+        factory_arg_defaults={"gpu_id": 0},
+    )
+
+    scheduler = stage_workers._construct_scheduler(spec, 0, _RecordingLog())
+
+    assert scheduler.gpu_id == 0
+    assert seen_gpu_ids == [0]
+    assert get_gpu_startup_lock_path(0).name.endswith("_gpu_4_startup.lock")
 
 
 def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
