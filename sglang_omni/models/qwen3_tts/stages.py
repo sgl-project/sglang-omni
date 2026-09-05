@@ -10,6 +10,7 @@ from typing import Any
 
 import torch
 
+from sglang_omni.models.qwen3_tts.backend import Qwen3TTSBackend, get_qwen3_tts_backend
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
@@ -239,9 +240,7 @@ def create_vocoder_executor(
     fused_snake_activation: bool = False,
     enable_stateful_codec_decoder: bool = False,
 ) -> SimpleScheduler:
-    from sglang.srt.utils.tensor_bridge import use_mlx
-
-    if use_mlx():
+    if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
         # Metal has neither CUDA graphs nor pinned staging; the MLX vocoder
         # decodes statefully per request instead of re-running a left-context
         # window, so the CUDA tuning knobs do not apply.

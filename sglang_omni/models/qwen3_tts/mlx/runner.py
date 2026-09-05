@@ -115,7 +115,7 @@ class Qwen3TTSMlxModelRunner:
         ensure_remote_code_allowed(model_path, self.trust_remote_code)
         logger.info("Loading native MLX Qwen3-TTS talker: %s", model_path)
         started = time.perf_counter()
-        self.model, _config = load_model(
+        self.model, _ = load_model(
             model_path,
             get_model_classes=lambda config: (Qwen3TTSTalkerModel, ModelConfig),
         )
