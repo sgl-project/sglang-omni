@@ -5621,6 +5621,80 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     assert talker._sub_sampled_has_unbounded_top_k is False
 
 
+def test_qwen3_tts_prepare_decode_buffers_stages_the_temperature_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    sampled_temperatures = [0.0, 1e-12, 9.999999e-6, 1e-5, 1.0000001e-5, 0.9]
+    sampled_rows = len(sampled_temperatures)
+    batch_size = sampled_rows + 1
+    vocab_size = 64
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(
+        num_code_groups=16,
+        code_predictor_config=SimpleNamespace(vocab_size=vocab_size),
+    )
+    talker._sub_temperature_tensor = torch.empty(batch_size, dtype=torch.float32)
+    talker._sub_top_p_tensor = torch.empty(batch_size, dtype=torch.float32)
+    talker._sub_top_k_tensor = torch.empty(batch_size, dtype=torch.long)
+    talker._semantic_sampling_seed_tensor = torch.empty(batch_size, dtype=torch.long)
+    talker._sub_sampling_seed_tensor = torch.empty(batch_size, dtype=torch.long)
+    talker._sub_do_sample_tensor = torch.empty(batch_size, dtype=torch.bool)
+    talker._sub_seed_offsets = torch.arange(1, 16, dtype=torch.long)
+
+    def _data(temperature: float, dosample: bool) -> Qwen3TTSSGLangRequestData:
+        return Qwen3TTSSGLangRequestData(
+            semantic_sampling_seed=1,
+            subtalker_dosample=dosample,
+            subtalker_temperature=temperature,
+            subtalker_top_p=1.0,
+            subtalker_top_k=50,
+            subtalker_sampling_seed=2,
+        )
+
+    requests = [
+        SimpleNamespace(data=_data(temperature, True))
+        for temperature in sampled_temperatures
+    ]
+    requests.append(SimpleNamespace(data=_data(1e-7, False)))
+
+    Qwen3TTSTalker.prepare_decode_buffers(talker, requests)
+
+    staged = talker._sub_temperature_tensor
+    expected = torch.tensor(sampled_temperatures, dtype=torch.float32).clamp_min(1e-5)
+    assert torch.equal(
+        staged[:sampled_rows].view(torch.int32), expected.view(torch.int32)
+    )
+    assert staged[sampled_rows].item() == 1.0
+
+    received: list[torch.Tensor] = []
+
+    def _record_logprobs(logprobs, seeds, positions):
+        del seeds, positions
+        received.append(logprobs.detach().clone())
+        return torch.zeros((logprobs.shape[0], 1), dtype=torch.long)
+
+    monkeypatch.setattr(sglang_model_module, "multinomial_with_seed", _record_logprobs)
+    pattern = torch.linspace(-1.0, 1.0, vocab_size, dtype=torch.float32)
+    logits = (
+        torch.tensor(sampled_temperatures, dtype=torch.float32).unsqueeze(1) * pattern
+    )
+    tokens = Qwen3TTSTalker._sample_subtalker_token_seeded(
+        talker,
+        logits,
+        sub_positions=torch.arange(sampled_rows, dtype=torch.long),
+    )
+
+    assert tokens.shape == (sampled_rows,)
+    (logprobs,) = received
+    top_scores, _ = torch.topk(logits / expected.unsqueeze(1), 50, dim=-1)
+    assert torch.isfinite(logprobs).all()
+    assert torch.allclose(logprobs, torch.log_softmax(top_scores, dim=-1), atol=1e-6)
+
+
 def test_qwen3_tts_prepare_decode_buffers_requires_owned_request_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
