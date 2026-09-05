@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -70,6 +71,14 @@ class _PackedFlowBatch:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_int_tuple(value: Any) -> tuple[int, ...]:
+    if isinstance(value, str):
+        value = json.loads(value)
+    if isinstance(value, int):
+        value = (value,)
+    return tuple(int(item) for item in value)
 
 
 def _flow_device_and_dtype(flow: Any) -> tuple[torch.device, torch.dtype]:
@@ -623,6 +632,10 @@ def create_vocoder_executor(
     flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
     enable_dit_torch_compile: bool = False,
+    enable_flow_npugraph: bool = False,
+    flow_npugraph_max_graphs: int = 8,
+    flow_npugraph_bucket_sizes: tuple[int, ...] = (),
+    flow_npugraph_warmup_buckets: tuple[int, ...] = (),
 ) -> SimpleScheduler:
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
@@ -634,6 +647,16 @@ def create_vocoder_executor(
             f"expected one of {sorted(_AUTOCAST_DTYPES)}"
         )
     compute_dtype = _AUTOCAST_DTYPES[dtype]
+    install_flow_npugraph = None
+    if enable_flow_npugraph:
+        from sglang_omni.models.fun_cosyvoice3.flow_npugraph import (
+            enable_flow_npugraph as install_flow_npugraph,
+        )
+        from sglang_omni.models.fun_cosyvoice3.flow_npugraph import (
+            prepare_flow_npugraph_environment,
+        )
+
+        prepare_flow_npugraph_environment()
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
         device=device,
@@ -641,6 +664,13 @@ def create_vocoder_executor(
     )
     if enable_dit_torch_compile:
         _compile_dit_backbone(flow, compute_dtype=compute_dtype)
+    if install_flow_npugraph is not None:
+        install_flow_npugraph(
+            flow,
+            max_graphs=flow_npugraph_max_graphs,
+            bucket_sizes=_normalize_int_tuple(flow_npugraph_bucket_sizes),
+            warmup_buckets=_normalize_int_tuple(flow_npugraph_warmup_buckets),
+        )
 
     vocoder = _CosyVoice3Vocoder(
         flow,
