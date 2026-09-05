@@ -1,0 +1,71 @@
+{
+  "run_id": "dots-seedtts-nonstream-1444-20260811-065202-411912000",
+  "status": "COMPLETE",
+  "source": {
+    "repository": "https://github.com/sgl-project/sglang-omni",
+    "code_base_commit": "71022250811d3e9e1a96e46f76306eed37a27de6",
+    "pull_request": "https://github.com/sgl-project/sglang-omni/pull/1444"
+  },
+  "runtime": {
+    "image": "hongccc/sglang-omni:dev",
+    "image_id": "sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101",
+    "image_created_at": "2026-08-05T05:25:13.880314656Z",
+    "dots_tts_version": "0.2.1"
+  },
+  "dataset": {
+    "repository": "zhaochenyang20/seed-tts-eval-arrow",
+    "revision": "27f4c1adee83b5b29b7c4b375f6b976324bda308",
+    "split": "en",
+    "full_sample_count": 1088
+  },
+  "model": "dots-studio/dots.tts-mf",
+  "hardware": "NVIDIA H200",
+  "hosts": [
+    "hyper00",
+    "hyper01"
+  ],
+  "allocation_policy": "free GPUs only, descending GPU id, excluding mapped reservations",
+  "stream": false,
+  "seed": 42,
+  "warmup_requests": 10,
+  "server_config": "examples/configs/dots_tts.yaml",
+  "max_running_requests": 16,
+  "cuda_graph_max_bs": 16,
+  "asr_model": "Qwen/Qwen3-ASR-1.7B",
+  "workers": [
+    {
+      "host": "hyper00",
+      "gpu": 7,
+      "container_local_gpu": 0,
+      "concurrency_sequence": [1, 16],
+      "samples_sequence": [50, 1088]
+    },
+    {
+      "host": "hyper00",
+      "gpu": 5,
+      "container_local_gpu": 1,
+      "concurrency_sequence": [2, 32],
+      "samples_sequence": [1088, 1088]
+    },
+    {
+      "host": "hyper01",
+      "gpu": 7,
+      "container_local_gpu": 0,
+      "concurrency_sequence": [4],
+      "samples_sequence": [1088]
+    },
+    {
+      "host": "hyper01",
+      "gpu": 6,
+      "container_local_gpu": 1,
+      "concurrency_sequence": [8],
+      "samples_sequence": [1088]
+    }
+  ],
+  "task_containers": {
+    "hyper00": "sglang-omni-jaxan-20260811-065202-413208000",
+    "hyper01": "sglang-omni-jaxan-20260811-065202-414470000"
+  },
+  "persistent_host_run_root": "/data02/jaxan/dots_seedtts_runs/dots-seedtts-nonstream-1444-20260811-065202-411912000",
+  "summary": "results-summary.json"
+}

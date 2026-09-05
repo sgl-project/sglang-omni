@@ -1,0 +1,130 @@
+{
+  "run_id": "dots-seedtts-stream-1444-20260811",
+  "status": "COMPLETE",
+  "source": {
+    "repository": "https://github.com/sgl-project/sglang-omni",
+    "code_base_commit": "7f5529ad8f8b0e3baff3391946b51474eec45832",
+    "benchmark_driver_commit": "49f0dd9eab148d8611125cbd611f20c883dcb16d"
+  },
+  "dataset": {
+    "repository": "zhaochenyang20/seed-tts-eval-arrow",
+    "revision": "27f4c1adee83b5b29b7c4b375f6b976324bda308",
+    "split": "en"
+  },
+  "model": "dots-studio/dots.tts-mf",
+  "asr_model": "Qwen/Qwen3-ASR-1.7B",
+  "hardware": "NVIDIA H200",
+  "stream": true,
+  "seed": 42,
+  "warmup_requests": 10,
+  "results": [
+    {
+      "concurrency": 1,
+      "host": "hyper00",
+      "physical_gpu_id": 7,
+      "samples": 50,
+      "completed": 50,
+      "failed": 0,
+      "wer_evaluated": 50,
+      "throughput_qps": 0.589,
+      "audio_throughput_s_per_s": 2.327,
+      "latency_mean_s": 1.698,
+      "rtf_mean": 0.4397,
+      "audio_ttfp_mean_s": 0.355,
+      "inter_chunk_mean_s": 0.1829,
+      "wer_corpus": 0.012411347517730497
+    },
+    {
+      "concurrency": 2,
+      "host": "hyper00",
+      "physical_gpu_id": 7,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "throughput_qps": 0.904,
+      "audio_throughput_s_per_s": 3.768,
+      "latency_mean_s": 2.212,
+      "rtf_mean": 0.5415,
+      "audio_ttfp_mean_s": 0.4405,
+      "inter_chunk_mean_s": 0.2324,
+      "wer_corpus": 0.01281085154483798
+    },
+    {
+      "concurrency": 4,
+      "host": "hyper00",
+      "physical_gpu_id": 6,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "throughput_qps": 1.342,
+      "audio_throughput_s_per_s": 5.596,
+      "latency_mean_s": 2.978,
+      "rtf_mean": 0.7288,
+      "audio_ttfp_mean_s": 0.6114,
+      "inter_chunk_mean_s": 0.3104,
+      "wer_corpus": 0.012308465209746294
+    },
+    {
+      "concurrency": 8,
+      "host": "hyper00",
+      "physical_gpu_id": 5,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "throughput_qps": 1.479,
+      "audio_throughput_s_per_s": 6.171,
+      "latency_mean_s": 5.406,
+      "rtf_mean": 1.3489,
+      "audio_ttfp_mean_s": 2.3405,
+      "inter_chunk_mean_s": 0.4018,
+      "wer_corpus": 0.012643389433140752
+    },
+    {
+      "concurrency": 16,
+      "host": "hyper01",
+      "physical_gpu_id": 7,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "throughput_qps": 1.489,
+      "audio_throughput_s_per_s": 6.21,
+      "latency_mean_s": 10.719,
+      "rtf_mean": 2.74,
+      "audio_ttfp_mean_s": 7.6436,
+      "inter_chunk_mean_s": 0.4034,
+      "wer_corpus": 0.012308465209746294
+    },
+    {
+      "concurrency": 32,
+      "host": "hyper01",
+      "physical_gpu_id": 6,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "throughput_qps": 1.443,
+      "audio_throughput_s_per_s": 6.017,
+      "latency_mean_s": 22.038,
+      "rtf_mean": 5.6885,
+      "audio_ttfp_mean_s": 18.7227,
+      "inter_chunk_mean_s": 0.4344,
+      "wer_corpus": 0.013145775768232438
+    }
+  ],
+  "conclusion": {
+    "throughput_saturation": "c=8 to c=16",
+    "best_latency_throughput_tradeoff": 8,
+    "c16_vs_c8_audio_throughput_pct": 0.63,
+    "c32_vs_c16_audio_throughput_pct": -3.11
+  },
+  "raw_artifacts": {
+    "status": "LOCAL_PERSISTENT_TRANSIENT",
+    "c1_host_path": "/data04/jaxan/dots_seedtts_runs/dots-seedtts-stream-1444-20260811/hyper00/c1",
+    "resume_host_root": "/data04/jaxan/dots_seedtts_runs/dots-seedtts-stream-1444-20260811/resume-20260811-022527-944075000",
+    "task_containers_removed_after_verification": true
+  }
+}

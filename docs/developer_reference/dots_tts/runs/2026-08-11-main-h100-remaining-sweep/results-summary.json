@@ -1,0 +1,213 @@
+{
+  "run_id": "dots-main-h100-remaining-20260811-085002-499693000",
+  "status": "COMPLETE",
+  "source_commit": "2b45073cc08f3bdb202248cb247f491bd0e059c2",
+  "hardware": "NVIDIA H100",
+  "runs": [
+    {
+      "concurrency": 1,
+      "physical_gpu_id": 0,
+      "samples": 50,
+      "completed": 50,
+      "failed": 0,
+      "throughput_qps": 0.953,
+      "latency_mean_s": 1.049,
+      "rtf_mean": 0.27,
+      "audio_throughput_s_per_s": 3.797
+    },
+    {
+      "concurrency": 1,
+      "physical_gpu_id": 1,
+      "samples": 50,
+      "completed": 50,
+      "failed": 0,
+      "throughput_qps": 0.917,
+      "latency_mean_s": 1.09,
+      "rtf_mean": 0.2801,
+      "audio_throughput_s_per_s": 3.654
+    },
+    {
+      "concurrency": 2,
+      "physical_gpu_id": 0,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "throughput_qps": 1.593,
+      "latency_mean_s": 1.255,
+      "rtf_mean": 0.3059,
+      "audio_throughput_s_per_s": 6.652
+    },
+    {
+      "concurrency": 2,
+      "physical_gpu_id": 1,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "throughput_qps": 1.519,
+      "latency_mean_s": 1.316,
+      "rtf_mean": 0.3216,
+      "audio_throughput_s_per_s": 6.334
+    },
+    {
+      "concurrency": 4,
+      "physical_gpu_id": 0,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "throughput_qps": 2.511,
+      "latency_mean_s": 1.591,
+      "rtf_mean": 0.3876,
+      "audio_throughput_s_per_s": 10.479
+    },
+    {
+      "concurrency": 4,
+      "physical_gpu_id": 1,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "throughput_qps": 2.475,
+      "latency_mean_s": 1.614,
+      "rtf_mean": 0.3928,
+      "audio_throughput_s_per_s": 10.334
+    },
+    {
+      "concurrency": 8,
+      "physical_gpu_id": 0,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "throughput_qps": 3.873,
+      "latency_mean_s": 2.063,
+      "rtf_mean": 0.5028,
+      "audio_throughput_s_per_s": 16.165
+    },
+    {
+      "concurrency": 8,
+      "physical_gpu_id": 1,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "throughput_qps": 3.877,
+      "latency_mean_s": 2.06,
+      "rtf_mean": 0.5014,
+      "audio_throughput_s_per_s": 16.18
+    }
+  ],
+  "aggregates": {
+    "1": {
+      "samples": 50,
+      "repeats": 2,
+      "throughput_qps": 0.935,
+      "latency_mean_s": 1.0695,
+      "rtf_mean": 0.27505,
+      "audio_throughput_s_per_s": 3.7255
+    },
+    "2": {
+      "samples": 1088,
+      "repeats": 2,
+      "throughput_qps": 1.556,
+      "latency_mean_s": 1.2855,
+      "rtf_mean": 0.31375,
+      "audio_throughput_s_per_s": 6.493
+    },
+    "4": {
+      "samples": 1088,
+      "repeats": 2,
+      "throughput_qps": 2.493,
+      "latency_mean_s": 1.6025,
+      "rtf_mean": 0.3902,
+      "audio_throughput_s_per_s": 10.4065
+    },
+    "8": {
+      "samples": 1088,
+      "repeats": 2,
+      "throughput_qps": 3.875,
+      "latency_mean_s": 2.0615,
+      "rtf_mean": 0.5021,
+      "audio_throughput_s_per_s": 16.1725
+    }
+  },
+  "complete_h100_ladder": [
+    {
+      "concurrency": 1,
+      "samples": 50,
+      "repeats": 2,
+      "throughput_qps": 0.935,
+      "latency_mean_s": 1.0695,
+      "rtf_mean": 0.27505,
+      "audio_throughput_s_per_s": 3.7255,
+      "qps_delta_vs_user_1393_percent": 5.65
+    },
+    {
+      "concurrency": 2,
+      "samples": 1088,
+      "repeats": 2,
+      "throughput_qps": 1.556,
+      "latency_mean_s": 1.2855,
+      "rtf_mean": 0.31375,
+      "audio_throughput_s_per_s": 6.493,
+      "qps_delta_vs_user_1393_percent": 3.18
+    },
+    {
+      "concurrency": 4,
+      "samples": 1088,
+      "repeats": 2,
+      "throughput_qps": 2.493,
+      "latency_mean_s": 1.6025,
+      "rtf_mean": 0.3902,
+      "audio_throughput_s_per_s": 10.4065,
+      "qps_delta_vs_user_1393_percent": 5.41
+    },
+    {
+      "concurrency": 8,
+      "samples": 1088,
+      "repeats": 2,
+      "throughput_qps": 3.875,
+      "latency_mean_s": 2.0615,
+      "rtf_mean": 0.5021,
+      "audio_throughput_s_per_s": 16.1725,
+      "qps_delta_vs_user_1393_percent": -0.54
+    },
+    {
+      "concurrency": 16,
+      "samples": 1088,
+      "repeats": 2,
+      "throughput_qps": 4.7595,
+      "latency_mean_s": 3.3435,
+      "rtf_mean": 0.81245,
+      "audio_throughput_s_per_s": 19.8585,
+      "qps_delta_vs_user_1393_percent": 4.72,
+      "source_run": "2026-08-11-pr1445-h100-ab"
+    },
+    {
+      "concurrency": 32,
+      "samples": 1088,
+      "repeats": 4,
+      "throughput_qps": 4.98825,
+      "latency_mean_s": 6.34425,
+      "rtf_mean": 1.59605,
+      "audio_throughput_s_per_s": 20.81825,
+      "qps_delta_vs_user_1393_percent": 7.83,
+      "source_run": "2026-08-11-pr1445-h100-ab"
+    }
+  ],
+  "comparison": {
+    "baseline": "User-provided PR #1393 table in the task conversation",
+    "throughput_delta_percent_by_concurrency": {
+      "1": 5.65,
+      "2": 3.18,
+      "4": 5.41,
+      "8": -0.54,
+      "16": 4.72,
+      "32": 7.83
+    },
+    "conclusion": "Current main improves five of six concurrency levels. C=8 is effectively flat at -0.54%, while c=32 is now the highest-throughput point at 4.988 req/s."
+  },
+  "raw_artifacts": {
+    "status": "LOCAL_PERSISTENT_TRANSIENT",
+    "host_root": "/data/jaxan/dots_seedtts_runs/dots-main-h100-remaining-20260811-085002-499693000",
+    "size": "3.7G",
+    "task_container_removed_after_verification": true,
+    "wer_rerun": false
+  }
+}

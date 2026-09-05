@@ -147,5 +147,6 @@ Supported Models
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
+   developer_reference/dots_tts/research_log.md
    developer_reference/rl_admin_control.md
    developer_reference/bump_version.md
