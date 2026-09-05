@@ -13,8 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
-from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
 from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
@@ -257,6 +255,8 @@ def _sample_independent_batched(
     # convention. Inputs MUST be contiguous fp32 for the flashinfer renorm kernels.
     probs = logits.float().softmax(dim=-1).reshape(B * N, V).contiguous()
     if top_k_buf is not None:
+        from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
+
         tk = (
             top_k_buf.view(B, 1)
             .expand(B, N)
@@ -267,6 +267,8 @@ def _sample_independent_batched(
         )
         probs = _fused_top_k_renorm(probs, tk)
     if top_p is not None:
+        from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
+
         tp = top_p.view(B, 1).expand(B, N).reshape(B * N).to(torch.float32).contiguous()
         probs = _fused_top_p_renorm(probs, tp)
 
