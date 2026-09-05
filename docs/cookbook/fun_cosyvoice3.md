@@ -149,6 +149,31 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Running the flow vocoder in its own process
+
+The three stages share one process by default. The flow vocoder holds most
+in-flight requests while the ONNX reference encoders are the busiest thread in
+that same interpreter, so on a saturated replica the two loops slow each other
+down. `FunCosyVoice3IsolatedVocoderPipelineConfig` puts the vocoder in its own
+process on the same GPU and declares the per-stage memory budgets that a shared
+GPU requires:
+
+```yaml
+config_cls: FunCosyVoice3IsolatedVocoderPipelineConfig
+model_path: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+```
+
+```bash
+sgl-omni serve --config fun_cosyvoice3_isolated_vocoder.yaml --port 8000
+```
+
+Setting `--vocoder.process vocoder` on the default config is not enough: two
+process groups on one GPU must each declare a footprint, and the default config
+declares none, so topology compilation refuses the launch. Measured on one H200
+at admission cap 16, this topology is worth about +30% throughput with
+bit-identical output; it costs one more CUDA context, and the AR engine runs on
+a declared 0.80 budget instead of the whole-card default.
+
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning

@@ -435,12 +435,15 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
+    total_gpu_memory_fraction: float | None = None,
 ) -> Any:
     from sglang_omni.models.fun_cosyvoice3.engine_builder import (
         FunCosyVoice3EngineBuilder,
     )
 
-    return FunCosyVoice3EngineBuilder().build(
+    return FunCosyVoice3EngineBuilder(
+        total_gpu_memory_fraction=total_gpu_memory_fraction
+    ).build(
         model_path,
         device=device,
         gpu_id=gpu_id,

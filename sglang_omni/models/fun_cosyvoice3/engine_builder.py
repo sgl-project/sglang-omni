@@ -27,9 +27,19 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     context_length = 4096
     model_arch_override = "FunCosyVoice3SGLangModel"
 
-    def __init__(self) -> None:
+    def __init__(self, *, total_gpu_memory_fraction: float | None = None) -> None:
         super().__init__()
         self._checkpoint_root: str | None = None
+        self.total_gpu_memory_fraction = total_gpu_memory_fraction
+
+    def infra_kwargs(self) -> dict[str, Any]:
+        # Note (Jiaxin Deng): without this the declared stage budget stops at the
+        # placement validator and KV sizing falls back to whatever the card happens to
+        # have free, so capacity would depend on which process loaded first. Emitted
+        # only when a budget is declared, so the single-process path is untouched.
+        if self.total_gpu_memory_fraction is None:
+            return {}
+        return {"total_gpu_memory_fraction": self.total_gpu_memory_fraction}
 
     def _blanken_dir(self) -> str:
         assert self._checkpoint_root is not None, "checkpoint_root not set"
