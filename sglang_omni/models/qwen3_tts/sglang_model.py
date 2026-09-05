@@ -1502,12 +1502,18 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             )
             cache_len += 1
 
-            sub_positions = self._sub_seed_positions(semantic_positions[:, pos])
+            sub_positions = (
+                self._sub_seed_positions(semantic_positions[:, pos])
+                if self._sub_has_sampled_rows
+                else None
+            )
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
                 next_code = self._sample_subtalker_token(
                     logits[:, -1, :],
-                    sub_positions=sub_positions[layer_idx],
+                    sub_positions=(
+                        None if sub_positions is None else sub_positions[layer_idx]
+                    ),
                 )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
                 codec_embedding = self.code_predictor.model.codec_embedding[layer_idx]

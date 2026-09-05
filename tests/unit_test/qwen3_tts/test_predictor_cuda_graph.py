@@ -252,6 +252,24 @@ def _run_forward(talker, layer0, hidden, positions):
 
 
 @pytest.mark.accelerator
+def test_greedy_prediction_reads_no_seed_state():
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    talker.prepare_decode_buffers(_uniform_requests(3, dosample=False))
+    layer0, hidden, positions = _step_inputs(3, device)
+    expected_codes, expected_embeds = _run_eager(talker, layer0, hidden, positions)
+
+    talker._sub_seed_offsets = None
+    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+
+    assert torch.equal(eager_codes, expected_codes)
+    assert torch.equal(eager_embeds, expected_embeds)
+    assert torch.equal(graph_codes, expected_codes)
+    assert torch.equal(graph_embeds, expected_embeds)
+
+
+@pytest.mark.accelerator
 @pytest.mark.parametrize("batch_size", [1, 2, 4, 8, 16])
 @pytest.mark.parametrize(
     "sampling_kwargs",
