@@ -1046,16 +1046,19 @@ workers, or changing process limits.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">health</span></code></p></td>
 <td><p>Probe interval, timeout, and transition thresholds</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">http_generation</span></code></p></td>
-<td><p>Chat request limits, trust domain, upstream timeouts, and pool settings</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">http</span></code></p></td>
+<td><p>Shared upstream connection pool and aggregate buffering budget</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">http_media</span></code></p></td>
-<td><p>Enabled media routes, request limits, trust domain, and upstream settings</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">http_generation</span></code></p></td>
+<td><p>Chat trust domain, request limits, and deadline</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">websocket</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">http_media</span></code></p></td>
+<td><p>Enabled media routes, trust domain, request limits, and deadline</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">websocket</span></code></p></td>
 <td><p>Speech and realtime routes with setup, connection, and close bounds</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">workers</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">workers</span></code></p></td>
 <td><p>Worker identity, endpoint, health path, and service profiles</p></td>
 </tr>
 </tbody>
@@ -1140,11 +1143,11 @@ limits, and timeouts from the expected workload and worker topology.</p>
 </tbody>
 </table>
 </div>
-<p>Generation requests use HTTP/1.1, JSON content type, no query string, and one
-valid <code class="docutils literal notranslate"><span class="pre">Content-Length</span></code>. A single <code class="docutils literal notranslate"><span class="pre">Expect:</span> <span class="pre">100-continue</span></code> is handled by the
-client connection and is not forwarded upstream. Ambiguous framing, transfer
-encoding, trailers, other expectations, content encoding, and oversized
-uploads are rejected before dispatch.</p>
+<p>Generation requests use HTTP/1.1, JSON content type, and no query string.
+Fixed-length and chunked request bodies are accepted. A single
+<code class="docutils literal notranslate"><span class="pre">Expect:</span> <span class="pre">100-continue</span></code> is handled by the client connection and is not forwarded
+upstream. Ambiguous framing, trailers, other expectations, unsupported content
+encoding, and oversized uploads are rejected before dispatch.</p>
 <p>A canonical <code class="docutils literal notranslate"><span class="pre">x-request-id</span></code> identifies each request. A valid caller value is
 preserved; otherwise the router generates one. The same value is sent to the
 worker and returned to the client.</p>
@@ -1155,8 +1158,10 @@ worker and returned to the client.</p>
 <h3>Request paths<a class="headerlink" href="#request-paths" title="Link to this heading">#</a></h3>
 <p>The direct path is available when every eligible replica in a trust-scoped
 cohort has the same concrete default model and compatible profile contract.
-The router selects a worker without inspecting the body and relays the incoming
-body as a backpressured stream.</p>
+Heterogeneous pools use the classified path. The optional
+<code class="docutils literal notranslate"><span class="pre">x-sglang-omni-route-model</span></code> and <code class="docutils literal notranslate"><span class="pre">x-sglang-omni-route-stream</span></code> headers are checked
+against the classified body and are not forwarded upstream. The router relays
+a direct request body as a backpressured stream.</p>
 <p>Requests that require body-owned routing facts reserve aggregate byte capacity,
 read the body once, and classify the model, content forms, media placement,
 input and output modalities, response format, and stream mode. Classification
@@ -1164,13 +1169,14 @@ runs on Tokio’s blocking pool with execution limited to the available CPU
 parallelism, while the aggregate buffered-byte budget bounds concurrent
 classifier memory. The original bytes are forwarded without reconstructing
 JSON or multipart content.</p>
-<p>The direct path is bounded by <code class="docutils literal notranslate"><span class="pre">streamed_request_max_bytes</span></code>. The classified path
-is bounded by <code class="docutils literal notranslate"><span class="pre">buffered_request_max_bytes</span></code> per request and
-<code class="docutils literal notranslate"><span class="pre">buffered_request_total_bytes</span></code> across concurrent requests. Their defaults are
-512 MiB, 8 MiB, and 256 MiB respectively. Requests without an explicit model
-return <code class="docutils literal notranslate"><span class="pre">ambiguous_model</span></code> when compatible workers do not share one default.
-Classified JSON follows the standard JSON number grammar; non-standard <code class="docutils literal notranslate"><span class="pre">NaN</span></code>
-and <code class="docutils literal notranslate"><span class="pre">Infinity</span></code> tokens are rejected.</p>
+<p>The direct path is bounded by each route’s <code class="docutils literal notranslate"><span class="pre">streamed_request_max_bytes</span></code>. The
+classified path is bounded by the route’s <code class="docutils literal notranslate"><span class="pre">buffered_request_max_bytes</span></code> per
+request and <code class="docutils literal notranslate"><span class="pre">http.buffered_request_total_bytes</span></code> across chat and media requests.
+Their defaults are 512 MiB, 8 MiB, and 256 MiB respectively. Chunked classified
+requests acquire the shared budget as bytes arrive. Requests without an
+explicit model return <code class="docutils literal notranslate"><span class="pre">ambiguous_model</span></code> when compatible workers do not share
+one default. Classified JSON follows the standard JSON number grammar;
+non-standard <code class="docutils literal notranslate"><span class="pre">NaN</span></code> and <code class="docutils literal notranslate"><span class="pre">Infinity</span></code> tokens are rejected.</p>
 <p>Classification completes before worker selection, so classification
 does not occupy an upstream connection.</p>
 </section>
@@ -1185,10 +1191,11 @@ concurrency to choose between the supported policies.</p>
 </section>
 <section id="admission-and-backpressure">
 <h3>Admission and backpressure<a class="headerlink" href="#admission-and-backpressure" title="Link to this heading">#</a></h3>
-<p>Global and per-service admission are fail-fast. One request owns its admission
-and worker-load guard until response EOF, upstream error, or downstream
-cancellation. The worker remains responsible for its execution and queue
-capacity.</p>
+<p>Global admission counts request envelopes. Per-service admission counts
+requests or sessions, except speech-batch admission, which counts batch items.
+Admission is fail-fast, and its permits and worker-load guard remain held until
+response EOF, upstream error, or downstream cancellation. The worker remains
+responsible for its execution and queue capacity.</p>
 <p>The router sends one upstream request through a shared HTTP/1.1 connection
 pool. Redirects, ambient proxies, retries, and automatic decompression are
 disabled. Request and response bodies use direct backpressure without a body
@@ -1205,22 +1212,30 @@ or process drain.</p>
 <section id="media-and-realtime-sessions">
 <h2>Media and Realtime Sessions<a class="headerlink" href="#media-and-realtime-sessions" title="Link to this heading">#</a></h2>
 <p>Media routes are enabled independently. Speech batches remain ordered and are
-never split; one worker atomically reserves capacity for the complete batch.
-Transcription and translation share a capacity class but require separate
-profile tasks.</p>
-<p>The router preserves validated JSON, text, SSE, encoded audio, raw PCM,
-sample-rate and channel metadata, usage, completion-token, and finish-reason
-contracts. It does not decode, transcode, or regenerate audio.</p>
+never split. Classified transcription and translation requests buffer the full
+multipart upload, so heterogeneous ASR deployments must size the buffered
+limits for their largest accepted recordings. Transcription and translation
+share a capacity class but require separate profile tasks.</p>
+<p>The router preserves the trusted worker’s response content type together with
+JSON, text, SSE, encoded audio, raw PCM, sample-rate and channel metadata,
+usage, completion-token, and finish-reason contracts. It does not decode,
+transcode, or regenerate audio.</p>
 <p>Speech and realtime WebSockets terminate both handshakes and pin one worker for
 the complete session. Each frame awaits its destination send, preserving frame
 type and order without relay tasks or application queues. Setup, connection,
 initial speech configuration, and close convergence use explicit bounds.
 Application-level idle behavior remains worker-owned.</p>
-<p>Managed voices have one explicit owner configured by
+<p>Uploaded voices have one explicit owner configured by
 <code class="docutils literal notranslate"><span class="pre">router.voice_owner_worker_id</span></code>. Voice CRUD and requests that depend on a stored
 voice are pinned to that worker. Stateless speech continues to use normal
 worker selection. The router does not store, replicate, or reconcile
-worker-local voice data.</p>
+worker-local voice data. <code class="docutils literal notranslate"><span class="pre">voice_name_policy</span> <span class="pre">=</span> <span class="pre">&quot;preset&quot;</span></code> declares names provided
+by the serving model. <code class="docutils literal notranslate"><span class="pre">voice_name_policy</span> <span class="pre">=</span> <span class="pre">&quot;uploaded&quot;</span></code> declares names resolved
+from worker-local voice state; hybrid pipelines should use <code class="docutils literal notranslate"><span class="pre">uploaded</span></code> so named
+requests are routed conservatively. A named-voice request is rejected when
+otherwise compatible profiles disagree on this policy.
+Qwen3-TTS CustomVoice profiles use <code class="docutils literal notranslate"><span class="pre">preset</span></code>; Qwen3-TTS Base, Higgs, and hybrid
+dots-style profiles use <code class="docutils literal notranslate"><span class="pre">uploaded</span></code>.</p>
 </section>
 <section id="health-and-readiness">
 <h2>Health and Readiness<a class="headerlink" href="#health-and-readiness" title="Link to this heading">#</a></h2>
@@ -1230,7 +1245,7 @@ Transport and upstream protocol failures can request an immediate coalesced
 probe. Application responses do not directly change worker health.</p>
 <p><code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/ready</span></code> returns <code class="docutils literal notranslate"><span class="pre">200</span></code> while the process is serving and every enabled
 generation, media, and WebSocket service has a compatible healthy worker.
-Readiness also requires the configured managed-voice owner to be healthy and
+Readiness also requires the configured uploaded-voice owner to be healthy and
 compatible. Current worker load does not change readiness.</p>
 </section>
 <section id="operations">
@@ -1343,21 +1358,24 @@ loopback sockets where transport behavior is part of the contract.</p>
 <td><p>Runtime assembly, routes, listener, and shutdown</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/worker_pool/</span></code></p></td>
-<td><p>Admission, health, profiles, policy selection, and capacity</p></td>
+<td><p>Admission, health, profiles, policy selection, and worker load</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/http_generation/</span></code></p></td>
-<td><p>Chat validation, classification, and relay</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/http_relay/</span></code></p></td>
+<td><p>Shared HTTP client, buffering, body adapters, and relay</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/http_media/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/http_generation/</span></code></p></td>
+<td><p>Chat validation and classification</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/http_media/</span></code></p></td>
 <td><p>Speech, batch, transcription, translation, and voices</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/websocket/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/websocket/</span></code></p></td>
 <td><p>Speech and realtime session setup and relay</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/operations.rs</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/operations.rs</span></code></p></td>
 <td><p>Models, metrics, and diagnostics</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tests/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tests/</span></code></p></td>
 <td><p>Process and protocol integration tests</p></td>
 </tr>
 </tbody>
