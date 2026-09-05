@@ -544,6 +544,7 @@ class PipelineConfig(BaseModel):
 
     architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
+    coordinator_factory: ClassVar[str | None] = None
     requires_model_capabilities: ClassVar[bool] = False
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
@@ -764,6 +765,10 @@ class PipelineConfig(BaseModel):
     def supports_audio_translation(self) -> bool:
         """Return whether this pipeline can serve /v1/audio/translations."""
         return False
+
+    def build_speech_realtime_handler(self) -> Any | None:
+        """Build an optional model-specific realtime speech handler."""
+        return None
 
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:

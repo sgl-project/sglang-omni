@@ -421,6 +421,14 @@ def test_speech_websocket_rejects_missing_initial_config() -> None:
     assert event["param"] == "type"
 
 
+def test_realtime_speech_endpoint_is_not_mounted_without_handler() -> None:
+    client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
+
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/v1/audio/speech/realtime"):
+            pass
+
+
 def test_speech_websocket_rejects_binary_client_frames() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 

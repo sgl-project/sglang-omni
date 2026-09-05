@@ -2753,8 +2753,6 @@ def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
     scheduler._backlogged_request_build_payloads = []
     scheduler.waiting_queue = []
     scheduler._abort_callback = None
-    scheduler._pending_stream_chunks = {}
-    scheduler._pending_stream_done = set()
     scheduler._pending_stream_ingress = {}
     scheduler._deferred_request_payloads = {}
     scheduler._dirty_deferred_request_ids = set()

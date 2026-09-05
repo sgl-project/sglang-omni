@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Control plane messages."""
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,8 @@ from sglang_omni.proto.kv_transfer import (
     KVTransferReadyMessage,
 )
 from sglang_omni.proto.request import StagePayload
+
+_MAX_WIRE_INT = (1 << 63) - 1
 
 
 @dataclass
@@ -170,6 +173,77 @@ class AbortMessage:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AbortMessage":
         return cls(request_id=d["request_id"])
+
+
+@dataclass(frozen=True)
+class InputUpdateMessage:
+    """Ordered token input targeting one already-submitted request."""
+
+    request_id: str
+    session_id: str
+    turn_id: str
+    seq_no: int
+    token_ids: tuple[int, ...] = ()
+    byte_count: int = 0
+    input_done: bool = False
+
+    def __post_init__(self) -> None:
+        for value, name in (
+            (self.request_id, "request_id"),
+            (self.session_id, "session_id"),
+            (self.turn_id, "turn_id"),
+        ):
+            _require_str(value, name)
+            if not value.strip():
+                raise ValueError(f"{name} must not be blank")
+        _require_wire_non_negative_int(self.seq_no, "seq_no")
+        _require_wire_non_negative_int(self.byte_count, "byte_count")
+        if not isinstance(self.token_ids, (list, tuple)):
+            raise TypeError("token_ids must be a list or tuple")
+        token_ids = tuple(self.token_ids)
+        for token_id in token_ids:
+            _require_wire_non_negative_int(token_id, "token_id")
+        object.__setattr__(self, "token_ids", token_ids)
+        _require_bool(self.input_done, "input_done")
+        if not token_ids and self.byte_count:
+            raise ValueError("a tokenless input update cannot retain queued bytes")
+
+    @property
+    def fingerprint(self) -> str:
+        digest = hashlib.blake2b(digest_size=16, person=b"omni-input-v1")
+        for value in (self.seq_no, self.byte_count, int(self.input_done)):
+            digest.update(value.to_bytes(8, byteorder="little", signed=False))
+        digest.update(len(self.token_ids).to_bytes(8, "little", signed=False))
+        for token_id in self.token_ids:
+            digest.update(token_id.to_bytes(8, byteorder="little", signed=False))
+        return digest.hexdigest()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "input_update",
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "seq_no": self.seq_no,
+            "token_ids": list(self.token_ids),
+            "byte_count": self.byte_count,
+            "input_done": self.input_done,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "InputUpdateMessage":
+        token_ids = d.get("token_ids", [])
+        if not isinstance(token_ids, (list, tuple)):
+            raise TypeError("input_update token_ids must be a list")
+        return cls(
+            request_id=d.get("request_id"),
+            session_id=d.get("session_id"),
+            turn_id=d.get("turn_id"),
+            seq_no=d.get("seq_no"),
+            token_ids=tuple(token_ids),
+            byte_count=d.get("byte_count", 0),
+            input_done=d.get("input_done", False),
+        )
 
 
 @dataclass
@@ -363,6 +437,7 @@ def parse_message(
     | KVTransferPrepareMessage
     | KVTransferReadyMessage
     | AbortMessage
+    | InputUpdateMessage
     | CompleteMessage
     | StreamMessage
     | SubmitMessage
@@ -382,6 +457,8 @@ def parse_message(
         return KVTransferReadyMessage.from_dict(d)
     elif msg_type == "abort":
         return AbortMessage.from_dict(d)
+    elif msg_type == "input_update":
+        return InputUpdateMessage.from_dict(d)
     elif msg_type == "complete":
         return CompleteMessage.from_dict(d)
     elif msg_type == "stream":
@@ -417,4 +494,11 @@ def _require_bool(value: Any, name: str) -> bool:
 def _require_non_negative_int(value: Any, name: str) -> int:
     if type(value) is not int or value < 0:
         raise TypeError(f"{name} must be a non-negative int")
+    return value
+
+
+def _require_wire_non_negative_int(value: Any, name: str) -> int:
+    value = _require_non_negative_int(value, name)
+    if value > _MAX_WIRE_INT:
+        raise ValueError(f"{name} exceeds the signed 64-bit wire range")
     return value

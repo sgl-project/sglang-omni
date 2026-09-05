@@ -421,6 +421,9 @@ async def _run_server(
     try:
         cl_kwargs = client_kwargs or {}
         client = Client(coordinator, **cl_kwargs)
+        speech_realtime_handler = await asyncio.to_thread(
+            pipeline_config.build_speech_realtime_handler
+        )
         app = create_app(
             client,
             model_name=model_name or pipeline_config.name,
@@ -451,6 +454,7 @@ async def _run_server(
             tts_batch_max_items=tts_batch_max_items,
             architectures=[pipeline_config.architecture],
             audio_chunking=pipeline_config.resolved_audio_chunking,
+            speech_realtime_handler=speech_realtime_handler,
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)

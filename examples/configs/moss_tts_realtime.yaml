@@ -1,0 +1,5 @@
+config_cls: MossTTSRealtimePipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-Realtime
+codec_model_path: OpenMOSS-Team/MOSS-Audio-Tokenizer
+vocoder_dtype: bfloat16
+cuda_graph: true

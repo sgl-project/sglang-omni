@@ -34,6 +34,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AbortMessage": ("sglang_omni.proto.messages", "AbortMessage"),
     "CompleteMessage": ("sglang_omni.proto.messages", "CompleteMessage"),
     "DataReadyMessage": ("sglang_omni.proto.messages", "DataReadyMessage"),
+    "InputUpdateMessage": ("sglang_omni.proto.messages", "InputUpdateMessage"),
     "OmniRequest": ("sglang_omni.proto.request", "OmniRequest"),
     "RequestState": ("sglang_omni.proto.request", "RequestState"),
     "StageInfo": ("sglang_omni.proto.stage", "StageInfo"),

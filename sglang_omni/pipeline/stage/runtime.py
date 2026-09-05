@@ -41,6 +41,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    InputUpdateMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -373,6 +374,8 @@ class Stage:
     async def _handle_message(self, msg: Any) -> None:
         if isinstance(msg, SubmitMessage):
             await self._on_submit(msg)
+        elif isinstance(msg, InputUpdateMessage):
+            await self._on_input_update(msg)
         elif isinstance(msg, DataAckMessage):
             self._comm.ack_transfer(msg)
         elif isinstance(msg, DataReadyMessage):
@@ -456,6 +459,42 @@ class Stage:
 
         payload = msg.data  # StagePayload from coordinator
         await self._execute(payload)
+
+    async def _on_input_update(self, msg: InputUpdateMessage) -> None:
+        request_id = msg.request_id
+        if request_id in self._aborted:
+            return
+        is_terminal = getattr(self.scheduler, "is_input_update_terminal", None)
+        if callable(is_terminal) and is_terminal(request_id):
+            return
+        if (
+            request_id not in self._active_requests
+            and not self._can_accept_stream_before_payload
+        ):
+            await self._send_failure(
+                request_id,
+                (
+                    f"Stage {self.name}: input update arrived before the request "
+                    "payload, but this stage is not configured to accept "
+                    "pre-payload stream data"
+                ),
+            )
+            return
+
+        self._active_requests.add(request_id)
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_input_received",
+            metadata={"from_stage": "coordinator", "kind": "input_update"},
+        )
+        self.scheduler.inbox.put(
+            IncomingMessage(
+                request_id=request_id,
+                type="input_update",
+                data=msg,
+            )
+        )
 
     async def _on_data_ready(
         self,

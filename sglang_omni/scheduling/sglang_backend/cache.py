@@ -33,11 +33,20 @@ def create_tree_cache(
     if server_args.disable_radix_cache:
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
-        return ChunkCache(params)
+        tree_cache = ChunkCache(params)
+    elif params.eviction_policy.lower() == "lru":
+        tree_cache = EvictHeapRadixCache(params)
+    else:
+        from sglang.srt.mem_cache.radix_cache import RadixCache
 
-    if params.eviction_policy.lower() == "lru":
-        return EvictHeapRadixCache(params)
+        tree_cache = RadixCache(params)
 
-    from sglang.srt.mem_cache.radix_cache import RadixCache
+    if (
+        getattr(server_args, "enable_streaming_session", False)
+        and not tree_cache.supports_streaming_session()
+    ):
+        from sglang.srt.session.streaming_session import StreamingSession
 
-    return RadixCache(params)
+        tree_cache = StreamingSession(tree_cache)
+
+    return tree_cache

@@ -6,6 +6,7 @@ import asyncio
 import signal
 from pathlib import Path
 from types import FrameType, SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
 from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+from sglang_omni.models.moss_tts_realtime.config import MossTTSRealtimePipelineConfig
 from sglang_omni.profiler.event_recorder import get_recorder
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
@@ -54,8 +56,17 @@ class _FakeCoordinator:
     async def run_completion_loop(self) -> None:
         await asyncio.Event().wait()
 
+    async def shutdown_stages(self) -> None:
+        return None
+
     async def stop(self) -> None:
         self.stopped = True
+
+
+class _RealtimeCoordinatorConfig(PipelineConfig):
+    coordinator_factory: ClassVar[str] = (
+        MossTTSRealtimePipelineConfig.coordinator_factory
+    )
 
 
 def _make_config(base_path: Path) -> PipelineConfig:
@@ -72,6 +83,45 @@ def _make_config(base_path: Path) -> PipelineConfig:
         ],
         endpoints=EndpointsConfig(base_path=str(base_path)),
     )
+
+
+@pytest.mark.asyncio
+async def test_mp_runner_selects_default_and_configured_coordinator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DefaultCoordinator(_FakeCoordinator):
+        pass
+
+    class RealtimeCoordinator(_FakeCoordinator):
+        pass
+
+    imported: list[str] = []
+
+    def fake_import_string(path: str):
+        imported.append(path)
+        return RealtimeCoordinator
+
+    monkeypatch.setattr(mp_runner, "Coordinator", DefaultCoordinator)
+    monkeypatch.setattr(mp_runner, "import_string", fake_import_string)
+    monkeypatch.setattr(mp_runner, "_build_stage_groups", lambda *args, **kwargs: [])
+
+    default_runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
+    await default_runner.start()
+    assert isinstance(default_runner.coordinator, DefaultCoordinator)
+    assert imported == []
+    await default_runner.stop()
+
+    realtime_config = _RealtimeCoordinatorConfig.model_validate(
+        _make_config(tmp_path).model_dump()
+    )
+    realtime_runner = mp_runner.MultiProcessPipelineRunner(realtime_config)
+    await realtime_runner.start()
+    assert isinstance(realtime_runner.coordinator, RealtimeCoordinator)
+    assert imported == [MossTTSRealtimePipelineConfig.coordinator_factory]
+    await realtime_runner.stop()
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.fixture(autouse=True)

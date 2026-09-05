@@ -313,6 +313,7 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     reset_calls: list[str] = []
     scheduler = object.__new__(OmniScheduler)
     scheduler.device = "cuda"
+    scheduler.tree_cache = SimpleNamespace(reset=lambda: reset_calls.append("tree"))
     OmniScheduler._init_upstream_compat_flags(
         scheduler,
         SimpleNamespace(
@@ -333,7 +334,6 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     )
     scheduler.disaggregation_mode = None
     scheduler.enable_hierarchical_cache = False
-    scheduler.tree_cache = SimpleNamespace(reset=lambda: reset_calls.append("tree"))
     scheduler.req_to_token_pool = SimpleNamespace(
         clear=lambda: reset_calls.append("req_pool")
     )

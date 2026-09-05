@@ -537,7 +537,12 @@ class MultiProcessPipelineRunner:
                 self._config,
                 logical_process_plan=prep.logical_process_plan,
             )
-            self._coordinator = Coordinator(
+            coordinator_cls = (
+                import_string(self._config.coordinator_factory)
+                if self._config.coordinator_factory
+                else Coordinator
+            )
+            self._coordinator = coordinator_cls(
                 completion_endpoint=prep.endpoints["completion"],
                 abort_endpoint=prep.endpoints["abort"],
                 entry_stage=prep.entry_stage,

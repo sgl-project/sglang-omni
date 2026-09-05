@@ -18,10 +18,88 @@ from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
+from sglang_omni.proto import (
+    DataReadyMessage,
+    InputUpdateMessage,
+    OmniRequest,
+    StagePayload,
+)
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.messages import OutgoingMessage
+from tests.unit_test.fixtures.pipeline_fakes import (
+    FakeScheduler,
+    RecordingStageControlPlane,
+)
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
+from tests.unit_test.pipeline.helpers import make_stage
+
+
+def _input_update_message(request_id: str = "request-1") -> InputUpdateMessage:
+    return InputUpdateMessage(
+        request_id=request_id,
+        session_id="session-1",
+        turn_id="turn-1",
+        seq_no=0,
+        token_ids=(7,),
+    )
+
+
+def test_stage_routes_input_update_to_scheduler_inbox() -> None:
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        stage = make_stage(
+            name="tts_engine",
+            scheduler=scheduler,
+            can_accept_stream_before_payload=True,
+        )
+        message = _input_update_message()
+
+        await stage._handle_message(message)
+
+        queued = scheduler.inbox.get_nowait()
+        assert queued.request_id == "request-1"
+        assert queued.type == "input_update"
+        assert queued.data is message
+        assert "request-1" in stage._active_requests
+
+    asyncio.run(_run())
+
+
+def test_stage_drops_input_update_for_scheduler_terminal_tombstone() -> None:
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        scheduler.is_input_update_terminal = lambda request_id: request_id == "done"
+        stage = make_stage(
+            name="tts_engine",
+            scheduler=scheduler,
+            can_accept_stream_before_payload=True,
+        )
+
+        await stage._handle_message(_input_update_message("done"))
+
+        assert scheduler.inbox.empty()
+        assert "done" not in stage._active_requests
+
+    asyncio.run(_run())
+
+
+def test_stage_rejects_unconfigured_pre_payload_input_update() -> None:
+    async def _run() -> None:
+        scheduler = FakeScheduler()
+        control_plane = RecordingStageControlPlane()
+        stage = make_stage(
+            name="ordinary_stage",
+            scheduler=scheduler,
+            control_plane=control_plane,
+        )
+
+        await stage._handle_message(_input_update_message())
+
+        assert scheduler.inbox.empty()
+        assert control_plane.completions[0].success is False
+        assert "before the request payload" in control_plane.completions[0].error
+
+    asyncio.run(_run())
 
 
 class _FakeControlPlane:

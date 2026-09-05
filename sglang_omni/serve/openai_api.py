@@ -8,6 +8,7 @@ Provides the following endpoints:
 - POST /v1/audio/speech/batch — Batch text-to-speech synthesis
 - WS   /v1/audio/speech/stream — Stateful TTS WebSocket streaming
 - POST /v1/audio/transcriptions — Speech-to-text transcription
+- WS   /v1/audio/speech/realtime — Incremental-input realtime TTS
 - GET  /v1/audio/voices      — List preset and uploaded TTS voices
 - POST /v1/audio/voices      — Upload a persistent TTS reference voice
 - DELETE /v1/audio/voices/{name} — Delete an uploaded TTS voice
@@ -192,6 +193,13 @@ def create_app(
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
+    speech_realtime_handler: (
+        Callable[
+            [WebSocket, Client, SpeechRequestValidator, str],
+            Awaitable[None],
+        ]
+        | None
+    ) = None,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -225,6 +233,8 @@ def create_app(
             ``/v1/audio/speech/batch``.
         audio_chunking: Long-audio chunking policy for ``/v1/audio/transcriptions``,
             declared by the pipeline config. None keeps chunking off.
+        speech_realtime_handler: Optional model-owned handler for
+            ``/v1/audio/speech/realtime``.
 
     Returns:
         Configured FastAPI application.
@@ -284,6 +294,8 @@ def create_app(
     _register_speech(app)
     _register_speech_batch(app)
     _register_speech_ws(app)
+    if speech_realtime_handler is not None:
+        _register_speech_realtime_ws(app, speech_realtime_handler)
     register_transcriptions(app)
     register_translations(app)
     if enable_realtime:
@@ -1398,6 +1410,24 @@ def _register_speech_ws(app: FastAPI) -> None:
             speech_service=app.state.speech_service,
         )
         await session.run()
+
+
+def _register_speech_realtime_ws(
+    app: FastAPI,
+    handler: Callable[
+        [WebSocket, Client, SpeechRequestValidator, str],
+        Awaitable[None],
+    ],
+) -> None:
+    @app.websocket("/v1/audio/speech/realtime")
+    async def speech_realtime(websocket: WebSocket) -> None:
+        await websocket.accept()
+        await handler(
+            websocket,
+            app.state.client,
+            app.state.speech_service,
+            f"speech_realtime_{uuid.uuid4().hex}",
+        )
 
 
 def _speech_pcm_chunk_bytes(

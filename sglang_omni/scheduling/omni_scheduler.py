@@ -38,6 +38,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.runtime_context import get_model, get_serving
+from sglang.srt.session.session_controller import SessionController
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.admission import QueueFullError
@@ -543,7 +544,6 @@ class OmniScheduler:
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []
         self.enable_overlap_mlx = False
-
         # Instance state upstream's Scheduler.__init__ sets. We
         # borrow upstream methods rather than inheriting, so anything they read
         # off ``self`` has to be mirrored here or __getattr__ raises.
@@ -563,11 +563,12 @@ class OmniScheduler:
         )
         # Upstream pool_stats_observer.streaming_session_count iterates
         # self.session_controller.sessions.values() during decode stats
-        # reporting. We don't host SGLang's interactive-session feature, so a
-        # stub with an empty sessions dict is sufficient.
+        # reporting. MOSS-TTS-Realtime also uses this controller to retain KV
+        # state across turns, so keep the real controller rather than a
+        # no-session compatibility stub.
         from types import SimpleNamespace
 
-        self.session_controller = SimpleNamespace(sessions={})
+        self.session_controller = SessionController(self.tree_cache)
         self.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
         self.load_snapshot_writer = None
         self.kv_events_publisher = SimpleNamespace(
@@ -807,8 +808,18 @@ class OmniScheduler:
                 self._on_stream_chunk(msg.request_id, msg.data)
             elif msg.type == "stream_done":
                 self._on_stream_done(msg.request_id)
+            elif msg.type == "input_update":
+                self._on_input_update(msg.request_id, msg.data)
 
         return new_reqs
+
+    def _on_input_update(self, request_id: str, message: Any) -> None:
+        del message
+        error = RuntimeError(
+            "this scheduler does not support active-request input updates"
+        )
+        self._emit_request_error(request_id, error)
+        self.abort(request_id)
 
     def _recv_scheduler_messages(self) -> list[IncomingMessage]:
         if self.tp_size == 1:
@@ -866,10 +877,20 @@ class OmniScheduler:
                 payload.prefetched_chunks = buffered_chunks
             pending_stream_done = ingress.done if ingress is not None else False
             payload.prefetched_stream_done = pending_stream_done
-            if not self._is_request_build_ready(
-                payload,
-                pending_stream_done=pending_stream_done,
-            ):
+            try:
+                request_build_ready = self._is_request_build_ready(
+                    payload,
+                    pending_stream_done=pending_stream_done,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "OmniScheduler: request readiness check failed for %s",
+                    req_id,
+                )
+                self._emit_request_error(req_id, exc)
+                self.abort(req_id)
+                continue
+            if not request_build_ready:
                 self._deferred_request_payloads[req_id] = payload
                 continue
             active_stage = _get_active_stage()
@@ -963,6 +984,17 @@ class OmniScheduler:
         )
         self._emit_request_error(req_id, QueueFullError())
         self.abort(req_id)
+
+    def _finalize_built_request(
+        self,
+        payload: Any,
+        pending_stream_done: bool,
+        req_data: Any,
+    ) -> Any:
+        """Synchronously finalize worker-built data before scheduler admission."""
+
+        del payload, pending_stream_done
+        return req_data
 
     def _stage_request_build_payloads(
         self, recv_reqs: list[Any]
@@ -1154,6 +1186,35 @@ class OmniScheduler:
         request_admission_lock_held: bool = False,
     ) -> None:
         req_id = payload.request_id
+
+        def finalize_if_live() -> tuple[bool, Any]:
+            if req_id in self._aborted_request_ids:
+                return False, req_data
+            finalized = self._finalize_built_request(
+                payload,
+                pending_stream_done,
+                req_data,
+            )
+            if finalized is None:
+                raise TypeError("_finalize_built_request() must return request data")
+            return True, finalized
+
+        try:
+            if request_admission_lock_held:
+                is_live, req_data = finalize_if_live()
+            else:
+                with self._request_admission_lock:
+                    is_live, req_data = finalize_if_live()
+        except Exception as exc:
+            logger.exception(
+                "OmniScheduler: request finalizer failed for %s",
+                req_id,
+            )
+            self._emit_request_error(req_id, exc)
+            self.abort(req_id)
+            return
+        if not is_live:
+            return
         self._deferred_request_payloads.pop(req_id, None)
         req = req_data.req
         self._normalize_req_token_arrays(req)
