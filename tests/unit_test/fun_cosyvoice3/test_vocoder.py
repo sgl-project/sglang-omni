@@ -11,6 +11,9 @@ import torch
 from sglang_omni.models.fun_cosyvoice3 import stages
 from sglang_omni.models.fun_cosyvoice3.config import FunCosyVoice3PipelineConfig
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
+    FunCosyVoice3StreamingVocoderScheduler,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
 
@@ -50,12 +53,112 @@ class _BatchCapableFakeFlow(torch.nn.Module):
         )
 
 
+class _FakeFlow(torch.nn.Module):
+    """CosyVoice-native Flow.inference(**kwargs) used by causal token2wav hops."""
+
+    def __init__(self):
+        super().__init__()
+        self.anchor = torch.nn.Parameter(torch.zeros(1))
+        self.calls = []
+        self.decoder = SimpleNamespace(estimator=_FakeEstimator())
+
+    def inference(self, **kwargs):
+        self.calls.append(kwargs)
+        token_count = kwargs["token"].shape[1]
+        return torch.ones(1, 80, token_count * 2), None
+
+
 def _payload(state: FunCosyVoice3State) -> StagePayload:
     return StagePayload(
         request_id="req-vocoder",
         request=OmniRequest(inputs="hello"),
         data=state.to_dict(),
     )
+
+
+def test_cosyvoice3_vocoder_does_not_pad_or_rescale_short_sequences() -> None:
+    flow = _FakeFlow()
+    hift = _FakeHiFT()
+    vocoder = stages._CosyVoice3Vocoder(flow, hift)
+
+    # note (guozhihao-224): token 0 is a valid FSQ speech token, not padding.
+    # Do not pad short sequences or apply speed inside HiFT.
+    wav = vocoder.token2wav(
+        token=torch.tensor([[0, 2]], dtype=torch.long),
+        prompt_token=torch.tensor([[4]], dtype=torch.int32),
+        prompt_feat=torch.zeros(1, 2, 80),
+        embedding=torch.ones(1, 192),
+    )
+
+    flow_call = flow.calls[0]
+    assert flow_call["token"].shape == (1, 2)
+    assert flow_call["token"].tolist() == [[0, 2]]
+    assert flow_call["token_len"].tolist() == [2]
+    assert flow_call["prompt_token_len"].tolist() == [1]
+    assert flow_call["prompt_feat_len"].tolist() == [2]
+    assert flow_call["finalize"] is True
+    assert flow_call["streaming"] is False
+    assert hift.calls[0][0].shape[-1] == 4
+    assert wav.device.type == "cpu"
+
+
+def test_cosyvoice3_vocoder_raises_on_empty_token_sequence() -> None:
+    vocoder = stages._CosyVoice3Vocoder(_FakeFlow(), _FakeHiFT())
+
+    with pytest.raises(RuntimeError, match="no usable speech tokens"):
+        vocoder.token2wav(
+            token=torch.zeros(1, 0, dtype=torch.long),
+            prompt_token=torch.tensor([[4]], dtype=torch.int32),
+            prompt_feat=torch.zeros(1, 2, 80),
+            embedding=torch.ones(1, 192),
+        )
+
+
+def test_cosyvoice3_token2wav_chunk_slices_mel_and_hift_delta() -> None:
+    flow = _FakeFlow()
+    vocoder = stages._CosyVoice3Vocoder(flow, _FakeHiFT())
+    token = torch.arange(28, dtype=torch.int32).unsqueeze(0)
+    prompt_token = torch.zeros(1, 0, dtype=torch.int32)
+    prompt_feat = torch.zeros(1, 0, 80)
+    embedding = torch.ones(1, 192)
+
+    delta, cached_mel, speech_offset = vocoder.token2wav_chunk(
+        token=token,
+        prompt_token=prompt_token,
+        prompt_feat=prompt_feat,
+        embedding=embedding,
+        token_offset=0,
+        streaming=True,
+        finalize=False,
+        hift_mel=None,
+        speech_offset=0,
+    )
+
+    assert flow.calls[0]["streaming"] is True
+    assert flow.calls[0]["finalize"] is False
+    assert cached_mel.shape[-1] == 56
+    assert speech_offset == 56
+    assert delta.shape[-1] == 56
+
+    tail, cached_mel, speech_offset = vocoder.token2wav_chunk(
+        token=token,
+        prompt_token=prompt_token,
+        prompt_feat=prompt_feat,
+        embedding=embedding,
+        token_offset=25,
+        streaming=False,
+        finalize=True,
+        hift_mel=cached_mel,
+        speech_offset=speech_offset,
+    )
+
+    assert flow.calls[1]["streaming"] is False
+    assert flow.calls[1]["finalize"] is True
+    # note (guozhihao-224): leftover hop slices from offset 25*2, concat onto
+    # the 56-frame cache; HiFT emits the 6 new samples.
+    assert cached_mel.shape[-1] == 62
+    assert speech_offset == 62
+    assert tail.shape[-1] == 6
 
 
 def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
@@ -343,7 +446,7 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     scheduler.inbox.put(second)
 
     assert scheduler._max_batch_cost == stages._DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
-    assert scheduler._collect_batch(first) == [first]
+    assert scheduler._collect_new_request_batch(first) == [first]
     assert scheduler._next_message() == second
 
 
@@ -377,7 +480,7 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         flow_batch_admission_frames=200,
     )
 
-    assert isinstance(scheduler, stages.SimpleScheduler)
+    assert isinstance(scheduler, FunCosyVoice3StreamingVocoderScheduler)
     assert scheduler._max_batch_size == 6
     assert scheduler._max_batch_wait_s == pytest.approx(0.007)
     assert scheduler._max_batch_cost == 200

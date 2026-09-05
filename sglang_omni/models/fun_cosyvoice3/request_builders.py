@@ -7,7 +7,7 @@ import hashlib
 import json
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -18,6 +18,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.streaming import build_cosyvoice3_stream_metadata
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -163,6 +164,14 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     output_codes: list[torch.Tensor] = None
     prompt_input_embeds: torch.Tensor | None = None
     engine_start_s: float = 0.0
+    stream_metadata: dict[str, Any] | None = None
+    stream_code_buffer: list[torch.Tensor] = field(default_factory=list)
+    stream_code_seen: int = 0
+    stream_code_next_flush: int = 0
+    stream_prompt_sent: bool = False
+    flow_prompt_speech_token: torch.Tensor | None = None
+    flow_prompt_speech_feat: torch.Tensor | None = None
+    flow_embedding: torch.Tensor | None = None
 
     def __post_init__(self):
         if self.output_codes is None:
@@ -798,9 +807,13 @@ def build_sglang_cosyvoice3_request(
         req=req,
         prompt_input_embeds=prepared.prompt_input_embeds,
         engine_start_s=time.perf_counter(),
+        flow_prompt_speech_token=prepared.flow_prompt_speech_token,
+        flow_prompt_speech_feat=prepared.flow_prompt_speech_feat,
+        flow_embedding=prepared.flow_embedding,
     )
     data.input_embeds_are_projected = True
     data.stage_payload = payload
+    data.stream_metadata = build_cosyvoice3_stream_metadata(payload)
     return data
 
 

@@ -422,6 +422,8 @@ def test_preprocess_and_build_request_share_prepared_state(
     # the explicit max_new_tokens=5.
     assert request_data.req.sampling_params.min_new_tokens == 4
     assert request_data.req._input_embeds_are_projected is True
+    assert request_data.stream_metadata is None
+    assert request_data.flow_prompt_speech_token.tolist() == [[40]]
     with pytest.raises(RuntimeError, match="state is missing"):
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
 
@@ -562,6 +564,45 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
         for request_id in request_ids:
             cleanup_prepared_cosyvoice3_request(request_id)
         assert not scheduler_thread.is_alive()
+
+
+def test_build_request_attaches_stream_metadata_when_stream_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: torch.zeros(1600).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: torch.zeros(2400).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 2, 80),
+    )
+    model = _FakeModel()
+    set_cosyvoice3_preprocessing_context(
+        model=model,
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_FakeSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+    )
+    payload = _payload(
+        {"text": "hello", "ref_audio": "reference.wav"},
+        params={"stream": True, "max_new_tokens": 8},
+    )
+    prepared_payload = preprocess_cosyvoice3_payload(payload)
+    request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
+
+    assert request_data.stream_metadata == {
+        "modality": "audio_codes",
+        "stream": True,
+    }
+    assert request_data.flow_embedding.tolist() == [[2.0] * 192]
 
 
 def test_build_request_derives_generation_length_contract_when_unset(

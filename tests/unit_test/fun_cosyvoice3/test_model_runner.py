@@ -8,6 +8,9 @@ import pytest
 import torch
 
 from sglang_omni.models.fun_cosyvoice3.model_runner import FunCosyVoice3ModelRunner
+from sglang_omni.models.fun_cosyvoice3.request_builders import (
+    CosyVoice3SGLangRequestData,
+)
 from sglang_omni.models.fun_cosyvoice3.sglang_model import (
     EOS_ID,
     VOCAB_SIZE,
@@ -17,9 +20,10 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import (
 
 def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner._outbox = None
     requests = [
-        SimpleNamespace(data=SimpleNamespace(output_codes=[])),
-        SimpleNamespace(data=SimpleNamespace(output_codes=[])),
+        SimpleNamespace(data=CosyVoice3SGLangRequestData()),
+        SimpleNamespace(data=CosyVoice3SGLangRequestData()),
     ]
     result = SimpleNamespace(next_token_ids=torch.tensor([[EOS_ID], [13]]))
 
@@ -32,7 +36,8 @@ def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
 
 def test_cosyvoice3_runner_skips_all_control_tokens() -> None:
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    requests = [SimpleNamespace(data=SimpleNamespace(output_codes=[]))]
+    runner._outbox = None
+    requests = [SimpleNamespace(data=CosyVoice3SGLangRequestData())]
 
     runner._collect_tokens(
         SimpleNamespace(next_token_ids=torch.tensor([VOCAB_SIZE + 3])),

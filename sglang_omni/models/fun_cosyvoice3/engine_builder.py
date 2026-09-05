@@ -110,3 +110,6 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
 
     def make_abort_callback(self) -> Any | None:
         return request_builders.cleanup_prepared_cosyvoice3_request
+
+    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+        model_runner.set_stream_outbox(scheduler.outbox)

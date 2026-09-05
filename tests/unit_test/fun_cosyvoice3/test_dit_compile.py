@@ -56,8 +56,11 @@ def test_compile_dit_backbone_compiles_estimator_forward_dynamic(monkeypatch) ->
     assert compile_calls[0]["fn"] == original_forward
     # Bound-method compile keeps parameter names stable (no _orig_mod prefix).
     assert set(dict(estimator.named_parameters())) == param_names
-    # Warmup runs the CFG [2, 80, T] signature.
-    assert forward_shapes == [((2, 80, 16), (2, 1, 16), (2, 80, 16), False)] * 3
+    # Warmup runs the CFG [2, 80, T] signature for buffered and causal hops.
+    assert forward_shapes == (
+        [((2, 80, 16), (2, 1, 16), (2, 80, 16), False)] * 3
+        + [((2, 80, 16), (2, 1, 16), (2, 80, 16), True)] * 3
+    )
 
 
 def test_compile_dit_backbone_warmup_matches_serving_grad_mode(monkeypatch) -> None:
@@ -77,7 +80,7 @@ def test_compile_dit_backbone_warmup_matches_serving_grad_mode(monkeypatch) -> N
     monkeypatch.setattr(torch, "compile", _fake_compile)
 
     stages._compile_dit_backbone(flow, warmup_mel_frames=16, warmup_steps=2)
-    assert modes == [(True, True)] * 2
+    assert modes == [(True, True)] * 4
 
 
 def test_compile_dit_backbone_skips_non_module_estimator(monkeypatch) -> None:

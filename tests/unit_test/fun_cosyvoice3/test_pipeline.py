@@ -32,7 +32,10 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
     assert type(config).stage_config_cls("tts_engine").engine_stage
     assert config.process_local_edges() == frozenset({("preprocessing", "tts_engine")})
-    assert CAPABILITIES.supports_streaming_vocoder is False
+    assert CAPABILITIES.supports_streaming_vocoder is True
+    stages_by_name = {stage.name: stage for stage in config.stages}
+    assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
+    assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
 
     vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
     assert vocoder.factory.dtype == "bfloat16"
