@@ -15,8 +15,8 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tokio_tungstenite::tungstenite::error::CapacityError;
-use tracing::error;
 
+use crate::classification::ClassificationExecutor;
 use crate::config::{Config, WebsocketConfig};
 use crate::error::HttpFault;
 use crate::request_id::CanonicalRequestId;
@@ -65,6 +65,7 @@ pub(crate) struct WebsocketGateway {
     policy: WebsocketConfig,
     speech: Option<TrustDomain>,
     realtime: Option<TrustDomain>,
+    classifier: Arc<ClassificationExecutor>,
     tracker: SessionTracker,
 }
 
@@ -72,6 +73,7 @@ impl WebsocketGateway {
     pub(crate) fn build(
         config: &Config,
         pool: Arc<WorkerPool>,
+        classifier: Arc<ClassificationExecutor>,
         tracker: SessionTracker,
     ) -> Option<Arc<Self>> {
         let policy = config.websocket.clone()?;
@@ -85,6 +87,7 @@ impl WebsocketGateway {
                 .realtime
                 .as_ref()
                 .map(|route| TrustDomain::new(route.trust_domain.clone())),
+            classifier,
             policy,
             tracker,
         }))
@@ -188,10 +191,12 @@ async fn run_speech(
     let classified = setup_until(
         &mut drain,
         classification_deadline,
-        classify_blocking(move || {
-            let requirement = classify_speech(config_text.as_bytes(), &classify_trust);
-            (config_text, requirement)
-        }),
+        gateway
+            .classifier
+            .classify(classification_deadline, move || {
+                let requirement = classify_speech(config_text.as_bytes(), &classify_trust);
+                Ok((config_text, requirement))
+            }),
     )
     .await;
     let (config_text, requirement) = match classified {
@@ -206,8 +211,7 @@ async fn run_speech(
             .await;
             return;
         }
-        Ok(Err(source)) => {
-            error!(error = %source, "classification task failed");
+        Ok(Err(_fault)) => {
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -769,15 +773,6 @@ fn dispatch_close(error: DispatchError) -> Message {
     }
 }
 
-async fn classify_blocking<T>(
-    operation: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, tokio::task::JoinError>
-where
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(operation).await
-}
-
 fn classify_speech(bytes: &[u8], trust: &TrustDomain) -> Result<RouteRequirement, ()> {
     let fields = parse_speech_config(bytes)?;
     let model = match fields.model.clone().flatten() {
@@ -1053,15 +1048,16 @@ mod tests {
     use axum::http::Uri;
     use tokio::sync::watch;
 
+    use crate::classification::ClassificationExecutor;
     use crate::worker_pool::{
         ModelSelection, ProfileRequirement, ReferenceForm, SpeechResponseFormat, SpeechTask,
         StreamMode, TrustDomain,
     };
 
     use super::{
-        DrainState, EventKind, MAX_MESSAGE_BYTES, SetupTermination, classify_blocking,
-        is_speech_setup_event, parse_event_kind, parse_speech_config, realtime_model,
-        reference_forms, setup_until, speech_requirement, websocket_message_too_large,
+        DrainState, EventKind, MAX_MESSAGE_BYTES, SetupTermination, is_speech_setup_event,
+        parse_event_kind, parse_speech_config, realtime_model, reference_forms, setup_until,
+        speech_requirement, websocket_message_too_large,
     };
 
     #[tokio::test]
@@ -1074,9 +1070,10 @@ mod tests {
         let result = setup_until(
             &mut drain,
             deadline,
-            classify_blocking(move || {
+            ClassificationExecutor::for_test(1).classify(deadline, move || {
                 entered_tx.send(()).expect("classifier started");
                 release_rx.recv().expect("release classifier");
+                Ok(())
             }),
         )
         .await;
