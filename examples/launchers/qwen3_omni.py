@@ -58,6 +58,14 @@ Examples:
       --prompt "Read me a bedtime story." --output audio.wav
 """
 
+_DEFAULT_COLOCATED_MEMORY_BUDGETS = {
+    "image_encoder": 0.025,
+    "audio_encoder": 0.025,
+    "thinker": 0.75,
+    "talker_ar": 0.12,
+    "code2wav": 0.02,
+}
+
 
 def _parse_thinker_tp_gpu_list(spec: str, tp_size: int) -> list[int]:
     try:
@@ -84,7 +92,8 @@ def _resolve_speech_mem_fractions(
     global_mem_fraction_static: float | None,
     thinker_mem_fraction_static: float | None,
     talker_mem_fraction_static: float | None,
-) -> None:
+    typed_runtime: bool = False,
+) -> tuple[float | None, float | None]:
     values = (
         ("--mem-fraction-static", global_mem_fraction_static),
         ("--thinker-mem-fraction-static", thinker_mem_fraction_static),
@@ -102,18 +111,38 @@ def _resolve_speech_mem_fractions(
         if talker_mem_fraction_static is not None
         else global_mem_fraction_static
     )
-    if thinker_value is not None:
-        apply_stage_factory_updates(
-            config,
-            stage_name="thinker",
-            server_arg_updates={"mem_fraction_static": thinker_value},
-        )
-    if talker_value is not None:
-        apply_stage_factory_updates(
-            config,
-            stage_name="talker_ar",
-            server_arg_updates={"mem_fraction_static": talker_value},
-        )
+    for stage_name, value in (
+        ("thinker", thinker_value),
+        ("talker_ar", talker_value),
+    ):
+        if value is None:
+            continue
+        if typed_runtime:
+            stage = next(stage for stage in config.stages if stage.name == stage_name)
+            stage.runtime.sglang_server_args.mem_fraction_static = value
+        else:
+            apply_stage_factory_updates(
+                config,
+                stage_name=stage_name,
+                server_arg_updates={"mem_fraction_static": value},
+            )
+    return thinker_value, talker_value
+
+
+def _set_colocated_memory_budgets(
+    config: Any,
+    *,
+    thinker_mem_fraction_static: float | None,
+    talker_mem_fraction_static: float | None,
+) -> None:
+    budgets = dict(_DEFAULT_COLOCATED_MEMORY_BUDGETS)
+    if thinker_mem_fraction_static is not None:
+        budgets["thinker"] = thinker_mem_fraction_static
+    if talker_mem_fraction_static is not None:
+        budgets["talker_ar"] = talker_mem_fraction_static
+    for stage in config.stages:
+        if stage.name in budgets:
+            stage.runtime.resources.total_gpu_memory_fraction = budgets[stage.name]
 
 
 def _build_qwen_text_server_parser() -> argparse.ArgumentParser:
@@ -426,12 +455,19 @@ def launch_qwen_speech_server(args: argparse.Namespace) -> None:
 
     set_stage_gpu(config, "talker_ar", gpu_talker)
     set_stage_gpu(config, "code2wav", gpu_code2wav)
-    _resolve_speech_mem_fractions(
+    thinker_mem_fraction, talker_mem_fraction = _resolve_speech_mem_fractions(
         config,
         global_mem_fraction_static=args.mem_fraction_static,
         thinker_mem_fraction_static=args.thinker_mem_fraction_static,
         talker_mem_fraction_static=args.talker_mem_fraction_static,
+        typed_runtime=args.colocated,
     )
+    if args.colocated:
+        _set_colocated_memory_budgets(
+            config,
+            thinker_mem_fraction_static=thinker_mem_fraction,
+            talker_mem_fraction_static=talker_mem_fraction,
+        )
     if args.thinker_max_seq_len is not None:
         updates = {"max_seq_len": int(args.thinker_max_seq_len)}
         apply_stage_factory_updates(config, stage_name="thinker", updates=updates)

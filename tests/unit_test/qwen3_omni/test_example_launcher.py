@@ -16,6 +16,7 @@ from examples.launchers.qwen3_omni import _parse_thinker_tp_gpu_list
 from examples.launchers.qwen3_omni import (
     launch_qwen_speech_server as _launch_speech_server,
 )
+from sglang_omni.config import build_stage_placement_plan
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 
 _EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
@@ -474,6 +475,77 @@ def test_colocated_defaults_use_thinker_gpu_for_gpu_stages(mock_launch_server):
     assert _stage(config, "thinker").gpu == 0
     assert _stage(config, "talker_ar").gpu == 0
     assert _stage(config, "code2wav").gpu == 0
+
+
+def test_colocated_defaults_populate_typed_memory_budgets(mock_launch_server):
+    mock_launch_server.side_effect = lambda config, **_: build_stage_placement_plan(
+        config
+    )
+
+    _launch_speech_server(_make_args(colocated=True))
+
+    config = mock_launch_server.call_args[0][0]
+    budgets = {
+        stage_name: _stage(
+            config, stage_name
+        ).runtime.resources.total_gpu_memory_fraction
+        for stage_name in (
+            "image_encoder",
+            "audio_encoder",
+            "thinker",
+            "talker_ar",
+            "code2wav",
+        )
+    }
+    assert budgets == {
+        "image_encoder": pytest.approx(0.025),
+        "audio_encoder": pytest.approx(0.025),
+        "thinker": pytest.approx(0.75),
+        "talker_ar": pytest.approx(0.12),
+        "code2wav": pytest.approx(0.02),
+    }
+    plan = build_stage_placement_plan(config)
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
+    assert (
+        _stage(config, "thinker").runtime.sglang_server_args.mem_fraction_static is None
+    )
+    assert (
+        _stage(config, "talker_ar").runtime.sglang_server_args.mem_fraction_static
+        is None
+    )
+
+
+def test_colocated_mem_fractions_update_typed_budgets(mock_launch_server):
+    mock_launch_server.side_effect = lambda config, **_: build_stage_placement_plan(
+        config
+    )
+    args = _make_args(
+        colocated=True,
+        thinker_mem_fraction_static=0.55,
+        talker_mem_fraction_static=0.20,
+    )
+
+    _launch_speech_server(args)
+
+    config = mock_launch_server.call_args[0][0]
+    thinker = _stage(config, "thinker")
+    talker = _stage(config, "talker_ar")
+    assert thinker.runtime.resources.total_gpu_memory_fraction == pytest.approx(0.55)
+    assert thinker.runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.55)
+    assert talker.runtime.resources.total_gpu_memory_fraction == pytest.approx(0.20)
+    assert talker.runtime.sglang_server_args.mem_fraction_static == pytest.approx(0.20)
+
+
+def test_colocated_global_mem_fraction_rejects_overcommit(mock_launch_server):
+    mock_launch_server.side_effect = lambda config, **_: build_stage_placement_plan(
+        config
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="total_gpu_memory_fraction=1.070 exceeds placement limit 1.000",
+    ):
+        _launch_speech_server(_make_args(colocated=True, mem_fraction_static=0.5))
 
 
 def test_colocated_rejects_conflicting_stage_gpu(mock_launch_server):
