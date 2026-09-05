@@ -42,6 +42,7 @@ class StreamingSimpleScheduler:
     _can_batch_stream_chunks: bool = False
     _stream_chunk_batch_max: int | None = None
     _stream_chunk_batch_distinct_requests: bool = False
+    supports_external_input_stream: bool = False
 
     def __init__(
         self,
@@ -53,8 +54,13 @@ class StreamingSimpleScheduler:
         request_cost_fn: Callable[[Any], int] | None = None,
         max_batch_cost: int | None = None,
         abort_callback: Callable[[str], None] | None = None,
+        max_pending_messages: int = 0,
     ) -> None:
-        self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
+        if max_pending_messages < 0:
+            raise ValueError("max_pending_messages must be >= 0")
+        self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue(
+            maxsize=max_pending_messages
+        )
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = True
 

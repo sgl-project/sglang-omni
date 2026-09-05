@@ -56,6 +56,8 @@ logger = logging.getLogger(__name__)
 
 _SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
 _OUTBOX_DRAIN_BATCH_SIZE = 64
+_EXTERNAL_INPUT_ENQUEUE_TIMEOUT_S = 1.0
+_EXTERNAL_INPUT_ENQUEUE_RETRY_S = 0.005
 
 GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
@@ -155,6 +157,8 @@ class Stage:
         self._aborted: set[str] = set()
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
+        self._external_input_next_chunk_ids: dict[str, int] = {}
+        self._external_input_done: set[str] = set()
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
         self._first_stream_chunk_seen: set[str] = set()
         self._local_stream_targets: dict[str, set[str]] = {}
@@ -311,6 +315,8 @@ class Stage:
             await self._comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
+        self._external_input_next_chunk_ids.clear()
+        self._external_input_done.clear()
         logger.info("Stage %s stopped", self.name)
         if cleanup_error is not None:
             raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
@@ -443,8 +449,18 @@ class Stage:
         request_id = msg.request_id
         if request_id in self._aborted:
             return
+        if msg.external_input_stream:
+            validation_error = self._external_input_start_validation_error()
+            if validation_error is not None:
+                await self._send_failure(request_id, validation_error)
+                return
         self._record_replica_bindings(request_id, msg.replica_bindings)
         self._active_requests.add(request_id)
+        if msg.external_input_stream:
+            if self._stream_queue is None:
+                self._stream_queue = StreamQueue()
+            self._external_input_next_chunk_ids[request_id] = 0
+            self._external_input_done.discard(request_id)
         if self._stream_queue is not None and not self._stream_queue.has(request_id):
             self._stream_queue.open(request_id)
         _emit_event(
@@ -455,7 +471,36 @@ class Stage:
         )
 
         payload = msg.data  # StagePayload from coordinator
-        await self._execute(payload)
+        if msg.external_input_stream and isinstance(payload, StagePayload):
+            payload.external_input_stream = True
+        try:
+            await self._execute(
+                payload, external_input_stream=msg.external_input_stream
+            )
+        except Exception as exc:
+            if not msg.external_input_stream:
+                raise
+            await self._fail_external_input_stream(
+                request_id, f"failed to start: {_error_text(exc)}"
+            )
+
+    def _external_input_start_validation_error(self) -> str | None:
+        if self._comm.tp_size != 1:
+            return (
+                f"Stage {self.name} external input streams currently require "
+                f"tp_size=1; got tp_size={self._comm.tp_size}"
+            )
+        if not getattr(self.scheduler, "supports_external_input_stream", False):
+            return f"Stage {self.name} does not support external input streams"
+        scheduler_inbox = getattr(self.scheduler, "inbox", None)
+        if getattr(scheduler_inbox, "maxsize", 0) <= 0:
+            return f"Stage {self.name} external input stream inbox must be bounded"
+        if not callable(getattr(scheduler_inbox, "put_nowait", None)):
+            return (
+                f"Stage {self.name} external input stream inbox must support "
+                "non-blocking enqueue"
+            )
+        return None
 
     async def _on_data_ready(
         self,
@@ -746,8 +791,20 @@ class Stage:
         logical_source = self._logical_source(item.from_stage)
         if logical_source != item.from_stage:
             item = replace(item, from_stage=logical_source)
+        if not await self._accept_external_input_chunk(request_id, item):
+            return
         if self._open_pre_payload_stream_if_allowed(request_id):
-            self._route_stream_item(request_id, item)
+            if item.from_stage == "coordinator":
+                await self._enqueue_external_input_message(
+                    request_id,
+                    IncomingMessage(
+                        request_id=request_id,
+                        type="stream_chunk",
+                        data=item,
+                    ),
+                )
+            else:
+                self._route_stream_item(request_id, item)
             return
         with suppress(Exception):
             self.scheduler.abort(request_id)
@@ -759,6 +816,86 @@ class Stage:
                 "accept pre-payload stream data"
             ),
         )
+
+    async def _accept_external_input_chunk(
+        self, request_id: str, item: StreamItem
+    ) -> bool:
+        if item.from_stage != "coordinator":
+            return True
+        expected = self._external_input_next_chunk_ids.get(request_id)
+        if expected is None:
+            await self._fail_external_input_stream(
+                request_id, "received a chunk before external input stream start"
+            )
+            return False
+        if request_id in self._external_input_done:
+            await self._fail_external_input_stream(
+                request_id, "received a chunk after external input stream done"
+            )
+            return False
+        if item.chunk_id != expected:
+            await self._fail_external_input_stream(
+                request_id,
+                f"expected chunk_id={expected}, got chunk_id={item.chunk_id}",
+            )
+            return False
+        self._external_input_next_chunk_ids[request_id] = expected + 1
+        return True
+
+    async def _accept_external_input_done(
+        self, request_id: str, from_stage: str
+    ) -> bool:
+        if self._logical_source(from_stage) != "coordinator":
+            return True
+        if request_id not in self._external_input_next_chunk_ids:
+            await self._fail_external_input_stream(
+                request_id, "received done before external input stream start"
+            )
+            return False
+        if request_id in self._external_input_done:
+            await self._fail_external_input_stream(
+                request_id, "received duplicate external input stream done"
+            )
+            return False
+        self._external_input_done.add(request_id)
+        return True
+
+    async def _fail_external_input_stream(self, request_id: str, reason: str) -> None:
+        with suppress(Exception):
+            self.scheduler.abort(request_id)
+        await self._send_failure(request_id, f"External input stream {reason}")
+
+    def _is_current_external_input_stream(self, request_id: str) -> bool:
+        return (
+            request_id in self._active_requests
+            and request_id in self._external_input_next_chunk_ids
+            and request_id not in self._aborted
+        )
+
+    async def _enqueue_external_input_message(
+        self,
+        request_id: str,
+        message: IncomingMessage,
+    ) -> bool:
+        """Wait asynchronously for bounded scheduler capacity without blocking IO."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _EXTERNAL_INPUT_ENQUEUE_TIMEOUT_S
+        while self._is_current_external_input_stream(request_id):
+            try:
+                self.scheduler.inbox.put_nowait(message)
+                return True
+            except _queue_mod.Full:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    if self._is_current_external_input_stream(request_id):
+                        await self._fail_external_input_stream(
+                            request_id,
+                            f"timed out waiting for the bounded scheduler inbox "
+                            f"to accept {message.type}",
+                        )
+                    return False
+                await asyncio.sleep(min(_EXTERNAL_INPUT_ENQUEUE_RETRY_S, remaining))
+        return False
 
     async def _queue_stream_error(
         self,
@@ -908,6 +1045,8 @@ class Stage:
             return
 
         if is_done:
+            if not await self._accept_external_input_done(request_id, from_stage):
+                return
             if not self._open_pre_payload_stream_if_allowed(request_id):
                 with suppress(Exception):
                     self.scheduler.abort(request_id)
@@ -923,12 +1062,14 @@ class Stage:
             self._stream_queue.put_done(
                 request_id, from_stage=self._logical_source(from_stage)
             )
-            self.scheduler.inbox.put(
-                IncomingMessage(
-                    request_id=request_id,
-                    type="stream_done",
-                )
+            done_message = IncomingMessage(
+                request_id=request_id,
+                type="stream_done",
             )
+            if self._logical_source(from_stage) == "coordinator":
+                await self._enqueue_external_input_message(request_id, done_message)
+            else:
+                self.scheduler.inbox.put(done_message)
 
     def _open_pre_payload_stream_if_allowed(self, request_id: str) -> bool:
         if self._stream_queue is None:
@@ -946,7 +1087,9 @@ class Stage:
             IncomingMessage(request_id=request_id, type="stream_chunk", data=item)
         )
 
-    async def _execute(self, payload: Any) -> None:
+    async def _execute(
+        self, payload: Any, *, external_input_stream: bool = False
+    ) -> None:
         request_id = payload.request_id
         if request_id in self._aborted:
             return
@@ -962,6 +1105,9 @@ class Stage:
         ):
             self._tp_fanout.fanout_work(payload)
         msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
+        if external_input_stream:
+            await self._enqueue_external_input_message(request_id, msg)
+            return
         enqueue = getattr(self.scheduler, "enqueue", None)
         if enqueue is not None:
             enqueue(msg)
@@ -1709,15 +1855,17 @@ class Stage:
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
-        await self.control_plane.send_complete(
-            CompleteMessage(
-                request_id=request_id,
-                from_stage=self.name,
-                success=False,
-                error=error,
+        try:
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=False,
+                    error=error,
+                )
             )
-        )
-        self._clear_request_state(request_id)
+        finally:
+            self._clear_request_state(request_id)
 
     def _clear_request_state(self, request_id: str) -> None:
         self._active_requests.discard(request_id)
@@ -1733,6 +1881,8 @@ class Stage:
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
         self._replica_bindings.pop(request_id, None)
+        self._external_input_next_chunk_ids.pop(request_id, None)
+        self._external_input_done.discard(request_id)
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:

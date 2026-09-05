@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Client package."""
 
-from sglang_omni.client.client import Client
+from sglang_omni.client.client import Client, ExternalInputStream
 from sglang_omni.client.types import (
     AbortLevel,
     AbortResult,
@@ -19,6 +19,7 @@ from sglang_omni.client.types import (
 
 __all__ = [
     "Client",
+    "ExternalInputStream",
     "AbortLevel",
     "AbortResult",
     "ClientError",
