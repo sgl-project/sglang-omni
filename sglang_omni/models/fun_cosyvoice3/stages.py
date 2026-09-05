@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Sequence, cast
@@ -31,6 +32,7 @@ from sglang_omni.utils.device import resolve_device_spec
 # length. The scheduler admits a request that exceeds it as a singleton Flow
 # batch and defers following requests to the next batch.
 _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES = 2000
+_MAX_FLOW_COALESCE_BATCH_SIZE = 8
 
 _AUTOCAST_DTYPES: dict[str, torch.dtype | None] = {
     "float32": None,
@@ -457,6 +459,127 @@ class _PreparedFlowRequest:
     index: int
     sample_rate: int
     flow_input: FlowBatchInput
+    total_mel_frames: int
+
+
+def _validate_flow_batch_coalescing_config(
+    span_frames: int,
+    max_added_padding_pct: float,
+) -> None:
+    if span_frames < 0:
+        raise ValueError(
+            "flow_batch_coalesce_span_frames must be greater than or equal to zero"
+        )
+    if not math.isfinite(max_added_padding_pct) or max_added_padding_pct < 0:
+        raise ValueError(
+            "flow_batch_coalesce_max_added_padding_pct must be finite and "
+            "greater than or equal to zero"
+        )
+    if span_frames == 0 and max_added_padding_pct != 0:
+        raise ValueError(
+            "flow_batch_coalesce_max_added_padding_pct must be zero when "
+            "flow_batch_coalesce_span_frames is zero"
+        )
+
+
+def _group_flow_requests(
+    buckets: dict[int, list[_PreparedFlowRequest]],
+    *,
+    coalesce_span_frames: int,
+    coalesce_max_added_padding_pct: float,
+) -> list[list[_PreparedFlowRequest]]:
+    """Group baseline Flow buckets, optionally choosing a contiguous coarsening.
+
+    The adaptive path exhaustively considers every contiguous partition of the
+    sorted atomic buckets. Its objective is the validated policy order:
+    solve count, padded work, maximum newly merged span, then bucket ranges.
+    """
+    if coalesce_span_frames == 0:
+        # note(chenye): preserve insertion order and grouping exactly
+        # when the policy is disabled.
+        return list(buckets.values())
+    if not buckets:
+        return []
+
+    atomic_groups = [
+        (bucket_key, tuple(requests))
+        for bucket_key, requests in sorted(buckets.items())
+    ]
+    baseline_work = sum(
+        len(requests) * max(request.total_mel_frames for request in requests)
+        for _, requests in atomic_groups
+    )
+    if baseline_work == 0:
+        # note(chenye): Let the existing Flow input validation report malformed
+        # zero length requests instead of failing in the coalescing arithmetic first.
+        return [list(requests) for _, requests in atomic_groups]
+    baseline_groups = [list(requests) for _, requests in atomic_groups]
+    best_objective: tuple[int, int, int, tuple[tuple[int, int], ...]] = (
+        len(baseline_groups),
+        baseline_work,
+        0,
+        tuple((bucket_key, bucket_key) for bucket_key, _ in atomic_groups),
+    )
+    best_groups = baseline_groups
+
+    def visit(
+        start: int,
+        candidate_groups: list[list[tuple[int, tuple[_PreparedFlowRequest, ...]]]],
+    ) -> None:
+        nonlocal best_objective, best_groups
+        if start == len(atomic_groups):
+            candidate_work = 0
+            max_merged_span = 0
+            signature: list[tuple[int, int]] = []
+            result_groups: list[list[_PreparedFlowRequest]] = []
+            for atomic_group in candidate_groups:
+                requests = [
+                    request
+                    for _, atomic_requests in atomic_group
+                    for request in atomic_requests
+                ]
+                max_total = max(request.total_mel_frames for request in requests)
+                min_total = min(request.total_mel_frames for request in requests)
+                candidate_work += len(requests) * max_total
+                if len(atomic_group) > 1:
+                    max_merged_span = max(max_merged_span, max_total - min_total)
+                signature.append((atomic_group[0][0], atomic_group[-1][0]))
+                result_groups.append(requests)
+
+            added_padding_pct = (candidate_work / baseline_work - 1) * 100
+            if added_padding_pct > coalesce_max_added_padding_pct + 1e-9:
+                return
+
+            objective = (
+                len(result_groups),
+                candidate_work,
+                max_merged_span,
+                tuple(signature),
+            )
+            if objective < best_objective:
+                best_objective = objective
+                best_groups = result_groups
+            return
+
+        for end in range(start + 1, len(atomic_groups) + 1):
+            segment = atomic_groups[start:end]
+            if len(segment) > 1:
+                segment_requests = [
+                    request
+                    for _, atomic_requests in segment
+                    for request in atomic_requests
+                ]
+                segment_span = max(
+                    request.total_mel_frames for request in segment_requests
+                ) - min(request.total_mel_frames for request in segment_requests)
+                if segment_span > coalesce_span_frames:
+                    continue
+            candidate_groups.append(segment)
+            visit(end, candidate_groups)
+            candidate_groups.pop()
+
+    visit(0, [])
+    return best_groups
 
 
 class _CosyVoice3Vocoder(BatchVocoderBase):
@@ -466,9 +589,15 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         hift: Any,
         compute_dtype: torch.dtype | None = None,
         flow_batch_bucket_frames: int = 50,
+        flow_batch_coalesce_span_frames: int = 0,
+        flow_batch_coalesce_max_added_padding_pct: float = 0.0,
     ) -> None:
         if flow_batch_bucket_frames <= 0:
             raise ValueError("flow_batch_bucket_frames must be greater than zero")
+        _validate_flow_batch_coalescing_config(
+            flow_batch_coalesce_span_frames,
+            flow_batch_coalesce_max_added_padding_pct,
+        )
         if not isinstance(flow.decoder.estimator, torch.nn.Module):
             raise RuntimeError(
                 "Fun-CosyVoice3 requires the PyTorch Flow estimator from the pinned "
@@ -480,6 +609,10 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         self._hift = hift
         self._compute_dtype = compute_dtype
         self._flow_batch_bucket_frames = flow_batch_bucket_frames
+        self._flow_batch_coalesce_span_frames = flow_batch_coalesce_span_frames
+        self._flow_batch_coalesce_max_added_padding_pct = (
+            flow_batch_coalesce_max_added_padding_pct
+        )
 
     def prepare_item(
         self, payload: StagePayload
@@ -496,20 +629,30 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
     async def decode_batch(
         self, items: list[tuple[FunCosyVoice3State, torch.Tensor]]
     ) -> list[tuple[Any, int]]:
-        prepared = [
-            _PreparedFlowRequest(
-                index=index,
-                sample_rate=state.sample_rate,
-                flow_input=self._make_flow_input(state, codes),
+        prepared: list[_PreparedFlowRequest] = []
+        for index, (state, codes) in enumerate(items):
+            flow_input = self._make_flow_input(state, codes)
+            prepared.append(
+                _PreparedFlowRequest(
+                    index=index,
+                    sample_rate=state.sample_rate,
+                    flow_input=flow_input,
+                    total_mel_frames=self._flow_total_mel_frames(flow_input),
+                )
             )
-            for index, (state, codes) in enumerate(items)
-        ]
         results: list[tuple[Any, int] | None] = [None] * len(prepared)
         buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
         for request in prepared:
             buckets[self._flow_bucket_key(request.flow_input)].append(request)
 
-        for bucket in buckets.values():
+        flow_groups = _group_flow_requests(
+            buckets,
+            coalesce_span_frames=self._flow_batch_coalesce_span_frames,
+            coalesce_max_added_padding_pct=(
+                self._flow_batch_coalesce_max_added_padding_pct
+            ),
+        )
+        for bucket in flow_groups:
             with torch.autocast(
                 device_type=current_platform.device_type,
                 dtype=self._compute_dtype,
@@ -622,10 +765,24 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
+    flow_batch_coalesce_span_frames: int = 0,
+    flow_batch_coalesce_max_added_padding_pct: float = 0.0,
     enable_dit_torch_compile: bool = False,
 ) -> SimpleScheduler:
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
+    _validate_flow_batch_coalescing_config(
+        flow_batch_coalesce_span_frames,
+        flow_batch_coalesce_max_added_padding_pct,
+    )
+    if (
+        flow_batch_coalesce_span_frames > 0
+        and max_batch_size > _MAX_FLOW_COALESCE_BATCH_SIZE
+    ):
+        raise ValueError(
+            "Fun-CosyVoice3 adaptive Flow coalescing currently requires "
+            f"max_batch_size <= {_MAX_FLOW_COALESCE_BATCH_SIZE}"
+        )
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
     if dtype not in _AUTOCAST_DTYPES:
@@ -647,6 +804,10 @@ def create_vocoder_executor(
         hift,
         compute_dtype=compute_dtype,
         flow_batch_bucket_frames=flow_batch_bucket_frames,
+        flow_batch_coalesce_span_frames=flow_batch_coalesce_span_frames,
+        flow_batch_coalesce_max_added_padding_pct=(
+            flow_batch_coalesce_max_added_padding_pct
+        ),
     )
 
     return SimpleScheduler(

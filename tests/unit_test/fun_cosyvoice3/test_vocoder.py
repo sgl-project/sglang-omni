@@ -153,6 +153,29 @@ def _install_fake_batch_adapter(monkeypatch, calls: list[list]) -> None:
     monkeypatch.setattr(stages.FunCosyVoice3Flow, "inference", fake_infer)
 
 
+def _run_decode_with_coalescing(
+    monkeypatch,
+    items,
+    *,
+    span_frames: int,
+    max_added_padding_pct: float,
+    bucket_frames: int = 50,
+):
+    flow = _BatchCapableFakeFlow()
+    hift = _FakeHiFT()
+    batch_calls: list[list] = []
+    _install_fake_batch_adapter(monkeypatch, batch_calls)
+    vocoder = stages._CosyVoice3Vocoder(
+        flow,
+        hift,
+        flow_batch_bucket_frames=bucket_frames,
+        flow_batch_coalesce_span_frames=span_frames,
+        flow_batch_coalesce_max_added_padding_pct=max_added_padding_pct,
+    )
+    results = asyncio.run(vocoder.decode_batch(items))
+    return results, batch_calls, hift
+
+
 def test_decode_batch_size_one_uses_batch_adapter(monkeypatch) -> None:
     flow = _BatchCapableFakeFlow()
     hift = _FakeHiFT()
@@ -241,6 +264,164 @@ def test_decode_batch_different_buckets_do_not_share_padding(monkeypatch) -> Non
     ]
 
 
+def test_flow_coalescing_disabled_preserves_current_bucket_groups(monkeypatch) -> None:
+    items = [
+        (_state(sample_rate=16001, prompt_tokens=0), _codes(27)),
+        (_state(sample_rate=16002, prompt_tokens=0), _codes(24)),
+        (_state(sample_rate=16003, prompt_tokens=0), _codes(25)),
+    ]
+
+    results, batch_calls, _ = _run_decode_with_coalescing(
+        monkeypatch,
+        items,
+        span_frames=0,
+        max_added_padding_pct=0,
+    )
+
+    assert [sample_rate for _, sample_rate in results] == [16001, 16002, 16003]
+    assert [[item.token.shape[1] for item in call] for call in batch_calls] == [
+        [27],
+        [24, 25],
+    ]
+
+
+def test_flow_coalescing_merges_and_restores_result_order(monkeypatch) -> None:
+    items = [
+        (_state(sample_rate=16001, prompt_tokens=0), _codes(27)),
+        (_state(sample_rate=16002, prompt_tokens=0), _codes(25)),
+    ]
+
+    results, batch_calls, hift = _run_decode_with_coalescing(
+        monkeypatch,
+        items,
+        span_frames=64,
+        max_added_padding_pct=5,
+    )
+
+    assert [sample_rate for _, sample_rate in results] == [16001, 16002]
+    assert [[item.token.shape[1] for item in call] for call in batch_calls] == [
+        [25, 27]
+    ]
+    assert len(hift.calls) == 2
+
+
+def _make_flow_buckets(
+    total_mel_frames: list[int], *, bucket_frames: int = 50
+) -> dict[int, list[stages._PreparedFlowRequest]]:
+    buckets: dict[int, list[stages._PreparedFlowRequest]] = {}
+    for index, total in enumerate(total_mel_frames):
+        bucket_key = (total + bucket_frames - 1) // bucket_frames
+        buckets.setdefault(bucket_key, []).append(
+            stages._PreparedFlowRequest(
+                index=index,
+                sample_rate=24000,
+                flow_input=stages.FlowBatchInput(
+                    token=torch.empty((1, 0), dtype=torch.int32),
+                    prompt_token=torch.empty((1, 0), dtype=torch.int32),
+                    prompt_feat=torch.empty((1, 0, 80)),
+                    embedding=torch.empty((1, 192)),
+                ),
+                total_mel_frames=total,
+            )
+        )
+    return buckets
+
+
+@pytest.mark.parametrize(
+    ("total_mel_frames", "bucket_frames", "span_frames", "padding_pct", "expected"),
+    [
+        pytest.param(
+            [48, 50, 54],
+            50,
+            1,
+            5,
+            [[48, 50], [54]],
+            id="atomic-baseline-buckets",
+        ),
+        pytest.param(
+            [104, 50, 54],
+            50,
+            64,
+            30,
+            [[50, 54], [104]],
+            id="sort-before-coarsening",
+        ),
+        pytest.param(
+            [50, 94],
+            50,
+            40,
+            100,
+            [[50], [94]],
+            id="span-limit",
+        ),
+        pytest.param(
+            [50, 54],
+            50,
+            64,
+            0,
+            [[50], [54]],
+            id="positive-span-zero-padding",
+        ),
+        pytest.param(
+            [10, 13, 30, 33],
+            10,
+            4,
+            5,
+            [[10], [13], [30, 33]],
+            id="whole-outer-padding-cap",
+        ),
+        pytest.param(
+            [50, 54, 104],
+            50,
+            64,
+            100,
+            [[50, 54, 104]],
+            id="fewest-solves",
+        ),
+        pytest.param(
+            [50, 54, 104],
+            50,
+            64,
+            30,
+            [[50, 54], [104]],
+            id="least-padded-work",
+        ),
+        pytest.param(
+            [10, 10, 20, 40],
+            10,
+            40,
+            30,
+            [[10, 10, 20], [40]],
+            id="smallest-maximum-merge-span",
+        ),
+        pytest.param(
+            [10, 20, 30],
+            10,
+            20,
+            40,
+            [[10], [20, 30]],
+            id="bucket-range-signature",
+        ),
+    ],
+)
+def test_flow_coalescing_policy_directly(
+    total_mel_frames: list[int],
+    bucket_frames: int,
+    span_frames: int,
+    padding_pct: float,
+    expected: list[list[int]],
+) -> None:
+    groups = stages._group_flow_requests(
+        _make_flow_buckets(total_mel_frames, bucket_frames=bucket_frames),
+        coalesce_span_frames=span_frames,
+        coalesce_max_added_padding_pct=padding_pct,
+    )
+
+    assert [
+        [request.total_mel_frames for request in group] for group in groups
+    ] == expected
+
+
 def test_decode_batch_preserves_input_order_across_buckets(monkeypatch) -> None:
     flow = _BatchCapableFakeFlow()
     batch_calls: list[list] = []
@@ -315,6 +496,41 @@ def test_vocoder_rejects_non_positive_flow_bucket_size() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        (
+            {"flow_batch_coalesce_span_frames": -1},
+            "flow_batch_coalesce_span_frames",
+        ),
+        (
+            {"flow_batch_coalesce_max_added_padding_pct": -1},
+            "flow_batch_coalesce_max_added_padding_pct",
+        ),
+        (
+            {"flow_batch_coalesce_max_added_padding_pct": float("nan")},
+            "flow_batch_coalesce_max_added_padding_pct",
+        ),
+        (
+            {"flow_batch_coalesce_max_added_padding_pct": float("inf")},
+            "flow_batch_coalesce_max_added_padding_pct",
+        ),
+        (
+            {
+                "flow_batch_coalesce_span_frames": 0,
+                "flow_batch_coalesce_max_added_padding_pct": 1,
+            },
+            "flow_batch_coalesce_max_added_padding_pct",
+        ),
+    ],
+)
+def test_vocoder_rejects_invalid_flow_coalescing_configuration(
+    kwargs, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        stages._CosyVoice3Vocoder(_BatchCapableFakeFlow(), _FakeHiFT(), **kwargs)
+
+
 def test_flow_scheduler_cost_rounds_to_bucket() -> None:
     vocoder = stages._CosyVoice3Vocoder(
         _BatchCapableFakeFlow(), _FakeHiFT(), flow_batch_bucket_frames=50
@@ -375,6 +591,8 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         max_batch_wait_ms=7,
         flow_batch_bucket_frames=100,
         flow_batch_admission_frames=200,
+        flow_batch_coalesce_span_frames=40,
+        flow_batch_coalesce_max_added_padding_pct=3,
     )
 
     assert isinstance(scheduler, stages.SimpleScheduler)
@@ -382,6 +600,9 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     assert scheduler._max_batch_wait_s == pytest.approx(0.007)
     assert scheduler._max_batch_cost == 200
     assert callable(scheduler._request_cost_fn)
+    vocoder = scheduler._request_cost_fn.__self__
+    assert vocoder._flow_batch_coalesce_span_frames == 40
+    assert vocoder._flow_batch_coalesce_max_added_padding_pct == 3
     state = _state(prompt_tokens=1)
     state.audio_codes = _codes(2)
     assert scheduler._request_cost_fn(_payload(state)) == 100
@@ -390,6 +611,40 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         "device": "cpu",
         "fp16": True,
     }
+
+
+def test_create_vocoder_executor_rejects_large_batch_for_coalescing() -> None:
+    with pytest.raises(ValueError, match=r"max_batch_size.*8"):
+        stages.create_vocoder_executor(
+            "model-that-must-not-load",
+            max_batch_size=9,
+            flow_batch_coalesce_span_frames=64,
+            flow_batch_coalesce_max_added_padding_pct=5,
+        )
+
+
+def test_create_vocoder_executor_allows_large_batch_when_coalescing_disabled(
+    monkeypatch,
+) -> None:
+    fake_flow = _BatchCapableFakeFlow()
+    fake_hift = _FakeHiFT()
+    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(
+        stages,
+        "_load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16: (fake_flow, fake_hift),
+    )
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cpu",
+        max_batch_size=16,
+        flow_batch_coalesce_span_frames=0,
+        flow_batch_coalesce_max_added_padding_pct=0,
+    )
+
+    assert scheduler._max_batch_size == 16
 
 
 def test_create_vocoder_executor_rejects_non_positive_admission_budget(
@@ -416,5 +671,7 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
         "dtype": "bfloat16",
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 2000,
+        "flow_batch_coalesce_span_frames": 0,
+        "flow_batch_coalesce_max_added_padding_pct": 0.0,
         "enable_dit_torch_compile": False,
     }

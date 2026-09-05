@@ -56,6 +56,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 dtype="bfloat16",
                 flow_batch_bucket_frames=50,
                 flow_batch_admission_frames=2000,
+                # note(chenye): Validated on H200 at 64 frames / 5%;
+                # tune for other hardware or workloads instead of treating
+                # it as universal.
+                flow_batch_coalesce_span_frames=0,
+                flow_batch_coalesce_max_added_padding_pct=0.0,
                 # Opt-in; off by default (one-time startup compile cost).
                 enable_dit_torch_compile=False,
             ),
