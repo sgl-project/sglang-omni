@@ -218,12 +218,24 @@ fn websocket_transport_and_worker_setup_timeouts_are_independently_bounded() {
     assert!(
         load_bytes(
             explicit
+                .replace(
+                    "worker_setup_timeout_ms = 60000",
+                    "worker_setup_timeout_ms = 60001"
+                )
+                .as_bytes()
+        )
+        .is_ok(),
+        "worker application setup has an independent operator bound"
+    );
+    assert!(
+        load_bytes(
+            explicit
                 .replace("connect_timeout_ms", "handshake_timeout_ms")
                 .as_bytes()
         )
         .is_err()
     );
-    for value in [0, 60_001] {
+    for value in [0, 3_600_001] {
         assert!(
             load_bytes(
                 explicit

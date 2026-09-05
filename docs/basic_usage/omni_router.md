@@ -265,7 +265,9 @@ MiB message bound. Speech configuration, upstream transport setup, the first
 worker event, and close convergence use separate deadlines. Application-level
 idle behavior remains worker-owned. A realtime `model` query requires a worker
 with the matching default; an omitted model can use any compatible worker in
-the trust domain.
+the trust domain. `worker_setup_timeout_ms` is an operator safety bound on the
+initial worker application event; it does not limit session lifetime or mark a
+worker unhealthy when it expires.
 Speech configuration is replayed byte-for-byte; the router extracts routing
 facts while the worker owns protocol-value validation.
 

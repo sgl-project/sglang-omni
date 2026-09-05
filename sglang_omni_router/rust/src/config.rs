@@ -537,15 +537,17 @@ impl Config {
                 "websocket.speech_config_timeout_ms",
                 websocket.speech_config_timeout_ms,
             ),
-            (
-                "websocket.worker_setup_timeout_ms",
-                websocket.worker_setup_timeout_ms,
-            ),
             ("websocket.close_timeout_ms", websocket.close_timeout_ms),
         ] {
             if !(1..=60_000).contains(&value) {
                 return Err(ConfigError::invalid(field, "must be between 1 and 60000"));
             }
+        }
+        if !(1..=3_600_000).contains(&websocket.worker_setup_timeout_ms) {
+            return Err(ConfigError::invalid(
+                "websocket.worker_setup_timeout_ms",
+                "must be between 1 and 3600000",
+            ));
         }
         if let Some(route) = websocket.speech.as_ref() {
             self.validate_websocket_route(
