@@ -476,3 +476,6 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
   `followup_batch_wait_ms`(4ms),等不到就先 drain(keep=0) 再回来;回归单测
   `test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_lock`。
   教训:**低负载(r1)是并发 bug 最灵敏的探针**,任何改动执行顺序的优化都要跑 r1 完整率验收。
+- **修复后 r1 验收(2026-09-06 11:37 PT,默认树 = 增量 + WARM/COLD 图 + 编译内核 + 提前发射 + 锁等待有界)**:
+  47/47 完成、underrun 0、first playable p50 45.3ms / p95 73ms(legacy 同批 44.5 / 73.5ms)、E2E p99 733ms。
+  低负载下增量路径与 legacy 打平且无停顿。三 seed r20 与首帧事件剖面在同一棵树上重跑中。
