@@ -217,6 +217,33 @@ def test_qwen_talker_decode_readiness_requires_feedback_and_text_or_pad() -> Non
     assert QwenTalkerModelRunner._data_has_next_decode_input(with_pad)
 
 
+def test_qwen_talker_decode_inputs_read_the_request_data_as_built() -> None:
+    """The decode input helpers read the request data fields as the builders
+    leave them: empty queues, the pad fallback, and the history the scheduler
+    clears at finish."""
+    data = SGLangARRequestData()
+
+    assert not QwenTalkerModelRunner._data_has_next_decode_input(data)
+    assert QwenTalkerModelRunner._peek_next_decode_inputs(data) is None
+
+    data.pending_feedback_queue.append(torch.tensor([1.0, 2.0]))
+    data.tts_pad_embed = torch.tensor([7.0, 8.0])
+    assert QwenTalkerModelRunner._data_has_next_decode_input(data)
+    feedback, text = QwenTalkerModelRunner._peek_next_decode_inputs(data)
+    assert torch.equal(feedback, torch.tensor([1.0, 2.0]))
+    assert text is data.tts_pad_embed
+
+    QwenTalkerModelRunner._pop_next_decode_inputs(data)
+    assert len(data.pending_feedback_queue) == 0
+    assert QwenTalkerModelRunner._peek_next_decode_inputs(data) is None
+
+    QwenTalkerModelRunner._append_decode_input_history(data, feedback)
+    assert len(data.decode_input_embeds) == 1
+    data.decode_input_embeds = None
+    assert QwenTalkerModelRunner._decode_input_history(data) == []
+    assert data.decode_input_embeds == []
+
+
 def test_qwen_talker_scheduler_waits_for_stream_done_without_replay() -> None:
     """Preserves build gating and avoids replaying prefetched text chunks."""
     scheduler = _fresh_partial_scheduler()

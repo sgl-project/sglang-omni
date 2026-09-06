@@ -61,7 +61,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
-from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.scheduling.types import ARRequestData, DeferredAdmission
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,16 @@ class _PendingStreamIngress:
     def __init__(self) -> None:
         self.chunks: list[Any] = []
         self.done = False
+
+
+def _compact_decode_input_history(data: ARRequestData) -> None:
+    """A decode input row is a view of the batch snapshot it was written in,
+    so a request that leaves the running batch would keep every snapshot of
+    its run alive while it waits. One copy gives it storage of its own."""
+    history = data.decode_input_embeds
+    if not history:
+        return
+    data.decode_input_embeds = list(torch.stack(history).unbind(0))
 
 
 def _detach_request_data(req: Any) -> None:
@@ -2183,6 +2193,11 @@ class OmniScheduler:
             self._engine_paused if previously_paused is None else previously_paused
         )
         return bool(engine_paused and self._last_pause_mode == "retract")
+
+    def _add_request_to_queue(self, req: Any, is_retracted: bool = False) -> None:
+        if req.is_retracted:
+            _compact_decode_input_history(req._omni_data)
+        _Upstream._add_request_to_queue(self, req, is_retracted=is_retracted)
 
     def _retract_running_requests(self) -> int:
         batch = self.running_batch

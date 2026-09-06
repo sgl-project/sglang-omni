@@ -300,23 +300,50 @@ class Qwen3TTSModelRunner(ModelRunner):
                 "Qwen3-TTS decode batch exceeds staged feedback embedding rows"
             )
         row_ids = self._decode_row_ids(batch_size, input_ids)
-        rows = []
-
+        weight = decode_feedback_embedding.weight
+        device = weight.device
+        dtype = weight.dtype
+        feedback_rows: list[torch.Tensor] = []
+        text_rows: list[torch.Tensor] = []
+        batched_row_ids: list[int] = []
+        rows: list[torch.Tensor | None] = [None] * batch_size
         for row_idx, sched_req in enumerate(requests):
-            combined = QwenTalkerModelRunner._take_next_decode_input_embed(
-                sched_req=sched_req,
-                device=decode_feedback_embedding.weight.device,
-                dtype=decode_feedback_embedding.weight.dtype,
+            data = sched_req.data
+            inputs = QwenTalkerModelRunner._peek_next_decode_inputs(data)
+            if inputs is None:
+                token_id = input_ids[row_idx : row_idx + 1].to(device=device)
+                rows[row_idx] = self.model.get_input_embeddings()(token_id).reshape(-1)
+                continue
+            feedback, text = inputs
+            feedback_rows.append(
+                QwenTalkerModelRunner._decode_row(feedback, device=device, dtype=dtype)
             )
-            if combined is None:
-                token_id = input_ids[row_idx : row_idx + 1].to(
-                    device=decode_feedback_embedding.weight.device
-                )
-                combined = self.model.get_input_embeddings()(token_id).reshape(-1)
-            QwenTalkerModelRunner._append_decode_input_history(sched_req.data, combined)
-            rows.append(combined)
+            text_rows.append(
+                QwenTalkerModelRunner._decode_row(text, device=device, dtype=dtype)
+            )
+            batched_row_ids.append(row_idx)
+            QwenTalkerModelRunner._pop_next_decode_inputs(data)
+
         with torch.no_grad():
-            torch.stack(rows, dim=0, out=decode_feedback_embedding.weight[:batch_size])
+            target = weight[:batch_size]
+            if len(batched_row_ids) == batch_size:
+                torch.stack(feedback_rows, dim=0, out=target)
+                target.add_(torch.stack(text_rows, dim=0))
+            else:
+                if feedback_rows:
+                    combined = torch.stack(feedback_rows, dim=0) + torch.stack(
+                        text_rows, dim=0
+                    )
+                    for slot, row_idx in enumerate(batched_row_ids):
+                        rows[row_idx] = combined[slot]
+                torch.stack(rows, dim=0, out=target)
+            # note(ratish): the history outlives the buffer, a retracted request
+            # replays it in its re-prefill.
+            history = target.detach().clone()
+        for row_idx, sched_req in enumerate(requests):
+            QwenTalkerModelRunner._append_decode_input_history(
+                sched_req.data, history[row_idx]
+            )
         # During graph decode, input_ids carries staged embedding row ids.
         input_ids[:batch_size].copy_(row_ids)
 

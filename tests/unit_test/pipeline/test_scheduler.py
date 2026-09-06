@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import gc
+import importlib
 import threading
 import weakref
 from array import array
@@ -19,6 +20,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
@@ -410,6 +412,111 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     assert aborts == [(req.rid, False)]
     assert trace_aborts == [{"reason": "The request queue is full."}]
     assert scheduler.waiting_queue == []
+
+
+def _requeue_scheduler() -> OmniScheduler:
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
+    scheduler.enable_priority_scheduling = False
+    scheduler.abort_on_priority_when_disabled = False
+    scheduler.max_queued_requests = None
+    scheduler.waiting_queue = []
+    scheduler.enable_hicache_storage = False
+    scheduler.enable_hierarchical_cache = False
+    return scheduler
+
+
+def _history_request(
+    *, is_retracted: bool, snapshots: list[torch.Tensor], row: int
+) -> SimpleNamespace:
+    data = SGLangARRequestData()
+    data.decode_input_embeds = [snapshot[row] for snapshot in snapshots]
+    return SimpleNamespace(
+        rid=f"req-{row}",
+        priority=None,
+        is_retracted=is_retracted,
+        _omni_data=data,
+        time_stats=SimpleNamespace(set_wait_queue_entry_time=lambda: None),
+    )
+
+
+@pytest.mark.parametrize("requeue_kwargs", [{"is_retracted": True}, {}])
+def test_retracted_request_history_gets_its_own_storage_before_requeue(
+    requeue_kwargs: dict,
+) -> None:
+    snapshots = [
+        torch.arange(8, dtype=torch.float32).reshape(4, 2) + 10 * step
+        for step in range(3)
+    ]
+    snapshot_storages = {
+        snapshot.untyped_storage().data_ptr() for snapshot in snapshots
+    }
+    retracted = _history_request(is_retracted=True, snapshots=snapshots, row=1)
+    fresh = _history_request(is_retracted=False, snapshots=snapshots, row=2)
+    expected = torch.stack([snapshot[1] for snapshot in snapshots])
+    scheduler = _requeue_scheduler()
+
+    OmniScheduler._add_request_to_queue(scheduler, retracted, **requeue_kwargs)
+    OmniScheduler._add_request_to_queue(scheduler, fresh)
+
+    assert scheduler.waiting_queue == [retracted, fresh]
+    history = retracted._omni_data.decode_input_embeds
+    assert torch.equal(torch.stack(history), expected)
+    storages = {row.untyped_storage().data_ptr() for row in history}
+    assert len(storages) == 1
+    assert storages.isdisjoint(snapshot_storages)
+    assert (
+        history[0].untyped_storage().nbytes()
+        == expected.numel() * expected.element_size()
+    )
+    fresh_storages = [
+        row.untyped_storage().data_ptr() for row in fresh._omni_data.decode_input_embeds
+    ]
+    assert fresh_storages == [
+        snapshot.untyped_storage().data_ptr() for snapshot in snapshots
+    ]
+
+
+def test_retracted_request_without_history_is_requeued_untouched() -> None:
+    scheduler = _requeue_scheduler()
+    retracted = _history_request(is_retracted=True, snapshots=[], row=0)
+
+    OmniScheduler._add_request_to_queue(scheduler, retracted, is_retracted=True)
+
+    assert scheduler.waiting_queue == [retracted]
+    assert retracted._omni_data.decode_input_embeds == []
+
+
+@pytest.mark.parametrize(
+    "module_name, class_name",
+    [
+        ("sglang_omni.models.moss_tts.request_builders", "MossTTSSGLangRequestData"),
+        (
+            "sglang_omni.models.moss_tts_local.request_builders",
+            "MossTTSLocalSGLangRequestData",
+        ),
+    ],
+)
+def test_retracted_request_with_model_owned_data_is_requeued(
+    module_name: str, class_name: str
+) -> None:
+    data_cls = getattr(importlib.import_module(module_name), class_name)
+    scheduler = _requeue_scheduler()
+    retracted = SimpleNamespace(
+        rid="req-model-owned",
+        priority=None,
+        is_retracted=True,
+        _omni_data=data_cls(),
+        time_stats=SimpleNamespace(set_wait_queue_entry_time=lambda: None),
+    )
+
+    OmniScheduler._add_request_to_queue(scheduler, retracted, is_retracted=True)
+
+    assert scheduler.waiting_queue == [retracted]
+    assert retracted._omni_data.decode_input_embeds == []
+    assert retracted._omni_data.prefill_input_embeds is None
 
 
 def _enqueue_limit_scheduler(monkeypatch):
