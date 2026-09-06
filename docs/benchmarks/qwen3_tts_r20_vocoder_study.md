@@ -138,9 +138,32 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   (COLD 在 r1 臂未开图)。**增量路径每 cohort 的 GPU 成本按 PR 自测应为 legacy 的
   1/3,但 underrun 没有相应改善——每 cohort 必有别的固定开销(arena gather/scatter、
   每 cohort 一次 `resolve_partial()` 同步、状态行拷贝),需要探针归因。**
-- 第四轮(进行中):(a) `server-1855c`:bootstrap 按 fresh_frames 成 cohort,COLD runner
-  也用 1/2/4/8 桶;(b) `server-1855p`:在 (a) 之上装四段探针,r20 归因每个增量 cohort
-  的 plan / gather+launch / resolve / commit。
+- 第四轮(2 worker,bootstrap 按 fresh_frames 成 cohort,COLD runner 用 1/2/4/8 桶):
+
+  | 臂 | underrun | First playable p50 / p95 | TTFA p50 | COLD replays |
+  |---|---|---|---|---|
+  | c-cold(ramp (1,2,4)) | 46.1% | 104 / 477ms | 181ms | 1155(此前 1535,cohort 生效) |
+  | c-cold-r24(ramp (2,4)) | **12.5%** | 122 / 200ms | 193ms | 875 |
+  | c-cold-r1 | 0% | 54 / 82ms | 59ms | 87 |
+
+  对照 legacy 2-worker:同 ramp 17.3% / 5.4%。增量路径 0 回退、图全命中,但仍不如 legacy。
+- **增量路径四段探针(p-cold,r20,6804 个 cohort,平均 2.32 行)**:
+
+  | 阶段 | mean | p95 | 占比 |
+  |---|---|---|---|
+  | plan | 0.72ms | 1.95ms | 3.5% |
+  | **launch(gather + 发射)** | **13.97ms** | 21.9ms | **67.7%** |
+  | resolve(GPU 等待) | 3.23ms | 7.9ms | 15.6% |
+  | 其它(slot 记账、日志) | 2.18ms | 4.4ms | 10.5% |
+  | commit | 0.54ms | 1.7ms | 2.6% |
+
+  cohort 墙钟 20.6ms,**比 legacy 的 15.9ms 还长**;GPU 侧确实只剩 3.2ms(PR 自测的
+  WARM 图 4ms 一致),但省下的时间被 14ms 的 CPU launch 吃光。1 行 cohort 18.5ms,
+  8 行 26.6ms(3.3ms/行)——固定开销 14ms 与行数无关。
+- **假设"launch 是 arena 的 52 个小张量搬运"被实测否定**:单独计时(真模型,B=1..8)
+  gather 0.24 + copy_in 0.5 + slice 0.06 + scatter 0.26 ≈ **1.0ms**。剩余 ~12ms 在
+  `_launch_async` 的增量分支里别的地方(graph replay 的 CPU 成本?每 cohort 的 H2D
+  positions 同步?)——已装更细的探针(stage / copyin+replay / slice / scatter 分开)。
 
 ## 决策日志
 
