@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
@@ -8,6 +10,8 @@ from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceCha
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+
+logger = logging.getLogger(__name__)
 
 BOS_TOKEN_ID = 1
 TALKER_PLACEHOLDER_ID = 0
@@ -25,6 +29,7 @@ SYSTEM_PROMPT = (
 def _ar_request(
     payload: StagePayload, *, input_ids: list[int], max_new_tokens: int, vocab_size: int
 ) -> SGLangARRequestData:
+    # Greedy sampling keeps Thinker's sampled tokens equal to those sent to Talker.
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
         temperature=0.0,
@@ -56,6 +61,13 @@ def build_thinker_request(
 ) -> SGLangARRequestData:
     """One request per utterance: the system prompt plus a position for the
     first acoustic frame, then one decode step per frame."""
+    params = payload.request.params
+    thinker_sampling = (params.get("stage_sampling") or {}).get("thinker") or {}
+    temperature = thinker_sampling.get("temperature", params.get("temperature"))
+    if temperature is not None and float(temperature) != 0.0:
+        logger.warning(
+            "Ignoring text temperature=%s; using temperature=0.", temperature
+        )
     num_frames = NemotronVoiceChatState.from_dict(payload.data).num_frames
     opening = [*prompt_token_ids, pad_token_id]
     data = _ar_request(

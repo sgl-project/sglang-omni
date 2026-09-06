@@ -159,9 +159,15 @@ class NemotronVoiceChatEngineBuilder(_VoiceChatEngineBuilder):
         stt = json.loads((self._source / "config.json").read_text())["model"]["stt"][
             "model"
         ]
-        tokenizer = AutoTokenizer.from_pretrained(
-            stt.get("pretrained_llm", "nvidia/NVIDIA-Nemotron-Nano-9B-v2")
-        )
+        tokenizer_name = stt.get("pretrained_llm", "nvidia/NVIDIA-Nemotron-Nano-9B-v2")
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        except OSError as exc:
+            raise OSError(
+                f"Failed to load Thinker tokenizer from {tokenizer_name!r}. "
+                "Check the path or Hub access. "
+                "For offline use, download the tokenizer files first."
+            ) from exc
         ident = tokenizer.convert_tokens_to_ids
         prompt = [
             ident(stt.get("bos_token", "<s>")),
