@@ -18,9 +18,6 @@ from sglang.srt.layers.quantization.unquant import (
     get_bf16_gemm_backend,
 )
 from sglang.srt.layers.sampler import multinomial_with_seed
-from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph import (
-    eager_on_graph,
-)
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -56,11 +53,6 @@ _PREDICTOR_GRAPH_WARMUP_PASSES = 2
 # Note: (Jiaxin Deng) 50 is on the ladder because it is the family checkpoint
 # default, keeping the dominant signature's kernel width exactly as before.
 _PREDICTOR_TOP_K_LADDER = (4, 8, 16, 32, 50, 64, 128, 256, 512, 1024)
-
-
-def _install_breakable_prefill_qk_norm_rope_graph_break(attention: Any) -> None:
-    """Keep Qwen3-TTS QK norm and RoPE outside breakable graph segments."""
-    attention.apply_qk_norm_rope = eager_on_graph(True)(attention.apply_qk_norm_rope)
 
 
 def _predictor_graph_env_enabled() -> bool:
@@ -192,11 +184,6 @@ class Qwen3TTSTalkerDecoderLayer(nn.Module):
             dual_chunk_attention_config=None,
             alt_stream=None,
         )
-        # Capturing the packed QKV normalization and RoPE block corrupts
-        # Qwen3-TTS prefill replay. Keep this narrow block eager while the
-        # surrounding projections and MLP remain captured. Decode execution
-        # runs outside the breakable-prefill context and is unchanged.
-        _install_breakable_prefill_qk_norm_rope_graph_break(self.self_attn)
         self.mlp = Qwen3OmniMoeTalkerDenseMLP(
             config.hidden_size,
             config.intermediate_size,

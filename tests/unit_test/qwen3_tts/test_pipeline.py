@@ -371,68 +371,51 @@ def test_qwen3_tts_breakable_prefill_is_scoped_to_the_measured_checkpoint(
     assert bare["max_running_requests"] == 16
 
 
-def test_qwen3_tts_breakable_prefill_breaks_around_qk_norm_rope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sglang(monkeypatch)
-    from sglang_omni.models.qwen3_tts import sglang_model
+def test_qwen3_tts_before_prefill_mirrors_positions_into_mrope() -> None:
+    from sglang_omni.models.qwen3_tts.model_runner import _ensure_mrope_positions
 
-    events: list[tuple[str, object]] = []
-
-    def fake_eager_on_graph(enabled: bool):
-        events.append(("enabled", enabled))
-
-        def decorate(function):
-            def wrapped(*args, **kwargs):
-                events.append(("wrapped", (args, kwargs)))
-                return function(*args, **kwargs)
-
-            return wrapped
-
-        return decorate
-
-    class FakeAttention(torch.nn.Module):
-        def __init__(self, **kwargs) -> None:
-            super().__init__()
-
-        def apply_qk_norm_rope(self, qkv, positions, forward_batch):
-            events.append(("inner", (qkv, positions, forward_batch)))
-            return qkv, positions, forward_batch
-
-    class FakeModule(torch.nn.Module):
-        def __init__(self, *args, **kwargs) -> None:
-            super().__init__()
-
-    monkeypatch.setattr(sglang_model, "eager_on_graph", fake_eager_on_graph)
-    monkeypatch.setattr(
-        sglang_model,
-        "Qwen3OmniMoeThinkerTextAttention",
-        FakeAttention,
+    batch = SimpleNamespace(
+        positions=torch.arange(7, dtype=torch.int64),
+        mrope_positions=None,
     )
-    monkeypatch.setattr(sglang_model, "Qwen3OmniMoeTalkerDenseMLP", FakeModule)
-    monkeypatch.setattr(sglang_model, "RMSNorm", FakeModule)
+    _ensure_mrope_positions(batch, prefill_graph_runner=object())
 
-    config = SimpleNamespace(
-        hidden_size=1024,
-        num_attention_heads=16,
-        num_key_value_heads=8,
-        rope_theta=1_000_000,
-        rope_scaling=None,
-        max_position_embeddings=32_768,
-        head_dim=128,
-        rms_norm_eps=1e-6,
-        attention_bias=False,
-        intermediate_size=3072,
+    assert batch.mrope_positions.shape == (3, 7)
+    assert torch.equal(batch.mrope_positions[0], batch.positions)
+    assert torch.equal(batch.mrope_positions[1], batch.positions)
+    assert torch.equal(batch.mrope_positions[2], batch.positions)
+
+
+def test_qwen3_tts_mrope_mirror_is_scoped_to_the_graphed_path() -> None:
+    """A 2-D positions tensor picks a different CUDA kernel.
+
+    ``MRotaryEmbedding.forward_cuda`` dispatches 1-D positions to
+    ``forward_native`` and 2-D positions to the fused ``forward_triton``, so
+    mirroring an eager prefill would move it to another kernel for no reason.
+    """
+    from sglang_omni.models.qwen3_tts.model_runner import _ensure_mrope_positions
+
+    batch = SimpleNamespace(
+        positions=torch.arange(7, dtype=torch.int64),
+        mrope_positions=None,
     )
-    layer = sglang_model.Qwen3TTSTalkerDecoderLayer(config, layer_id=0)
+    _ensure_mrope_positions(batch, prefill_graph_runner=None)
 
-    expected = (object(), object(), object())
-    assert layer.self_attn.apply_qk_norm_rope(*expected) == expected
-    assert events == [
-        ("enabled", True),
-        ("wrapped", (expected, {})),
-        ("inner", expected),
-    ]
+    assert batch.mrope_positions is None
+
+
+def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
+    """A batch that already carries mrope positions owns them."""
+    from sglang_omni.models.qwen3_tts.model_runner import _ensure_mrope_positions
+
+    supplied = torch.arange(21, dtype=torch.int64).reshape(3, 7)
+    batch = SimpleNamespace(
+        positions=torch.zeros(7, dtype=torch.int64),
+        mrope_positions=supplied,
+    )
+    _ensure_mrope_positions(batch, prefill_graph_runner=object())
+
+    assert batch.mrope_positions is supplied
 
 
 def test_qwen3_tts_prefill_coalescing_is_opt_in() -> None:
@@ -5179,15 +5162,22 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     runner.model = SimpleNamespace(
         prepare_decode_buffers=lambda requests: calls.append("prepare")
     )
+    # A prefill graph runner is present, so the MRoPE mirror applies here.
+    runner.tp_worker = SimpleNamespace(
+        model_runner=SimpleNamespace(prefill_cuda_graph_runner=object())
+    )
     runner._build_prefill_input_embeds = (
         lambda forward_batch, requests: calls.append("embeds") or input_embeds
     )
     mm_inputs = [object()]
+    positions = torch.arange(3)
     forward_batch = SimpleNamespace(
         input_ids=torch.zeros(3, dtype=torch.long),
         input_embeds=None,
         replace_embeds=None,
         mm_inputs=mm_inputs,
+        positions=positions,
+        mrope_positions=None,
     )
 
     runner.before_prefill(forward_batch, object(), [object()])
@@ -5198,6 +5188,9 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     assert forward_batch.input_embeds is None
     assert forward_batch.mm_inputs is mm_inputs
     assert calls == ["prepare", "embeds"]
+    assert forward_batch.mrope_positions.shape == (3, 3)
+    for row in forward_batch.mrope_positions:
+        assert torch.equal(row, positions)
 
 
 def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
@@ -5239,7 +5232,8 @@ def test_qwen3_tts_prefill_uses_shared_late_bound_forward_transport(
         return SimpleNamespace(logits_output=logits_output, next_token_ids=None)
 
     runner.tp_worker = SimpleNamespace(
-        forward_batch_generation=forward_batch_generation
+        forward_batch_generation=forward_batch_generation,
+        model_runner=SimpleNamespace(prefill_cuda_graph_runner=None),
     )
     requests = [SimpleNamespace(request_id="request-a")]
     forward_batch = SimpleNamespace(

@@ -17,6 +17,30 @@ from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRun
 from sglang_omni.scheduling.types import RequestOutput
 
 
+def _ensure_mrope_positions(forward_batch: Any, *, prefill_graph_runner: Any) -> None:
+    """Give a graph-replayed batch MRoPE positions mirroring its plain ones.
+
+    The Talker declares ``is_mrope_enabled``, so a captured prefill graph binds
+    the runner's ``mrope_positions`` slot, and that slot is only refreshed at
+    replay when the live batch carries mrope positions. A TTS request has no
+    multimodal inputs to provide them, so a replay would otherwise rotate on
+    whatever positions capture happened to leave behind.
+
+    All three MRoPE rows are equal for the Talker, and ``MRotaryEmbedding``
+    selects row ``i`` of each mrope section, so a mirrored ``[3, T]`` collapses
+    to exactly the 1-D result. It is not the same kernel though: on CUDA a 1-D
+    positions tensor runs ``forward_native`` while a 2-D one runs the fused
+    ``forward_triton``. Mirroring only where a graph will replay keeps every
+    other prefill on the kernel it already used.
+    """
+    if prefill_graph_runner is None:
+        return
+    if forward_batch.mrope_positions is None:
+        forward_batch.mrope_positions = (
+            forward_batch.positions.unsqueeze(0).expand(3, -1).contiguous()
+        )
+
+
 class Qwen3TTSModelRunner(ModelRunner):
     """Runs Qwen3-TTS AR steps and stores generated codec frames per request."""
 
@@ -45,6 +69,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
+        _ensure_mrope_positions(
+            forward_batch,
+            prefill_graph_runner=self.tp_worker.model_runner.prefill_cuda_graph_runner,
+        )
         self.model.prepare_decode_buffers(requests)
         attach_omni_prefill_inputs(
             forward_batch,
