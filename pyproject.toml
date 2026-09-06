@@ -25,6 +25,7 @@ dependencies = [
     "torchvision==0.26.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
     "transformers==5.12.1",  # Match the pinned sglang stack
+    "sentencepiece>=0.2.0",  # MOSS-TTS-Nano text tokenizer
     "safetensors>=0.4.3",     # Direct weight loading
     "pillow>=10.0.0",         # Required by AutoImageProcessor
     "huggingface-hub[hf_xet]>=0.36.0",# HF model downloads with Xet transport

@@ -29,7 +29,7 @@ from sglang_omni.models.moss_tts.vocoder_quantizer import (
 )
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.pipeline_state import build_usage
+from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
     StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
@@ -307,6 +307,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         *,
         n_vq: int,
         sample_rate: int,
+        state_cls: type[DeclarativeStateBase] = MossTTSLocalState,
+        source_hint: str = _SOURCE_HINT,
         stream_slots: int = 16,
         stream_chunk_frames: int = 25,
         attention_backend: str = AUTO_ATTENTION_BACKEND,
@@ -339,20 +341,22 @@ class MossTTSLocalStreamingVocoderScheduler(
         ]
         if missing:
             raise RuntimeError(
-                f"MOSS-TTS Local streaming vocoder: codec is missing {missing}; "
-                "the installed MOSS-Audio-Tokenizer-v2 version is incompatible"
+                f"{source_hint} streaming vocoder: codec is missing {missing}; "
+                "the loaded MOSS-Audio-Tokenizer runtime is incompatible"
             )
         nonstream_decoder = MossAudioTokenizerVocoderDecoder.from_module(
             codec.decoder,
             attention_backend=attention_backend,
         )
         logger.info(
-            "MOSS-TTS Local non-streaming vocoder uses configured attention "
-            "backend=%s stages=%d",
+            "%s non-streaming vocoder uses configured attention backend=%s stages=%d",
+            source_hint,
             attention_backend,
             len(nonstream_decoder),
         )
         self._codec = codec
+        self._state_cls = state_cls
+        self._source_hint = str(source_hint)
         self._nonstream_decoder = nonstream_decoder
         quantizer = getattr(codec, "quantizer", None)
         if quantizer is None or not callable(getattr(quantizer, "decode_codes", None)):
@@ -416,7 +420,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             self._vocode,
             batch_compute_fn=self._vocode_batch,
             sample_rate=sample_rate,
-            stream_source_hint=_SOURCE_HINT,
+            stream_source_hint=self._source_hint,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
@@ -452,7 +456,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             n_vq = int(n_vq)
             if state.n_vq is not None and state.n_vq != n_vq:
                 raise ValueError(
-                    f"MOSS-TTS Local stream n_vq changed for {request_id!r}: "
+                    f"{self._source_hint} stream n_vq changed for {request_id!r}: "
                     f"{state.n_vq} -> {n_vq}"
                 )
             state.n_vq = n_vq
@@ -474,7 +478,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         else:
             shape_contract = f"at least {n_vq + 1} channels"
         raise ValueError(
-            f"MOSS-TTS Local stream chunk must be {shape_contract}, "
+            f"{self._source_hint} stream chunk must be {shape_contract}, "
             f"got {tuple(codes.shape)}"
         )
 
@@ -488,7 +492,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             state.pending.extend(codes.unbind(0))
         else:
             raise ValueError(
-                f"MOSS-TTS Local validated stream codes must be 1-D or 2-D, "
+                f"{self._source_hint} validated stream codes must be 1-D or 2-D, "
                 f"got {tuple(codes.shape)}"
             )
         self._ensure_slot(state)
@@ -528,7 +532,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             waveform.detach().to("cpu", torch.float32),
             sample_rate=self._sample_rate,
             modality="audio",
-            source_hint=f"{_SOURCE_HINT} streaming",
+            source_hint=f"{self._source_hint} streaming",
             keep_channels=True,
         )
 
@@ -546,7 +550,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             "modality": "audio",
             "sample_rate": self._sample_rate,
         }
-        usage = build_usage(MossTTSLocalState.from_dict(payload.data))
+        usage = build_usage(self._state_cls.from_dict(payload.data))
         if usage is not None:
             final_data["usage"] = usage
         return final_data
@@ -711,7 +715,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             state.threshold = self._stream_chunk_frames
 
     def _decode_payload_codes(self, payload: StagePayload) -> torch.Tensor | None:
-        state = MossTTSLocalState.from_dict(payload.data)
+        state = self._state_cls.from_dict(payload.data)
         if state.audio_codes is None:
             return None
         rows = torch.as_tensor(state.audio_codes, dtype=torch.long)
@@ -721,10 +725,10 @@ class MossTTSLocalStreamingVocoderScheduler(
 
     def _prepare_codes(
         self, payload: StagePayload
-    ) -> tuple[MossTTSLocalState, torch.Tensor | None]:
-        state = MossTTSLocalState.from_dict(payload.data)
+    ) -> tuple[DeclarativeStateBase, torch.Tensor | None]:
+        state = self._state_cls.from_dict(payload.data)
         if state.audio_codes is None:
-            raise RuntimeError("MOSS-TTS Local vocoder requires audio_codes")
+            raise RuntimeError(f"{self._source_hint} vocoder requires audio_codes")
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
         if codes.numel() == 0:
             # Emit no audio: only this request fails downstream, not the batch.
@@ -734,12 +738,12 @@ class MossTTSLocalStreamingVocoderScheduler(
     def _store_vocoder_result(
         self,
         payload: StagePayload,
-        state: MossTTSLocalState,
+        state: DeclarativeStateBase,
         wav: torch.Tensor,
     ) -> StagePayload:
         # The v2 codec is natively stereo: keep [channels, samples] end to end.
         audio_payload = audio_waveform_payload(
-            wav, source_hint=_SOURCE_HINT, keep_channels=True
+            wav, source_hint=self._source_hint, keep_channels=True
         )
         state.audio_codes = None
         state.sample_rate = self._sample_rate

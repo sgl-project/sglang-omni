@@ -16,13 +16,25 @@ def _rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
 
 
 class MossTTSLocalMLP(nn.Module):
-    def __init__(self, hidden_size: int, inner_size: int) -> None:
+    def __init__(
+        self, hidden_size: int, inner_size: int, *, activation: str = "silu"
+    ) -> None:
         super().__init__()
         self.fc_in = nn.Linear(hidden_size, inner_size)
         self.fc_out = nn.Linear(inner_size, hidden_size)
+        if activation not in {"silu", "gelu_new"}:
+            raise ValueError(
+                f"unsupported local-transformer activation: {activation!r}"
+            )
+        self.activation = activation
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.fc_out(F.silu(self.fc_in(hidden_states)))
+        hidden_states = self.fc_in(hidden_states)
+        if self.activation == "gelu_new":
+            hidden_states = F.gelu(hidden_states, approximate="tanh")
+        else:
+            hidden_states = F.silu(hidden_states)
+        return self.fc_out(hidden_states)
 
 
 class MossTTSLocalAttention(nn.Module):
@@ -45,12 +57,13 @@ class MossTTSLocalBlock(nn.Module):
         num_heads: int,
         inner_size: int,
         layer_norm_eps: float,
+        activation: str,
     ) -> None:
         super().__init__()
         self.ln_1 = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
         self.attn = MossTTSLocalAttention(hidden_size, num_heads)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
-        self.mlp = MossTTSLocalMLP(hidden_size, inner_size)
+        self.mlp = MossTTSLocalMLP(hidden_size, inner_size, activation=activation)
 
 
 class MossTTSLocalTransformer(nn.Module):
@@ -71,6 +84,7 @@ class MossTTSLocalTransformer(nn.Module):
         max_positions: int,
         rope_base: float,
         layer_norm_eps: float = 1e-6,
+        activation: str = "silu",
     ) -> None:
         super().__init__()
         self.hidden_size = int(hidden_size)
@@ -79,7 +93,13 @@ class MossTTSLocalTransformer(nn.Module):
         self.max_positions = int(max_positions)
         self.h = nn.ModuleList(
             [
-                MossTTSLocalBlock(hidden_size, num_heads, inner_size, layer_norm_eps)
+                MossTTSLocalBlock(
+                    hidden_size,
+                    num_heads,
+                    inner_size,
+                    layer_norm_eps,
+                    activation,
+                )
                 for _ in range(int(num_layers))
             ]
         )
