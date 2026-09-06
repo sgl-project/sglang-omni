@@ -1555,6 +1555,54 @@ def test_rollback_decode_prep_after_skip_is_noop_for_prefill_batches() -> None:
     assert freed == []
 
 
+def test_rollback_zeroes_same_cell_with_cached_device_scalar() -> None:
+    class FakeForwardMode:
+        @staticmethod
+        def is_decode() -> bool:
+            return True
+
+    def _make_batch(req_to_token: torch.Tensor) -> SimpleNamespace:
+        return SimpleNamespace(
+            forward_mode=FakeForwardMode(),
+            out_cache_loc=None,
+            output_ids=torch.tensor([1]),
+            input_ids=torch.tensor([1]),
+            reqs=[
+                SimpleNamespace(
+                    decode_batch_idx=1,
+                    kv_committed_len=6,
+                    kv=SimpleNamespace(kv_allocated_len=7),
+                )
+            ],
+            seq_lens=torch.tensor([6]),
+            seq_lens_cpu=torch.tensor([6]),
+            orig_seq_lens=torch.tensor([6]),
+            seq_lens_sum=None,
+            req_pool_indices=torch.tensor([2]),
+            req_to_token_pool=SimpleNamespace(req_to_token=req_to_token),
+        )
+
+    req_to_token = torch.zeros((4, 8), dtype=torch.int32)
+    req_to_token[2, 5] = 555
+    req_to_token[3, 5] = 999
+    scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler.token_to_kv_pool_allocator = SimpleNamespace(free=lambda slot: None)
+
+    scheduler._rollback_decode_prep_after_skip(_make_batch(req_to_token))
+
+    assert req_to_token[2, 5] == 0
+    assert req_to_token[3, 5] == 999
+    cached = scheduler._rollback_zero
+    assert cached.shape == ()
+    assert cached.dtype == req_to_token.dtype
+    assert cached.device == req_to_token.device
+
+    req_to_token[2, 5] = 333
+    scheduler._rollback_decode_prep_after_skip(_make_batch(req_to_token))
+    assert req_to_token[2, 5] == 0
+    assert scheduler._rollback_zero is cached
+
+
 def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) -> None:
     schedule_batch_mod = pytest.importorskip("sglang.srt.managers.schedule_batch")
     ScheduleBatch = schedule_batch_mod.ScheduleBatch

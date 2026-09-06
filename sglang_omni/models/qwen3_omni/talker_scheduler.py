@@ -7,6 +7,8 @@ import logging
 from collections import deque
 from typing import Any
 
+import torch
+
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -134,7 +136,16 @@ class QwenTalkerScheduler(OmniScheduler):
         batch.seq_lens.sub_(1)
         batch.seq_lens_cpu.sub_(1)
         batch.orig_seq_lens.sub_(1)
-        batch.req_to_token_pool.req_to_token[batch.req_pool_indices, batch.seq_lens] = 0
+        req_to_token = batch.req_to_token_pool.req_to_token
+        zero = getattr(self, "_rollback_zero", None)
+        if (
+            zero is None
+            or zero.dtype != req_to_token.dtype
+            or zero.device != req_to_token.device
+        ):
+            zero = torch.zeros((), dtype=req_to_token.dtype, device=req_to_token.device)
+            self._rollback_zero = zero
+        req_to_token.index_put_((batch.req_pool_indices, batch.seq_lens), zero)
 
     def self_check_during_idle(self) -> None:
         if self.running_batch is not None and not self.running_batch.is_empty():
