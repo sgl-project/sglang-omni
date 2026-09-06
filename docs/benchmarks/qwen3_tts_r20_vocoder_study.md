@@ -286,8 +286,19 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
 - **编译内核的 357 个 kernel 从哪来(B2,1.76ms)**:Inductor Triton 融合核 166(0.38ms)、
   GEMM/conv 117(0.80ms;其中 transformer 的 64×8 微型 GEMM 57 个)、**cudnn nchw↔nhwc
   布局转换 62 个(0.56ms,占设备时间 32%、节点 17%)**。下一刀:把因果卷积改成
-  channels-last 的 conv2d 在编译区内执行,让 cudnn 直接走 NHWC 不再来回转置(原型排队中);
+  channels-last 的 conv2d 在编译区内执行,让 cudnn 直接走 NHWC 不再来回转置;
   再往后是 transformer 的 q/k/v 三 GEMM 合一(每层省 2 节点)。
+- channels-last conv2d 原型(编译区内替换因果卷积):布局 kernel 62→19,总 397→367,
+  设备时间 1.90→1.66ms,eager 墙钟不变(CPU 受限);数值 max-abs 0.85×rms(bf16 量级)。
+  收益有但小,排在后面。
+- **r10 探针(编译内核,Talker 负载减半):resolve 8.7ms(p50 7.7),与 r20 的 7.7ms 一样。**
+  "剩余 6ms 是 Talker 交错"被否定。候选:GPU 在 cohort 之间空转(launch 2-5ms 的 CPU 段)
+  导致 SM 降频、每次重放前再爬升(r1 空闲时 12.8ms、孤立紧循环 1.8ms 与此一致)。下一轮
+  探针以 100ms 采样 SM 时钟验证。
+- **潜在 bug(真实码对照脚本撞出)**:`_incremental_transformer` 内更新 Python int
+  `transformer_context_length`,Dynamo 按值特化,eager 路径每条流每步重编译,8 次后
+  `fullgraph=True` 直接硬报错。生产未触发只因编译内核只在 graph 捕获时执行一次。已把该
+  记账移到 `decode()` 的非追踪区(c1b4b3e6),测试同步调整。
 
 ## 决策日志
 
