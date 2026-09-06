@@ -17,6 +17,74 @@ then download the model:
 hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ```
 
+## Experimental Apple Silicon support
+
+Fun-ASR has an experimental Torch/MPS compatibility path using the official
+`FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint. Use the `-hf` variant, not the
+original `model.pt` release or a community quantized checkpoint. MLX support is
+planned separately; set `SGLANG_USE_MLX=0` for this path.
+
+Install the [Apple Silicon environment](../get_started/installation.md#macos-apple-silicon),
+then pin the checkpoint used for validation:
+
+```bash
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+FUN_ASR_MODEL_PATH="$(hf download FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --revision 972ee603a3abb40a66c802ffaa9ba0ce88742b60 --quiet)"
+
+# Torch/MPS compatibility
+SGLANG_USE_MLX=0 sgl-omni serve \
+  --model-path "$FUN_ASR_MODEL_PATH" --port 8000
+```
+
+The initial profile uses one Metal device and one active inference request.
+Concurrent HTTP requests queue; this is not batched model execution. This path
+requires `temperature=0`, disable radix caching, chunked prefill, CUDA graphs,
+Torch compilation, and async decode. Audio encoding runs during prefill. The
+existing 30-second upload limit and text/SSE transcription contract apply.
+Quantization is not qualified. The validated checkpoint uses BF16 weights.
+
+### Apple validation
+
+On an M5 Pro with 48 GB memory and macOS 26.4.1, Torch/MPS passed JSON/SSE text
+agreement, four concurrent HTTP requests, malformed input and sampling rejection,
+the 30-second duration boundary, and recovery after a streaming disconnect.
+The opt-in HTTP suite runs against an already-started server:
+
+```bash
+FUN_ASR_APPLE_URL=http://127.0.0.1:8000 \
+  python -m pytest tests/test_model/test_fun_asr_apple.py -q
+```
+
+It uses `tests/data/query_to_cars.wav`, also used by the
+transcription examples below. Unit tests check cached decode against full prefill and verify
+request-cache cleanup and strict checkpoint loading.
+
+A small SeedTTS smoke run used five EN and five ZH sample rows from
+`zhaochenyang20/seed-tts-eval-mini-arrow` at revision
+`abda2357c762e836da38635f75049403b5acad67`. The mini set contains repeated reference
+recordings. Torch/MPS produced identical text at client concurrency 1 and 4.
+After one discarded warmup pass, one measured repeat at concurrency 1 gave:
+
+| Backend | EN mean HTTP latency | ZH mean HTTP latency | EN normalized WER | ZH normalized error rate |
+|---|---:|---:|---:|---:|
+| Torch/MPS | 0.327 s | 0.191 s | 0.0000 | 0.0156 |
+
+These are exploratory end-to-end timings on a tiny corpus, not throughput or
+accuracy qualification. Broader language/dialect coverage, full-corpus accuracy,
+sustained-load memory measurements, and a dedicated macOS CI runner remain open.
+Reproduce a smoke run with the existing benchmark (repeat with `--lang zh`):
+
+```bash
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --model-path "$FUN_ASR_MODEL_PATH" \
+  --meta zhaochenyang20/seed-tts-eval-mini-arrow \
+  --dataset-revision abda2357c762e836da38635f75049403b5acad67 \
+  --lang en --concurrencies 1,4 --repeats 1 --warmup \
+  --disable-resource-monitor --output fun_asr_apple_en.json
+```
+
 ## Server Configuration
 
 Fun-ASR-Nano runs a single ASR stage on one GPU.
