@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -226,7 +227,9 @@ def _solve_flow_euler(
 
 
 @torch.inference_mode()
-def _generate_flow(flow: Any, packed: _PackedFlowBatch) -> torch.Tensor:
+def _generate_flow(
+    flow: Any, packed: _PackedFlowBatch
+) -> tuple[torch.Tensor, Any, Any]:
     embedding = flow.spk_embed_affine_layer(F.normalize(packed.embedding, dim=1))
     token_embedding = flow.input_embedding(torch.clamp(packed.token, min=0))
     h = flow.pre_lookahead_layer(
@@ -264,7 +267,19 @@ def _generate_flow(flow: Any, packed: _PackedFlowBatch) -> torch.Tensor:
     t_span = torch.linspace(0, 1, 11, device=mu.device, dtype=mu.dtype)
     if decoder.t_scheduler == "cosine":
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-    return _solve_flow_euler(decoder, z, t_span, mu, mask, embedding, cond)
+    # note (db-ol): the solve is timed with stream events on CUDA, read later
+    # by the caller, and with perf_counter on CPU.
+    if mu.device.type == "cuda":
+        stream = torch.cuda.current_stream(mu.device)
+        start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        start.record(stream)
+        mel = _solve_flow_euler(decoder, z, t_span, mu, mask, embedding, cond)
+        end.record(stream)
+    else:
+        start = time.perf_counter()
+        mel = _solve_flow_euler(decoder, z, t_span, mu, mask, embedding, cond)
+        end = time.perf_counter()
+    return mel, start, end
 
 
 class FunCosyVoice3Flow:
@@ -272,6 +287,7 @@ class FunCosyVoice3Flow:
 
     def __init__(self, flow: Any) -> None:
         self._flow = flow
+        self._last_solve: tuple[int, Any, Any] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._flow, name)
@@ -287,10 +303,30 @@ class FunCosyVoice3Flow:
         self._flow.eval()
         return self
 
+    def log_last_solve(self) -> None:
+        # note (db-ol): the vocoder calls this after the bucket's audio reached
+        # the host. A still pending end event is skipped, never waited for.
+        if self._last_solve is None:
+            return
+        items, start, end = self._last_solve
+        self._last_solve = None
+        if isinstance(end, float):
+            elapsed_ms = (end - start) * 1000.0
+        elif end.query():
+            elapsed_ms = start.elapsed_time(end)
+        else:
+            return
+        logger.debug(
+            "Fun-CosyVoice3 flow solve: batch_items=%d solve_elapsed_ms=%.1f",
+            items,
+            elapsed_ms,
+        )
+
     @torch.inference_mode()
     def inference(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated = _generate_flow(self._flow, packed)
+        generated, start, end = _generate_flow(self._flow, packed)
+        self._last_solve = (len(inputs), start, end)
         outputs: list[torch.Tensor] = []
         for index, prompt_frames in enumerate(packed.prompt_mel_lengths):
             mel = generated[
@@ -621,6 +657,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                     wavs = self._mel2wav_batch([mel for _, mel in group])
                     for (request, _), wav in zip(group, wavs, strict=True):
                         results[request.index] = (wav, request.sample_rate)
+            self._flow.log_last_solve()
 
         if any(result is None for result in results):
             raise RuntimeError("Fun-CosyVoice3 vocoder did not decode every request")
