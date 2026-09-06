@@ -9,10 +9,35 @@ from .checkpoint import backbone_weights
 
 
 class BreezeSGLangModel(Qwen3ForCausalLM):
+    def stage_decode_embeddings(self, rows: int) -> torch.nn.Embedding:
+        """Persistent decode-step embedding table, sized once for the batch.
+
+        Every decode step feeds the backbone a continuous frame embedding rather
+        than a token. SGLang's decode CUDA graph only copies registered
+        ForwardBatch slots on replay, and ``input_embeds`` is not one, so a graph
+        captured against a per-step tensor would replay stale embeddings. Writing
+        the step's embeddings into this fixed table and passing row indices as
+        ``input_ids`` keeps the varying data behind a stable pointer, which the
+        graph can replay. Same approach as MOSS-TTS.
+        """
+        table = getattr(self, "_decode_embeddings", None)
+        if table is None or table.weight.shape[0] < rows:
+            weight = self.model.embed_tokens.weight
+            table = torch.nn.Embedding(
+                rows, self.config.hidden_size, device=weight.device, dtype=weight.dtype
+            )
+            table.weight.requires_grad_(False)
+            self._decode_embeddings = table
+        return table
+
     @torch.no_grad()
     def forward(self, input_ids, positions, forward_batch, input_embeds=None, **kwargs):
         if input_embeds is None:
             input_embeds = forward_batch.input_embeds
+        if input_embeds is None:
+            table = getattr(self, "_decode_embeddings", None)
+            if table is not None and forward_batch.forward_mode.is_decode():
+                input_embeds = table(input_ids)
         if input_embeds is None:
             raise RuntimeError(
                 "Breeze backbone requires projected prompt/feedback embeddings"

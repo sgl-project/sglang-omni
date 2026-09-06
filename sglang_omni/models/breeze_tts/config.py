@@ -43,11 +43,11 @@ class BreezeTTSPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name="vocoder",
-            # Codec decoding shares the pipeline process. Giving it a process of
-            # its own would stop it contending with the autoregressive stage for
-            # the interpreter, but that path moves CUDA tensors over IPC and is
-            # unavailable on kernels without pidfd_getfd.
-            process="pipeline",
+            # Codec decoding is host-dispatch bound, like the autoregressive
+            # stage, so sharing one process makes the two contend for the
+            # interpreter instead of overlapping. Streaming frames cross this
+            # boundary host-side so the transport never needs CUDA IPC.
+            process="vocoder",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             gpu_memory_fraction=0.15,

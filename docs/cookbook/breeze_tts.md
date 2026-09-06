@@ -20,10 +20,9 @@ needed here.
 for English/Chinese cloning, design and direction, including streaming,
 uploaded voice references, cancellation and queued-request isolation. CPU tests
 cover request contracts, component loading, CFG/depth decoding and state ownership.
-This remains an experimental eager implementation: successful synthesis does not
-imply production latency or perceptual quality. The AR backbone and depth decoder
-are continuously batched, but CUDA graphs and compilation remain disabled. Do not
-interpret the upstream H100 latency numbers as SGLang-Omni results.
+This remains an experimental implementation: successful synthesis does not
+imply production latency or perceptual quality. Do not interpret the upstream
+H100 latency numbers as SGLang-Omni results.
 Tracking issue: [#1973](https://github.com/sgl-project/sglang-omni/issues/1973).
 
 ## Installation and launch
@@ -58,15 +57,18 @@ sgl-omni serve \
   --port 8000
 ```
 
-All stages default to the same GPU/process. The CUDA/BF16 eager AR engine runs up
-to **16 logical requests concurrently** by default. Each logical request expands
-to adjacent conditional/unconditional CFG rows internally; the public
-`tts_engine.engine.max_running_requests` setting counts logical requests, not
-those internal rows. Preprocessing and vocoder execution overlap AR generation.
+The AR engine and preprocessing share one GPU process; codec decoding runs in a
+second process on the same GPU, because it is host-dispatch bound like the AR
+stage and would otherwise contend with it for the interpreter. The CUDA/BF16 AR
+engine runs up to **16 logical requests concurrently** by default. Each logical
+request expands to adjacent conditional/unconditional CFG rows internally; the
+public `tts_engine.engine.max_running_requests` setting counts logical requests,
+not those internal rows. Preprocessing and codec decoding overlap AR generation.
 
 SGLang deterministic inference with FA3 attention is required so a seeded request
-keeps the same output as neighboring requests join or leave the live batch. TP,
-quantization, CUDA graphs, chunked prefill, radix prefix reuse and AR retraction
+keeps the same output as neighboring requests join or leave the live batch. The
+backbone and depth decode steps are CUDA-graph captured. TP, quantization,
+torch.compile, chunked prefill, radix prefix reuse and AR retraction
 are not implemented. Disabling prefix reuse is deliberate: placeholder IDs do not
 identify the continuous prompt/reference embeddings. The scheduler admits only
 complete CFG pairs, reserves KV for every configured row's bounded lifetime, and
@@ -172,23 +174,21 @@ concurrency 16; any smaller subset must be identified explicitly.
 
 ## Benchmark results
 
-SeedTTS-Eval full set on one H20, BF16/FA3 deterministic eager execution,
-concurrency 16, seed 42 and `max_new_tokens=750`. The checkpoint revision is
+SeedTTS-Eval full set on one H20, BF16/FA3 deterministic execution, concurrency
+16, seed 42 and `max_new_tokens=750`. The checkpoint revision is
 `799624c0b4a1daa8db6d28bbd9850043c0270734` and the dataset revision is
 `27f4c1adee83b5b29b7c4b375f6b976324bda308`. These are single-GPU reference
-numbers for this configuration, not a tuned upper bound; per-request RTF is
-still above realtime and is being optimized.
+numbers for this configuration, not a tuned upper bound.
 
 | Lang | Samples / failures | QPS | Audio s/s | Latency mean / p95 (s) | TTFA p95 (s) | RTF mean |
 |---|---:|---:|---:|---:|---:|---:|
-| EN | 1088 / 0 | 0.673 | 2.852 | 23.668 / 35.830 | 1.585 | 5.609 |
-| ZH | 2020 / 0 | 0.555 | 3.008 | 28.762 / 40.088 | 1.475 | 5.311 |
+| EN | 1088 / 0 | 2.868 | 12.25 | 5.553 / 8.065 | 2.483 | 1.336 |
+| ZH | 2020 / 0 | 2.634 | 14.46 | 6.061 / 8.106 | 1.974 | 1.113 |
 
 `/model_info` polling observed 32 live SGLang rows (16 logical requests); the
-median active sample also had 32 rows. Peak sampled GPU memory was 60.77 GiB.
-RTF is per request and includes time sharing the batch; aggregate `Audio s/s`
-shows that the c16 server produced more than two seconds of audio per wall-clock
-second even though each request's RTF was above one.
+median active sample also had 32 rows. RTF is per request and includes time
+spent sharing the batch; aggregate `Audio s/s` shows the c16 server producing
+over twelve seconds of audio per wall-clock second.
 
 Quality uses Qwen3-ASR-1.7B revision
 `7278e1e70fe206f11671096ffdd38061171dd6e5`, WavLM cosine similarity ×100 and
@@ -196,12 +196,11 @@ predicted UTMOS. All generated rows were scored; no sample exceeded 50% WER/CER.
 
 | Lang | Corpus WER/CER | >50% outliers | WavLM SIM | UTMOS |
 |---|---:|---:|---:|---:|
-| EN | 1.507% WER | 0 / 1088 | 69.461 | 3.927 |
-| ZH | 1.039% CER | 0 / 2020 | 74.488 | 3.193 |
+| EN | 1.767% WER | 0 / 1088 | 69.159 | 3.910 |
+| ZH | 0.968% CER | 0 / 2020 | 74.567 | 3.184 |
 
 These automated scores are not human listening tests. Voice similarity,
-instruction following and naturalness still require perceptual review. CUDA
-graphs also require separate validation.
+instruction following and naturalness still require perceptual review.
 
 ## Performance characteristics
 
@@ -212,40 +211,54 @@ forwards (180 layer passes) against 28 backbone layer passes, and each forward
 costs a fixed ~6.3 ms of host dispatch versus ~4.3 ms of device time, unchanged
 from 2 to 32 rows.
 
-Two changes address that directly. Sampling is vectorized across the batch
-through per-row seeds instead of one call per request, which makes the depth
-loop's cost independent of batch size (137 ms at sixteen requests before, ~104 ms
-after). The whole fifteen-step loop then runs under a CUDA graph with a static
-KV cache, captured per batch bucket at startup, which cuts it to 23.6 ms at one
-request and 28.9 ms at sixteen. Replays reproduce the eager tokens exactly.
+Sampling is vectorized across the batch through per-row seeds instead of one call
+per request, which makes the depth loop's cost independent of batch size (137 ms
+at sixteen requests before, ~104 ms after). The whole fifteen-step loop then runs
+under a CUDA graph with a static KV cache, captured per batch bucket at startup,
+which cuts it to 23.6 ms at one request and 28.9 ms at sixteen. Replays reproduce
+the eager tokens exactly.
+
+The backbone step is graph captured too. A decode step feeds it a continuous
+frame embedding rather than a token, and SGLang's decode graph only refreshes
+registered ForwardBatch slots on replay, so the step's embeddings are staged in a
+fixed table with `input_ids` holding their row indices -- a stable pointer the
+graph can replay.
+
+Codec decode is launch bound: a chunk costs ~10.6 ms at one frame and ~11.3 ms at
+sixteen, so the per-frame cost falls from 5.40 ms to 0.70 ms as the chunk grows.
+The stage therefore ramps its chunk size (2, 4, 8, then 16 frames) instead of
+decoding every 2 frames, which keeps the first chunk small for time to first
+audio. Batching several streams into one decode was measured as the worse trade:
+it costs more per stream-frame than one large single-stream chunk (0.776 ms
+against 0.703 ms) and is not bit-exact against decoding a stream alone.
+
+The codec stage also runs in its own process. It is host-dispatch bound like the
+autoregressive stage, so sharing one process made the two contend for the
+interpreter rather than overlap; a concurrent codec thread inflated an eager
+depth frame from 99 to 227 ms at one request. Streaming frames cross the process
+boundary host-side, so the transport never needs CUDA IPC. Preprocessing overlaps
+four requests for the same reason.
 
 Measured end to end on the fixed 32-sample streaming sweep, one H20, against the
-same sweep on the pre-optimization implementation:
+same sweep on the pre-optimization implementation. Zero failures either side:
 
-| Group | QPS | RTF mean | Latency mean (s) |
+| Group | QPS | RTF mean | TTFA p95 (s) |
 |---|---|---|---|
-| EN c1 | 0.097 -> 0.296 | 2.337 -> 0.813 | 10.3 -> 3.4 |
-| EN c8 | 0.446 -> 0.795 | 3.648 -> 2.411 | 16.0 -> 9.8 |
-| EN c16 | 0.613 -> 0.942 | 4.961 -> 3.972 | 21.6 -> 16.1 |
-| EN c32 | 0.638 -> 1.124 | 8.505 -> 6.236 | 34.9 -> 24.4 |
-| ZH c1 | 0.080 -> 0.213 | 2.339 -> 0.820 | 12.5 -> 4.7 |
-| ZH c8 | 0.389 -> 0.615 | 3.607 -> 2.283 | 19.3 -> 12.8 |
-| ZH c16 | 0.516 -> 0.753 | 5.117 -> 3.603 | 27.5 -> 20.2 |
-| ZH c32 | 0.510 -> 0.885 | 8.597 -> 5.604 | 44.2 -> 31.0 |
+| EN c1 | 0.097 -> 0.507 | 2.337 -> 0.475 | 0.24 |
+| EN c8 | 0.446 -> 2.022 | 3.648 -> 0.916 | 1.89 |
+| EN c16 | 0.613 -> 2.540 | 4.961 -> 1.336 | 4.35 |
+| EN c32 | 0.638 -> 2.496 | 8.505 -> 2.331 | 9.64 |
+| ZH c1 | 0.080 -> 0.377 | 2.339 -> 0.464 | 0.24 |
+| ZH c8 | 0.389 -> 1.599 | 3.607 -> 0.832 | 2.04 |
+| ZH c16 | 0.516 -> 2.222 | 5.117 -> 1.148 | 4.18 |
+| ZH c32 | 0.510 -> 2.196 | 8.597 -> 1.952 | 10.33 |
 
-Both sweeps had zero failed requests. A single request now runs below realtime;
-concurrent RTF does not, and time to first audio at c8 and above regressed
-(2.23 s to 5.79 s at EN c16) because the codec stage is now the limiting one.
+A request runs below realtime up to concurrency 8. Throughput saturates at the
+16-logical-request running limit, so c32 mainly adds queue delay. Seeded output
+stayed byte-identical across c1/c8/c16/c32 throughout.
 
-It decodes one stream at a time (`max_batch_size=1`) with CUDA graphs disabled,
-at about 10.8 ms per 2-frame chunk regardless of chunk size, which is roughly
-86 ms of serial work per step at concurrency 16. It also shares the pipeline
-process with the autoregressive stage, and both are host-dispatch bound, so they
-contend for the interpreter: with a concurrent codec thread an eager depth frame
-grew from 99 to 227 ms at one request. Giving the stage its own process removes
-that contention, but that path moves CUDA tensors over IPC and is unavailable on
-kernels without `pidfd_getfd`, so it is not enabled by default and is not
-measured here. Restoring cross-stream codec batching and graph capture, and
-re-enabling backbone CUDA graphs, remain unapplied.
+Still not enabled: torch.compile, quantization, chunked prefill, retraction and
+radix prefix reuse. Per-step host work in the runner still grows with batch size
+and is the next thing to attack.
 
 Reference implementation: [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts/tree/43e2ea1595297c4059477e2e4a300653761c759b).

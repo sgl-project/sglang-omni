@@ -21,6 +21,7 @@ from sglang_omni.models.breeze_tts.request_builders import (
 )
 from sglang_omni.models.breeze_tts.sampling import SamplingConfig
 from sglang_omni.models.breeze_tts.scheduler import BreezeScheduler
+from sglang_omni.models.breeze_tts.sglang_model import BreezeSGLangModel
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
@@ -33,14 +34,22 @@ def cpu_runner_device(monkeypatch):
     )
 
 
+class FakeModel(SimpleNamespace):
+    # Reuse the real decode-embedding allocator: before_decode stages every step
+    # through it, so a stub would hide the path a captured graph replays.
+    stage_decode_embeddings = BreezeSGLangModel.stage_decode_embeddings
+
+
 def make_model(config):
     depth = BreezeDepthDecoder(config["depth_decoder_config"]).eval()
     torch.nn.init.normal_(depth.codebooks_head.weight, std=0.1)
-    return SimpleNamespace(
+    return FakeModel(
         config=BreezeConfig(**config),
         depth_decoder=depth,
         lm_head=torch.nn.Linear(16, 12),
-        model=SimpleNamespace(norm=torch.nn.LayerNorm(16)),
+        model=SimpleNamespace(
+            norm=torch.nn.LayerNorm(16), embed_tokens=torch.nn.Embedding(64, 16)
+        ),
     )
 
 
@@ -94,9 +103,14 @@ def test_branch_ownership_prefill_and_feedback(tiny_config):
     assert result.next_token_ids.tolist() == [3, 3]
     assert len(data.generation.codes) == 1
     runner.before_decode(fb, None, requests)
-    torch.testing.assert_close(fb.input_embeds[0], fb.input_embeds[1])
+    # The step's embeddings are staged in the model's fixed decode table, with
+    # input_ids pointing at their rows, so a captured graph replays them.
+    assert fb.input_embeds is None
+    assert fb.input_ids[:2].tolist() == [0, 1]
+    staged = model.stage_decode_embeddings(2).weight
+    torch.testing.assert_close(staged[0], staged[1])
     torch.testing.assert_close(
-        fb.input_embeds[0], model.depth_decoder.embed_frames(data.generation.codes[-1])
+        staged[0], model.depth_decoder.embed_frames(data.generation.codes[-1])
     )
     # A companion row must not steal the primary row's pending codec frame.
     assert list(stream_output(twin.req.rid, twin, None)) == []
@@ -212,12 +226,14 @@ def test_batched_advance_compacts_eos_and_routes_feedback(tiny_config, monkeypat
     assert data[1].generation.seen is None
     assert data[1].generation.feedback is None
     # Simulate EOS removal and batch reordering between decode steps.
-    fb = SimpleNamespace()
+    fb = SimpleNamespace(input_ids=torch.zeros(8, dtype=torch.long))
     runner.before_decode(fb, None, requests[4:] + requests[:2])
+    staged = model.stage_decode_embeddings(4).weight
+    assert fb.input_ids[:4].tolist() == [0, 1, 2, 3]
     for row, d in zip((0, 2), (data[2], data[0])):
         expected = model.depth_decoder.embed_frames(d.generation.codes[-1])
-        torch.testing.assert_close(fb.input_embeds[row], expected)
-        torch.testing.assert_close(fb.input_embeds[row + 1], expected)
+        torch.testing.assert_close(staged[row], expected)
+        torch.testing.assert_close(staged[row + 1], expected)
         assert len(list(stream_output(d.req.rid, d, None))) == 1
         assert list(stream_output(d.req.rid, d, None)) == []
 
@@ -354,7 +370,7 @@ def test_scheduler_abort_also_retires_cfg_twin(monkeypatch):
         ("enable_deterministic_inference", False),
         ("attention_backend", "triton"),
         ("disable_radix_cache", False),
-        ("disable_cuda_graph", False),
+        ("disable_cuda_graph", True),
         ("chunked_prefill_size", 16),
         ("dtype", "float16"),
         ("quantization", "fp8"),

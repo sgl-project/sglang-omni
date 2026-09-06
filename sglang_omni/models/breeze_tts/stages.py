@@ -37,7 +37,13 @@ def create_preprocessing_executor(model_path: str, *, gpu_id=None, device=None):
     tokenizer = load_text_tokenizer(checkpoint)
     audio_tokenizer = load_audio_tokenizer(checkpoint, device)
     return SimpleScheduler(
-        lambda payload: frontend.prepare(payload, tokenizer, audio_tokenizer)
+        lambda payload: frontend.prepare(payload, tokenizer, audio_tokenizer),
+        # prepare() reads module weights and per-request data only, so it is
+        # re-entrant. Overlapping a few requests hides each one's audio decode
+        # and tokenization behind another's encoder forward, which is what keeps
+        # a burst of arrivals from queueing one text encode at a time. Kept
+        # small because these forwards share the device with the AR stage.
+        max_concurrency=4,
     )
 
 
@@ -72,9 +78,14 @@ def create_vocoder_executor(model_path: str, *, gpu_id=None, device=None):
     return Qwen3TTSStreamingVocoderScheduler(
         tokenizer,
         device=device,
-        stream_stride=2,
-        stream_followup_stride=2,
-        initial_chunk_frames=2,
+        # Codec decode is launch bound: one chunk costs ~10.6 ms at 1 frame and
+        # ~11.3 ms at 16, so per-frame cost falls from 5.40 ms to 0.70 ms as the
+        # chunk grows. Ramp the chunk size instead of decoding every 2 frames,
+        # which keeps the first chunk small for time to first audio while making
+        # steady-state decoding cheap enough to stay off the critical path.
+        stream_stride=16,
+        stream_followup_stride=16,
+        stream_chunk_ramp=(2, 4, 8, 16),
         max_batch_size=1,
         initial_max_batch_size=1,
         followup_max_batch_size=1,

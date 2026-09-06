@@ -44,7 +44,17 @@ class BreezeModelRunner(ModelRunner):
         if any(generation.feedback is None for generation in generations):
             raise RuntimeError("Breeze decode request has no complete feedback frame")
         feedback = torch.stack([generation.feedback for generation in generations])
-        forward_batch.input_embeds = feedback.repeat_interleave(2, dim=0).contiguous()
+        rows = feedback.repeat_interleave(2, dim=0).contiguous()
+        # Write this step's embeddings into the model's fixed decode table and
+        # point input_ids at their rows, instead of handing the batch a fresh
+        # input_embeds tensor. input_ids is a registered CUDA-graph slot, so this
+        # is the form a captured decode graph can replay.
+        table = self.model.stage_decode_embeddings(rows.shape[0])
+        table.weight[: rows.shape[0]].copy_(rows)
+        forward_batch.input_ids[: rows.shape[0]].copy_(
+            torch.arange(rows.shape[0], device=forward_batch.input_ids.device)
+        )
+        forward_batch.input_embeds = None
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         del forward_batch, schedule_batch
@@ -120,6 +130,10 @@ class BreezeModelRunner(ModelRunner):
             codebook_size=model.config.codec_codebook_size,
         ).detach()
         feedback = model.depth_decoder.embed_frames(frames).detach()
+        # The vocoder stage runs in its own process, and a CUDA tensor would have
+        # to cross that boundary over IPC. One copy per step moves every frame
+        # host-side at once, on the transfer this step already pays for sampling.
+        host_frames = frames.to("cpu")
 
         for row, (request_index, generation) in enumerate(
             zip(active, active_generations, strict=True)
@@ -127,7 +141,7 @@ class BreezeModelRunner(ModelRunner):
             frame = frames[row].clone()
             generation.note_token(sampled_ids[request_index], logits.shape[-1], device)
             generation.codes.append(frame)
-            generation.pending_chunk = frame
+            generation.pending_chunk = host_frames[row]
             # Clone views out of the compact batch so one request's retirement
             # cannot retain or alias another request's frame storage.
             generation.feedback = feedback[row].clone()

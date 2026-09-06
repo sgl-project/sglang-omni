@@ -41,7 +41,10 @@ class BreezeEngineBuilder(TtsEngineBuilder):
             # invariant to live-batch shape changes.
             "enable_deterministic_inference": True,
             "attention_backend": "fa3",
-            "disable_cuda_graph": True,
+            "disable_cuda_graph": False,
+            # Decode graphs are captured over physical CFG rows; adjust_overrides
+            # keeps this at twice whatever logical limit the operator sets.
+            "cuda_graph_max_bs": 32,
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -61,6 +64,7 @@ class BreezeEngineBuilder(TtsEngineBuilder):
                 "request count"
             )
         overrides["max_running_requests"] = 2 * logical_requests
+        overrides["cuda_graph_max_bs"] = 2 * logical_requests
         queued = overrides.get("max_queued_requests")
         if queued is not None:
             queued = int(queued)
@@ -75,7 +79,7 @@ class BreezeEngineBuilder(TtsEngineBuilder):
             ("enable_prefill_delayer", False),
             ("enable_deterministic_inference", True),
             ("attention_backend", "fa3"),
-            ("disable_cuda_graph", True),
+            ("disable_cuda_graph", False),
             ("disable_overlap_schedule", True),
             ("disable_radix_cache", True),
             ("enable_torch_compile", False),
@@ -108,6 +112,9 @@ class BreezeEngineBuilder(TtsEngineBuilder):
         self._logical_requests = max(
             1, int(getattr(server_args, "max_running_requests", 2) or 2) // 2
         )
+        # Allocate the decode-step embedding table before SGLang captures its
+        # graphs, so capture runs the same path as replay.
+        model.stage_decode_embeddings(2 * self._logical_requests)
 
     def compile_model(self, model, server_args):
         """Capture the depth loop before serving, while the stream is quiet."""
