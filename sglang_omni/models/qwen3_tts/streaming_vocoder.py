@@ -792,8 +792,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._pinned_staging_disabled = self._device.type != "cuda"
         self._cuda_decode_failed = False
         if self._device.type == "cuda":
-            least_priority, greatest_priority = torch.cuda.Stream.priority_range()
-            followup_priority = min(least_priority, greatest_priority + 1)
+            followup_priority = self._decode_stream_priority()
             self._decode_stream = torch.cuda.Stream(
                 device=self._device,
                 priority=followup_priority,
@@ -912,6 +911,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         graph_enabled = bool(
             enabled and self._async_decode and not self._deterministic_inference
         )
+        graph_priority = (
+            self._decode_stream_priority() if self._device.type == "cuda" else 0
+        )
         graph_batch_sizes = self._resolve_incremental_warm_graph_batch_sizes(
             max_batch_size=min(
                 self._followup_max_batch_size,
@@ -929,6 +931,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             min_free_gb=min_free_gb,
             enabled=graph_enabled,
             arena=self._codec_arena,
+            stream_priority=graph_priority,
         )
         # note (luojiaxuan): arrival jitter and terminal chunks hand the WARM
         # path every fresh-frame count from 1 up to the steady stride, not only
@@ -969,6 +972,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     (self._stream_followup_stride,) if compile_steady else ()
                 ),
                 arena=self._codec_arena,
+                stream_priority=graph_priority,
             )
             for _ in range(worker_count)
         )
@@ -1575,6 +1579,12 @@ class Qwen3TTSStreamingVocoderScheduler(
         stream.wait_event(state.codes_ready)
         for chunk in state.code_chunks:
             chunk.record_stream(stream)
+
+    @staticmethod
+    def _decode_stream_priority() -> int:
+        """One notch above the lowest priority: ahead of the talker, not maximal."""
+        least_priority, greatest_priority = torch.cuda.Stream.priority_range()
+        return min(least_priority, greatest_priority + 1)
 
     def _decode_stream_context(self) -> Any:
         if self._decode_stream is None:

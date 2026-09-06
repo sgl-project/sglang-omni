@@ -202,6 +202,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         enabled: bool = True,
         compile_fresh_frames: Sequence[int] = (),
         arena: Any = None,
+        stream_priority: int = 0,
     ) -> None:
         self._decoder = decoder
         self._compile_fresh_frames = frozenset(int(f) for f in compile_fresh_frames)
@@ -209,6 +210,10 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         # rows from the arena, decodes, and scatters the advanced rows back,
         # all inside the replay. The host then only writes slot ids and codes.
         self._arena = arena
+        # note (luojiaxuan): CUDA instantiates a captured graph with node
+        # priorities taken from the capture stream, not from the stream that
+        # replays it, so capture at the priority the decode streams run at.
+        self._stream_priority = int(stream_priority)
         self._device = torch.device(device)
         self._dtype = dtype
         self._num_quantizers = int(num_quantizers)
@@ -269,7 +274,9 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 self._memory_stats["before"] = before
                 self._require_headroom(before["free_bytes"])
                 pool = torch.cuda.graph_pool_handle()
-                capture_stream = torch.cuda.Stream(device=self._device)
+                capture_stream = torch.cuda.Stream(
+                    device=self._device, priority=self._stream_priority
+                )
                 for key in sorted(
                     keys,
                     key=lambda item: (item.batch_bucket, item.fresh_frames),
