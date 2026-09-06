@@ -479,3 +479,5 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
 - **修复后 r1 验收(2026-09-06 11:37 PT,默认树 = 增量 + WARM/COLD 图 + 编译内核 + 提前发射 + 锁等待有界)**:
   47/47 完成、underrun 0、first playable p50 45.3ms / p95 73ms(legacy 同批 44.5 / 73.5ms)、E2E p99 733ms。
   低负载下增量路径与 legacy 打平且无停顿。三 seed r20 与首帧事件剖面在同一棵树上重跑中。
+- 同一棵树关掉 CUDA graph 与编译内核(eager 增量)的 r1 对照:47/47、underrun 0、first playable
+  p50 54.0ms / p95 94ms、E2E p99 907ms——同样无停顿,graph 在首帧上省约 9ms(p50)、尾部省 20-30ms。
