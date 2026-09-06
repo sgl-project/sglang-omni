@@ -6892,3 +6892,64 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
                 str(tmp_path), names - {"talker.model.text_embedding.weight"}
             )
         )
+
+
+def test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_lock() -> None:
+    """A worker owing a commit must not wait on a sibling's idle collect."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        followup_worker_count=2,
+        followup_batch_wait_ms=5,
+    )
+
+    idle_holds_lock = threading.Event()
+    release_idle = threading.Event()
+    drained = threading.Event()
+    served = threading.Event()
+
+    def _worker(index):
+        scheduler._worker_ctx.index = index
+        scheduler._run_followup_worker(index)
+
+    idle = threading.Thread(target=_worker, args=(0,))
+
+    def _collect(**kwargs):
+        if scheduler._worker_ctx.index == 0:
+            idle_holds_lock.set()
+            release_idle.wait(5)
+            return None
+        if not served.is_set():
+            served.set()
+            return [("req", object())]
+        release_idle.wait(5)
+        return None
+
+    def _run_batch(batch):
+        # note (luojiaxuan): the cohort is now in flight; hand the collect
+        # lock to the idle sibling before this worker loops back for it.
+        scheduler._pending_incremental().append(object())
+        idle.start()
+        assert idle_holds_lock.wait(5)
+
+    def _drain(*, keep):
+        del scheduler._pending_incremental()[keep:]
+        if keep == 0:
+            drained.set()
+
+    scheduler._collect_followup_batch = _collect
+    scheduler._run_followup_batch = _run_batch
+    scheduler._drain_pending_incremental = _drain
+
+    busy = threading.Thread(target=_worker, args=(1,))
+    busy.start()
+    # note (luojiaxuan): the idle sibling holds the lock throughout, so the
+    # only way this fires is the bounded lock wait falling through to the
+    # drain instead of blocking behind the sibling.
+    assert drained.wait(2)
+    assert scheduler._followup_collect_lock.locked()
+
+    release_idle.set()
+    idle.join(5)
+    busy.join(5)
+    assert not idle.is_alive() and not busy.is_alive()
