@@ -81,9 +81,6 @@ def build_sglang_tts_request(
 ) -> S2ProSGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
-    from sglang.srt.utils.hf_transformers_utils import attach_additional_stop_token_ids
-
-    from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
     input_ids_list = list(state.input_ids)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
@@ -102,12 +99,21 @@ def build_sglang_tts_request(
             for p in vq_parts
         ]
 
+    # Imports stay in the fallback branch: the cached-invariant path is the
+    # per-request hot path and must not pay for them.
     if im_end_token_id is None or vocab_size is None:
+        from sglang.srt.utils.hf_transformers_utils import (
+            attach_additional_stop_token_ids,
+        )
+
         if not hasattr(tokenizer, "additional_stop_token_ids"):
             attach_additional_stop_token_ids(tokenizer)
         if im_end_token_id is None:
-            tokenizer_adapter = S2ProTokenizerAdapter(tokenizer)
-            im_end_token_id = int(tokenizer_adapter.eos_token_ids[0])
+            from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
+                S2ProTokenizerAdapter,
+            )
+
+            im_end_token_id = int(S2ProTokenizerAdapter(tokenizer).eos_token_ids[0])
         if vocab_size is None:
             # note (Gaokai): the semantic tokens live in the added vocab
             # (151678..155773 > tokenizer.vocab_size); Req must carry the full
