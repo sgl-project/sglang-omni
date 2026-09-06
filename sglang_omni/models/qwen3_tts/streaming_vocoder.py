@@ -2296,10 +2296,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                 # Note (Qihao Liu): gathering is inside the guard too: a failure
                 # here must degrade the cohort, not kill the worker thread.
                 cohort_state = arena.gather(slots)
-                cohort_state.frame_positions = torch.tensor(
-                    [entry[1].codec_frame_position for entry in group],
-                    device=self._device,
-                    dtype=torch.long,
+                cohort_state.frame_positions = arena.positions(
+                    [entry[1].codec_frame_position for entry in group]
                 )
                 batch = _IncrementalDecodeBatch(
                     decoder=decoder,

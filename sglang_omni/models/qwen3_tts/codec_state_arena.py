@@ -46,6 +46,14 @@ class Qwen3TTSCodecStateArena:
             self._num_slots, device=self._device, dtype=dtype
         )
         self._lock = threading.Lock()
+        # note (luojiaxuan): cohort indices and positions reach the device
+        # through per-thread pinned staging with non_blocking copies. Building
+        # them with ``torch.as_tensor(list, device=cuda)`` issues a pageable
+        # H2D copy, which blocks the host until every kernel already queued on
+        # the stream (the decode just launched) has finished: an implicit
+        # resolve() on every gather and scatter. A worker reuses its staging
+        # only after resolve() has synchronized its previous cohort.
+        self._staging = threading.local()
         self._free: list[int] = list(reversed(range(self._num_slots)))
         self._retired: set[int] = set()
         self._exhausted_count = 0
@@ -116,10 +124,27 @@ class Qwen3TTSCodecStateArena:
             buffer[slot].zero_()
         self._storage.frame_positions[slot] = 0
 
-    def _index(self, slots: Sequence[int]) -> torch.Tensor:
-        if not slots:
+    def _staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
+        count = len(values)
+        if count == 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
-        return torch.as_tensor(list(slots), device=self._device, dtype=torch.long)
+        host = getattr(self._staging, f"{name}_host", None)
+        if host is None:
+            host = torch.empty(self._num_slots, dtype=torch.long).pin_memory()
+            device = torch.empty(self._num_slots, dtype=torch.long, device=self._device)
+            setattr(self._staging, f"{name}_host", host)
+            setattr(self._staging, f"{name}_device", device)
+        device = getattr(self._staging, f"{name}_device")
+        host[:count].copy_(torch.as_tensor(list(values), dtype=torch.long))
+        device[:count].copy_(host[:count], non_blocking=True)
+        return device[:count]
+
+    def _index(self, slots: Sequence[int]) -> torch.Tensor:
+        return self._staged("index", slots)
+
+    def positions(self, values: Sequence[int]) -> torch.Tensor:
+        """Stage a cohort's frame positions on the device without a host sync."""
+        return self._staged("positions", values)
 
     def gather(self, slots: Sequence[int]) -> Qwen3TTSIncrementalCodecState:
         """Select a cohort's rows into one contiguous state."""
