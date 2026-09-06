@@ -1,0 +1,104 @@
+name: XPU Docker Release
+
+# Publishes the XPU docker image to Docker Hub after every merge to main
+# that changes docker/xpu.Dockerfile or pyproject_xpu.toml -- the same
+# inputs that force omni-xpu-ci.yaml onto its build path, so the published
+# image tracks whatever PR CI just verified.
+#
+# Design:
+#   * Trigger on push to main, paths scoped to the two files that go into
+#     the image. workflow_dispatch is available as a manual escape hatch
+#     (also used to seed the first image before any inputs change).
+#   * Build on the same self-hosted runner PR CI uses. BuildKit's persistent
+#     cache from PR CI's pre-merge build is expected to hit for every layer,
+#     keeping the "rebuild" in seconds-to-minutes. Reproducibility comes
+#     from the pinned base image / pinned SGLang / pinned sgl-kernel-xpu
+#     ref inside the Dockerfile, not from --no-cache.
+#   * Push with exponential backoff -- registry pushes are noisy.
+#   * Repo guard so forks do not accidentally publish to intel/*.
+#
+# Prerequisites (fleet-side, not enforced by this workflow):
+#   * self-hosted runner labeled [self-hosted, intel-omni-bmg] with docker
+#     daemon reachable to the runner user;
+#   * `prod` GitHub Environment configured on the repo, with
+#     DOCKERHUB_INTEL_USERNAME and DOCKERHUB_INTEL_TOKEN scoped to it
+#     (ideally gated with a required reviewer). Uses the intel/* scoped
+#     credential pair, matching sglang upstream's release workflows;
+#   * `intel/sglang-omni-xpu-dev` repository on Docker Hub with the token above
+#     granted push access.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/xpu.Dockerfile"
+      - "pyproject_xpu.toml"
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel a mid-flight release push -- half-written registry state
+  # is worse than a slightly delayed publish.
+  group: xpu-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish-xpu
+    if: github.repository == 'sgl-project/sglang-omni'
+    runs-on: [self-hosted, intel-omni-bmg]
+    environment: prod
+    timeout-minutes: 90
+    env:
+      IMAGE_NAME: intel/sglang-omni-xpu-dev
+    steps:
+      - name: Checkout merged code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute image tag
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "IMAGE_TAG=dev-xpu-bmg-$(date -u +%Y%m%d)-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_INTEL_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_INTEL_TOKEN }}
+
+      - name: Build XPU image
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker build -f docker/xpu.Dockerfile \
+            -t "${IMAGE_NAME}:latest" \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            .
+
+      - name: Push to Docker Hub
+        shell: bash
+        run: |
+          set -euxo pipefail
+          push_with_retry() {
+            for i in 1 2 3 4 5; do
+              docker push "$1" && return 0
+              echo "push failed (attempt $i), retrying in $((i*15))s..."
+              sleep $((i*15))
+            done
+            return 1
+          }
+          push_with_retry "${IMAGE_NAME}:${IMAGE_TAG}"
+          push_with_retry "${IMAGE_NAME}:latest"
+
+      - name: Cleanup local tags
+        if: always()
+        shell: bash
+        run: |
+          set -eux
+          docker rmi -f "${IMAGE_NAME}:latest" || true
+          docker rmi -f "${IMAGE_NAME}:${IMAGE_TAG}" || true

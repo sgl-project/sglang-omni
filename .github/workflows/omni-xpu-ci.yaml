@@ -3,31 +3,39 @@ name: XPU CI
 # Per-PR XPU CI for sglang-omni.
 #
 # DAG:
-#   preflight -> xpu-ci
+#   check-changes -> preflight -> xpu-ci
+#
+# check-changes (ubuntu-latest) runs dorny/paths-filter and emits two
+# booleans: `xpu` gates the whole pipeline so PRs that touch no XPU path
+# skip cleanly (skip = pass, so this workflow can safely become a required
+# status check), and `image` distinguishes source-only PRs from PRs that
+# change image inputs (docker/xpu.Dockerfile or pyproject_xpu.toml).
 #
 # preflight (ubuntu-latest) enforces the PR gate: fetches live label/draft
 # state, blocks draft PRs, requires the `run-ci` label, and runs
-# .github/scripts/pr_ci_gate.py for lint + mergeability. It also pins the
-# exact SHA that xpu-ci checks out, so a force-push mid-run cannot split
+# .github/scripts/pr_ci_gate.py for lint + mergeability. It pins the exact
+# SHA that xpu-ci checks out, so a force-push mid-run cannot split
 # preflight and test across two commits.
 #
-# xpu-ci (self-hosted intel-omni-bmg) builds the XPU docker image from the
-# PR checkout using docker/xpu.Dockerfile, starts a long-lived container
-# with /dev/dri exposed, runs the XPU unit tests inside it, and removes
-# both the container and the image on completion so nothing is retained
-# across runs. GHA's `container:` block is intentionally NOT used -- it
-# would try to pull the image before any step runs, and we want to build
-# it here instead.
-#
-# Trade-offs vs a prebuilt image: every push pays the docker build cost
-# (torch+xpu wheels, sglang clone + install, sglang-omni install). In
-# exchange there is no dependency on a companion release workflow, and
-# every test run exercises the Dockerfile itself.
+# xpu-ci (self-hosted intel-omni-bmg) sudo-cleans the workspace first to
+# reap root-owned droppings from prior bind-mount runs that would otherwise
+# fail actions/checkout, then builds locally when image inputs changed,
+# otherwise pulls intel/sglang-omni-xpu-dev:latest (falling back to a local
+# build if the pull fails -- registry outage, or before the first release
+# seeds the tag). It bind-mounts the PR source at /workspace/sglang-omni-pr
+# and refreshes the editable install so tests always exercise PR code, runs
+# the container with ZE_AFFINITY_MASK=6,7 to pin to Level Zero devices 6-7
+# (leaving 0-5 free for co-tenants on the shared runner), then runs the XPU
+# unit tests and unconditionally removes the container / dangling images on
+# completion. The image consumed on the pull path is published by
+# omni-xpu-release.yaml on merges that change the same image inputs.
 #
 # Runtime prerequisites (fleet-side, not enforced by this workflow):
 #   * self-hosted runner labeled [self-hosted, intel-omni-bmg] with /dev/dri
 #     exposed, docker daemon reachable to the runner user, and the runner
-#     user in the render/video groups.
+#     user in the render/video groups;
+#   * intel/sglang-omni-xpu-dev:latest published on Docker Hub (or the pull
+#     path falls back to a local build -- see omni-xpu-release.yaml).
 
 on:
   pull_request:
@@ -50,11 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      # workflow_dispatch on main lets dorny/paths-filter inspect only the
-      # tip commit, so a manual run against a non-XPU tip would skip the
-      # heavy job. Force `true` on manual dispatch; keep path filtering for
-      # pull requests.
       xpu: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.xpu }}
+      image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.image }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -69,6 +74,9 @@ jobs:
               - 'scripts/xpu/**'
               - 'docker/xpu.Dockerfile'
               - '.github/workflows/omni-xpu-ci.yaml'
+            image:
+              - 'docker/xpu.Dockerfile'
+              - 'pyproject_xpu.toml'
 
   preflight:
     name: xpu-ci-gate
@@ -87,8 +95,6 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            // Reruns reuse the original pull_request event payload, so fetch
-            // live labels/draft state after /tag-and-rerun-ci adds run-ci.
             const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -152,12 +158,14 @@ jobs:
     runs-on: [self-hosted, intel-omni-bmg]
     timeout-minutes: 120
     env:
-      # Unique per push + attempt so parallel PRs / reruns cannot collide on
-      # the local docker daemon. Full SHA (not short) so image tags are
-      # trivially traceable back to the tested commit.
       IMAGE_TAG: sglang-omni-xpu-ci:${{ github.event.pull_request.number || github.run_id }}-${{ needs.preflight.outputs.exact_sha }}
       CONTAINER_NAME: ci_omni_xpu_${{ github.event.pull_request.number || github.run_id }}_${{ github.run_attempt }}
+      PUBLISHED_IMAGE: intel/sglang-omni-xpu-dev:latest
     steps:
+      - name: Force-clean workspace (root-owned files from prior runs)
+        shell: bash
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.[!.]* 2>/dev/null || true
+
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
@@ -165,21 +173,30 @@ jobs:
           fetch-depth: 0
 
       - name: Build XPU docker image
-        # In-place build of docker/xpu.Dockerfile on the runner (no registry
-        # pull). Heaviest step: torch+xpu wheels, sglang clone + build,
-        # sglang-omni editable install. Doubles as Dockerfile CI.
+        if: needs.check-changes.outputs.image == 'true'
         timeout-minutes: 90
         shell: bash
         run: |
           set -euxo pipefail
           docker build -f docker/xpu.Dockerfile -t "${IMAGE_TAG}" .
 
+      - name: Pull XPU docker image
+        if: needs.check-changes.outputs.image != 'true'
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if docker pull "${PUBLISHED_IMAGE}"; then
+            docker tag "${PUBLISHED_IMAGE}" "${IMAGE_TAG}"
+          else
+            echo "docker pull ${PUBLISHED_IMAGE} failed -- falling back to local build"
+            docker build -f docker/xpu.Dockerfile -t "${IMAGE_TAG}" .
+          fi
+
       - name: Start CI container
         shell: bash
         run: |
           set -euxo pipefail
-          # Idempotent: leftover container from a killed prior attempt would
-          # block `docker run --name` here.
           docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
           docker run -dt \
             --name "${CONTAINER_NAME}" \
@@ -188,13 +205,19 @@ jobs:
             --group-add render \
             --shm-size 32g \
             -v /dev/shm:/dev/shm \
+            -v "${GITHUB_WORKSPACE}:/workspace/sglang-omni-pr" \
+            -e ZE_AFFINITY_MASK=6,7 \
             "${IMAGE_TAG}" \
             sleep infinity
 
+      - name: Refresh sglang-omni editable install from PR source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
+            bash -c "cp pyproject_xpu.toml pyproject.toml && pip install --no-cache-dir --no-deps --no-build-isolation -e ."
+
       - name: Verify XPU state
-        # Fail the job if torch.xpu is unavailable: a broken XPU stack lets
-        # device-agnostic tests silently fall back to CPU and pass, keeping
-        # CI green on a regressed image. sycl-ls is diagnostic only.
         shell: bash
         run: |
           docker exec "${CONTAINER_NAME}" python -c "
@@ -210,9 +233,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          docker exec -w /workspace/sglang-omni "${CONTAINER_NAME}" \
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pip install --no-cache-dir pytest pytest-asyncio
-          docker exec -w /workspace/sglang-omni "${CONTAINER_NAME}" \
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pytest tests/unit_test/xpu/test_device_layer.py -v -x
 
       - name: Cleanup container and image
@@ -220,12 +243,6 @@ jobs:
         shell: bash
         run: |
           set -eux
-          # SIGTERM sglang before docker rm -f to drain GPU context and
-          # avoid a GT reset on Battlemage (learned from upstream sglang's
-          # pr-test-xpu.yml cleanup step). Patterns use character classes
-          # (e.g. [s]glang) so pkill/pgrep do not match their own argv, which
-          # would otherwise send SIGTERM to the enclosing bash -c and stop
-          # the drain loop before it runs.
           if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
             docker exec "${CONTAINER_NAME}" bash -c '
               pkill -TERM -f "[s]glang|[r]un_suite|[p]ython3.*[t]est_" 2>/dev/null || true
@@ -238,8 +255,4 @@ jobs:
           fi
           docker rm -f "${CONTAINER_NAME}" || true
           docker rmi -f "${IMAGE_TAG}" || true
-          # Reap dangling images left behind when a prior push was cancelled
-          # mid-build. NOT builder prune -f -- that evicts the shared
-          # BuildKit cache (25-64 GB observed) and forces a 20+ min rebuild
-          # on the next run.
           docker image prune -f || true
