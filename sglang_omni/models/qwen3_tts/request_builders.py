@@ -127,6 +127,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     enforce_request_limits: bool = True
     output_codes: list[torch.Tensor] = field(default_factory=list)
     latest_stream_code_chunk: torch.Tensor | None = None
+    codes_ready_event: Any = None
     stream_ref_sent: bool = False
     stream_codec_output: bool = False
     suppress_bootstrap_silence: bool = False
@@ -1588,6 +1589,11 @@ def make_qwen3_tts_scheduler_adapters(*, model: Any, wrapper: Any):
             data.stream_ref_sent = True
 
         codes = codes.detach().to(dtype=torch.long)
+        if data.codes_ready_event is not None:
+            # note (luojiaxuan): the vocoder shares this process and reads the
+            # chunk on its own stream, so it waits on the event that marks the
+            # chunk complete instead of on everything the talker has enqueued.
+            metadata["codes_ready_event"] = data.codes_ready_event
 
         return [
             OutgoingMessage(

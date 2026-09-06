@@ -1499,6 +1499,7 @@ class Stage:
             )
             return
         self._record_nonlocal_stream_target(request_id, target)
+        metadata = stage_io.strip_process_local_metadata(metadata)
         if not isinstance(data, torch.Tensor):
             raise TypeError(
                 "relay-backed stream chunks must be torch.Tensor, got "

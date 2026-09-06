@@ -252,6 +252,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         batch_size = len(scheduler_output.requests)
         codes_snap = self.model._output_codes[:batch_size].detach().clone()
         embeds_snap = self.model._output_embeds[:batch_size].detach().clone()
+        codes_ready = None
+        if codes_snap.is_cuda:
+            codes_ready = torch.cuda.Event()
+            codes_ready.record()
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == eos_id:
@@ -259,6 +263,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             code_chunk = codes_snap[row_idx]
             sched_req.data.output_codes.append(code_chunk)
             sched_req.data.latest_stream_code_chunk = code_chunk
+            sched_req.data.codes_ready_event = codes_ready
             sched_req.data.pending_feedback_queue.append(embeds_snap[row_idx])
 
     def _sample_positions(

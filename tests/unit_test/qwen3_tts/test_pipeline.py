@@ -2657,9 +2657,10 @@ def test_qwen3_tts_streaming_vocoder_avoids_cuda_value_sync() -> None:
     assert scheduler.validate_chunk("request", state, Codes()) is chunk
 
 
-def test_qwen3_tts_decode_stream_waits_for_input_producer(
+def test_qwen3_tts_decode_plan_waits_for_the_talker_chunk_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Planning orders the worker's stream after the newest chunk's event only."""
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
@@ -2667,43 +2668,56 @@ def test_qwen3_tts_decode_stream_waits_for_input_producer(
     state = scheduler.create_stream_state("request")
     state.code_chunks.append(torch.ones((1, 2), dtype=torch.long))
     state.total_frames = 1
+    ready = object()
+    state.codes_ready = ready
+
+    waited: list[object] = []
+
+    class WorkerStream:
+        def wait_event(self, event):
+            waited.append(event)
+
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: WorkerStream())
+
     plan = scheduler._build_decode_plan(state, is_final=True)
     assert plan is not None
+    assert waited == [ready]
 
-    producer_stream = object()
-    events: list[object] = []
+    state.codes_ready = None
+    waited.clear()
+    assert scheduler._build_decode_plan(state, is_final=True) is not None
+    assert waited == []
 
-    class DecodeStream:
-        def wait_stream(self, stream):
-            events.append(("wait", stream))
 
-        def synchronize(self):
-            events.append("synchronize")
-
-    decode_stream = DecodeStream()
-
-    class StreamContext:
-        def __enter__(self):
-            events.append("enter")
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-    monkeypatch.setattr(
-        torch.cuda,
-        "current_stream",
-        lambda device: producer_stream,
+def test_qwen3_tts_ingest_keeps_the_newest_chunk_event() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
     )
-    monkeypatch.setattr(
-        torch.cuda,
-        "stream",
-        lambda stream: StreamContext(),
+    state = scheduler.create_stream_state("request")
+    state.num_quantizers = 2
+    first, second = object(), object()
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "codes_ready_event": first},
+        origin="stream metadata",
     )
-
-    handle = scheduler._launch_decode_plans([plan], stream=decode_stream)
-    handle.resolve()
-
-    assert events[0] == ("wait", producer_stream)
+    scheduler.ingest("request", state, torch.ones((1, 2), dtype=torch.long))
+    assert state.codes_ready is first
+    scheduler.latch_stream_contract(
+        "request",
+        state,
+        {"num_quantizers": 2, "codes_ready_event": second},
+        origin="stream metadata",
+    )
+    scheduler.ingest("request", state, torch.ones((1, 2), dtype=torch.long))
+    assert state.codes_ready is second
+    scheduler.latch_stream_contract(
+        "request", state, {"num_quantizers": 2}, origin="stream metadata"
+    )
+    scheduler.ingest("request", state, torch.ones((1, 2), dtype=torch.long))
+    assert state.codes_ready is None
 
 
 def test_qwen3_tts_pageable_fallback_syncs_with_empty_delta(
@@ -2764,7 +2778,7 @@ def test_qwen3_tts_pageable_fallback_syncs_with_empty_delta(
 def test_qwen3_tts_decode_launch_defers_resolve_to_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Launch records the slot event; resolve() waits on it; the event is reused."""
+    """Launch records the slot event on the worker's own stream; resolve() waits on it."""
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
         device="cpu",
@@ -2782,7 +2796,7 @@ def test_qwen3_tts_decode_launch_defers_resolve_to_event(
 
     handle = scheduler._launch_decode_plans([plan], stream=stream)
 
-    assert events == ["wait", "record"], events
+    assert events == ["record"], events
     assert handle.slot is slot and slot.busy, "a pending handle owns the slot"
     assert (
         handle.decoder_input_keepalive is not None
