@@ -38,7 +38,7 @@ impl Drop for TestDir {
 
 fn valid_config(listen: &str, drain_timeout_ms: u64, filter: &str) -> String {
     format!(
-        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 2\nfailure_threshold = 3\n\n[http_generation]\ntrust_domain = \"local\"\nstreamed_request_max_bytes = 16777216\nconnect_timeout_ms = 1000\nrequest_timeout_ms = 5000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
+        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 2\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 8388608\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[http_generation]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
     )
 }
 
@@ -71,6 +71,41 @@ fn append_worker(base: &str, worker_id: &str, port: u16) -> String {
     format!("{base}\n{worker}")
 }
 
+fn valid_translation_config() -> String {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "generation_http = 64",
+        "generation_http = 64\ntranscription_http = 16",
+    );
+    format!(
+        "{base}\n[[workers.service_profiles]]\nservice = \"transcription_http\"\nmodel_ids = [\"omni\"]\ntask = \"translate\"\nresponse_formats = [\"json\", \"text\", \"verbose_json\", \"srt\", \"vtt\", \"sse\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\n\n[http_media]\nroutes = [\"translation\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
+    )
+}
+
+fn media_only_config() -> String {
+    String::from(
+        "schema_version = 1\n\n[server]\nlisten = \"127.0.0.1:30000\"\n\n[shutdown]\ndrain_timeout_ms = 30000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 16\ntranscription_http = 8\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 8388608\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[http_media]\nroutes = [\"transcription\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n\n[[workers]]\nworker_id = \"asr\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"asr\"\n\n[[workers.service_profiles]]\nservice = \"transcription_http\"\nmodel_ids = [\"asr\"]\ntask = \"transcribe\"\nresponse_formats = [\"json\", \"text\", \"verbose_json\", \"srt\", \"vtt\", \"sse\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\n",
+    )
+}
+
+fn websocket_only_config(route: &str) -> String {
+    let (admission, capacity, profile) = if route == "speech" {
+        (
+            "speech_websocket = 4",
+            "speech_websocket = 2",
+            "service = \"speech_websocket\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"",
+        )
+    } else {
+        (
+            "realtime_websocket = 4",
+            "realtime_websocket = 2",
+            "service = \"realtime_websocket\"",
+        )
+    };
+    format!(
+        "schema_version = 1\n\n[server]\nlisten = \"127.0.0.1:30000\"\n\n[shutdown]\ndrain_timeout_ms = 30000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 8\n{admission}\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[websocket.{route}]\ntrust_domain = \"local\"\n\n[[workers]]\nworker_id = \"omni\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\n\n[workers.capacity]\n{capacity}\n\n[[workers.service_profiles]]\n{profile}\n"
+    )
+}
+
 #[test]
 fn omitted_server_limits_use_bounded_defaults() {
     let config = load_bytes(valid_config("127.0.0.1:30000", 30_000, "info").as_bytes())
@@ -82,11 +117,173 @@ fn omitted_server_limits_use_bounded_defaults() {
 }
 
 #[test]
+fn shipped_examples_match_the_strict_schema() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for name in ["omni.toml", "tts.toml", "asr.toml"] {
+        let path = root.join("examples").join(name);
+        Config::load(&path).unwrap_or_else(|error| panic!("{name} must load: {error}"));
+    }
+}
+
+#[test]
 fn compact_logging_format_selects_compact_output() {
     let config = valid_config("127.0.0.1:30000", 30_000, "info")
         .replace("format = \"json\"", "format = \"compact\"");
     let config = load_bytes(config.as_bytes()).expect("compact logging format should be valid");
     assert_eq!(config.logging.format, LogFormat::Compact);
+}
+
+#[test]
+fn media_routes_require_exact_task_capacity_and_owned_transport_contracts() {
+    let base = valid_translation_config();
+    assert!(load_bytes(base.as_bytes()).is_ok());
+    for invalid in [
+        base.replace("\ntranscription_http = 16", ""),
+        base.replace("task = \"translate\"", "task = \"transcribe\""),
+        base.replace(
+            "routes = [\"translation\"]",
+            "routes = [\"translation\", \"translation\"]",
+        ),
+        base.replace(
+            "buffered_request_max_bytes = 1048576",
+            "buffered_request_max_bytes = 9000000",
+        ),
+        base.replace("connect_timeout_ms = 1000", "connect_timeout_ms = 6000"),
+        base.replace(
+            "pool_max_idle_per_host = 8",
+            "pool_max_idle_per_host = 1025",
+        ),
+    ] {
+        assert!(load_bytes(invalid.as_bytes()).is_err());
+    }
+}
+
+#[test]
+fn generation_and_media_handlers_are_independently_configurable() {
+    assert!(load_bytes(media_only_config().as_bytes()).is_ok());
+
+    let generation_without_admission =
+        valid_config("127.0.0.1:30000", 30_000, "info").replace("generation_http = 64\n", "");
+    assert!(load_bytes(generation_without_admission.as_bytes()).is_err());
+
+    let media_only = media_only_config();
+    let (prefix, media_and_workers) = media_only
+        .split_once("[http_media]")
+        .expect("media section");
+    let (_, workers) = media_and_workers
+        .split_once("[[workers]]")
+        .expect("worker section");
+    let no_handler = format!("{prefix}[[workers]]{workers}");
+    assert!(load_bytes(no_handler.as_bytes()).is_err());
+}
+
+#[test]
+fn websocket_handlers_are_independently_configurable_without_http_routes() {
+    for route in ["speech", "realtime"] {
+        let config = websocket_only_config(route);
+        assert!(load_bytes(config.as_bytes()).is_ok(), "valid {route} route");
+        assert!(
+            load_bytes(
+                config
+                    .replace(&format!("{route}_websocket = 4\n"), "",)
+                    .as_bytes()
+            )
+            .is_err(),
+            "{route} requires its admission class"
+        );
+    }
+}
+
+#[test]
+fn websocket_transport_and_worker_setup_timeouts_are_independently_bounded() {
+    let base = websocket_only_config("speech");
+    let explicit = base.replace(
+        "[websocket.speech]",
+        "[websocket]\nconnect_timeout_ms = 5000\nworker_setup_timeout_ms = 60000\n\n[websocket.speech]",
+    );
+    assert!(load_bytes(explicit.as_bytes()).is_ok());
+    for value in [0, 60_001] {
+        assert!(
+            load_bytes(
+                explicit
+                    .replace(
+                        "connect_timeout_ms = 5000",
+                        &format!("connect_timeout_ms = {value}")
+                    )
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        load_bytes(
+            explicit
+                .replace(
+                    "worker_setup_timeout_ms = 60000",
+                    "worker_setup_timeout_ms = 60001"
+                )
+                .as_bytes()
+        )
+        .is_ok(),
+        "worker application setup has an independent operator bound"
+    );
+    assert!(
+        load_bytes(
+            explicit
+                .replace("connect_timeout_ms", "handshake_timeout_ms")
+                .as_bytes()
+        )
+        .is_err()
+    );
+    for value in [0, 3_600_001] {
+        assert!(
+            load_bytes(
+                explicit
+                    .replace(
+                        "worker_setup_timeout_ms = 60000",
+                        &format!("worker_setup_timeout_ms = {value}")
+                    )
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        load_bytes(
+            explicit
+                .replace(
+                    "worker_setup_timeout_ms = 60000",
+                    "worker_setup_timeout_ms = 1"
+                )
+                .as_bytes()
+        )
+        .is_ok(),
+        "worker setup and transport deadlines cover independent phases"
+    );
+}
+
+#[test]
+fn speech_batch_profile_maximum_is_independent_from_admission_limit() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "generation_http = 64",
+        "generation_http = 64\nspeech_batch = 2",
+    ) + "\n[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"wav\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 3\n";
+    let config = format!(
+        "{base}\n[http_media]\nroutes = [\"speech_batch\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
+    );
+    assert!(load_bytes(config.as_bytes()).is_ok());
+}
+
+#[test]
+fn speech_batch_admission_counts_items_independently_from_global() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "global = 128\ngeneration_http = 64",
+        "global = 2\ngeneration_http = 2\nspeech_batch = 3",
+    ) + "\n[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"wav\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 3\n";
+    let config = format!(
+        "{base}\n[http_media]\nroutes = [\"speech_batch\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
+    );
+    assert!(load_bytes(config.as_bytes()).is_ok());
 }
 
 #[test]
@@ -219,9 +416,10 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
     );
     let cases = [
         base.replace("global = 128", "global = 0"),
+        base.replace("generation_http = 64", "generation_http = 65536"),
         base.replace(
-            "streamed_request_max_bytes = 16777216",
-            "streamed_request_max_bytes = 0",
+            "buffered_request_max_bytes = 1048576",
+            "buffered_request_max_bytes = 0",
         ),
         base.replace("connect_timeout_ms = 1000", "connect_timeout_ms = 0"),
         base.replace("pool_max_idle_per_host = 8", "pool_max_idle_per_host = 0"),
@@ -239,8 +437,8 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
             "message_content_forms = []",
         ),
         base.replace(
-            "trust_domain = \"local\"\nstreamed_request_max_bytes",
-            "trust_domain = \"remote\"\nstreamed_request_max_bytes",
+            "trust_domain = \"local\"\nbuffered_request_max_bytes",
+            "trust_domain = \"remote\"\nbuffered_request_max_bytes",
         ),
         base.replace("global = 128", "global = 128\nfuture_limit = 1"),
     ];
@@ -250,34 +448,24 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
 }
 
 #[test]
-fn content_blind_route_requires_a_homogeneous_worker_cohort() {
+fn classified_route_accepts_heterogeneous_worker_profiles() {
     let base = valid_config("127.0.0.1:30000", 30_000, "info");
     let two_workers = append_worker(&base, "worker-b", 8001);
     assert!(load_bytes(two_workers.as_bytes()).is_ok());
 
-    let different_model = two_workers.replacen(
+    let heterogeneous = two_workers.replacen(
         "default_model_id = \"omni\"",
         "default_model_id = \"other\"",
         1,
     );
-    let different_model =
-        different_model.replacen("model_ids = [\"omni\"]", "model_ids = [\"other\"]", 1);
-    let error = load_bytes(different_model.as_bytes())
-        .expect_err("different default models must reject content-blind routing");
-    assert!(matches!(
-        error,
-        ConfigError::InvalidField {
-            field: "http_generation.trust_domain",
-            ..
-        }
-    ));
-
-    let different_profile = two_workers.replacen(
+    let heterogeneous =
+        heterogeneous.replacen("model_ids = [\"omni\"]", "model_ids = [\"other\"]", 1);
+    let heterogeneous = heterogeneous.replacen(
         "input_modalities = [\"text\"]",
         "input_modalities = [\"text\", \"audio\"]",
         1,
     );
-    assert!(load_bytes(different_profile.as_bytes()).is_err());
+    assert!(load_bytes(heterogeneous.as_bytes()).is_ok());
 }
 
 #[test]
@@ -296,8 +484,8 @@ fn worker_fields_are_validated_before_route_cross_checks() {
     ));
 
     let invalid_route = valid_config("127.0.0.1:30000", 30_000, "info").replace(
-        "trust_domain = \"local\"\nstreamed_request_max_bytes",
-        "trust_domain = \"local \"\nstreamed_request_max_bytes",
+        "trust_domain = \"local\"\nbuffered_request_max_bytes",
+        "trust_domain = \"local \"\nbuffered_request_max_bytes",
     );
     let error = load_bytes(invalid_route.as_bytes()).expect_err("invalid route label must fail");
     assert!(matches!(

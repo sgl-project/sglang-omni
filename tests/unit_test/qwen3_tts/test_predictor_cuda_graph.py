@@ -11,12 +11,15 @@ bucket-exact batch sizes, and the dispatch/replay path must never host-sync.
 from __future__ import annotations
 
 import ast
+import gc
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.quantization.unquant import Bf16GemmBackend
 from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
@@ -127,10 +130,6 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker._sub_identity_row_indices_tensor = torch.arange(
         MAX_BS, device=device, dtype=torch.long
     )
-    talker._sub_sample_row_indices_tensor = torch.zeros(
-        MAX_BS, device=device, dtype=torch.long
-    )
-    talker._sub_sample_count = 0
     talker._sub_has_sampled_rows = False
     talker._sub_sampled_has_top_p = False
     talker._sub_sampled_max_top_k = 0
@@ -188,6 +187,7 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker._predictor_graph_capacity_warned = False
     talker._predictor_graph_capture_count = 0
     talker._predictor_graph_pool = None
+    talker._predictor_capture_stream = None
     return talker
 
 
@@ -319,61 +319,17 @@ def test_missing_embedding_buffer_uses_original_graph_path():
 
 
 @pytest.mark.accelerator
-def test_fused_embedding_runs_only_during_cuda_graph_capture(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_eager_predictor_leaves_the_talker_hidden_untouched_for_an_identity_projection():
     device = torch.device("cuda")
     talker = _build_talker(device)
+    talker.code_predictor.project_input = lambda hidden: hidden
     talker.prepare_decode_buffers(_uniform_requests(2))
     layer0, hidden, positions = _step_inputs(2, device)
-    original_kernel = sglang_model_module.gather_codec_embedding_and_add
-    calls = []
+    hidden_before = hidden.clone()
 
-    def _record_kernel(*args):
-        calls.append(None)
-        return original_kernel(*args)
+    _run_eager(talker, layer0, hidden, positions)
 
-    monkeypatch.setattr(
-        sglang_model_module,
-        "gather_codec_embedding_and_add",
-        _record_kernel,
-    )
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    assert not calls
-
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
-    assert len(calls) == NUM_CODE_GROUPS - 1
-    assert torch.equal(graph_codes, eager_codes)
-    assert torch.equal(graph_embeds, eager_embeds)
-
-
-@pytest.mark.accelerator
-@pytest.mark.parametrize("batch_size", [1, 4, 8, 16])
-def test_fused_o_proj_residual_runs_only_during_cuda_graph_capture(
-    monkeypatch: pytest.MonkeyPatch,
-    batch_size: int,
-):
-    device = torch.device("cuda")
-    talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(batch_size))
-    layer0, hidden, positions = _step_inputs(batch_size, device)
-    original_addmm = torch.addmm
-    calls = []
-
-    def _record_addmm(input, *args, **kwargs):
-        assert kwargs["out"] is input
-        calls.append(None)
-        return original_addmm(input, *args, **kwargs)
-
-    monkeypatch.setattr(torch, "addmm", _record_addmm)
-
-    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
-    assert not calls
-
-    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
-    assert len(calls) == NUM_CODE_GROUPS
-    assert torch.equal(graph_codes, eager_codes)
-    assert torch.equal(graph_embeds, eager_embeds)
+    assert torch.equal(hidden, hidden_before)
 
 
 @pytest.mark.accelerator
@@ -650,17 +606,20 @@ def test_capture_failure_restores_live_sub_state(monkeypatch: pytest.MonkeyPatch
     )
     layer0, hidden, positions = _step_inputs(2, device)
 
-    class _BoomGraph:
-        def __init__(self, model, bucket_size, signature, **kwargs) -> None:
-            del kwargs
-            with model._predictor_graph_capture_state(bucket_size, signature):
-                raise RuntimeError("simulated capture failure")
+    real_forward = Qwen3TTSTalker._code_predictor_forward_incremental
 
-    monkeypatch.setattr(sglang_model_module, "_PredictorDecodeGraph", _BoomGraph)
+    def _boom_forward(self, *args, **kwargs):
+        if torch.cuda.current_stream(device) != torch.cuda.default_stream(device):
+            raise RuntimeError("simulated capture failure")
+        return real_forward(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        Qwen3TTSTalker, "_code_predictor_forward_incremental", _boom_forward
+    )
     _run_forward(talker, layer0, hidden, positions)
 
+    assert talker._predictor_graph_disabled
     assert talker._sub_batch_size == 2
-    assert talker._sub_sample_count == 1
     assert talker._sub_has_sampled_rows is True
     assert talker._sub_do_sample_tensor[:2].tolist() == [True, False]
 
@@ -1038,7 +997,6 @@ def test_capture_state_body_failure_restores_state():
     talker.prepare_decode_buffers(_uniform_requests(3, dosample=False))
     saved = (
         talker._sub_batch_size,
-        talker._sub_sample_count,
         talker._sub_has_sampled_rows,
         talker._sub_sampled_has_top_p,
         talker._sub_sampled_max_top_k,
@@ -1048,7 +1006,6 @@ def test_capture_state_body_failure_restores_state():
     with pytest.raises(RuntimeError, match="simulated capture failure"):
         with talker._predictor_graph_capture_state(4, ("sampled", 8, True, False)):
             assert talker._sub_batch_size == 4
-            assert talker._sub_sample_count == 4
             assert talker._sub_has_sampled_rows is True
             assert talker._sub_sampled_has_top_p is True
             assert talker._sub_sampled_max_top_k == 8
@@ -1057,7 +1014,6 @@ def test_capture_state_body_failure_restores_state():
 
     assert (
         talker._sub_batch_size,
-        talker._sub_sample_count,
         talker._sub_has_sampled_rows,
         talker._sub_sampled_has_top_p,
         talker._sub_sampled_max_top_k,
@@ -1102,6 +1058,175 @@ def test_server_disable_cuda_graph_gates_predictor(monkeypatch: pytest.MonkeyPat
 
     assert not talker._predictor_graphs
     assert talker._predictor_graph_enabled is False
+    assert torch.equal(graph_codes, eager_codes)
+    assert torch.equal(graph_embeds, eager_embeds)
+
+
+@pytest.mark.accelerator
+def test_failed_capture_restores_the_current_stream(monkeypatch: pytest.MonkeyPatch):
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    real_forward = Qwen3TTSTalker._code_predictor_forward_incremental
+
+    def _sync_inside_capture(self, *args, **kwargs):
+        if torch.cuda.is_current_stream_capturing():
+            torch.cuda.synchronize()
+        return real_forward(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        Qwen3TTSTalker, "_code_predictor_forward_incremental", _sync_inside_capture
+    )
+    talker.prepare_decode_buffers(_uniform_requests(2))
+    layer0, hidden, positions = _step_inputs(2, device)
+    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
+
+    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+
+    assert torch.cuda.current_stream(device) == torch.cuda.default_stream(device)
+    assert gc.isenabled()
+    assert not talker._predictor_graphs
+    assert talker._predictor_graph_failure_count == 1
+    assert torch.equal(graph_codes, eager_codes)
+    assert torch.equal(graph_embeds, eager_embeds)
+
+
+@pytest.mark.accelerator
+@pytest.mark.accelerator
+def test_startup_capture_builds_the_ladder_for_one_signature():
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    signature = ("sampled", 8, False, False)
+
+    assert talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0) == len(
+        BUCKETS
+    )
+    assert set(talker._predictor_graphs) == {(bucket, *signature) for bucket in BUCKETS}
+    assert talker.capture_predictor_graphs(do_sample=True, top_k=5, top_p=1.0) == 0
+
+    for batch_size in BUCKETS:
+        talker.prepare_decode_buffers(_uniform_requests(batch_size, top_k=5))
+        layer0, hidden, positions = _step_inputs(batch_size, device)
+        eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
+        graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+        assert torch.equal(graph_codes, eager_codes)
+        assert torch.equal(graph_embeds, eager_embeds)
+
+    assert len(talker._predictor_graphs) == len(BUCKETS)
+
+
+@pytest.mark.accelerator
+def test_startup_capture_failure_raises_and_restores_state(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    real_forward = Qwen3TTSTalker._code_predictor_forward_incremental
+
+    def _boom_forward(self, *args, **kwargs):
+        if torch.cuda.current_stream(device) != torch.cuda.default_stream(device):
+            raise RuntimeError("simulated capture failure")
+        return real_forward(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        Qwen3TTSTalker, "_code_predictor_forward_incremental", _boom_forward
+    )
+
+    with pytest.raises(RuntimeError, match="simulated capture failure"):
+        talker.capture_predictor_graphs(do_sample=True, top_k=8, top_p=1.0)
+
+    assert not talker._predictor_graphs
+    assert talker._sub_batch_size == 0
+    assert gc.isenabled()
+
+
+def test_signature_rule_is_shared_by_batch_and_startup_paths(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    talker = _build_talker(torch.device("cpu"))
+    startup_keys: list[tuple] = []
+
+    def _record_capture(self, bucket_size, signature):
+        startup_keys.append((bucket_size, *signature))
+        return object()
+
+    monkeypatch.setattr(Qwen3TTSTalker, "_capture_predictor_graph", _record_capture)
+    cases = [
+        (True, 5, 1.0),
+        (True, 5, 0.9),
+        (True, 0, 1.0),
+        (True, 3, 0.5),
+        (True, PRED_VOCAB, 1.0),
+        (True, 4, 1.0),
+        (True, 9, 1.0),
+        (False, 5, 1.0),
+    ]
+    for dosample, top_k, top_p in cases:
+        talker.prepare_decode_buffers(
+            _uniform_requests(3, dosample=dosample, top_k=top_k, top_p=top_p)
+        )
+        if talker._sub_has_sampled_rows:
+            expected = (
+                "sampled",
+                talker._sub_sampled_max_top_k,
+                talker._sub_sampled_has_top_p,
+                talker._sub_sampled_has_unbounded_top_k,
+            )
+        else:
+            expected = ("argmax", 0, False, False)
+        talker._predictor_graphs.clear()
+        talker.capture_predictor_graphs(do_sample=dosample, top_k=top_k, top_p=top_p)
+        assert startup_keys[-1][1:] == expected, (dosample, top_k, top_p)
+
+
+@pytest.mark.accelerator
+def test_graph_object_holds_no_reference_to_the_talker():
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    talker.prepare_decode_buffers(_uniform_requests(2))
+    layer0, hidden, positions = _step_inputs(2, device)
+    _run_forward(talker, layer0, hidden, positions)
+    (graph,) = talker._predictor_graphs.values()
+
+    assert all(value is not talker for value in vars(graph).values())
+    assert talker not in gc.get_referents(graph)
+
+    graph_ref = weakref.ref(graph)
+    talker._predictor_graphs.clear()
+    del graph
+    assert graph_ref() is None
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    "sglang_gemm_override",
+    [
+        ("is_batch_invariant_mode_enabled", lambda: True),
+        ("get_bf16_gemm_backend", lambda: Bf16GemmBackend.CUTEDSL),
+    ],
+    ids=["batch-invariant", "optimized-backend"],
+)
+def test_sglang_gemm_overrides_keep_the_eager_gemm_on_both_paths(
+    monkeypatch: pytest.MonkeyPatch, sglang_gemm_override
+):
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    monkeypatch.setattr(sglang_model_module, *sglang_gemm_override)
+    original_addmm = torch.addmm
+    calls = []
+
+    def _record_addmm(*args, **kwargs):
+        calls.append(None)
+        return original_addmm(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "addmm", _record_addmm)
+    talker.prepare_decode_buffers(_uniform_requests(2))
+    layer0, hidden, positions = _step_inputs(2, device)
+
+    eager_codes, eager_embeds = _run_eager(talker, layer0, hidden, positions)
+    graph_codes, graph_embeds = _run_forward(talker, layer0, hidden, positions)
+
+    assert talker._predictor_graphs
+    assert not calls
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 

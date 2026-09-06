@@ -1188,13 +1188,24 @@ def _build_generate_response(
 def _register_realtime(app: FastAPI) -> None:
     """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
     from sglang_omni.serve.realtime import RealtimeSessionManager
+    from sglang_omni.serve.realtime.smart_turn import load_smart_turn
 
     client: Client = app.state.client
     model_name: str = app.state.model_name
+    try:
+        smart_turn_model = load_smart_turn()
+    except Exception:
+        logger.warning(
+            "Smart Turn model could not be loaded; semantic VAD will fall back "
+            "to server VAD",
+            exc_info=True,
+        )
+        smart_turn_model = None
     manager = RealtimeSessionManager(
         client=client,
         model_name=model_name,
         supports_audio_output=app.state.supports_realtime_audio_output,
+        smart_turn_model=smart_turn_model,
     )
     app.state.realtime_manager = manager
 

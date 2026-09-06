@@ -132,16 +132,17 @@ The top-level sections are:
 | `server` | Listener address, accepted-connection limit, and request-head timeout |
 | `shutdown` | Graceful drain deadline |
 | `logging` | Structured log format and tracing filter |
-| `router` | Routing policy, classification concurrency, and optional voice owner |
+| `router` | Routing policy and optional voice owner |
 | `admission` | Global and per-service in-flight limits |
 | `health` | Probe interval, timeout, and transition thresholds |
-| `http_generation` | Chat request limits, trust domain, upstream timeouts, and pool settings |
-| `http_media` | Enabled media routes, request limits, trust domain, and upstream settings |
-| `websocket` | Speech and realtime routes with setup, connection, and close bounds |
-| `workers` | Worker identity, endpoint, health path, and service profiles |
+| `http` | Shared upstream connection pool and aggregate buffering budget |
+| `http_generation` | Chat trust domain, request limits, and deadline |
+| `http_media` | Enabled media routes, trust domain, request limits, and deadline |
+| `websocket` | Speech and realtime routes with setup and close bounds |
+| `workers` | Worker identity, endpoint, health path, session capacity, and service profiles |
 
 Each worker has a stable ID, base URL, trust domain, optional default model,
-health path and one or more correlated service profiles.
+health path, session capacity, and one or more correlated service profiles.
 A profile row describes a combination the worker supports; the router never
 combines independent fields from different rows.
 
@@ -149,9 +150,8 @@ DNS worker authorities are resolved when an upstream connection is opened, so
 health probes and new data connections follow DNS changes. Worker membership
 remains static for the process lifetime.
 
-Configuration limits are deployment budgets. Set admission, classification
-concurrency, connection-pool limits, and timeouts from the
-expected workload and worker topology.
+Configuration limits are deployment budgets. Set admission, connection-pool
+limits, and timeouts from the expected workload and worker topology.
 
 ## Supported APIs
 
@@ -165,18 +165,18 @@ expected workload and worker topology.
 | `POST` | `/v1/audio/transcriptions` | Multipart transcription |
 | `POST` | `/v1/audio/translations` | Multipart translation |
 | `GET` | `/v1/audio/speech/stream` | Speech WebSocket |
-| `GET` | `/v1/realtime?model=<id>` | OpenAI-compatible realtime WebSocket |
+| `GET` | `/v1/realtime[?model=<id>]` | OpenAI-compatible realtime WebSocket |
 | `GET`, `POST` | `/v1/audio/voices` | List or upload worker-local voices |
 | `DELETE` | `/v1/audio/voices/{name}` | Delete a worker-local voice |
 | `GET` | `/v1/models` | Static model inventory |
 | `GET` | `/metrics` | Prometheus lifecycle and capacity metrics |
 | `GET` | `/diagnostics` | Bounded router state |
 
-Generation requests use HTTP/1.1, JSON content type, no query string, and one
-valid `Content-Length`. A single `Expect: 100-continue` is handled by the
-client connection and is not forwarded upstream. Ambiguous framing, transfer
-encoding, trailers, other expectations, content encoding, and oversized
-uploads are rejected before dispatch.
+Generation requests use HTTP/1.1, JSON content type, and no query string.
+Fixed-length and chunked request bodies are accepted. A single
+`Expect: 100-continue` is handled by the client connection and is not forwarded
+upstream. Ambiguous framing, trailers, other expectations, unsupported content
+encoding, and oversized uploads are rejected before dispatch.
 
 A canonical `x-request-id` identifies each request. A valid caller value is
 preserved; otherwise the router generates one. The same value is sent to the
@@ -188,17 +188,30 @@ worker and returned to the client.
 
 The direct path is available when every eligible replica in a trust-scoped
 cohort has the same concrete default model and compatible profile contract.
-The router selects a worker without inspecting the body and relays the incoming
-body as a backpressured stream.
+Heterogeneous pools use the classified path. The optional
+`x-sglang-omni-route-model` and `x-sglang-omni-route-stream` headers are checked
+against the classified body and are not forwarded upstream. The router relays
+a direct request body as a backpressured stream.
 
 Requests that require body-owned routing facts reserve aggregate byte capacity,
 read the body once, and classify the model, content forms, media placement,
 input and output modalities, response format, and stream mode. Classification
-runs under one shared concurrency limit. The original bytes are forwarded
-without reconstructing JSON or multipart content.
+runs on Tokio's blocking pool with execution limited to the available CPU
+parallelism, while the aggregate buffered-byte budget bounds concurrent
+classifier memory. The original bytes are forwarded without reconstructing
+JSON or multipart content.
 
-Classification completes before worker selection, so classification does not
-occupy an upstream connection.
+The direct path is bounded by each route's `streamed_request_max_bytes`. The
+classified path is bounded by the route's `buffered_request_max_bytes` per
+request and `http.buffered_request_total_bytes` across chat and media requests.
+Their defaults are 512 MiB, 8 MiB, and 256 MiB respectively. Chunked classified
+requests acquire the shared budget as bytes arrive. Requests without an
+explicit model return `ambiguous_model` when compatible workers do not share
+one default. Classified JSON follows the standard JSON number grammar;
+non-standard `NaN` and `Infinity` tokens are rejected.
+
+Classification completes before worker selection, so classification
+does not occupy an upstream connection.
 
 ### Worker selection
 
@@ -212,10 +225,11 @@ concurrency to choose between the supported policies.
 
 ### Admission and backpressure
 
-Global and per-service admission are fail-fast. One request owns its admission
-and worker-load guard until response EOF, upstream error, or downstream
-cancellation. The worker remains responsible for its execution and queue
-capacity.
+Global admission counts request envelopes. Per-service admission counts
+requests or sessions, except speech-batch admission, which counts batch items.
+Admission is fail-fast, and its permits and worker-load guard remain held until
+response EOF, upstream error, or downstream cancellation. The worker remains
+responsible for its execution and queue capacity.
 
 The router sends one upstream request through a shared HTTP/1.1 connection
 pool. Redirects, ambient proxies, retries, and automatic decompression are
@@ -234,25 +248,40 @@ or process drain.
 ## Media and Realtime Sessions
 
 Media routes are enabled independently. Speech batches remain ordered and are
-never split; one worker atomically reserves capacity for the complete batch.
-Transcription and translation share a capacity class but require separate
-profile tasks.
+never split. Classified transcription and translation requests buffer the full
+multipart upload, so heterogeneous ASR deployments must size the buffered
+limits for their largest accepted recordings. Transcription and translation
+share a capacity class but require separate profile tasks.
 
-The router preserves validated JSON, text, SSE, encoded audio, raw PCM,
-sample-rate and channel metadata, usage, completion-token, and finish-reason
-contracts. It does not decode, transcode, or regenerate audio.
+The router preserves the trusted worker's response content type together with
+JSON, text, SSE, encoded audio, raw PCM, sample-rate and channel metadata,
+usage, completion-token, and finish-reason contracts. It does not decode,
+transcode, or regenerate audio.
 
 Speech and realtime WebSockets terminate both handshakes and pin one worker for
 the complete session. Each frame awaits its destination send, preserving frame
-type and order without relay tasks or application queues. Setup, connection,
-initial speech configuration, and close convergence use explicit bounds.
-Application-level idle behavior remains worker-owned.
+type and order without relay tasks or application queues. Both links use a 16
+MiB message bound. Speech configuration, upstream transport setup, the first
+worker event, and close convergence use separate deadlines. Application-level
+idle behavior remains worker-owned. A realtime `model` query requires a worker
+with the matching default; an omitted model can use any compatible worker in
+the trust domain. `worker_setup_timeout_ms` is an operator safety bound on the
+initial worker application event; it does not limit session lifetime or mark a
+worker unhealthy when it expires.
+Speech configuration is replayed byte-for-byte; the router extracts routing
+facts while the worker owns protocol-value validation.
 
-Managed voices have one explicit owner configured by
+Uploaded voices have one explicit owner configured by
 `router.voice_owner_worker_id`. Voice CRUD and requests that depend on a stored
 voice are pinned to that worker. Stateless speech continues to use normal
 worker selection. The router does not store, replicate, or reconcile
-worker-local voice data.
+worker-local voice data. `voice_name_policy = "preset"` declares names provided
+by the serving model. `voice_name_policy = "uploaded"` declares names resolved
+from worker-local voice state; hybrid pipelines should use `uploaded` so named
+requests are routed conservatively. A named-voice request is rejected when
+otherwise compatible profiles disagree on this policy.
+Qwen3-TTS CustomVoice profiles use `preset`; Qwen3-TTS Base, Higgs, and hybrid
+dots-style profiles use `uploaded`.
 
 ## Health and Readiness
 
@@ -263,7 +292,7 @@ probe. Application responses do not directly change worker health.
 
 `GET /ready` returns `200` while the process is serving and every enabled
 generation, media, and WebSocket service has a compatible healthy worker.
-Readiness also requires the configured managed-voice owner to be healthy and
+Readiness also requires the configured uploaded-voice owner to be healthy and
 compatible. Current worker load does not change readiness.
 
 ## Operations
@@ -381,8 +410,9 @@ loopback sockets where transport behavior is part of the contract.
 | --- | --- |
 | `src/config.rs` | Strict configuration and cross-field validation |
 | `src/server.rs` | Runtime assembly, routes, listener, and shutdown |
-| `src/worker_pool/` | Admission, health, profiles, policy selection, and capacity |
-| `src/http_generation/` | Chat validation, classification, and relay |
+| `src/worker_pool/` | Admission, health, profiles, policy selection, and worker load |
+| `src/http_relay/` | Shared HTTP client, buffering, body adapters, and relay |
+| `src/http_generation/` | Chat validation and classification |
 | `src/http_media/` | Speech, batch, transcription, translation, and voices |
 | `src/websocket/` | Speech and realtime session setup and relay |
 | `src/operations.rs` | Models, metrics, and diagnostics |

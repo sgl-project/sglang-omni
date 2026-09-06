@@ -341,7 +341,7 @@ GPUs, so these numbers describe that experiment's topology change, not the
 default code2wav placement. Streaming TTS workloads should prefer this
 layout regardless, since TTFA is the latency users notice first.
 
-### Realtime Speech with Server VAD
+### Realtime Speech with Server-Side Turn Detection
 
 The speech pipeline can stream spoken responses over `/v1/realtime`. Enable the
 WebSocket endpoint on the standard speech pipeline:
@@ -362,15 +362,35 @@ output:
   "session": {
     "modalities": ["text", "audio"],
     "input_audio_format": "pcm16",
-    "output_audio_format": "pcm16"
+    "output_audio_format": "pcm16",
+    "turn_detection": {
+      "type": "semantic_vad",
+      "eagerness": "medium"
+    }
   }
 }
 ```
 
-Stream mono 16 kHz PCM16 input with `input_audio_buffer.append`. Server VAD
-automatically commits each utterance and starts generation. Text arrives in
-`response.text.delta` events; spoken output arrives as base64-encoded mono
-24 kHz PCM16 in `response.audio.delta` events, followed by
+Stream mono 16 kHz PCM16 input with `input_audio_buffer.append`. Turn
+detection auto-commits each utterance and starts generation. Check
+`session.created.capabilities.turn_detection` before requesting
+`semantic_vad` — older servers only support `server_vad`.
+
+`server_vad` (default) ends a turn after a fixed silence duration.
+`semantic_vad` adds a GPU Smart Turn v3.2 model on top of Silero speech
+detection, so a natural mid-thought pause doesn't end the turn early.
+`eagerness` (`low`/`medium`/`high`, default `medium`) trades latency for
+patience; `silence_duration_ms` only applies to `server_vad`.
+
+To enable `semantic_vad`, provision the BSD-2 licensed
+[Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3)
+`smart-turn-v3.2-gpu.onnx` model and set `SGLANG_OMNI_SMART_TURN_MODEL_PATH`
+to its path (file or containing directory). The server never downloads it and
+verifies its SHA-256 on load. If the model is missing or invalid, the
+endpoint still works — semantic requests just fall back to `server_vad`.
+
+Text arrives in `response.text.delta` events; spoken output arrives as
+base64-encoded mono 24 kHz PCM16 in `response.audio.delta` events, followed by
 `response.audio.done` and `response.done`.
 
 Audio output is opt-in: sessions remain text-only unless both modalities are
@@ -378,10 +398,10 @@ requested. A thinker-only server rejects audio negotiation because it has no
 `code2wav` stage.
 
 For text-and-audio sessions, server-owned barge-in is enabled by default. When
-server VAD emits `input_audio_buffer.speech_started`, the active response is
-cancelled with reason `turn_detected`; its user transcription still completes
-and enters conversation history before the next queued turn runs. Cancelled
-assistant output is not added to conversation history.
+the active turn detector emits `input_audio_buffer.speech_started`, the active
+response is cancelled with reason `turn_detected`; its user transcription still
+completes and enters conversation history before the next queued turn runs.
+Cancelled assistant output is not added to conversation history.
 
 Clients must stop buffered playback on `speech_started` and reject every later
 `response.audio.delta` for that response until its `response.done`. If speech
@@ -398,14 +418,15 @@ removes that assistant item from conversation history. The whole assistant
 transcript is removed because the endpoint cannot align text with played audio.
 
 Set `turn_detection.interrupt_response` to `false` in `session.update` to opt
-out. This is the only `turn_detection` field applied dynamically by the current
-endpoint. Server VAD remains fixed at its startup defaults; `threshold`,
-`prefix_padding_ms`, and `silence_duration_ms` do not reconfigure it. Text-only
-responses are not interrupted automatically.
+out. Partial updates preserve the active detector type and settings, so clients
+can change interruption behavior without dropping semantic VAD or its
+eagerness. Changing detector behavior rebuilds the detector and clears pending
+input audio; `interrupt_response` changes independently. Text-only responses
+are not interrupted automatically.
 
 The browser example in `playground/qwen-omni/realtime` captures microphone
-input and lets the user select text-only output or text plus streamed PCM16
-audio playback.
+input, negotiates turn-detection support per connection, and lets the user
+select text-only output or text plus streamed PCM16 audio playback.
 
 ## Single-GPU FP8 on H100/H20
 
