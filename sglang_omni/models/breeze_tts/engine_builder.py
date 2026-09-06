@@ -7,8 +7,14 @@ from accelerate import init_empty_weights
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 from .checkpoint import load_component, read_config
-from .depth_decoder import BreezeDepthDecoder
+from .depth_decoder import BreezeDepthDecoder, BreezeDepthGraphs
 from .hf_config import register_breeze_config
+
+
+def depth_graph_buckets(logical_requests: int) -> list[int]:
+    """Powers of two up to the configured logical batch, plus the batch itself."""
+    buckets = [size for size in (1, 2, 4, 8, 16, 32) if size < logical_requests]
+    return buckets + [logical_requests]
 
 
 class BreezeEngineBuilder(TtsEngineBuilder):
@@ -89,7 +95,7 @@ class BreezeEngineBuilder(TtsEngineBuilder):
             raise ValueError("Breeze-TTS-2 quantization is not implemented")
 
     def setup_model(self, *, model_worker, checkpoint_dir, device, gpu_id, server_args):
-        del gpu_id, server_args
+        del gpu_id
         if torch.device(device).type != "cuda":
             raise ValueError("Breeze-TTS-2 serving currently requires CUDA")
         model = model_worker.model_runner.model
@@ -99,6 +105,20 @@ class BreezeEngineBuilder(TtsEngineBuilder):
         load_component(depth, checkpoint_dir, "depth_decoder.")
         model.depth_decoder = depth.to(device=device, dtype=torch.bfloat16).eval()
         model.lm_head.float()
+        self._logical_requests = max(
+            1, int(getattr(server_args, "max_running_requests", 2) or 2) // 2
+        )
+
+    def compile_model(self, model, server_args):
+        """Capture the depth loop before serving, while the stream is quiet."""
+        del server_args
+        graphs = BreezeDepthGraphs(
+            model.depth_decoder,
+            depth_graph_buckets(getattr(self, "_logical_requests", 1)),
+            codebook_size=model.config.codec_codebook_size,
+        )
+        graphs.capture()
+        model.depth_decoder.graphs = graphs
 
     def make_model_runner(self, model_worker, output_proc):
         from .model_runner import BreezeModelRunner

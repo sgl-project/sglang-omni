@@ -19,12 +19,18 @@ CFG_SUFFIX = "::breeze-uncond"
 @dataclass
 class BreezeGenerationState:
     sampling: SamplingConfig
-    generator: torch.Generator
     started: float = field(default_factory=time.perf_counter)
-    history: list[int] = field(default_factory=list)
     codes: list[torch.Tensor] = field(default_factory=list)
     feedback: torch.Tensor | None = None
     pending_chunk: torch.Tensor | None = None
+    # Repetition penalty reads a device-resident mask of already-emitted first
+    # codes, so no step rebuilds a growing history tensor on the host.
+    seen: torch.Tensor | None = None
+
+    def note_token(self, token: int, width: int, device: torch.device) -> None:
+        if self.seen is None:
+            self.seen = torch.zeros(width, device=device, dtype=torch.bool)
+        self.seen[token] = True
 
 
 @dataclass
@@ -45,10 +51,7 @@ def build_request(payload: StagePayload, model) -> BreezeRequestData:
     settings = SamplingConfig(**prepared["sampling"])
     device = model.lm_head.weight.device
     dtype = model.model.norm.weight.dtype
-    generation = BreezeGenerationState(
-        sampling=settings,
-        generator=torch.Generator(device=device).manual_seed(settings.seed),
-    )
+    generation = BreezeGenerationState(sampling=settings)
     eos_id = model.config.audio_vocab_size
 
     def branch(suffix: str, embeds: torch.Tensor) -> BreezeRequestData:

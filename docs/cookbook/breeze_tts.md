@@ -205,32 +205,47 @@ graphs also require separate validation.
 
 ## Performance characteristics
 
-Per-request RTF is above realtime, and the cost is host dispatch rather than
-compute. The codec emits 12.5 frames per second, so a step must finish within
-80 ms to reach RTF 1. Three measured effects explain the gap.
+The codec emits 12.5 frames per second, so an autoregressive step must finish
+within 80 ms to reach RTF 1. The cost is host dispatch rather than compute:
+`num_codebooks` is 16, so every audio frame runs 15 sequential 12-layer depth
+forwards (180 layer passes) against 28 backbone layer passes, and each forward
+costs a fixed ~6.3 ms of host dispatch versus ~4.3 ms of device time, unchanged
+from 2 to 32 rows.
 
-First, `num_codebooks` is 16, so every audio frame runs 15 sequential 12-layer
-depth forwards (180 layer passes) against 28 backbone layer passes. Each depth
-forward costs a fixed ~6.3 ms of host dispatch versus ~4.3 ms of device time,
-unchanged from 2 to 32 rows, so `decode_frames` needs about 101 ms at one
-request and 137 ms at sixteen.
+Two changes address that directly. Sampling is vectorized across the batch
+through per-row seeds instead of one call per request, which makes the depth
+loop's cost independent of batch size (137 ms at sixteen requests before, ~104 ms
+after). The whole fifteen-step loop then runs under a CUDA graph with a static
+KV cache, captured per batch bucket at startup, which cuts it to 23.6 ms at one
+request and 28.9 ms at sixteen. Replays reproduce the eager tokens exactly.
 
-Second, the vocoder stage decodes one stream at a time (`max_batch_size=1`) with
-CUDA graphs disabled, at about 10.8 ms per 2-frame chunk regardless of chunk
-size. At concurrency 16 that is roughly 86 ms of serial vocoder work per
-autoregressive step.
+Measured end to end on the fixed 32-sample streaming sweep, one H20, against the
+same sweep on the pre-optimization implementation:
 
-Third, all three stages run as threads in one process, so the autoregressive and
-vocoder threads contend for the interpreter instead of overlapping: with a
-concurrent vocoder thread a depth frame grows from 99 to 227 ms at one request
-and from 134 to 307 ms at sixteen, while chunk decode grows from 10.8 to 23.9 ms.
+| Group | QPS | RTF mean | Latency mean (s) |
+|---|---|---|---|
+| EN c1 | 0.097 -> 0.296 | 2.337 -> 0.813 | 10.3 -> 3.4 |
+| EN c8 | 0.446 -> 0.795 | 3.648 -> 2.411 | 16.0 -> 9.8 |
+| EN c16 | 0.613 -> 0.942 | 4.961 -> 3.972 | 21.6 -> 16.1 |
+| EN c32 | 0.638 -> 1.124 | 8.505 -> 6.236 | 34.9 -> 24.4 |
+| ZH c1 | 0.080 -> 0.213 | 2.339 -> 0.820 | 12.5 -> 4.7 |
+| ZH c8 | 0.389 -> 0.615 | 3.607 -> 2.283 | 19.3 -> 12.8 |
+| ZH c16 | 0.516 -> 0.753 | 5.117 -> 3.603 | 27.5 -> 20.2 |
+| ZH c32 | 0.510 -> 0.885 | 8.597 -> 5.604 | 44.2 -> 31.0 |
 
-Because these costs do not grow with batch size, concurrency raises aggregate
-throughput but cannot bring per-request RTF near 1 on its own. Known
-optimization candidates, none of them applied or measured end to end yet, are
-CUDA-graphing the static depth loop, running the vocoder in its own process,
-re-enabling cross-stream vocoder batching and graph capture, vectorizing
-per-request sampling, removing per-step host synchronization, and re-enabling
-backbone CUDA graphs.
+Both sweeps had zero failed requests. A single request now runs below realtime;
+concurrent RTF does not, and time to first audio at c8 and above regressed
+(2.23 s to 5.79 s at EN c16) because the codec stage is now the limiting one.
+
+It decodes one stream at a time (`max_batch_size=1`) with CUDA graphs disabled,
+at about 10.8 ms per 2-frame chunk regardless of chunk size, which is roughly
+86 ms of serial work per step at concurrency 16. It also shares the pipeline
+process with the autoregressive stage, and both are host-dispatch bound, so they
+contend for the interpreter: with a concurrent codec thread an eager depth frame
+grew from 99 to 227 ms at one request. Giving the stage its own process removes
+that contention, but that path moves CUDA tensors over IPC and is unavailable on
+kernels without `pidfd_getfd`, so it is not enabled by default and is not
+measured here. Restoring cross-stream codec batching and graph capture, and
+re-enabling backbone CUDA graphs, remain unapplied.
 
 Reference implementation: [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts/tree/43e2ea1595297c4059477e2e4a300653761c759b).

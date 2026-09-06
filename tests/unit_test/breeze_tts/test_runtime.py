@@ -138,10 +138,9 @@ def test_requests_do_not_share_rng_feedback_or_codec_history(tiny_config):
     model = make_model(tiny_config)
     first, second = make_request(model), make_request(model, "other")
     assert first.generation is not second.generation
-    assert first.generation.generator is not second.generation.generator
-    first.generation.history.append(7)
+    first.generation.note_token(7, 12, torch.device("cpu"))
     first.generation.codes.append(torch.ones(4))
-    assert second.generation.history == []
+    assert second.generation.seen is None
     assert second.generation.codes == []
     assert second.generation.feedback is None
     with pytest.raises(RuntimeError, match="adjacent CFG pair"):
@@ -193,13 +192,9 @@ def test_batched_advance_compacts_eos_and_routes_feedback(tiny_config, monkeypat
         logits[2 * i : 2 * i + 2, token] = 100
     calls = []
 
-    def decode(hidden_rows, first, params, generators, **kwargs):
-        calls.append((hidden_rows.clone(), first.tolist()))
+    def decode(hidden_rows, first, params, frames, **kwargs):
+        calls.append((hidden_rows.clone(), first.tolist(), frames.tolist()))
         assert params == [data[0].generation.sampling, data[2].generation.sampling]
-        assert generators == [
-            data[0].generation.generator,
-            data[2].generation.generator,
-        ]
         return torch.tensor([[3, 2, 1, 0], [5, 6, 7, 1]])
 
     monkeypatch.setattr(model.depth_decoder, "decode_frames", decode)
@@ -212,8 +207,9 @@ def test_batched_advance_compacts_eos_and_routes_feedback(tiny_config, monkeypat
     assert len(calls) == 1  # one shared depth forward, not one call per request
     torch.testing.assert_close(calls[0][0], hidden[[0, 1, 4, 5]])
     assert calls[0][1] == [3, 5]
+    assert calls[0][2] == [0, 0]  # both requests are on their first frame
     assert data[1].generation.codes == []
-    assert data[1].generation.history == []
+    assert data[1].generation.seen is None
     assert data[1].generation.feedback is None
     # Simulate EOS removal and batch reordering between decode steps.
     fb = SimpleNamespace()
