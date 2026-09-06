@@ -735,7 +735,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
         (
             self._initial_incremental_decode_graphs,
-            self._followup_incremental_decode_graphs,
+            self._followup_incremental_graph_holders,
         ) = self._build_incremental_graph_runners(
             dtype=codec_state_dtype,
             num_quantizers=num_quantizers,
@@ -867,10 +867,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         min_free_gb: float,
     ) -> tuple[
         Qwen3TTSIncrementalCodecCudaGraphRunner | None,
-        Qwen3TTSIncrementalCodecCudaGraphRunner | None,
+        tuple[Qwen3TTSIncrementalCodecCudaGraphRunner, ...],
     ]:
         if self._incremental_decoder is None:
-            return None, None
+            return None, ()
 
         graph_enabled = bool(
             enabled and self._async_decode and not self._deterministic_inference
@@ -909,18 +909,24 @@ class Qwen3TTSStreamingVocoderScheduler(
                 warm_fresh_frames,
                 graph_batch_sizes,
             )
-        followup = Qwen3TTSIncrementalCodecCudaGraphRunner(
-            self._incremental_decoder,
-            device=self._device,
-            dtype=dtype,
-            num_quantizers=num_quantizers,
-            mode="warm",
-            fresh_frames=warm_fresh_frames,
-            batch_sizes=graph_batch_sizes,
-            min_free_gb=min_free_gb,
-            enabled=graph_enabled,
+        # note (luojiaxuan): one WARM runner per follow-up worker, mirroring
+        # ``_followup_graph_holders``: a runner's static buffers are written on
+        # replay and handed back as views, so two workers cannot share one.
+        followups = tuple(
+            Qwen3TTSIncrementalCodecCudaGraphRunner(
+                self._incremental_decoder,
+                device=self._device,
+                dtype=dtype,
+                num_quantizers=num_quantizers,
+                mode="warm",
+                fresh_frames=warm_fresh_frames,
+                batch_sizes=graph_batch_sizes,
+                min_free_gb=min_free_gb,
+                enabled=graph_enabled,
+            )
+            for _ in range(self._followup_worker_count)
         )
-        return initial, followup
+        return initial, followups
 
     def codec_state_stats(self) -> dict[str, Any]:
         """Snapshot of incremental Codec state usage."""
@@ -935,11 +941,9 @@ class Qwen3TTSStreamingVocoderScheduler(
                 if self._initial_incremental_decode_graphs is not None
                 else {"enabled": False}
             ),
-            "warm": (
-                self._followup_incremental_decode_graphs.stats()
-                if self._followup_incremental_decode_graphs is not None
-                else {"enabled": False}
-            ),
+            "warm": [
+                holder.stats() for holder in self._followup_incremental_graph_holders
+            ],
         }
         return stats
 
@@ -976,8 +980,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._initial_decode_graphs.capture()
         for holder in self._followup_graph_holders:
             holder.capture()
-        if self._followup_incremental_decode_graphs is not None:
-            self._followup_incremental_decode_graphs.capture()
+        for holder in self._followup_incremental_graph_holders:
+            holder.capture()
         if self._initial_incremental_decode_graphs is not None:
             self._initial_incremental_decode_graphs.capture()
 
@@ -1633,7 +1637,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                         self._initial_incremental_decode_graphs
                         if stream is self._decode_stream
                         else (
-                            self._followup_incremental_decode_graphs
+                            getattr(self._worker_ctx, "incremental_graphs", None)
                             if stream in self._followup_decode_streams
                             else None
                         )
@@ -2224,9 +2228,10 @@ class Qwen3TTSStreamingVocoderScheduler(
     ) -> list[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]]]:
         """Split cohorts above the largest captured bucket instead of falling back."""
 
-        if not group or self._followup_incremental_decode_graphs is None:
+        holders = self._followup_incremental_graph_holders
+        if not group or not holders:
             return [group] if group else []
-        batch_sizes = self._followup_incremental_decode_graphs.available_batch_sizes(
+        batch_sizes = holders[0].available_batch_sizes(
             group[0][2].fresh_frames
         )
         if not batch_sizes:
@@ -2416,6 +2421,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._worker_ctx.graphs = (
             self._followup_graph_holders[index]
             if index < len(self._followup_graph_holders)
+            else None
+        )
+        self._worker_ctx.incremental_graphs = (
+            self._followup_incremental_graph_holders[index]
+            if index < len(self._followup_incremental_graph_holders)
             else None
         )
         self._worker_ctx.stream = (

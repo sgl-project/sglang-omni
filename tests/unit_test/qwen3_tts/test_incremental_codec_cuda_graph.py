@@ -352,7 +352,7 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     scheduler._initial_decode_graphs = graph_holder("whole-sequence-initial")
     scheduler._followup_graph_holders = (graph_holder("whole-sequence-followup"),)
     scheduler._initial_incremental_decode_graphs = graph_holder("cold")
-    scheduler._followup_incremental_decode_graphs = graph_holder("warm")
+    scheduler._followup_incremental_graph_holders = (graph_holder("warm"),)
 
     scheduler.warmup_now()
 
@@ -399,7 +399,8 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
         scatter=lambda slots, state: scatters.append((slots, state))
     )
     scheduler._initial_incremental_decode_graphs = None
-    scheduler._followup_incremental_decode_graphs = graph_runner
+    scheduler._followup_incremental_graph_holders = (graph_runner,)
+    scheduler._worker_ctx.incremental_graphs = graph_runner
     plan = _IncrementalDecodePlan(
         decoder_input=torch.tensor([[[1, 2], [3, 4]]], device=device),
         slot=0,
@@ -465,7 +466,8 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
         scatter=lambda slots, state: scatters.append((slots, state))
     )
     scheduler._initial_incremental_decode_graphs = None
-    scheduler._followup_incremental_decode_graphs = graph_runner
+    scheduler._followup_incremental_graph_holders = (graph_runner,)
+    scheduler._worker_ctx.incremental_graphs = graph_runner
     plan = _IncrementalDecodePlan(
         decoder_input=torch.tensor([[[1, 2], [3, 4]]], device=device),
         slot=0,
@@ -501,10 +503,12 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
-    scheduler._followup_incremental_decode_graphs = SimpleNamespace(
-        available_batch_sizes=lambda fresh_frames: (
-            (4, 2, 1) if fresh_frames == 8 else ()
-        )
+    scheduler._followup_incremental_graph_holders = (
+        SimpleNamespace(
+            available_batch_sizes=lambda fresh_frames: (
+                (4, 2, 1) if fresh_frames == 8 else ()
+            )
+        ),
     )
 
     def plan(slot: int, fresh_frames: int = 8) -> _IncrementalDecodePlan:

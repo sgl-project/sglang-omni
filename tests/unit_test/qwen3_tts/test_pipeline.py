@@ -1970,7 +1970,7 @@ def test_qwen3_tts_stateful_codec_graph_shapes_follow_chunk_ramp(
         stream_chunk_ramp=(2, 4, 6),
     )
 
-    assert scheduler._followup_incremental_decode_graphs._fresh_frames == (4, 6, 8)
+    assert scheduler._followup_incremental_graph_holders[0]._fresh_frames == (4, 6, 8)
 
 
 def test_qwen3_tts_stateful_codec_uses_reference_once_then_fresh_frames(
