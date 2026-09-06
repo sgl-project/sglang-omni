@@ -2123,20 +2123,26 @@ def _talker_seed_self(
     fake = SimpleNamespace(
         _repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
         _suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
+        _min_new_token_stop_mask=torch.zeros(
+            max_bs, vocab, dtype=torch.bool, device=device
+        ),
         _repetition_penalties=torch.ones(max_bs, 1, device=device),
         _sampling_temperatures=torch.ones(max_bs, 1, device=device),
         _sampling_top_ps=torch.ones(max_bs, device=device),
         _sampling_top_ks=torch.ones(max_bs, dtype=torch.long, device=device),
         _sampling_min_ps=torch.zeros(max_bs, device=device),
         _sampling_seeds=torch.zeros(max_bs, dtype=torch.long, device=device),
+        _sampling_min_new_tokens=torch.zeros(max_bs, dtype=torch.long, device=device),
+        _sampling_output_lens=torch.zeros(max_bs, dtype=torch.long, device=device),
+        _sampler=None,
         _sampling_staging_cpu=torch.zeros(
-            6,
+            8,
             max_bs,
             dtype=torch.int64,
             device="cpu",
             pin_memory=device.type == "cuda",
         ),
-        _sampling_staging_gpu=torch.zeros(6, max_bs, dtype=torch.int64, device=device),
+        _sampling_staging_gpu=torch.zeros(8, max_bs, dtype=torch.int64, device=device),
         _sampling_staging_event=(torch.cuda.Event() if device.type == "cuda" else None),
         _sampled_token_ids=torch.zeros(max_bs, dtype=torch.long, device=device),
         _decode_prep_rids=None,
@@ -2158,9 +2164,16 @@ def _talker_seed_req(seed: int | None, rid: str) -> SimpleNamespace:
         top_k=20,
         min_p=0.0,
         sampling_seed=seed,
+        min_new_tokens=0,
+        ignore_eos=False,
+        stop_token_ids=set(),
     )
     req = SimpleNamespace(
-        sampling_params=sp, output_ids=[], _codec_suppress_tokens=None, rid=rid
+        sampling_params=sp,
+        output_ids=[],
+        _codec_suppress_tokens=None,
+        rid=rid,
+        eos_token_ids=set(),
     )
     return SimpleNamespace(data=SimpleNamespace(req=req, suppress_tokens=None))
 
@@ -2206,6 +2219,10 @@ def _talker_prep_req(
     seed: int = 7,
     output_ids: list[int] | None = None,
     suppress: list[int] | None = None,
+    min_new_tokens: int = 0,
+    stop_token_ids: set[int] | None = None,
+    eos_token_ids: set[int] | None = None,
+    ignore_eos: bool = False,
 ) -> SimpleNamespace:
     sp = SimpleNamespace(
         repetition_penalty=penalty,
@@ -2214,10 +2231,14 @@ def _talker_prep_req(
         top_k=top_k,
         min_p=min_p,
         sampling_seed=seed,
+        min_new_tokens=min_new_tokens,
+        stop_token_ids=stop_token_ids or set(),
+        ignore_eos=ignore_eos,
     )
     req = SimpleNamespace(
         sampling_params=sp,
         output_ids=list(output_ids or []),
+        eos_token_ids=eos_token_ids or set(),
         _codec_suppress_tokens=None,
         rid=rid,
     )
@@ -2338,12 +2359,16 @@ def test_talker_prepare_decode_buffers_cuda_matches_fresh_rebuild() -> None:
         "_sampling_top_ks",
         "_sampling_min_ps",
         "_sampling_seeds",
-        "_sampling_staging_cpu",
-        "_sampling_staging_gpu",
+        "_sampling_min_new_tokens",
+        "_sampling_output_lens",
+        "_min_new_token_stop_mask",
         "_repetition_mask",
         "_suppress_mask",
     ):
         torch.testing.assert_close(getattr(fake, name), getattr(fresh, name))
+    # Note (wenyao): reuse advances device lengths without another host staging copy.
+    for name in ("_sampling_staging_cpu", "_sampling_staging_gpu"):
+        torch.testing.assert_close(getattr(fake, name)[:7], getattr(fresh, name)[:7])
 
 
 def test_talker_prepare_decode_buffers_rebuild_triggers() -> None:

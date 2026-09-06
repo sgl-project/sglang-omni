@@ -136,7 +136,6 @@ class QwenTalkerModelRunner(ModelRunner):
             req = schedule_batch.reqs[idx]
             code_chunk = codes_snap[idx]
             feedback_row = embeds_snap[idx]
-            # Tell code2wav whether to forward audio chunks to the Coordinator.
             stage_payload = sched_req.data.stage_payload
             is_streaming = bool(
                 stage_payload is not None

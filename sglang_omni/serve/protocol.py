@@ -93,6 +93,7 @@ class ChatCompletionRequest(BaseModel):
     talker_top_k: int | None = None
     talker_repetition_penalty: float | None = None
     talker_max_new_tokens: int | None = None
+    talker_min_new_tokens: int | None = Field(default=None, ge=0)
 
     # Misc
     request_id: str | None = None

@@ -496,9 +496,7 @@ class Qwen3OmniPreprocessor:
                 else None
             )
 
-            # Compute cache keys BEFORE conversion (paths are cheap to hash)
             image_cache_key = compute_image_cache_key(raw_images)
-            raw_audio_cache_key = compute_audio_cache_key(raw_audios)
             video_cache_key = compute_video_cache_key(raw_videos)
 
             # Count explicit audio inputs (for placeholder insertion)
@@ -553,7 +551,6 @@ class Qwen3OmniPreprocessor:
             videos = []
             audios = []
             image_cache_key = None
-            raw_audio_cache_key = None
             video_cache_key = None
             audio_target_sr = 16000
             video_fps = self.default_video_fps
@@ -574,6 +571,10 @@ class Qwen3OmniPreprocessor:
             resolved_video_total_pixels = None
             resolved_video_seconds_per_chunk = None
             resolved_video_position_id_per_seconds = None
+
+        # Note (wenyao): URLs can change content and sampled hashes can miss edits,
+        # so audio cache keys include every decoded sample, including video tracks.
+        audio_cache_key = compute_audio_cache_key(audios)
 
         messages_norm = normalize_messages(messages)
         # Insert placeholders:
@@ -687,10 +688,10 @@ class Qwen3OmniPreprocessor:
 
         audio_encoder_inputs = {**full_mm_inputs["audio"]}
         contextualized_audio_cache_key = _contextualize_cache_key(
-            raw_audio_cache_key,
+            audio_cache_key,
             target_sr=audio_target_sr,
         )
-        if audio_from_video:
+        if audio_from_video and contextualized_audio_cache_key is not None:
             contextualized_audio_cache_key = _combine_cache_keys(
                 contextualized_audio_cache_key,
                 _contextualize_cache_key(

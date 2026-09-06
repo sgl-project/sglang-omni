@@ -1626,3 +1626,122 @@ def test_qwen_rejects_metadata_only_processed_bundle() -> None:
 def test_qwen_rejects_unknown_processed_tensor_names() -> None:
     with pytest.raises(ValueError, match="unknown multimodal_train_inputs"):
         _processed_bundle_state({"pixel_values_video": torch.ones((2, 2))})
+
+
+@pytest.fixture
+def decoded_audio_preprocessor(monkeypatch):
+    import numpy as np
+
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+
+    class Processor:
+        def __init__(self):
+            self.audio_calls = []
+
+        def apply_chat_template(self, *args, **kwargs):
+            return "audio prompt"
+
+        def __call__(self, *, audio, **kwargs):
+            self.audio_calls.append(audio)
+            return {
+                "input_ids": torch.tensor([[1, 2]]),
+                "input_features": torch.ones(1, 2, 4),
+                "feature_attention_mask": torch.ones(1, 4, dtype=torch.long),
+            }
+
+    pre = object.__new__(mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.processor = Processor()
+    for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
+        setattr(pre, "default_video_" + name, None)
+    loaded = {"audio": [np.zeros(10000, dtype=np.float32)], "video": [], "loads": 0}
+
+    async def audio_loader(raw, **kwargs):
+        loaded["loads"] += 1
+        return loaded["audio"] if raw else []
+
+    async def video_loader(raw, **kwargs):
+        return ([], None, loaded["video"])
+
+    monkeypatch.setattr(mod, "ensure_audio_list_async", audio_loader)
+    monkeypatch.setattr(mod, "ensure_video_list_async", video_loader)
+
+    def run(
+        *, audio=True, video=False, sr=16000, path="https://audio.invalid/same.wav"
+    ):
+        inputs = {
+            "messages": [{"role": "user", "content": "hello"}],
+            "audio_target_sr": sr,
+        }
+        if audio:
+            inputs["audio"] = [path]
+        if video:
+            inputs.update(
+                videos=["https://video.invalid/same.mp4"], use_audio_in_video=True
+            )
+        payload = StagePayload(
+            request_id="cache-key", request=OmniRequest(inputs=inputs), data={}
+        )
+        state = Qwen3OmniPipelineState.from_dict(
+            asyncio.run(pre._call_impl(payload)).data
+        )
+        return state.encoder_inputs["audio_encoder"].get("cache_key")
+
+    return pre, loaded, run
+
+
+@pytest.mark.parametrize("audio,video", [(True, False), (False, True), (True, True)])
+def test_qwen_audio_cache_key_tracks_decoded_content(
+    decoded_audio_preprocessor, audio, video
+):
+    import numpy as np
+
+    pre, loaded, run = decoded_audio_preprocessor
+    if video:
+        loaded["video"] = [np.zeros(10000, dtype=np.float32)]
+    before = run(audio=audio, video=video)
+    assert run(audio=audio, video=video) == before
+    track = loaded["video" if video else "audio"][0]
+    track[5000] = 0.5
+    after = run(audio=audio, video=video)
+    assert after != before
+    assert run(audio=audio, video=video, sr=8000) != after
+    assert loaded["loads"] == 4
+    assert pre.processor.audio_calls[-1][-1] is track
+
+
+def test_qwen_audio_cache_key_distinguishes_unsampled_file_content(
+    decoded_audio_preprocessor, tmp_path
+):
+    import wave
+
+    import numpy as np
+
+    from sglang_omni.preprocessing.cache_key import hash_file_sampled
+
+    _, loaded, run = decoded_audio_preprocessor
+    paths = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    keys = []
+    for index, path in enumerate(paths):
+        samples = np.zeros(10000, dtype=np.int16)
+        samples[5000] = index * 1000
+        with wave.open(str(path), "wb") as wav:
+            wav.setparams((1, 2, 16000, len(samples), "NONE", "not compressed"))
+            wav.writeframes(samples.tobytes())
+        loaded["audio"] = [samples.astype(np.float32) / 32768]
+        keys.append(run(path=str(path)))
+    assert hash_file_sampled(paths[0]) == hash_file_sampled(paths[1])
+    assert keys[0] != keys[1]
+
+
+def test_qwen_audio_cache_key_requires_complete_content(decoded_audio_preprocessor):
+    import numpy as np
+
+    _, loaded, run = decoded_audio_preprocessor
+    a, b = np.zeros(5, dtype=np.float32), np.ones(5, dtype=np.float32)
+    loaded["audio"] = [a, b]
+    forward = run()
+    loaded["audio"] = [b, a]
+    assert run() != forward
+    loaded["video"] = [object()]
+    assert run(video=True) is None

@@ -939,6 +939,12 @@ class Qwen3OmniTalker(nn.Module):
             dtype=torch.bool,
             device=device,
         )
+        self._min_new_token_stop_mask = torch.zeros(
+            max_batch_size,
+            config.text_config.vocab_size,
+            dtype=torch.bool,
+            device=device,
+        )
         self._sampling_temperatures = torch.ones(
             max_batch_size,
             1,
@@ -966,19 +972,29 @@ class Qwen3OmniTalker(nn.Module):
             dtype=torch.int64,
             device=device,
         )
+        self._sampling_min_new_tokens = torch.zeros(
+            max_batch_size,
+            dtype=torch.int64,
+            device=device,
+        )
+        self._sampling_output_lens = torch.zeros(
+            max_batch_size,
+            dtype=torch.int64,
+            device=device,
+        )
         # Note (akazaakane): int64-typed; rows 0-3 hold floats bit-cast via
         # .view(torch.float64) so one copy covers both float and int params.
         # Note (akazaakane): device="cpu" is required — model init runs under
         # a cuda default-device context, and only CPU tensors can be pinned.
         self._sampling_staging_cpu = torch.zeros(
-            6,
+            8,
             max_batch_size,
             dtype=torch.int64,
             device="cpu",
             pin_memory=device.type == "cuda",
         )
         self._sampling_staging_gpu = torch.zeros(
-            6,
+            8,
             max_batch_size,
             dtype=torch.int64,
             device=device,
@@ -1032,8 +1048,8 @@ class Qwen3OmniTalker(nn.Module):
         return next_code
 
     def _reuse_decode_buffers(self, requests: list) -> bool:
-        # Note (akazaakane): sampling params/suppress mask are static per
-        # request, so only the repetition mask needs updating here.
+        # Note (akazaakane): sampling params and stop/suppress masks are static
+        # per request. Repetition history and generated length advance per step.
         prev_rids = self._decode_prep_rids
         if prev_rids is None or len(prev_rids) != len(requests):
             return False
@@ -1049,6 +1065,7 @@ class Qwen3OmniTalker(nn.Module):
         rep_rows = self._decode_prep_rep_rows
         if rep_rows is not None:
             self._repetition_mask[rep_rows, self._sampled_token_ids[rep_rows]] = True
+        self._sampling_output_lens[: len(prev_lens)].add_(1)
         for row_idx in range(len(prev_lens)):
             prev_lens[row_idx] += 1
         return True
@@ -1072,6 +1089,7 @@ class Qwen3OmniTalker(nn.Module):
 
         self._repetition_mask[:batch_size] = False
         self._suppress_mask[:batch_size] = False
+        self._min_new_token_stop_mask[:batch_size] = False
 
         rep_penalties: list[float] = []
         temperatures: list[float] = []
@@ -1079,10 +1097,14 @@ class Qwen3OmniTalker(nn.Module):
         top_ks: list[int] = []
         min_ps: list[float] = []
         sampling_seeds: list[int] = []
+        min_new_tokens: list[int] = []
+        output_lens: list[int] = []
         rep_rows: list[int] = []
         rep_toks: list[int] = []
         sup_rows: list[int] = []
         sup_toks: list[int] = []
+        stop_rows: list[int] = []
+        stop_toks: list[int] = []
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
@@ -1095,6 +1117,10 @@ class Qwen3OmniTalker(nn.Module):
             top_ps.append(float(sp.top_p))
             top_ks.append(int(sp.top_k))
             min_ps.append(float(sp.min_p))
+            minimum = int(sp.min_new_tokens)
+            output_len = len(req.output_ids) if req.output_ids else 0
+            min_new_tokens.append(minimum)
+            output_lens.append(output_len)
             # Unseeded: rank-shared seed from the request id (same on every TP
             # rank), not os.urandom, else the ranks desync.
             seed = sp.sampling_seed
@@ -1126,6 +1152,18 @@ class Qwen3OmniTalker(nn.Module):
                     sup_rows.extend([row_idx] * len(valid_sup))
                     sup_toks.extend(valid_sup)
 
+            if minimum > 0 and not sp.ignore_eos:
+                valid_stops = {
+                    int(token_id)
+                    for token_id in (
+                        set(sp.stop_token_ids or ()) | set(req.eos_token_ids or ())
+                    )
+                    if 0 <= int(token_id) < sup_vocab
+                }
+                if valid_stops:
+                    stop_rows.extend([row_idx] * len(valid_stops))
+                    stop_toks.extend(valid_stops)
+
         if self._sampling_staging_event is not None:
             # Note (akazaakane): guards the prior async copy still reading
             # this buffer before we overwrite it.
@@ -1142,6 +1180,8 @@ class Qwen3OmniTalker(nn.Module):
         staging_cpu_f64[3, :batch_size] = torch.tensor(min_ps, dtype=torch.float64)
         staging_cpu[4, :batch_size] = torch.tensor(top_ks, dtype=torch.int64)
         staging_cpu[5, :batch_size] = torch.tensor(sampling_seeds, dtype=torch.int64)
+        staging_cpu[6, :batch_size] = torch.tensor(min_new_tokens, dtype=torch.int64)
+        staging_cpu[7, :batch_size] = torch.tensor(output_lens, dtype=torch.int64)
         staging_gpu = self._sampling_staging_gpu
         staging_gpu.copy_(staging_cpu, non_blocking=True)
         if self._sampling_staging_event is not None:
@@ -1157,6 +1197,8 @@ class Qwen3OmniTalker(nn.Module):
         self._sampling_min_ps[:batch_size].copy_(staging_gpu_f64[3, :batch_size])
         self._sampling_top_ks[:batch_size].copy_(staging_gpu[4, :batch_size])
         self._sampling_seeds[:batch_size].copy_(staging_gpu[5, :batch_size])
+        self._sampling_min_new_tokens[:batch_size].copy_(staging_gpu[6, :batch_size])
+        self._sampling_output_lens[:batch_size].copy_(staging_gpu[7, :batch_size])
 
         if rep_rows:
             rep_pairs = torch.tensor(
@@ -1172,6 +1214,14 @@ class Qwen3OmniTalker(nn.Module):
             )
             self._suppress_mask[
                 sup_pairs[: len(sup_rows)], sup_pairs[len(sup_rows) :]
+            ] = True
+
+        if stop_rows:
+            stop_pairs = torch.tensor(
+                stop_rows + stop_toks, dtype=torch.long, device=device
+            )
+            self._min_new_token_stop_mask[
+                stop_pairs[: len(stop_rows)], stop_pairs[len(stop_rows) :]
             ] = True
 
         self._decode_prep_rids = [sched_req.data.req.rid for sched_req in requests]
@@ -1345,6 +1395,14 @@ class Qwen3OmniTalker(nn.Module):
             self._repetition_mask[:batch_size], penalized_logits, logits
         )
         logits = logits.masked_fill(self._suppress_mask[:batch_size], float("-inf"))
+        below_minimum = (
+            self._sampling_output_lens[:batch_size]
+            < self._sampling_min_new_tokens[:batch_size]
+        )
+        logits = logits.masked_fill(
+            self._min_new_token_stop_mask[:batch_size] & below_minimum.unsqueeze(1),
+            float("-inf"),
+        )
 
         logits_output = LogitsProcessorOutput(
             next_token_logits=logits,

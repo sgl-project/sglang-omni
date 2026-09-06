@@ -982,6 +982,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         ("talker_top_k", req.talker_top_k),
         ("talker_repetition_penalty", req.talker_repetition_penalty),
         ("talker_max_new_tokens", req.talker_max_new_tokens),
+        ("talker_min_new_tokens", req.talker_min_new_tokens),
     ):
         if value is not None:
             extra_params[field_name] = value

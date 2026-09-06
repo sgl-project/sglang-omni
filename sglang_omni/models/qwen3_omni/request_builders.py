@@ -39,6 +39,17 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 MAX_INT32_POSITIVE = 0x7FFFFFFF
 
 
+class _TalkerCodecTokenizerView:
+
+    def __init__(self, tokenizer: Any, codec_eos_id: int | None) -> None:
+        self._tokenizer = tokenizer
+        self.eos_token_id = codec_eos_id
+        self.additional_stop_token_ids: set[int] = set()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._tokenizer, name)
+
+
 def _resolve_seed(params: dict[str, Any]) -> int | None:
     """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
     for key in ("seed", "sampling_seed"):
@@ -716,6 +727,7 @@ def build_sglang_talker_request(
     tokenizer: Any,
     codec_vocab_size: int,
     max_new_tokens: int = 2048,
+    min_new_tokens: int = 0,
     temperature: float = 0.7,
     top_k: int = 50,
     top_p: float = 1.0,
@@ -775,8 +787,10 @@ def build_sglang_talker_request(
 
         prefill_embeds_tensor = thinker_hidden_states
 
+    talker_tokenizer = _TalkerCodecTokenizerView(tokenizer, codec_eos_id)
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
+        min_new_tokens=min_new_tokens,
         temperature=temperature,
         top_k=top_k,
         top_p=top_p,
@@ -785,7 +799,7 @@ def build_sglang_talker_request(
         logit_bias=None,
         sampling_seed=seed,
     )
-    sampling_params.normalize(tokenizer)
+    sampling_params.normalize(talker_tokenizer)
     sampling_params.verify(codec_vocab_size)
 
     rid = request_id or "talker-req-0"
@@ -798,7 +812,7 @@ def build_sglang_talker_request(
         eos_token_ids={int(codec_eos_id)} if codec_eos_id is not None else None,
         vocab_size=codec_vocab_size,
     )
-    req.tokenizer = tokenizer
+    req.tokenizer = talker_tokenizer
     req._input_embeds_are_projected = bool(input_embeds_are_projected)
     req.omni_model_inputs = dict(talker_model_inputs or {})
     req._omni_consumed = None
@@ -1084,6 +1098,7 @@ def make_talker_scheduler_adapters(
         ]
         return {
             "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
+            "min_new_tokens": int(params.get("talker_min_new_tokens", 0)),
             "temperature": float(params.get("talker_temperature", 0.9)),
             "top_k": int(params.get("talker_top_k", 50)),
             "top_p": float(params.get("talker_top_p", 1.0)),
@@ -1173,6 +1188,7 @@ def _build_talker_request_data(
         tokenizer=tokenizer,
         codec_vocab_size=codec_vocab_size,
         max_new_tokens=sampling_cfg["max_new_tokens"],
+        min_new_tokens=sampling_cfg.get("min_new_tokens", 0),
         temperature=sampling_cfg["temperature"],
         top_k=sampling_cfg["top_k"],
         top_p=sampling_cfg["top_p"],
