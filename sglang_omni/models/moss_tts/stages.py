@@ -33,7 +33,10 @@ from sglang_omni.models.moss_tts.request_builders import (
     preprocess_moss_tts_payload,
     set_moss_tts_preprocessing_context,
 )
-from sglang_omni.models.moss_tts.streaming_vocoder import MossStreamingVocoderScheduler
+from sglang_omni.models.moss_tts.streaming_vocoder import (
+    DEFAULT_MOSS_TTS_STREAM_SLACK_MARGIN_S,
+    MossStreamingVocoderScheduler,
+)
 from sglang_omni.models.moss_tts.vocoder import MossTTSVocoder
 from sglang_omni.preprocessing.cache_key import hash_bytes
 from sglang_omni.scheduling.reference_encoder import (
@@ -537,6 +540,8 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     stream_stride: int = 8,
     stream_followup_stride: int = 8,
+    stream_slack_ladder: tuple[int, ...] | list[int] | None = None,
+    stream_slack_margin_s: float = DEFAULT_MOSS_TTS_STREAM_SLACK_MARGIN_S,
     stream_overlap_tokens: int = 8,
     stream_holdback_tokens: int = 1,
     initial_chunk_frames: int = 0,
@@ -574,6 +579,8 @@ def create_vocoder_executor(
         vocoder,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
+        stream_slack_ladder=stream_slack_ladder,
+        stream_slack_margin_s=stream_slack_margin_s,
         stream_overlap_tokens=stream_overlap_tokens,
         stream_holdback_tokens=stream_holdback_tokens,
         initial_chunk_frames=initial_chunk_frames,

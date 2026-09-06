@@ -268,3 +268,173 @@ def test_abort_drops_state_and_late_chunks() -> None:
 
     assert "req" not in scheduler._stream_states
     assert _drain(scheduler) == []
+
+
+class _RealtimeFakeAudioTokenizer(_FakeAudioTokenizer):
+    """Decoder whose output length matches a 10 Hz codec, so slack is measurable in seconds."""
+
+    SAMPLES_PER_FRAME = 2400
+
+    class _Model:
+        class config:
+            hop_length = 2400
+
+    def __init__(self) -> None:
+        self.model = self._Model()
+        self.decode_inputs: list[torch.Tensor] = []
+
+    def decode_codes(self, segments: list[torch.Tensor]) -> list[torch.Tensor]:
+        decoded = []
+        for segment in segments:
+            self.decode_inputs.append(segment.detach().clone())
+            decoded.append(torch.zeros(len(segment) * self.SAMPLES_PER_FRAME))
+        return decoded
+
+
+class _FakeClock:
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _make_realtime_scheduler(
+    *,
+    stream_slack_ladder=None,
+    stream_slack_margin_s: float = 1.0,
+    clock=None,
+    stream_followup_stride: int = 2,
+):
+    processor = SimpleNamespace(
+        model_config=SimpleNamespace(n_vq=3, audio_pad_code=99, sampling_rate=24000)
+    )
+    tokenizer = _RealtimeFakeAudioTokenizer()
+    vocoder = MossTTSVocoder(processor, tokenizer, "cpu")
+    scheduler = MossStreamingVocoderScheduler(
+        vocoder,
+        stream_stride=3,
+        stream_followup_stride=stream_followup_stride,
+        stream_overlap_tokens=1,
+        stream_holdback_tokens=0,
+        stream_slack_ladder=stream_slack_ladder,
+        stream_slack_margin_s=stream_slack_margin_s,
+        clock=clock,
+    )
+    return scheduler, tokenizer
+
+
+def test_moss_slack_ladder_rejects_bad_config() -> None:
+    with pytest.raises(TypeError, match="must be a tuple or list"):
+        _make_realtime_scheduler(stream_slack_ladder=8)
+    with pytest.raises(ValueError, match="at least one entry"):
+        _make_realtime_scheduler(stream_slack_ladder=())
+    for non_int in ((8, 16.0), (True, 16), (8, "16")):
+        with pytest.raises(TypeError, match="entries must be ints"):
+            _make_realtime_scheduler(stream_slack_ladder=non_int)
+    for bad in ((0, 16), (-8, 16)):
+        with pytest.raises(ValueError, match="entries must be > 0"):
+            _make_realtime_scheduler(stream_slack_ladder=bad)
+    for not_ascending in ((16, 8), (8, 8, 16), (8, 32, 16)):
+        with pytest.raises(ValueError, match="strictly ascending"):
+            _make_realtime_scheduler(stream_slack_ladder=not_ascending)
+    for bad_margin in (-0.1, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="stream_slack_margin_s"):
+            _make_realtime_scheduler(
+                stream_slack_ladder=(2, 4), stream_slack_margin_s=bad_margin
+            )
+    with pytest.raises(TypeError, match="stream_slack_margin_s"):
+        _make_realtime_scheduler(stream_slack_ladder=(2, 4), stream_slack_margin_s=True)
+
+
+def test_moss_slack_stride_fit_rule_boundaries() -> None:
+    clock = _FakeClock(100.0)
+    scheduler, _ = _make_realtime_scheduler(
+        stream_slack_ladder=(2, 4, 8), stream_slack_margin_s=1.0, clock=clock
+    )
+    state = scheduler.create_stream_state("req")
+    frame_s = _RealtimeFakeAudioTokenizer.SAMPLES_PER_FRAME / 24000.0
+
+    def stride_for(slack_s: float) -> int:
+        state.playback_deadline_s = clock.now + 1.0 + slack_s
+        return scheduler._steady_followup_stride(state, now=clock.now)
+
+    state.playback_deadline_s = 0.0
+    assert scheduler._steady_followup_stride(state, now=clock.now) == 2
+    assert stride_for(-5.0) == 2
+    assert stride_for(4 * frame_s - 1e-6) == 2
+    assert stride_for(4 * frame_s + 1e-6) == 4
+    assert stride_for(8 * frame_s - 1e-6) == 4
+    assert stride_for(8 * frame_s + 1e-6) == 8
+    assert stride_for(60.0) == 8
+
+
+def test_moss_slack_ladder_default_off_keeps_configured_stride() -> None:
+    clock = _FakeClock(0.0)
+    scheduler, _ = _make_realtime_scheduler(clock=clock, stream_followup_stride=2)
+    assert scheduler._slack_ladder is None
+    state = scheduler.create_stream_state("req")
+    state.playback_deadline_s = 1e6
+    assert scheduler._steady_followup_stride(state, now=clock.now) == 2
+    clock.now = 1e9
+    assert scheduler._steady_followup_stride(state, now=clock.now) == 2
+
+
+def test_moss_slack_ladder_climbs_then_steps_down_with_buffer() -> None:
+    clock = _FakeClock(0.0)
+    scheduler, _ = _make_realtime_scheduler(
+        stream_slack_ladder=(2, 4, 8), stream_slack_margin_s=0.0, clock=clock
+    )
+    raw = torch.arange(120, dtype=torch.long).reshape(40, 3) % 90
+    delayed = _apply_delay_pattern(raw)
+    scheduler._on_streaming_new_request("req", _payload("req", delayed))
+
+    strides: list[int] = []
+    emitted = 0
+    for chunk_id, row in enumerate(delayed):
+        scheduler._on_chunk("req", _item(row.unsqueeze(0), chunk_id))
+        messages = _drain(scheduler)
+        if not messages:
+            continue
+        emitted += len(messages)
+        state = scheduler._stream_states["req"]
+        strides.append(state.next_decode_rows - state.delayed_count)
+
+    assert emitted > 0, "no audio was emitted"
+    # The clock is frozen, so the client buffer only grows: the ladder must climb and
+    # never step back down, and it must reach a rung above the first one.
+    assert strides == sorted(strides), strides
+    assert strides[0] == 2 and max(strides) > 2, strides
+
+    state = scheduler._stream_states["req"]
+    grown = scheduler._steady_followup_stride(state, now=clock.now)
+    clock.now = state.playback_deadline_s
+    assert scheduler._steady_followup_stride(state, now=clock.now) == 2
+    assert grown > 2
+    scheduler.abort("req")
+
+
+def test_moss_vocoder_factory_forwards_slack_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts import stages
+
+    processor = SimpleNamespace(
+        model_config=SimpleNamespace(n_vq=3, audio_pad_code=99, sampling_rate=24000)
+    )
+    monkeypatch.setattr(stages, "_load_moss_processor", lambda path: processor)
+    monkeypatch.setattr(
+        stages, "_resolve_audio_tokenizer_model_path", lambda *a, **k: "fake"
+    )
+    monkeypatch.setattr(
+        stages, "load_moss_audio_vocoder", lambda *a, **k: _RealtimeFakeAudioTokenizer()
+    )
+    scheduler = stages.create_vocoder_executor(
+        "fake-model",
+        device="cpu",
+        stream_slack_ladder=[2, 4, 8],
+        stream_slack_margin_s=0.5,
+    )
+    assert scheduler._slack_ladder == (2, 4, 8)
+    assert scheduler._slack_margin_s == 0.5
+    assert scheduler._stream_followup_stride == 8

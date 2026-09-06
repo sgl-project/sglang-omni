@@ -180,6 +180,45 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
+#### Streaming Step Size
+
+The streaming vocoder decodes `stream_followup_stride` new frames plus
+`stream_overlap_tokens` of recomputed context on every step, so at the shipped
+8 / 8 half of each decode is context and one SeedTTS request costs 84 vocoder
+steps. Raising the fixed stride trades playback continuity for throughput one
+for one, and the trade only pays while the client already has audio buffered,
+which a fixed number cannot know.
+
+`stream_slack_ladder` sizes the step from that buffer instead. After each
+emitted chunk the scheduler advances the request's playback deadline by the
+audio it just handed over, computes the slack (deadline minus now minus
+`stream_slack_margin_s`) and picks the largest rung whose own playback duration
+fits. With a thin buffer it stays on the first rung. It is off by default, and
+when set it replaces `stream_followup_stride` only after the first chunk;
+`initial_codec_chunk_frames` still governs the first one.
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      stream_slack_ladder: [8, 16, 32]
+      stream_slack_margin_s: 1.0
+```
+
+Measured on one H200 with the vocoder in its own process, SeedTTS EN streaming
+at concurrency 8, against the shipped fixed 8:
+
+| step policy | QPS | vs fixed 8 | TTFA p95 | mean playback gap |
+|---|---:|---:|---:|---:|
+| fixed 8 | 3.19 | | 1.93 s | 53 ms |
+| ladder `[8, 16, 32]` | 3.82 | +19.8% | 1.36 s | 79 ms |
+| fixed 32 | 5.34 | +67.4% | 0.82 s | 378 ms |
+
+Per millisecond of added playback gap the ladder buys 0.024 QPS and the fixed
+32 buys 0.0066. The ladder also self limits: once the server is past real time
+no client builds a buffer, so it stays near its first rung instead of spending
+continuity it does not have.
+
 ### Duration Control
 
 MOSS-TTS conditions on a target **duration token count** (codec frames; a larger count yields
