@@ -572,6 +572,7 @@ class MultiProcessPipelineRunner:
                 replica_topology=prep.replica_topology,
                 logical_process_plan=prep.logical_process_plan,
                 max_in_flight=max_in_flight,
+                admission_min_gap_ms=self._config.admission_min_gap_ms,
             )
             if max_in_flight is not None:
                 logger.info(

@@ -598,6 +598,7 @@ class PipelineConfig(BaseModel):
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
+    admission_min_gap_ms: float = Field(default=0.0, ge=0.0)
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         """Dump with each stage serialized by its runtime class.

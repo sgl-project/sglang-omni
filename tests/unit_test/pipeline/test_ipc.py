@@ -333,6 +333,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             replica_topology=None,
             logical_process_plan=None,
             max_in_flight=None,
+            admission_min_gap_ms: float = 0.0,
         ) -> None:
             del (
                 abort_endpoint,
@@ -342,6 +343,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
                 replica_topology,
                 logical_process_plan,
                 max_in_flight,
+                admission_min_gap_ms,
             )
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
