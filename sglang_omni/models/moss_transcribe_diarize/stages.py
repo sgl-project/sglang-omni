@@ -71,7 +71,7 @@ def _default_max_new_tokens(model_path: str) -> int:
 def create_sglang_moss_transcribe_diarize_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 16,
     max_new_tokens: int | None = None,

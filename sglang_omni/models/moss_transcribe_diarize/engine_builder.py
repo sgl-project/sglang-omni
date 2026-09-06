@@ -11,6 +11,7 @@ from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_bui
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -80,6 +81,12 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.audio_encoder_service: BatchedAudioEncoderService | None = None
         self.max_new_tokens = 0
         self.context_length = 0
+        self.device: str | None = None
+
+    def _uses_apple(self) -> bool:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        return use_mlx()
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoProcessor
@@ -103,6 +110,26 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        if self._uses_apple():
+            if not current_platform.is_mps():
+                raise RuntimeError(
+                    "MOSS-Transcribe-Diarize MLX requires the Apple Metal platform"
+                )
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_total_tokens": self.context_length,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "sampling_backend": "pytorch",
+                "mem_fraction_static": self.mem_fraction_static,
+                "dtype": dtype,
+            }
         # note (Xinyu): cached-prefix extends commonly contain one or two new
         # tokens, so keep exact graph buckets below the shared ladder's 4-token
         # floor instead of failing the prefill padding-factor replay guard.
@@ -130,13 +157,56 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         # note (Dayuxiaoshui): context_length is an explicit server-args
         # parameter, so consume the operator override before the shared builder
         # expands overrides.
+        previous_context_length = self.context_length
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
+        if self._uses_apple():
+            for field in ("max_total_tokens", "max_prefill_tokens"):
+                if overrides.get(field) == previous_context_length:
+                    overrides[field] = self.context_length
+            overrides["enable_torch_compile"] = False
+            overrides["max_running_requests"] = 1
 
     def customize_server_args(self, server_args: Any) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
         # ServerArgs, matching the pre-refactor factory behavior.
         self.context_length = int(server_args.context_length)
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        if self._uses_apple():
+            if server_args.max_running_requests != 1:
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize MLX currently requires "
+                    "max_running_requests=1"
+                )
+            if (
+                not server_args.disable_radix_cache
+                or server_args.chunked_prefill_size != -1
+            ):
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize MLX requires disabled radix cache "
+                    "and chunked prefill"
+                )
+            if server_args.mlx_enable_sampling:
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize MLX currently requires "
+                    "mlx_enable_sampling=False"
+                )
+            if server_args.quantization is not None:
+                raise ValueError(
+                    "MOSS-Transcribe-Diarize MLX currently requires unquantized "
+                    "HF weights"
+                )
+        super().validate_before_infrastructure(server_args)
+
+    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        if self._uses_apple():
+            from sglang_omni.model_runner.mlx_model_worker import (
+                MlxSchedulerModelRunner,
+            )
+
+            return MlxSchedulerModelRunner(model_worker, output_proc)
+        return super().make_model_runner(model_worker, output_proc)
 
     def setup_model_resources(
         self,
@@ -146,6 +216,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         generation_cuda_graph_enabled: bool,
     ) -> None:
         del server_args
+        if self._uses_apple():
+            return
         input_feature_len = int(self.processor.feature_extractor.nb_max_frames)
         if self.encoder_torch_compile:
             model.compile_encoder(self.encoder_chunk_buckets, input_feature_len)
@@ -156,6 +228,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del server_args
+        if self._uses_apple():
+            return
         self.audio_encoder_service = BatchedAudioEncoderService(
             model,
             max_batch_size=self.encoder_max_batch_size,
@@ -170,9 +244,11 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             context_length=self.context_length,
             duration_scaled_default=self.requested_max_new_tokens is None,
             audio_encoder_service=self.audio_encoder_service,
+            greedy_only=self._uses_apple(),
         )
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
+        use_apple = self._uses_apple()
         return {
             "stream_output_builder": (
                 request_builders.make_moss_transcribe_diarize_stream_output_builder(
@@ -180,9 +256,11 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
                     min_emit_interval_s=self.stream_emit_interval_s,
                 )
             ),
-            "enable_async_decode": self.enable_async_decode,
+            "enable_async_decode": False if use_apple else self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
-            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_requests": (
+                0 if use_apple else self.prefill_coalesce_requests
+            ),
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
             "prefill_coalesce_requires_pending_builds": (
@@ -191,6 +269,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             "prefill_coalesce_after_builds_during_decode": (
                 self.prefill_coalesce_after_builds_during_decode
             ),
-            "request_build_max_workers": self.request_build_max_workers,
+            "request_build_max_workers": (
+                1 if use_apple else self.request_build_max_workers
+            ),
             "request_build_max_pending": self.request_build_max_pending,
         }
