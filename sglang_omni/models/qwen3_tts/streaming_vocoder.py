@@ -164,7 +164,13 @@ class _IncrementalDecodeBatch:
     decoder: Qwen3TTSIncrementalDecoder
     arena: Qwen3TTSCodecStateArena
     slots: list[int]
-    cohort_state: Qwen3TTSIncrementalCodecState
+    cohort_state: Qwen3TTSIncrementalCodecState | None = None
+
+    def gathered(self) -> Qwen3TTSIncrementalCodecState:
+        """The cohort's rows on the host-driven path; the graph path skips this."""
+        if self.cohort_state is None:
+            self.cohort_state = self.arena.gather(self.slots)
+        return self.cohort_state
 
 
 @dataclass(frozen=True)
@@ -919,6 +925,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             batch_sizes=graph_batch_sizes,
             min_free_gb=min_free_gb,
             enabled=graph_enabled,
+            arena=self._codec_arena,
         )
         # note (luojiaxuan): arrival jitter and terminal chunks hand the WARM
         # path every fresh-frame count from 1 up to the steady stride, not only
@@ -958,6 +965,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 compile_fresh_frames=(
                     (self._stream_followup_stride,) if compile_steady else ()
                 ),
+                arena=self._codec_arena,
             )
             for _ in range(worker_count)
         )
@@ -1613,12 +1621,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             if stream is None:
                 _raise_for_bad_rows(bad_rows, len(plans))
                 if incremental is not None:
-                    waveform = incremental.decoder.decode(
-                        decoder_input, incremental.cohort_state
-                    )
-                    incremental.arena.scatter(
-                        incremental.slots, incremental.cohort_state
-                    )
+                    cohort_state = incremental.gathered()
+                    waveform = incremental.decoder.decode(decoder_input, cohort_state)
+                    incremental.arena.scatter(incremental.slots, cohort_state)
                     extract = self._extract_incremental_delta
                 else:
                     waveform = self._decoder.chunked_decode(decoder_input)
@@ -1677,27 +1682,19 @@ class Qwen3TTSStreamingVocoderScheduler(
                             else None
                         )
                     )
-                    graph_result = (
-                        incremental_graphs.decode(gpu_input, incremental.cohort_state)
+                    waveform = (
+                        incremental_graphs.decode_slots(gpu_input, incremental.slots)
                         if incremental_graphs is not None
+                        and incremental_graphs.arena_bound
                         else None
                     )
-                    if graph_result is None:
-                        waveform = incremental.decoder.decode(
-                            gpu_input, incremental.cohort_state
-                        )
-                    else:
-                        waveform = graph_result.waveform
-                        incremental.cohort_state = graph_result.state
-                        keepalives.append(graph_result)
-                    # Note (Qihao Liu): the scatter is enqueued on the decode
-                    # stream right behind the decode that produced it, so the
-                    # arena rows are written in stream order. The next decode
-                    # for these slots is only scheduled after resolve(), which
-                    # synchronizes, so a later gather cannot read them early.
-                    incremental.arena.scatter(
-                        incremental.slots, incremental.cohort_state
-                    )
+                    if waveform is None:
+                        # note (luojiaxuan): graph miss: the eager decoder works on
+                        # a gathered copy of the rows, scattered back on the same
+                        # stream so the arena stays stream-ordered.
+                        cohort_state = incremental.gathered()
+                        waveform = incremental.decoder.decode(gpu_input, cohort_state)
+                        incremental.arena.scatter(incremental.slots, cohort_state)
                     extract = self._extract_incremental_delta
                 else:
                     graphs = (
@@ -2333,15 +2330,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         assert arena is not None and decoder is not None
         claimed_slots = [entry[2].slot for entry in group]
         try:
-            cohort_state = arena.gather(claimed_slots)
-            cohort_state.frame_positions = arena.positions(
-                [entry[1].codec_frame_position for entry in group]
-            )
             batch = _IncrementalDecodeBatch(
-                decoder=decoder,
-                arena=arena,
-                slots=list(claimed_slots),
-                cohort_state=cohort_state,
+                decoder=decoder, arena=arena, slots=list(claimed_slots)
             )
             handle = self._launch_decode_plans(
                 [entry[2] for entry in group],
@@ -2419,16 +2409,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             try:
                 # Note (Qihao Liu): gathering is inside the guard too: a failure
                 # here must degrade the cohort, not kill the worker thread.
-                cohort_state = arena.gather(slots)
-                cohort_state.frame_positions = arena.positions(
-                    [entry[1].codec_frame_position for entry in group]
-                )
-                batch = _IncrementalDecodeBatch(
-                    decoder=decoder,
-                    arena=arena,
-                    slots=slots,
-                    cohort_state=cohort_state,
-                )
+                batch = _IncrementalDecodeBatch(decoder=decoder, arena=arena, slots=slots)
                 handle = self._launch_decode_plans(
                     [entry[2] for entry in group],
                     stream=stream,

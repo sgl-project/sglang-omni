@@ -47,9 +47,10 @@ class IncrementalCodecGraphResult:
 class _CapturedIncrementalCodecGraph:
     graph: torch.cuda.CUDAGraph
     static_codes: torch.Tensor
-    input_state: Qwen3TTSIncrementalCodecState
-    output_state: Qwen3TTSIncrementalCodecState
+    input_state: Qwen3TTSIncrementalCodecState | None
+    output_state: Qwen3TTSIncrementalCodecState | None
     waveform: torch.Tensor
+    static_index: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -200,9 +201,14 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         min_free_gb: float = 3.0,
         enabled: bool = True,
         compile_fresh_frames: Sequence[int] = (),
+        arena: Any = None,
     ) -> None:
         self._decoder = decoder
         self._compile_fresh_frames = frozenset(int(f) for f in compile_fresh_frames)
+        # note (luojiaxuan): bound to an arena, a graph gathers its cohort's
+        # rows from the arena, decodes, and scatters the advanced rows back,
+        # all inside the replay. The host then only writes slot ids and codes.
+        self._arena = arena
         self._device = torch.device(device)
         self._dtype = dtype
         self._num_quantizers = int(num_quantizers)
@@ -368,14 +374,22 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         try:
             self._warmup_capture_shape(key, static_codes, resources)
             current_stream = torch.cuda.current_stream(self._device)
-            input_state = self._decoder.init_state(
-                key.batch_bucket,
-                device=self._device,
-                dtype=self._dtype,
-            )
-            output_state = _make_output_state_shell(input_state)
+            compiled = key.fresh_frames in self._compile_fresh_frames
+            if self._arena is not None:
+                static_index = self._scratch_index(key.batch_bucket)
+                input_state = output_state = None
+                resources.keepalives.append(static_index)
+            else:
+                static_index = None
+                input_state = self._decoder.init_state(
+                    key.batch_bucket,
+                    device=self._device,
+                    dtype=self._dtype,
+                )
+                output_state = _make_output_state_shell(input_state)
+                resources.keepalives.extend((input_state, output_state))
             graph = torch.cuda.CUDAGraph()
-            resources.keepalives.extend((input_state, output_state, graph))
+            resources.keepalives.append(graph)
             capture_stream.wait_stream(current_stream)
             try:
                 with (
@@ -387,11 +401,16 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                         capture_error_mode="thread_local",
                     ),
                 ):
-                    waveform = self._decoder.decode(
-                        static_codes,
-                        output_state,
-                        compiled=key.fresh_frames in self._compile_fresh_frames,
-                    )
+                    if static_index is not None:
+                        state = self._arena.gather_by_index(static_index)
+                        waveform = self._decoder.decode(
+                            static_codes, state, compiled=compiled
+                        )
+                        self._arena.scatter_by_index(static_index, state)
+                    else:
+                        waveform = self._decoder.decode(
+                            static_codes, output_state, compiled=compiled
+                        )
             finally:
                 torch.cuda.set_stream(current_stream)
             resources.keepalives.append(waveform)
@@ -403,6 +422,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 input_state=input_state,
                 output_state=output_state,
                 waveform=waveform,
+                static_index=static_index,
             )
         except BaseException:
             synchronized = self._retain_capture_resources_if_unsynchronized(resources)
@@ -430,11 +450,16 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         capture_stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(capture_stream), torch.inference_mode():
             for _ in range(self._WARMUP_ITERATIONS):
-                warmup_state = self._decoder.init_state(
-                    key.batch_bucket,
-                    device=self._device,
-                    dtype=self._dtype,
-                )
+                if self._arena is not None:
+                    warmup_state = self._arena.gather_by_index(
+                        self._scratch_index(key.batch_bucket)
+                    )
+                else:
+                    warmup_state = self._decoder.init_state(
+                        key.batch_bucket,
+                        device=self._device,
+                        dtype=self._dtype,
+                    )
                 resources.keepalives.append(warmup_state)
                 self._decoder.decode(
                     static_codes,
@@ -596,6 +621,77 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             waveform=entry.waveform[:batch_size],
             state=_slice_state_rows(entry.output_state, batch_size),
         )
+
+    def _scratch_index(self, bucket: int) -> torch.Tensor:
+        return torch.full(
+            (int(bucket),),
+            int(self._arena.scratch_slot),
+            dtype=torch.long,
+            device=self._device,
+        )
+
+    @property
+    def arena_bound(self) -> bool:
+        return self._arena is not None
+
+    def decode_slots(
+        self, codes: torch.Tensor, slots: Sequence[int]
+    ) -> torch.Tensor | None:
+        """Replay the bucket that fits this cohort directly against the arena.
+
+        Returns the borrowed waveform rows, or None on a graph miss. Rows past
+        the cohort read and write the arena's scratch row.
+        """
+        if self._arena is None:
+            raise RuntimeError("decode_slots requires an arena-bound runner")
+        if os.getpid() != self._owner_pid:
+            raise RuntimeError(
+                "Qwen3-TTS incremental Codec graph runner belongs to PID "
+                f"{self._owner_pid}, but was used in PID {os.getpid()}"
+            )
+        if not self._enabled or not self._graphs:
+            self._misses["disabled_or_uncaptured"] += 1
+            return None
+        self._validate_codes(codes)
+        if int(codes.shape[2]) not in self._fresh_frames:
+            self._misses["uncaptured_fresh_frames"] += 1
+            return None
+        batch_size = int(codes.shape[0])
+        if batch_size != len(slots):
+            raise ValueError("decode_slots needs one slot per code row")
+        bucket = next(
+            (
+                size
+                for size in self._batch_sizes
+                if size >= batch_size
+                and IncrementalCodecGraphKey(int(codes.shape[2]), size) in self._graphs
+            ),
+            None,
+        )
+        if bucket is None:
+            self._misses["missing_batch_bucket"] += 1
+            return None
+        entry = self._graphs[IncrementalCodecGraphKey(int(codes.shape[2]), bucket)]
+        assert entry.static_index is not None
+        entry.static_index[:batch_size].copy_(self._arena.stage_index(slots))
+        if batch_size < bucket:
+            entry.static_index[batch_size:].fill_(int(self._arena.scratch_slot))
+            entry.static_codes[batch_size:].zero_()
+        entry.static_codes[:batch_size].copy_(codes)
+        try:
+            entry.graph.replay()
+        except Exception as exc:
+            self._replay_failures += 1
+            reason = f"runtime_replay_failed: {type(exc).__name__}: {exc}"
+            entry = None
+            self._disable_runtime(reason)
+            logger.exception(
+                "Qwen3-TTS incremental Codec graph replay disabled the %s runner",
+                self._mode,
+            )
+            raise
+        self._replays += 1
+        return entry.waveform[:batch_size]
 
     def _validate_codes(self, codes: torch.Tensor) -> None:
         if codes.ndim != 3:

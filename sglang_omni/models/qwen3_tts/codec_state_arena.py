@@ -42,8 +42,13 @@ class Qwen3TTSCodecStateArena:
         self._device = torch.device(device)
         self._dtype = dtype
         self._num_slots = int(num_slots)
+        # note (luojiaxuan): one extra row past the last slot is the scratch
+        # row. A captured graph gathers a fixed batch bucket, so the rows a
+        # smaller cohort leaves unused point here and their scatter lands
+        # here, never in a live slot.
+        self.scratch_slot = self._num_slots
         self._storage = decoder.init_state(
-            self._num_slots, device=self._device, dtype=dtype
+            self._num_slots + 1, device=self._device, dtype=dtype
         )
         self._lock = threading.Lock()
         # note (luojiaxuan): cohort indices and positions reach the device
@@ -142,13 +147,24 @@ class Qwen3TTSCodecStateArena:
     def _index(self, slots: Sequence[int]) -> torch.Tensor:
         return self._staged("index", slots)
 
+    def stage_index(self, slots: Sequence[int]) -> torch.Tensor:
+        """Stage a cohort's slot ids on the device without a host sync."""
+        return self._staged("index", slots)
+
     def positions(self, values: Sequence[int]) -> torch.Tensor:
         """Stage a cohort's frame positions on the device without a host sync."""
         return self._staged("positions", values)
 
     def gather(self, slots: Sequence[int]) -> Qwen3TTSIncrementalCodecState:
         """Select a cohort's rows into one contiguous state."""
-        index = self._index(slots)
+        return self.gather_by_index(self._index(slots))
+
+    def gather_by_index(self, index: torch.Tensor) -> Qwen3TTSIncrementalCodecState:
+        """Select the rows named by a device index tensor.
+
+        Capturable: with a static index this is the gather half of a graph
+        that reads the arena directly.
+        """
         storage = self._storage
         state = Qwen3TTSIncrementalCodecState(
             transformer_context_length=storage.transformer_context_length,
@@ -168,7 +184,12 @@ class Qwen3TTSCodecStateArena:
         self, slots: Sequence[int], state: Qwen3TTSIncrementalCodecState
     ) -> None:
         """Write an advanced cohort state back into its slots."""
-        index = self._index(slots)
+        self.scatter_by_index(self._index(slots), state)
+
+    def scatter_by_index(
+        self, index: torch.Tensor, state: Qwen3TTSIncrementalCodecState
+    ) -> None:
+        """Write a cohort state into the rows named by a device index tensor."""
         storage = self._storage
         if state.frame_positions is None:
             raise RuntimeError(
