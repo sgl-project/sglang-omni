@@ -403,6 +403,11 @@ response is cancelled with reason `turn_detected`; its user transcription still
 completes and enters conversation history before the next queued turn runs.
 Cancelled assistant output is not added to conversation history.
 
+The server aborts active generation immediately on speech detection instead of
+waiting on the outbound `speech_started` send, so a slow client can't extend
+model work past an interruption. Cancellation terminals still wait behind
+`speech_started` on the wire.
+
 Clients must stop buffered playback on `speech_started` and reject every later
 `response.audio.delta` for that response until its `response.done`. If speech
 starts before `response.created`, retain a pending-interruption flag and reject
