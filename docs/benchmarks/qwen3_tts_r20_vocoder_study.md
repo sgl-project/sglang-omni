@@ -257,9 +257,22 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   状态张量(0.96 rel-L2 的垃圾)是因为没走 runner 的静态 input/output 协议,不是算法问题。
   **数值**:compiled vs eager 逐帧 rel-L2 中位 0.03-0.05、最大 0.04-0.17(随机码),高于
   batch 噪声底(0.01-0.02),要用真实请求的码做接缝/STFT 对照后才算过。
-- 下一步(实现中):把增量 decode 拆成"张量-only 内核 + 外层记账",内核可选 `torch.compile`,
-  runner 捕获时用编译版;只编译 WARM 稳态形状(fresh_frames=8 × B 1/2/4/8,约 1 分钟
-  启动开销),其余形状保持 eager-in-graph;开编译时禁用手写 SnakeBeta 融合。
+- **第七轮:编译内核接进 runner**(worktree commits 40e5d153 / 4cdadb61 / 48f032b5):
+  `decode` 拆成张量-only `_decode_tensors` + 外层记账;`precompile(B, T)` 只对预编译过的
+  形状走编译内核,未见形状走 eager,避免 15s 编译落在请求关键路径;runner 捕获 WARM
+  稳态形状(fresh_frames=steady × B 1/2/4/8)前预编译,捕获的即编译版;config
+  `incremental_codec_compile`(默认关)。266 + 1 单测过。r20,2 worker,wait 4:
+
+  | 臂 | ramp | underrun | First playable p50 / p95 | TTFA p50 |
+  |---|---|---|---|---|
+  | k-w4-r24(编译) | (2,4) | **2.73%** | 110 / 155ms | 161ms |
+  | c-w4-r24(不编译,同配置) | (2,4) | 5.12% | 116 / 173ms | 177ms |
+  | legacy r-24(config 最优) | (2,4) | 5.37% | 106 / 168ms | 176ms |
+  | k-w4(编译) | (1,2,4) | 22.6% | 87 / 148ms | 157ms |
+  | legacy s-base | (1,2,4) | 17.3% | 82 / 136ms | 155ms |
+
+  **第一次在同等 TTFA 下 underrun 低于 legacy**((2,4) ramp:2.7% 对 5.4%)。(1,2,4)
+  ramp 下无收益:那里 bootstrap/COLD 路径主导,COLD 形状未编译。图显存 1.0GB/进程。
 
 ## 决策日志
 
