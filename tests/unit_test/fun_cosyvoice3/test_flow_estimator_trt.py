@@ -115,6 +115,21 @@ def test_execute_flow_estimator_rejects_odd_cfg_batch() -> None:
         execute_flow_estimator(_ExecuteTRT(2), x, dummy, dummy, t, spks, dummy)
 
 
+def test_execute_flow_estimator_expands_broadcast_timestep() -> None:
+    estimator = _ExecuteTRT(max_batch=2)
+    x = torch.tensor([[[1.0]], [[-1.0]]])
+    mask = torch.ones_like(x)
+    mu = torch.zeros_like(x)
+    t = torch.tensor([0.3])
+    spks = torch.zeros(2, 1)
+    cond = torch.zeros_like(x)
+
+    out = execute_flow_estimator(estimator, x, mask, mu, t, spks, cond)
+
+    assert len(estimator.calls) == 1
+    torch.testing.assert_close(out, x + 1.0)
+
+
 def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
     estimator = _ExecuteTRT(max_batch=2)
     x = torch.tensor(

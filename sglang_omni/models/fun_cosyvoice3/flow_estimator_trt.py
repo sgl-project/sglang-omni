@@ -302,6 +302,10 @@ def execute_flow_estimator(
         raise ValueError(
             f"Flow estimator CFG batch must be even and >= 2, got {cfg_batch}"
         )
+    # note (guozhihao-224): packed Flow may pass a broadcast timestep (1,);
+    # official ONNX/TRT freezes t at CFG batch=2, so expand before enqueue.
+    if int(t.shape[0]) == 1 and cfg_batch > 1:
+        t = t.expand(cfg_batch).contiguous()
     max_batch = int(estimator.max_batch)
     if cfg_batch <= max_batch:
         return _run_estimator(estimator, x, mask, mu, t, spks, cond)
