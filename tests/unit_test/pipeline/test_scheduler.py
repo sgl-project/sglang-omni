@@ -442,7 +442,10 @@ def _history_request(
     )
 
 
-def test_retracted_request_history_gets_its_own_storage_before_requeue() -> None:
+@pytest.mark.parametrize("requeue_kwargs", [{"is_retracted": True}, {}])
+def test_retracted_request_history_gets_its_own_storage_before_requeue(
+    requeue_kwargs: dict,
+) -> None:
     snapshots = [
         torch.arange(8, dtype=torch.float32).reshape(4, 2) + 10 * step
         for step in range(3)
@@ -455,7 +458,7 @@ def test_retracted_request_history_gets_its_own_storage_before_requeue() -> None
     expected = torch.stack([snapshot[1] for snapshot in snapshots])
     scheduler = _requeue_scheduler()
 
-    OmniScheduler._add_request_to_queue(scheduler, retracted, is_retracted=True)
+    OmniScheduler._add_request_to_queue(scheduler, retracted, **requeue_kwargs)
     OmniScheduler._add_request_to_queue(scheduler, fresh)
 
     assert scheduler.waiting_queue == [retracted, fresh]
