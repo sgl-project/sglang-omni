@@ -298,7 +298,14 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
 - **潜在 bug(真实码对照脚本撞出)**:`_incremental_transformer` 内更新 Python int
   `transformer_context_length`,Dynamo 按值特化,eager 路径每条流每步重编译,8 次后
   `fullgraph=True` 直接硬报错。生产未触发只因编译内核只在 graph 捕获时执行一次。已把该
-  记账移到 `decode()` 的非追踪区(c1b4b3e6),测试同步调整。
+  记账移到 `decode()` 的非追踪区(c1b4b3e6),测试同步调整。移出后对照脚本仍撞
+  recompile 上限(还有别的值守卫),于是改为**编译内核按调用显式 opt-in**(822ed089):
+  只有 graph runner 在 warmup/capture 时传 `compiled=True`,所有 eager 解码永不进
+  Dynamo;未预编译形状传 `compiled=True` 直接抛错。剩余守卫用 `TORCH_LOGS=recompiles`
+  在对照脚本里定位(排队中)。
+- **SM 时钟假设被否**:r20 编译臂测量窗内以 100ms 采样 400 次,`clocks.sm` 恒为 1980MHz
+  (min=median=max)。至此 Talker 交错、时钟降频都不成立;剩下的 5-6ms 只能靠时间线
+  (进程内 torch.profiler 抓 CUDA 流时间线)看 replay 前后到底排了什么。
 
 ## 决策日志
 
