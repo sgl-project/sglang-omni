@@ -628,3 +628,13 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
   `enable_mixed_chunk` 下本 scheduler 的 prefill/decode 混批把请求整体拖垮,r1 冒烟里 E2E 尾部
   变差就是前兆。r20 那 ~14ms 准入等待另找办法(例如在 resolve 等待期间做准入,或缩短 decode 步
   本身——code predictor 那 4.4ms 正是 decode 步的大头)。
+- **code predictor 一步的 kernel 计数(bucket 1,capture 时 profiler)**:**1371 个 CUDA kernel,
+  4.04ms 设备时间**,平均 3µs/kernel——纯延迟主导。分布:aten::mm+addmm 2.1ms(52%,255 次
+  64x8 的 nvjet 小 GEMM,每次 ~6µs)、copy_ 0.32、seeded top-k/top-p 采样 0.31、elementwise 0.3、
+  rmsnorm 0.28、cudnn attention 0.22、qknorm+rope 0.23、act_and_mul 0.11、index_select 0.11。
+  与 vocoder 第六轮同构(1147 kernel → 编译后 356,3.2 → 1.8ms):把 `_predictor_forward_one_token`
+  与子步胶水(dtype 转换、copy_/add_、unsqueeze)做成 tensor-only 并 torch.compile,可望把 elementwise/
+  norm/copy 那 ~1.2ms 压掉大半;255 个小 GEMM 是层结构决定的(qkv/gate-up 若未融合可再省)。预期
+  每帧 4.4 → ~2.5-3ms:首帧 −3ms(prefill finalize + 第二帧),每步 −1.5ms(低 batch 下 Talker 提速
+  约 20%,r20 的准入等待与 decode 步同步缩短)。这是第十二轮的候选,需要先过外审(改 Talker 侧的
+  采样路径,涉及数值/种子一致性)。
