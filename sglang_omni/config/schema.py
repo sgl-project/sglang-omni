@@ -533,6 +533,14 @@ class ResolvedAudioChunking:
         return max(int(self.max_audio_clip_s * sample_rate), 1)
 
 
+@dataclass(frozen=True)
+class CustomVoiceConfig:
+    # Note(yzxiao): CustomVoice selects a checkpoint speaker without reference
+    # audio. Only an absent config disables this contract; speakers is required.
+    speakers: tuple[str, ...]
+    task_type: str
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -584,6 +592,7 @@ class PipelineConfig(BaseModel):
     processes: dict[str, ProcessConfig] = Field(default_factory=dict)
     env_defaults: dict[str, str] = Field(default_factory=dict)
     mps: Literal["off", "on", "auto"] = "off"
+    weight_share: Literal["off", "on"] = "off"
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
@@ -760,6 +769,9 @@ class PipelineConfig(BaseModel):
     def supports_uploaded_voice_references(self) -> bool:
         """Return whether uploaded voices can be lowered as reference audio."""
         return False
+
+    def resolve_custom_voice_config(self) -> CustomVoiceConfig | None:
+        return None
 
     def supports_audio_translation(self) -> bool:
         """Return whether this pipeline can serve /v1/audio/translations."""

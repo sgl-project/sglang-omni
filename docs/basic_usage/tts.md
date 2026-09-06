@@ -39,7 +39,7 @@ for details.
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`. Use `--no-ref-audio` for SeedTTS benchmarking |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |
-| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml`, `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Text-only synthesis with built-in speakers; omit `voice` for Vivian. Both sizes support streaming; use 1.7B for instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; streaming; the provided config uses TP1 |
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | `examples/configs/fun_cosyvoice3_0_5b.yaml` | Requires one reference audio clip via `ref_audio` or `references`. Supports zero-shot cloning, cross-lingual, instruct mode, and buffered speed control |
@@ -107,12 +107,14 @@ For Qwen3-TTS CustomVoice:
 
 ```bash
 sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
-  --config examples/configs/qwen3_tts_0_6b_customvoice.yaml \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
   --allowed-media-domain huggingface.co \
   --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
+
+For 0.6B CustomVoice, use `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` with `examples/configs/qwen3_tts_0_6b_customvoice.yaml`.
 
 For Qwen3-TTS VoiceDesign:
 
@@ -218,6 +220,23 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   }' \
   --output output.wav
 ```
+
+Qwen3-TTS CustomVoice uses a built-in speaker without reference audio:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "input": "Hello from Qwen CustomVoice.",
+    "voice": "Ryan",
+    "language": "English",
+    "instructions": "Speak clearly and calmly."
+  }' \
+  --output custom-voice.wav
+```
+
+Omit cloning fields (`ref_audio`, `ref_text`, `references`, and `x_vector_only_mode`) and omit `task_type` or set it to `CustomVoice`. For 0.6B, omit `instructions`: it remains accepted for compatibility, but reliable instruction control is not supported. See [CustomVoice checkpoints](../cookbook/qwen3_tts.md#customvoice-checkpoints) for speaker discovery, streaming, and Eric/Dylan language behavior.
 
 Qwen3-TTS VoiceDesign uses text plus voice instructions:
 
@@ -448,6 +467,8 @@ List preset and uploaded voices:
 curl http://localhost:8000/v1/audio/voices
 ```
 
+For CustomVoice, the response's `voices` list contains `default` and the served checkpoint's built-in speakers. Uploaded reference voices are not used for CustomVoice synthesis.
+
 Use the uploaded voice by name:
 
 ```bash
@@ -593,7 +614,9 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
-| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS Base uses `8`, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
+| `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS ramps `1 -> 2 -> 4` into the steady stride, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
+| `stream_codec_output` | bool | `true` | Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice / VoiceDesign |
+| `suppress_bootstrap_silence` | bool | `true` | Qwen3-TTS only. Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set `false` to keep the leading silence |
 | `references` | list | `null` | Reference audio for voice cloning. Each item has `audio_path` (local path / file URL / data URL / remote URL) and `text` |
 | `ref_audio` | string | `null` | Reference audio path / URL / base64 string. Equivalent to `references[0].audio_path` |
 | `ref_text` | string | `null` | Transcript for `ref_audio`. Equivalent to `references[0].text` |

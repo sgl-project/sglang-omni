@@ -217,11 +217,18 @@ conditions flush any buffered text before the final transcript event.
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
 | `language` | string | none | Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection |
-| `prompt` | string | none | Accepted for OpenAI compatibility; Qwen3-ASR currently ignores it |
+| `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
+
+Biasing raises the model's preference for the supplied terms. It does not
+force them: a term the audio does not contain will not be inserted, and an
+irrelevant list biases the model toward words that were never spoken, which
+hurts accuracy. A short, relevant list works best — in testing, accuracy
+stopped improving past roughly 20 terms, while latency kept growing because
+the text is prefilled with every request.
 
 `verbose_json` uses the model adapter's verbose response schema and includes
 duration-based usage (rounded-up audio seconds) when duration probing succeeds.
@@ -393,5 +400,4 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
   transcribed in full via chunking; see Long Audio above. Streaming requests
   are limited to `max_native_clip_s` (1,200s) on MLX/CUDA; Torch MPS caps both
   native and whole-upload requests at 60 seconds.
-- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

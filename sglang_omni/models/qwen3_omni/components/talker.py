@@ -9,6 +9,7 @@ from typing import Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.model_executor.runner_utils.capture_mode import get_is_capture_mode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.utils import add_prefix
@@ -89,7 +90,11 @@ class _PredictorDecodeGraph:
         self.summed_embeddings: torch.Tensor | None = None
         self._capture()
 
-    @torch.no_grad()
+    # Note (zijiecode): capture in the same mode as replay. SGLang registers the
+    # CUDA generator from inference mode, so on torch 2.9 (ROCm) a no_grad
+    # capture_begin() is refused as an inplace update to an inference tensor
+    # and the aborted capture breaks every later graph in the process.
+    @torch.inference_mode()
     def _capture(self) -> None:
         device = self.layer0_codes.device
         with torch.cuda.device(device):
@@ -1463,6 +1468,13 @@ class Qwen3OmniTalker(nn.Module):
             return False
         if torch.cuda.is_current_stream_capturing():
             return False
+        # Note (zijiecode): SGLang's decode-graph warmup runs this forward before
+        # its own capture. On ROCm (torch 2.9) the predictor must not register
+        # the CUDA generator first, or SGLang's no_grad capture_begin() fails
+        # on the inference tensors it left behind. CUDA keeps the startup-time
+        # capture.
+        if current_platform.is_rocm() and get_is_capture_mode():
+            return False
         return True
 
     @staticmethod
@@ -1725,6 +1737,7 @@ class Qwen3OmniTalker(nn.Module):
         attn_output, _ = attn.o_proj(attn_output)
         return attn_output.reshape(batch_size, 1, hidden_size)
 
+    @torch.no_grad()
     def code_predictor_forward(
         self,
         layer0_codes: torch.Tensor,

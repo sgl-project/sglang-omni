@@ -29,7 +29,7 @@ env:
 #   stage-1-thinker -> stage-2-tts -> stage-3-mmmu -> stage-4-mmmu-talker
 #     -> stage-5-mmsu -> stage-6-mmsu-talker -> stage-7-videomme
 #     -> stage-8-videomme-talker -> stage-9-videoamme
-#     -> stage-10-videoamme-talker-tp2
+#     -> stage-10-videoamme-talker-tp2 -> stage-11-process-replicas
 
 jobs:
   stage-1-thinker:
@@ -501,3 +501,45 @@ jobs:
             */videoamme_audio*/videoamme_results.json
           artifact-upload-name: qwen3-omni-videoamme-talker-tp2-results
           artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
+
+  stage-11-process-replicas:
+    name: stage 11 - process replicas
+    needs: stage-10-videoamme-talker-tp2
+    if: always() && !cancelled()
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 30
+    container:
+      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        --cap-add=SYS_PTRACE
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run process-replica smoke test
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_qwen3_omni_process_replicas.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: process replicas

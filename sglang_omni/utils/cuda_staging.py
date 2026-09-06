@@ -5,8 +5,9 @@ Streaming decoders copy device results into pinned host memory asynchronously
 and wait on a CUDA event before reading them back. The two classes here hold
 just the buffer and the event and carry no ownership policy: the owner
 serializes access, grows a buffer only while no asynchronous copy can still be
-using it, and must not touch a slot between ``record()`` and a successful
-``synchronize()``.
+using it, and must not touch a slot between ``record()`` and observed
+completion (a successful ``synchronize()``, or a ``query()`` that reported
+True).
 """
 
 from __future__ import annotations
@@ -76,12 +77,12 @@ class GrowablePinnedBuffer:
 class PinnedTransferSlot:
     """One growable pinned host buffer plus one reusable CUDA event.
 
-    The event is a completion fence for everything enqueued on the recording
-    stream before ``record()``, so it also covers work that does not target
-    this buffer. Between ``record()`` and a successful ``synchronize()`` the
-    owner must not grow, re-record, or reuse the buffer. There is no pool,
-    lock, or failure policy here: after a failed ``record()`` or
-    ``synchronize()`` the owner decides whether the slot can be trusted again.
+    The event fences work queued before ``record()``. Do not resize or reuse
+    the buffer until ``synchronize()`` returns or ``query()`` reports True.
+
+    If ``record()`` raises, completion reads fail until a later ``record()``
+    succeeds. Copy failures before ``record()`` remain the owner's
+    responsibility.
     """
 
     def __init__(
@@ -94,6 +95,12 @@ class PinnedTransferSlot:
         self.device = _normalize_device(device)
         self._buffer = GrowablePinnedBuffer(dtype, initial_capacity=initial_capacity)
         self._event: Any = None
+        # Note (jiannan-17): True only while the most recent ``record()``
+        # succeeded. The event object alone cannot tell "never recorded" from
+        # "the last record() raised", and CUDA reports an event whose record
+        # never happened as already complete, which would hand the owner a
+        # completion marker for a transfer that was never fenced.
+        self._recorded = False
 
     @property
     def capacity(self) -> int:
@@ -114,8 +121,14 @@ class PinnedTransferSlot:
         """Record the completion event on ``stream``.
 
         ``stream`` must live on this slot's device; the event is created on
-        first use and reused for every later ``record()``.
+        first use and reused for every later ``record()``. If this raises,
+        the slot has no recorded transfer until a later ``record()``
+        succeeds.
         """
+        # Note (jiannan-17): cleared before anything can fail, so neither a
+        # rejected stream nor a failed CUDA record can leave the previous
+        # transfer's completion state readable as this transfer's.
+        self._recorded = False
         stream_device = getattr(stream, "device", None)
         if (
             stream_device is not None
@@ -129,13 +142,33 @@ class PinnedTransferSlot:
             if self._event is None:
                 self._event = torch.cuda.Event()
             self._event.record(stream)
+        self._recorded = True
+
+    def _recorded_event(self) -> Any:
+        if not self._recorded:
+            raise RuntimeError(
+                "transfer event was not recorded: no record() has succeeded on "
+                "this slot since it was created or since its last record() raised"
+            )
+        return self._event
+
+    def query(self) -> bool:
+        """Return whether the recorded event has completed, without blocking.
+
+        Raises ``RuntimeError`` until a ``record()`` has succeeded.
+        """
+        event = self._recorded_event()
+        with self._device_guard():
+            return bool(event.query())
 
     def synchronize(self) -> None:
-        """Block until the recorded event has completed."""
-        if self._event is None:
-            raise RuntimeError("transfer event was not recorded")
+        """Block until the recorded event has completed.
+
+        Raises ``RuntimeError`` until a ``record()`` has succeeded.
+        """
+        event = self._recorded_event()
         with self._device_guard():
-            self._event.synchronize()
+            event.synchronize()
 
 
 __all__ = ["GrowablePinnedBuffer", "PinnedTransferSlot"]

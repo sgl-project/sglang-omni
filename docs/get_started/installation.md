@@ -8,6 +8,8 @@ source installer below.
 
 > **Intel GPU (XPU)?** For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
 
+> **Intel CPU?** Also not this page. See [Installation — Intel CPU](./installation_cpu.md), which uses [`pyproject_cpu.toml`](../../pyproject_cpu.toml) + the PyTorch CPU wheel index.
+
 > **Ascend NPU?** See [Installation — Ascend NPU](./installation_npu.md) for the supported software stack, prerequisites, and installation helper.
 
 ## 🐳 Option A: Docker (recommended)

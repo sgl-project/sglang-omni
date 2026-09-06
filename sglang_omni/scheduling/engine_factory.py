@@ -72,6 +72,7 @@ class SGLangGenerationEngineBuilder(ABC):
     ) -> Any:
         import torch
 
+        from sglang_omni.platforms import current_platform
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
         from sglang_omni.scheduling import sglang_backend
         from sglang_omni.utils.device import place_device_spec, resolve_device_spec
@@ -89,6 +90,12 @@ class SGLangGenerationEngineBuilder(ABC):
         self.dtype = dtype
 
         self.pre_infra_setup(checkpoint_dir)
+
+        if current_platform.is_cpu():
+            # A stage default asking for a graph would otherwise fail inside
+            # capture rather than at configuration time.
+            server_args_overrides = dict(server_args_overrides or {})
+            server_args_overrides["disable_cuda_graph"] = True
 
         requested_context_length = (
             server_args_overrides.get("context_length")
@@ -154,6 +161,15 @@ class SGLangGenerationEngineBuilder(ABC):
             **overrides,
         )
         self.customize_server_args(server_args)
+        if (
+            overrides.get("chunked_prefill_size") is None
+            and get_prefill_cuda_graph_backend(server_args) != CudaGraphBackend.DISABLED
+        ):
+            logger.info(
+                f"{self.model_name}: chunked_prefill_size was unset, SGLang resolved "
+                f"{server_args.chunked_prefill_size}, prefill CUDA graph cap "
+                f"{server_args.cuda_graph_config.prefill.max_bs}"
+            )
         self.validate_before_infrastructure(server_args)
 
         infra_kwargs = dict(self.infra_kwargs())
