@@ -599,3 +599,12 @@ r20 p50 **68.7ms**(第九轮 79.1)。r20 各阶段均值:preprocessing 8.9ms、�
   code predictor 4.4ms/步是 16 个串行子步,已在一个图里;要再降要动子解码器的 kernel。
 - **r1 首帧账**(p50 35.6-35.9ms):preprocessing 2.1 + 准入 3.3 + prefill 12 + 首帧 code 到 vocoder
   发出 ~5 + 第二帧等待(bootstrap 静音抑制要 2 帧,一步 ≈ forward 2 + predictor 4.4 ≈ 7)+ hop/HTTP。
+
+### 分支现状(2026-09-06 14:05 PT)
+
+`qwen3-tts-pr1855-rebase`(origin,HEAD 742ca60f)自 21a16bc4 起 26 个 commit。第十/十一轮新增:
+da0fe4ed 环形 staging;74914eb0 + a6402532 collect 锁有界等待与回归测试;5ad19d18 解码 worker 自有流 +
+Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上捕获;0578cb81 preprocessing
+独立流 + ready event;742ca60f black。#1855 本身是 leihehehe 的 draft(fork 分支),这些 SHA 只在
+评论里被引用、不在 PR diff 内——是否以本分支另开 PR 由 luojiaxuan 定(此前 JiaxinD 直接推到对方
+分支后道歉,不宜重演)。
