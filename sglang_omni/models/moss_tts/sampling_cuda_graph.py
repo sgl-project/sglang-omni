@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bucket-aligned CUDA graphs for MOSS-TTS Delay sampling and its FSM."""
+"""Bucket-aligned CUDA graphs for MOSS-TTS Delay sampling, FSM, and feedback."""
 
 from __future__ import annotations
 
@@ -30,14 +30,15 @@ class _CapturedSamplingGraph(NamedTuple):
     graph: torch.cuda.CUDAGraph
     rows: torch.Tensor
     next_delay_state: torch.Tensor
+    feedback_embeds: torch.Tensor
 
 
 class MossTTSDelaySamplingCudaGraphRunner:
-    """Sampling/FSM graphs aligned to the backbone CUDA-graph buckets.
+    """Sampling/FSM/feedback graphs aligned to the backbone CUDA-graph buckets.
 
-    LM heads and feedback embedding deliberately remain eager. Every graph uses
-    all 32 codebook rows and applies the Delay mask only to its fixed-shape
-    output, so replay topology does not depend on the number of active channels.
+    Every graph uses all 32 codebook rows and applies the Delay mask only to its
+    fixed-shape output, so replay topology does not depend on the number of
+    active channels.
     """
 
     def __init__(
@@ -204,19 +205,21 @@ class MossTTSDelaySamplingCudaGraphRunner:
     def _run_static(
         self,
         bucket: int,
-    ) -> DelaySamplingOutput:
+    ) -> tuple[DelaySamplingOutput, torch.Tensor]:
         inputs = self._require_inputs()
         batch = DelayGraphBatch(
             delay_state=inputs.delay_state[:bucket],
             seeds=inputs.seeds[:bucket],
             generation_steps=inputs.generation_steps[:bucket],
         )
-        return self.model.sample_delay_fixed_shape(
+        output = self.model.sample_delay_fixed_shape(
             inputs.control_logits[:bucket],
             inputs.audio_logits[:bucket],
             batch,
             audio_sample_output=inputs.audio_sample_output,
         )
+        feedback_embeds = self.model._prepare_multi_modal_inputs(output.rows)
+        return output, feedback_embeds
 
     def _capture_bucket(
         self,
@@ -247,12 +250,13 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 stream=capture_stream,
                 capture_error_mode="thread_local",
             ):
-                output = self._run_static(bucket)
+                output, feedback_embeds = self._run_static(bucket)
         torch.cuda.current_stream(device).wait_stream(capture_stream)
         return _CapturedSamplingGraph(
             graph=graph,
             rows=output.rows,
             next_delay_state=output.next_delay_state,
+            feedback_embeds=feedback_embeds,
         )
 
     def canonical_bucket(self, batch_size: int) -> int | None:
@@ -281,7 +285,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         control_logits: torch.Tensor,
         audio_logits: torch.Tensor,
         batch: DelayGraphBatch,
-    ) -> DelaySamplingOutput:
+    ) -> tuple[DelaySamplingOutput, torch.Tensor]:
         batch_size = int(control_logits.shape[0])
         bucket = self.canonical_bucket(batch_size)
         key = self._graph_key(batch_size)
@@ -325,7 +329,10 @@ class MossTTSDelaySamplingCudaGraphRunner:
 
         captured = self.graphs[key]
         captured.graph.replay()
-        return DelaySamplingOutput(
-            rows=captured.rows[:batch_size],
-            next_delay_state=captured.next_delay_state[:batch_size],
+        return (
+            DelaySamplingOutput(
+                rows=captured.rows[:batch_size],
+                next_delay_state=captured.next_delay_state[:batch_size],
+            ),
+            captured.feedback_embeds[:batch_size],
         )

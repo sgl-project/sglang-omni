@@ -186,7 +186,7 @@ class MossTTSModelRunner(ModelRunner):
             return
 
         if self._can_use_sampling_cuda_graph(datas, is_audio=is_audio):
-            rows = self._sample_rows_graphed(channel_logits, datas)
+            rows, embeds = self._sample_rows_graphed(channel_logits, datas)
         else:
             rows = self._sample_rows(
                 channel_logits,
@@ -194,12 +194,12 @@ class MossTTSModelRunner(ModelRunner):
                 n_vq=n_vq,
                 is_audio=is_audio,
             )
+            embeds = self.model._prepare_multi_modal_inputs(
+                rows.to(device=self.model.device)
+            )
 
         next_token_ids = rows[:, 0].contiguous()
         result.next_token_ids = next_token_ids
-        embeds = self.model._prepare_multi_modal_inputs(
-            rows.to(device=self.model.device)
-        )
         self._pending_rows = rows
         self._pending_embeds = embeds.detach()
 
@@ -230,7 +230,7 @@ class MossTTSModelRunner(ModelRunner):
         self,
         channel_logits: list[torch.Tensor],
         datas: list,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         device = channel_logits[0].device
         batch_size = len(datas)
         n_vq = len(channel_logits) - 1
@@ -257,7 +257,7 @@ class MossTTSModelRunner(ModelRunner):
                 "MOSS-TTS Delay sampling graph audio-logits shape mismatch: "
                 f"got {tuple(audio_logits.shape)}"
             )
-        sampled = self.model.sample_delay_graphed(
+        sampled, feedback_embeds = self.model.sample_delay_graphed(
             channel_logits[0].to(torch.float32),
             audio_logits,
             DelayGraphBatch(
@@ -270,7 +270,7 @@ class MossTTSModelRunner(ModelRunner):
         next_state = sampled.next_delay_state[:batch_size].clone()
         for index, data in enumerate(datas):
             data.delay_state = next_state[index]
-        return rows
+        return rows, feedback_embeds
 
     def _channel_logits_from_result(
         self,

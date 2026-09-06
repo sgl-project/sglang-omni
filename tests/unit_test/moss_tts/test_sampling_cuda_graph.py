@@ -169,32 +169,28 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
             batch,
         ):
             calls.append((control_logits.clone(), audio_logits.clone(), batch))
-            return SimpleNamespace(
-                rows=torch.tensor([[12, 2, 4]], dtype=torch.long),
-                next_delay_state=torch.tensor([[2, _INT64_MAX, 1]], dtype=torch.long),
+            return (
+                SimpleNamespace(
+                    rows=torch.tensor([[12, 2, 4]], dtype=torch.long),
+                    next_delay_state=torch.tensor(
+                        [[2, _INT64_MAX, 1]], dtype=torch.long
+                    ),
+                ),
+                torch.tensor([[101.0, 102.0, 103.0]]),
             )
 
         @staticmethod
         def _prepare_multi_modal_inputs(rows):
-            return rows.to(torch.float32)
+            raise AssertionError("graphed route recomputed feedback embeddings")
 
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
     runner.model = FakeModel()
     runner._pending_rows = None
     runner._pending_embeds = None
-    profile = _sampling_data(profile="default")
-    data = SimpleNamespace(
-        is_audio=True,
-        delay_state=torch.tensor([1, _INT64_MAX, 1]),
-        sampling_seed=123,
+    data = _request_data(
+        torch.tensor([1, _INT64_MAX, 1]),
+        seed=123,
         generation_steps=1,
-        text_temperature=profile.text_temperature,
-        text_top_p=profile.text_top_p,
-        text_top_k=profile.text_top_k,
-        audio_temperature=profile.audio_temperature,
-        audio_top_p=profile.audio_top_p,
-        audio_top_k=profile.audio_top_k,
-        audio_repetition_penalty=1.0,
     )
     request = SimpleNamespace(data=data)
     result = SimpleNamespace(
@@ -215,7 +211,79 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
     assert len(calls) == 1
     assert result.next_token_ids.tolist() == [12]
     assert runner._pending_rows.tolist() == [[12, 2, 4]]
+    assert torch.equal(
+        runner._pending_embeds,
+        torch.tensor([[101.0, 102.0, 103.0]]),
+    )
     assert data.delay_state.tolist() == [2, _INT64_MAX, 1]
+
+
+def test_model_runner_keeps_ineligible_batch_on_eager_sampling() -> None:
+    graph_calls = []
+    prepare_calls = []
+
+    class FakeModel:
+        device = torch.device("cpu")
+        hidden_size = 3
+        config = _config(n_vq=2, audio_vocab=5)
+        text_control_token_ids = torch.tensor([12, 13], dtype=torch.long)
+
+        @staticmethod
+        def is_sampling_cuda_graph_compatible(data):
+            return MossTTSDelaySGLangModel.is_sampling_cuda_graph_compatible(data)
+
+        @staticmethod
+        def sampling_graph_available(batch_size):
+            graph_calls.append(batch_size)
+            return False
+
+        @staticmethod
+        def compute_channel_logits(hidden_states, forward_batch, *, is_audio=False):
+            del hidden_states, forward_batch
+            assert is_audio is True
+            return [
+                torch.tensor([[3.0, 1.0]]),
+                torch.zeros(1, 5),
+                torch.zeros(1, 5),
+            ]
+
+        @staticmethod
+        def sample_delay_graphed(*args, **kwargs):
+            del args, kwargs
+            raise AssertionError("ineligible batch used the sampling graph")
+
+        @staticmethod
+        def _prepare_multi_modal_inputs(rows):
+            prepare_calls.append(rows.clone())
+            return rows.to(torch.float32) + 100.0
+
+    runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
+    runner.model = FakeModel()
+    runner._pending_rows = None
+    runner._pending_embeds = None
+    data = _request_data(
+        torch.tensor([1, _INT64_MAX, 1]),
+        seed=123,
+        generation_steps=1,
+    )
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(
+            customized_info=None,
+            hidden_states=torch.zeros(1, 3),
+        )
+    )
+
+    runner._collect_moss_step(
+        result,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        [SimpleNamespace(data=data)],
+    )
+
+    assert graph_calls == [1]
+    assert len(prepare_calls) == 1
+    assert torch.equal(runner._pending_embeds, prepare_calls[0].float() + 100.0)
+    assert torch.equal(result.next_token_ids, runner._pending_rows[:, 0])
 
 
 def test_sampling_cuda_graph_setup_failure_uses_eager(
@@ -253,7 +321,30 @@ class _CudaGraphModel:
             audio_vocab=_MOSS_DELAY_AUDIO_VOCAB,
         )
         self.device = device
+        self.hidden_size = 4
+        self.embedding_list = torch.nn.ModuleList(
+            [
+                torch.nn.Embedding(
+                    int(vocab_size),
+                    self.hidden_size,
+                    device=device,
+                    dtype=torch.float32,
+                )
+                for vocab_size in self.config.vocab_size_list
+            ]
+        )
+        for embedding in self.embedding_list:
+            embedding.weight.requires_grad_(False)
+        self._pad_token_per_channel = [self.config.pad_token_id] + [
+            self.config.audio_pad_code
+        ] * self.config.n_vq
         self.delay_graph_sampler = MossTTSDelayAudioGraphSampler(self.config).to(device)
+
+    def _first_embedding_weight(self) -> torch.Tensor:
+        return self.embedding_list[0].weight
+
+    def _prepare_multi_modal_inputs(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return MossTTSDelaySGLangModel._prepare_multi_modal_inputs(self, input_ids)
 
     def sample_delay_fixed_shape(
         self,
@@ -421,17 +512,20 @@ def test_sampling_cuda_graph_replay_matches_fixed_shape_eager() -> None:
             audio_logits,
             batch,
         )
-        actual = runner.replay(
+        expected_feedback = model._prepare_multi_modal_inputs(expected.rows)
+        actual, actual_feedback = runner.replay(
             control_logits,
             audio_logits,
             batch,
         )
         actual_rows = actual.rows.clone()
         actual_state = actual.next_delay_state.clone()
+        actual_feedback = actual_feedback.clone()
         torch.cuda.synchronize()
 
         assert torch.equal(expected.rows, actual_rows)
         assert torch.equal(expected.next_delay_state, actual_state)
+        assert torch.equal(expected_feedback, actual_feedback)
         if batch_size == 1:
             static_inputs = runner._require_inputs()
             assert not torch.count_nonzero(static_inputs.control_logits[1:2])

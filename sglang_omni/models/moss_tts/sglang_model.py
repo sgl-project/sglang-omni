@@ -645,7 +645,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         *,
         disable_padding: bool = False,
     ) -> None:
-        """Capture sampling/FSM graphs in the backbone batch envelope."""
+        """Capture sampling/FSM and feedback-embedding graphs in the batch envelope."""
 
         buckets = tuple(sorted({int(batch_size) for batch_size in batch_sizes}))
         if not buckets:
@@ -687,8 +687,8 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         control_logits: torch.Tensor,
         audio_logits: torch.Tensor,
         batch: DelayGraphBatch,
-    ) -> DelaySamplingOutput:
-        """Replay one fixed-shape sampling/FSM CUDA graph."""
+    ) -> tuple[DelaySamplingOutput, torch.Tensor]:
+        """Replay the sampling/FSM graph and return its feedback embeddings."""
 
         runner = self._sampling_graph_runner
         if runner is None:
