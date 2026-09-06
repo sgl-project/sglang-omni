@@ -141,15 +141,6 @@ impl AdmissionController {
         }
     }
 
-    pub(super) fn try_admit(
-        &self,
-        class: CapacityClass,
-        credits: u32,
-    ) -> Result<AdmissionLease, AdmissionError> {
-        let envelope = self.try_admit_envelope()?;
-        self.try_admit_class(envelope, class, credits)
-    }
-
     pub(super) fn try_admit_envelope(&self) -> Result<EnvelopeLease, AdmissionError> {
         let global = Arc::clone(&self.global)
             .try_acquire_owned()

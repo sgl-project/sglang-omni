@@ -8,6 +8,7 @@ use axum::http::{HeaderMap, HeaderValue, Response};
 use axum::middleware::Next;
 
 use crate::error::HttpFault;
+use crate::metrics::{HttpRoute, RouterMetrics};
 
 pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -26,6 +27,20 @@ impl CanonicalRequestId {
 pub(crate) struct RequestIds {
     prefix: String,
     sequence: AtomicU64,
+}
+
+pub(crate) struct RequestBoundary {
+    request_ids: Arc<RequestIds>,
+    metrics: Arc<RouterMetrics>,
+}
+
+impl RequestBoundary {
+    pub(crate) fn new(request_ids: Arc<RequestIds>, metrics: Arc<RouterMetrics>) -> Arc<Self> {
+        Arc::new(Self {
+            request_ids,
+            metrics,
+        })
+    }
 }
 
 impl RequestIds {
@@ -60,29 +75,34 @@ impl RequestIds {
 }
 
 pub(crate) async fn canonicalize(
-    State(request_ids): State<Arc<RequestIds>>,
+    State(boundary): State<Arc<RequestBoundary>>,
     mut request: Request,
     next: Next,
 ) -> Response<Body> {
-    let Some((request_id, accepted)) = request_ids.canonicalize(request.headers()) else {
-        return HttpFault::InternalError.into_response();
+    let route = HttpRoute::from_path(request.uri().path());
+    boundary.metrics.record_request(route);
+    let response = match boundary.request_ids.canonicalize(request.headers()) {
+        None => HttpFault::InternalError.into_response(),
+        Some((request_id, false)) => {
+            let mut response = HttpFault::MalformedRequest.into_response();
+            response
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, request_id.0);
+            response
+        }
+        Some((request_id, true)) => {
+            request
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, request_id.0.clone());
+            request.extensions_mut().insert(request_id.clone());
+            let mut response = next.run(request).await;
+            response
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, request_id.0);
+            response
+        }
     };
-    if !accepted {
-        let mut response = HttpFault::MalformedRequest.into_response();
-        response
-            .headers_mut()
-            .insert(REQUEST_ID_HEADER, request_id.0);
-        return response;
-    }
-
-    request
-        .headers_mut()
-        .insert(REQUEST_ID_HEADER, request_id.0.clone());
-    request.extensions_mut().insert(request_id.clone());
-    let mut response = next.run(request).await;
-    response
-        .headers_mut()
-        .insert(REQUEST_ID_HEADER, request_id.0);
+    boundary.metrics.record_response(route, &response);
     response
 }
 

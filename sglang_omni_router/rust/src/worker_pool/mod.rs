@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Notify, Semaphore};
 
 use crate::config::{Config, RoutingStrategy};
+use crate::metrics::{Rejection, RouterMetrics};
 
 pub(crate) use admission::{
     AdmissionError, AdmissionLease, DispatchError, EnvelopeLease, RequestLease,
@@ -153,6 +154,7 @@ pub(crate) struct WorkerPool {
     homogeneous_media_http: Vec<HomogeneousMediaCohort>,
     health_client: reqwest::Client,
     http_client: reqwest::Client,
+    metrics: Arc<RouterMetrics>,
 }
 
 struct HomogeneousGenerationCohort {
@@ -183,7 +185,10 @@ pub(crate) struct ContentBlindMediaHttp<'a> {
 }
 
 impl WorkerPool {
-    pub(crate) fn build(config: &Config) -> Result<Self, crate::error::RouterError> {
+    pub(crate) fn build(
+        config: &Config,
+        metrics: Arc<RouterMetrics>,
+    ) -> Result<Self, crate::error::RouterError> {
         let targets: Vec<_> = config
             .workers
             .iter()
@@ -257,6 +262,7 @@ impl WorkerPool {
             homogeneous_media_http,
             health_client,
             http_client,
+            metrics,
         })
     }
 
@@ -279,11 +285,16 @@ impl WorkerPool {
         class: CapacityClass,
         credits: u32,
     ) -> Result<AdmissionLease, AdmissionError> {
-        self.admission.try_admit(class, credits)
+        let envelope = self.try_admit_envelope()?;
+        self.try_admit_class(envelope, class, credits)
     }
 
     pub(crate) fn try_admit_envelope(&self) -> Result<EnvelopeLease, AdmissionError> {
-        self.admission.try_admit_envelope()
+        let admitted = self.admission.try_admit_envelope();
+        if matches!(admitted, Err(AdmissionError::Overloaded)) {
+            self.metrics.record_rejection(Rejection::GlobalAdmission);
+        }
+        admitted
     }
 
     pub(crate) fn try_admit_class(
@@ -292,7 +303,11 @@ impl WorkerPool {
         class: CapacityClass,
         credits: u32,
     ) -> Result<AdmissionLease, AdmissionError> {
-        self.admission.try_admit_class(envelope, class, credits)
+        let admitted = self.admission.try_admit_class(envelope, class, credits);
+        if matches!(admitted, Err(AdmissionError::Overloaded)) {
+            self.metrics.record_rejection(Rejection::admission(class));
+        }
+        admitted
     }
 
     pub(crate) fn dispatch(
@@ -351,7 +366,7 @@ impl WorkerPool {
                 .ok_or(DispatchError::Internal)?;
             let permit = Arc::clone(&capacity.semaphore)
                 .try_acquire_owned()
-                .map_err(|_| DispatchError::Overloaded)?;
+                .map_err(|_| self.session_overloaded(class))?;
             let lease = RequestLease::new_session(admission, permit, Arc::clone(owner));
             drop(selector);
             return Ok(lease);
@@ -397,7 +412,7 @@ impl WorkerPool {
             return Err(DispatchError::Unavailable);
         }
         if eligible_count == 0 {
-            return Err(DispatchError::Overloaded);
+            return Err(self.session_overloaded(class));
         }
 
         let eligible = &eligible[..eligible_count];
@@ -420,6 +435,13 @@ impl WorkerPool {
         let lease = RequestLease::new_session(admission, permit, selected);
         drop(selector);
         Ok(lease)
+    }
+
+    fn session_overloaded(&self, class: CapacityClass) -> DispatchError {
+        if let Some(rejection) = Rejection::worker(class) {
+            self.metrics.record_rejection(rejection);
+        }
+        DispatchError::Overloaded
     }
 
     fn matching_profiles(
@@ -908,6 +930,8 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
+    use crate::metrics::Rejection;
+
     use super::profile::{
         InputModality, MessageContentForm, ModelSelection, OutputModality, ProfileRequirement,
         ServiceProfile, StreamMode, VoiceNamePolicy,
@@ -1039,6 +1063,7 @@ mod tests {
             selector,
             health_client: client.clone(),
             http_client: client,
+            metrics: crate::metrics::RouterMetrics::new(),
         }
     }
 
@@ -1641,6 +1666,55 @@ mod tests {
     }
 
     #[test]
+    fn admission_rejections_are_counted_at_the_saturated_resource() {
+        let mut class_limited = pool(
+            RoutingStrategy::RoundRobin,
+            vec![record(0, "local", "omni")],
+            2,
+        );
+        class_limited.admission =
+            AdmissionController::new(2, [Some(1), None, None, None, None, None]);
+        let held = class_limited
+            .try_admit(CapacityClass::GenerationHttp, 1)
+            .expect("hold generation admission");
+        assert!(matches!(
+            class_limited.try_admit(CapacityClass::GenerationHttp, 1),
+            Err(AdmissionError::Overloaded)
+        ));
+        assert_eq!(
+            class_limited
+                .metrics
+                .rejections(Rejection::GenerationAdmission),
+            1
+        );
+        assert_eq!(
+            class_limited.metrics.rejections(Rejection::GlobalAdmission),
+            0
+        );
+        drop(held);
+
+        let global_limited = pool(
+            RoutingStrategy::RoundRobin,
+            vec![record(0, "local", "omni")],
+            1,
+        );
+        let held = global_limited
+            .try_admit_envelope()
+            .expect("hold global admission");
+        assert!(matches!(
+            global_limited.try_admit_envelope(),
+            Err(AdmissionError::Overloaded)
+        ));
+        assert_eq!(
+            global_limited
+                .metrics
+                .rejections(Rejection::GlobalAdmission),
+            1
+        );
+        drop(held);
+    }
+
+    #[test]
     fn websocket_sessions_hold_exact_worker_capacity_and_active_load() {
         let mut record = record_with_profile(0, "local", "omni", ServiceProfile::RealtimeWebsocket);
         Arc::get_mut(&mut record)
@@ -1681,6 +1755,10 @@ mod tests {
             ),
             Err(DispatchError::Overloaded)
         ));
+        assert_eq!(
+            pool.metrics.rejections(Rejection::RealtimeWebsocketWorker),
+            1
+        );
 
         drop(first);
         let reused = pool
@@ -1882,6 +1960,7 @@ mod tests {
             selector,
             health_client: client.clone(),
             http_client: client,
+            metrics: crate::metrics::RouterMetrics::new(),
         }
     }
 

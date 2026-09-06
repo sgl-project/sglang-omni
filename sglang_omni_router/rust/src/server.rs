@@ -22,8 +22,9 @@ use crate::http_generation::{self, HttpGeneration};
 use crate::http_media::{self, HttpMedia};
 use crate::http_relay::HttpRelay;
 use crate::lifecycle::Lifecycle;
+use crate::metrics::RouterMetrics;
 use crate::operations::{Operations, ResourceSnapshot, ResourceUsage};
-use crate::request_id::{self, RequestIds};
+use crate::request_id::{self, RequestBoundary, RequestIds};
 use crate::shutdown;
 use crate::websocket::{self, SessionTracker, WebsocketGateway};
 use crate::worker_pool::{HealthSupervisor, WorkerPool};
@@ -81,7 +82,8 @@ impl AppState {
 
 pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
     let lifecycle = Arc::new(Lifecycle::starting());
-    let pool = Arc::new(WorkerPool::build(&config)?);
+    let metrics = RouterMetrics::new();
+    let pool = Arc::new(WorkerPool::build(&config, Arc::clone(&metrics))?);
     let classifier = ClassificationExecutor::new();
     let relay = HttpRelay::new(
         pool.http_client(),
@@ -90,6 +92,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
             .buffered_total_usize()
             .map_err(RouterError::Config)?,
         Arc::clone(&classifier),
+        Arc::clone(&metrics),
     );
     let generation = HttpGeneration::build(&config, Arc::clone(&pool), Arc::clone(&relay))?;
     let media = HttpMedia::build(&config, Arc::clone(&pool), Arc::clone(&relay))?;
@@ -100,8 +103,8 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
         Arc::clone(&classifier),
         sessions.clone(),
     );
-    let operations = Arc::new(Operations::build(&config)?);
-    let request_ids = RequestIds::new();
+    let operations = Arc::new(Operations::build(&config, Arc::clone(&metrics))?);
+    let request_boundary = RequestBoundary::new(RequestIds::new(), metrics);
     let mut signal_observer = shutdown::SignalObserver::install().map_err(RouterError::Signal)?;
     let listener = tokio::net::TcpListener::bind(config.server.listen)
         .await
@@ -124,7 +127,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
         generation,
         media,
         websocket,
-        request_ids,
+        request_boundary,
     );
     let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
     lifecycle.enter_serving()?;
@@ -375,7 +378,7 @@ fn route_table(
     generation: Option<Arc<HttpGeneration>>,
     media: Option<Arc<HttpMedia>>,
     websocket: Option<Arc<WebsocketGateway>>,
-    request_ids: Arc<RequestIds>,
+    request_boundary: Arc<RequestBoundary>,
 ) -> Router {
     let mut app = Router::new()
         .route("/live", get(live).head(reject_head))
@@ -446,7 +449,7 @@ fn route_table(
         .route("/metrics", any(metrics).with_state(state.clone()))
         .route("/diagnostics", any(diagnostics).with_state(state));
     app.layer(middleware::from_fn_with_state(
-        request_ids,
+        request_boundary,
         request_id::canonicalize,
     ))
 }

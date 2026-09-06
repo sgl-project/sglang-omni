@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
@@ -10,6 +11,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{HttpFault, RouterError};
 use crate::lifecycle::State as LifecycleState;
+use crate::metrics::{HttpRoute, Rejection, RouterMetrics, StatusClass};
 use crate::worker_pool::{
     OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth,
 };
@@ -56,10 +58,11 @@ impl ResourceSnapshot {
 /// Immutable model inventory plus scrape-time operations rendering.
 pub(crate) struct Operations {
     models: Bytes,
+    metrics: Arc<RouterMetrics>,
 }
 
 impl Operations {
-    pub(crate) fn build(config: &Config) -> Result<Self, RouterError> {
+    pub(crate) fn build(config: &Config, metrics: Arc<RouterMetrics>) -> Result<Self, RouterError> {
         let profile_ids = config.workers.iter().flat_map(|worker| {
             worker
                 .service_profiles
@@ -72,6 +75,7 @@ impl Operations {
             .filter_map(|worker| worker.default_model_id.as_deref());
         Ok(Self {
             models: render_model_sources(profile_ids, defaults)?,
+            metrics,
         })
     }
 
@@ -89,7 +93,13 @@ impl Operations {
         response(
             StatusCode::OK,
             METRICS_CONTENT_TYPE,
-            Bytes::from(render_metrics(lifecycle, ready, snapshot, resources)),
+            Bytes::from(render_metrics(
+                lifecycle,
+                ready,
+                snapshot,
+                resources,
+                &self.metrics,
+            )),
         )
     }
 
@@ -191,6 +201,7 @@ fn render_metrics(
     ready: bool,
     snapshot: &OperationsSnapshot,
     resources: &ResourceSnapshot,
+    metrics: &RouterMetrics,
 ) -> String {
     let mut output = String::new();
     output.push_str("# HELP sglang_omni_router_lifecycle Router lifecycle state.\n");
@@ -206,6 +217,8 @@ fn render_metrics(
     output.push_str("# HELP sglang_omni_router_ready Router readiness state.\n");
     output.push_str("# TYPE sglang_omni_router_ready gauge\n");
     let _ = writeln!(output, "sglang_omni_router_ready {}", u8::from(ready));
+
+    render_request_metrics(&mut output, metrics);
 
     output.push_str("# HELP sglang_omni_router_workers_by_health Workers by health state.\n");
     output.push_str("# TYPE sglang_omni_router_workers_by_health gauge\n");
@@ -236,6 +249,80 @@ fn render_metrics(
     render_worker_metrics(&mut output, snapshot);
     render_resource_metrics(&mut output, resources);
     output
+}
+
+fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
+    output.push_str("# HELP sglang_omni_router_http_requests_total HTTP requests received.\n");
+    output.push_str("# TYPE sglang_omni_router_http_requests_total counter\n");
+    for route in HttpRoute::ALL {
+        let count = metrics.requests(route);
+        if count != 0 {
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_http_requests_total{{route=\"{}\"}} {count}",
+                route.label()
+            );
+        }
+    }
+
+    output.push_str(
+        "# HELP sglang_omni_router_http_response_headers_total HTTP response headers by status class.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_http_response_headers_total counter\n");
+    for route in HttpRoute::ALL {
+        for status in StatusClass::ALL {
+            let count = metrics.responses(route, status);
+            if count != 0 {
+                let _ = writeln!(
+                    output,
+                    "sglang_omni_router_http_response_headers_total{{route=\"{}\",status=\"{}\"}} {count}",
+                    route.label(),
+                    status.label()
+                );
+            }
+        }
+    }
+
+    output.push_str("# HELP sglang_omni_router_http_faults_total Router-generated HTTP faults.\n");
+    output.push_str("# TYPE sglang_omni_router_http_faults_total counter\n");
+    for route in HttpRoute::ALL {
+        for fault in HttpFault::ALL {
+            let count = metrics.faults(route, fault);
+            if count != 0 {
+                let _ = writeln!(
+                    output,
+                    "sglang_omni_router_http_faults_total{{route=\"{}\",code=\"{}\"}} {count}",
+                    route.label(),
+                    fault.code()
+                );
+            }
+        }
+    }
+
+    output.push_str(
+        "# HELP sglang_omni_router_rejections_total Requests rejected by a saturated bounded resource.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_rejections_total counter\n");
+    for rejection in Rejection::ALL {
+        let count = metrics.rejections(rejection);
+        if count != 0 {
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_rejections_total{{resource=\"{}\"}} {count}",
+                rejection.label()
+            );
+        }
+    }
+
+    output.push_str(
+        "# HELP sglang_omni_router_http_relay_failures_total Upstream body failures after response commitment.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_http_relay_failures_total counter\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_http_relay_failures_total {}",
+        metrics.relay_failures()
+    );
 }
 
 fn render_probe_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
@@ -516,7 +603,11 @@ impl<'a> Diagnostics<'a> {
 mod tests {
     use std::collections::BTreeSet;
 
+    use axum::http::{Response, StatusCode};
+
+    use crate::error::HttpFault;
     use crate::lifecycle::State as LifecycleState;
+    use crate::metrics::{HttpRoute, Rejection, RouterMetrics};
     use crate::worker_pool::{
         AdmissionClass, AdmissionSnapshot, CapacityClass, OperationsSnapshot, ProbeOutcome,
         ProbeSnapshot, SessionCapacitySnapshot, WorkerHealth, WorkerSnapshot,
@@ -656,11 +747,13 @@ mod tests {
 
     #[test]
     fn metrics_text_is_complete_exact_and_fixed_order() {
+        let metrics = RouterMetrics::new();
         let rendered = render_metrics(
             LifecycleState::Serving,
             true,
             &representative_snapshot(),
             &resources(),
+            &metrics,
         );
         assert_eq!(
             rendered,
@@ -675,6 +768,17 @@ mod tests {
                 "# HELP sglang_omni_router_ready Router readiness state.\n",
                 "# TYPE sglang_omni_router_ready gauge\n",
                 "sglang_omni_router_ready 1\n",
+                "# HELP sglang_omni_router_http_requests_total HTTP requests received.\n",
+                "# TYPE sglang_omni_router_http_requests_total counter\n",
+                "# HELP sglang_omni_router_http_response_headers_total HTTP response headers by status class.\n",
+                "# TYPE sglang_omni_router_http_response_headers_total counter\n",
+                "# HELP sglang_omni_router_http_faults_total Router-generated HTTP faults.\n",
+                "# TYPE sglang_omni_router_http_faults_total counter\n",
+                "# HELP sglang_omni_router_rejections_total Requests rejected by a saturated bounded resource.\n",
+                "# TYPE sglang_omni_router_rejections_total counter\n",
+                "# HELP sglang_omni_router_http_relay_failures_total Upstream body failures after response commitment.\n",
+                "# TYPE sglang_omni_router_http_relay_failures_total counter\n",
+                "sglang_omni_router_http_relay_failures_total 0\n",
                 "# HELP sglang_omni_router_workers_by_health Workers by health state.\n",
                 "# TYPE sglang_omni_router_workers_by_health gauge\n",
                 "sglang_omni_router_workers_by_health{health=\"unknown\"} 1\n",
@@ -740,6 +844,37 @@ mod tests {
                 "sglang_omni_router_websocket_sessions_registered 1\n",
             )
         );
+    }
+
+    #[test]
+    fn counter_metrics_use_fixed_route_fault_and_resource_labels() {
+        let metrics = RouterMetrics::new();
+        metrics.record_request(HttpRoute::Speech);
+        let mut response = Response::new(());
+        *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+        response
+            .extensions_mut()
+            .insert(HttpFault::RouterOverloaded);
+        metrics.record_response(HttpRoute::Speech, &response);
+        metrics.record_rejection(Rejection::SpeechAdmission);
+        metrics.record_relay_failure();
+
+        let rendered = render_metrics(
+            LifecycleState::Serving,
+            true,
+            &representative_snapshot(),
+            &resources(),
+            &metrics,
+        );
+        for sample in [
+            "sglang_omni_router_http_requests_total{route=\"speech\"} 1\n",
+            "sglang_omni_router_http_response_headers_total{route=\"speech\",status=\"4xx\"} 1\n",
+            "sglang_omni_router_http_faults_total{route=\"speech\",code=\"router_overloaded\"} 1\n",
+            "sglang_omni_router_rejections_total{resource=\"admission_speech_http\"} 1\n",
+            "sglang_omni_router_http_relay_failures_total 1\n",
+        ] {
+            assert!(rendered.contains(sample), "missing metric sample: {sample}");
+        }
     }
 
     #[test]

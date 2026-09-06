@@ -598,6 +598,11 @@ fn serves_exact_local_health_and_operations_routes_and_shuts_down_cleanly() {
     assert!(metrics.contains("sglang_omni_router_buffered_request_bytes_reserved 0\n"));
     assert!(metrics.contains("sglang_omni_router_classification_slots_in_use 0\n"));
     assert!(metrics.contains("sglang_omni_router_websocket_sessions_registered 0\n"));
+    assert!(metrics.contains("sglang_omni_router_http_requests_total{route=\"models\"} 1\n"));
+    assert!(metrics.contains("sglang_omni_router_http_requests_total{route=\"metrics\"} 1\n"));
+    assert!(metrics.contains(
+        "sglang_omni_router_http_response_headers_total{route=\"models\",status=\"2xx\"} 1\n"
+    ));
     assert!(
         metrics
             .contains("sglang_omni_router_worker_capacity_limit{class=\"speech_websocket\"} 0\n")
@@ -704,6 +709,29 @@ fn serves_exact_local_health_and_operations_routes_and_shuts_down_cleanly() {
         b"GET /metrics HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(wrong_version.starts_with("HTTP/1.0 505"));
+
+    let final_metrics = request(address, "GET", "/metrics");
+    assert!(
+        final_metrics.contains("sglang_omni_router_http_requests_total{route=\"metrics\"} 5\n")
+    );
+    assert!(final_metrics.contains(
+        "sglang_omni_router_http_response_headers_total{route=\"metrics\",status=\"2xx\"} 1\n"
+    ));
+    assert!(final_metrics.contains(
+        "sglang_omni_router_http_response_headers_total{route=\"metrics\",status=\"4xx\"} 2\n"
+    ));
+    assert!(final_metrics.contains(
+        "sglang_omni_router_http_response_headers_total{route=\"metrics\",status=\"5xx\"} 1\n"
+    ));
+    assert!(final_metrics.contains(
+        "sglang_omni_router_http_faults_total{route=\"metrics\",code=\"method_not_allowed\"} 1\n"
+    ));
+    assert!(final_metrics.contains(
+        "sglang_omni_router_http_faults_total{route=\"metrics\",code=\"malformed_request\"} 1\n"
+    ));
+    assert!(final_metrics.contains(
+        "sglang_omni_router_http_faults_total{route=\"metrics\",code=\"http_version_not_supported\"} 1\n"
+    ));
 
     signal(child.id(), "-TERM");
     assert_eq!(child.wait(PROCESS_DEADLINE).code(), Some(0));

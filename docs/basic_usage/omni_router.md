@@ -300,12 +300,14 @@ compatible. Current worker load does not change readiness.
 `/v1/models` returns a sorted, deduplicated inventory built from worker defaults
 and correlated profile model IDs. `/metrics` exposes Prometheus lifecycle,
 readiness, health, admission, worker-load, listener, buffered-byte,
-classification, and WebSocket-session gauges. `/diagnostics` returns bounded
-deterministic JSON for the same router-local state and marks the configured
-voice owner. Probe counters distinguish successful, HTTP-failed, and
-transport-failed health checks; each diagnostic worker includes its latest
-probe result, HTTP status when present, observation time, transition streaks,
-and cumulative outcomes.
+classification, and WebSocket-session gauges. It also exposes cumulative
+request and response-header counts, router-generated faults, saturation
+rejections, post-commit HTTP relay failures, and worker probe outcomes.
+Response-header counts do not claim that a streaming body completed.
+`/diagnostics` returns bounded deterministic JSON for the same router-local
+state and marks the configured voice owner. Each diagnostic worker includes
+its latest probe result, HTTP status when present, observation time, transition
+streaks, and cumulative outcomes.
 
 Operations responses snapshot router-local state and never contact workers.
 Admission values come from the semaphores that enforce router limits. Worker
