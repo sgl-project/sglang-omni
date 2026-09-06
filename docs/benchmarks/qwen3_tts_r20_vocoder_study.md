@@ -551,3 +551,9 @@ r20 三 seed(事件解耦树 5ad19d18 + record_stream 5456cc54,全部 100% 完�
 record_stream 堵上;它另指出 PyTorch 以 `cudaGraphInstantiateFlagUseNodePriority` 实例化图,
 kernel 优先级取自**捕获流**而非 replay 流——我们的图一直在默认优先级流上捕获,所谓高优先级
 vocoder 流对图内 kernel 从未生效。第十一轮:在解码流同优先级的流上捕获,r20 A/B。
+
+事件解耦树的请求事件剖面(2026-09-06 13:15 PT):r1 first playable p50 **36.2ms**(min 32.3),
+r20 p50 **68.7ms**(第九轮 79.1)。r20 各阶段均值:preprocessing 8.9ms、准入等待(build_end→queue_enter)
+13.9ms、prefill→首帧 13.9ms、vocoder 整个请求 14.3ms(第九轮 19.8);r1 的 vocoder 生命周期 8.6ms
+(第九轮 10.6)。剩下的首帧预算里最大的三项都在 Talker 侧:准入等一整个 decode step、prefill 本身、
+以及 preprocessing——下一步分别拆。
