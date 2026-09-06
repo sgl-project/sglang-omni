@@ -774,7 +774,7 @@ impl Config {
     }
 
     fn validate_voice_state(&self) -> Result<(), ConfigError> {
-        use crate::worker_pool::profile::{ServiceClass, ServiceProfile, VoiceNamePolicy};
+        use crate::worker_pool::profile::{ServiceProfile, VoiceNamePolicy};
 
         let Some(owner_id) = self.router.voice_owner_worker_id.as_deref() else {
             return Ok(());
@@ -807,38 +807,6 @@ impl Config {
             return Err(ConfigError::invalid(
                 "router.voice_owner_worker_id",
                 "owner must advertise an uploaded-voice service profile",
-            ));
-        }
-
-        let owner_has_uploaded = |service, trust: &str| {
-            owner.trust_domain == trust
-                && owner.service_profiles.iter().any(|profile| {
-                    profile.service_class() == service && supports_uploaded_voice(profile)
-                })
-        };
-        if let Some(media) = self.http_media.as_ref() {
-            for service in media.routes.iter().filter_map(|route| match route {
-                HttpMediaRoute::Speech => Some(ServiceClass::SpeechHttp),
-                HttpMediaRoute::SpeechBatch => Some(ServiceClass::SpeechBatch),
-                HttpMediaRoute::Transcription | HttpMediaRoute::Translation => None,
-            }) {
-                if !owner_has_uploaded(service, &media.trust_domain) {
-                    return Err(ConfigError::invalid(
-                        "router.voice_owner_worker_id",
-                        "enabled speech HTTP routes require an owner-side uploaded-voice row in the same trust domain",
-                    ));
-                }
-            }
-        }
-        if let Some(speech) = self
-            .websocket
-            .as_ref()
-            .and_then(|websocket| websocket.speech.as_ref())
-            && !owner_has_uploaded(ServiceClass::SpeechWebsocket, &speech.trust_domain)
-        {
-            return Err(ConfigError::invalid(
-                "router.voice_owner_worker_id",
-                "enabled speech WebSocket requires an owner-side uploaded-voice row in the same trust domain",
             ));
         }
         Ok(())

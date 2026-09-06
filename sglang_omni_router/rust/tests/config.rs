@@ -287,43 +287,27 @@ fn voice_state_has_one_exact_owner_with_uploaded_voice_support() {
 }
 
 #[test]
-fn enabled_speech_consumers_require_uploaded_owner_rows_in_matching_trust() {
-    let base = voice_only_config().replace("global = 8", "global = 8\nspeech_http = 4");
-    let media = "\n[http_media]\nroutes = [\"speech\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n";
-    let invalid = format!(
-        "{}{media}",
-        base.replace(
-            "voice_name_policy = \"uploaded\"",
+fn voice_owner_need_not_serve_preset_only_speech_interfaces() {
+    let uploaded_http_owner = voice_only_config()
+        .replace("global = 8", "global = 8\nspeech_websocket = 4")
+        + "\n[[workers]]\nworker_id = \"speech-ws\"\nbase_url = \"http://127.0.0.1:8001/\"\ntrust_domain = \"remote\"\ndefault_model_id = \"tts\"\n\n[workers.capacity]\nspeech_websocket = 2\n\n[[workers.service_profiles]]\nservice = \"speech_websocket\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\n\n[websocket.speech]\ntrust_domain = \"remote\"\n";
+    assert!(load_bytes(uploaded_http_owner.as_bytes()).is_ok());
+
+    let uploaded_websocket_owner = websocket_only_config("speech")
+        .replace(
+            "strategy = \"round_robin\"",
+            "strategy = \"round_robin\"\nvoice_owner_worker_id = \"omni\"",
+        )
+        .replace(
+            "speech_websocket = 4",
+            "speech_websocket = 4\nspeech_http = 4",
+        )
+        .replace(
             "voice_name_policy = \"preset\"",
+            "voice_name_policy = \"uploaded\"",
         )
-    );
-    assert!(load_bytes(invalid.as_bytes()).is_err());
-    assert!(
-        load_bytes(
-            invalid
-                .replace(
-                    "voice_name_policy = \"preset\"",
-                    "voice_name_policy = \"uploaded\"",
-                )
-                .as_bytes()
-        )
-        .is_ok()
-    );
-    assert!(
-        load_bytes(
-            invalid
-                .replace(
-                    "voice_name_policy = \"preset\"",
-                    "voice_name_policy = \"uploaded\"",
-                )
-                .replace(
-                    "trust_domain = \"local\"\nbuffered",
-                    "trust_domain = \"remote\"\nbuffered"
-                )
-                .as_bytes()
-        )
-        .is_err()
-    );
+        + "\n[[workers]]\nworker_id = \"speech-http\"\nbase_url = \"http://127.0.0.1:8001/\"\ntrust_domain = \"remote\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"wav\"]\nstream_modes = [\"non_streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\n\n[http_media]\nroutes = [\"speech\"]\ntrust_domain = \"remote\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n";
+    assert!(load_bytes(uploaded_websocket_owner.as_bytes()).is_ok());
 }
 
 #[test]
