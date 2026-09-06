@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -18,6 +19,7 @@ import numpy as np
 import pytest
 import requests
 import soundfile as sf
+from scipy.signal import resample as _scipy_resample
 
 _URL = os.environ.get("FUN_ASR_APPLE_URL", "").rstrip("/")
 pytestmark = pytest.mark.skipif(
@@ -48,6 +50,35 @@ def _wav(seconds):
         buffer, np.zeros(int(16000 * seconds), dtype=np.float32), 16000, format="WAV"
     )
     return buffer.getvalue()
+
+
+def _encode(samples, sample_rate, fmt):
+    buffer = io.BytesIO()
+    sf.write(buffer, samples, sample_rate, format=fmt)
+    return buffer.getvalue()
+
+
+def _to_m4a(wav_bytes):
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-f", "wav", "-i", "pipe:0", "-f", "ipod", "pipe:1"],
+        input=wav_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"ffmpeg unavailable for m4a encoding: {result.stderr[-500:]}")
+    return result.stdout
+
+
+@pytest.fixture(scope="module")
+def real_speech_samples(audio):
+    samples, sample_rate = sf.read(io.BytesIO(audio), dtype="float32")
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+    if sample_rate != 16000:
+        samples = _scipy_resample(samples, int(len(samples) * 16000 / sample_rate))
+    return samples.astype(np.float32)
 
 
 def test_json_sse_and_queued_requests_match(audio):
@@ -90,6 +121,75 @@ def test_invalid_requests_leave_server_healthy(audio):
 
 def test_audio_at_duration_limit():
     _transcribe(_wav(30), max_new_tokens="16").raise_for_status()
+
+
+def test_real_speech_near_thirty_seconds_uses_default_budget(real_speech_samples):
+    # The duration-limit boundary test above uses silence with a reduced
+    # max_new_tokens override, which never exercises the default per-duration
+    # token budget (scales up to 200 tokens at 30s) against real speech. Tile
+    # the real clip with small gaps to approach the 30s VAD cap without going
+    # over it, and let the server pick the budget itself.
+    gap = np.zeros(int(16000 * 0.3), dtype=np.float32)
+    unit = np.concatenate([real_speech_samples, gap])
+    target_samples = int(16000 * 29.5)
+    repeats = -(-target_samples // len(unit))
+    near_thirty = np.tile(unit, repeats)[:target_samples]
+
+    response = _transcribe(_encode(near_thirty, 16000, "WAV"))
+    response.raise_for_status()
+    assert "cars" in response.json()["text"].lower()
+
+
+def test_mp3_and_m4a_uploads_transcribe_correctly(audio):
+    samples, sample_rate = sf.read(io.BytesIO(audio), dtype="float32")
+
+    mp3_response = requests.post(
+        f"{_URL}/v1/audio/transcriptions",
+        files={
+            "file": ("audio.mp3", _encode(samples, sample_rate, "MP3"), "audio/mpeg")
+        },
+        data={"language": "en"},
+        timeout=120,
+    )
+    mp3_response.raise_for_status()
+    assert "cars" in mp3_response.json()["text"].lower()
+
+    m4a_response = requests.post(
+        f"{_URL}/v1/audio/transcriptions",
+        files={"file": ("audio.m4a", _to_m4a(audio), "audio/mp4")},
+        data={"language": "en"},
+        timeout=120,
+    )
+    m4a_response.raise_for_status()
+    assert "cars" in m4a_response.json()["text"].lower()
+
+
+@pytest.mark.parametrize("sample_rate", [8000, 22050, 44100, 48000])
+def test_varied_sample_rates_transcribe_correctly(real_speech_samples, sample_rate):
+    resampled = _scipy_resample(
+        real_speech_samples, int(len(real_speech_samples) * sample_rate / 16000)
+    ).astype(np.float32)
+
+    response = _transcribe(_encode(resampled, sample_rate, "WAV"))
+    response.raise_for_status()
+    assert "cars" in response.json()["text"].lower()
+
+
+def test_silence_and_noise_do_not_hallucinate_or_break_the_server():
+    # Real ASR models can loop into repeated hallucinated phrases when fed
+    # non-speech input. Bound the output size as a coarse well-behaved check,
+    # and confirm the server stays healthy afterward either way.
+    silence_response = _transcribe(_wav(3), max_new_tokens="32")
+    silence_response.raise_for_status()
+    assert len(silence_response.json()["text"]) < 200
+
+    rng = np.random.default_rng(0)
+    noise = (rng.standard_normal(16000 * 3) * 0.05).astype(np.float32)
+    noise_response = _transcribe(_encode(noise, 16000, "WAV"), max_new_tokens="32")
+    noise_response.raise_for_status()
+    assert len(noise_response.json()["text"]) < 200
+
+    requests.get(f"{_URL}/health", timeout=10).raise_for_status()
 
 
 def test_disconnect_releases_request_and_next_request_succeeds(audio):
