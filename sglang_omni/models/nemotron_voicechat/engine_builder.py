@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 from sglang.kernels.ops.mamba.triton_ops import (
@@ -36,19 +39,18 @@ from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
-CACHE_ROOT = Path.home() / ".cache" / "sglang-omni"
 TALKER_SPEAKER = "Aria"
 TALKER_PROMPT_FRAMES = 37
 TALKER_PLACEHOLDER_VOCAB = 8
 
 
 def _shim_dir(name: str, source: Path) -> Path:
-    shim = CACHE_ROOT / name
-    shim.mkdir(parents=True, exist_ok=True)
-    for entry in source.resolve().iterdir():
-        link = shim / entry.name
-        if entry.name != "config.json" and not link.exists():
-            link.symlink_to(entry)
+    source = source.resolve()
+    shim = Path(tempfile.mkdtemp(prefix=f"sglang-omni-{name}-"))
+    atexit.register(shutil.rmtree, shim, ignore_errors=True)
+    for entry in source.iterdir():
+        if entry.name != "config.json":
+            (shim / entry.name).symlink_to(entry)
     return shim
 
 
