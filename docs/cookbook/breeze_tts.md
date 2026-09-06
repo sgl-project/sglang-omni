@@ -175,9 +175,9 @@ concurrency 16; any smaller subset must be identified explicitly.
 SeedTTS-Eval full set on one H20, BF16/FA3 deterministic eager execution,
 concurrency 16, seed 42 and `max_new_tokens=750`. The checkpoint revision is
 `799624c0b4a1daa8db6d28bbd9850043c0270734` and the dataset revision is
-`27f4c1adee83b5b29b7c4b375f6b976324bda308`. The host's GPU-reservation helper
-yields compute whenever a real workload runs, so it did not contend with these
-measurements. These remain single-H20 reference numbers, not universal limits.
+`27f4c1adee83b5b29b7c4b375f6b976324bda308`. These are single-GPU reference
+numbers for this configuration, not a tuned upper bound; per-request RTF is
+still above realtime and is being optimized.
 
 | Lang | Samples / failures | QPS | Audio s/s | Latency mean / p95 (s) | TTFA p95 (s) | RTF mean |
 |---|---:|---:|---:|---:|---:|---:|
@@ -202,5 +202,23 @@ predicted UTMOS. All generated rows were scored; no sample exceeded 50% WER/CER.
 These automated scores are not human listening tests. Voice similarity,
 instruction following and naturalness still require perceptual review. CUDA
 graphs also require separate validation.
+
+## Performance characteristics
+
+Per-request RTF is above realtime. The codec emits 12.5 frames per second, so a
+step must finish within 80 ms to reach RTF 1, while `decode_frames` alone needs
+about 101 ms at one request and 137 ms at sixteen. The cause is structural:
+`num_codebooks` is 16, so every audio frame runs 15 sequential 12-layer depth
+forwards (180 layer passes) against 28 backbone layer passes, and each depth
+forward costs a fixed ~6.3 ms of host dispatch versus ~4.3 ms of device time,
+unchanged from 2 to 32 rows. With sequence length 1 the loop is dispatch bound
+rather than compute bound, which is why device utilization stays near 29%.
+
+Because that cost does not grow with batch size, concurrency raises aggregate
+throughput but cannot bring per-request RTF near 1 on its own. Known
+optimization candidates, none of them applied or measured end to end yet, are
+CUDA-graphing the static depth loop, vectorizing per-request sampling across the
+batch, removing per-step host synchronization, and re-enabling backbone CUDA
+graphs.
 
 Reference implementation: [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts/tree/43e2ea1595297c4059477e2e4a300653761c759b).
