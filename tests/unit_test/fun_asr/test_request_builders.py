@@ -457,3 +457,42 @@ def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
 
     with pytest.raises(ValueError, match=r"longer than the model's context length"):
         request_builder(payload)
+
+
+def test_apple_rejects_sampling_before_preprocessing(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("sampling rejection must precede audio loading")
+
+    monkeypatch.setattr(request_builders, "prepare_audio", unexpected)
+    build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=_feature_extractor(17),
+        greedy_only=True,
+    )
+    payload = StagePayload(
+        request_id="sampling",
+        request=OmniRequest(
+            inputs={"audio_bytes": b"wav"}, params={"temperature": 0.5}
+        ),
+        data={},
+    )
+    with pytest.raises(ValueError, match="greedy"):
+        build(payload)
+
+
+def test_apple_sampling_error_is_an_http_bad_request():
+    from sglang_omni.serve.openai_errors import is_bad_request_error
+
+    assert is_bad_request_error(
+        RuntimeError("Fun-ASR Apple currently requires temperature=0 (greedy decoding)")
+    )
+    assert not is_bad_request_error(RuntimeError("Fun-ASR model execution failed"))
+
+
+@pytest.mark.parametrize("model", ["Fun-ASR", "Qwen3-ASR"])
+def test_audio_decode_error_survives_pipeline_error_serialization(model):
+    from sglang_omni.serve.openai_errors import is_bad_request_error
+
+    assert is_bad_request_error(RuntimeError(f"Could not decode {model} audio input"))
+    assert not is_bad_request_error(RuntimeError("Could not decode model weights"))
