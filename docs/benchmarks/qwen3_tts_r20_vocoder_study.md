@@ -612,3 +612,7 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
   (均值 1.67%),2 → 0.94 / 0.60 / 0.58%(0.71%);首帧 p50 两边都 55-57ms。r1 下那 2ms 是纯延迟,
   但 r20 下把同时到达的 bootstrap 段合成一个 cohort 值回来;**保留默认 2ms**。默认臂在本树上六个
   seed 的 underrun:1.11 / 0.69 / 1.08 / 0.94 / 0.60 / 0.58%(均值 0.83%)。
+- **Talker 混合 chunked prefill(`enable_mixed_chunk: true`,`chunked_prefill_size: 2048`)r1 冒烟**:
+  能跑,47/47、0 underrun、首帧 p50 36.1ms(与默认持平);但 E2E p95 1.34s / p99 3.75s(默认 0.73 /
+  0.92s)——低负载下尾部明显变差,说明混批让部分请求的 decode 步被拉长。它瞄准的是 r20 那 ~14ms
+  准入等待,三 seed r20 已排队;若 r20 首帧无收益或尾部照样变差,此路作废。
