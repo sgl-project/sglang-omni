@@ -10,6 +10,8 @@ from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.utils import get_hip_version, is_gfx95_supported
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
+from sglang_omni.models.weight_loader import resolve_model_path
+
 from sglang_omni.models.qwen3_asr import mrope_fast_path, request_builders
 from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_max_audio_tokens,
@@ -113,11 +115,16 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
+        # Resolve the repo id to its local directory once. Handing the repo id
+        # to each from_pretrained makes every one of them revalidate its files
+        # against the Hub, which costs a network round trip per config file on
+        # a startup path that already has the bytes on disk.
+        local_dir = str(resolve_model_path(checkpoint_dir))
         self.tokenizer = AutoTokenizer.from_pretrained(
-            checkpoint_dir, trust_remote_code=True
+            local_dir, trust_remote_code=True
         )
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(
-            checkpoint_dir, trust_remote_code=True
+            local_dir, trust_remote_code=True
         )
         # Note(Jeffro): Size context_length for the model's native max input + output budget.
         # model natively accepts: 1,200s (MAX_ASR_INPUT_SECONDS, see

@@ -33,6 +33,27 @@ def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
     return mapping[key]
 
 
+def _complete_cached_snapshot(model_path: str) -> Path | None:
+    """Return the cached snapshot for model_path, or None unless it is complete.
+
+    huggingface_hub 1.x refuses incomplete snapshots on its own; older releases
+    within our floor (>=0.36) return whatever is on disk. An interrupted
+    download leaves ``blobs/*.incomplete`` next to the snapshot and symlinks
+    that point at missing blobs, so reject the cache when either is present.
+    """
+    try:
+        snapshot = Path(snapshot_download(model_path, local_files_only=True))
+    except Exception:  # noqa: BLE001 - any cache miss falls through to the Hub
+        return None
+    repo_root = snapshot.parent.parent
+    if any(repo_root.joinpath("blobs").glob("*.incomplete")):
+        return None
+    for entry in snapshot.rglob("*"):
+        if entry.is_symlink() and not entry.exists():
+            return None
+    return snapshot
+
+
 @lru_cache(maxsize=4)
 def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Path:
     """Resolve a model_path to a local path, downloading if needed."""
@@ -42,6 +63,12 @@ def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Pa
     if local_files_only:
         config_path = cached_file(model_path, "config.json", local_files_only=True)
         return Path(config_path).parent
+    # Serve a verifiably complete cache without asking the Hub whether it
+    # moved; anything less falls through to the normal download path, which
+    # itself honors HF_HUB_OFFLINE and degrades to the cache on network errors.
+    cached = _complete_cached_snapshot(model_path)
+    if cached is not None:
+        return cached
     return Path(snapshot_download(model_path, local_files_only=False))
 
 
