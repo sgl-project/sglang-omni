@@ -13,6 +13,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
 )
+from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 
 
 class Qwen3TTSCodecStateArena:
@@ -46,6 +47,7 @@ class Qwen3TTSCodecStateArena:
             self._num_slots, device=self._device, dtype=dtype
         )
         self._lock = threading.Lock()
+        self._index_staging = threading.local()
         self._free: list[int] = list(reversed(range(self._num_slots)))
         self._retired: set[int] = set()
         self._exhausted_count = 0
@@ -119,7 +121,26 @@ class Qwen3TTSCodecStateArena:
     def _index(self, slots: Sequence[int]) -> torch.Tensor:
         if not slots:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
-        return torch.as_tensor(list(slots), device=self._device, dtype=torch.long)
+        if self._device.type != "cuda":
+            return torch.as_tensor(list(slots), device=self._device, dtype=torch.long)
+
+        staging = getattr(self._index_staging, "slot", None)
+        if staging is None:
+            staging = PinnedTransferSlot(self._device, torch.long)
+            self._index_staging.slot = staging
+            self._index_staging.recorded = False
+        elif self._index_staging.recorded:
+            # Do not overwrite pinned memory until its preceding H2D copy has
+            # completed. Each worker resolves a cohort before starting the next.
+            staging.synchronize()
+
+        staging.ensure_capacity(len(slots))
+        pinned = staging.view(len(slots))
+        pinned.copy_(torch.as_tensor(list(slots), dtype=torch.long))
+        index = pinned.to(self._device, non_blocking=True)
+        staging.record(torch.cuda.current_stream(self._device))
+        self._index_staging.recorded = True
+        return index
 
     def gather(self, slots: Sequence[int]) -> Qwen3TTSIncrementalCodecState:
         """Select a cohort's rows into one contiguous state."""

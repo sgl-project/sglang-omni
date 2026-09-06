@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import threading
 
 import pytest
 import torch
@@ -630,3 +631,19 @@ def test_arena_reports_exhaustion_and_retirement() -> None:
     arena.release(reused)
     assert arena.acquire() is None
     assert arena.describe()["bytes_per_slot"] == arena.bytes_per_slot
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_arena_indices_use_pinned_non_blocking_staging() -> None:
+    arena = object.__new__(Qwen3TTSCodecStateArena)
+    arena._device = torch.device("cuda")
+    arena._index_staging = threading.local()
+
+    first = arena._index([3, 1])
+    second = arena._index([2, 0])
+    torch.cuda.synchronize()
+
+    assert first.tolist() == [3, 1]
+    assert second.tolist() == [2, 0]
+    assert arena._index_staging.slot.view(2).is_pinned()
