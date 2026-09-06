@@ -189,6 +189,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
                 tokenizer=self.tokenizer,
                 max_new_tokens_cap=self.max_new_tokens,
                 context_length=self.context_length,
+                im_end_token_id=self.adapter.eos_token_ids[0],
             )
         )
         return request_builder, result_adapter

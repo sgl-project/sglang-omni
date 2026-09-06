@@ -319,6 +319,8 @@ def preprocess_dots_tts_payload(
         ),
         stream=bool(params.get("stream", False)),
         generation_schedule=schedule,
+        # note: copy per request; DotsTTSState owns a mutable list and the
+        # cached tuple is shared across every request on this executor.
         audio_span_token_ids=list(audio_span_token_ids),
         latent_patch_size=int(model_config.patch_size),
         vocab_size=int(vocab_size),

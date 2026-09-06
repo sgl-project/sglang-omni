@@ -179,17 +179,23 @@ def make_tts_scheduler_adapters(
     tokenizer: Any,
     max_new_tokens_cap: int | None = None,
     context_length: int | None = None,
+    im_end_token_id: int | None = None,
 ):
-    """Build model-specific StagePayload <-> scheduler adapters for Fish TTS."""
+    """Build model-specific StagePayload <-> scheduler adapters for Fish TTS.
+
+    Pass ``im_end_token_id`` when the caller already holds an
+    ``S2ProTokenizerAdapter`` so we do not build a second one here.
+    """
 
     from sglang.srt.utils.hf_transformers_utils import attach_additional_stop_token_ids
 
-    from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
-
     if not hasattr(tokenizer, "additional_stop_token_ids"):
         attach_additional_stop_token_ids(tokenizer)
-    tokenizer_adapter = S2ProTokenizerAdapter(tokenizer)
-    im_end_token_id = int(tokenizer_adapter.eos_token_ids[0])
+    if im_end_token_id is None:
+        from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
+
+        im_end_token_id = S2ProTokenizerAdapter(tokenizer).eos_token_ids[0]
+    im_end_token_id = int(im_end_token_id)
     vocab_size = len(tokenizer)
 
     def request_builder(payload: StagePayload) -> S2ProSGLangRequestData:
