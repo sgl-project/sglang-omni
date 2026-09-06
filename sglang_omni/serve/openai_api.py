@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -231,9 +232,16 @@ def create_app(
     """
     app = FastAPI(title="sglang-omni", version=__version__)
 
+    # CORS configuration: allow_origins defaults to ["*"] but if
+    # SGLANG_CORS_ORIGINS is set, use that value instead.
+    # Note: when credentials are allowed, wildcard origins are not permitted
+    # by browsers, so set SGLANG_CORS_ORIGINS to specific origins in that case.
+    cors_origins = os.environ.get("SGLANG_CORS_ORIGINS", "*").split(",")
+    if cors_origins == ["*"]:
+        cors_origins = ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
