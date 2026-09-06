@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -44,6 +46,21 @@ jobs:
       - name: Add .nojekyll file
         run: |
           touch ./docs/_build/html/.nojekyll
+
+      - name: Build TTS refactor dashboard
+        run: |
+          python3 scripts/refactor_net_deletions.py \
+            --base '4e4c98a^1' \
+            --head HEAD \
+            --mode commit-sum \
+            --commit-file scripts/tts_refactor_commits.json \
+            --format html \
+            --output docs/_build/html/tts-refactor/index.html \
+            --title 'TTS Refactor Progress' \
+            --refresh-seconds 300 \
+            --scope-note 'Counts only merge commits in scripts/tts_refactor_commits.json. Model integrations #858 and #1112 and unrelated main commits are excluded.' \
+            --list-test-files \
+            --list-non-test-files
 
       - name: Deploy
         uses: peaceiris/actions-gh-pages@v4
