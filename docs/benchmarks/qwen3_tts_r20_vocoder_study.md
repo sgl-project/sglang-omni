@@ -619,3 +619,8 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
 - **prefill 图 `full` 后端**:server 启动即被 `generation_batch_policy` 拒绝("invalid generation batch
   policy: prefill CUDA graph ...")——Qwen3-TTS 只声明支持 breakable。要压 22-token prefill 的 6.2ms
   得改 model runner 的 prefill 图路径,不是配置能开的。
+- **decode 步分解(r1,batch 1,2408 步,同步 execute 路径)**:wall 7.2ms = build 0.2 + 发射 0.7 +
+  predictor 发射 0.1 + **finalize 等 GPU 6.1**;即 GPU 每步 ≈ decode forward ~2 + code predictor
+  ~4.4ms。低 batch 下 code predictor(16 个量化器串行子步,已在一张图里,~0.27ms/子步)是 Talker
+  每帧成本的主项:它同时决定 prefill 的 finalize 4.6ms、第二帧的等待、以及每帧节奏。下一刀候选:
+  用与 vocoder 同样的手法(tensor-only 子步 + torch.compile 降 kernel 数)压子步内的 kernel 数。
