@@ -366,6 +366,17 @@ fn route_table(
                 ),
             };
         }
+        if media.voice_routes_enabled() {
+            app = app
+                .route(
+                    "/v1/audio/voices",
+                    any(http_media::voice::collection).with_state(Arc::clone(&media)),
+                )
+                .route(
+                    "/v1/audio/voices/{name}",
+                    any(http_media::voice::item).with_state(Arc::clone(&media)),
+                );
+        }
     }
     if let Some(websocket) = websocket {
         if websocket.speech_enabled() {

@@ -106,6 +106,12 @@ fn websocket_only_config(route: &str) -> String {
     )
 }
 
+fn voice_only_config() -> String {
+    String::from(
+        "schema_version = 1\n\n[server]\nlisten = \"127.0.0.1:30000\"\n\n[shutdown]\ndrain_timeout_ms = 30000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\nvoice_owner_worker_id = \"voice-owner\"\n\n[admission]\nglobal = 8\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 16777216\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"voice-owner\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"wav\"]\nstream_modes = [\"non_streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"uploaded\"\n",
+    )
+}
+
 #[test]
 fn omitted_server_limits_use_bounded_defaults() {
     let config = load_bytes(valid_config("127.0.0.1:30000", 30_000, "info").as_bytes())
@@ -260,6 +266,77 @@ fn websocket_transport_and_worker_setup_timeouts_are_independently_bounded() {
         .is_ok(),
         "worker setup and transport deadlines cover independent phases"
     );
+}
+
+#[test]
+fn voice_state_has_one_exact_owner_with_uploaded_voice_support() {
+    let base = voice_only_config();
+    assert!(load_bytes(base.as_bytes()).is_ok());
+    for invalid in [
+        base.replace(
+            "voice_owner_worker_id = \"voice-owner\"",
+            "voice_owner_worker_id = \"missing\"",
+        ),
+        base.replace(
+            "voice_name_policy = \"uploaded\"",
+            "voice_name_policy = \"preset\"",
+        ),
+    ] {
+        assert!(load_bytes(invalid.as_bytes()).is_err());
+    }
+}
+
+#[test]
+fn voice_upload_bound_fits_the_buffered_request_budget() {
+    let body_max = 10 * 1024 * 1024 + 64 * 1024;
+    let with_budget = |bytes| {
+        voice_only_config().replace(
+            "buffered_request_total_bytes = 16777216",
+            &format!("buffered_request_total_bytes = {bytes}"),
+        )
+    };
+
+    assert!(load_bytes(with_budget(body_max).as_bytes()).is_ok());
+    let error = load_bytes(with_budget(body_max - 1).as_bytes())
+        .expect_err("voice upload bound must fit the buffered request budget");
+    assert!(matches!(
+        error,
+        ConfigError::InvalidField {
+            field: "http.buffered_request_total_bytes",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn voice_owner_need_not_serve_preset_only_speech_interfaces() {
+    let uploaded_http_owner = voice_only_config()
+        .replace("global = 8", "global = 8\nspeech_websocket = 4")
+        + "\n[[workers]]\nworker_id = \"speech-ws\"\nbase_url = \"http://127.0.0.1:8001/\"\ntrust_domain = \"remote\"\ndefault_model_id = \"tts\"\n\n[workers.capacity]\nspeech_websocket = 2\n\n[[workers.service_profiles]]\nservice = \"speech_websocket\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\n\n[websocket.speech]\ntrust_domain = \"remote\"\n";
+    assert!(load_bytes(uploaded_http_owner.as_bytes()).is_ok());
+
+    let uploaded_websocket_owner = websocket_only_config("speech")
+        .replace(
+            "strategy = \"round_robin\"",
+            "strategy = \"round_robin\"\nvoice_owner_worker_id = \"omni\"",
+        )
+        .replace(
+            "speech_websocket = 4",
+            "speech_websocket = 4\nspeech_http = 4",
+        )
+        .replace(
+            "voice_name_policy = \"preset\"",
+            "voice_name_policy = \"uploaded\"",
+        )
+        + "\n[[workers]]\nworker_id = \"speech-http\"\nbase_url = \"http://127.0.0.1:8001/\"\ntrust_domain = \"remote\"\ndefault_model_id = \"tts\"\n\n[[workers.service_profiles]]\nservice = \"speech_http\"\nmodel_ids = [\"tts\"]\nresponse_formats = [\"wav\"]\nstream_modes = [\"non_streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\n\n[http_media]\nroutes = [\"speech\"]\ntrust_domain = \"remote\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n";
+    assert!(load_bytes(uploaded_websocket_owner.as_bytes()).is_ok());
+}
+
+#[test]
+fn voice_state_does_not_require_speech_profiles_for_translation() {
+    let config = voice_only_config().replace("global = 8", "global = 8\ntranscription_http = 4")
+        + "\n[[workers]]\nworker_id = \"asr\"\nbase_url = \"http://127.0.0.1:8001/\"\ntrust_domain = \"local\"\ndefault_model_id = \"asr\"\n\n[[workers.service_profiles]]\nservice = \"transcription_http\"\nmodel_ids = [\"asr\"]\ntask = \"translate\"\nresponse_formats = [\"json\"]\nstream_modes = [\"non_streaming\"]\n\n[http_media]\nroutes = [\"translation\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n";
+    assert!(load_bytes(config.as_bytes()).is_ok());
 }
 
 #[test]

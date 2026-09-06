@@ -24,7 +24,9 @@ pub(crate) use resolver::{ConnectTarget, ResolvedTarget};
 
 use admission::AdmissionController;
 use health::AtomicHealth;
-use profile::{MAX_WORKERS, RegistrationId, ServiceProfile, WorkerCapacityConfig, WorkerId};
+use profile::{
+    MAX_WORKERS, RegistrationId, ServiceProfile, VoiceNamePolicy, WorkerCapacityConfig, WorkerId,
+};
 use resolver::{build_health_client, build_http_client};
 use selection::{Selector, SelectorGuard};
 
@@ -94,6 +96,7 @@ impl WorkerRecord {
 /// state, and independently owned health and weighted load.
 pub(crate) struct WorkerPool {
     records: Vec<Arc<WorkerRecord>>,
+    voice_owner: Option<Arc<WorkerRecord>>,
     admission: AdmissionController,
     selector: Selector,
     homogeneous_generation_http: Vec<HomogeneousGenerationCohort>,
@@ -110,6 +113,12 @@ struct HomogeneousMediaCohort {
     trust_domain: TrustDomain,
     service: ServiceClass,
     task: Option<SpeechToTextTask>,
+}
+
+struct ProfileMatches {
+    workers: [bool; MAX_WORKERS],
+    any: bool,
+    voice_policy: Option<VoiceNamePolicy>,
 }
 
 /// Startup proof that chat body inspection cannot change the route cohort.
@@ -172,11 +181,25 @@ impl WorkerPool {
                 immediate_probe: Notify::new(),
             }));
         }
+        let voice_owner = config
+            .router
+            .voice_owner_worker_id
+            .as_ref()
+            .map(|owner_id| {
+                records
+                    .iter()
+                    .find(|record| record.worker_id.as_str() == owner_id)
+                    .cloned()
+                    .ok_or(crate::error::RouterError::WorkerPoolInvariant)
+            })
+            .transpose()?;
         let homogeneous_generation_http = build_content_blind_generation_cohorts(&records);
-        let homogeneous_media_http = build_content_blind_media_cohorts(&records);
+        let homogeneous_media_http =
+            build_content_blind_media_cohorts(&records, voice_owner.as_ref());
         let selector = Selector::new(config.router.strategy, records.len());
         Ok(Self {
             records,
+            voice_owner,
             admission,
             selector,
             homogeneous_generation_http,
@@ -229,24 +252,18 @@ impl WorkerPool {
         if admission.class() != requirement.capacity_class() {
             return Err(DispatchError::Internal);
         }
-        let mut matching = [false; MAX_WORKERS];
-        let mut voice_policies = 0;
-        for (index, record) in self.records.iter().enumerate() {
-            if &record.trust_domain != requirement.trust_domain() {
-                continue;
-            }
-            let (matched, policies) = record.profile_match(requirement);
-            matching[index] = matched;
-            voice_policies |= policies;
+        let matching = self.matching_profiles(requirement)?;
+        if matching.voice_policy == Some(VoiceNamePolicy::Uploaded) {
+            let owner = self.uploaded_voice_owner(requirement, &matching)?;
+            let policy = self.selector.lock();
+            let lease = RequestLease::new(admission, Arc::clone(owner));
+            drop(policy);
+            return Ok(lease);
         }
-        let profile_found = matching[..self.records.len()].contains(&true);
-        if requirement.profile.has_named_voice() && voice_policies.count_ones() > 1 {
-            return Err(DispatchError::AmbiguousModel);
-        }
-        if profile_found && requirement.profile.requires_default_resolution() {
+        if matching.any && requirement.profile.requires_default_resolution() {
             let mut resolved = None;
             for (index, record) in self.records.iter().enumerate() {
-                if !matching[index] {
+                if !matching.workers[index] {
                     continue;
                 }
                 let Some(model_id) = record.default_model_id.as_deref() else {
@@ -259,8 +276,8 @@ impl WorkerPool {
                 }
             }
         }
-        self.dispatch_matching(admission, profile_found, |record| {
-            matching[record.registration_id.startup_ordinal()]
+        self.dispatch_matching(admission, matching.any, |record| {
+            matching.workers[record.registration_id.startup_ordinal()]
         })
     }
 
@@ -274,24 +291,31 @@ impl WorkerPool {
             return Err(DispatchError::Internal);
         }
 
-        let mut profile_found = false;
+        let matching = self.matching_profiles(requirement)?;
+        if matching.voice_policy == Some(VoiceNamePolicy::Uploaded) {
+            let owner = self.uploaded_voice_owner(requirement, &matching)?;
+            let selector = self.selector.lock();
+            let capacity = owner
+                .session_capacity(class)
+                .ok_or(DispatchError::Internal)?;
+            let permit = Arc::clone(&capacity.semaphore)
+                .try_acquire_owned()
+                .map_err(|_| DispatchError::Overloaded)?;
+            let lease = RequestLease::new_session(admission, permit, Arc::clone(owner));
+            drop(selector);
+            return Ok(lease);
+        }
+
         let mut healthy_found = false;
         let mut eligible = [0; MAX_WORKERS];
         let mut eligible_count = 0;
-        let mut voice_policies = 0;
         let requires_default_resolution = requirement.profile.requires_default_resolution();
         let mut resolved_default = None;
         let mut selector = self.selector.lock();
-        for record in &self.records {
-            if &record.trust_domain != requirement.trust_domain() {
+        for (index, record) in self.records.iter().enumerate() {
+            if !matching.workers[index] {
                 continue;
             }
-            let (matched, policies) = record.profile_match(requirement);
-            if !matched {
-                continue;
-            }
-            voice_policies |= policies;
-            profile_found = true;
             if requires_default_resolution {
                 let Some(model_id) = record.default_model_id.as_deref() else {
                     return Err(DispatchError::AmbiguousModel);
@@ -315,10 +339,7 @@ impl WorkerPool {
                 eligible_count += 1;
             }
         }
-        if requirement.profile.has_named_voice() && voice_policies.count_ones() > 1 {
-            return Err(DispatchError::AmbiguousModel);
-        }
-        if !profile_found {
+        if !matching.any {
             return Err(DispatchError::NoEligibleProfile);
         }
         if !healthy_found {
@@ -347,6 +368,78 @@ impl WorkerPool {
             .map_err(|_| DispatchError::Internal)?;
         let lease = RequestLease::new_session(admission, permit, selected);
         drop(selector);
+        Ok(lease)
+    }
+
+    fn matching_profiles(
+        &self,
+        requirement: &RouteRequirement,
+    ) -> Result<ProfileMatches, DispatchError> {
+        let mut workers = [false; MAX_WORKERS];
+        let mut voice_policies = 0;
+        for (index, record) in self.records.iter().enumerate() {
+            if &record.trust_domain != requirement.trust_domain() {
+                continue;
+            }
+            let (matched, policies) = record.profile_match(requirement);
+            workers[index] = matched;
+            voice_policies |= policies;
+        }
+        let voice_policy = match voice_policies {
+            0 => None,
+            policy if policy == VoiceNamePolicy::Preset.bit() => Some(VoiceNamePolicy::Preset),
+            policy if policy == VoiceNamePolicy::Uploaded.bit() => Some(VoiceNamePolicy::Uploaded),
+            _ => return Err(DispatchError::AmbiguousModel),
+        };
+        Ok(ProfileMatches {
+            any: workers[..self.records.len()].contains(&true),
+            workers,
+            voice_policy,
+        })
+    }
+
+    fn uploaded_voice_owner(
+        &self,
+        requirement: &RouteRequirement,
+        matching: &ProfileMatches,
+    ) -> Result<&Arc<WorkerRecord>, DispatchError> {
+        let owner = self
+            .voice_owner
+            .as_ref()
+            .ok_or(DispatchError::NoEligibleProfile)?;
+        if !matching.workers[owner.registration_id.startup_ordinal()] {
+            return Err(DispatchError::NoEligibleProfile);
+        }
+        if requirement.profile.requires_default_resolution() && owner.default_model_id.is_none() {
+            return Err(DispatchError::AmbiguousModel);
+        }
+        if !owner.is_routable() {
+            return Err(DispatchError::Unavailable);
+        }
+        Ok(owner)
+    }
+
+    pub(crate) fn voice_state_enabled(&self) -> bool {
+        self.voice_owner.is_some()
+    }
+
+    pub(crate) fn voice_owner_ready(&self) -> bool {
+        self.voice_owner
+            .as_ref()
+            .is_none_or(|owner| owner.is_routable())
+    }
+
+    pub(crate) fn dispatch_voice_owner(
+        &self,
+        envelope: EnvelopeLease,
+    ) -> Result<RequestLease, DispatchError> {
+        let owner = self.voice_owner.as_ref().ok_or(DispatchError::Internal)?;
+        if !owner.is_routable() {
+            return Err(DispatchError::Unavailable);
+        }
+        let policy = self.selector.lock();
+        let lease = RequestLease::new_owner(envelope, Arc::clone(owner));
+        drop(policy);
         Ok(lease)
     }
 
@@ -572,7 +665,10 @@ fn build_content_blind_generation_cohorts(
     result
 }
 
-fn build_content_blind_media_cohorts(records: &[Arc<WorkerRecord>]) -> Vec<HomogeneousMediaCohort> {
+fn build_content_blind_media_cohorts(
+    records: &[Arc<WorkerRecord>],
+    voice_owner: Option<&Arc<WorkerRecord>>,
+) -> Vec<HomogeneousMediaCohort> {
     let mut result = Vec::new();
     for record in records {
         for profile in &record.profiles {
@@ -614,6 +710,17 @@ fn build_content_blind_media_cohorts(records: &[Arc<WorkerRecord>]) -> Vec<Homog
             let Some(first) = members.first() else {
                 continue;
             };
+            let requires_voice_owner = service == ServiceClass::SpeechHttp
+                && first.profiles.iter().any(|row| {
+                    row.service_class() == service
+                        && row.voice_name_policy() == Some(VoiceNamePolicy::Uploaded)
+                });
+            if requires_voice_owner
+                && !voice_owner
+                    .is_some_and(|owner| members.iter().all(|member| Arc::ptr_eq(member, owner)))
+            {
+                continue;
+            }
             if first.default_model_id.is_some()
                 && members.iter().all(|candidate| {
                     candidate.default_model_id == first.default_model_id
@@ -693,7 +800,7 @@ fn build_session_capacity(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -818,7 +925,8 @@ mod tests {
         let selector = Selector::new(strategy, records.len());
         WorkerPool {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
-            homogeneous_media_http: build_content_blind_media_cohorts(&records),
+            homogeneous_media_http: build_content_blind_media_cohorts(&records, None),
+            voice_owner: None,
             records,
             admission: AdmissionController::new(
                 admission,
@@ -1596,7 +1704,8 @@ mod tests {
         let selector = Selector::new(RoutingStrategy::RoundRobin, records.len());
         WorkerPool {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
-            homogeneous_media_http: build_content_blind_media_cohorts(&records),
+            homogeneous_media_http: build_content_blind_media_cohorts(&records, None),
+            voice_owner: None,
             records,
             admission: AdmissionController::new(
                 8,
@@ -1653,6 +1762,359 @@ mod tests {
             },
             TrustDomain::new(String::from("local")),
         )
+    }
+
+    fn voice_speech_record(ordinal: usize) -> Arc<WorkerRecord> {
+        let health = AtomicHealth::unknown();
+        health.store(WorkerHealth::Healthy);
+        Arc::new(WorkerRecord {
+            worker_id: WorkerId::new(format!("voice-{ordinal}")),
+            default_model_id: Some(String::from("tts")),
+            registration_id: RegistrationId::from_startup_ordinal(ordinal),
+            target: ResolvedTarget::from_parts(
+                &format!("http://127.0.0.1:{}/", 13_000 + ordinal),
+                "/health",
+            )
+            .expect("voice target"),
+            trust_domain: TrustDomain::new(String::from("local")),
+            profiles: vec![
+                ServiceProfile::SpeechHttp {
+                    model_ids: vec![String::from("tts")],
+                    response_formats: vec![SpeechResponseFormat::Wav],
+                    stream_modes: vec![StreamMode::NonStreaming],
+                    tasks: vec![SpeechTask::TextToSpeech],
+                    reference_forms: vec![ReferenceForm::None],
+                    voice_name_policy: VoiceNamePolicy::Uploaded,
+                },
+                ServiceProfile::SpeechBatch {
+                    model_ids: vec![String::from("tts")],
+                    response_formats: vec![SpeechResponseFormat::Wav],
+                    tasks: vec![SpeechTask::TextToSpeech],
+                    reference_forms: vec![ReferenceForm::None],
+                    voice_name_policy: VoiceNamePolicy::Uploaded,
+                    max_batch_size: 8,
+                },
+                ServiceProfile::SpeechWebsocket {
+                    model_ids: vec![String::from("tts")],
+                    response_formats: vec![SpeechResponseFormat::Pcm],
+                    stream_modes: vec![StreamMode::NonStreaming],
+                    tasks: vec![SpeechTask::TextToSpeech],
+                    reference_forms: vec![ReferenceForm::None],
+                    voice_name_policy: VoiceNamePolicy::Uploaded,
+                },
+            ],
+            active_requests: AtomicUsize::new(0),
+            session_capacity: [
+                Some(SessionCapacity {
+                    semaphore: Arc::new(Semaphore::new(1)),
+                }),
+                None,
+            ],
+            health,
+            immediate_probe: Notify::new(),
+        })
+    }
+
+    fn speech_requirement(named_voice: bool) -> RouteRequirement {
+        RouteRequirement::new(
+            ProfileRequirement::SpeechHttp {
+                model: ModelSelection::Explicit(String::from("tts")),
+                response_format: SpeechResponseFormat::Wav,
+                stream_mode: StreamMode::NonStreaming,
+                task: Some(SpeechTask::TextToSpeech),
+                reference_forms: if named_voice {
+                    Vec::new()
+                } else {
+                    vec![ReferenceForm::None]
+                },
+                named_voice,
+            },
+            TrustDomain::new(String::from("local")),
+        )
+    }
+
+    fn batch_requirement(named_voice: bool) -> RouteRequirement {
+        RouteRequirement::new(
+            ProfileRequirement::SpeechBatch {
+                models: vec![ModelSelection::Explicit(String::from("tts"))],
+                response_formats: vec![SpeechResponseFormat::Wav],
+                tasks: vec![SpeechTask::TextToSpeech],
+                reference_forms: if named_voice {
+                    Vec::new()
+                } else {
+                    vec![ReferenceForm::None]
+                },
+                named_voice,
+                batch_size: 1,
+            },
+            TrustDomain::new(String::from("local")),
+        )
+    }
+
+    fn speech_websocket_requirement(named_voice: bool) -> RouteRequirement {
+        RouteRequirement::new(
+            ProfileRequirement::SpeechWebsocket {
+                model: ModelSelection::Explicit(String::from("tts")),
+                response_format: Some(SpeechResponseFormat::Pcm),
+                stream_mode: StreamMode::NonStreaming,
+                task: Some(SpeechTask::TextToSpeech),
+                reference_forms: if named_voice {
+                    Vec::new()
+                } else {
+                    vec![ReferenceForm::None]
+                },
+                named_voice,
+            },
+            TrustDomain::new(String::from("local")),
+        )
+    }
+
+    #[test]
+    fn voice_owner_dispatch_is_exact_and_mixed_speech_requires_classification() {
+        for strategy in [RoutingStrategy::RoundRobin, RoutingStrategy::LeastRequests] {
+            let owner = voice_speech_record(0);
+            let mut non_owner = voice_speech_record(1);
+            let non_owner_record =
+                Arc::get_mut(&mut non_owner).expect("new test record is uniquely owned");
+            non_owner_record.default_model_id = Some(String::from("other"));
+            for profile in &mut non_owner_record.profiles {
+                match profile {
+                    ServiceProfile::SpeechHttp { model_ids, .. }
+                    | ServiceProfile::SpeechBatch { model_ids, .. }
+                    | ServiceProfile::SpeechWebsocket { model_ids, .. } => {
+                        model_ids.push(String::from("other"));
+                    }
+                    _ => panic!("voice fixture contains only speech profiles"),
+                }
+            }
+            let mut pool = media_pool(vec![Arc::clone(&owner), Arc::clone(&non_owner)]);
+            pool.selector = Selector::new(strategy, pool.records.len());
+            pool.voice_owner = Some(Arc::clone(&owner));
+            pool.homogeneous_media_http =
+                build_content_blind_media_cohorts(&pool.records, pool.voice_owner.as_ref());
+            pool.admission =
+                AdmissionController::new(8, [None, Some(4), Some(4), None, Some(4), None]);
+
+            assert!(pool.voice_owner_ready());
+            assert!(
+                pool.content_blind_media_http(
+                    &TrustDomain::new(String::from("local")),
+                    crate::config::HttpMediaRoute::Speech,
+                )
+                .is_none()
+            );
+
+            let mut omitted_http = speech_requirement(true);
+            let ProfileRequirement::SpeechHttp { model, .. } = &mut omitted_http.profile else {
+                panic!("speech requirement")
+            };
+            *model = ModelSelection::UnresolvedDefault;
+            let omitted_http = pool
+                .dispatch(
+                    pool.try_admit(CapacityClass::SpeechHttp, 1)
+                        .expect("owner-bound default admission"),
+                    &omitted_http,
+                )
+                .expect("owner default is deterministic");
+            assert_eq!(omitted_http.registration_ordinal(), 0);
+            drop(omitted_http);
+
+            for (class, named, stateless) in [
+                (
+                    CapacityClass::SpeechHttp,
+                    speech_requirement(true),
+                    speech_requirement(false),
+                ),
+                (
+                    CapacityClass::SpeechBatch,
+                    batch_requirement(true),
+                    batch_requirement(false),
+                ),
+            ] {
+                let named = pool
+                    .dispatch(
+                        pool.try_admit(class, 1).expect("named voice admission"),
+                        &named,
+                    )
+                    .expect("named voice dispatch");
+                assert_eq!(named.registration_ordinal(), 0);
+                drop(named);
+
+                let mut reached_non_owner = false;
+                for _ in 0..2 {
+                    let lease = pool
+                        .dispatch(
+                            pool.try_admit(class, 1).expect("stateless admission"),
+                            &stateless,
+                        )
+                        .expect("stateless policy dispatch");
+                    reached_non_owner |= lease.registration_ordinal() == 1;
+                }
+                assert!(reached_non_owner);
+            }
+
+            let websocket = speech_websocket_requirement(true);
+            let session = pool
+                .dispatch_session(
+                    pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                        .expect("named voice session admission"),
+                    &websocket,
+                )
+                .expect("named voice session dispatch");
+            assert_eq!(session.registration_ordinal(), 0);
+            drop(session);
+
+            let mut omitted_websocket = speech_websocket_requirement(true);
+            let ProfileRequirement::SpeechWebsocket { model, .. } = &mut omitted_websocket.profile
+            else {
+                panic!("speech websocket requirement")
+            };
+            *model = ModelSelection::UnresolvedDefault;
+            let session = pool
+                .dispatch_session(
+                    pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                        .expect("owner-bound session admission"),
+                    &omitted_websocket,
+                )
+                .expect("owner session default is deterministic");
+            assert_eq!(session.registration_ordinal(), 0);
+            drop(session);
+
+            let control = pool
+                .dispatch_voice_owner(pool.try_admit_envelope().expect("voice admission"))
+                .expect("exact owner dispatch");
+            assert_eq!(control.registration_ordinal(), 0);
+            assert_eq!(owner.load(), 1);
+            drop(control);
+            assert_eq!(owner.load(), 0);
+
+            owner.health.store(WorkerHealth::Unhealthy);
+            assert!(!pool.voice_owner_ready());
+            assert_eq!(
+                pool.dispatch_voice_owner(
+                    pool.try_admit_envelope()
+                        .expect("unhealthy owner admission"),
+                )
+                .err(),
+                Some(DispatchError::Unavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn owner_only_speech_keeps_content_blind_proof() {
+        let owner = voice_speech_record(0);
+        let mut pool = media_pool(vec![Arc::clone(&owner)]);
+        pool.voice_owner = Some(owner);
+        pool.homogeneous_media_http =
+            build_content_blind_media_cohorts(&pool.records, pool.voice_owner.as_ref());
+        assert!(
+            pool.content_blind_media_http(
+                &TrustDomain::new(String::from("local")),
+                crate::config::HttpMediaRoute::Speech,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn uploaded_voice_speech_without_an_owner_requires_classification() {
+        let pool = media_pool(vec![voice_speech_record(0)]);
+
+        assert!(
+            pool.content_blind_media_http(
+                &TrustDomain::new(String::from("local")),
+                crate::config::HttpMediaRoute::Speech,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unrelated_voice_owner_does_not_disable_preset_content_blind_proof() {
+        let mut owner = voice_speech_record(0);
+        Arc::get_mut(&mut owner)
+            .expect("new test record is uniquely owned")
+            .trust_domain = TrustDomain::new(String::from("owner"));
+        let preset = record_with_profile(
+            1,
+            "local",
+            "custom",
+            named_speech_profile("custom", VoiceNamePolicy::Preset),
+        );
+        let mut pool = media_pool(vec![Arc::clone(&owner), preset]);
+        pool.voice_owner = Some(owner);
+        pool.homogeneous_media_http =
+            build_content_blind_media_cohorts(&pool.records, pool.voice_owner.as_ref());
+
+        assert!(
+            pool.content_blind_media_http(
+                &TrustDomain::new(String::from("local")),
+                crate::config::HttpMediaRoute::Speech,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn preset_voice_uses_normal_selection_with_an_uploaded_voice_owner() {
+        let owner = voice_speech_record(0);
+        let preset = record_with_profile(
+            1,
+            "local",
+            "custom",
+            named_speech_profile("custom", VoiceNamePolicy::Preset),
+        );
+        let mut pool = media_pool(vec![Arc::clone(&owner), preset]);
+        pool.voice_owner = Some(owner);
+
+        let lease = pool
+            .dispatch(
+                pool.try_admit(CapacityClass::SpeechHttp, 1)
+                    .expect("preset admission"),
+                &named_speech_requirement(ModelSelection::Explicit(String::from("custom"))),
+            )
+            .expect("preset dispatch");
+        assert_eq!(lease.registration_ordinal(), 1);
+    }
+
+    #[test]
+    fn uploaded_voice_owner_must_declare_its_default_model() {
+        let mut owner = voice_speech_record(0);
+        Arc::get_mut(&mut owner)
+            .expect("new test record is uniquely owned")
+            .default_model_id = None;
+        let mut pool = media_pool(vec![Arc::clone(&owner)]);
+        pool.voice_owner = Some(owner);
+        pool.admission = AdmissionController::new(8, [None, Some(4), Some(4), None, Some(4), None]);
+
+        let mut http = speech_requirement(true);
+        let ProfileRequirement::SpeechHttp { model, .. } = &mut http.profile else {
+            panic!("speech requirement")
+        };
+        *model = ModelSelection::UnresolvedDefault;
+        assert!(matches!(
+            pool.dispatch(
+                pool.try_admit(CapacityClass::SpeechHttp, 1)
+                    .expect("HTTP admission"),
+                &http,
+            ),
+            Err(DispatchError::AmbiguousModel)
+        ));
+
+        let mut websocket = speech_websocket_requirement(true);
+        let ProfileRequirement::SpeechWebsocket { model, .. } = &mut websocket.profile else {
+            panic!("speech WebSocket requirement")
+        };
+        *model = ModelSelection::UnresolvedDefault;
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("WebSocket admission"),
+                &websocket,
+            ),
+            Err(DispatchError::AmbiguousModel)
+        ));
     }
 
     #[test]
@@ -1774,7 +2236,8 @@ mod tests {
             "base",
             named_speech_profile("base", VoiceNamePolicy::Uploaded),
         );
-        let pool = media_pool(vec![preset, uploaded]);
+        let mut pool = media_pool(vec![preset, Arc::clone(&uploaded)]);
+        pool.voice_owner = Some(uploaded);
 
         let preset_lease = pool
             .dispatch(
@@ -1803,6 +2266,26 @@ mod tests {
                 &named_speech_requirement(ModelSelection::UnresolvedDefault),
             ),
             Err(DispatchError::AmbiguousModel)
+        ));
+    }
+
+    #[test]
+    fn uploaded_voice_requires_an_owner() {
+        let uploaded = record_with_profile(
+            0,
+            "local",
+            "base",
+            named_speech_profile("base", VoiceNamePolicy::Uploaded),
+        );
+        let pool = media_pool(vec![uploaded]);
+
+        assert!(matches!(
+            pool.dispatch(
+                pool.try_admit(CapacityClass::SpeechHttp, 1)
+                    .expect("uploaded admission"),
+                &named_speech_requirement(ModelSelection::Explicit(String::from("base"))),
+            ),
+            Err(DispatchError::NoEligibleProfile)
         ));
     }
 }

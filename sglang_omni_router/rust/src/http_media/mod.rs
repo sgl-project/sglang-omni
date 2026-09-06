@@ -1,6 +1,7 @@
 mod classify;
 mod headers;
 mod multipart;
+pub(crate) mod voice;
 
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ const TRANSLATION_PATH: &str = "/v1/audio/translations";
 pub(crate) struct HttpMedia {
     pool: Arc<WorkerPool>,
     relay: Arc<HttpRelay>,
-    trust: TrustDomain,
+    ordinary_trust: Option<TrustDomain>,
     enabled_routes: Box<[HttpMediaRoute]>,
     buffered_max: u64,
     streamed_max: u64,
@@ -66,13 +67,17 @@ impl HttpMedia {
         pool: Arc<WorkerPool>,
         relay: Arc<HttpRelay>,
     ) -> Result<Option<Arc<Self>>, RouterError> {
-        let Some(media) = config.http_media.as_ref() else {
+        if config.http_media.is_none() && !pool.voice_state_enabled() {
             return Ok(None);
-        };
+        }
+        let media = config.http_media.clone().unwrap_or_default();
         Ok(Some(Arc::new(Self {
             pool,
             relay,
-            trust: TrustDomain::new(media.trust_domain.clone()),
+            ordinary_trust: config
+                .http_media
+                .as_ref()
+                .map(|configured| TrustDomain::new(configured.trust_domain.clone())),
             enabled_routes: media.routes.clone().into_boxed_slice(),
             buffered_max: media.buffered_request_max_bytes,
             streamed_max: media.streamed_request_max_bytes,
@@ -85,8 +90,14 @@ impl HttpMedia {
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        self.pool
-            .media_http_ready(&self.trust, &self.enabled_routes)
+        self.ordinary_trust
+            .as_ref()
+            .is_none_or(|trust| self.pool.media_http_ready(trust, &self.enabled_routes))
+            && self.pool.voice_owner_ready()
+    }
+
+    pub(crate) fn voice_routes_enabled(&self) -> bool {
+        self.pool.voice_state_enabled()
     }
 }
 
@@ -150,6 +161,10 @@ async fn handle(
         return Err(HttpFault::MalformedRequest);
     }
     let deadline = tokio::time::Instant::now() + media.request_timeout;
+    let trust = media
+        .ordinary_trust
+        .as_ref()
+        .ok_or(HttpFault::InternalError)?;
     let framing = headers::validate_request(request.headers(), route.request_kind())?;
     let direct_proof = if route != HttpMediaRoute::SpeechBatch
         && framing.route_model.is_none()
@@ -158,7 +173,7 @@ async fn handle(
             .content_length
             .is_none_or(|length| length <= media.streamed_max)
     {
-        media.pool.content_blind_media_http(&media.trust, route)
+        media.pool.content_blind_media_http(trust, route)
     } else {
         None
     };
@@ -222,7 +237,7 @@ async fn handle(
     let boundary = framing.boundary;
     let route_model = framing.route_model;
     let route_stream = framing.route_stream;
-    let classify_trust = media.trust.clone();
+    let classify_trust = trust.clone();
     let (upload, classified) = media
         .relay
         .classify(deadline, move || {
@@ -240,7 +255,7 @@ async fn handle(
     if route == HttpMediaRoute::SpeechBatch
         && !media
             .pool
-            .supports_speech_batch_size(&media.trust, classified.credits)
+            .supports_speech_batch_size(trust, classified.credits)
     {
         return Err(HttpFault::NoCompatibleWorker);
     }

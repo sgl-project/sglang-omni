@@ -197,7 +197,7 @@ impl HttpFault {
         match self {
             Self::MalformedRequest => "The request is malformed.",
             Self::AmbiguousModel => "An explicit model is required.",
-            Self::MethodNotAllowed => "POST is required for this route.",
+            Self::MethodNotAllowed => "The request method is not allowed for this route.",
             Self::RequestTimeout => "The request body timed out.",
             Self::RequestBodyTooLarge => "The request body is too large.",
             Self::UnsupportedMediaType => "The content type is unsupported.",
@@ -222,6 +222,10 @@ impl HttpFault {
     }
 
     pub(crate) fn into_response(self) -> Response<Body> {
+        self.into_response_with_allow(HeaderValue::from_static("POST"))
+    }
+
+    pub(crate) fn into_response_with_allow(self, allow: HeaderValue) -> Response<Body> {
         let body = format!(
             "{{\"error\":{{\"message\":\"{}\",\"type\":\"{}\",\"param\":null,\"code\":\"{}\"}}}}",
             self.message(),
@@ -241,9 +245,7 @@ impl HttpFault {
             .headers_mut()
             .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         if self == Self::MethodNotAllowed {
-            response
-                .headers_mut()
-                .insert(ALLOW, HeaderValue::from_static("POST"));
+            response.headers_mut().insert(ALLOW, allow);
         }
         response
     }

@@ -17,6 +17,8 @@ const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 8;
+// Match the worker's 10 MiB audio limit plus its 64 KiB multipart allowance.
+pub(crate) const VOICE_UPLOAD_BODY_MAX_BYTES: u64 = 10 * 1024 * 1024 + 64 * 1024;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 30_000;
 const SCHEMA_VERSION: u32 = 1;
@@ -262,6 +264,7 @@ impl HttpGenerationConfig {
 pub(crate) struct RouterConfig {
     #[serde(default)]
     pub(crate) strategy: RoutingStrategy,
+    pub(crate) voice_owner_worker_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -459,7 +462,11 @@ impl Config {
         self.validate_admission()?;
         self.validate_health()?;
         validate_workers(&self.workers)?;
-        if self.http_generation.is_none() && self.http_media.is_none() && self.websocket.is_none() {
+        if self.http_generation.is_none()
+            && self.http_media.is_none()
+            && self.websocket.is_none()
+            && self.router.voice_owner_worker_id.is_none()
+        {
             return Err(ConfigError::invalid(
                 "routes",
                 "must configure at least one HTTP or WebSocket route",
@@ -469,6 +476,7 @@ impl Config {
         self.validate_http_generation()?;
         self.validate_http_media()?;
         self.validate_websocket()?;
+        self.validate_voice_state()?;
         Ok(())
     }
 
@@ -482,6 +490,12 @@ impl Config {
                 self.http_media
                     .as_ref()
                     .map(|config| config.buffered_request_max_bytes),
+            )
+            .chain(
+                self.router
+                    .voice_owner_worker_id
+                    .as_ref()
+                    .map(|_| VOICE_UPLOAD_BODY_MAX_BYTES),
             )
             .max()
             .unwrap_or(0);
@@ -761,6 +775,45 @@ impl Config {
                     "configured class limits must be between 1 and 65535",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_voice_state(&self) -> Result<(), ConfigError> {
+        use crate::worker_pool::profile::{ServiceProfile, VoiceNamePolicy};
+
+        let Some(owner_id) = self.router.voice_owner_worker_id.as_deref() else {
+            return Ok(());
+        };
+        let owner = self
+            .workers
+            .iter()
+            .find(|worker| worker.worker_id == owner_id)
+            .ok_or_else(|| {
+                ConfigError::invalid(
+                    "router.voice_owner_worker_id",
+                    "must name a configured worker",
+                )
+            })?;
+        let supports_uploaded_voice = |profile: &ServiceProfile| match profile {
+            ServiceProfile::SpeechHttp {
+                voice_name_policy, ..
+            }
+            | ServiceProfile::SpeechBatch {
+                voice_name_policy, ..
+            }
+            | ServiceProfile::SpeechWebsocket {
+                voice_name_policy, ..
+            } => *voice_name_policy == VoiceNamePolicy::Uploaded,
+            ServiceProfile::GenerationHttp { .. }
+            | ServiceProfile::TranscriptionHttp { .. }
+            | ServiceProfile::RealtimeWebsocket => false,
+        };
+        if !owner.service_profiles.iter().any(supports_uploaded_voice) {
+            return Err(ConfigError::invalid(
+                "router.voice_owner_worker_id",
+                "owner must advertise an uploaded-voice service profile",
+            ));
         }
         Ok(())
     }
