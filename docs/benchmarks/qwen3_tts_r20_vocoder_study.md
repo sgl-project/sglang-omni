@@ -314,8 +314,31 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   (runner 每 key 需两套静态输入/输出缓冲)。等 profiler 时间线确认空隙位置后实施。
 - 真实码对照脚本的重编译来源已定位:裸 `Qwen3TTSIncrementalCodecState()` 在前 9 步里
   conv 历史从无到有、K/V 从 8 宽长到 71 宽,每步一个新形状,加上 inference_mode 内外
-  的 dispatch key 差异;runner 用的是 arena 全宽状态,这些守卫在生产里恒定。脚本改为
-  arena 状态重跑(排队)。全量单测 267 过。
+  的 dispatch key 差异;runner 用的是 arena 全宽状态,这些守卫在生产里恒定。全量单测 267 过。
+- **真实码数值对照(6 段生成音频经编码器取码,48-80 帧,逐帧相对 L2 中位 / p95 / 最大)**:
+
+  | 对照 | 中位 | p95 | 最大 |
+  |---|---|---|---|
+  | eager 增量 vs legacy(PR 自带路径) | 0.0075-0.0103 | 0.020-0.030 | 0.03-0.87 |
+  | compiled 增量 vs legacy | 0.015-0.022 | 0.037-0.056 | 0.07-0.89 |
+  | compiled vs eager 增量 | 0.015-0.022 | 0.034-0.050 | 0.07-0.87 |
+
+  最大值 0.7-0.9 出现在 eager-vs-legacy 也有的同一帧(尾部近静音帧,相对量纲失效),与
+  编译无关。接缝一阶差分跳变 legacy/compiled 逐段一致(19.6/19.3、3.9/3.8、35.2/35.4…),
+  **无接缝伪影**。编译引入的噪声约为 batch-size 噪声(中位 0.009-0.010)的 1.5-2 倍,
+  仍在 bf16 量级。log-mel 距离未做。
+- **进程内 profiler 时间线(401ms 窗,48742 个 GPU 事件)**:4 条流——流 7 忙 28%
+  (30665 事件,含 flash attention / `_seeded_top_k_top_p_sample` / flashinfer RMSNorm:
+  **是 Talker 的 kernel,Talker 与 vocoder 在同一进程同一 GPU 上下文**),流 23 / 19
+  (两个 follow-up worker)各忙 10% / 7%,流 15(initial)2%。vocoder 流每 cohort 只执行
+  约 2ms,却等 7.5ms:它的 356 个串行微节点每个都可能排在 Talker 占满 SM 的 kernel 后面
+  (优先级只管排队不管抢占),r10 也一样是因为 Talker 单个 kernel 的时长与批大小无关。
+  **所以这是同进程内的 Talker 交错,r10 实验不能证伪它。**
+- 两条产品化方向同时实验:(a) **提前发射**(worker 内保持一个 cohort 在飞,先发下一个再
+  resolve 上一个;每线程两个 pinned 槽;commit ed5af36f)——填掉 CPU 段的流空转;
+  (b) **vocoder 独立进程 + CUDA MPS**(仓库已有 `--mps` 运行时与 `stages.vocoder.process`)
+  ——让 vocoder 的微 kernel 与 Talker 的 kernel 在不同上下文里并发,而不是排队。MPS 首跑
+  因控制 socket 路径超过 AF_UNIX 107 字节失败(state root 取自 TMPDIR),改短后重排。
 
 ## 决策日志
 
