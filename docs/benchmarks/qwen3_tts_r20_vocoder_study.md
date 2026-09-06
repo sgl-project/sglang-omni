@@ -608,3 +608,7 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
 独立流 + ready event;742ca60f black。#1855 本身是 leihehehe 的 draft(fork 分支),这些 SHA 只在
 评论里被引用、不在 PR diff 内——是否以本分支另开 PR 由 luojiaxuan 定(此前 JiaxinD 直接推到对方
 分支后道歉,不宜重演)。
+- **`initial_batch_wait_ms` 0 对 2(默认)A/B**(同树,三 seed,100% 完成):0 → 1.71 / 1.46 / 1.83%
+  (均值 1.67%),2 → 0.94 / 0.60 / 0.58%(0.71%);首帧 p50 两边都 55-57ms。r1 下那 2ms 是纯延迟,
+  但 r20 下把同时到达的 bootstrap 段合成一个 cohort 值回来;**保留默认 2ms**。默认臂在本树上六个
+  seed 的 underrun:1.11 / 0.69 / 1.08 / 0.94 / 0.60 / 0.58%(均值 0.83%)。
