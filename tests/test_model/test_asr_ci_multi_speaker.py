@@ -44,8 +44,13 @@ MOSS_TD_CI_MODEL_PATH = os.environ.get(
     "MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH",
     MODEL_PATH,
 )
-MOSS_TD_CONCURRENCY = 16
-MOSS_TD_WARMUP_REQUESTS = 0
+MOSS_TD_CONCURRENCY = 32
+# Note (Jiaxin Deng): a cold JIT cache otherwise lands inside the timed
+# window, so the first run on a fresh CI home measures about 20% low.
+# Only the first dataset warms: the server is module scoped, and a
+# concurrency-sized cohort of 38 minute audio would cost more than the
+# long-audio measurement itself.
+MOSS_TD_WARMUP_REQUESTS = MOSS_TD_CONCURRENCY
 MOSS_TD_CI_SAMPLES = 800
 MOSS_TD_AISHELL4_LONG_CI_SAMPLES = 20
 MOSS_TD_GOOGLETIME_CI_SAMPLES = 25
@@ -454,6 +459,7 @@ def test_moss_transcribe_diarize_multi_speaker_datasets(
             moss_td_router_server=moss_td_router_server,
             request_timeout_s=300,
             max_new_tokens=None,
+            warmup=MOSS_TD_WARMUP_REQUESTS,
         )
     movies800times_results = _build_results(
         samples=movies800times_samples,
@@ -587,6 +593,7 @@ def _run_transcribe_diarize(
     request_timeout_s: int,
     max_new_tokens: int | None,
     stream: bool = False,
+    warmup: int = 0,
 ):
     return asyncio.run(
         run_eval(
@@ -595,7 +602,7 @@ def _run_transcribe_diarize(
             model_path=MOSS_TD_CI_MODEL_PATH,
             language=None,
             concurrency=MOSS_TD_CONCURRENCY,
-            warmup=MOSS_TD_WARMUP_REQUESTS,
+            warmup=warmup,
             request_rate=float("inf"),
             disable_tqdm=False,
             request_timeout_s=request_timeout_s,

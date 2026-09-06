@@ -666,12 +666,32 @@ def resolve_venv(flag, cfg):
     return default, "default", [default]
 
 
+def _marker_applies(marker):
+    try:
+        from packaging.markers import Marker
+        return bool(Marker(marker).evaluate())
+    except Exception:
+        return True
+
+
 def read_pins():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    return parse_pins(data["project"]["dependencies"])
+
+
+def parse_pins(dependencies):
+    # Note (Jiaxin Deng): pyproject pins carry PEP 508 markers for the darwin
+    # arm64 wheels; a pin whose marker does not hold on this host is not the
+    # pin CI runs against, and the first applicable pin wins.
     pins = {}
-    for dep in data["project"]["dependencies"]:
-        m = re.match(r'^\s*"?([A-Za-z0-9_\-]+)"?\s*==\s*([^\s,"]+)', dep)
-        if m: pins[m.group(1).lower()] = m.group(2)
+    for dep in dependencies:
+        req, _, marker = dep.partition(";")
+        m = re.match(r'^\s*"?([A-Za-z0-9_\-]+)"?\s*==\s*([^\s,"]+)', req)
+        if not m:
+            continue
+        if marker.strip() and not _marker_applies(marker.strip()):
+            continue
+        pins.setdefault(m.group(1).lower(), m.group(2))
     return pins
 
 
