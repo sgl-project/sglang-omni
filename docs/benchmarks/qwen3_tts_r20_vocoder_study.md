@@ -283,6 +283,11 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   First playable p95 148→433ms。首块在 initial worker 上 B 多为 1-2,编译版对它没有节点
   优势,却多了每形状 15s 的启动编译与运行时 guard 开销。已 revert(5f25e155),COLD 保持
   eager-in-graph。
+- **编译内核的 357 个 kernel 从哪来(B2,1.76ms)**:Inductor Triton 融合核 166(0.38ms)、
+  GEMM/conv 117(0.80ms;其中 transformer 的 64×8 微型 GEMM 57 个)、**cudnn nchw↔nhwc
+  布局转换 62 个(0.56ms,占设备时间 32%、节点 17%)**。下一刀:把因果卷积改成
+  channels-last 的 conv2d 在编译区内执行,让 cudnn 直接走 NHWC 不再来回转置(原型排队中);
+  再往后是 transformer 的 q/k/v 三 GEMM 合一(每层省 2 节点)。
 
 ## 决策日志
 
