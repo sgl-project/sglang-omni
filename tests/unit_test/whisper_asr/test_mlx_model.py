@@ -113,6 +113,19 @@ def test_encoder_halves_the_frame_count() -> None:
     assert out.shape == (1, POSITIONS, D_MODEL)
 
 
+def test_encoder_rejects_input_longer_than_the_position_table() -> None:
+    """Over-long input must name the problem, not fail inside a broadcast.
+
+    Slicing embed_positions past its end returns fewer rows rather than raising,
+    so without this guard the failure surfaces as
+    "[broadcast_shapes] Shapes (1,50,64) and (20,64) cannot be broadcast".
+    """
+    model = WhisperMlxModel(_tiny_config())
+
+    with pytest.raises(ValueError, match="exceeds max_source_positions"):
+        model.encode(mx.zeros((1, MELS, POSITIONS * 2 + 2)))
+
+
 def test_key_projection_has_no_bias() -> None:
     """Whisper checkpoints ship k_proj without a bias; the module must match."""
     model = WhisperMlxModel(_tiny_config())

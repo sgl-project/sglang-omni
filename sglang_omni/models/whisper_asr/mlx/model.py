@@ -156,9 +156,18 @@ class WhisperEncoder(nn.Module):
         hidden_states = nn.gelu(self.conv1(hidden_states))
         hidden_states = nn.gelu(self.conv2(hidden_states))
 
-        hidden_states = (
-            hidden_states + self.embed_positions.weight[: hidden_states.shape[1]]
-        )
+        # Slicing past the end of embed_positions silently yields fewer rows,
+        # so an over-long input surfaces as an opaque broadcast failure in the
+        # addition below. Name the real problem instead.
+        length = hidden_states.shape[1]
+        if length > self.config.max_source_positions:
+            raise ValueError(
+                f"encoded length {length} exceeds max_source_positions "
+                f"{self.config.max_source_positions}; Whisper expects at most "
+                f"{self.config.max_source_positions * 2} mel frames per window, "
+                f"got {input_features.shape[-1]}"
+            )
+        hidden_states = hidden_states + self.embed_positions.weight[:length]
 
         for layer in self.layers:
             hidden_states = layer(hidden_states)
