@@ -273,6 +273,11 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
 
   **第一次在同等 TTFA 下 underrun 低于 legacy**((2,4) ramp:2.7% 对 5.4%)。(1,2,4)
   ramp 下无收益:那里 bootstrap/COLD 路径主导,COLD 形状未编译。图显存 1.0GB/进程。
+- 编译臂的探针(pk-w4-r24,带探针时 underrun 4.1%,探针本身有开销):cohort 14.1ms
+  (此前 18.0),resolve 9.4-10.0 → **7.7ms**,launch 5.0ms。孤立 replay 只要 1.8ms,生产
+  仍等 7.7ms:vocoder 自己的节点已经便宜,剩下的等待来自与 Talker(默认优先级流、
+  batch 48 的大 kernel)交错——vocoder 流优先级已是 -4(最高 -5),但优先级不能抢占
+  正在跑的 kernel。下一步验证:r10(Talker 负载减半)下 resolve 是否随之下降。
 
 ## 决策日志
 
