@@ -158,9 +158,7 @@ async fn send_once(
     if let Some(name) = name {
         path.push(name.to_owned());
     }
-    let (content_type, upload) = upload
-        .map(|(content_type, upload)| (Some(content_type), Some(upload)))
-        .unwrap_or((None, None));
+    let (content_type, upload) = upload.unzip();
     let outgoing =
         OutgoingRequest::control(method, path, query.map(str::to_owned), content_type, upload)?;
     Arc::clone(&media.relay)
