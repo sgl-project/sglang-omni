@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinSet};
@@ -14,6 +14,119 @@ pub(crate) enum WorkerHealth {
     Unknown = 0,
     Healthy = 1,
     Unhealthy = 2,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum ProbeOutcome {
+    Pending = 0,
+    Success = 1,
+    HttpFailure = 2,
+    TransportFailure = 3,
+}
+
+impl ProbeOutcome {
+    pub(crate) const OBSERVED: [Self; 3] =
+        [Self::Success, Self::HttpFailure, Self::TransportFailure];
+
+    const fn from_atomic(value: u8) -> Self {
+        match value {
+            1 => Self::Success,
+            2 => Self::HttpFailure,
+            3 => Self::TransportFailure,
+            _ => Self::Pending,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Success => "success",
+            Self::HttpFailure => "http_failure",
+            Self::TransportFailure => "transport_failure",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProbeSnapshot {
+    pub(crate) outcome: ProbeOutcome,
+    pub(crate) status: Option<u16>,
+    pub(crate) checked_at_unix_ms: Option<u64>,
+    pub(crate) consecutive_successes: u8,
+    pub(crate) consecutive_failures: u8,
+    pub(crate) successes: u64,
+    pub(crate) http_failures: u64,
+    pub(crate) transport_failures: u64,
+}
+
+pub(super) struct AtomicProbe {
+    outcome: AtomicU8,
+    status: AtomicU16,
+    checked_at_unix_ms: AtomicU64,
+    consecutive_successes: AtomicU8,
+    consecutive_failures: AtomicU8,
+    successes: AtomicU64,
+    http_failures: AtomicU64,
+    transport_failures: AtomicU64,
+}
+
+impl AtomicProbe {
+    pub(super) const fn pending() -> Self {
+        Self {
+            outcome: AtomicU8::new(ProbeOutcome::Pending as u8),
+            status: AtomicU16::new(0),
+            checked_at_unix_ms: AtomicU64::new(0),
+            consecutive_successes: AtomicU8::new(0),
+            consecutive_failures: AtomicU8::new(0),
+            successes: AtomicU64::new(0),
+            http_failures: AtomicU64::new(0),
+            transport_failures: AtomicU64::new(0),
+        }
+    }
+
+    fn record(&self, outcome: ProbeOutcome, status: Option<u16>, tracker: &ProbeTracker) {
+        match outcome {
+            ProbeOutcome::Pending => {}
+            ProbeOutcome::Success => {
+                self.successes.fetch_add(1, Ordering::Relaxed);
+            }
+            ProbeOutcome::HttpFailure => {
+                self.http_failures.fetch_add(1, Ordering::Relaxed);
+            }
+            ProbeOutcome::TransportFailure => {
+                self.transport_failures.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.status.store(status.unwrap_or(0), Ordering::Relaxed);
+        self.consecutive_successes
+            .store(tracker.successes, Ordering::Relaxed);
+        self.consecutive_failures
+            .store(tracker.failures, Ordering::Relaxed);
+        let checked_at = SystemTime::UNIX_EPOCH
+            .elapsed()
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+            .unwrap_or(0);
+        self.checked_at_unix_ms.store(checked_at, Ordering::Relaxed);
+        self.outcome.store(outcome as u8, Ordering::Release);
+    }
+
+    pub(super) fn snapshot(&self) -> ProbeSnapshot {
+        let outcome = ProbeOutcome::from_atomic(self.outcome.load(Ordering::Acquire));
+        let status = self.status.load(Ordering::Relaxed);
+        let checked_at_unix_ms = self.checked_at_unix_ms.load(Ordering::Relaxed);
+        ProbeSnapshot {
+            outcome,
+            status: (status != 0).then_some(status),
+            checked_at_unix_ms: (checked_at_unix_ms != 0).then_some(checked_at_unix_ms),
+            consecutive_successes: self.consecutive_successes.load(Ordering::Relaxed),
+            consecutive_failures: self.consecutive_failures.load(Ordering::Relaxed),
+            successes: self.successes.load(Ordering::Relaxed),
+            http_failures: self.http_failures.load(Ordering::Relaxed),
+            transport_failures: self.transport_failures.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl WorkerHealth {
@@ -144,11 +257,17 @@ async fn run_worker_health(
                 result
             }
         };
-        let success = response
-            .as_ref()
-            .is_ok_and(|response| response.status().is_success());
+        let (outcome, status) = match response.as_ref() {
+            Ok(response) if response.status().is_success() => {
+                (ProbeOutcome::Success, Some(response.status().as_u16()))
+            }
+            Ok(response) => (ProbeOutcome::HttpFailure, Some(response.status().as_u16())),
+            Err(_) => (ProbeOutcome::TransportFailure, None),
+        };
+        let success = outcome == ProbeOutcome::Success;
         let previous = record.health.load();
         let next = tracker.observe(success);
+        record.probe.record(outcome, status, &tracker);
         record.health.store(next);
         if previous != next {
             tracing::info!(
@@ -223,7 +342,9 @@ mod tests {
 
     use tokio::sync::Notify;
 
-    use super::{AtomicHealth, HealthSupervisor, ProbeTracker, WorkerHealth};
+    use super::{
+        AtomicHealth, AtomicProbe, HealthSupervisor, ProbeOutcome, ProbeTracker, WorkerHealth,
+    };
     use crate::worker_pool::WorkerRecord;
     use crate::worker_pool::profile::{
         InputModality, MessageContentForm, OutputModality, RegistrationId, ServiceProfile,
@@ -255,6 +376,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health: AtomicHealth::unknown(),
+            probe: AtomicProbe::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -322,6 +444,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(record.health.load(), WorkerHealth::Healthy);
+        let probe = record.probe.snapshot();
+        assert_eq!(probe.outcome, ProbeOutcome::Success);
+        assert_eq!(probe.status, Some(200));
+        assert!(probe.checked_at_unix_ms.is_some());
+        assert_eq!(probe.consecutive_successes, 1);
+        assert_eq!(probe.successes, 1);
         supervisor.cancel();
         assert!(matches!(supervisor.join_next().await, Some(Ok(()))));
         server.join().expect("join health fixture server");
@@ -402,6 +530,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(record.health.load(), WorkerHealth::Unhealthy);
+        let probe = record.probe.snapshot();
+        assert_eq!(probe.outcome, ProbeOutcome::TransportFailure);
+        assert_eq!(probe.status, None);
+        assert_eq!(probe.consecutive_failures, 1);
+        assert_eq!(probe.transport_failures, 1);
         supervisor.cancel();
         assert!(matches!(supervisor.join_next().await, Some(Ok(()))));
         server.join().expect("join timeout fixture server");
@@ -437,6 +570,11 @@ mod tests {
         })
         .await
         .expect("non-2xx observation must complete");
+        let probe = record.probe.snapshot();
+        assert_eq!(probe.outcome, ProbeOutcome::HttpFailure);
+        assert_eq!(probe.status, Some(503));
+        assert_eq!(probe.consecutive_failures, 1);
+        assert_eq!(probe.http_failures, 1);
         supervisor.cancel();
         assert!(matches!(supervisor.join_next().await, Some(Ok(()))));
         server.join().expect("join non-2xx fixture server");
@@ -499,6 +637,7 @@ mod tests {
             .await
             .expect("stalled probe cancellation must be bounded");
         assert!(matches!(joined, Some(Ok(()))));
+        assert_eq!(record.probe.snapshot().outcome, ProbeOutcome::Pending);
         release.store(true, Ordering::Release);
         server.join().expect("join stalled fixture server");
         assert!(!overlap.load(Ordering::Acquire));

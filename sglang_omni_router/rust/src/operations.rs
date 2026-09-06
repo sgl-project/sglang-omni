@@ -10,7 +10,9 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{HttpFault, RouterError};
 use crate::lifecycle::State as LifecycleState;
-use crate::worker_pool::{OperationsSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth};
+use crate::worker_pool::{
+    OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth,
+};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -229,10 +231,33 @@ fn render_metrics(
         .count();
     let _ = writeln!(output, "sglang_omni_router_workers_routable {routable}");
 
+    render_probe_metrics(&mut output, snapshot);
     render_admission_metrics(&mut output, snapshot);
     render_worker_metrics(&mut output, snapshot);
     render_resource_metrics(&mut output, resources);
     output
+}
+
+fn render_probe_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
+    output.push_str("# HELP sglang_omni_router_worker_probes_total Worker health probes.\n");
+    output.push_str("# TYPE sglang_omni_router_worker_probes_total counter\n");
+    for outcome in ProbeOutcome::OBSERVED {
+        let count: u64 = snapshot
+            .workers
+            .iter()
+            .map(|worker| match outcome {
+                ProbeOutcome::Success => worker.probe.successes,
+                ProbeOutcome::HttpFailure => worker.probe.http_failures,
+                ProbeOutcome::TransportFailure => worker.probe.transport_failures,
+                ProbeOutcome::Pending => 0,
+            })
+            .sum();
+        let _ = writeln!(
+            output,
+            "sglang_omni_router_worker_probes_total{{outcome=\"{}\"}} {count}",
+            outcome.label()
+        );
+    }
 }
 
 fn render_admission_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
@@ -407,9 +432,37 @@ struct DiagnosticWorker<'a> {
     registration_ordinal: usize,
     voice_owner: bool,
     health: &'static str,
+    probe: DiagnosticProbe,
     routable: bool,
     active_requests: usize,
     capacity: Vec<DiagnosticCapacity>,
+}
+
+#[derive(Serialize)]
+struct DiagnosticProbe {
+    outcome: &'static str,
+    status: Option<u16>,
+    checked_at_unix_ms: Option<u64>,
+    consecutive_successes: u8,
+    consecutive_failures: u8,
+    successes: u64,
+    http_failures: u64,
+    transport_failures: u64,
+}
+
+impl From<ProbeSnapshot> for DiagnosticProbe {
+    fn from(probe: ProbeSnapshot) -> Self {
+        Self {
+            outcome: probe.outcome.label(),
+            status: probe.status,
+            checked_at_unix_ms: probe.checked_at_unix_ms,
+            consecutive_successes: probe.consecutive_successes,
+            consecutive_failures: probe.consecutive_failures,
+            successes: probe.successes,
+            http_failures: probe.http_failures,
+            transport_failures: probe.transport_failures,
+        }
+    }
 }
 
 impl<'a> Diagnostics<'a> {
@@ -440,6 +493,7 @@ impl<'a> Diagnostics<'a> {
                     registration_ordinal: worker.registration_ordinal,
                     voice_owner: worker.voice_owner,
                     health: worker.health.label(),
+                    probe: worker.probe.into(),
                     routable: worker.routable,
                     active_requests: worker.active_requests,
                     capacity: worker
@@ -464,8 +518,8 @@ mod tests {
 
     use crate::lifecycle::State as LifecycleState;
     use crate::worker_pool::{
-        AdmissionClass, AdmissionSnapshot, CapacityClass, OperationsSnapshot,
-        SessionCapacitySnapshot, WorkerHealth, WorkerSnapshot,
+        AdmissionClass, AdmissionSnapshot, CapacityClass, OperationsSnapshot, ProbeOutcome,
+        ProbeSnapshot, SessionCapacitySnapshot, WorkerHealth, WorkerSnapshot,
     };
 
     use super::{
@@ -486,6 +540,23 @@ mod tests {
             class,
             limit,
             in_flight,
+        }
+    }
+
+    fn probe(outcome: ProbeOutcome, successes: u64, failures: u64) -> ProbeSnapshot {
+        ProbeSnapshot {
+            outcome,
+            status: Some(if matches!(outcome, ProbeOutcome::Success) {
+                200
+            } else {
+                503
+            }),
+            checked_at_unix_ms: Some(1_000),
+            consecutive_successes: u8::from(matches!(outcome, ProbeOutcome::Success)),
+            consecutive_failures: u8::from(!matches!(outcome, ProbeOutcome::Success)),
+            successes,
+            http_failures: failures,
+            transport_failures: 0,
         }
     }
 
@@ -522,6 +593,7 @@ mod tests {
                     registration_ordinal: 0,
                     voice_owner: true,
                     health: WorkerHealth::Unknown,
+                    probe: probe(ProbeOutcome::HttpFailure, 2, 3),
                     routable: false,
                     active_requests: 3,
                     session_capacity: vec![
@@ -534,6 +606,7 @@ mod tests {
                     registration_ordinal: 1,
                     voice_owner: false,
                     health: WorkerHealth::Healthy,
+                    probe: probe(ProbeOutcome::Success, 4, 1),
                     routable: true,
                     active_requests: 1,
                     session_capacity: vec![capacity(CapacityClass::RealtimeWebsocket, 2, 1)],
@@ -610,6 +683,11 @@ mod tests {
                 "# HELP sglang_omni_router_workers_routable Routable workers.\n",
                 "# TYPE sglang_omni_router_workers_routable gauge\n",
                 "sglang_omni_router_workers_routable 1\n",
+                "# HELP sglang_omni_router_worker_probes_total Worker health probes.\n",
+                "# TYPE sglang_omni_router_worker_probes_total counter\n",
+                "sglang_omni_router_worker_probes_total{outcome=\"success\"} 6\n",
+                "sglang_omni_router_worker_probes_total{outcome=\"http_failure\"} 4\n",
+                "sglang_omni_router_worker_probes_total{outcome=\"transport_failure\"} 0\n",
                 "# HELP sglang_omni_router_admission_limit Configured admission limit in class-specific units.\n",
                 "# TYPE sglang_omni_router_admission_limit gauge\n",
                 "sglang_omni_router_admission_limit{class=\"global\"} 100\n",
@@ -677,6 +755,7 @@ mod tests {
                     1 => WorkerHealth::Healthy,
                     _ => WorkerHealth::Unhealthy,
                 },
+                probe: probe(ProbeOutcome::Success, 1, 0),
                 routable: registration_ordinal % 2 == 0,
                 active_requests: registration_ordinal,
                 session_capacity: vec![
@@ -711,6 +790,7 @@ mod tests {
         assert_eq!(value["ready"], false);
         assert_eq!(value["workers"][0]["voice_owner"], true);
         assert_eq!(value["workers"][1]["voice_owner"], false);
+        assert_eq!(value["workers"][0]["probe"]["outcome"], "success");
         assert_eq!(value["workers"][0]["registration_ordinal"], 0);
         assert_eq!(value["workers"][255]["registration_ordinal"], 255);
         let text = String::from_utf8(bytes).expect("diagnostics are UTF-8");

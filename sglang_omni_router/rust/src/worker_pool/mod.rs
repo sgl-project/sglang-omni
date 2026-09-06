@@ -14,7 +14,7 @@ use crate::config::{Config, RoutingStrategy};
 pub(crate) use admission::{
     AdmissionError, AdmissionLease, DispatchError, EnvelopeLease, RequestLease,
 };
-pub(crate) use health::{HealthSupervisor, WorkerHealth};
+pub(crate) use health::{HealthSupervisor, ProbeOutcome, ProbeSnapshot, WorkerHealth};
 pub(crate) use profile::{
     CapacityClass, ChatAudioFormat, MediaPlacement, MessageContentForm, ModelSelection,
     ProfileRequirement, ReferenceForm, RouteRequirement, ServiceClass, SpeechResponseFormat,
@@ -23,7 +23,7 @@ pub(crate) use profile::{
 pub(crate) use resolver::{ConnectTarget, ResolvedTarget};
 
 use admission::AdmissionController;
-use health::AtomicHealth;
+use health::{AtomicHealth, AtomicProbe};
 use profile::{
     CAPACITY_CLASS_COUNT, MAX_WORKERS, RegistrationId, ServiceProfile, VoiceNamePolicy,
     WorkerCapacityConfig, WorkerId,
@@ -71,6 +71,7 @@ pub(crate) struct WorkerSnapshot {
     pub(crate) registration_ordinal: usize,
     pub(crate) voice_owner: bool,
     pub(crate) health: WorkerHealth,
+    pub(crate) probe: ProbeSnapshot,
     pub(crate) routable: bool,
     pub(crate) active_requests: usize,
     pub(crate) session_capacity: Vec<SessionCapacitySnapshot>,
@@ -93,6 +94,7 @@ pub(super) struct WorkerRecord {
     active_requests: AtomicUsize,
     session_capacity: [Option<SessionCapacity>; 2],
     health: AtomicHealth,
+    probe: AtomicProbe,
     immediate_probe: Notify,
 }
 
@@ -226,6 +228,7 @@ impl WorkerPool {
                 active_requests: AtomicUsize::new(0),
                 session_capacity: build_session_capacity(&worker.capacity)?,
                 health: AtomicHealth::unknown(),
+                probe: AtomicProbe::pending(),
                 immediate_probe: Notify::new(),
             }));
         }
@@ -606,6 +609,7 @@ impl WorkerPool {
                         .as_ref()
                         .is_some_and(|owner| Arc::ptr_eq(owner, record)),
                     health,
+                    probe: record.probe.snapshot(),
                     routable: health == WorkerHealth::Healthy,
                     active_requests: record.load(),
                     session_capacity: SESSION_CAPACITY_CLASSES
@@ -1003,6 +1007,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health,
+            probe: AtomicProbe::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -1853,6 +1858,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health,
+            probe: AtomicProbe::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -1974,6 +1980,7 @@ mod tests {
                 None,
             ],
             health,
+            probe: AtomicProbe::pending(),
             immediate_probe: Notify::new(),
         })
     }
