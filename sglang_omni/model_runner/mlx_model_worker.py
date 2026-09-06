@@ -13,6 +13,10 @@ from sglang_omni.model_runner.base import ModelRunner
 # imported on demand. Their modules import ``mlx`` at module scope, so eager
 # imports here would pull MLX into every platform's worker startup.
 _MLX_RUNNER_FACTORIES: dict[str, str] = {
+    "MossTTSLocalSGLangModel": (
+        "sglang_omni.models.moss_tts_local.mlx.runner:"
+        "make_moss_tts_local_mlx_runner_class"
+    ),
     "Qwen3ASRForConditionalGeneration": (
         "sglang_omni.models.qwen3_asr.mlx.runner:make_qwen3_asr_mlx_runner_class"
     ),

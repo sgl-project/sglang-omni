@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import sys
 from typing import Any, ClassVar
 
 from pydantic import Field
@@ -29,6 +31,12 @@ _REF_AUDIO_CACHE_MAX_ITEMS = 8192
 _REF_AUDIO_CACHE_MAX_BYTES = 64 * 1024 * 1024
 _PREPROCESSING_MAX_CONCURRENCY = 16
 _MAX_PIPELINE_INTRAOP_THREADS = 8
+
+
+def _default_codec_device() -> str:
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        return "mps"
+    return "cuda:0"
 
 
 def _uses_rocm_wsl_dxg() -> bool:
@@ -157,7 +165,9 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         return frozenset({("preprocessing", "tts_engine")})
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
+        default_factory=lambda: _stages(
+            codec_device=_default_codec_device(), colocated=True
+        )
     )
 
     # None preserves whether the user supplied an override. The resolved
@@ -260,7 +270,9 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
     """Backward-compatible alias for the default single-GPU pipeline."""
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
+        default_factory=lambda: _stages(
+            codec_device=_default_codec_device(), colocated=True
+        )
     )
 
 

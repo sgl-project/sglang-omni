@@ -13,6 +13,7 @@ from sglang_omni.models.moss_tts.hf_loading import (
 )
 from sglang_omni.models.moss_tts_local import request_builders
 from sglang_omni.models.moss_tts_local import stages as moss_local_stages
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
@@ -63,6 +64,22 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            if not current_platform.is_mps():
+                raise RuntimeError("MOSS-TTS Local MLX requires Apple Silicon")
+            return {
+                "max_running_requests": 1,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "mem_fraction_static": 0.6,
+            }
         defaults: dict[str, Any] = {
             "max_running_requests": 16,
             "dtype": dtype,
@@ -136,9 +153,19 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
-        self.model = model_worker.model_runner.model
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        self.model = (
+            model_worker._mlx_runner
+            if use_mlx()
+            else model_worker.model_runner.model
+        )
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            return
         from sglang_omni.scheduling.generation_batch_policy import (
             get_decode_cuda_graph_bs,
         )
@@ -150,6 +177,14 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         model.init_frame_decode_graphs(list(get_decode_cuda_graph_bs(server_args)))
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
+                MossTTSLocalMlxSchedulerModelRunner,
+            )
+
+            return MossTTSLocalMlxSchedulerModelRunner(model_worker, output_proc)
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.moss_tts_local.model_runner"
         )
@@ -157,7 +192,11 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.MossTTSLocalModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
-        return request_builders.make_moss_tts_local_scheduler_adapters(model=model)
+        del model
+        assert self.model is not None
+        return request_builders.make_moss_tts_local_scheduler_adapters(
+            model=self.model
+        )
 
     def make_abort_callback(self) -> Any | None:
         assert self.model is not None

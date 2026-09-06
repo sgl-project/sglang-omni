@@ -18,6 +18,16 @@ def test_qwen3_asr_resolves_to_its_runner_factory() -> None:
     assert factory is make_qwen3_asr_mlx_runner_class
 
 
+def test_moss_tts_local_resolves_to_its_runner_factory() -> None:
+    pytest.importorskip("mlx.core")
+    from sglang_omni.models.moss_tts_local.mlx.runner import (
+        make_moss_tts_local_mlx_runner_class,
+    )
+
+    factory = mlx_model_worker.resolve_mlx_runner_factory("MossTTSLocalSGLangModel")
+    assert factory is make_moss_tts_local_mlx_runner_class
+
+
 def test_unregistered_architecture_lists_the_supported_ones() -> None:
     with pytest.raises(NotImplementedError) as excinfo:
         mlx_model_worker.resolve_mlx_runner_factory("SomeOtherArch")
