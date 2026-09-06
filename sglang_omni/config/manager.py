@@ -25,9 +25,10 @@ def resolve_config_cls_for_model_path(model_path: str):
     if "@" in model_path and not os.path.isdir(model_path):
         repo_id, _, pinned = model_path.partition("@")
         revision = pinned or None
+    hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(repo_id, revision=revision)
+        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
     except (OSError, ValueError, KeyError):
         hf_config = None
 
