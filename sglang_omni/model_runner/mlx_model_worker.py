@@ -169,10 +169,19 @@ def create_mlx_model_worker(
     tp_rank: int = 0,
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
-    if config.model_arch_override != "Qwen3ASRForConditionalGeneration":
+    if config.model_arch_override == "Qwen3ASRForConditionalGeneration":
+        from sglang_omni.models.qwen3_asr.mlx.runner import (
+            make_qwen3_asr_mlx_runner_class,
+        )
+
+        runner_factory = make_qwen3_asr_mlx_runner_class
+    elif config.model_arch_override == "FunAsrNanoForConditionalGeneration":
+        from sglang_omni.models.fun_asr.mlx.runner import make_fun_asr_mlx_runner_class
+
+        runner_factory = make_fun_asr_mlx_runner_class
+    else:
         raise NotImplementedError(
-            "Omni's MLX worker currently supports only "
-            "Qwen3ASRForConditionalGeneration"
+            f"Omni's MLX worker does not support {config.model_arch_override}"
         )
 
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
@@ -182,16 +191,14 @@ def create_mlx_model_worker(
     from sglang.srt.runtime_context import publish
     from sglang.srt.server_args import PortArgs
 
-    from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
-
-    class OmniQwen3ASRMlxWorker(MlxTpModelWorker):
+    class OmniAudioMlxWorker(MlxTpModelWorker):
         @property
         def tp_rank(self) -> int:
             return self.ps.tp_rank
 
         def _init_model_runner(self):
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
-            runner_class = make_qwen3_asr_mlx_runner_class()
+            runner_class = runner_factory()
             init_kwargs = {
                 "model_path": self.server_args.model_path,
                 "trust_remote_code": self.server_args.trust_remote_code,
@@ -269,7 +276,7 @@ def create_mlx_model_worker(
     # note (yexiaodong): MlxTpModelWorker reads the split runtime configuration
     # while building its model config, before the bookkeeping stub exists.
     publish(server_args, role="scheduler")
-    return OmniQwen3ASRMlxWorker(
+    return OmniAudioMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
         ps=ps,
