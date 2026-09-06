@@ -13,6 +13,7 @@ _BAD_REQUEST_MARKERS = (
     "accepts audio up to",
     "could not decode the uploaded audio",
     "max_new_tokens must be",
+    "supports only greedy decoding",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",
     "multimodal_train_inputs",
