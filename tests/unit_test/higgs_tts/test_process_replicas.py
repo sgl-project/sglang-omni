@@ -119,7 +119,9 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
         codec_loads.append((checkpoint, device, dtype))
         return fake_codec
 
-    monkeypatch.setattr(stages, "resolve_device_spec", resolve)
+    import sglang_omni.utils.device as device_mod
+
+    monkeypatch.setattr(device_mod, "resolve_device_spec", resolve)
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(stages.Tokenizer, "from_file", lambda _path: object())
     monkeypatch.setattr(

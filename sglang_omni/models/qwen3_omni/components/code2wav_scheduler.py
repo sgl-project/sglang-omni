@@ -22,7 +22,6 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavRunResult,
     GraphKey,
 )
-from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
@@ -31,7 +30,6 @@ from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
-from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -972,16 +970,14 @@ def create_code2wav_scheduler(
     total_gpu_memory_fraction: float | None = None,
 ):
     """Factory: returns Code2WavScheduler."""
+    from sglang_omni.utils.device import resolve_concrete_device
+
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(
             "Code2Wav CUDA graph requires "
             "runtime.resources.total_gpu_memory_fraction"
         )
-    concrete_device = torch.device(resolve_device_spec(device, gpu_id))
-    if concrete_device.type != "cpu" and concrete_device.index is None:
-        concrete_device = current_platform.get_device(
-            torch.get_device_module().current_device()
-        )
+    concrete_device = resolve_concrete_device(device, gpu_id)
     device = str(concrete_device)
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)

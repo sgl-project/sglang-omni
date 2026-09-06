@@ -68,7 +68,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             # output budget. The request builder will scale the actual budget
             # with audio duration.
             factory=Qwen3ASRFactoryArgs(
-                device=None,
                 max_new_tokens=128,
                 enable_pre_lm_encoder=True,
                 pre_lm_cache_max_entries=4096,

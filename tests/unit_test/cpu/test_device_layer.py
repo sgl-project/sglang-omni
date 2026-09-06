@@ -115,10 +115,10 @@ def test_cpu_stages_need_no_process_env_overrides():
 
 
 def test_a_cpu_device_spec_never_gains_a_placement_index():
-    """``place_device_spec`` applies a stage's gpu_id to the caller's device. On
-    CPU that index has to be dropped, not appended: 'cpu:2' is not a valid device.
+    """A stage's gpu_id applied to a cpu device has to be dropped, not
+    appended: 'cpu:2' is not a valid device.
     """
-    assert dev.place_device_spec("cpu", 2) == "cpu"
-    assert dev.place_device_spec("cpu") == "cpu"
+    assert str(dev.resolve_concrete_device("cpu", 2)) == "cpu"
+    assert str(dev.resolve_concrete_device("cpu")) == "cpu"
     assert dev.resolve_device_spec("cpu", 5) == "cpu"
     assert dev.resolve_device_spec("cpu") == "cpu"

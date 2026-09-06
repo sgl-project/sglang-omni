@@ -826,7 +826,14 @@ def create_preprocessing_executor(
     return SimpleScheduler(_preprocess)
 
 
-def create_aggregate_executor():
+def create_aggregate_executor(
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+):
+    # note (lennox): identity stage placed on GPU for colocation only;
+    # it does not touch the device.
+    del device, gpu_id
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     def _identity(payload: StagePayload) -> StagePayload:
@@ -839,12 +846,13 @@ def create_image_encoder_executor(
     model_path: str,
     *,
     device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_device_spec
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = resolve_device_spec(device)
+    device = str(resolve_concrete_device(device, gpu_id))
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
@@ -913,13 +921,14 @@ def create_audio_encoder_executor(
     model_path: str,
     *,
     device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_device_spec
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = resolve_device_spec(device)
+    device = str(resolve_concrete_device(device, gpu_id))
     model = Qwen3OmniAudioEncoder(
         model_path=model_path,
         device=device,
@@ -998,7 +1007,8 @@ def create_decode_executor(model_path: str):
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
@@ -1014,6 +1024,11 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_when_idle: bool = False,
 ):
     """Returns OmniScheduler for thinker."""
+    from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    gpu_id = concrete_device.index or 0
     # note (luojiaxuan):
     # The thinker runs prefill XOR decode per scheduler step, so under
     # concurrent streaming a large fraction of steps are prefill-only while
@@ -1055,6 +1070,7 @@ def create_sglang_thinker_executor_from_config(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         encoder_mem_reserve=colocated_encoder_mem_reserve,
     )
+    pin_resolved_device_type(overrides, concrete_device.type)
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,
@@ -1138,7 +1154,8 @@ def create_sglang_thinker_executor_from_config(
 def create_talker_ar_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
@@ -1153,6 +1170,11 @@ def create_talker_ar_executor_from_config(
 ):
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
+    from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    gpu_id = concrete_device.index or 0
 
     # Note (Xuesong, Chenyang): cuda_graph defaults to ON for the talker
     # after #384, which routed talker MoE through `self.experts` (FusedMoE)
@@ -1180,6 +1202,7 @@ def create_talker_ar_executor_from_config(
         stage_name="talker_ar",
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
+    pin_resolved_device_type(overrides, concrete_device.type)
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,

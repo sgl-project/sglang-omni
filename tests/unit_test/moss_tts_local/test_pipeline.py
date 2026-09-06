@@ -520,7 +520,7 @@ def test_pipeline_stage_wiring():
         assert "moss_tts_local" in stage.factory_path
     assert stages["preprocessing"].process == "pipeline"
     assert stages["preprocessing"].gpu == 0
-    assert stages["preprocessing"].factory.device == "cuda:0"
+    assert stages["preprocessing"].factory.device is None
     assert stages["preprocessing"].factory.max_concurrency == 16
     preprocessing_kwargs = config.stage_factory_kwargs("preprocessing")
     assert preprocessing_kwargs["ref_audio_cache"] is True
@@ -536,7 +536,7 @@ def test_pipeline_stage_wiring():
     ] == pytest.approx(0.0)
     assert stages["vocoder"].process == "vocoder"
     assert stages["vocoder"].gpu == 0
-    assert stages["vocoder"].factory.device == "cuda:0"
+    assert stages["vocoder"].factory.device is None
     assert stages["vocoder"].gpu_memory_fraction == pytest.approx(0.18)
 
     placement = build_stage_placement_plan(config)
@@ -555,28 +555,29 @@ def test_pipeline_stage_wiring():
         model_path="OpenMOSS-Team/moss-local-test"
     )
     colocated_stages = {stage.name: stage for stage in colocated.stages}
-    assert colocated_stages["preprocessing"].factory.device == "cuda:0"
+    assert colocated_stages["preprocessing"].factory.device is None
     assert (
         colocated.stage_factory_kwargs("preprocessing")["ref_audio_cache_max_items"]
         == 8192
     )
-    assert colocated_stages["vocoder"].factory.device == "cuda:0"
+    assert colocated_stages["vocoder"].factory.device is None
 
     split = MossTTSLocalSplitPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
     split_stages = {stage.name: stage for stage in split.stages}
-    assert split_stages["preprocessing"].factory.device == "cuda:1"
+    assert split_stages["preprocessing"].factory.device is None
+    assert split_stages["preprocessing"].gpu == 0
     assert split_stages["tts_engine"].gpu == 0
     assert split_stages["tts_engine"].gpu_memory_fraction is None
     assert split_stages["tts_engine"].engine.mem_fraction_static == pytest.approx(0.85)
     assert split_stages["preprocessing"].gpu_memory_fraction is None
     assert split_stages["vocoder"].gpu_memory_fraction is None
-    assert split_stages["vocoder"].factory.device == "cuda:1"
-    # The split variant carries no per-stage GPU budgets, so its vocoder stays in
-    # the shared pipeline process; its declared topology must still validate.
-    assert split_stages["vocoder"].process == "pipeline"
+    assert split_stages["vocoder"].gpu == 1
+    assert split_stages["vocoder"].factory.device is None
+    assert split_stages["vocoder"].process == "vocoder"
     split_topology = build_compiled_process_topology(split)
     assert [(group.name, group.stage_names) for group in split_topology.groups] == [
-        ("pipeline", ("preprocessing", "tts_engine", "vocoder"))
+        ("pipeline", ("preprocessing", "tts_engine")),
+        ("vocoder", ("vocoder",)),
     ]
 
 

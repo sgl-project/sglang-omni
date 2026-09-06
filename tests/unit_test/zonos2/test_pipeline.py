@@ -220,3 +220,20 @@ def test_zonos2_engine_builder_keeps_power_of_two_cuda_graph_buckets() -> None:
     overrides = {"cuda_graph_max_bs": 16}
     Zonos2EngineBuilder(cuda_graph_max_bs=16).adjust_overrides(overrides)
     assert overrides["cuda_graph_bs"] == [1, 2, 4, 8, 16]
+
+
+def test_zonos2_factories_reject_unknown_config_options() -> None:
+    """A catch-all **kwargs here once made the config validator accept options
+    the factory silently discarded (e.g. factory.max_new_tokens)."""
+    import pytest
+
+    from sglang_omni.config.runtime import apply_typed_stage_kwargs
+    from sglang_omni.models.zonos2 import stages
+
+    with pytest.raises(ValueError, match="max_new_tokens"):
+        apply_typed_stage_kwargs(
+            stages.create_sglang_omni_tts_engine_executor,
+            {},
+            {"max_new_tokens": 100},
+            stage_name="tts_engine",
+        )

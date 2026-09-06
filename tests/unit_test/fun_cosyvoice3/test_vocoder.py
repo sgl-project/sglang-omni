@@ -372,7 +372,9 @@ def test_flow_scheduler_cost_rounds_to_bucket() -> None:
 
 
 def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None:
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
     monkeypatch.setattr(
         stages,
@@ -399,7 +401,9 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
 
 
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
     monkeypatch.setattr(
         stages,
@@ -421,7 +425,9 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
 
     fake_flow = _BatchCapableFakeFlow()
     fake_hift = _FakeHiFT()
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
 
     def fake_load(checkpoint_dir, device, fp16):
@@ -517,7 +523,9 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
 def test_create_vocoder_executor_rejects_non_positive_admission_budget(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
 
     with pytest.raises(ValueError, match="flow_batch_admission_frames"):
         stages.create_vocoder_executor(

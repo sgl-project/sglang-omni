@@ -46,7 +46,6 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             name="audio_encoder",
             process="tts_frontend",
             factory_path=f"{_PKG}.stages.create_audio_encoder_executor",
-            factory=FactoryArgs(device="cuda"),
             gpu=0,
             gpu_memory_fraction=0.03,
             next="tts_engine",
@@ -55,9 +54,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(
-                device="cuda", max_new_tokens=2048, enable_async_decode=True
-            ),
+            factory=FactoryArgs(max_new_tokens=2048, enable_async_decode=True),
             gpu=0,
             gpu_memory_fraction=0.85,
             next="vocoder",
@@ -70,7 +67,14 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             # serving concurrency and prevents decode/vocoder overlap.
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FactoryArgs(device="cuda"),
+            factory=FactoryArgs(
+                compile_decode=False,
+                # Before the steady cursor is established, a decode window is
+                # bounded by the default 75-row stride plus its 75-row
+                # follow-up. Capture that complete finite domain so terminal
+                # flushes cannot silently fall back to eager execution.
+                decode_cuda_graph_frame_counts=tuple(range(1, 151)),
+            ),
             gpu=0,
             gpu_memory_fraction=0.10,
             terminal=True,
@@ -94,15 +98,6 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 key: vocoder_extra[key]
                 for key in self._STREAM_CADENCE_KEYS
                 if key in vocoder_extra
-            }
-        if stage_name == "vocoder":
-            return {
-                "compile_decode": False,
-                # Before the steady cursor is established, a decode window is
-                # bounded by the default 75-row stride plus its 75-row
-                # follow-up. Capture that complete finite domain so terminal
-                # flushes cannot silently fall back to eager execution.
-                "decode_cuda_graph_frame_counts": tuple(range(1, 151)),
             }
         return {}
 

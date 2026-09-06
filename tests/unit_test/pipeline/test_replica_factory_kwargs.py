@@ -22,6 +22,18 @@ from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
 
+def _higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
+    """Higgs's surviving hook mirrors vocoder-set cadence onto tts_engine; the
+    vocoder defaults themselves moved into FactoryArgs and no longer flow
+    through the hook."""
+    config = HiggsTtsPipelineConfig(model_path="model")
+    vocoder = config.stage_named("vocoder")
+    vocoder.factory = type(vocoder.factory)(
+        **(vocoder.factory.model_dump(exclude_none=True)), stream_stride=75
+    )
+    return config
+
+
 @pytest.mark.parametrize(
     ("config", "stage_name"),
     [
@@ -44,8 +56,8 @@ from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
             id="dots-tts",
         ),
         pytest.param(
-            HiggsTtsPipelineConfig(model_path="model"),
-            "vocoder",
+            _higgs_with_vocoder_cadence(),
+            "tts_engine",
             id="higgs-tts",
         ),
         pytest.param(

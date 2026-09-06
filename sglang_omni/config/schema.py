@@ -40,6 +40,17 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 logger = logging.getLogger(__name__)
 
+# Factory kwargs owned by placement and process construction: injected from
+# stage.gpu / stage.gpu_memory_fraction, so a config may not set them directly.
+PLACEMENT_OWNED_FACTORY_KWARGS = frozenset(
+    {
+        "gpu_id",
+        "total_gpu_memory_fraction",
+        "process_total_gpu_memory_fraction",
+    }
+)
+
+
 MAX_SPEECH_INPUT_CHARS: int = 4096
 
 
@@ -777,6 +788,17 @@ class PipelineConfig(BaseModel):
     def _validate_general(self) -> None:
         if not self.model_path:
             raise ValueError("Model path is required")
+
+        for stage in self.stages:
+            factory = stage.factory
+            set_keys = set(factory.model_fields_set) | set(factory.model_extra or {})
+            reserved = PLACEMENT_OWNED_FACTORY_KWARGS & set_keys
+            if reserved:
+                raise ValueError(
+                    f"stage {stage.name!r} sets {sorted(reserved)} under factory.*; "
+                    "these kwargs are owned by placement and are injected from "
+                    "stage.gpu and stage.gpu_memory_fraction"
+                )
 
         names = [s.name for s in self.stages]
         if not names:

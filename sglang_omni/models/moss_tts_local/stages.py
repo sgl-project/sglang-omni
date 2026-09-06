@@ -203,22 +203,6 @@ def _normalize_processor_config(processor: Any) -> None:
             setattr(model_config, attr, default)
 
 
-def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
-    """Pick the codec GPU for the preprocessing/vocoder stages.
-
-    The ~1B-param codec encoder costs ~0.25 GPU-seconds per reference, which
-    at concurrency 16 starves the AR engine when both share one device.
-    The default config passes an explicit ``device`` so the second-GPU codec
-    placement is visible in the pipeline config. ``gpu_id`` remains a fallback
-    for custom colocated configs and launcher-injected runtime defaults.
-    """
-    if device:
-        return device
-    if gpu_id is not None:
-        return f"cuda:{int(gpu_id)}"
-    return "cuda:0"
-
-
 def _load_moss_tts_local_processor(model_path: str) -> Any:
     logger.info(f"Loading MOSS-TTS Local processor from {model_path} without codec")
     try:
@@ -570,7 +554,9 @@ def create_preprocessing_executor(
             "off",
             "",
         )
-    device = _resolve_codec_device(device, gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     processor = _load_moss_tts_local_processor(model_path)
     resolved_compute_dtype = resolve_moss_audio_dtype(
         compute_dtype,
@@ -612,7 +598,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
@@ -669,8 +655,10 @@ def create_vocoder_executor(
     cuda_graph_frames: list[int] | None = None,
     cuda_graph_min_free_gb: float = 3.0,
 ) -> MossTTSLocalStreamingVocoderScheduler:
+    from sglang_omni.utils.device import resolve_concrete_device
+
     cuda_graph = resolve_vocoder_cuda_graph(cuda_graph)
-    device = _resolve_codec_device(device, gpu_id)
+    device = str(resolve_concrete_device(device, gpu_id))
     processor = _load_moss_tts_local_processor(model_path)
     decoder_dtype = resolve_moss_audio_dtype(
         dtype,

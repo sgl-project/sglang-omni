@@ -230,10 +230,11 @@ def test_fish_engine_builder_cuda_defaults_unchanged(monkeypatch) -> None:
 def test_stage_devices_resolve_from_current_platform(monkeypatch) -> None:
     import inspect
 
+    import sglang_omni.utils.device as device_mod
     from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
     from sglang_omni.models.fishaudio_s2_pro import streaming_vocoder
 
-    # The tts_engine stage resolves device=None via resolve_device_spec.
+    # The tts_engine stage resolves device=None via resolve_concrete_device.
     default = (
         inspect.signature(fish_stages.create_sglang_tts_engine_executor)
         .parameters["device"]
@@ -241,11 +242,11 @@ def test_stage_devices_resolve_from_current_platform(monkeypatch) -> None:
     )
     assert default is None
 
-    # The vocoder stage resolves device=None from gpu_id via resolve_device_spec.
+    # The vocoder stage resolves device=None from gpu_id via resolve_concrete_device.
     seen: list[str] = []
     monkeypatch.setattr(
-        fish_stages,
-        "resolve_device_spec",
+        device_mod,
+        "resolve_concrete_device",
         lambda device, index: f"npu:{index}" if index is not None else "npu",
     )
     monkeypatch.setattr(fish_stages, "_resolve_checkpoint", lambda model_path: "ckpt")
@@ -265,8 +266,8 @@ def test_stage_devices_resolve_from_current_platform(monkeypatch) -> None:
     assert seen[-1] == "npu"
 
     monkeypatch.setattr(
-        fish_stages,
-        "resolve_device_spec",
+        device_mod,
+        "resolve_concrete_device",
         lambda device, index: f"cuda:{index}" if index is not None else "cpu",
     )
     fish_stages.create_vocoder_executor("model", device=None, gpu_id=0)

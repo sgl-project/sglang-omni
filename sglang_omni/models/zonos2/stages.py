@@ -56,10 +56,15 @@ def _default_quality_list() -> list[int | None]:
 def create_preprocessing_executor(
     model_path: str,
     *,
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_concurrency: int = 16,
     tts_norm: bool = True,
     tts_norm_cache_dir: str | None = None,
 ) -> SimpleScheduler:
+    # note (lennox): CPU-only stage declaring gpu only to share the pipeline
+    # process; it does not touch the device.
+    del device, gpu_id
     configure_tts_norm_cache_root(tts_norm_cache_dir)
 
     def _preprocess(payload: StagePayload) -> StagePayload:
@@ -82,15 +87,17 @@ def create_preprocessing_executor(
 def create_speaker_encode_executor(
     model_path: str,
     *,
-    gpu_id: int | None = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     speaker_cache_max_items: int = 256,
     max_concurrency: int = 4,
     spk_compile: bool = False,
 ) -> SimpleScheduler:
     from sglang_omni.models.zonos2.components.speaker_encoder import SpeakerEncoder
+    from sglang_omni.utils.device import resolve_concrete_device
 
     encoder = SpeakerEncoder(
-        device=_device(gpu_id),
+        device=str(resolve_concrete_device(device, gpu_id)),
         cache_max_items=speaker_cache_max_items,
         compile_forward=spk_compile,
     )
@@ -113,7 +120,8 @@ def create_speaker_encode_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
-    gpu_id: int | None = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     dac_batch: bool = False,
     vocoder_warmup: bool = False,
 ) -> Any:
@@ -122,8 +130,9 @@ def create_vocoder_executor(
         decode_batch,
         decode_to_pcm,
     )
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = _device(gpu_id)
+    device = str(resolve_concrete_device(device, gpu_id))
 
     def _result_payload(
         payload: StagePayload, state: Zonos2State, pcm: Any
@@ -213,17 +222,14 @@ def create_vocoder_executor(
     return scheduler
 
 
-def _device(gpu_id: int | None) -> str:
-    return f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
-
-
 # ---- AR engine stage (OmniScheduler-backed ZONOS2 backbone) ----
 
 
 def create_sglang_omni_tts_engine_executor(
     model_path: str,
     *,
-    gpu_id: int | None = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     mem_fraction_static: float = 0.5,
     fp8: bool = False,
@@ -250,9 +256,7 @@ def create_sglang_omni_tts_engine_executor(
         mem_fraction_static=mem_fraction_static,
     ).build(
         model_path,
-        # CUDA-only model: keep the pre-existing device rather than resolving through
-        # the ambient platform.
-        device="cuda:0",
+        device=device,
         gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,

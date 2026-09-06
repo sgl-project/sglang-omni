@@ -85,9 +85,11 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
 
     seen_devices: list[str] = []
     resolved_devices: list[tuple[str | None, int | None]] = []
+    import sglang_omni.utils.device as device_mod
+
     monkeypatch.setattr(
-        stages,
-        "resolve_device_spec",
+        device_mod,
+        "resolve_concrete_device",
         lambda device, gpu_id: (
             resolved_devices.append((device, gpu_id)) or f"npu:{gpu_id}"
         ),
@@ -649,7 +651,10 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    scheduler = stages.create_generation_executor("model", device="cuda:0")
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
+    scheduler = stages.create_generation_executor("model", device="cuda", gpu_id=0)
 
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16]

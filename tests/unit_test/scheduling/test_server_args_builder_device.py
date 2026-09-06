@@ -119,7 +119,7 @@ def test_an_operator_device_that_contradicts_placement_is_rejected(monkeypatch) 
     resolved = platforms.current_platform.device_type
     other = "cuda" if resolved != "cuda" else "xpu"
 
-    with pytest.raises(ValueError, match="Omni owns placement"):
+    with pytest.raises(ValueError, match="stage placement"):
         _drive_build(monkeypatch, overrides={"device": other})
 
 

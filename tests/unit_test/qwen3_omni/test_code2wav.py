@@ -193,7 +193,8 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
     with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
         code2wav_scheduler.create_code2wav_scheduler(
             "dummy",
-            device="cuda:0",
+            device="cuda",
+            gpu_id=0,
             enable_cuda_graph=True,
         )
 
@@ -220,7 +221,8 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         enable_batching=True,
         enable_cuda_graph=True,
         total_gpu_memory_fraction=0.02,
@@ -258,7 +260,8 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         enable_batching=True,
         batch_ceiling=4,
         enable_cuda_graph=True,
@@ -305,7 +308,8 @@ def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         enable_batching=True,
         enable_cuda_graph=True,
         total_gpu_memory_fraction=0.02,

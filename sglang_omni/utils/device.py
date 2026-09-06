@@ -5,13 +5,14 @@ from __future__ import annotations
 
 
 def _with_index(dev_type: str, raw_index: str, index: int | None) -> str:
-    if index is not None:
-        idx: int | None = int(index)
-    else:
-        idx = int(raw_index) if raw_index else None
-    if dev_type == "cpu" or idx is None:
+    if raw_index:
+        raise ValueError(
+            f"device={f'{dev_type}:{raw_index}'!r} names an index; device can"
+            " only name the type"
+        )
+    if dev_type == "cpu" or index is None:
         return dev_type
-    return f"{dev_type}:{idx}"
+    return f"{dev_type}:{int(index)}"
 
 
 def resolve_device_spec(device: str | None, index: int | None = None) -> str:
@@ -34,14 +35,26 @@ def resolve_device_spec(device: str | None, index: int | None = None) -> str:
     return _with_index(dev_type, raw_index, index)
 
 
-def place_device_spec(device: str, index: int | None = None) -> str:
-    """Apply a placement index to an explicit device spec, keeping its own type.
+def resolve_concrete_device(
+    device: str | None, index: int | None = None
+) -> "torch.device":
+    """Resolve device/index to a concrete torch.device with an index.
 
-    The caller named the platform, so honor it rather than validate it: a CUDA-only
-    stage keeps CUDA on any host, and an explicit xpu or cpu is never rewritten.
+    Falls back to asking the host which card this process is already on
+    when neither the caller nor placement supplied an index, rather than
+    assuming 0.
     """
-    dev_type, _, raw_index = str(device).strip().partition(":")
-    return _with_index(dev_type.lower(), raw_index, index)
+    import torch
+
+    concrete = torch.device(resolve_device_spec(device, index))
+    if concrete.type != "cpu" and concrete.index is None:
+        # note (lennox): built from the resolved type directly -- the platform
+        # object's get_device is NotImplemented on cpu-only hosts even when a
+        # test legitimately pins device_type.
+        concrete = torch.device(
+            concrete.type, torch.get_device_module(concrete).current_device()
+        )
+    return concrete
 
 
-__all__ = ["place_device_spec", "resolve_device_spec"]
+__all__ = ["resolve_concrete_device", "resolve_device_spec"]

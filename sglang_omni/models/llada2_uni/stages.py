@@ -38,7 +38,8 @@ def create_preprocessing_executor(
 def create_image_encoder_executor(
     model_path: str,
     *,
-    device: str = "cuda",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: Any = None,
 ):
     import torch
@@ -54,8 +55,10 @@ def create_image_encoder_executor(
     )
     from sglang_omni.models.weight_loader import resolve_dtype
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.utils.device import resolve_concrete_device
 
     dtype = resolve_dtype(dtype)
+    device = str(resolve_concrete_device(device, gpu_id))
 
     model = LLaDA2ImageEncoder(model_path=model_path, device=device, dtype=dtype)
 
@@ -82,7 +85,8 @@ def create_image_encoder_executor(
 def create_sglang_dllm_thinker_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
@@ -90,7 +94,14 @@ def create_sglang_dllm_thinker_executor_from_config(
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
-    from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
+    from sglang_omni.scheduling.sglang_backend import (
+        build_sglang_server_args,
+        pin_resolved_device_type,
+    )
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    resolved_gpu_id = concrete_device.index or 0
 
     overrides: dict[str, Any] = {
         "attention_backend": "flashinfer",
@@ -98,6 +109,7 @@ def create_sglang_dllm_thinker_executor_from_config(
         "sampling_backend": "pytorch",
     }
     overrides.update(server_args_overrides or {})
+    pin_resolved_device_type(overrides, concrete_device.type)
 
     server_args = build_sglang_server_args(
         model_path,
@@ -112,7 +124,7 @@ def create_sglang_dllm_thinker_executor_from_config(
         server_args.dllm_algorithm,
         server_args.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, gpu_id)
+    return create_dllm_thinker_scheduler(server_args, resolved_gpu_id)
 
 
 def create_decode_executor(model_path: str):

@@ -317,7 +317,7 @@ def test_ming_talker_factory_returns_scheduler_contract(monkeypatch) -> None:
     scheduler = create_talker_executor(
         model_path="dummy",
         talker_model_path="talker",
-        device="cuda:1",
+        gpu_id=1,
         voice="DB30",
     )
 
@@ -718,6 +718,9 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         return SimpleNamespace(tp_size=1)
 
     backend_module.build_sglang_server_args = build_sglang_server_args
+    from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
+
+    backend_module.pin_resolved_device_type = pin_resolved_device_type
     monkeypatch.setitem(
         sys.modules,
         "sglang_omni.scheduling.sglang_backend",

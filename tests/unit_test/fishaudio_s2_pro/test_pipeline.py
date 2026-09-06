@@ -751,9 +751,11 @@ def _run_s2pro_engine_with_fake_buffers(
     from sglang_omni.models.fishaudio_s2_pro import (
         engine_builder as fish_engine_builder,
     )
+    from sglang_omni.platforms import current_platform
     from sglang_omni.scheduling import bootstrap as scheduler_bootstrap
     from sglang_omni.scheduling import engine_factory, sglang_backend
 
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
     monkeypatch.setattr(
         fish_engine_builder,
         "get_visible_gpu_sm_version",
@@ -918,7 +920,8 @@ def _run_s2pro_engine_with_fake_buffers(
 
     scheduler = stages.create_sglang_tts_engine_executor(
         "model",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         server_args_overrides=server_args_overrides,
     )
     return SimpleNamespace(
