@@ -175,9 +175,9 @@ concurrency 16; any smaller subset must be identified explicitly.
 SeedTTS-Eval full set on one H20, BF16/FA3 deterministic eager execution,
 concurrency 16, seed 42 and `max_new_tokens=750`. The checkpoint revision is
 `799624c0b4a1daa8db6d28bbd9850043c0270734` and the dataset revision is
-`27f4c1adee83b5b29b7c4b375f6b976324bda308`. The host retained unrelated
-GPU-reservation workloads, so these are shared-load reference numbers rather
-than exclusive-machine limits.
+`27f4c1adee83b5b29b7c4b375f6b976324bda308`. The host's GPU-reservation helper
+yields compute whenever a real workload runs, so it did not contend with these
+measurements. These remain single-H20 reference numbers, not universal limits.
 
 | Lang | Samples / failures | QPS | Audio s/s | Latency mean / p95 (s) | TTFA p95 (s) | RTF mean |
 |---|---:|---:|---:|---:|---:|---:|
