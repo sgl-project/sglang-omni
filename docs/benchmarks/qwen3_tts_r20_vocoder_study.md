@@ -178,9 +178,25 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   graph 含 8 层 transformer + ~30 个因果卷积 + 52 个状态拷贝,在 B≈2、T=8 下全是微型
   kernel,launch-latency 受限(~10µs/kernel),三条流交错并不能重叠。**增量路径每次调用
   的 kernel 比 legacy 多、每个更小,"少 3 倍算力"没有换成"少 3 倍时间"。**
-- 由此杠杆变成**把 cohort 做宽**(B8 时 9.0ms/8 = 1.1ms/行):增量路径的 follow-up 几乎
-  全是 fresh_frames=8 同形状,加大收集窗口这次应该真能变宽(legacy 加窗口失败是因为
-  形状碎片化)。第五轮:wait {4, 8} × ramp {(1,2,4), (2,4)},2 worker,带探针。
+- 第五轮(wait × ramp,2 worker,COLD cohort,staging 修复,带探针):
+
+  | 臂 | wait | ramp | underrun | First playable p50 | TTFA p50 | rows/cohort | launch | resolve |
+  |---|---|---|---|---|---|---|---|---|
+  | P4 | 1ms | (1,2,4) | 45.4% | 98ms | 177ms | 2.30 | 7.1ms | 8.9ms |
+  | c-w4 | 4ms | (1,2,4) | 23.5% | 88ms | 157ms | 2.39 | 5.0ms | 9.5ms |
+  | c-w8 | 8ms | (1,2,4) | 24.0% | 86ms | 158ms | 2.44 | 4.6ms | 9.2ms |
+  | c-w4-r24 | 4ms | (2,4) | **5.1%** | 116ms | 177ms | 2.43 | 5.1ms | 10.0ms |
+  | c-w8-r24 | 8ms | (2,4) | 5.8% | 113ms | 170ms | 2.46 | 4.7ms | 9.4ms |
+
+  读法:加大收集窗口把 underrun 减半,但 **cohort 宽度几乎没变(2.30→2.46),resolve
+  也没变**——收益来自 launch 变便宜(7.1→4.6ms):worker 多睡一会儿,与 initial 流 / Talker
+  的争抢就少。这与外审"干扰而非节点数"的判断一致,也否定了我"做宽 cohort"的假设。
+  **c-w4-r24(5.1% / 177ms)与 legacy 的 r-24(5.4% / 176ms)统计上打平**:增量路径修到
+  现在,最好配置只追平 legacy 的最好配置,没有超越。
+- 外审(见 `docs/reviews/2026-09-06-qwen3-tts-incremental-codec-cohort-latency.md`)
+  的证伪实验已排队:同一探针 r1 低负载、r20 单 follow-up worker,对照 P4(r20 双 worker)
+  的 resolve 8.9ms。若孤立时 4-6ms 则为干扰/排队,下一步是 T-PR10 式的单 dispatcher
+  单流 + 让 graph 直接消费 arena 状态;若孤立也 8-9ms 则是 graph 本身,去看 52 个状态拷贝。
 
 ## 决策日志
 
