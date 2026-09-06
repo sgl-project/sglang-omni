@@ -88,7 +88,7 @@ class ARRequestData:
     # note(ratish): the scheduler clears both on every request it finishes and
     # compacts the history of every request it retracts, whatever the model.
     prefill_input_embeds: "torch.Tensor | None" = None
-    decode_input_embeds: list["torch.Tensor"] = field(default_factory=list)
+    decode_input_embeds: list["torch.Tensor"] | None = field(default_factory=list)
 
 
 def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:

@@ -61,7 +61,7 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
-from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.scheduling.types import ARRequestData, DeferredAdmission
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class _PendingStreamIngress:
         self.done = False
 
 
-def _compact_decode_input_history(data: Any) -> None:
+def _compact_decode_input_history(data: ARRequestData) -> None:
     """A decode input row is a view of the batch snapshot it was written in,
     so a request that leaves the running batch would keep every snapshot of
     its run alive while it waits. One copy gives it storage of its own."""
