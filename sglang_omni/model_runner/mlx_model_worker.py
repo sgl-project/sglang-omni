@@ -225,9 +225,15 @@ def create_mlx_model_worker(
         )
 
         make_runner_class = make_fun_cosyvoice3_mlx_runner_class
+    elif model_arch == "MossTranscribeDiarizeForConditionalGeneration":
+        from sglang_omni.models.moss_transcribe_diarize.mlx.runner import (
+            make_moss_transcribe_diarize_mlx_runner_class,
+        )
+
+        make_runner_class = make_moss_transcribe_diarize_mlx_runner_class
     else:
         raise NotImplementedError(
-            "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
+            f"Omni's MLX worker does not support model architecture {model_arch!r}"
         )
 
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
