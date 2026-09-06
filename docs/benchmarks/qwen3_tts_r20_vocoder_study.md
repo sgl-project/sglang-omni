@@ -458,3 +458,7 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
   pinned 索引 staging 每线程只有一份,后一个 cohort 的写入会覆盖前一个尚未执行的 H2D 拷贝,
   前一个 cohort 于是解码/推进了错误的 slot,受害流永远等不到自己的下一段。修法:staging
   改为每线程 4 份的环(da0fe4ed),268 单测过。r1、三 seed r20、首帧路径事件剖面按序重跑。
+- **主机与收尾更正(2026-09-06 11:05 PT)**:eval-h100 实为 8×H100 80GB,本任务容器只暴露 GPU 0
+  (`device=0`);GPU 6/7 是 omni-ci runner 在用。停 server 时 `pkill -f main-arm-` 只杀父进程,
+  multiprocessing spawn 出来的 stage worker(`spawn_main`,持有 ~72GB)会成为孤儿继续占卡,后续
+  server 全部 OOM。各 launcher 的收尾改为连 `spawn_main|compile_worker|resource_tracker` 一起杀。
