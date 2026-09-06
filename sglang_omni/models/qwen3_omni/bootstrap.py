@@ -195,6 +195,18 @@ def create_talker_scheduler(
         # prefill graphs later cannot silently miss the embeds view.
         init_sglang_cuda_graphs(model_worker)
 
+    # Opt in to a second, prefill-sized FlashInfer MoE autotune pass only after
+    # the talker's eager runner and deferred CUDA graphs are initialized.
+    from sglang_omni.model_runner.moe_prefill_autotune import (
+        MOE_AUTOTUNE_TALKER_TOKENS_ENV,
+        maybe_autotune_prefill_moe,
+    )
+
+    maybe_autotune_prefill_moe(
+        model_worker.model_runner,
+        env_var=MOE_AUTOTUNE_TALKER_TOKENS_ENV,
+    )
+
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
         capture_hidden_layers=None,

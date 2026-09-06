@@ -33,6 +33,34 @@ def _is_h20_device() -> bool:
         return False
 
 
+def _is_flashinfer_cutlass_moe_prebuilt() -> bool:
+    """Return whether the current GPU's FlashInfer fused-MoE module is cached.
+
+    Detection failures intentionally pass through. This guard should reject only
+    environments known to require a source build, never block an otherwise valid
+    installation because FlashInfer changed an inspection detail.
+    """
+    try:
+        import torch
+        from flashinfer.jit import env as jit_env
+
+        if not torch.cuda.is_available():
+            return True
+        major, minor = torch.cuda.get_device_capability()
+        # Match FlashInfer's v0.6.14 CUTLASS dispatch aliases: these newer
+        # capabilities reuse the compatible lower-architecture module.
+        major, minor = {(11, 0): (10, 0), (12, 1): (12, 0)}.get(
+            (major, minor), (major, minor)
+        )
+        module_name = f"fused_moe_{major}{minor}"
+        return any(
+            (base / module_name / f"{module_name}.so").is_file()
+            for base in (jit_env.FLASHINFER_AOT_DIR, jit_env.FLASHINFER_JIT_DIR)
+        )
+    except Exception:
+        return True
+
+
 def _is_fp8_cutlass_moe_supported() -> bool:
     """Mirror SGLang's CUTLASS FP8 MoE assertions."""
     from sglang.srt.layers.quantization.fp8_utils import cutlass_fp8_supported
@@ -124,13 +152,30 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         ):
             # Note:(Chenchen Hong) flashinfer_cutlass MoE deadlocks CUDA-graph
             # capture on H20 (no H20 kernel coverage); triton captures cleanly there.
-            override_server_args(
-                server_args,
-                "sglang-omni-qwen3-backend-policy",
-                moe_runner_backend=(
-                    "triton" if _is_h20_device() else "flashinfer_cutlass"
-                ),
-            )
+            if _is_h20_device():
+                override_server_args(
+                    server_args,
+                    "sglang-omni-qwen3-backend-policy",
+                    moe_runner_backend="triton",
+                )
+            else:
+                if not _is_flashinfer_cutlass_moe_prebuilt():
+                    raise ValueError(
+                        "BF16 Qwen3-Omni talker needs a prebuilt FlashInfer "
+                        "CUTLASS fused-MoE kernel, but the module is missing "
+                        "from this environment's AOT and JIT caches. Its first "
+                        "call runs inside talker CUDA graph capture, so building "
+                        "from source there can trip the startup timeout. Use the "
+                        "official SGLang-Omni image, provide a compatible "
+                        "precompiled FlashInfer cache, or set the talker's "
+                        "moe_runner_backend to 'triton' (triton changes talker "
+                        "audio output)."
+                    )
+                override_server_args(
+                    server_args,
+                    "sglang-omni-qwen3-backend-policy",
+                    moe_runner_backend="flashinfer_cutlass",
+                )
             moe_runner_backend = server_args.moe_runner_backend
 
         if (

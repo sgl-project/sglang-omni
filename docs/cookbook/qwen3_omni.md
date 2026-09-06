@@ -22,6 +22,15 @@ uv pip install --prerelease=allow "sglang-omni==0.1.4"
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
 
+The BF16 talker uses FlashInfer's CUTLASS fused-MoE kernel. The official
+SGLang-Omni image includes a compatible precompiled cache. Other environments
+must provide the matching cached kernel (for example, through a compatible
+`flashinfer-jit-cache` wheel) or explicitly select the talker's `triton` MoE
+runner. When the default CUTLASS runner is selected, startup fails fast if the
+kernel is absent instead of compiling it inside CUDA graph capture.
+Set `SGLANG_OMNI_MOE_AUTOTUNE_TALKER_TOKENS=<max_tokens>` to opt into one
+additional prefill-sized FlashInfer MoE tuning pass during talker startup.
+
 ## Server Configuration
 
 Use the selector below to generate the exact launch command for your configuration.
