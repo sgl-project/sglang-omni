@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import struct
 import wave
 from types import SimpleNamespace
 
@@ -197,3 +198,80 @@ def test_verbose_response_uses_requested_task() -> None:
     )
 
     assert json.loads(response.body)["task"] == "translate"
+
+
+class _Upload:
+    def __init__(self, data: bytes, content_type: str | None, filename: str | None):
+        self._data = data
+        self.content_type = content_type
+        self.filename = filename
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+@pytest.mark.asyncio
+async def test_read_wraps_declared_g711_upload_in_a_wav_container() -> None:
+    raw = bytes([0xFF] * 8000)
+
+    audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+        _Upload(raw, "audio/basic", "call.bin")
+    )
+
+    assert audio_bytes[:4] == b"RIFF"
+    assert audio_bytes.endswith(raw)
+    # The probe reads the header we added: 8000 µ-law bytes are one second.
+    assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_read_passes_other_uploads_through_unchanged() -> None:
+    raw = b"RIFF" + b"\x00" * 40
+
+    audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+        _Upload(raw, "audio/wav", "clip.wav")
+    )
+
+    assert audio_bytes is raw
+
+
+@pytest.mark.asyncio
+async def test_read_still_rejects_empty_g711_uploads() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        await speech_to_text.read_and_validate_speech_to_text_audio(
+            _Upload(b"", "audio/basic", "call.ulaw")
+        )
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_read_keeps_sun_au_declared_as_audio_basic_intact() -> None:
+    # Sun AU header by hand (Python 3.13 drops sunau): 1 s of 8 kHz µ-law.
+    payload = b"\xff" * 8000
+    au = b".snd" + struct.pack(">IIIII", 24, len(payload), 1, 8000, 1) + payload
+
+    audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+        _Upload(au, "audio/basic", "call.au")
+    )
+
+    assert audio_bytes is au
+    assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("content_type", ["audio/basic", "audio/PCMA"])
+@pytest.mark.asyncio
+async def test_probe_measures_wrapped_g711_without_the_av_fallback(
+    monkeypatch, content_type
+) -> None:
+    monkeypatch.setattr(
+        speech_to_text,
+        "_av_duration",
+        lambda audio_bytes: pytest.fail("fell back to av for a G.711 upload"),
+    )
+
+    audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
+        _Upload(b"\xff" * 12000, content_type, "call.bin")
+    )
+
+    assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.5)

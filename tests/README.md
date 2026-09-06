@@ -41,7 +41,8 @@ tests/
     │   ├── pipeline_fakes.py
     │   └── qwen_fakes.py
     ├── utils/
-    │   └── test_audio.py
+    │   ├── test_audio.py
+    │   └── test_g711.py
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
@@ -472,7 +473,11 @@ that happened to contain an older version of the test.
 
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
-    and mono/channel preservation.
+    and mono/channel preservation, plus the 8 kHz telephony fixtures under
+    `tests/data/`.
+  - G.711 helpers (`test_g711.py`): media-type and extension resolution, and
+    wrapping headerless bytes in a WAV container that matches ffmpeg's while
+    leaving WAV and Sun AU inputs untouched.
   - pinned CUDA staging primitives (`cuda_staging`): exact-size growth,
     reusable events, non-blocking completion queries, device checks, and
     record/query/synchronize failure handling. Failed records invalidate
@@ -734,7 +739,8 @@ that happened to contain an older version of the test.
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
-  - shared speech-to-text form, request, response-format, and serialization mechanics
+  - shared speech-to-text form, request, response-format, and serialization mechanics,
+    including headerless G.711 uploads getting a WAV container at read time
   - streaming response framing and failure semantics.
   - realtime barge-in cancellation, partial session updates, terminal races,
     VAD stop-to-start segmentation, and assistant-history truncation.
@@ -808,8 +814,9 @@ that happened to contain an older version of the test.
   Kernel and CUDA Graph parity cases in `test_core.py` are marked `accelerator`.
 
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
-  resampling, audio-source resolution, duration validation, fingerprinting,
-  downmixing, and legacy input compatibility.
+  resampling, audio-source resolution (including declared G.711 bytes getting
+  a WAV container), duration validation, fingerprinting, downmixing, and
+  legacy input compatibility.
 
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
