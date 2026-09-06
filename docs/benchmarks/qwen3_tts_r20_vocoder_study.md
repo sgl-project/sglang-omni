@@ -230,10 +230,36 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   流水化得好(3.4ms);生产里 Talker 与 initial 流的 kernel 插进这 1147 个节点之间,每个
   节点都可能等一下,墙钟翻倍。legacy 节点少三成、每个 kernel 大得多,对插队不敏感。
   **"少 3 倍算力"没换成时间,是因为换来了"多 1.6 倍节点"。**
-- 第六轮(进行中):config 开 `fused_snake_activation`(仓库已有 #1794 的融合 kernel,
-  增量路径会自动用上,1147→约 890 节点),wait 4,ramp (1,2,4) / (2,4)。之后的方向是
-  真正砍节点:去掉 cudnn 布局转换、原地/环形状态代替 cat+copy、融合 transformer 的
-  elementwise 链(T-PR18 列的 QK-norm+RoPE、RMSNorm)。
+- 第六轮:config 开 `fused_snake_activation`(#1794 的融合 kernel,增量路径自动用上,
+  1147→887 节点),wait 4:ramp (1,2,4) underrun 23.5%→**20.1%**、resolve 9.5→8.3ms;
+  ramp (2,4) 5.1%→5.4%(持平)。有效但小。
+- **节点来源拆分(B2,eager,fused snake,887 个 kernel)**:transformer 8 层单独占
+  **545 个**(elementwise 365、GEMM 74、cat/copy 71),只做 1.26ms 的活;卷积栈约 340 个,
+  其中 cudnn nchw↔nhwc 布局转换 62 个(0.56ms);关掉 cudnn 走原生卷积会炸到 6647 个,
+  不可行;`cudnn.benchmark` 无影响。
+- **`torch.compile` 原型(容器内,B2,fresh_frames=8)**:
+
+  | 对象 | kernel 数 | 墙钟 / replay |
+  |---|---|---|
+  | transformer 单步 eager | 543 | 5.4ms |
+  | transformer 单步 compiled(fullgraph,0 break) | 203 | 1.7ms |
+  | transformer 单步 compiled 捕进 CUDA graph | 163 | **0.44ms** replay |
+  | 整个增量 decode eager | 1148 | 12.5ms |
+  | 整个增量 decode compiled | 356-397 | 3.1-3.5ms |
+  | **整个增量 decode compiled 捕进 CUDA graph** | **356** | **1.83ms** replay |
+
+  对照:PR 现有 WARM 图 B2 孤立 replay 4.0ms(1147 节点),legacy 24 帧图 10.7ms。
+  编译约 15s/静态形状(dynamic=True 首次 41s)。踩到的坑:(a) #1794 的手写 SnakeBeta
+  Triton kernel 用了 `torch.cuda.device_of`,Dynamo 不能 trace,编译时须不套它(Inductor
+  自己会融合);(b) `state.advance()` 与 `transformer_context_length` 是 Python int,Dynamo
+  按值特化、每步重编译,必须移出编译区;(c) 首次调用的 arena 视图与后续 clone 的 stride
+  不同,触发一次重编译,runner 用固定静态缓冲即可避免;(d) 原型里 replay 读到被释放的
+  状态张量(0.96 rel-L2 的垃圾)是因为没走 runner 的静态 input/output 协议,不是算法问题。
+  **数值**:compiled vs eager 逐帧 rel-L2 中位 0.03-0.05、最大 0.04-0.17(随机码),高于
+  batch 噪声底(0.01-0.02),要用真实请求的码做接缝/STFT 对照后才算过。
+- 下一步(实现中):把增量 decode 拆成"张量-only 内核 + 外层记账",内核可选 `torch.compile`,
+  runner 捕获时用编译版;只编译 WARM 稳态形状(fresh_frames=8 × B 1/2/4/8,约 1 分钟
+  启动开销),其余形状保持 eager-in-graph;开编译时禁用手写 SnakeBeta 融合。
 
 ## 决策日志
 
