@@ -28,22 +28,30 @@ source .venv-apple/bin/activate
 export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
-Support is experimental. Use the official `FunAudioLLM/Fun-ASR-Nano-2512-hf`
-checkpoint with unquantized BF16 weights; no converted artifact is needed.
-Inference runs one request at a time and additional requests queue. Use
-`temperature=0` and upload audio segments no longer than 30 seconds. JSON and
-SSE transcription are supported; quantized checkpoints are not.
+Support is experimental. Both backends load the official
+`FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized BF16 weights; no
+converted MLX artifact or `mlx-audio` runtime package is needed. Inference runs
+one request at a time and additional requests queue. Use `temperature=0` and
+upload audio segments no longer than 30 seconds. JSON and SSE transcription are
+supported; quantized checkpoints are not.
+
+### MLX
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
 
 ### Torch/MPS
 
-Native MLX support is added separately; until then, set `SGLANG_USE_MLX=0`:
+Without `SGLANG_USE_MLX=1`, the same checkpoint runs through PyTorch MPS:
 
 ```bash
 SGLANG_USE_MLX=0 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
 ```
 
-See [the Torch/MPS PR](https://github.com/sgl-project/sglang-omni/pull/1982) for hardware validation and benchmark results.
+See [the Apple backend PRs](https://github.com/sgl-project/sglang-omni/pull/1983) for hardware validation and benchmark results.
 
 ## Server Configuration
 
