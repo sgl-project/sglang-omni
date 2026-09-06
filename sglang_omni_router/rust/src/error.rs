@@ -84,9 +84,9 @@ pub enum RouterError {
     /// Signal observation could not be installed or completed.
     #[error("failed to observe process termination signals: {0}")]
     Signal(#[source] io::Error),
-    /// The generation data-plane client failed to build.
-    #[error("failed to initialize the generation HTTP client")]
-    GenerationClient(#[source] reqwest::Error),
+    /// The shared data-plane client failed to build.
+    #[error("failed to initialize the HTTP relay client")]
+    HttpClient(#[source] reqwest::Error),
     /// The isolated health client failed to build.
     #[error("failed to initialize the isolated health client")]
     HealthClient(#[source] reqwest::Error),
@@ -117,7 +117,7 @@ impl RouterError {
             | Self::Lifecycle
             | Self::ShutdownNotify
             | Self::Signal(_)
-            | Self::GenerationClient(_)
+            | Self::HttpClient(_)
             | Self::HealthClient(_)
             | Self::WorkerPoolInvariant
             | Self::HealthTaskExited

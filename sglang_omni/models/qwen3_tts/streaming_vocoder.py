@@ -41,6 +41,14 @@ DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
+# note (luojiaxuan): fail-closed acoustic guard for bootstrap-frame
+# suppression, in linear amplitude: RMS cap 1e-3 is -60 dBFS, peak cap
+# 3.2e-3 is -50 dBFS. Calibrated against the Ryan/English corpus, whose
+# loudest first frame measured -103.7 dBFS RMS; real speech onsets sit far
+# above -40 dBFS, so these thresholds separate the two by orders of
+# magnitude.
+_BOOTSTRAP_SILENCE_MAX_RMS = 1e-3
+_BOOTSTRAP_SILENCE_MAX_PEAK = 3.2e-3
 
 
 def _decode_graph_frame_counts(
@@ -100,6 +108,7 @@ class _Qwen3TTSStreamState:
     playback_deadline_s: float = 0.0
     incremental_codec_state: Qwen3TTSIncrementalCodecState | None = None
     incremental_codec_fallback: bool = False
+    suppress_bootstrap: bool = False
 
 
 class _Qwen3TTSInvalidCodeRows(ValueError):
@@ -416,6 +425,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         followup_cuda_graph: bool = True,
         fused_snake_activation: bool = False,
         enable_stateful_codec_decoder: bool = False,
+        suppress_bootstrap_silence: bool = True,
+        suppress_bootstrap_max_streams: int = 24,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -509,6 +520,13 @@ class Qwen3TTSStreamingVocoderScheduler(
             1 if self._deterministic_inference else int(followup_worker_count)
         )
         self._enable_stateful_codec_decoder = bool(enable_stateful_codec_decoder)
+        self._suppress_bootstrap_silence = bool(suppress_bootstrap_silence)
+        # note (luojiaxuan): the compensation below decodes one extra frame
+        # into a suppressed stream's first chunk. Near capacity that extra
+        # per-stream startup work is what the pipeline cannot spare, so the
+        # suppression is skipped once this many streams are already live
+        # (measured: a win to 10 RPS, a regression at 20 RPS).
+        self._suppress_bootstrap_max_streams = int(suppress_bootstrap_max_streams)
         self._incremental_decoder = (
             Qwen3TTSIncrementalDecoder(self._decoder)
             if self._enable_stateful_codec_decoder
@@ -528,6 +546,25 @@ class Qwen3TTSStreamingVocoderScheduler(
             followup_stride_ramp=followup_stride_ramp,
             steady_stride=int(stream_followup_stride),
         )
+        if self._suppress_bootstrap_silence and initial_chunk_frames < stream_stride:
+            # note (luojiaxuan): a suppressed stream decodes one extra bootstrap
+            # frame into its first chunk, which shifts every startup window, not
+            # just the first. CustomVoice carries no reference codes, so those
+            # windows are the running sums of the bumped schedule rather than
+            # left_context + stride. Capture the whole bumped schedule.
+            graph_frames = tuple(
+                sorted(
+                    set(graph_frames)
+                    | set(
+                        _decode_graph_frame_counts(
+                            left_context=int(stream_left_context_frames),
+                            initial_chunk_frames=int(initial_chunk_frames) + 1,
+                            followup_stride_ramp=followup_stride_ramp,
+                            steady_stride=int(stream_followup_stride),
+                        )
+                    )
+                )
+            )
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
             self._decoder,
             device=self._device,
@@ -772,6 +809,26 @@ class Qwen3TTSStreamingVocoderScheduler(
                 steady_chunk_frames=self._stream_stride,
                 default_frames=self._default_initial_chunk_frames,
             )
+        if metadata.get("bootstrap_silence_suppression"):
+            state.suppress_bootstrap = (
+                self._suppress_bootstrap_silence
+                and len(self._stream_states) <= self._suppress_bootstrap_max_streams
+            )
+            if state.suppress_bootstrap:
+                # note (luojiaxuan): the withheld frame is also withheld from
+                # the client's playback buffer, so decode one extra frame into
+                # the first chunk to keep the audible lead unchanged. Without
+                # that compensation the stream would emit a shorter lead than
+                # an unsuppressed one, so suppression only stays on when the
+                # bump actually applies.
+                bumped = min(state.initial_chunk_frames + 1, self._stream_stride)
+                if (
+                    state.initial_chunk_frames > 0
+                    and bumped > state.initial_chunk_frames
+                ):
+                    state.initial_chunk_frames = bumped
+                else:
+                    state.suppress_bootstrap = False
 
     def validate_chunk(
         self,
@@ -1329,6 +1386,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         if delta.numel() == 0:
             raise RuntimeError("Qwen3-TTS streaming decoder returned an empty delta")
 
+        # note (luojiaxuan): trim before the deadline is credited, otherwise the
+        # stream is charged for the withheld frame it never emits and sorts late
+        # in the follow-up queue. The call is one-shot and self-gating.
+        delta = self._apply_bootstrap_suppression(state, delta)
+
         state.emitted_generated_frames = plan.generated_frames
         state.decoded_chunks += 1
         state.next_decode_generated_frames = (
@@ -1338,6 +1400,29 @@ class Qwen3TTSStreamingVocoderScheduler(
         duration_s = float(delta.numel()) / float(self._sample_rate)
         state.playback_deadline_s = max(state.playback_deadline_s, now) + duration_s
         return delta
+
+    def _apply_bootstrap_suppression(
+        self, state: _Qwen3TTSStreamState, delta: torch.Tensor
+    ) -> torch.Tensor:
+        """Withhold the bootstrap frame's samples from the first emitted chunk.
+
+        The frame stays in decoder history — only its emitted audio is
+        suppressed — so every later sample is identical to the unsuppressed
+        stream. The acoustic guard fails closed: a first frame that is not
+        actually silent is emitted unchanged.
+        """
+        if not state.suppress_bootstrap:
+            return delta
+        state.suppress_bootstrap = False
+        frame_samples = self._samples_per_frame
+        if int(delta.shape[-1]) <= frame_samples:
+            return delta
+        head = delta[..., :frame_samples].float()
+        rms = float(head.pow(2).mean().sqrt())
+        peak = float(head.abs().max())
+        if rms > _BOOTSTRAP_SILENCE_MAX_RMS or peak > _BOOTSTRAP_SILENCE_MAX_PEAK:
+            return delta
+        return delta[..., frame_samples:]
 
     def _next_followup_stride(self, state: _Qwen3TTSStreamState) -> int:
         """Stride of the next decode chunk after a commit.

@@ -934,6 +934,7 @@ dependencies = [
  "http-body",
  "hyper",
  "hyper-util",
+ "memchr",
  "reqwest",
  "rlimit",
  "serde",
