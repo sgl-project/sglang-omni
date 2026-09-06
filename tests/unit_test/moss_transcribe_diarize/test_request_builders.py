@@ -21,6 +21,7 @@ from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     make_moss_transcribe_diarize_scheduler_adapters,
 )
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, OmniRequest, StagePayload
+from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
 def _wav_bytes(num_samples: int = 1600, sample_rate: int = 16000) -> bytes:
@@ -182,6 +183,35 @@ def _payload_with_inputs(
         ),
         data={},
     )
+
+
+def test_moss_transcribe_diarize_mlx_rejects_non_greedy_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: pytest.fail(
+            "non-greedy Apple request should fail before audio decoding"
+        ),
+    )
+    processor = FakeProcessor()
+    request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
+        processor=processor,
+        tokenizer=processor.tokenizer,
+        max_new_tokens=32,
+        context_length=4096,
+        greedy_only=True,
+    )
+
+    with pytest.raises(ValueError, match="supports only greedy decoding") as error:
+        request_builder(
+            _payload(
+                params={"temperature": 0.1},
+                metadata={EXPLICIT_GENERATION_PARAMS_KEY: ["temperature"]},
+            )
+        )
+    assert is_bad_request_error(error.value)
 
 
 TEST_CONTEXT_LENGTH = 131072

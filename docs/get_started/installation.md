@@ -86,8 +86,9 @@ The persistent SGLang source checkout defaults to
 defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 
 This path currently supports macOS `arm64` only and is intended for the
-Apple-Silicon Qwen3-ASR MLX/Torch-MPS paths. Other platforms should use the
-Docker, manual, or Intel XPU instructions below. Common failures are a missing
+Apple-Silicon Qwen3-ASR and MOSS-Transcribe-Diarize MLX paths, plus the Qwen3-ASR
+Torch-MPS path. Other platforms should use the Docker, manual, or Intel XPU
+instructions below. Common failures are a missing
 Homebrew/uv on `PATH`, an unavailable Python 3.12 toolchain, or forgetting the
 `DYLD_LIBRARY_PATH` export when starting an audio server.
 
