@@ -60,8 +60,9 @@ class BreezeTTSPipelineConfig(PipelineConfig):
 
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:
-        # Two SGLang rows form one logical CFG request. HTTP requests can queue.
-        return {"max_running_requests": 2, "max_queued_requests": 64}
+        # Coordinator capacities count logical requests. The engine builder
+        # expands each request into two conditional/unconditional SGLang rows.
+        return {"max_running_requests": 16, "max_queued_requests": 64}
 
 
 EntryClass = BreezeTTSPipelineConfig

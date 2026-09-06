@@ -30,6 +30,13 @@ def make_payload(*, text="Hello", tts=None, params=None):
     )
 
 
+def test_generation_admission_counts_logical_requests():
+    assert BreezeTTSPipelineConfig.generation_admission_defaults() == {
+        "max_running_requests": 16,
+        "max_queued_requests": 64,
+    }
+
+
 def test_endpoint_defaults_do_not_replace_model_defaults():
     public = CreateSpeechRequest(
         input="Hello", instructions="Warm voice", cfg_scale=4, seed=42

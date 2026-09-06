@@ -46,20 +46,35 @@ class BreezeDepthDecoder(nn.Module):
         return self.model.embed_tokens(codes.long() + offsets).sum(dim=-2)
 
     @torch.no_grad()
-    def decode_frame(
+    def decode_frames(
         self,
         hidden: torch.Tensor,
-        first_code: torch.Tensor,
-        params: SamplingConfig,
-        generator: torch.Generator,
+        first_codes: torch.Tensor,
+        params: list[SamplingConfig],
+        generators: list[torch.Generator],
         *,
         codebook_size: int = 2048,
     ) -> torch.Tensor:
+        """Decode one complete codec frame per logical request in one batch."""
+        batch_size = len(params)
+        if (
+            batch_size == 0
+            or len(generators) != batch_size
+            or first_codes.numel() != batch_size
+            or hidden.ndim != 2
+            or hidden.shape[0] != 2 * batch_size
+        ):
+            raise ValueError(
+                "Breeze depth decode requires two hidden rows and one RNG per "
+                "logical request"
+            )
+
         # [backbone hidden, c0] prefill predicts c1 with head 0. Every later
         # position embeds c(k) from its own codebook before predicting c(k+1).
-        token = first_code.reshape(1).expand(2)
-        embeds = torch.stack((hidden, self.model.embed_tokens(token)), dim=1)
-        codes = [first_code.reshape(())]
+        first_codes = first_codes.reshape(batch_size)
+        paired_codes = first_codes.repeat_interleave(2)
+        embeds = torch.stack((hidden, self.model.embed_tokens(paired_codes)), dim=1)
+        codes = [first_codes]
         cache = None
         for codebook in range(1, self.num_codebooks):
             output = self.model(
@@ -72,14 +87,41 @@ class BreezeDepthDecoder(nn.Module):
                 output.last_hidden_state[:, -1].float()
                 @ self.codebooks_head.weight[codebook - 1].float()
             )
-            code = sample_logits(
-                apply_cfg(logits, params.cfg_scale),
-                params,
-                generator,
-                codebook_size=codebook_size,
-            )
-            codes.append(code.reshape(()))
+            sampled = []
+            for index, (sampling, generator) in enumerate(
+                zip(params, generators, strict=True)
+            ):
+                sampled.append(
+                    sample_logits(
+                        apply_cfg(
+                            logits[2 * index : 2 * index + 2], sampling.cfg_scale
+                        ),
+                        sampling,
+                        generator,
+                        codebook_size=codebook_size,
+                    ).reshape(())
+                )
+            code = torch.stack(sampled)
+            codes.append(code)
             embeds = self.model.embed_tokens(
-                code.expand(2) + codebook * self.config.vocab_size
+                code.repeat_interleave(2) + codebook * self.config.vocab_size
             ).unsqueeze(1)
-        return torch.stack(codes)
+        return torch.stack(codes, dim=1)
+
+    @torch.no_grad()
+    def decode_frame(
+        self,
+        hidden: torch.Tensor,
+        first_code: torch.Tensor,
+        params: SamplingConfig,
+        generator: torch.Generator,
+        *,
+        codebook_size: int = 2048,
+    ) -> torch.Tensor:
+        return self.decode_frames(
+            hidden,
+            first_code.reshape(1),
+            [params],
+            [generator],
+            codebook_size=codebook_size,
+        )[0]

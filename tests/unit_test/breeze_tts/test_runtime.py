@@ -119,7 +119,7 @@ def test_eos_never_reaches_depth_or_codec(tiny_config, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("EOS must not run the depth decoder")
 
-    monkeypatch.setattr(model.depth_decoder, "decode_frame", forbidden)
+    monkeypatch.setattr(model.depth_decoder, "decode_frames", forbidden)
     logits = torch.zeros(2, 12)
     logits[:, 11] = 100
     result = SimpleNamespace(
@@ -145,9 +145,85 @@ def test_requests_do_not_share_rng_feedback_or_codec_history(tiny_config):
     assert second.generation.codes == []
     assert second.generation.feedback is None
     with pytest.raises(RuntimeError, match="adjacent CFG pair"):
-        BreezeModelRunner._generation(
+        BreezeModelRunner._generations(
             [SimpleNamespace(data=first), SimpleNamespace(data=second)]
         )
+
+
+@pytest.mark.parametrize("logical_requests", [1, 2, 8, 16, 32])
+def test_engine_capacity_counts_logical_requests(logical_requests):
+    builder = BreezeEngineBuilder()
+    settings = builder.generation_defaults(dtype="bfloat16")
+    settings["max_running_requests"] = logical_requests
+    builder.adjust_overrides(settings)
+    assert settings["max_running_requests"] == 2 * logical_requests
+    assert settings["max_queued_requests"] == 128
+
+
+@pytest.mark.parametrize("shortfall", [0, 1])
+def test_kv_reservation_covers_all_cfg_rows(monkeypatch, shortfall):
+    needed = 8 * (1024 + 2 * 64) + 1
+
+    def initialize(self, **kwargs):
+        self.max_running_requests = 8
+        self.page_size = 64
+        self.max_prefill_tokens = 4096
+        self.token_to_kv_pool_allocator = SimpleNamespace(
+            available_size=lambda: needed - shortfall
+        )
+
+    monkeypatch.setattr(OmniScheduler, "__init__", initialize)
+    if shortfall:
+        with pytest.raises(ValueError, match="KV token slots"):
+            BreezeScheduler()
+    else:
+        BreezeScheduler()
+
+
+def test_batched_advance_compacts_eos_and_routes_feedback(tiny_config, monkeypatch):
+    model = make_model(tiny_config)
+    data = [make_request(model, str(i)) for i in range(3)]
+    runner = BreezeModelRunner(
+        SimpleNamespace(gpu_id=0, model_runner=SimpleNamespace(model=model)), None
+    )
+    requests = [SimpleNamespace(data=row) for d in data for row in (d, d.cfg_uncond)]
+    hidden = torch.randn(6, 16)
+    logits = torch.zeros(6, 12)
+    for i, token in enumerate([3, 11, 5]):
+        logits[2 * i : 2 * i + 2, token] = 100
+    calls = []
+
+    def decode(hidden_rows, first, params, generators, **kwargs):
+        calls.append((hidden_rows.clone(), first.tolist()))
+        assert params == [data[0].generation.sampling, data[2].generation.sampling]
+        assert generators == [
+            data[0].generation.generator,
+            data[2].generation.generator,
+        ]
+        return torch.tensor([[3, 2, 1, 0], [5, 6, 7, 1]])
+
+    monkeypatch.setattr(model.depth_decoder, "decode_frames", decode)
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=logits, hidden_states=hidden),
+        next_token_ids=None,
+    )
+    runner._advance(result, requests)
+    assert result.next_token_ids.tolist() == [3, 3, 11, 11, 5, 5]
+    assert len(calls) == 1  # one shared depth forward, not one call per request
+    torch.testing.assert_close(calls[0][0], hidden[[0, 1, 4, 5]])
+    assert calls[0][1] == [3, 5]
+    assert data[1].generation.codes == []
+    assert data[1].generation.history == []
+    assert data[1].generation.feedback is None
+    # Simulate EOS removal and batch reordering between decode steps.
+    fb = SimpleNamespace()
+    runner.before_decode(fb, None, requests[4:] + requests[:2])
+    for row, d in zip((0, 2), (data[2], data[0])):
+        expected = model.depth_decoder.embed_frames(d.generation.codes[-1])
+        torch.testing.assert_close(fb.input_embeds[row], expected)
+        torch.testing.assert_close(fb.input_embeds[row + 1], expected)
+        assert len(list(stream_output(d.req.rid, d, None))) == 1
+        assert list(stream_output(d.req.rid, d, None)) == []
 
 
 def test_nonstreaming_requests_keep_codes_without_emitting_partial_audio(tiny_config):
@@ -172,32 +248,79 @@ def test_late_prepared_request_cannot_enqueue_orphan_cfg_twin(tiny_config, monke
     assert scheduler.waiting_queue == []
 
 
-def test_scheduler_admits_whole_pair_only_and_restores_waiting_queue(monkeypatch):
+def make_scheduler(pairs, *, slots=8, budget=4096, page_size=64):
     scheduler = object.__new__(BreezeScheduler)
     scheduler._request_admission_lock = RLock()
-    scheduler.waiting_queue = list(range(6))
+    scheduler.max_prefill_tokens = budget
+    scheduler.page_size = page_size
+    scheduler.max_running_requests = slots
+    scheduler.get_num_allocatable_reqs = lambda running: slots - running
+    scheduler.waiting_queue = []
+    for index, (cond_len, uncond_len) in enumerate(pairs):
+        cond = SimpleNamespace(
+            rid=str(index),
+            origin_input_ids=[0] * cond_len,
+            _omni_data=SimpleNamespace(),
+        )
+        uncond = SimpleNamespace(
+            rid=str(index) + CFG_SUFFIX,
+            origin_input_ids=[0] * uncond_len,
+            _omni_data=SimpleNamespace(),
+        )
+        cond._omni_data.cfg_uncond = uncond._omni_data
+        scheduler.waiting_queue.extend([cond, uncond])
+    return scheduler
+
+
+def test_scheduler_admits_pairs_during_decode_and_restores_queue(monkeypatch):
+    scheduler = make_scheduler([(5, 3)] * 4, slots=6)
+    queue = list(scheduler.waiting_queue)
     seen = []
-    updated_running = SimpleNamespace(reqs=[])
+    updated_running = SimpleNamespace(reqs=["active", "active-uncond"])
 
     def prefill(self, running):
         seen.append(list(self.waiting_queue))
-        self.waiting_queue.clear()
+        admitted = list(self.waiting_queue)
+        # Match upstream, which rebinds the queue after removing admitted rows.
+        self.waiting_queue = []
         return NextBatchPlan(
-            batch_to_run=SimpleNamespace(reqs=["cond", "uncond"]),
+            batch_to_run=SimpleNamespace(reqs=admitted),
             running_batch=updated_running,
         )
 
     monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", prefill)
-    active = SimpleNamespace(reqs=["active"])
-    held = scheduler.get_new_batch_prefill(active)
-    assert held.batch_to_run is None
-    assert held.running_batch is active
-    assert scheduler.waiting_queue == list(range(6))
-    plan = scheduler.get_new_batch_prefill(SimpleNamespace(reqs=[]))
-    assert plan.batch_to_run.reqs == ["cond", "uncond"]
+    plan = scheduler.get_new_batch_prefill(updated_running)
+    assert plan.batch_to_run.reqs == queue[:4]
     assert plan.running_batch is updated_running
-    assert seen == [[0, 1]]
-    assert scheduler.waiting_queue == [2, 3, 4, 5]
+    assert seen == [queue[:4]]
+    assert scheduler.waiting_queue == queue[4:]
+
+
+@pytest.mark.parametrize(
+    "slots,budget,expected",
+    [(8, 2048, 4), (3, 4096, 2), (1, 4096, 0), (8, 1152, 2)],
+)
+def test_pair_admission_respects_paged_strict_prefill_budget(slots, budget, expected):
+    scheduler = make_scheduler(
+        [(100, 100), (400, 400), (500, 500)], slots=slots, budget=budget
+    )
+    # SGLang rejects a later row when its rounded input length EQUALS the
+    # remaining budget. 256 + 896 == 1152 must defer the entire second pair.
+    assert scheduler._pair_admission_limit(SimpleNamespace(reqs=[])) == expected
+
+
+def test_prefill_exception_preserves_deferred_pairs(monkeypatch):
+    scheduler = make_scheduler([(5, 3)] * 3, slots=4)
+    queue = list(scheduler.waiting_queue)
+
+    def fail(self, running):
+        self.waiting_queue = []
+        raise RuntimeError("prefill failed")
+
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", fail)
+    with pytest.raises(RuntimeError, match="prefill failed"):
+        scheduler.get_new_batch_prefill(SimpleNamespace(reqs=[]))
+    assert scheduler.waiting_queue == queue
 
 
 def test_idle_scheduler_returns_upstream_plan_before_first_request():
@@ -227,13 +350,20 @@ def test_scheduler_abort_also_retires_cfg_twin(monkeypatch):
     "field,value",
     [
         ("tp_size", 2),
-        ("max_running_requests", 4),
+        ("max_running_requests", 0),
+        ("schedule_policy", "random"),
+        ("enable_priority_scheduling", True),
+        ("prefill_max_requests", 3),
+        ("enable_prefill_delayer", True),
+        ("enable_deterministic_inference", False),
+        ("attention_backend", "triton"),
         ("disable_radix_cache", False),
         ("disable_cuda_graph", False),
         ("chunked_prefill_size", 16),
         ("dtype", "float16"),
         ("quantization", "fp8"),
         ("max_prefill_tokens", 1024),
+        ("max_prefill_tokens", 2048),
     ],
 )
 def test_unsupported_execution_cannot_bypass_cfg_invariants(field, value):

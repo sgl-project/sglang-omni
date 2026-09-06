@@ -18,6 +18,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import numpy as np
 import pytest
@@ -99,16 +100,21 @@ def _generate(payload, *, streaming=False):
     return audio, headers, arrivals, time.perf_counter() - start
 
 
+def _running_rows(session):
+    info = session.post(
+        BASE_URL + "/model_info",
+        json={"stages": ["tts_engine"], "timeout_s": 5},
+        timeout=10,
+    ).json()
+    return int(info["results"][0]["data"]["running_batch_size"]), info
+
+
 def _assert_idle(timeout=30):
     deadline = time.monotonic() + timeout
     with _session() as session:
         while time.monotonic() < deadline:
             health = session.get(BASE_URL + "/health", timeout=10).json()
-            info = session.post(
-                BASE_URL + "/model_info",
-                json={"stages": ["tts_engine"], "timeout_s": 5},
-                timeout=10,
-            ).json()
+            _, info = _running_rows(session)
             data = info["results"][0]["data"]
             if (
                 health["total_requests"] == 0
@@ -167,33 +173,70 @@ def test_streaming_and_offline_preserve_all_generated_samples(language):
     assert float(np.mean(np.abs(streaming - offline))) < 0.002
 
 
-def test_seeded_requests_are_isolated_when_queued_concurrently():
+def test_seeded_requests_are_isolated_when_batched_concurrently():
     payloads = [_payload("en" if i % 2 == 0 else "zh", seed=100 + i) for i in range(4)]
     expected = [_generate(payload)[0] for payload in payloads]
+    peak_rows = 0
     with ThreadPoolExecutor(max_workers=4) as pool:
-        actual = list(pool.map(lambda payload: _generate(payload)[0], payloads))
+        futures = [pool.submit(_generate, payload) for payload in payloads]
+        with _session() as session:
+            while not all(future.done() for future in futures):
+                running_rows, _ = _running_rows(session)
+                peak_rows = max(peak_rows, running_rows)
+                time.sleep(0.02)
+        actual = [future.result()[0] for future in futures]
+    # Each logical request occupies two CFG rows. Four or more live rows proves
+    # model execution overlapped rather than merely queueing concurrent HTTP.
+    assert peak_rows >= 4
     for first, second in zip(expected, actual, strict=True):
         np.testing.assert_array_equal(first, second)
     _assert_idle()
 
 
-def test_disconnect_releases_cfg_pair_and_next_request_still_succeeds():
+def test_disconnect_releases_cfg_pair_without_poisoning_batched_neighbor():
     payload = _payload()
     payload.update(
-        input="Please read this slowly. " * 16,
-        max_new_tokens=750,
+        input=(
+            "Today we are testing a speech synthesis system. It should speak "
+            "clearly and naturally, preserve every word, and keep the same voice "
+            "throughout the entire message. Thank you for listening to this "
+            "longer example."
+        ),
+        max_new_tokens=300,
         stream=True,
         response_format="pcm",
     )
-    with _session() as session:
-        with session.post(
-            BASE_URL + "/v1/audio/speech", json=payload, stream=True, timeout=300
-        ) as response:
-            assert response.status_code == 200
-            assert next(response.iter_content(chunk_size=None))
-            # Close before completion, forcing the HTTP disconnect/abort path.
-    _assert_idle()
-    _generate(_payload())
+    first_chunk = Event()
+    release = Event()
+
+    def disconnect_after_neighbor_joins():
+        with _session() as session:
+            with session.post(
+                BASE_URL + "/v1/audio/speech", json=payload, stream=True, timeout=300
+            ) as response:
+                assert response.status_code == 200
+                chunks = response.iter_content(chunk_size=None)
+                assert next(chunks)
+                first_chunk.set()
+                assert release.wait(30)
+                # Leaving the context closes the stream before completion.
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        aborted = pool.submit(disconnect_after_neighbor_joins)
+        assert first_chunk.wait(60)
+        survivor = pool.submit(_generate, _payload(seed=777))
+        deadline = time.monotonic() + 20
+        peak_rows = 0
+        with _session() as session:
+            while time.monotonic() < deadline and peak_rows < 4:
+                running_rows, _ = _running_rows(session)
+                peak_rows = max(peak_rows, running_rows)
+                time.sleep(0.02)
+        release.set()
+        aborted.result()
+        audio = survivor.result()[0]
+    assert peak_rows >= 4
+    assert len(audio) > 2400
     _assert_idle()
 
 

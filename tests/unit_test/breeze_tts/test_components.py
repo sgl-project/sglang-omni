@@ -129,6 +129,67 @@ def test_depth_cached_decode_matches_full_sequence_and_resets(tiny_config):
     torch.testing.assert_close(model.embed_frames(actual), expected_embed)
 
 
+def test_depth_batched_decode_matches_individual_requests(tiny_config):
+    torch.manual_seed(17)
+    model = BreezeDepthDecoder(tiny_config["depth_decoder_config"]).eval()
+    torch.nn.init.normal_(model.codebooks_head.weight, std=0.1)
+    hidden = torch.randn(6, 16)
+    first = torch.tensor([1, 3, 5])
+    params = [
+        SamplingConfig(temperature=0, cfg_scale=0),
+        SamplingConfig(temperature=0, cfg_scale=1),
+        SamplingConfig(temperature=0, cfg_scale=4),
+    ]
+    actual = model.decode_frames(
+        hidden,
+        first,
+        params,
+        [torch.Generator() for _ in params],
+        codebook_size=8,
+    )
+    expected = torch.stack(
+        [
+            model.decode_frame(
+                hidden[2 * index : 2 * index + 2],
+                first[index : index + 1],
+                params[index],
+                torch.Generator(),
+                codebook_size=8,
+            )
+            for index in range(3)
+        ]
+    )
+    assert actual.tolist() == expected.tolist()
+
+
+def test_depth_batched_sampling_is_neighbor_independent(tiny_config):
+    model = BreezeDepthDecoder(tiny_config["depth_decoder_config"]).eval()
+    torch.nn.init.zeros_(model.codebooks_head.weight)
+    hidden = torch.randn(4, 16)
+    first = torch.tensor([2, 6])
+    params = [SamplingConfig(top_k=0), SamplingConfig(top_k=0)]
+    batch_generators = [torch.Generator().manual_seed(10 + i) for i in range(2)]
+    actual = model.decode_frames(
+        hidden, first, params, batch_generators, codebook_size=8
+    )
+    single_generators = [torch.Generator().manual_seed(10 + i) for i in range(2)]
+    expected = torch.stack(
+        [
+            model.decode_frame(
+                hidden[2 * index : 2 * index + 2],
+                first[index : index + 1],
+                params[index],
+                single_generators[index],
+                codebook_size=8,
+            )
+            for index in range(2)
+        ]
+    )
+    assert actual.tolist() == expected.tolist()
+    for batched, single in zip(batch_generators, single_generators, strict=True):
+        assert torch.equal(batched.get_state(), single.get_state())
+
+
 def test_backbone_mapping_filters_auxiliary_weights_and_requires_all_layers(
     tiny_config,
 ):

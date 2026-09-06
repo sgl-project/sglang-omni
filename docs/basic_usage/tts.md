@@ -36,7 +36,7 @@ for details.
 
 | Model family | Example config | Request notes |
 |---|---|---|
-| [Breeze-TTS-2 (experimental)](../cookbook/breeze_tts.md) | `examples/configs/breeze_tts.yaml` | English/Chinese clone, design and direction; native eager baseline, CUDA E2E validation pending |
+| [Breeze-TTS-2 (experimental)](../cookbook/breeze_tts.md) | `examples/configs/breeze_tts.yaml` | English/Chinese clone, design and direction; native BF16 eager serving with continuous-batched CFG generation (16 logical requests by default) |
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`. Use `--no-ref-audio` for SeedTTS benchmarking |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |

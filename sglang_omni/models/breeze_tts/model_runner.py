@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""One logical Breeze request per AR batch, two atomic CFG branch rows."""
+"""Batched Breeze AR execution with adjacent CFG branch rows."""
 
 import torch
 
@@ -16,12 +16,13 @@ class BreezeModelRunner(ModelRunner):
     def before_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
         pieces = []
+        self._generations(requests)
         for request in requests:
             data = request.data
             req = data.req
             if len(req.prefix_indices) or req.output_ids:
                 raise RuntimeError(
-                    "Breeze initial serving does not support radix reuse or retraction"
+                    "Breeze serving does not support radix reuse or retraction"
                 )
             if int(req.extend_range.length) != len(data.prefill_input_embeds):
                 raise RuntimeError(
@@ -39,10 +40,11 @@ class BreezeModelRunner(ModelRunner):
         self, forward_batch, schedule_batch, requests, *, is_lookahead=False
     ):
         del schedule_batch, is_lookahead
-        generation = self._generation(requests)
-        forward_batch.input_embeds = (
-            generation.feedback.reshape(1, -1).expand(2, -1).contiguous()
-        )
+        generations = self._generations(requests)
+        if any(generation.feedback is None for generation in generations):
+            raise RuntimeError("Breeze decode request has no complete feedback frame")
+        feedback = torch.stack([generation.feedback for generation in generations])
+        forward_batch.input_embeds = feedback.repeat_interleave(2, dim=0).contiguous()
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         del forward_batch, schedule_batch
@@ -53,38 +55,76 @@ class BreezeModelRunner(ModelRunner):
         self._advance(result, requests)
 
     @staticmethod
-    def _generation(requests):
-        if len(requests) != 2 or requests[0].data.cfg_uncond is not requests[1].data:
-            raise RuntimeError("Breeze AR batches must contain one adjacent CFG pair")
-        return requests[0].data.generation
+    def _generations(requests):
+        if not requests or len(requests) % 2:
+            raise RuntimeError("Breeze AR batches must contain complete CFG pairs")
+        generations = []
+        for index in range(0, len(requests), 2):
+            cond, uncond = requests[index : index + 2]
+            if cond.data.cfg_uncond is not uncond.data:
+                raise RuntimeError("Breeze AR batches must contain adjacent CFG pairs")
+            generations.append(cond.data.generation)
+        return generations
 
     def _advance(self, result, requests):
-        generation = self._generation(requests)
-        params = generation.sampling
+        generations = self._generations(requests)
         model = self.model
+        logits = result.logits_output.next_token_logits
+        if logits is None or logits.shape[0] != len(requests):
+            raise RuntimeError("Breeze expected one backbone logit row per CFG branch")
+
         eos_id = model.config.audio_vocab_size
-        token = sample_logits(
-            apply_cfg(result.logits_output.next_token_logits, params.cfg_scale),
-            params,
-            generation.generator,
-            history=generation.history,
-            codebook_size=model.config.codec_codebook_size,
-            eos_token_id=eos_id,
-        )
-        token_id = int(token.item())
-        # Both branches advance/finish together; the base runner will not
-        # resample when next_token_ids has already been supplied.
-        result.next_token_ids = token.expand(2).clone()
-        if token_id == eos_id:
+        tokens = []
+        for index, generation in enumerate(generations):
+            params = generation.sampling
+            tokens.append(
+                sample_logits(
+                    apply_cfg(logits[2 * index : 2 * index + 2], params.cfg_scale),
+                    params,
+                    generation.generator,
+                    history=generation.history,
+                    codebook_size=model.config.codec_codebook_size,
+                    eos_token_id=eos_id,
+                ).reshape(())
+            )
+        logical_tokens = torch.stack(tokens)
+        # Both branches of every request advance and finish together. The base
+        # runner does not resample when next_token_ids is already supplied.
+        result.next_token_ids = logical_tokens.repeat_interleave(2)
+
+        active = [
+            index
+            for index, token in enumerate(logical_tokens.tolist())
+            if token != eos_id
+        ]
+        if not active:
             return
-        codes = model.depth_decoder.decode_frame(
-            result.logits_output.hidden_states,
-            token,
-            params,
-            generation.generator,
+
+        hidden = result.logits_output.hidden_states
+        if hidden is None or hidden.ndim != 2 or hidden.shape[0] != len(requests):
+            raise RuntimeError("Breeze expected one backbone hidden row per CFG branch")
+        branch_rows = torch.tensor(
+            [row for index in active for row in (2 * index, 2 * index + 1)],
+            device=hidden.device,
+            dtype=torch.long,
+        )
+        active_generations = [generations[index] for index in active]
+        frames = model.depth_decoder.decode_frames(
+            hidden.index_select(0, branch_rows),
+            logical_tokens[active],
+            [generation.sampling for generation in active_generations],
+            [generation.generator for generation in active_generations],
             codebook_size=model.config.codec_codebook_size,
         ).detach()
-        generation.history.append(token_id)
-        generation.codes.append(codes)
-        generation.pending_chunk = codes
-        generation.feedback = model.depth_decoder.embed_frames(codes).detach()
+        feedback = model.depth_decoder.embed_frames(frames).detach()
+
+        for row, (request_index, generation) in enumerate(
+            zip(active, active_generations, strict=True)
+        ):
+            frame = frames[row].clone()
+            generation.history.append(int(logical_tokens[request_index].item()))
+            generation.codes.append(frame)
+            generation.pending_chunk = frame
+            # Clone views out of the compact batch so one request's retirement
+            # cannot retain or alias another request's frame storage.
+            generation.feedback = feedback[row].clone()
