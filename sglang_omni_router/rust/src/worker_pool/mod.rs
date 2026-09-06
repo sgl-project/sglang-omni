@@ -254,20 +254,7 @@ impl WorkerPool {
         }
         let matching = self.matching_profiles(requirement)?;
         if matching.voice_policy == Some(VoiceNamePolicy::Uploaded) {
-            let owner = self
-                .voice_owner
-                .as_ref()
-                .ok_or(DispatchError::NoEligibleProfile)?;
-            if !matching.workers[owner.registration_id.startup_ordinal()] {
-                return Err(DispatchError::NoEligibleProfile);
-            }
-            if requirement.profile.requires_default_resolution() && owner.default_model_id.is_none()
-            {
-                return Err(DispatchError::AmbiguousModel);
-            }
-            if !owner.is_routable() {
-                return Err(DispatchError::Unavailable);
-            }
+            let owner = self.uploaded_voice_owner(requirement, &matching)?;
             let policy = self.selector.lock();
             let lease = RequestLease::new(admission, Arc::clone(owner));
             drop(policy);
@@ -306,20 +293,7 @@ impl WorkerPool {
 
         let matching = self.matching_profiles(requirement)?;
         if matching.voice_policy == Some(VoiceNamePolicy::Uploaded) {
-            let owner = self
-                .voice_owner
-                .as_ref()
-                .ok_or(DispatchError::NoEligibleProfile)?;
-            if !matching.workers[owner.registration_id.startup_ordinal()] {
-                return Err(DispatchError::NoEligibleProfile);
-            }
-            if requirement.profile.requires_default_resolution() && owner.default_model_id.is_none()
-            {
-                return Err(DispatchError::AmbiguousModel);
-            }
-            if !owner.is_routable() {
-                return Err(DispatchError::Unavailable);
-            }
+            let owner = self.uploaded_voice_owner(requirement, &matching)?;
             let selector = self.selector.lock();
             let capacity = owner
                 .session_capacity(class)
@@ -422,6 +396,27 @@ impl WorkerPool {
             workers,
             voice_policy,
         })
+    }
+
+    fn uploaded_voice_owner(
+        &self,
+        requirement: &RouteRequirement,
+        matching: &ProfileMatches,
+    ) -> Result<&Arc<WorkerRecord>, DispatchError> {
+        let owner = self
+            .voice_owner
+            .as_ref()
+            .ok_or(DispatchError::NoEligibleProfile)?;
+        if !matching.workers[owner.registration_id.startup_ordinal()] {
+            return Err(DispatchError::NoEligibleProfile);
+        }
+        if requirement.profile.requires_default_resolution() && owner.default_model_id.is_none() {
+            return Err(DispatchError::AmbiguousModel);
+        }
+        if !owner.is_routable() {
+            return Err(DispatchError::Unavailable);
+        }
+        Ok(owner)
     }
 
     pub(crate) fn voice_state_enabled(&self) -> bool {
