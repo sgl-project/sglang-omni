@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 
 _BAD_REQUEST_MARKERS = (
+    "Invalid Breeze-TTS-2 request:",
     "Unsupported language:",
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",

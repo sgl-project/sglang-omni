@@ -725,7 +725,13 @@ class SpeechRequestValidator:
             value = payload["top_k"]
             if isinstance(value, bool) or not isinstance(value, int):
                 raise bad_request("top_k must be an integer", param="top_k")
-        for field_name in ("speed", "temperature", "top_p", "repetition_penalty"):
+        for field_name in (
+            "speed",
+            "temperature",
+            "top_p",
+            "repetition_penalty",
+            "cfg_scale",
+        ):
             if field_name in payload and payload[field_name] is not None:
                 value = payload[field_name]
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -838,6 +844,8 @@ def _build_tts_params(
         tts_params["language"] = request.language
     if request.instructions is not None:
         tts_params["instructions"] = request.instructions
+    if request.cfg_scale is not None:
+        tts_params["cfg_scale"] = request.cfg_scale
     if request.ref_audio is not None:
         tts_params["ref_audio"] = request.ref_audio
     if request.ref_text is not None:

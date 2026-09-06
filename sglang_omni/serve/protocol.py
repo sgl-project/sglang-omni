@@ -346,6 +346,7 @@ class CreateSpeechRequest(BaseModel):
     task_type: str | None = None  # e.g. "Base", "CustomVoice", "VoiceDesign"
     language: str | None = None
     instructions: str | None = None  # style/emotion instructions
+    cfg_scale: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     # Voice cloning parameters
     ref_audio: str | None = None  # path or URL to reference audio
@@ -360,7 +361,7 @@ class CreateSpeechRequest(BaseModel):
 
     # Generation parameters
     max_new_tokens: int | None = None
-    temperature: float | None = None
+    temperature: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     top_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None
