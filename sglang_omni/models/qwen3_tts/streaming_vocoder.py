@@ -517,7 +517,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
         incremental_codec_cuda_graph: bool = False,
         incremental_codec_compile: bool = False,
-        incremental_codec_cuda_graph_cold_frames: Sequence[int] = (),
+        incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
         incremental_codec_cuda_graph_min_free_gb: float = 3.0,
         suppress_bootstrap_silence: bool = True,
         suppress_bootstrap_max_streams: int = 24,
@@ -752,7 +752,20 @@ class Qwen3TTSStreamingVocoderScheduler(
             codec_state_slots=int(codec_state_slots),
             enabled=incremental_codec_cuda_graph,
             compile_steady=bool(incremental_codec_compile),
-            cold_frames=incremental_codec_cuda_graph_cold_frames,
+            # note (luojiaxuan): with no reference prefix a bootstrap decode is
+            # exactly the first chunk, plus one frame when bootstrap silence
+            # suppression bumps it, so those two widths are the COLD graphs a
+            # CustomVoice deployment replays. Reference-prefixed bootstraps are
+            # ragged and stay eager whatever is captured.
+            cold_frames=(
+                incremental_codec_cuda_graph_cold_frames
+                if incremental_codec_cuda_graph_cold_frames is not None
+                else (
+                    (int(initial_chunk_frames), int(initial_chunk_frames) + 1)
+                    if self._suppress_bootstrap_silence
+                    else (int(initial_chunk_frames),)
+                )
+            ),
             min_free_gb=incremental_codec_cuda_graph_min_free_gb,
         )
         self._codec_fallback_count = 0

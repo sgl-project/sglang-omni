@@ -1760,6 +1760,7 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         device="cpu",
         max_batch_size=2,
         max_batch_wait_ms=3,
+        enable_stateful_codec_decoder=False,
     )
     assert warmed_schedulers == [scheduler]
     assert scheduler.create_stream_state("request").initial_chunk_frames == 1
@@ -1769,7 +1770,7 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
     assert scheduler._initial_max_batch_size == 32
     assert scheduler._initial_batch_wait_s == pytest.approx(0.002)
     assert scheduler._followup_max_batch_size == 8
-    assert scheduler._followup_batch_wait_s == pytest.approx(0.001)
+    assert scheduler._followup_batch_wait_s == pytest.approx(0.004)
     first = make_payload(inputs="first")
     first.data = Qwen3TTSState(
         audio_codes=torch.tensor([[1, 2], [3, 4]]),
@@ -3704,6 +3705,7 @@ def test_qwen3_tts_vocoder_factory_forwards_chunk_ramp(
         "model",
         device="cpu",
         stream_chunk_ramp=[2, 4, 8],
+        enable_stateful_codec_decoder=False,
     )
     payload = make_payload(inputs="target", params={"stream": True})
     scheduler._on_streaming_new_request(payload.request_id, payload)
