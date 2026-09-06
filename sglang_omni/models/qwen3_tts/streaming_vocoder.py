@@ -896,11 +896,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             batch_sizes=graph_batch_sizes,
             min_free_gb=min_free_gb,
             enabled=graph_enabled,
-            compile_fresh_frames=(
-                tuple(sorted({int(frames) for frames in cold_frames}))
-                if compile_steady
-                else ()
-            ),
         )
         # note (luojiaxuan): arrival jitter and terminal chunks hand the WARM
         # path every fresh-frame count from 1 up to the steady stride, not only
