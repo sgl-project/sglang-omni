@@ -109,6 +109,9 @@ def create_sglang_fun_asr_executor(
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
     prefill_coalesce_after_builds_during_decode: bool = True,
+    # Hold a lone waiting request only if the arrival rate can deliver at least
+    # one companion before the window expires; otherwise it waits for nothing.
+    prefill_coalesce_min_expected_arrivals: float = 1.0,
     mm_attention_backend: str | None = None,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
@@ -150,6 +153,7 @@ def create_sglang_fun_asr_executor(
         prefill_coalesce_after_builds_during_decode=(
             prefill_coalesce_after_builds_during_decode
         ),
+        prefill_coalesce_min_expected_arrivals=prefill_coalesce_min_expected_arrivals,
         mm_attention_backend=mm_attention_backend,
         enable_pre_lm_encoder=enable_pre_lm_encoder,
         pre_lm_cache_max_entries=pre_lm_cache_max_entries,

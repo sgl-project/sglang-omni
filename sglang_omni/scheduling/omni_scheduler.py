@@ -193,6 +193,7 @@ class OmniScheduler:
         prefill_coalesce_when_idle: bool = False,
         prefill_coalesce_requires_pending_builds: bool = False,
         prefill_coalesce_after_builds_during_decode: bool = False,
+        prefill_coalesce_min_expected_arrivals: float = 0.0,
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
@@ -308,6 +309,14 @@ class OmniScheduler:
         self.prefill_coalesce_after_builds_during_decode = bool(
             prefill_coalesce_after_builds_during_decode
         )
+        # 0 keeps the fixed hold-off window; > 0 releases a small queue early
+        # when the observed arrival rate cannot deliver that many companions
+        # before the window expires.
+        self.prefill_coalesce_min_expected_arrivals = float(
+            prefill_coalesce_min_expected_arrivals
+        )
+        self._arrival_gap_ema_s: float | None = None
+        self._last_arrival_t: float | None = None
 
         # Token / memory info (upstream reads from tp_worker.get_worker_info)
         mr = tp_worker.model_runner
@@ -1200,6 +1209,7 @@ class OmniScheduler:
                 event_name="scheduler_queue_enter",
             )
             req._coalesce_enqueue_t = time.perf_counter()
+            self._observe_arrival(now=req._coalesce_enqueue_t)
             req._omni_terminal_claimed = False
             req._omni_data = req_data
             self.waiting_queue.append(req)
@@ -1344,13 +1354,8 @@ class OmniScheduler:
         decode_is_idle = running_batch is None or running_batch.is_empty()
         if not self.prefill_coalesce_when_idle and decode_is_idle:
             return _Upstream.get_new_batch_prefill(self, running_batch)
+        build_work_pending = self._coalesce_build_work_pending()
         if self.prefill_coalesce_requires_pending_builds:
-            with self._request_admission_lock:
-                build_work_pending = bool(
-                    self._pending_request_builds
-                    or self._pending_request_admissions
-                    or self._backlogged_request_build_payloads
-                )
             if not build_work_pending and not (
                 self.prefill_coalesce_after_builds_during_decode and not decode_is_idle
             ):
@@ -1365,9 +1370,50 @@ class OmniScheduler:
             if t is None:
                 t = req._coalesce_enqueue_t = now
             oldest = min(oldest, t)
-        if now - oldest >= self.prefill_coalesce_wait_s:
+        remaining_s = self.prefill_coalesce_wait_s - (now - oldest)
+        if remaining_s <= 0:
+            return _Upstream.get_new_batch_prefill(self, running_batch)
+        # A request still in the build pipeline is a companion that will
+        # arrive; with none pending, only the arrival rate can justify waiting.
+        if not build_work_pending and not self._coalesce_companion_expected(
+            remaining_s=remaining_s
+        ):
             return _Upstream.get_new_batch_prefill(self, running_batch)
         return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
+
+    def _coalesce_build_work_pending(self) -> bool:
+        with self._request_admission_lock:
+            return bool(
+                self._pending_request_builds
+                or self._pending_request_admissions
+                or self._backlogged_request_build_payloads
+            )
+
+    def _coalesce_companion_expected(self, *, remaining_s: float) -> bool:
+        # Expected arrivals in the remaining window = remaining / mean gap.
+        min_expected = self.prefill_coalesce_min_expected_arrivals
+        if min_expected <= 0:
+            return True  # rate check disabled: keep the fixed window
+        gap_s = self._arrival_gap_ema_s
+        if gap_s is None or gap_s <= 0:
+            return False  # no arrival history: nothing says a companion is coming
+        return remaining_s / gap_s >= min_expected
+
+    # Arbitrary smoothing; tracks a closed-loop client's concurrency change
+    # within a handful of requests without reacting to a single gap.
+    _ARRIVAL_GAP_EMA_ALPHA = 0.2
+
+    def _observe_arrival(self, *, now: float) -> None:
+        last = self._last_arrival_t
+        self._last_arrival_t = now
+        if last is None:
+            return
+        gap_s = max(now - last, 0.0)
+        ema = self._arrival_gap_ema_s
+        alpha = self._ARRIVAL_GAP_EMA_ALPHA
+        self._arrival_gap_ema_s = (
+            gap_s if ema is None else (1 - alpha) * ema + alpha * gap_s
+        )
 
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
