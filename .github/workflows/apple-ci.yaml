@@ -1,0 +1,52 @@
+name: Apple Silicon CI
+
+# Runs the Apple Silicon (macOS arm64) unit-test subset on a GitHub-hosted M1
+# runner: ./install.sh builds the .venv-apple environment (SGLang v0.5.18 from
+# source with all_mps, MLX, torchcodec) and pytest covers the platform and
+# Qwen3-ASR MLX/Torch-MPS paths tracked in RFC #1967.
+#
+# macOS runners are free for public repos, so unlike omni-ci this workflow is
+# not gated by the run-ci label; path filters keep it off unrelated PRs.
+
+on:
+  pull_request:
+    paths:
+      - "install.sh"
+      - "pyproject.toml"
+      - "sglang_omni/platforms/**"
+      - "sglang_omni/models/qwen3_asr/**"
+      - "tests/unit_test/platforms/**"
+      - "tests/unit_test/qwen3_asr/**"
+      - ".github/workflows/apple-ci.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: apple-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-test:
+    name: unit-test (macOS arm64)
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # install.sh detects the checkout next to it and installs it editable,
+      # so the venv tests the PR's code, not a fresh clone of main.
+      - name: Install Apple Silicon environment
+        run: ./install.sh --non-interactive
+
+      - name: Run test
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          source .venv-apple/bin/activate
+          export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          export PYTHONPATH=$PWD
+          pytest tests/unit_test/platforms tests/unit_test/qwen3_asr \
+            -v -m "not benchmark and not accelerator"
