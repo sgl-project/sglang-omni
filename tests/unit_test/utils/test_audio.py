@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import struct
+import sys
 import wave
+from types import ModuleType
 
 import numpy as np
 import pybase64
@@ -44,8 +46,8 @@ def test_load_audio_raises_typed_error_for_undecodable_bytes(
 ) -> None:
     monkeypatch.setattr(
         audio,
-        "_ensure_torchaudio_decoder_ready",
-        lambda: None,
+        "check_torchcodec_ready",
+        lambda: True,
         raising=False,
     )
     monkeypatch.setattr(
@@ -69,32 +71,32 @@ def test_load_audio_raises_typed_error_for_undecodable_bytes(
         load_audio(b"not-audio", source_name="Qwen3-ASR")
 
 
-def test_load_audio_preserves_decoder_backend_failure(monkeypatch) -> None:
-    backend_error = RuntimeError("TorchCodec backend is unavailable")
+def test_check_torchcodec_ready_probes_decoder_and_warns_once(
+    monkeypatch, caplog
+) -> None:
+    fake_torchcodec = ModuleType("torchcodec")
+    monkeypatch.setitem(sys.modules, "torchcodec", fake_torchcodec)
+    monkeypatch.delitem(sys.modules, "torchcodec.decoders", raising=False)
+    monkeypatch.setattr(audio, "_TORCHCODEC_USABLE", None)
 
-    def raise_backend_error():
-        raise backend_error
+    with caplog.at_level("WARNING", logger=audio.__name__):
+        assert audio.check_torchcodec_ready() is False
+        assert audio.check_torchcodec_ready() is False
 
-    def unexpected_decoder(source):
-        del source
-        pytest.fail("decoder should not run without its backend")
+    fallback_records = [
+        record
+        for record in caplog.records
+        if "falling back to soundfile" in record.getMessage()
+    ]
+    assert len(fallback_records) == 1
 
-    monkeypatch.setattr(
-        audio,
-        "_ensure_torchaudio_decoder_ready",
-        raise_backend_error,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        audio.torchaudio,
-        "load",
-        unexpected_decoder,
-    )
 
-    with pytest.raises(RuntimeError) as exc_info:
-        load_audio(b"encoded-audio")
+def test_load_audio_falls_back_when_torchcodec_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: False)
 
-    assert exc_info.value is backend_error
+    samples = load_audio(_wav_bytes(), mono=False)
+
+    assert samples.shape == (1, 1600)
 
 
 def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
@@ -107,7 +109,7 @@ def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
         except audio.torch.OutOfMemoryError as exc:
             raise RuntimeError("decoder failed") from exc
 
-    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(
         audio,
         "_is_invalid_audio_source",
@@ -130,7 +132,7 @@ def test_load_audio_classifies_corrupt_local_path(monkeypatch, tmp_path) -> None
         assert source == str(corrupt_path)
         raise RuntimeError("invalid audio data")
 
-    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(audio.torchaudio, "load", raise_decode_error)
 
     with pytest.raises(AudioDecodeError, match="Could not decode Test"):

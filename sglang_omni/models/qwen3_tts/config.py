@@ -103,13 +103,37 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return kwargs
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
-        return _is_qwen3_tts_base_model(self.model_path)
+        return is_qwen3_tts_base_model(self.model_path)
 
     def supports_uploaded_voice_references(self) -> bool:
-        return _is_qwen3_tts_base_model(self.model_path)
+        return is_qwen3_tts_base_model(self.model_path)
 
 
-def _is_qwen3_tts_base_model(model_path: str) -> bool:
+def qwen3_tts_checkpoint_model_type(checkpoint_dir: str) -> str:
+    """Read ``tts_model_type`` from a resolved checkpoint.
+
+    The directory name is not a reliable signal: a Base checkpoint served from
+    a path like ``/srv/checkpoints/current`` carries no marker at all. The
+    config does, and it is the same value the request path validates against.
+    Returns ``"base"`` when the field is absent, matching that path's default.
+    """
+    import json
+    import os
+
+    config_path = os.path.join(checkpoint_dir, "config.json")
+    if not os.path.isfile(config_path):
+        return "base"
+    with open(config_path, encoding="utf-8") as handle:
+        raw = json.load(handle).get("tts_model_type")
+    normalized = str(raw or "base").replace("-", "_").strip().lower()
+    if normalized == "customvoice":
+        return "custom_voice"
+    if normalized == "voicedesign":
+        return "voice_design"
+    return normalized
+
+
+def is_qwen3_tts_base_model(model_path: str) -> bool:
     qwen3_tts_parts = [
         part.replace("-", "_").casefold()
         for part in re.split(r"[/\\]+", model_path.strip())

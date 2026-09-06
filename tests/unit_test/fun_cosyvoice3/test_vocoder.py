@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 import torch
@@ -16,6 +17,10 @@ from sglang_omni.scheduling.messages import IncomingMessage
 
 
 class _FakeHiFT(torch.nn.Module):
+    # cosyvoice3.yaml: upsample_rates [8, 5, 3], istft_params.hop_len 4.
+    upsample_rates: ClassVar[list[int]] = [8, 5, 3]
+    istft_params: ClassVar[dict[str, int]] = {"n_fft": 16, "hop_len": 4}
+
     def __init__(self):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1))
@@ -23,7 +28,9 @@ class _FakeHiFT(torch.nn.Module):
 
     def inference(self, *, speech_feat, finalize):
         self.calls.append((speech_feat, finalize))
-        return torch.arange(speech_feat.shape[-1]).reshape(1, -1).float(), None
+        batch, _, frames = speech_feat.shape
+        row = torch.arange(frames * 480, dtype=torch.float32).reshape(1, -1)
+        return row.repeat(batch, 1), None
 
 
 class _FakeEstimator(torch.nn.Module):
@@ -205,6 +212,45 @@ def test_decode_batch_same_bucket_batches_flow_once(monkeypatch) -> None:
 
     assert len(batch_calls) == 1
     assert len(batch_calls[0]) == 2
+    # HiFT runs once over the padded batch rather than once per request.
+    assert len(hift.calls) == 1
+    assert hift.calls[0][0].shape[0] == 2
+
+
+def test_decode_batch_runs_hift_once_over_padded_mels(monkeypatch) -> None:
+    flow = _BatchCapableFakeFlow()
+    hift = _FakeHiFT()
+    _install_fake_batch_adapter(monkeypatch, [])
+    vocoder = stages._CosyVoice3Vocoder(flow, hift)
+
+    results = asyncio.run(
+        vocoder.decode_batch(
+            [(_state(), _codes(9)), (_state(), _codes(10)), (_state(), _codes(11))]
+        )
+    )
+
+    # 9/10/11 tokens -> 18/20/22 mel frames. Right-zero-padded into one call.
+    assert len(hift.calls) == 1
+    speech_feat, finalize = hift.calls[0]
+    assert finalize is True
+    assert speech_feat.shape == (3, 80, 22)
+    assert torch.count_nonzero(speech_feat[0, :, 18:]) == 0
+    assert torch.count_nonzero(speech_feat[1, :, 20:]) == 0
+    # Each request is sliced back to its own true length.
+    assert [wav.shape[-1] for wav, _ in results] == [18 * 480, 20 * 480, 22 * 480]
+
+
+def test_decode_batch_splits_hift_batch_when_padding_waste_is_large(
+    monkeypatch,
+) -> None:
+    flow = _BatchCapableFakeFlow()
+    hift = _FakeHiFT()
+    _install_fake_batch_adapter(monkeypatch, [])
+    # max_waste=1.0 only accepts groups that need no padding at all.
+    vocoder = stages._CosyVoice3Vocoder(flow, hift, hift_max_padding_waste=1.0)
+
+    asyncio.run(vocoder.decode_batch([(_state(), _codes(2)), (_state(), _codes(3))]))
+
     assert len(hift.calls) == 2
 
 
@@ -333,7 +379,12 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
         "_load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16: (_BatchCapableFakeFlow(), _FakeHiFT()),
     )
-    scheduler = stages.create_vocoder_executor("model", device="cpu")
+    # The default admission budget is sized for the real seed-tts-eval length
+    # distribution, so pin it here: this test is about admission behaviour, not
+    # about the default value.
+    scheduler = stages.create_vocoder_executor(
+        "model", device="cpu", flow_batch_admission_frames=2000
+    )
     long_state = _state(prompt_tokens=0)
     long_state.audio_codes = _codes(2200)
     short_state = _state(prompt_tokens=0)
@@ -342,9 +393,27 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     second = IncomingMessage("short", "new_request", _payload(short_state))
     scheduler.inbox.put(second)
 
-    assert scheduler._max_batch_cost == stages._DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
+    assert scheduler._max_batch_cost == 2000
     assert scheduler._collect_batch(first) == [first]
     assert scheduler._next_message() == second
+
+
+def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
+    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(
+        stages,
+        "_load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16: (_BatchCapableFakeFlow(), _FakeHiFT()),
+    )
+    scheduler = stages.create_vocoder_executor("model", device="cpu")
+
+    assert scheduler._max_batch_cost == stages._DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
+    assert (
+        scheduler._max_batch_cost // 713 >= 8
+    ), "default admission budget no longer holds a useful batch"
+    assert scheduler._max_batch_size == 16
+    assert scheduler._max_batch_wait_s == pytest.approx(0.03)
 
 
 def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> None:
@@ -392,6 +461,59 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     }
 
 
+def test_preprocessing_executor_threads_max_concurrency() -> None:
+    scheduler = stages.create_preprocessing_executor("model", max_concurrency=11)
+    assert scheduler._max_concurrency == 11
+
+
+def test_preprocessing_executor_rejects_non_positive_concurrency() -> None:
+    with pytest.raises(ValueError, match="max_concurrency"):
+        stages.create_preprocessing_executor("model", max_concurrency=0)
+
+
+def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
+    from sglang_omni.models.fun_cosyvoice3 import engine_builder, request_builders
+
+    seen: dict[str, int] = {}
+
+    def fake_tokenizer(model_path, device="cpu", intra_op_threads=1):
+        seen["speech_tokenizer"] = intra_op_threads
+        return object()
+
+    def fake_encoder(model_path, device="cpu", intra_op_threads=1):
+        seen["speaker_encoder"] = intra_op_threads
+        return object()
+
+    class _StubModel:
+        def load_weights(self, weights) -> None:
+            del weights
+
+    monkeypatch.setattr(engine_builder, "SpeechTokenizerV3", fake_tokenizer)
+    monkeypatch.setattr(engine_builder, "SpeakerEncoder", fake_encoder)
+    monkeypatch.setattr(engine_builder, "CosyVoice3Tokenizer", lambda path: object())
+    monkeypatch.setattr(engine_builder.torch, "load", lambda *a, **k: {})
+    monkeypatch.setattr(
+        request_builders, "set_cosyvoice3_preprocessing_context", lambda **kwargs: None
+    )
+
+    builder = engine_builder.FunCosyVoice3EngineBuilder(onnx_intra_op_threads=6)
+    builder._checkpoint_root = "/tmp"
+    builder.setup_model(
+        model_worker=SimpleNamespace(
+            model_runner=SimpleNamespace(
+                model=_StubModel(),
+                model_config=SimpleNamespace(vocab_size=0),
+            )
+        ),
+        checkpoint_dir="/tmp",
+        device="cpu",
+        gpu_id=0,
+        server_args=object(),
+    )
+
+    assert seen == {"speech_tokenizer": 6, "speaker_encoder": 6}
+
+
 def test_create_vocoder_executor_rejects_non_positive_admission_budget(
     monkeypatch,
 ) -> None:
@@ -415,6 +537,19 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
     assert vocoder_stage.factory.model_dump(exclude_none=True) == {
         "dtype": "bfloat16",
         "flow_batch_bucket_frames": 50,
-        "flow_batch_admission_frames": 2000,
+        "flow_batch_admission_frames": 8000,
+        "max_batch_size": 16,
+        "max_batch_wait_ms": 30,
         "enable_dit_torch_compile": False,
     }
+
+
+def test_vocoder_hift_defaults_to_float32(monkeypatch) -> None:
+    flow = _BatchCapableFakeFlow()
+    _install_fake_batch_adapter(monkeypatch, [])
+    vocoder = stages._CosyVoice3Vocoder(flow, _FakeHiFT())
+
+    # bfloat16 gave HiFT no speedup, so the default keeps full precision.
+    assert vocoder._hift_compute_dtype is None
+    with vocoder._hift_autocast():
+        assert not torch.is_autocast_enabled()

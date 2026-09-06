@@ -51,6 +51,25 @@ def fast_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def cuda_platform_for_engine_builder_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the engine-builder platform to non-NPU for SM-validated CUDA tests.
+
+    On Ascend hosts torch.npu is available, so current_platform resolves to
+    NPU and these CUDA SM-scope tests would route into the NPU branch instead
+    of the SM-validated path they assert on.
+    """
+    from sglang_omni.models.fishaudio_s2_pro import engine_builder as fish_engine
+
+    monkeypatch.setattr(
+        fish_engine,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: False),
+    )
+
+
 def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     """Preserves S2-Pro topology, state tensor round-trip, and prompt VQ layout."""
     config = S2ProPipelineConfig(model_path="model")
@@ -1259,20 +1278,15 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
     ref_path = tmp_path / "ref.wav"
     ref_path.write_bytes(b"version-a")
 
-    def load(path: str):
+    def load_audio(path: str, *, target_sample_rate: int, mono: bool):
         assert path == str(ref_path)
-        return torch.zeros((1, 8), dtype=torch.float32), 16000
+        assert target_sample_rate == 16000
+        assert mono is True
+        return np.zeros(8, dtype=np.float32)
 
-    monkeypatch.setitem(
-        sys.modules,
-        "torchaudio",
-        SimpleNamespace(
-            load=load,
-            functional=SimpleNamespace(
-                resample=lambda audio, sr, target_sr: audio,
-            ),
-        ),
-    )
+    from sglang_omni.utils import audio as audio_utils
+
+    monkeypatch.setattr(audio_utils, "load_audio", load_audio)
 
     class _Codec:
         sample_rate = 16000

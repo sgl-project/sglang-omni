@@ -691,3 +691,42 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
                 "cuda_graph_bs_prefill": [128, 256],
             },
         )
+
+
+def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets() -> None:
+    """A raised cap must grow a stage ladder, not replace it with the shared one.
+
+    The stage ladders carry buckets the shared one does not, such as the
+    Qwen3-TTS 1-token bucket, and losing them sends those shapes back to eager.
+    """
+    stage_ladder = [1, 2] + build_default_prefill_cuda_graph_bs(512)
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        cuda_graph_backend_prefill="breakable",
+        cuda_graph_bs_prefill=list(stage_ladder),
+        server_args_overrides={"cuda_graph_max_bs_prefill": 1024},
+    )
+
+    result = overrides["cuda_graph_bs_prefill"]
+    assert overrides["cuda_graph_max_bs_prefill"] == 1024
+    # Every stage bucket survives, including the ones the shared ladder lacks.
+    assert set(stage_ladder) <= set(result)
+    assert 1 in result and 2 in result
+    assert max(result) == 1024
+    assert result == sorted(result)
+    assert len(result) == len(set(result))
+
+
+def test_raised_operator_cap_leaves_an_operator_declared_ladder_alone() -> None:
+    """When the operator declares both, they own the pair."""
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_bs_prefill": [128, 256],
+            "cuda_graph_max_bs_prefill": 1024,
+        },
+    )
+
+    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_max_bs_prefill"] == 1024

@@ -229,7 +229,7 @@ mod tests {
     fn test_record(ordinal: usize, address: SocketAddr) -> Arc<WorkerRecord> {
         Arc::new(WorkerRecord {
             worker_id: WorkerId::new(format!("worker-{ordinal}")),
-            default_model_id: String::from("omni"),
+            default_model_id: Some(String::from("omni")),
             registration_id: RegistrationId::from_startup_ordinal(ordinal),
             target: test_target(address),
             trust_domain: TrustDomain::new(String::from("local")),
@@ -243,6 +243,7 @@ mod tests {
                 stream_modes: vec![StreamMode::NonStreaming],
             }],
             active_requests: AtomicUsize::new(0),
+            session_capacity: [None, None],
             health: AtomicHealth::unknown(),
             immediate_probe: Notify::new(),
         })
