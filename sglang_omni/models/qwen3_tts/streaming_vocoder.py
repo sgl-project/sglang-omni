@@ -1271,7 +1271,9 @@ class Qwen3TTSStreamingVocoderScheduler(
                     self._prune_incremental_codes(state)
                     return delta
 
-            plan = self._build_decode_plan(state, is_final=is_final or force_legacy_decode)
+            plan = self._build_decode_plan(
+                state, is_final=is_final or force_legacy_decode
+            )
             if plan is None:
                 return None
             handle = self._launch_decode_plans([plan], stream=self._decode_stream)
@@ -2324,9 +2326,7 @@ class Qwen3TTSStreamingVocoderScheduler(
 
         if not group or runner is None:
             return [group] if group else []
-        batch_sizes = runner.available_batch_sizes(
-            group[0][2].fresh_frames
-        )
+        batch_sizes = runner.available_batch_sizes(group[0][2].fresh_frames)
         if not batch_sizes:
             return [group]
         largest = max(batch_sizes)
@@ -2414,7 +2414,9 @@ class Qwen3TTSStreamingVocoderScheduler(
                     if index in bad:
                         self._fail_async_stream(request_id, state, exc)
                 survivors = [e for i, e in enumerate(group) if i not in bad]
-                return self._decode_incremental_cohorts(survivors, stream=pending.stream)
+                return self._decode_incremental_cohorts(
+                    survivors, stream=pending.stream
+                )
             except Exception as exc:
                 for request_id, state, _ in group:
                     self._fallback_incremental_stream(request_id, state, exc)
@@ -2457,7 +2459,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             try:
                 # Note (Qihao Liu): gathering is inside the guard too: a failure
                 # here must degrade the cohort, not kill the worker thread.
-                batch = _IncrementalDecodeBatch(decoder=decoder, arena=arena, slots=slots)
+                batch = _IncrementalDecodeBatch(
+                    decoder=decoder, arena=arena, slots=slots
+                )
                 handle = self._launch_decode_plans(
                     [entry[2] for entry in group],
                     stream=stream,

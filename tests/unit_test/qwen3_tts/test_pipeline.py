@@ -6580,6 +6580,8 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     assert state.followup_pending is True
     assert scheduler._followup_queue.qsize() == 1
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 1
+
+
 def _prepared_request_fixture(*, dtype: torch.dtype) -> Qwen3TTSPreparedRequest:
     prompt = torch.randn(5, 4).to(dtype)
     return Qwen3TTSPreparedRequest(
@@ -6917,7 +6919,9 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
         )
 
 
-def test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_lock() -> None:
+def test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_lock() -> (
+    None
+):
     """A worker owing a commit must not wait on a sibling's idle collect."""
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
@@ -6990,9 +6994,7 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
             waited.append(event)
 
     scheduler_stream = SchedulerStream()
-    monkeypatch.setattr(
-        torch.cuda, "current_stream", lambda device: scheduler_stream
-    )
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: scheduler_stream)
     monkeypatch.setattr(
         torch.Tensor,
         "record_stream",
