@@ -42,6 +42,33 @@ class _RecordingEstimator(torch.nn.Module):
         return (0.1 * x + mu + spks.unsqueeze(-1) + cond) * mask
 
 
+class _RecordingTRTEstimator:
+    def __init__(self, max_batch: int = 16) -> None:
+        self.max_batch = max_batch
+        self.calls: list[dict[str, torch.Tensor]] = []
+
+    def execute(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+    ) -> torch.Tensor:
+        self.calls.append(
+            {
+                "x": x.detach().clone(),
+                "mask": mask.detach().clone(),
+                "mu": mu.detach().clone(),
+                "t": t.detach().clone(),
+                "spks": spks.detach().clone(),
+                "cond": cond.detach().clone(),
+            }
+        )
+        return (0.1 * x + mu + spks.unsqueeze(-1) + cond) * mask
+
+
 class _FakeDecoder:
     def __init__(
         self,
@@ -284,3 +311,40 @@ def test_flow_batch_rejects_prompt_alignment_mismatch() -> None:
 
     with pytest.raises(ValueError, match="prompt feature length"):
         _infer_flow(_FakeFlow(), [item])
+
+
+def test_flow_batch_tensorrt_estimator_keeps_cfg_layout() -> None:
+    estimator = _RecordingTRTEstimator(max_batch=16)
+    _infer_flow(
+        _FakeFlow(estimator=estimator),
+        [_input([1]), _input([2]), _input([3])],
+    )
+
+    assert estimator.calls
+    for call in estimator.calls:
+        assert call["x"].shape[0] == 6
+
+
+def test_flow_batch_tensorrt_chunks_cfg_pairs_when_engine_batch_is_2() -> None:
+    estimator = _RecordingTRTEstimator(max_batch=2)
+    items = [_input([1]), _input([2]), _input([3])]
+    _infer_flow(_FakeFlow(estimator=estimator), items)
+
+    assert estimator.calls
+    assert all(call["x"].shape[0] == 2 for call in estimator.calls)
+    # note (guozhihao-224): 10 Euler steps times 3 request-wise CFG pairs.
+    assert len(estimator.calls) == 30
+
+
+def test_flow_batch_tensorrt_matches_pytorch_serial() -> None:
+    items = [
+        _input([1, 0], prompt_token=[2], prompt_value=0.5),
+        _input([3], prompt_token=[4, 5], prompt_value=1.5),
+    ]
+    serial = [_infer_flow(_FakeFlow(), [item])[0] for item in items]
+    batched = _infer_flow(
+        _FakeFlow(estimator=_RecordingTRTEstimator(max_batch=2)), items
+    )
+
+    for actual, expected in zip(batched, serial, strict=True):
+        torch.testing.assert_close(actual, expected)

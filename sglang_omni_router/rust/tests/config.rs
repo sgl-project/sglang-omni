@@ -87,6 +87,25 @@ fn media_only_config() -> String {
     )
 }
 
+fn websocket_only_config(route: &str) -> String {
+    let (admission, capacity, profile) = if route == "speech" {
+        (
+            "speech_websocket = 4",
+            "speech_websocket = 2",
+            "service = \"speech_websocket\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"pcm\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"",
+        )
+    } else {
+        (
+            "realtime_websocket = 4",
+            "realtime_websocket = 2",
+            "service = \"realtime_websocket\"",
+        )
+    };
+    format!(
+        "schema_version = 1\n\n[server]\nlisten = \"127.0.0.1:30000\"\n\n[shutdown]\ndrain_timeout_ms = 30000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 8\n{admission}\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[websocket.{route}]\ntrust_domain = \"local\"\n\n[[workers]]\nworker_id = \"omni\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\n\n[workers.capacity]\n{capacity}\n\n[[workers.service_profiles]]\n{profile}\n"
+    )
+}
+
 #[test]
 fn omitted_server_limits_use_bounded_defaults() {
     let config = load_bytes(valid_config("127.0.0.1:30000", 30_000, "info").as_bytes())
@@ -156,6 +175,91 @@ fn generation_and_media_handlers_are_independently_configurable() {
         .expect("worker section");
     let no_handler = format!("{prefix}[[workers]]{workers}");
     assert!(load_bytes(no_handler.as_bytes()).is_err());
+}
+
+#[test]
+fn websocket_handlers_are_independently_configurable_without_http_routes() {
+    for route in ["speech", "realtime"] {
+        let config = websocket_only_config(route);
+        assert!(load_bytes(config.as_bytes()).is_ok(), "valid {route} route");
+        assert!(
+            load_bytes(
+                config
+                    .replace(&format!("{route}_websocket = 4\n"), "",)
+                    .as_bytes()
+            )
+            .is_err(),
+            "{route} requires its admission class"
+        );
+    }
+}
+
+#[test]
+fn websocket_transport_and_worker_setup_timeouts_are_independently_bounded() {
+    let base = websocket_only_config("speech");
+    let explicit = base.replace(
+        "[websocket.speech]",
+        "[websocket]\nconnect_timeout_ms = 5000\nworker_setup_timeout_ms = 60000\n\n[websocket.speech]",
+    );
+    assert!(load_bytes(explicit.as_bytes()).is_ok());
+    for value in [0, 60_001] {
+        assert!(
+            load_bytes(
+                explicit
+                    .replace(
+                        "connect_timeout_ms = 5000",
+                        &format!("connect_timeout_ms = {value}")
+                    )
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        load_bytes(
+            explicit
+                .replace(
+                    "worker_setup_timeout_ms = 60000",
+                    "worker_setup_timeout_ms = 60001"
+                )
+                .as_bytes()
+        )
+        .is_ok(),
+        "worker application setup has an independent operator bound"
+    );
+    assert!(
+        load_bytes(
+            explicit
+                .replace("connect_timeout_ms", "handshake_timeout_ms")
+                .as_bytes()
+        )
+        .is_err()
+    );
+    for value in [0, 3_600_001] {
+        assert!(
+            load_bytes(
+                explicit
+                    .replace(
+                        "worker_setup_timeout_ms = 60000",
+                        &format!("worker_setup_timeout_ms = {value}")
+                    )
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        load_bytes(
+            explicit
+                .replace(
+                    "worker_setup_timeout_ms = 60000",
+                    "worker_setup_timeout_ms = 1"
+                )
+                .as_bytes()
+        )
+        .is_ok(),
+        "worker setup and transport deadlines cover independent phases"
+    );
 }
 
 #[test]

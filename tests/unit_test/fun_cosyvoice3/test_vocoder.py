@@ -309,8 +309,23 @@ def test_vocoder_rejects_non_pytorch_flow_estimator() -> None:
     flow = _BatchCapableFakeFlow()
     flow.decoder.estimator = object()
 
-    with pytest.raises(RuntimeError, match="PyTorch Flow estimator"):
+    with pytest.raises(RuntimeError, match="PyTorch module or a TensorRT wrapper"):
         stages._CosyVoice3Vocoder(flow, _FakeHiFT())
+
+
+def test_vocoder_accepts_tensorrt_flow_estimator() -> None:
+    class _FakeTRTEstimator:
+        def acquire_estimator(self):
+            return [None, None], None
+
+        def execute(self, *args, **kwargs):
+            del args, kwargs
+            raise AssertionError("vocoder init must not run the estimator")
+
+    flow = _BatchCapableFakeFlow()
+    flow.decoder.estimator = _FakeTRTEstimator()
+    vocoder = stages._CosyVoice3Vocoder(flow, _FakeHiFT())
+    assert vocoder._flow is not None
 
 
 def test_decode_batch_alignment_mismatch_fails() -> None:
@@ -377,7 +392,10 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     monkeypatch.setattr(
         stages,
         "_load_cosyvoice3_flow_hift",
-        lambda checkpoint_dir, device, fp16: (_BatchCapableFakeFlow(), _FakeHiFT()),
+        lambda checkpoint_dir, device, fp16, **kwargs: (
+            _BatchCapableFakeFlow(),
+            _FakeHiFT(),
+        ),
     )
     # The default admission budget is sized for the real seed-tts-eval length
     # distribution, so pin it here: this test is about admission behaviour, not
@@ -404,7 +422,10 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
     monkeypatch.setattr(
         stages,
         "_load_cosyvoice3_flow_hift",
-        lambda checkpoint_dir, device, fp16: (_BatchCapableFakeFlow(), _FakeHiFT()),
+        lambda checkpoint_dir, device, fp16, **kwargs: (
+            _BatchCapableFakeFlow(),
+            _FakeHiFT(),
+        ),
     )
     scheduler = stages.create_vocoder_executor("model", device="cpu")
 
@@ -424,12 +445,15 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
 
-    def fake_load(checkpoint_dir, device, fp16):
+    def fake_load(checkpoint_dir, device, fp16, **kwargs):
         captured.update(
             {
                 "checkpoint_dir": checkpoint_dir,
                 "device": device,
                 "fp16": fp16,
+                "enable_flow_estimator_trt": kwargs.get(
+                    "enable_flow_estimator_trt", False
+                ),
             }
         )
         return fake_flow, fake_hift
@@ -458,7 +482,59 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         "checkpoint_dir": "/checkpoint",
         "device": "cpu",
         "fp16": True,
+        "enable_flow_estimator_trt": False,
     }
+
+
+def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+
+    def fake_load(checkpoint_dir, device, fp16, **kwargs):
+        captured.update(
+            {
+                "enable_flow_estimator_trt": kwargs.get("enable_flow_estimator_trt"),
+            }
+        )
+        return _BatchCapableFakeFlow(), _FakeHiFT()
+
+    monkeypatch.setattr(stages, "_load_cosyvoice3_flow_hift", fake_load)
+
+    stages.create_vocoder_executor(
+        "model",
+        device="cpu",
+        max_batch_size=4,
+        enable_flow_estimator_trt=True,
+    )
+
+    assert captured == {
+        "enable_flow_estimator_trt": True,
+    }
+
+
+def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
+    with pytest.raises(ValueError, match="enable only one"):
+        stages.create_vocoder_executor(
+            "model",
+            enable_dit_torch_compile=True,
+            enable_flow_estimator_trt=True,
+        )
+
+
+def test_attach_flow_estimator_trt_requires_cuda(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(RuntimeError, match="requires NVIDIA CUDA"):
+        stages._attach_flow_estimator_trt(object(), "/checkpoint", "cuda:0")
+
+
+@pytest.mark.parametrize("device", ["cpu", "npu:0", "xpu:0"])
+def test_attach_flow_estimator_trt_rejects_non_cuda_device(
+    monkeypatch, device: str
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    with pytest.raises(RuntimeError, match="CUDA vocoder device"):
+        stages._attach_flow_estimator_trt(object(), "/checkpoint", device)
 
 
 def test_preprocessing_executor_threads_max_concurrency() -> None:
@@ -541,6 +617,7 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
         "enable_dit_torch_compile": False,
+        "enable_flow_estimator_trt": False,
     }
 
 

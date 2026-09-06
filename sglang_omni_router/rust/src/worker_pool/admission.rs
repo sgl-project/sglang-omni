@@ -3,6 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
+use super::profile::CAPACITY_CLASS_COUNT;
 use super::{CapacityClass, ResolvedTarget, WorkerRecord};
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
@@ -21,6 +22,8 @@ pub(crate) enum DispatchError {
     NoEligibleProfile,
     #[error("matching workers are unavailable")]
     Unavailable,
+    #[error("matching worker session capacity is full")]
+    Overloaded,
     #[error("router dispatch invariant failed")]
     Internal,
 }
@@ -68,6 +71,7 @@ impl Drop for WorkerLoadGuard {
 /// Admission and weighted worker load retained through response termination.
 pub(crate) struct RequestLease {
     _admission: AdmissionLease,
+    _capacity: Option<OwnedSemaphorePermit>,
     load: WorkerLoadGuard,
 }
 
@@ -76,6 +80,20 @@ impl RequestLease {
         let weight = admission.credits;
         Self {
             _admission: admission,
+            _capacity: None,
+            load: WorkerLoadGuard::new(registration, weight),
+        }
+    }
+
+    pub(super) fn new_session(
+        admission: AdmissionLease,
+        capacity: OwnedSemaphorePermit,
+        registration: Arc<WorkerRecord>,
+    ) -> Self {
+        let weight = admission.credits;
+        Self {
+            _admission: admission,
+            _capacity: Some(capacity),
             load: WorkerLoadGuard::new(registration, weight),
         }
     }
@@ -96,11 +114,11 @@ impl RequestLease {
 
 pub(super) struct AdmissionController {
     global: Arc<Semaphore>,
-    classes: [Option<Arc<Semaphore>>; 4],
+    classes: [Option<Arc<Semaphore>>; CAPACITY_CLASS_COUNT],
 }
 
 impl AdmissionController {
-    pub(super) fn new(global: usize, limits: [Option<usize>; 4]) -> Self {
+    pub(super) fn new(global: usize, limits: [Option<usize>; CAPACITY_CLASS_COUNT]) -> Self {
         Self {
             global: Arc::new(Semaphore::new(global)),
             classes: limits.map(|limit| limit.map(|value| Arc::new(Semaphore::new(value)))),
@@ -152,7 +170,7 @@ impl AdmissionController {
     }
 
     #[cfg(test)]
-    pub(super) fn available(&self) -> (usize, [Option<usize>; 4]) {
+    pub(super) fn available(&self) -> (usize, [Option<usize>; CAPACITY_CLASS_COUNT]) {
         let classes = std::array::from_fn(|index| {
             self.classes[index]
                 .as_ref()

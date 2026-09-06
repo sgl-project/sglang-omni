@@ -566,6 +566,8 @@ that happened to contain an older version of the test.
     conditioning, bucketed admission, and serial-parity invariants
   - vocoder batching, conditioning handoff, output payload construction, and
     abort/error handling
+  - opt-in Flow DiT TensorRT wrapper: ONNX resolution, request-wise CFG-pair
+    chunking, CUDA-only attach, and mutual exclusion with torch.compile
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio

@@ -7,7 +7,7 @@ mod selection;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::config::{Config, RoutingStrategy};
 
@@ -20,13 +20,17 @@ pub(crate) use profile::{
     ProfileRequirement, ReferenceForm, RouteRequirement, ServiceClass, SpeechResponseFormat,
     SpeechTask, SpeechToTextTask, StreamMode, TranscriptionResponseFormat, TrustDomain,
 };
-pub(crate) use resolver::ResolvedTarget;
+pub(crate) use resolver::{ConnectTarget, ResolvedTarget};
 
 use admission::AdmissionController;
 use health::AtomicHealth;
-use profile::{MAX_WORKERS, RegistrationId, ServiceProfile, WorkerId};
+use profile::{MAX_WORKERS, RegistrationId, ServiceProfile, WorkerCapacityConfig, WorkerId};
 use resolver::{build_health_client, build_http_client};
 use selection::{Selector, SelectorGuard};
+
+struct SessionCapacity {
+    semaphore: Arc<Semaphore>,
+}
 
 /// One static startup registration with independently updated health and load.
 pub(super) struct WorkerRecord {
@@ -37,6 +41,7 @@ pub(super) struct WorkerRecord {
     trust_domain: TrustDomain,
     profiles: Vec<ServiceProfile>,
     active_requests: AtomicUsize,
+    session_capacity: [Option<SessionCapacity>; 2],
     health: AtomicHealth,
     immediate_probe: Notify,
 }
@@ -78,6 +83,10 @@ impl WorkerRecord {
                     current.checked_sub(weight)
                 });
         debug_assert!(previous.is_ok(), "worker load cannot underflow");
+    }
+
+    fn session_capacity(&self, class: CapacityClass) -> Option<&SessionCapacity> {
+        session_capacity_index(class).and_then(|index| self.session_capacity[index].as_ref())
     }
 }
 
@@ -144,6 +153,8 @@ impl WorkerPool {
                 admission_limit(config.admission.speech_http)?,
                 admission_limit(config.admission.speech_batch)?,
                 admission_limit(config.admission.transcription_http)?,
+                admission_limit(config.admission.speech_websocket)?,
+                admission_limit(config.admission.realtime_websocket)?,
             ],
         );
         let mut records = Vec::with_capacity(config.workers.len());
@@ -156,6 +167,7 @@ impl WorkerPool {
                 trust_domain: TrustDomain::new(worker.trust_domain.clone()),
                 profiles: worker.service_profiles.clone(),
                 active_requests: AtomicUsize::new(0),
+                session_capacity: build_session_capacity(&worker.capacity)?,
                 health: AtomicHealth::unknown(),
                 immediate_probe: Notify::new(),
             }));
@@ -250,6 +262,92 @@ impl WorkerPool {
         self.dispatch_matching(admission, profile_found, |record| {
             matching[record.registration_id.startup_ordinal()]
         })
+    }
+
+    pub(crate) fn dispatch_session(
+        &self,
+        admission: AdmissionLease,
+        requirement: &RouteRequirement,
+    ) -> Result<RequestLease, DispatchError> {
+        let class = admission.class();
+        if class != requirement.capacity_class() || session_capacity_index(class).is_none() {
+            return Err(DispatchError::Internal);
+        }
+
+        let mut profile_found = false;
+        let mut healthy_found = false;
+        let mut eligible = [0; MAX_WORKERS];
+        let mut eligible_count = 0;
+        let mut voice_policies = 0;
+        let requires_default_resolution = requirement.profile.requires_default_resolution();
+        let mut resolved_default = None;
+        let mut selector = self.selector.lock();
+        for record in &self.records {
+            if &record.trust_domain != requirement.trust_domain() {
+                continue;
+            }
+            let (matched, policies) = record.profile_match(requirement);
+            if !matched {
+                continue;
+            }
+            voice_policies |= policies;
+            profile_found = true;
+            if requires_default_resolution {
+                let Some(model_id) = record.default_model_id.as_deref() else {
+                    return Err(DispatchError::AmbiguousModel);
+                };
+                match resolved_default {
+                    None => resolved_default = Some(model_id),
+                    Some(expected) if expected == model_id => {}
+                    Some(_) => return Err(DispatchError::AmbiguousModel),
+                }
+            }
+            if !record.is_routable() {
+                continue;
+            }
+            healthy_found = true;
+            if record
+                .session_capacity(class)
+                .is_some_and(|capacity| capacity.semaphore.available_permits() != 0)
+            {
+                let index = record.registration_id.startup_ordinal();
+                eligible[eligible_count] = index;
+                eligible_count += 1;
+            }
+        }
+        if requirement.profile.has_named_voice() && voice_policies.count_ones() > 1 {
+            return Err(DispatchError::AmbiguousModel);
+        }
+        if !profile_found {
+            return Err(DispatchError::NoEligibleProfile);
+        }
+        if !healthy_found {
+            return Err(DispatchError::Unavailable);
+        }
+        if eligible_count == 0 {
+            return Err(DispatchError::Overloaded);
+        }
+
+        let eligible = &eligible[..eligible_count];
+        let selected = match self.selector.strategy() {
+            RoutingStrategy::RoundRobin => {
+                let candidates = candidate_set(eligible);
+                selector
+                    .select(&candidates)
+                    .map(|index| Arc::clone(&self.records[index]))
+            }
+            RoutingStrategy::LeastRequests => self.select_least_requests(eligible, &mut selector),
+        }
+        .ok_or(DispatchError::Internal)?;
+        let capacity = selected
+            .session_capacity(class)
+            .ok_or(DispatchError::Internal)?;
+        let permit = Arc::clone(&capacity.semaphore)
+            .try_acquire_owned()
+            .map_err(|_| DispatchError::Internal)?;
+        let lease = RequestLease::new_session(admission, permit, selected);
+        drop(selector);
+        Ok(lease)
     }
 
     fn dispatch_matching(
@@ -381,6 +479,17 @@ impl WorkerPool {
                             if u32::from(*max_batch_size) >= size
                     )
                 })
+        })
+    }
+
+    pub(crate) fn service_ready(&self, trust: &TrustDomain, service: ServiceClass) -> bool {
+        self.records.iter().any(|record| {
+            &record.trust_domain == trust
+                && record.is_routable()
+                && record
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.service_class() == service)
         })
     }
 
@@ -552,6 +661,37 @@ fn generation_rows_equal(left: &[ServiceProfile], right: &[ServiceProfile]) -> b
     service_rows_equal(left, right, ServiceClass::GenerationHttp, None)
 }
 
+const fn session_capacity_index(class: CapacityClass) -> Option<usize> {
+    match class {
+        CapacityClass::SpeechWebsocket => Some(0),
+        CapacityClass::RealtimeWebsocket => Some(1),
+        CapacityClass::GenerationHttp
+        | CapacityClass::SpeechHttp
+        | CapacityClass::SpeechBatch
+        | CapacityClass::TranscriptionHttp => None,
+    }
+}
+
+fn build_session_capacity(
+    config: &WorkerCapacityConfig,
+) -> Result<[Option<SessionCapacity>; 2], crate::error::RouterError> {
+    let build = |configured: Option<u32>| {
+        configured
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| crate::error::RouterError::WorkerPoolInvariant)
+            .map(|limit| {
+                limit.map(|limit| SessionCapacity {
+                    semaphore: Arc::new(Semaphore::new(limit)),
+                })
+            })
+    };
+    Ok([
+        build(config.speech_websocket)?,
+        build(config.realtime_websocket)?,
+    ])
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -591,6 +731,35 @@ mod tests {
         }
     }
 
+    fn speech_websocket_profile(
+        model: &str,
+        response_format: SpeechResponseFormat,
+        stream_mode: StreamMode,
+    ) -> ServiceProfile {
+        speech_websocket_profile_with_policy(
+            model,
+            response_format,
+            stream_mode,
+            VoiceNamePolicy::Preset,
+        )
+    }
+
+    fn speech_websocket_profile_with_policy(
+        model: &str,
+        response_format: SpeechResponseFormat,
+        stream_mode: StreamMode,
+        voice_name_policy: VoiceNamePolicy,
+    ) -> ServiceProfile {
+        ServiceProfile::SpeechWebsocket {
+            model_ids: vec![model.to_owned()],
+            response_formats: vec![response_format],
+            stream_modes: vec![stream_mode],
+            tasks: vec![SpeechTask::TextToSpeech],
+            reference_forms: vec![ReferenceForm::None],
+            voice_name_policy,
+        }
+    }
+
     fn requirement(model: &str, trust: &str) -> RouteRequirement {
         RouteRequirement::new(
             ProfileRequirement::GenerationHttp {
@@ -626,6 +795,7 @@ mod tests {
             trust_domain: TrustDomain::new(trust.to_owned()),
             profiles: vec![service_profile],
             active_requests: AtomicUsize::new(0),
+            session_capacity: [None, None],
             health,
             immediate_probe: Notify::new(),
         })
@@ -650,7 +820,10 @@ mod tests {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
             homogeneous_media_http: build_content_blind_media_cohorts(&records),
             records,
-            admission: AdmissionController::new(admission, [Some(admission), None, None, None]),
+            admission: AdmissionController::new(
+                admission,
+                [Some(admission), None, None, None, None, None],
+            ),
             selector,
             health_client: client.clone(),
             http_client: client,
@@ -1068,7 +1241,7 @@ mod tests {
             ),
         ];
         let mut pool = pool(RoutingStrategy::RoundRobin, records, 2);
-        pool.admission = AdmissionController::new(2, [None, Some(2), None, None]);
+        pool.admission = AdmissionController::new(2, [None, Some(2), None, None, None, None]);
         let requirement = RouteRequirement::new(
             ProfileRequirement::SpeechHttp {
                 model: ModelSelection::UnresolvedDefault,
@@ -1091,6 +1264,142 @@ mod tests {
     }
 
     #[test]
+    fn speech_websocket_default_resolution_uses_compatible_profiles() {
+        let build_record = |ordinal, model, format, stream| {
+            let mut record = record_with_profile(
+                ordinal,
+                "local",
+                model,
+                speech_websocket_profile(model, format, stream),
+            );
+            Arc::get_mut(&mut record)
+                .expect("new test record is uniquely owned")
+                .session_capacity[0] = Some(SessionCapacity {
+                semaphore: Arc::new(Semaphore::new(1)),
+            });
+            record
+        };
+        let pcm = build_record(
+            0,
+            "pcm-model",
+            SpeechResponseFormat::Pcm,
+            StreamMode::Streaming,
+        );
+        let wav = build_record(
+            1,
+            "wav-model",
+            SpeechResponseFormat::Wav,
+            StreamMode::NonStreaming,
+        );
+        let mut compatible = pool(RoutingStrategy::RoundRobin, vec![pcm, wav], 2);
+        compatible.admission = AdmissionController::new(2, [None, None, None, None, Some(2), None]);
+        let requirement = RouteRequirement::new(
+            ProfileRequirement::SpeechWebsocket {
+                model: ModelSelection::UnresolvedDefault,
+                response_format: Some(SpeechResponseFormat::Pcm),
+                stream_mode: StreamMode::Streaming,
+                task: Some(SpeechTask::TextToSpeech),
+                reference_forms: vec![ReferenceForm::None],
+                named_voice: false,
+            },
+            TrustDomain::new(String::from("local")),
+        );
+        let lease = compatible
+            .dispatch_session(
+                compatible
+                    .try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("admit speech session"),
+                &requirement,
+            )
+            .expect("dispatch compatible default");
+        assert_eq!(lease.registration_ordinal(), 0);
+        drop(lease);
+
+        let mut ambiguous = pool(
+            RoutingStrategy::RoundRobin,
+            vec![
+                build_record(0, "pcm-a", SpeechResponseFormat::Pcm, StreamMode::Streaming),
+                build_record(1, "pcm-b", SpeechResponseFormat::Pcm, StreamMode::Streaming),
+            ],
+            2,
+        );
+        ambiguous.admission = AdmissionController::new(2, [None, None, None, None, Some(2), None]);
+        assert!(matches!(
+            ambiguous.dispatch_session(
+                ambiguous
+                    .try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("admit ambiguous speech session"),
+                &requirement,
+            ),
+            Err(DispatchError::AmbiguousModel)
+        ));
+    }
+
+    #[test]
+    fn speech_websocket_named_voice_policy_follows_the_selected_model() {
+        let build_record = |ordinal, model, policy| {
+            let mut record = record_with_profile(
+                ordinal,
+                "local",
+                model,
+                speech_websocket_profile_with_policy(
+                    model,
+                    SpeechResponseFormat::Pcm,
+                    StreamMode::Streaming,
+                    policy,
+                ),
+            );
+            Arc::get_mut(&mut record)
+                .expect("new test record is uniquely owned")
+                .session_capacity[0] = Some(SessionCapacity {
+                semaphore: Arc::new(Semaphore::new(1)),
+            });
+            record
+        };
+        let mut pool = pool(
+            RoutingStrategy::RoundRobin,
+            vec![
+                build_record(0, "custom", VoiceNamePolicy::Preset),
+                build_record(1, "base", VoiceNamePolicy::Uploaded),
+            ],
+            2,
+        );
+        pool.admission = AdmissionController::new(2, [None, None, None, None, Some(2), None]);
+        let requirement = |model| {
+            RouteRequirement::new(
+                ProfileRequirement::SpeechWebsocket {
+                    model,
+                    response_format: Some(SpeechResponseFormat::Pcm),
+                    stream_mode: StreamMode::Streaming,
+                    task: Some(SpeechTask::TextToSpeech),
+                    reference_forms: Vec::new(),
+                    named_voice: true,
+                },
+                TrustDomain::new(String::from("local")),
+            )
+        };
+
+        let preset = pool
+            .dispatch_session(
+                pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("preset admission"),
+                &requirement(ModelSelection::Explicit(String::from("custom"))),
+            )
+            .expect("preset dispatch");
+        assert_eq!(preset.registration_ordinal(), 0);
+        drop(preset);
+
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::SpeechWebsocket, 1)
+                    .expect("ambiguous admission"),
+                &requirement(ModelSelection::UnresolvedDefault),
+            ),
+            Err(DispatchError::AmbiguousModel)
+        ));
+    }
+
+    #[test]
     fn admission_and_worker_load_release_on_every_drop() {
         let pool = pool(
             RoutingStrategy::RoundRobin,
@@ -1104,11 +1413,120 @@ mod tests {
                 &requirement("omni", "local"),
             )
             .expect("dispatch");
-        assert_eq!(pool.admission.available(), (0, [Some(0), None, None, None]));
+        assert_eq!(
+            pool.admission.available(),
+            (0, [Some(0), None, None, None, None, None])
+        );
         assert_eq!(pool.records[0].load(), 1);
         drop(lease);
-        assert_eq!(pool.admission.available(), (1, [Some(1), None, None, None]));
+        assert_eq!(
+            pool.admission.available(),
+            (1, [Some(1), None, None, None, None, None])
+        );
         assert_eq!(pool.records[0].load(), 0);
+    }
+
+    #[test]
+    fn websocket_sessions_hold_exact_worker_capacity_and_active_load() {
+        let mut record = record_with_profile(0, "local", "omni", ServiceProfile::RealtimeWebsocket);
+        Arc::get_mut(&mut record)
+            .expect("new test record is uniquely owned")
+            .session_capacity[1] = Some(SessionCapacity {
+            semaphore: Arc::new(Semaphore::new(1)),
+        });
+        let mut pool = pool(RoutingStrategy::LeastRequests, vec![Arc::clone(&record)], 2);
+        pool.admission = AdmissionController::new(2, [None, None, None, None, None, Some(2)]);
+        let requirement = RouteRequirement::new(
+            ProfileRequirement::RealtimeWebsocket { model: None },
+            TrustDomain::new(String::from("local")),
+        );
+
+        let first = pool
+            .dispatch_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("first admission"),
+                &requirement,
+            )
+            .expect("first session");
+        assert_eq!(record.load(), 1);
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("second admission"),
+                &requirement,
+            ),
+            Err(DispatchError::Overloaded)
+        ));
+
+        drop(first);
+        let reused = pool
+            .dispatch_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("reused admission"),
+                &requirement,
+            )
+            .expect("released session capacity is reusable");
+        assert_eq!(record.load(), 1);
+        drop(reused);
+        assert_eq!(record.load(), 0);
+    }
+
+    #[test]
+    fn realtime_explicit_model_never_falls_back_when_its_worker_is_full() {
+        let build_record = |ordinal, model| {
+            let mut record =
+                record_with_profile(ordinal, "local", model, ServiceProfile::RealtimeWebsocket);
+            Arc::get_mut(&mut record)
+                .expect("new test record is uniquely owned")
+                .session_capacity[1] = Some(SessionCapacity {
+                semaphore: Arc::new(Semaphore::new(1)),
+            });
+            record
+        };
+        let alpha = build_record(0, "omni-alpha");
+        let beta = build_record(1, "omni-beta");
+        let mut pool = pool(
+            RoutingStrategy::RoundRobin,
+            vec![Arc::clone(&alpha), Arc::clone(&beta)],
+            2,
+        );
+        pool.admission = AdmissionController::new(2, [None, None, None, None, None, Some(2)]);
+        let requirement = RouteRequirement::new(
+            ProfileRequirement::RealtimeWebsocket {
+                model: Some(String::from("omni-beta")),
+            },
+            TrustDomain::new(String::from("local")),
+        );
+
+        let preferred = pool
+            .dispatch_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("preferred admission"),
+                &requirement,
+            )
+            .expect("select explicitly requested worker");
+        assert_eq!(preferred.registration_ordinal(), 1);
+
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("second admission"),
+                &requirement,
+            ),
+            Err(DispatchError::Overloaded)
+        ));
+        drop(preferred);
+
+        beta.health.store(WorkerHealth::Unhealthy);
+        assert!(matches!(
+            pool.dispatch_session(
+                pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
+                    .expect("unhealthy admission"),
+                &requirement,
+            ),
+            Err(DispatchError::Unavailable)
+        ));
+        assert_eq!((alpha.load(), beta.load()), (0, 0));
     }
 
     #[test]
@@ -1163,6 +1581,7 @@ mod tests {
             trust_domain: TrustDomain::new(String::from("local")),
             profiles: vec![profile],
             active_requests: AtomicUsize::new(0),
+            session_capacity: [None, None],
             health,
             immediate_probe: Notify::new(),
         })
@@ -1179,7 +1598,10 @@ mod tests {
             homogeneous_generation_http: build_content_blind_generation_cohorts(&records),
             homogeneous_media_http: build_content_blind_media_cohorts(&records),
             records,
-            admission: AdmissionController::new(8, [Some(8), Some(8), Some(8), Some(8)]),
+            admission: AdmissionController::new(
+                8,
+                [Some(8), Some(8), Some(8), Some(8), None, None],
+            ),
             selector,
             health_client: client.clone(),
             http_client: client,
