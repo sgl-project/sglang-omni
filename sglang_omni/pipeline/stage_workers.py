@@ -407,13 +407,6 @@ def stage_process_main(
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    # Stage processes have no console of their own, so the only way to raise
-    # their verbosity is the environment the parent was launched with. Set the
-    # package logger rather than the root one: basicConfig is a no-op once an
-    # imported library has installed handlers.
-    stage_log_level = os.environ.get("SGLANG_OMNI_STAGE_LOG_LEVEL")
-    if stage_log_level:
-        logging.getLogger("sglang_omni").setLevel(stage_log_level.upper())
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_workers.{spec.process_name}")

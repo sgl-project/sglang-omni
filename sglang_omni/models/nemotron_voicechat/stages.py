@@ -151,9 +151,10 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None):
     device = resolve_device_spec(device)
     generation = _speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
-    # The codes that mark an utterance's edges live beside the codec rather
-    # than inside it, so they are read under their own prefix.
-    markers = load_weights_by_prefix(model_path, prefix=("tts_model.",))
+    markers = {
+        name: load_weights_by_prefix(model_path, prefix=f"tts_model.{name}")[""]
+        for name in ("_control_codes", "codec_silence_tokens")
+    }
     decoder_weights = {
         key: value
         for key, value in weights.items()

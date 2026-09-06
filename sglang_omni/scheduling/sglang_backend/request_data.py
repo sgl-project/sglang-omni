@@ -31,9 +31,6 @@ class SGLangARRequestData(ARRequestData):
     tts_pad_embed: Any = None
     tts_eos_embed: Any = None
     thinker_chunks_done: bool = True
-    # Length of the instruction a request opens with, when its prefill carries
-    # one; 0 when it does not.
-    prompt_len: int = 0
 
 
 @dataclass
