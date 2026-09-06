@@ -403,3 +403,26 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   但从发射到完成 20.5ms(p50 17、p95 46)——两个 cohort 在飞时串行排队,每 cohort 的 GPU
   服务时间仍约 8-10ms。replay 事件本身的 GPU 时长(判定 Talker 是插在节点之间还是挡在
   第一个节点之前)因探针读 keepalives 的时机错了没记到,已修,排在多 seed 之后重跑。
+
+## 三 seed 正式对比(2026-09-06 05:40 PT;同一服务进程跑 seed 0/1/2,r20)
+
+| 臂 | underrun(s0 / s1 / s2 → 均值) | First playable p50 | First playable p95 | TTFA p50 | TTFA p99 |
+|---|---|---|---|---|---|
+| **新默认 + ramp (2,4)** | 4.01 / 2.75 / 4.16 → **3.6%** | 105-109ms | **145-151ms** | 164-167ms | 240-285ms |
+| legacy + ramp (2,4) | 6.22 / 6.71 / 9.91 → **7.6%** | 109-114ms | 247-509ms | 180-188ms | 545-939ms |
+| **新默认(ramp 1,2,4)** | 22.8 / 19.7 / 20.3 → **20.9%** | 86-87ms | **117-134ms** | 147-148ms | 210-305ms |
+| legacy 默认 | 19.0 / 17.6 / 21.2 → **19.3%** | 83-99ms | 159-767ms | 157-175ms | 590-980ms |
+
+读法:(2,4) ramp 下新路径 underrun 减半(3.6% 对 7.6%),且尾部大幅收紧(首帧 p95 150ms
+对 250-510ms,TTFA p99 260ms 对 550-940ms);默认 ramp (1,2,4) 下 underrun 打平
+(20.9% 对 19.3%,噪声内),但尾部同样大幅收紧(首帧 p95 117-134ms 对 159-767ms)。
+**新路径在两种 ramp 下都不差于 legacy,并在尾延迟上显著更好**——这是翻默认的依据。
+Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ramp 下的产能。
+
+- **CUDA 事件探针(v3,提前发射版)**:replay 本身 start→end 均值 3.76ms(p50 3.78,
+  p95 6.2;孤立 1.8ms),从发射到完成 21ms(p50 17;两 cohort 在飞,≈ 2 个服务时间),
+  resolve 里 host 等待 2.9ms。按外审的判定表:replay 内部被 Talker 拉长约 2×(节点间
+  交错),但每 cohort 约 8.5ms 的服务时间里 replay 只占 3.8ms,**另外 ~4.7ms 是 graph 之外
+  的 GPU 工作**(52 次状态拷入、52 次 scatter、gather、切片、D2H)在交错下的耗时。
+  下一刀:让 graph 直接消费 arena 状态(静态 slot 索引张量,index_select/index_copy 进
+  graph),把这些散 kernel 收进一次 replay。
