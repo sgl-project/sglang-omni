@@ -579,22 +579,28 @@ minutes while the <code class="docutils literal notranslate"><span class="pre">t
 <section id="flow-decoder-batching">
 <h3>Flow Decoder Batching<a class="headerlink" href="#flow-decoder-batching" title="Link to this heading">#</a></h3>
 <p>The buffered vocoder uses the batch-capable <code class="docutils literal notranslate"><span class="pre">FunCosyVoice3Flow.inference</span></code> API for every
-request. <code class="docutils literal notranslate"><span class="pre">SimpleScheduler</span></code> collects up to 8 requests for at most 2 ms, then the vocoder
+request. <code class="docutils literal notranslate"><span class="pre">SimpleScheduler</span></code> collects up to 16 requests for at most 30 ms, then the vocoder
 groups requests by total mel length in 50-frame buckets. Every bucket, including a
 single-request bucket, calls the same built-in Flow inference method; packing, padding,
 masking, CFM Euler/CFG, and output unpadding are handled inside the Flow implementation.
 The 50-frame default matches the current DiT estimator’s static chunk size; a larger bucket
 can combine more requests at the cost of additional padding, compute, and peak GPU memory.</p>
 <p>The scheduler uses a bucket-rounded Flow admission budget, configured by
-<code class="docutils literal notranslate"><span class="pre">flow_batch_admission_frames</span></code> (2,000 by default). It controls whether a later request joins the
+<code class="docutils literal notranslate"><span class="pre">flow_batch_admission_frames</span></code> (8,000 by default). It controls whether a later request joins the
 current Flow batch; it is not a maximum supported request length. A request whose total
 prompt-plus-output mel length exceeds that budget runs as a B=1 Flow batch through the same
 adapter, and later requests wait for the next scheduler batch. This preserves valid long
 generations while preventing them from being combined with more work.</p>
-<p>HiFT still runs once per request. The built-in Flow implementation supports the pinned
-CosyVoice PyTorch estimator and buffered <code class="docutils literal notranslate"><span class="pre">streaming=False,</span> <span class="pre">finalize=True</span></code> inference only.
-TensorRT Flow is not supported by this integration and fails during vocoder initialization
-rather than falling back to another inference path.</p>
+<p>HiFT is batched the same way: the mels from one Flow bucket are right-zero-padded into a single
+tensor, decoded in one HiFT call, and sliced back to each request’s true length, under the
+padding budget <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code> (1.5 by default; <code class="docutils literal notranslate"><span class="pre">1.0</span></code> only groups requests that need no
+padding at all). HiFT is prepared for this at load time by folding away its <code class="docutils literal notranslate"><span class="pre">weight_norm</span></code>
+parametrizations. Right-zero-padding matches the zero padding HiFT applies in single-request
+inference, so batched output is identical except in the final mel frame of padded requests.</p>
+<p>The built-in Flow implementation supports the pinned CosyVoice PyTorch estimator and buffered
+<code class="docutils literal notranslate"><span class="pre">streaming=False,</span> <span class="pre">finalize=True</span></code> inference only. TensorRT Flow is not supported by this
+integration and fails during vocoder initialization rather than falling back to another
+inference path.</p>
 <p>Change the mel-frame bucket size, for example to 100 frames:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
@@ -628,10 +634,16 @@ single request.</p>
 <span class="w">      </span><span class="nt">flow_batch_admission_frames</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4000</span>
 </pre></div>
 </div>
+<p>The remaining vocoder <code class="docutils literal notranslate"><span class="pre">factory</span></code> options are <code class="docutils literal notranslate"><span class="pre">max_batch_size</span></code> (16) and <code class="docutils literal notranslate"><span class="pre">max_batch_wait_ms</span></code> (30)
+for the scheduler batch, <code class="docutils literal notranslate"><span class="pre">dtype</span></code> (<code class="docutils literal notranslate"><span class="pre">bfloat16</span></code>) for the Flow autocast, <code class="docutils literal notranslate"><span class="pre">hift_dtype</span></code> (<code class="docutils literal notranslate"><span class="pre">float32</span></code>,
+independent of <code class="docutils literal notranslate"><span class="pre">dtype</span></code>; <code class="docutils literal notranslate"><span class="pre">bfloat16</span></code> measured no faster for HiFT on H200 and lowers output fidelity)
+for the HiFT autocast, and <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code> (see below). The
+<code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> stage takes <code class="docutils literal notranslate"><span class="pre">onnx_intra_op_threads</span></code> (16) for the speech tokenizer and speaker
+encoder ONNX sessions, and <code class="docutils literal notranslate"><span class="pre">preprocessing</span></code> takes <code class="docutils literal notranslate"><span class="pre">max_concurrency</span></code> (8) for concurrent reference
+conditioning.</p>
 <p>The built-in Flow implementation is tied to the Flow/CFM structure in the documented CosyVoice commit
-<code class="docutils literal notranslate"><span class="pre">074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc</span></code>. It does not modify or monkey-patch the
-CosyVoice checkout; an incompatible Flow structure fails directly instead of using a
-fallback implementation.</p>
+<code class="docutils literal notranslate"><span class="pre">074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc</span></code>. It does not patch the CosyVoice source on disk; an
+incompatible Flow structure fails directly instead of using a fallback implementation.</p>
 </section>
 <section id="torch-compile-for-the-dit-backbone">
 <h3>torch.compile for the DiT backbone<a class="headerlink" href="#torch-compile-for-the-dit-backbone" title="Link to this heading">#</a></h3>
@@ -874,8 +886,9 @@ on every request instead of being cached by URL alone.</p></li>
 <li><p><strong>Voice conversion.</strong> Voice conversion is outside the current zero-shot TTS scope.</p></li>
 <li><p><strong>Streaming decode.</strong> The current implementation buffers all speech tokens before Flow + HiFT
 decoding. Incremental PCM output is planned but is not yet available.</p></li>
-<li><p><strong>Flow batch scope.</strong> Flow batching currently supports only the PyTorch estimator. HiFT
-remains serial, and streaming Flow/HiFT batching is outside the current buffered decoder.</p></li>
+<li><p><strong>Flow batch scope.</strong> Flow batching currently supports only the PyTorch estimator, and HiFT
+batches only the mels produced by one Flow bucket, only while the padding waste stays within
+<code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>. Streaming Flow/HiFT batching is outside the current buffered decoder.</p></li>
 <li><p><strong>cosyvoice dependency.</strong> The <code class="docutils literal notranslate"><span class="pre">cosyvoice</span></code> package has no PyPI release and must be
 installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
 only the CosyVoice Flow and HiFT paths are used by the buffered decoder.</p></li>
