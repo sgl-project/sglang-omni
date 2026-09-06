@@ -473,11 +473,11 @@ that happened to contain an older version of the test.
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation.
-  - pinned CUDA staging primitives (`cuda_staging`): exact-size growth that
-    keeps the old storage on allocation failure, allocation outside inference
-    mode, one reusable completion event per transfer slot, and record/sync
-    error propagation with same-device stream checks, using CPU stand-ins
-    where no GPU is present.
+  - pinned CUDA staging primitives (`cuda_staging`): exact-size growth,
+    reusable events, non-blocking completion queries, device checks, and
+    record/query/synchronize failure handling. Failed records invalidate
+    completion reads until a later record succeeds. CPU tests use stand-ins;
+    `accelerator` cases cover in-flight D2H queries and cross-device use.
 - `unit_test/model_runner/`: Shared model-runner contract tests:
   - arch override pool sizing: a sub-model engine's KV pool takes the
     sub-model's layer count through SGLang's layer resolver (the Qwen3-Omni
@@ -609,11 +609,11 @@ that happened to contain an older version of the test.
     ```bash
     pytest tests/unit_test/qwen3_omni/test_code2wav_cuda_graph.py -m accelerator -q
     ```
-  - Code2Wav output overlap (depth-2 pipelined D2H): message-for-message byte
-    identity against the synchronous path, first-window sync cadence,
-    stream-done pending flush, lazy batched EOS scanning, pinned-slot pool
-    lifecycle across abort/replay-failure/exhaustion, and profiler event
-    shape; the `accelerator`-marked case runs real pinned buffers and CUDA events
+  - Code2Wav output overlap (depth-2 pipelined D2H): byte parity with the
+    synchronous path, first-window and stream-done behavior, CUDA Graph replay,
+    and slot lifecycle across abort and failure paths. The `accelerator` cases
+    cover real pinned buffers and events, eager/graph parity, in-flight
+    completion queries, abort recovery, and cross-device use.
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
   - Thinker prefill contracts: `OmniPrefillInputs` adoption for text and
     audio-input → text-output prefills, whole-batch fail-closed qualification,
@@ -826,5 +826,7 @@ that happened to contain an older version of the test.
   installer rollback, interrupted-run recovery, and lock serialization. No
   accelerator is required.
 
-- `unit_test/fixtures/`: Shared fakes. Single-test
-  helpers should stay local until a second test needs them.
+- `unit_test/fixtures/`: Shared fakes, plus the runtime accelerator probe
+  (`accelerator.py`, `require_cuda(min_devices)`) that `accelerator`-marked
+  tests call in the test body. Single-test helpers should stay local until a
+  second test needs them.

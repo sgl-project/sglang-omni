@@ -3,7 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
-use super::{ResolvedTarget, WorkerRecord};
+use super::{CapacityClass, ResolvedTarget, WorkerRecord};
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub(crate) enum AdmissionError {
@@ -15,37 +15,57 @@ pub(crate) enum AdmissionError {
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub(crate) enum DispatchError {
+    #[error("compatible workers have ambiguous default models")]
+    AmbiguousModel,
     #[error("no configured profile matches the request")]
     NoEligibleProfile,
     #[error("matching workers are unavailable")]
     Unavailable,
+    #[error("router dispatch invariant failed")]
+    Internal,
 }
 
-/// Global and generation-class ingress ownership, released exactly once.
+/// Global-envelope and route-class ingress ownership, released exactly once.
 pub(crate) struct AdmissionLease {
-    _generation: OwnedSemaphorePermit,
+    class: CapacityClass,
+    credits: usize,
+    _class: OwnedSemaphorePermit,
+    _envelope: EnvelopeLease,
+}
+
+pub(crate) struct EnvelopeLease {
     _global: OwnedSemaphorePermit,
+}
+
+impl AdmissionLease {
+    pub(super) const fn class(&self) -> CapacityClass {
+        self.class
+    }
 }
 
 /// Active worker load retained through response termination.
 struct WorkerLoadGuard {
     registration: Arc<WorkerRecord>,
+    weight: usize,
 }
 
 impl WorkerLoadGuard {
-    fn new(registration: Arc<WorkerRecord>) -> Self {
-        registration.increment_load();
-        Self { registration }
+    fn new(registration: Arc<WorkerRecord>, weight: usize) -> Self {
+        registration.increment_load(weight);
+        Self {
+            registration,
+            weight,
+        }
     }
 }
 
 impl Drop for WorkerLoadGuard {
     fn drop(&mut self) {
-        self.registration.decrement_load();
+        self.registration.decrement_load(self.weight);
     }
 }
 
-/// Admission and worker load retained through response termination.
+/// Admission and weighted worker load retained through response termination.
 pub(crate) struct RequestLease {
     _admission: AdmissionLease,
     load: WorkerLoadGuard,
@@ -53,9 +73,10 @@ pub(crate) struct RequestLease {
 
 impl RequestLease {
     pub(super) fn new(admission: AdmissionLease, registration: Arc<WorkerRecord>) -> Self {
+        let weight = admission.credits;
         Self {
             _admission: admission,
-            load: WorkerLoadGuard::new(registration),
+            load: WorkerLoadGuard::new(registration, weight),
         }
     }
 
@@ -75,30 +96,54 @@ impl RequestLease {
 
 pub(super) struct AdmissionController {
     global: Arc<Semaphore>,
-    generation: Arc<Semaphore>,
+    classes: [Option<Arc<Semaphore>>; 4],
 }
 
 impl AdmissionController {
-    pub(super) fn new(global: usize, generation: usize) -> Self {
+    pub(super) fn new(global: usize, limits: [Option<usize>; 4]) -> Self {
         Self {
             global: Arc::new(Semaphore::new(global)),
-            generation: Arc::new(Semaphore::new(generation)),
+            classes: limits.map(|limit| limit.map(|value| Arc::new(Semaphore::new(value)))),
         }
     }
 
-    pub(super) fn try_admit(&self) -> Result<AdmissionLease, AdmissionError> {
+    pub(super) fn try_admit(
+        &self,
+        class: CapacityClass,
+        credits: u32,
+    ) -> Result<AdmissionLease, AdmissionError> {
+        let envelope = self.try_admit_envelope()?;
+        self.try_admit_class(envelope, class, credits)
+    }
+
+    pub(super) fn try_admit_envelope(&self) -> Result<EnvelopeLease, AdmissionError> {
         let global = Arc::clone(&self.global)
             .try_acquire_owned()
             .map_err(|error| match error {
                 TryAcquireError::Closed => AdmissionError::Draining,
                 TryAcquireError::NoPermits => AdmissionError::Overloaded,
             })?;
-        let generation = Arc::clone(&self.generation)
-            .try_acquire_owned()
+        Ok(EnvelopeLease { _global: global })
+    }
+
+    pub(super) fn try_admit_class(
+        &self,
+        envelope: EnvelopeLease,
+        class: CapacityClass,
+        credits: u32,
+    ) -> Result<AdmissionLease, AdmissionError> {
+        let class_semaphore = self.classes[class.index()]
+            .as_ref()
+            .ok_or(AdmissionError::Overloaded)?;
+        let class_permit = Arc::clone(class_semaphore)
+            .try_acquire_many_owned(credits)
             .map_err(|_| AdmissionError::Overloaded)?;
+        let credits = usize::try_from(credits).map_err(|_| AdmissionError::Overloaded)?;
         Ok(AdmissionLease {
-            _generation: generation,
-            _global: global,
+            class,
+            credits,
+            _class: class_permit,
+            _envelope: envelope,
         })
     }
 
@@ -107,10 +152,12 @@ impl AdmissionController {
     }
 
     #[cfg(test)]
-    pub(super) fn available(&self) -> (usize, usize) {
-        (
-            self.global.available_permits(),
-            self.generation.available_permits(),
-        )
+    pub(super) fn available(&self) -> (usize, [Option<usize>; 4]) {
+        let classes = std::array::from_fn(|index| {
+            self.classes[index]
+                .as_ref()
+                .map(|semaphore| semaphore.available_permits())
+        });
+        (self.global.available_permits(), classes)
     }
 }

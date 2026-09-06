@@ -71,7 +71,7 @@ pub(super) fn build_health_client(
         .build()
 }
 
-pub(super) fn build_generation_client(
+pub(super) fn build_http_client(
     connect_timeout: Duration,
     pool_idle_timeout: Duration,
     pool_max_idle_per_host: usize,

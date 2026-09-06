@@ -36,9 +36,13 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
 
     vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
     assert vocoder.factory.dtype == "bfloat16"
+    # max_batch_size / max_batch_wait_ms are declared fields on FactoryArgs, so
+    # they are validated eagerly rather than passing through as extras.
+    assert vocoder.factory.max_batch_size == 16
+    assert vocoder.factory.max_batch_wait_ms == 30
     assert vocoder.factory.model_extra == {
         "flow_batch_bucket_frames": 50,
-        "flow_batch_admission_frames": 2000,
+        "flow_batch_admission_frames": 8000,
         "enable_dit_torch_compile": False,
     }
 

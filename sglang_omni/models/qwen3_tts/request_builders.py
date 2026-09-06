@@ -101,6 +101,25 @@ def derive_qwen3_tts_sampling_seeds(seed: int) -> tuple[int, int]:
     )
 
 
+@dataclass(frozen=True)
+class SubtalkerSampling:
+    do_sample: bool
+    temperature: float
+    top_p: float
+    top_k: int
+
+
+def resolve_subtalker_sampling(gen_kwargs: dict[str, Any]) -> SubtalkerSampling:
+    """Subtalker sampling from merged generate kwargs, with the fallbacks used
+    when the checkpoint ships no generation config."""
+    return SubtalkerSampling(
+        do_sample=bool(gen_kwargs.get("subtalker_dosample", True)),
+        temperature=float(gen_kwargs.get("subtalker_temperature", 0.9)),
+        top_p=float(gen_kwargs.get("subtalker_top_p", 1.0)),
+        top_k=int(gen_kwargs.get("subtalker_top_k", 50)),
+    )
+
+
 @dataclass
 class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     """Qwen3-TTS scheduler-owned request state."""
@@ -110,6 +129,7 @@ class Qwen3TTSSGLangRequestData(SGLangARRequestData):
     latest_stream_code_chunk: torch.Tensor | None = None
     stream_ref_sent: bool = False
     stream_codec_output: bool = False
+    suppress_bootstrap_silence: bool = False
     ref_code: torch.Tensor | None = None
     ref_code_len: int = 0
     prompt_input_embeds: torch.Tensor | None = None
@@ -311,6 +331,16 @@ def build_qwen3_tts_state(
     seed = tts_params["seed"] if "seed" in tts_params else params.get("seed")
     normalized_seed = _normalize_qwen3_tts_seed(seed) if seed is not None else None
 
+    suppress_bootstrap_silence = resolve_bootstrap_silence_suppression(
+        task_type=task_type,
+        voice=voice,
+        language=language,
+        instructions=instructions,
+        stream_codec_output=stream_codec_output,
+        params=params,
+        tts_params=tts_params,
+    )
+
     return Qwen3TTSState(
         text=text,
         task_type=task_type,
@@ -331,6 +361,7 @@ def build_qwen3_tts_state(
         x_vector_only_mode=x_vector_only_mode,
         non_streaming_mode=non_streaming_mode,
         stream_codec_output=stream_codec_output,
+        suppress_bootstrap_silence=suppress_bootstrap_silence,
         generation_kwargs=build_generation_kwargs(
             params,
             tts_params=tts_params,
@@ -468,6 +499,60 @@ def resolve_stream_codec_output(
         if "non_streaming_mode" in source:
             return not bool(source["non_streaming_mode"])
     return default
+
+
+# note (luojiaxuan): the model deterministically emits one silent bootstrap
+# codec frame for these voice/language pairs under shipped-default sampling
+# (measured n=2229, Ryan/English 1.7B: first-80ms RMS never above -103 dBFS).
+# Extending either set requires an equivalent corpus measurement first.
+QWEN3_TTS_BOOTSTRAP_SILENCE_VOICES = frozenset({"ryan"})
+QWEN3_TTS_BOOTSTRAP_SILENCE_LANGUAGES = frozenset({"english"})
+# note (luojiaxuan): max_new_tokens caps length without touching the first
+# frame's sampling distribution, so it stays out of the eligibility gate.
+_BOOTSTRAP_SILENCE_SAMPLING_FIELDS = frozenset(
+    name for name in _GENERATION_FIELDS if name != "max_new_tokens"
+)
+# note (luojiaxuan): the serving layer materializes a sampling value on every
+# request, so key presence cannot distinguish an operator override. The request
+# already carries explicit_generation_params, which names the fields the caller
+# actually set, so that is the discriminator rather than a second copy of the
+# defaults.
+
+
+def resolve_bootstrap_silence_suppression(
+    *,
+    task_type: str,
+    voice: str | None,
+    language: str,
+    instructions: str | None,
+    stream_codec_output: bool,
+    params: dict[str, Any],
+    tts_params: dict[str, Any],
+) -> bool:
+    for source in (params, tts_params):
+        if "suppress_bootstrap_silence" in source:
+            if not bool(source["suppress_bootstrap_silence"]):
+                return False
+            break
+    if task_type != QWEN3_TTS_TASK_CUSTOM_VOICE:
+        return False
+    if not stream_codec_output:
+        return False
+    if instructions:
+        return False
+    if (voice or "").lower() not in QWEN3_TTS_BOOTSTRAP_SILENCE_VOICES:
+        return False
+    if language.lower() not in QWEN3_TTS_BOOTSTRAP_SILENCE_LANGUAGES:
+        return False
+    explicit = tts_params.get("explicit_generation_params")
+    explicit_fields = (
+        {str(field) for field in explicit}
+        if isinstance(explicit, (list, tuple, set))
+        else set()
+    )
+    if explicit_fields & _BOOTSTRAP_SILENCE_SAMPLING_FIELDS:
+        return False
+    return True
 
 
 def normalize_language(language: Any) -> str:
@@ -1339,6 +1424,7 @@ def build_sglang_qwen3_tts_request(
     ref_code_len = (
         int(prepared.ref_code.shape[0]) if prepared.ref_code is not None else 0
     )
+    subtalker = resolve_subtalker_sampling(gen_kwargs)
     data = Qwen3TTSSGLangRequestData(
         input_ids=prepared.input_ids,
         attention_mask=prepared.attention_mask,
@@ -1353,12 +1439,13 @@ def build_sglang_qwen3_tts_request(
         prompt_input_embeds=prepared.prompt_input_embeds,
         prefill_input_embeds=prepared.prompt_input_embeds,
         semantic_sampling_seed=semantic_sampling_seed,
-        subtalker_dosample=bool(gen_kwargs.get("subtalker_dosample", True)),
-        subtalker_temperature=float(gen_kwargs.get("subtalker_temperature", 0.9)),
-        subtalker_top_p=float(gen_kwargs.get("subtalker_top_p", 1.0)),
-        subtalker_top_k=int(gen_kwargs.get("subtalker_top_k", 50)),
+        subtalker_dosample=subtalker.do_sample,
+        subtalker_temperature=subtalker.temperature,
+        subtalker_top_p=subtalker.top_p,
+        subtalker_top_k=subtalker.top_k,
         subtalker_sampling_seed=subtalker_sampling_seed,
         stream_codec_output=state.stream_codec_output,
+        suppress_bootstrap_silence=state.suppress_bootstrap_silence,
         engine_start_s=time.perf_counter(),
     )
     data.pending_text_queue = PendingTextTensorQueue.from_tensor(
@@ -1496,6 +1583,8 @@ def make_qwen3_tts_scheduler_adapters(*, model: Any, wrapper: Any):
                 metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
                     INITIAL_CODEC_CHUNK_FRAMES_PARAM
                 ]
+            if data.suppress_bootstrap_silence:
+                metadata["bootstrap_silence_suppression"] = True
             data.stream_ref_sent = True
 
         codes = codes.detach().to(dtype=torch.long)

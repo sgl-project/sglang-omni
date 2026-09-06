@@ -584,6 +584,7 @@ class PipelineConfig(BaseModel):
     processes: dict[str, ProcessConfig] = Field(default_factory=dict)
     env_defaults: dict[str, str] = Field(default_factory=dict)
     mps: Literal["off", "on", "auto"] = "off"
+    weight_share: Literal["off", "on"] = "off"
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)

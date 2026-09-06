@@ -5,6 +5,7 @@ The runner owns the single serving path. It can start one OS process containing
 multiple non-TP stages, multiple OS processes on the same GPU, and the existing
 one-process-per-rank TP topology.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,6 +42,7 @@ from sglang_omni.pipeline.stage_workers import (
     StageLaunchConfig,
     StageWorkerProcessSpec,
 )
+from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
@@ -465,6 +467,15 @@ async def _finish_despite_cancellation(coro) -> None:
         raise cancelled
 
 
+def _wave_stage_names(wave: list[StageGroup]) -> list[str]:
+    return [
+        stage_spec.stage_name
+        for group in wave
+        for spec in group.process_specs
+        for stage_spec in spec.stage_specs
+    ]
+
+
 class MultiProcessPipelineRunner:
 
     def __init__(self, config: PipelineConfig):
@@ -479,6 +490,7 @@ class MultiProcessPipelineRunner:
         self._prep: PipelineRuntimePrep | None = None
         self._started = False
         self._mps: MpsPipelineRuntime | None = None
+        self._weight_share: WeightSharePlan | None = None
 
     @property
     def coordinator(self) -> Coordinator:
@@ -528,6 +540,20 @@ class MultiProcessPipelineRunner:
                 replica_topology=prep.replica_topology,
             )
 
+            # Note (Jiaxin Deng): roles are assigned before the coordinator
+            # binds and before any child is spawned, so an unshareable topology
+            # fails in milliseconds instead of after a leader has loaded a
+            # whole checkpoint.
+            if self._config.weight_share != "off":
+                self._weight_share = plan_weight_share(
+                    self._config,
+                    logical_process_plan=prep.logical_process_plan,
+                    process_specs=[
+                        spec for group in groups for spec in group.process_specs
+                    ],
+                    runtime_dir=prep.runtime_dir.path,
+                )
+
             terminal_stages_resolver = (
                 import_string(self._config.terminal_stages_fn)
                 if self._config.terminal_stages_fn
@@ -564,7 +590,7 @@ class MultiProcessPipelineRunner:
 
             # Note (Jiaxin Deng): daemons must predate the first CUDA init and
             # ride the same spawn-time env patching; off must touch nothing.
-            mps_env_by_process = None
+            env_by_process: dict[str, dict[str, str]] | None = None
             if self._config.mps != "off":
                 all_process_specs = [
                     spec for group in groups for spec in group.process_specs
@@ -575,28 +601,40 @@ class MultiProcessPipelineRunner:
                 )
             if self._mps is not None:
                 await self._mps.start()
-                mps_env_by_process = {
-                    spec.process_name: env
+                env_by_process = {
+                    spec.process_name: dict(env)
                     for spec in all_process_specs
                     if (env := self._mps.env_for_process(spec.process_name))
                 }
-            for group in self._groups:
-                if mps_env_by_process is None:
-                    group.spawn(ctx)
-                else:
-                    group.spawn(
-                        ctx,
-                        process_env_overrides=mps_env_by_process,
-                    )
+            if self._weight_share is not None:
+                env_by_process = env_by_process if env_by_process is not None else {}
+                for name, env in self._weight_share.env_by_process.items():
+                    env_by_process.setdefault(name, {}).update(env)
 
-            await asyncio.gather(*(g.wait_ready(timeout) for g in self._groups))
+            # Note (Jiaxin Deng): timeout is the budget for one startup wave,
+            # not for the whole call: weight sharing makes startup genuinely
+            # sequential, and splitting one budget would let a slow leader load
+            # starve the follower attach that follows it into a false timeout.
+            for wave in self._spawn_waves():
+                if not wave:
+                    continue
+                for group in wave:
+                    if env_by_process is None:
+                        group.spawn(ctx)
+                    else:
+                        group.spawn(
+                            ctx,
+                            process_env_overrides=env_by_process,
+                        )
 
-            for group in self._groups:
-                if group.any_dead():
-                    raise RuntimeError(
-                        f"Stage process(es) died during startup: "
-                        f"{group.dead_summary()}"
-                    )
+                await asyncio.gather(*(g.wait_ready(timeout) for g in wave))
+
+                for group in wave:
+                    if group.any_dead():
+                        raise RuntimeError(
+                            f"Stage process(es) died during startup: "
+                            f"{group.dead_summary()}"
+                        )
 
             if self._mps is not None:
                 await self._mps.verify()
@@ -618,7 +656,10 @@ class MultiProcessPipelineRunner:
                 total_procs,
             )
 
-        except Exception as startup_error:
+        # Note (Jiaxin Deng): one branch for both, because a cancellation
+        # without MPS used to skip cleanup entirely and strand the children it
+        # had already spawned; only the MPS release is conditional.
+        except BaseException as startup_error:
             process_start_attempts: set[str] | None = None
             if self._mps is not None:
                 process_start_attempts = self._process_start_attempts()
@@ -633,19 +674,6 @@ class MultiProcessPipelineRunner:
                     except BaseException as cleanup_error:
                         raise startup_error from cleanup_error
             raise
-        except BaseException as startup_error:
-            if self._mps is not None:
-                process_start_attempts = self._process_start_attempts()
-                try:
-                    await self._cleanup_on_failure()
-                finally:
-                    try:
-                        await self._close_mps(
-                            process_start_attempts=process_start_attempts
-                        )
-                    except BaseException as cleanup_error:
-                        raise startup_error from cleanup_error
-            raise
 
     def _process_start_attempts(self) -> set[str]:
         return {
@@ -653,6 +681,38 @@ class MultiProcessPipelineRunner:
             for group in self._groups
             for process_name in group.process_start_attempts()
         }
+
+    def _is_weight_share_follower(self, group: StageGroup) -> bool:
+        if self._weight_share is None:
+            return False
+        followers = self._weight_share.follower_process_names
+        return any(spec.process_name in followers for spec in group.process_specs)
+
+    def _spawn_waves(self) -> list[list[StageGroup]]:
+        """Partition groups so every weight-share follower starts last.
+
+        # Note (Jiaxin Deng): a follower waits for the leader's export inside
+        # the per-GPU startup lock, so a follower that wins that lock first
+        # would block the leader that has to release it.
+        """
+        if self._weight_share is None:
+            return [list(self._groups)]
+        followers = [g for g in self._groups if self._is_weight_share_follower(g)]
+        leaders_and_rest = [
+            g for g in self._groups if not self._is_weight_share_follower(g)
+        ]
+        return [leaders_and_rest, followers]
+
+    def _shutdown_waves(self) -> list[list[StageGroup]]:
+        """Retire followers before their leader.
+
+        # Note (Jiaxin Deng): a follower's aliased weights die with the leader
+        # process, so a leader that exits first turns an ordinary shutdown into
+        # the follower's liveness-monitor abort.
+        """
+        if self._weight_share is None:
+            return [list(self._groups)]
+        return list(reversed(self._spawn_waves()))
 
     async def _monitor_children(self) -> None:
         while self._started:
@@ -734,18 +794,28 @@ class MultiProcessPipelineRunner:
         await _finish_despite_cancellation(self._teardown())
 
     async def _teardown(self) -> None:
-        # Send shutdown to stages via coordinator
-        try:
-            await self._coordinator.shutdown_stages()
-        except Exception as e:
-            logger.warning("shutdown_stages error: %s", e)
-
-        # Shutdown all groups
         before_signal = self._retire_mps_clients if self._mps is not None else None
-        await asyncio.gather(
-            *(g.shutdown(before_signal=before_signal) for g in self._groups),
-            return_exceptions=True,
-        )
+        waves = self._shutdown_waves()
+        partitioned = len(waves) > 1
+        for wave in waves:
+            if not wave:
+                continue
+            # Send shutdown to stages via coordinator
+            try:
+                if partitioned:
+                    await self._coordinator.shutdown_stages(
+                        stage_names=_wave_stage_names(wave)
+                    )
+                else:
+                    await self._coordinator.shutdown_stages()
+            except Exception as e:
+                logger.warning("shutdown_stages error: %s", e)
+
+            # Shutdown this wave's groups
+            await asyncio.gather(
+                *(g.shutdown(before_signal=before_signal) for g in wave),
+                return_exceptions=True,
+            )
 
         mps_error: BaseException | None = None
         if self._mps is not None:
@@ -770,7 +840,7 @@ class MultiProcessPipelineRunner:
 
     async def _cleanup_on_failure(self) -> None:
         """Best-effort cleanup after a failed start()."""
-        for group in self._groups:
+        for group in [g for wave in self._shutdown_waves() for g in wave]:
             for spec, p in zip(group.process_specs, group.processes):
                 if p.is_alive():
                     if self._mps is not None:
