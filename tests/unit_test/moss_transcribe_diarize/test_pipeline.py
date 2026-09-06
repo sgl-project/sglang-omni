@@ -68,7 +68,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     factory = config.stages[0].factory
     engine = config.stages[0].engine
     assert factory.device == "cuda:0"
-    assert engine.max_running_requests == 16
+    assert engine.max_running_requests == 32
     assert engine.enable_torch_compile is True
     assert engine.torch_compile_max_bs == 4
     assert factory.encoder_max_batch_size == 2
@@ -191,7 +191,7 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
 def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
 
-    assert signature.parameters["max_running_requests"].default == 16
+    assert signature.parameters["max_running_requests"].default == 32
     assert signature.parameters["mem_fraction_static"].default == 0.80
     assert signature.parameters["enable_torch_compile"].default is False
     assert signature.parameters["torch_compile_max_bs"].default == 4
