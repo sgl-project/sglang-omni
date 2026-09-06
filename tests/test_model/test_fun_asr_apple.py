@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -58,17 +59,34 @@ def _encode(samples, sample_rate, fmt):
     return buffer.getvalue()
 
 
-def _to_m4a(wav_bytes):
+def _to_m4a(wav_bytes, output_path):
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required to encode the M4A fixture")
+    # A regular MP4/M4A container needs seekable output to finalize its header.
     result = subprocess.run(
-        ["ffmpeg", "-y", "-f", "wav", "-i", "pipe:0", "-f", "ipod", "pipe:1"],
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "wav",
+            "-i",
+            "pipe:0",
+            "-c:a",
+            "aac",
+            "-f",
+            "ipod",
+            str(output_path),
+        ],
         input=wav_bytes,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=30,
     )
-    if result.returncode != 0:
-        pytest.skip(f"ffmpeg unavailable for m4a encoding: {result.stderr[-500:]}")
-    return result.stdout
+    assert result.returncode == 0, result.stderr.decode(errors="replace")[-2000:]
+    return output_path.read_bytes()
 
 
 @pytest.fixture(scope="module")
@@ -140,7 +158,7 @@ def test_real_speech_near_thirty_seconds_uses_default_budget(real_speech_samples
     assert "cars" in response.json()["text"].lower()
 
 
-def test_mp3_and_m4a_uploads_transcribe_correctly(audio):
+def test_mp3_upload_transcribes_correctly(audio):
     samples, sample_rate = sf.read(io.BytesIO(audio), dtype="float32")
 
     mp3_response = requests.post(
@@ -154,9 +172,13 @@ def test_mp3_and_m4a_uploads_transcribe_correctly(audio):
     mp3_response.raise_for_status()
     assert "cars" in mp3_response.json()["text"].lower()
 
+
+def test_m4a_upload_transcribes_correctly(audio, tmp_path):
     m4a_response = requests.post(
         f"{_URL}/v1/audio/transcriptions",
-        files={"file": ("audio.m4a", _to_m4a(audio), "audio/mp4")},
+        files={
+            "file": ("audio.m4a", _to_m4a(audio, tmp_path / "audio.m4a"), "audio/mp4")
+        },
         data={"language": "en"},
         timeout=120,
     )
