@@ -220,3 +220,20 @@ Set `stream_emit_chunk_frames=1` for per-frame streaming. The 2-GPU `multi_gpu` 
   has an isolated request RNG.
 - **Rare runaway generation.** A small fraction of utterances can loop and generate up to
   `max_new_tokens`; lowering `max_new_tokens` bounds the output.
+
+## Serve with Example Config
+
+For a copy-paste single-GPU launch, use the bundled
+[`examples/configs/zonos2.yaml`](../../examples/configs/zonos2.yaml). It pins
+`config_cls: Zonos2PipelineConfig` and the official `model_path`; the single-process
+`preprocessing → speaker_encode → tts_engine → vocoder` pipeline runs colocated on one GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --config examples/configs/zonos2.yaml \
+  --port 8000
+```
+
+The config targets a single GPU (validated on a single A100-40G / H100). After
+the server is up, clone a voice with the examples in
+[Voice Cloning](#voice-cloning).
