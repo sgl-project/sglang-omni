@@ -538,3 +538,16 @@ r1 验收(47 请求,100% 完成,0 underrun):**first playable p50 35.8ms(此前 4
 初始解码 plan 0.38 / launch 0.28 / resolve 4.3 / commit 0.11 ms,合计 4.6ms(此前 17-18ms)。
 单测 507 过(3 个 test_compat 文档测试在该 rsync 树上失败,与本改动无关,server-30ms 树上通过)。
 三 seed r20 与事件剖面在跑。
+
+r20 三 seed(事件解耦树 5ad19d18 + record_stream 5456cc54,全部 100% 完成,2026-09-06 13:10 PT):
+
+| arm | seed 0 | seed 1 | seed 2 | 均值 | 第九轮均值 | first playable p50 / p95 |
+|---|---|---|---|---|---|---|
+| 默认 ramp (1,2,4) | 1.11% | 0.60% | 1.83% | **1.18%** | 2.8% | 64-66 / 88-91 ms(此前 76-79 / 106-114) |
+| ramp (2,4) | 0.26% | 0.00% | 0.00% | **0.09%** | 0.26% | ~81 / ~109 ms(此前 95-98 / 127-137) |
+
+默认 ramp 的 underrun 再减半以上、首帧 p50 少 12ms、p95 少 20ms;legacy 起点是 20.9% / 159-767ms。
+外审(`docs/reviews/2026-09-06-qwen3-tts-stream-decoupling.md`)指出的生命周期漏洞已用
+record_stream 堵上;它另指出 PyTorch 以 `cudaGraphInstantiateFlagUseNodePriority` 实例化图,
+kernel 优先级取自**捕获流**而非 replay 流——我们的图一直在默认优先级流上捕获,所谓高优先级
+vocoder 流对图内 kernel 从未生效。第十一轮:在解码流同优先级的流上捕获,r20 A/B。
