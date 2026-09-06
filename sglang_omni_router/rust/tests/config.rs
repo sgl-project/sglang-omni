@@ -287,6 +287,28 @@ fn voice_state_has_one_exact_owner_with_uploaded_voice_support() {
 }
 
 #[test]
+fn voice_upload_bound_fits_the_buffered_request_budget() {
+    let body_max = 10 * 1024 * 1024 + 64 * 1024;
+    let with_budget = |bytes| {
+        voice_only_config().replace(
+            "buffered_request_total_bytes = 16777216",
+            &format!("buffered_request_total_bytes = {bytes}"),
+        )
+    };
+
+    assert!(load_bytes(with_budget(body_max).as_bytes()).is_ok());
+    let error = load_bytes(with_budget(body_max - 1).as_bytes())
+        .expect_err("voice upload bound must fit the buffered request budget");
+    assert!(matches!(
+        error,
+        ConfigError::InvalidField {
+            field: "http.buffered_request_total_bytes",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn voice_owner_need_not_serve_preset_only_speech_interfaces() {
     let uploaded_http_owner = voice_only_config()
         .replace("global = 8", "global = 8\nspeech_websocket = 4")

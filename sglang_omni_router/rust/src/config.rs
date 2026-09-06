@@ -491,6 +491,12 @@ impl Config {
                     .as_ref()
                     .map(|config| config.buffered_request_max_bytes),
             )
+            .chain(
+                self.router
+                    .voice_owner_worker_id
+                    .as_ref()
+                    .map(|_| VOICE_UPLOAD_BODY_MAX_BYTES),
+            )
             .max()
             .unwrap_or(0);
         if self.http.buffered_request_total_bytes < largest_buffered_request
