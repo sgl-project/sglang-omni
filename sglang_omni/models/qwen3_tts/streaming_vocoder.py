@@ -2548,10 +2548,26 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
         while True:
             in_flight = bool(getattr(self._worker_ctx, "pending_incremental", None))
-            with self._followup_collect_lock:
-                batch = self._collect_followup_batch(
-                    first_timeout=self._followup_batch_wait_s if in_flight else None
-                )
+            if in_flight:
+                # note (luojiaxuan): an idle sibling blocks inside the collect
+                # lock until something is queued, and the very thing that
+                # queues the next chunk of this worker's stream is the commit
+                # it still owes. Bound the wait for the lock so the commit
+                # never depends on unrelated traffic arriving.
+                if not self._followup_collect_lock.acquire(
+                    timeout=self._followup_batch_wait_s
+                ):
+                    self._drain_pending_incremental(keep=0)
+                    continue
+                try:
+                    batch = self._collect_followup_batch(
+                        first_timeout=self._followup_batch_wait_s
+                    )
+                finally:
+                    self._followup_collect_lock.release()
+            else:
+                with self._followup_collect_lock:
+                    batch = self._collect_followup_batch(first_timeout=None)
             if batch is None:
                 self._drain_pending_incremental(keep=0)
                 if in_flight and not self._async_stop.is_set():
