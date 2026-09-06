@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
 # Adapted from vLLM-Omni diffusion profiler (Apache 2.0 licensed)
 # Original files:
 # - https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/diffusion/profiler/torch_profiler.py
