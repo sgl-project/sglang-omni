@@ -624,3 +624,7 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
   ~4.4ms。低 batch 下 code predictor(16 个量化器串行子步,已在一张图里,~0.27ms/子步)是 Talker
   每帧成本的主项:它同时决定 prefill 的 finalize 4.6ms、第二帧的等待、以及每帧节奏。下一刀候选:
   用与 vocoder 同样的手法(tensor-only 子步 + torch.compile 降 kernel 数)压子步内的 kernel 数。
+- **混合 chunked prefill r20 三 seed:作废**。首帧 p50 3.7s(!)、完成率 63%、E2E p50 5.7s——
+  `enable_mixed_chunk` 下本 scheduler 的 prefill/decode 混批把请求整体拖垮,r1 冒烟里 E2E 尾部
+  变差就是前兆。r20 那 ~14ms 准入等待另找办法(例如在 resolve 等待期间做准入,或缩短 decode 步
+  本身——code predictor 那 4.4ms 正是 decode 步的大头)。
