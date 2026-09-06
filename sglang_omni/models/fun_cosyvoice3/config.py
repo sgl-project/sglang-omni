@@ -63,8 +63,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 flow_batch_admission_frames=8000,
                 max_batch_size=16,
                 max_batch_wait_ms=30,
-                # note (guozhihao-224): mutually exclusive DiT accelerators; both default off.
-                enable_dit_torch_compile=False,
+                # note (guozhihao-224): mutually exclusive DiT accelerators.
+                # note (db-ol): torch.compile is on by default, it removes most of
+                # the per step dispatch cost that saturates the vocoder thread and
+                # costs about 100 s at startup. Set it false to skip or to use TRT.
+                enable_dit_torch_compile=True,
                 enable_flow_estimator_trt=False,
             ),
             gpu=0,

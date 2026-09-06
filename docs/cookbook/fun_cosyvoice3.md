@@ -145,24 +145,22 @@ incompatible Flow structure fails directly instead of using a fallback implement
 ### torch.compile for the DiT backbone
 
 The flow decoder's DiT backbone (`flow.decoder.estimator`, a 22-layer DiT invoked
-once per Euler step) can be compiled with `torch.compile` to reduce per-step
-kernel-launch overhead. It is opt-in because it pays a one-time compile cost at
-startup and is most beneficial under sustained throughput load. The compile uses
-`dynamic=True`, so one symbolic-sequence-length graph serves every utterance
-length.
+once per Euler step) is compiled with `torch.compile` to reduce per-step
+kernel-launch overhead. It is on by default. The compile pays a one-time cost of
+about 100 s at startup with an empty inductor cache and uses `dynamic=True`, so
+one symbolic-sequence-length graph serves every utterance length.
 
-Enable it by overriding the vocoder stage's `factory` args (the `stages.`
-prefix is implied in the CLI dotted path):
+Disable it by overriding the vocoder stage's `factory` args (the `stages.`
+prefix is implied in the CLI dotted path), for example to shorten startup during
+development or before enabling TensorRT for the same DiT (see below):
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
   --config examples/configs/fun_cosyvoice3_0_5b.yaml \
-  --vocoder.factory.enable_dit_torch_compile true \
+  --vocoder.factory.enable_dit_torch_compile false \
   --port 8000
 ```
-
-Do not enable this together with TensorRT for the same DiT (see below).
 
 ### TensorRT for the DiT backbone
 
@@ -176,12 +174,14 @@ Packed Flow (CFG batch = `2 * request_batch`) still works by chunking
 request-wise cond/uncond pairs into that CFG=2 engine.
 
 TensorRT and `torch.compile` both replace the same DiT, so they are mutually
-exclusive. Enable only one:
+exclusive. Because `torch.compile` is on by default, switch it off when
+enabling TensorRT:
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
   --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --vocoder.factory.enable_dit_torch_compile false \
   --vocoder.factory.enable_flow_estimator_trt true \
   --port 8000
 ```
