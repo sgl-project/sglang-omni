@@ -83,6 +83,43 @@ def try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
     return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
+def _load_raw_config(model_path: str) -> dict | None:
+    """Read ``config.json`` as plain JSON, from a local dir or a Hub repo id."""
+    local_config = os.path.join(model_path, "config.json")
+    if os.path.isfile(local_config):
+        with open(local_config) as f:
+            return json.load(f)
+    if os.path.isdir(model_path):
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cached = hf_hub_download(repo_id=model_path, filename="config.json")
+        with open(cached) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def try_resolve_arch_from_nemo_config(model_path: str) -> str | None:
+    """Resolve architecture from a NeMo training config (local or Hub).
+
+    Some checkpoints ship the config they were trained with rather than an HF
+    one, so there is no ``architectures`` or ``model_type`` to read. A duplex
+    speech-to-speech model is recognisable all the same: its config carries
+    both a speech-understanding and a speech-generation section.
+    """
+    raw = _load_raw_config(model_path)
+    if raw is None:
+        return None
+    model = raw.get("model")
+    if not isinstance(model, dict):
+        return None
+    if "stt" in model and "speech_generation" in model:
+        return "NemotronVoiceChatForCausalLM"
+    return None
+
+
 def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
     """Resolve architecture by reading raw ``config.json`` as plain JSON.
 
@@ -91,24 +128,7 @@ def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
     module is unavailable).  We parse the JSON directly to extract
     ``architectures`` or map ``model_type``.
     """
-    raw: dict | None = None
-
-    # Try local path first
-    local_config = os.path.join(model_path, "config.json")
-    if os.path.isfile(local_config):
-        with open(local_config) as f:
-            raw = json.load(f)
-    elif not os.path.isdir(model_path):
-        # Treat as a Hub repo id — download config.json
-        try:
-            from huggingface_hub import hf_hub_download
-
-            cached = hf_hub_download(repo_id=model_path, filename="config.json")
-            with open(cached) as f:
-                raw = json.load(f)
-        except Exception:
-            return None
-
+    raw = _load_raw_config(model_path)
     if raw is None:
         return None
 
