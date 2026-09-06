@@ -278,6 +278,11 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   仍等 7.7ms:vocoder 自己的节点已经便宜,剩下的等待来自与 Talker(默认优先级流、
   batch 48 的大 kernel)交错——vocoder 流优先级已是 -4(最高 -5),但优先级不能抢占
   正在跑的 kernel。下一步验证:r10(Talker 负载减半)下 resolve 是否随之下降。
+- **负面:COLD(首块)形状也编译(commit 342f36e5)反而变差**:ramp (2,4) underrun
+  2.73%→4.26%、First playable p50 110→136ms;ramp (1,2,4) underrun 22.6%→18.8% 但
+  First playable p95 148→433ms。首块在 initial worker 上 B 多为 1-2,编译版对它没有节点
+  优势,却多了每形状 15s 的启动编译与运行时 guard 开销。已 revert(5f25e155),COLD 保持
+  eager-in-graph。
 
 ## 决策日志
 
