@@ -263,6 +263,12 @@ def create_vocoder_executor(
         dtype=dtype,
         attn_implementation=attn_implementation,
     )
+    if torch.device(device).type == "mps":
+        from sglang_omni.models.qwen3_tts.torch_mps_vocoder import (
+            create_torch_mps_vocoder_scheduler,
+        )
+
+        return create_torch_mps_vocoder_scheduler(tokenizer)
 
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         tokenizer,
