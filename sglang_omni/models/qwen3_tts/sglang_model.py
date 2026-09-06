@@ -463,6 +463,9 @@ class Qwen3TTSPromptBuilderMixin:
         language: str,
         voice: str | None = None,
     ) -> int | None:
+        # Note(yzxiao): QwenLM/Qwen3-TTS (qwen-tts 0.1.1) also applies speaker
+        # dialects to Chinese. Keep explicit languages unchanged here so existing
+        # Chinese requests do not switch to a dialect when using Eric or Dylan.
         if language.lower() != "auto":
             return self.config.codec_language_id[language.lower()]
         if voice is None:
