@@ -31,7 +31,7 @@ dependencies = [
     "pybase64>=1.4.0",       # fast base64 decode for inline media (utils/audio.py)
     "tabulate",
     "pandas",
-    "typer>=0.9.0",
+    "typer>=0.19.0",  # Literal options in the CLI need 0.19+
 
     # --- PyTorch XPU builds (from --extra-index-url .../whl/xpu) -------------
     # Pins match SGLang's pyproject_xpu.toml / xpu.Dockerfile.
