@@ -55,6 +55,28 @@ class TranscriptionAdapter(ABC):
         """
         return text
 
+    def postprocess_plain_text(self, text: str) -> str:
+        """Post-process ``response_format=text`` without changing legacy output.
+
+        Existing adapters historically returned their raw model text for this
+        format. Models that require clean plain text can opt in without
+        changing that behavior for every other transcription pipeline.
+        """
+        return text
+
+    def resolve_language(
+        self,
+        raw_text: str,
+        requested_language: str | None,
+    ) -> str | None:
+        """Resolve the response language before model markup is removed.
+
+        Most models do not emit a language marker, so the default preserves
+        the caller's value. Adapters for language-detecting models can inspect
+        ``raw_text`` and return the detected locale instead.
+        """
+        return requested_language
+
     @abstractmethod
     def build_verbose_response(
         self,

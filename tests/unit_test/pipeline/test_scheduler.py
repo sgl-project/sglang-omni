@@ -158,6 +158,26 @@ def test_simple_scheduler_batch_and_error_contracts() -> None:
         out.type == "error" and isinstance(out.data, ValueError) for out in outputs
     )
 
+    mixed = SimpleScheduler(
+        lambda payload: payload,
+        batch_compute_fn=lambda payloads: [payloads[0].upper(), ValueError("bad")],
+        max_batch_size=2,
+        max_batch_wait_ms=10,
+    )
+    outputs = run_scheduler(
+        mixed,
+        [
+            IncomingMessage("req-1", "new_request", "a"),
+            IncomingMessage("req-2", "new_request", "b"),
+        ],
+        output_count=2,
+    )
+    by_request = {out.request_id: out for out in outputs}
+    assert by_request["req-1"].type == "result"
+    assert by_request["req-1"].data == "A"
+    assert by_request["req-2"].type == "error"
+    assert isinstance(by_request["req-2"].data, ValueError)
+
 
 def test_threaded_simple_scheduler_runs_requests_concurrently() -> None:
     """Covers concurrent worker execution before result emission."""
