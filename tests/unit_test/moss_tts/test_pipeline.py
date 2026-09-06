@@ -903,6 +903,7 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
 ) -> None:
     from sglang_omni.models.moss_tts import request_builders as rb
     from sglang_omni.models.moss_tts import stages
+    from sglang_omni.platforms import current_platform
 
     processor = SimpleNamespace(
         audio_tokenizer=None,
@@ -927,6 +928,7 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
 
     monkeypatch.setattr(stages, "_load_moss_processor", lambda model_path: processor)
     monkeypatch.setattr(stages, "load_moss_audio_encoder", load_encoder)
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
 
     try:
         stages.create_preprocessing_executor(
