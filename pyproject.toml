@@ -34,8 +34,8 @@ dependencies = [
     # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
     # so Apple Silicon installs this exact tag from source with the all_mps extra.
     "sglang==0.5.18; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "mlx-lm; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx>=0.32.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "flashinfer_python[cu13]==0.6.17; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
     "cache-dit==1.3.0",      # MiniMax Music 3 DIT (hard import, not optional)
     "addict==2.4.0",         # sglang.multimodal_gen server_args; MiniMax DIT import
@@ -66,7 +66,8 @@ dependencies = [
     "mistral_common[audio]>=1.11.0",
     # /v1/realtime — server-side turn detection
     "silero-vad>=5.1",
-    "onnxruntime-gpu>=1.17",  # CUDAExecutionProvider for the FP32 Smart Turn model
+    "onnxruntime-gpu>=1.17; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDAExecutionProvider for the FP32 Smart Turn model
+    "onnxruntime>=1.17; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "websockets>=12.0",       # FastAPI WebSocket library + example clients
     # Testing
     "pytest>=7.0.0",
