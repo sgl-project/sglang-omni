@@ -11,7 +11,7 @@ enum State {
     Failed,
 }
 
-/// Authoritative legal process-state transitions shared with local health.
+/// Authoritative legal process-state transitions shared with local serving.
 pub(crate) struct Lifecycle {
     state: Mutex<State>,
 }
@@ -58,6 +58,12 @@ impl Lifecycle {
         self.state
             .lock()
             .is_ok_and(|state| matches!(*state, State::Serving | State::Draining))
+    }
+
+    pub(crate) fn is_serving(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| matches!(*state, State::Serving))
     }
 
     fn transition(&self, from: State, to: State) -> Result<(), RouterError> {

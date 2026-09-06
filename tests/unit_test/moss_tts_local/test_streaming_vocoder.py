@@ -56,16 +56,38 @@ class _FakeStreamingState:
         self.exec_mask[reset_mask] = True
 
 
+class FakeQuantizer:
+    """Batched-path quantizer: [N, B, T] codes -> [B, 1, T] hidden values
+    ``sum(codes[:, b, t]) + 1000 * t`` (the other half of ``reference_waveform``)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def decode_codes(self, codes: torch.Tensor) -> torch.Tensor:
+        self.calls += 1
+        values = codes.to(torch.float64).sum(dim=0)
+        offsets = torch.arange(int(codes.shape[2]), dtype=torch.float64) * 1000.0
+        return (values + offsets).to(torch.float32).unsqueeze(1)
+
+
 class _FakeDecoderStage(nn.Module):
     module_type = "PatchedPretransform"
-    patch_size = 1
+    patch_size = SAMPLES_PER_FRAME
+    is_downsample = False
 
     def forward(
         self,
         x: torch.Tensor,
         input_lengths: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return x, input_lengths
+        # note (Zhang Yiyang): [B, 1, T] -> [B, 2, T * SAMPLES_PER_FRAME]:
+        # replicate per-frame values over the frame's samples (negated on the
+        # second channel).
+        audio = x.repeat_interleave(SAMPLES_PER_FRAME, dim=-1)
+        return (
+            torch.cat([audio, -audio], dim=1),
+            input_lengths * SAMPLES_PER_FRAME,
+        )
 
 
 class FakeCodec(nn.Module):
@@ -85,6 +107,7 @@ class FakeCodec(nn.Module):
         self.attention_implementation = "flash_attention_2"
         self.attention_implementation_calls: list[str] = []
         self.decoder = nn.ModuleList([_FakeDecoderStage()])
+        self.quantizer = FakeQuantizer()
         self.frame_calls = 0
         self.decode_calls = 0
         self.decode_chunk_durations: list[float | None] = []
@@ -156,7 +179,22 @@ class FakeCodec(nn.Module):
             )
         else:
             lengths = padding_mask.sum(dim=-1).long()
-        return self._decode_frame(audio_codes, lengths)
+        # note (Zhang Yiyang): full-sequence decode is stateless in the real
+        # codec — production runs it through the shared batched path
+        # (decode_codes_batch), which never consults a live streaming session's
+        # exec_mask/offsets; the fake mirrors that by ignoring _streaming_state.
+        _, batch_size, total = audio_codes.shape
+        audio = torch.zeros(batch_size, 2, total * SAMPLES_PER_FRAME)
+        audio_lengths = torch.zeros(batch_size, dtype=torch.long)
+        for b in range(batch_size):
+            t_len = int(lengths[b])
+            for t in range(t_len):
+                value = float(audio_codes[:, b, t].sum()) + 1000.0 * t
+                start = t * SAMPLES_PER_FRAME
+                audio[b, 0, start : start + SAMPLES_PER_FRAME] = value
+                audio[b, 1, start : start + SAMPLES_PER_FRAME] = -value
+            audio_lengths[b] = t_len * SAMPLES_PER_FRAME
+        return SimpleNamespace(audio=audio, audio_lengths=audio_lengths)
 
 
 class FakeProcessor:
@@ -391,13 +429,15 @@ def test_stream_concatenates_to_offline_decode(monkeypatch) -> None:
     }
 
 
-def test_default_session_preserves_batch_width_for_streaming_lanes(monkeypatch) -> None:
+def test_default_session_streaming_lane_capacity(monkeypatch) -> None:
     scheduler = _make_scheduler(monkeypatch, FakeProcessor())
     session = scheduler._ensure_session()
 
     assert scheduler._max_batch_size == 8
-    assert scheduler._stream_slots == 15
-    assert session._offline_slots == 1
+    # note (Zhang Yiyang): 15 streaming lanes + the 1 lane freed by removing the
+    # offline reserve = 16; the freed lane goes to streaming, not the trash.
+    assert scheduler._stream_slots == 16
+    assert not hasattr(session, "_offline_slots")
     assert session._batch_size == 16
 
 
@@ -406,7 +446,6 @@ def test_streaming_session_forces_sdpa_and_restores_codec_backend() -> None:
     session = _CodecStreamSession(
         codec,
         stream_slots=2,
-        offline_slots=1,
         n_vq=N_VQ,
     )
 
@@ -427,7 +466,7 @@ def test_streaming_session_restores_backend_when_streaming_setup_fails() -> None
 
     codec = FailingCodec()
     with pytest.raises(RuntimeError, match="streaming setup failed"):
-        _CodecStreamSession(codec, stream_slots=1, offline_slots=1, n_vq=N_VQ)
+        _CodecStreamSession(codec, stream_slots=1, n_vq=N_VQ)
 
     assert codec.attention_implementation == "flash_attention_2"
     assert codec.attention_implementation_calls == ["sdpa", "flash_attention_2"]
@@ -932,7 +971,7 @@ def test_slot_reacquisition_preserves_initial_chunk_boundary(monkeypatch) -> Non
     )
 
 
-def test_slot_exhaustion_falls_back_to_offline_decode(monkeypatch) -> None:
+def test_slot_exhaustion_falls_back_to_batched_decode(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(
         monkeypatch,
@@ -960,12 +999,13 @@ def test_slot_exhaustion_falls_back_to_offline_decode(monkeypatch) -> None:
         for m in messages_b
         if m.type == "stream"
     ]
-    assert sizes_b == [8]  # one catch-up chunk decoded through the offline lane
+    # note (Zhang Yiyang): the whole buffer decodes in one batched call.
+    assert sizes_b == [8]
     np.testing.assert_array_equal(
         _concat_stream_audio(messages_b, "b"),
         reference_waveform(rows_b[:, 1:]).numpy(),
     )
-    # "a" is unaffected by b's offline-lane decode.
+    # note (Zhang Yiyang): "a" is unaffected by b's batched decode.
     for index, row in enumerate(rows_a[5:], start=5):
         scheduler._on_chunk("a", _stream_item(row, metadata, index))
     scheduler._on_done("a")
@@ -1014,11 +1054,10 @@ def test_abort_releases_slot(monkeypatch) -> None:
     )
 
 
-def test_non_streaming_path_ignores_idle_startup_session(monkeypatch) -> None:
+def test_non_streaming_path_leaves_startup_session_untouched(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
-    scheduler._ensure_session()
-    assert scheduler._session is not None
+    startup_session = scheduler._ensure_session()
     assert scheduler._codec._streaming_state is not None
 
     rows = _rows(11, seed=59)
@@ -1026,12 +1065,14 @@ def test_non_streaming_path_ignores_idle_startup_session(monkeypatch) -> None:
     (result,) = scheduler._vocode_batch([_offline_payload(rows, "r1")])
 
     assert processor.decode_calls == 0
-    assert scheduler._codec.decode_calls == 1
-    assert scheduler._codec.decode_chunk_durations == [None]
-    assert scheduler._codec.decode_decoders == [scheduler._nonstream_decoder]
+    # note (Zhang Yiyang): the batched path bypasses codec.decode entirely (no
+    # decoder swap, no streaming-loop entry): quantizer decode happens once,
+    # under no session, and never touches the startup session.
+    assert scheduler._codec.decode_calls == 0
+    assert scheduler._codec.quantizer.calls == 1
     assert scheduler._codec.decoder is original_decoder
-    assert scheduler._session is None
-    assert scheduler._codec._streaming_state is None
+    assert scheduler._session is startup_session
+    assert scheduler._codec._streaming_state is not None
     np.testing.assert_array_equal(
         _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
     )
@@ -1058,15 +1099,14 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     rows_2 = _rows(4, seed=61)
     original_decoder = scheduler._codec.decoder
 
-    # Before any stream: use the full-sequence tokenizer path with the packed
-    # non-streaming decoder installed.
+    # note (Zhang Yiyang): before any stream, use the batched full-sequence
+    # path (quantizer + batched decoder), never codec.decode.
     results = scheduler._vocode_batch(
         [_offline_payload(rows_1, "r1"), _offline_payload(rows_2, "r2")]
     )
     assert processor.decode_calls == 0
-    assert scheduler._codec.decode_calls == 1
-    assert scheduler._codec.decode_chunk_durations == [None]
-    assert scheduler._codec.decode_decoders == [scheduler._nonstream_decoder]
+    assert scheduler._codec.decode_calls == 0
+    assert scheduler._codec.quantizer.calls == 1
     assert scheduler._codec.decoder is original_decoder
     waves_before = [_decode_audio(result.data) for result in results]
     for result in results:
@@ -1078,14 +1118,15 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     _run_stream(scheduler, _rows(6, seed=62))
     assert scheduler._session is not None
 
-    # ...after which the processor path would raise ("already streaming"), so
-    # offline decodes must go through the session's offline lane and still
-    # produce identical audio.
+    # note (Zhang Yiyang): ...after which offline decodes still use the batched
+    # full-sequence path (non-streaming work never enters the streaming
+    # session), producing identical audio.
     results = scheduler._vocode_batch(
         [_offline_payload(rows_1, "r3"), _offline_payload(rows_2, "r4")]
     )
     assert processor.decode_calls == 0
-    assert scheduler._codec.decode_calls == 1
+    assert scheduler._codec.decode_calls == 0
+    assert scheduler._codec.quantizer.calls == 2
     waves_after = [_decode_audio(result.data) for result in results]
     for before, after in zip(waves_before, waves_after):
         np.testing.assert_array_equal(before, after)
@@ -1094,7 +1135,7 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     )
 
 
-def test_offline_lane_waves_split_across_slots(monkeypatch) -> None:
+def test_offline_batch_uses_batched_path_with_live_session(monkeypatch) -> None:
     del monkeypatch
     processor = FakeProcessor()
     # Constructed directly: max_step_frames is not a factory knob.
@@ -1119,13 +1160,20 @@ def test_offline_lane_waves_split_across_slots(monkeypatch) -> None:
             )
         )
     results = scheduler._vocode_batch(payloads)
+    codec = processor.audio_tokenizer
+    # note (Zhang Yiyang): two batched waves (3 items, max_batch_size=2); no
+    # session stepping.
+    assert codec.decode_calls == 0
+    assert codec.quantizer.calls == 2
     for rows, result in zip(rows_list, results):
         np.testing.assert_array_equal(
             _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
         )
 
 
-def test_mixed_offline_batch_borrows_idle_stream_slots(monkeypatch) -> None:
+def test_offline_batch_leaves_stream_slots_untouched(monkeypatch) -> None:
+    """With streams holding slots, an offline batch decodes via the batched path
+    without borrowing or resetting any stream slot."""
     processor = FakeProcessor()
     codec = processor.audio_tokenizer
     scheduler = _make_scheduler(
@@ -1142,6 +1190,9 @@ def test_mixed_offline_batch_borrows_idle_stream_slots(monkeypatch) -> None:
             request_id, _stream_item(_rows(1, seed=seed)[0], _metadata())
         )
     assert codec.frame_calls == 0
+    session = scheduler._session
+    assert session is not None
+    assert len(session._free_stream_slots) == 1
 
     offline_rows = [_rows(2, seed=82), _rows(2, seed=83)]
     results = scheduler._vocode_batch(
@@ -1150,95 +1201,23 @@ def test_mixed_offline_batch_borrows_idle_stream_slots(monkeypatch) -> None:
             _offline_payload(offline_rows[1], "offline-b"),
         ]
     )
-    assert codec.frame_calls == 1
+    assert codec.decode_calls == 0
+    assert codec.quantizer.calls == 1
+    # note (Zhang Yiyang): the batched path never runs streaming steps.
+    assert codec.frame_calls == 0
+    assert scheduler._session is session
+    assert len(session._free_stream_slots) == 1
     for rows, result in zip(offline_rows, results):
         np.testing.assert_array_equal(
             _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
         )
 
     rows = _rows(2, seed=84)
-    messages = _run_stream(scheduler, rows, request_id="borrowed-slot-stream")
+    messages = _run_stream(scheduler, rows, request_id="stream-after-offline")
     np.testing.assert_array_equal(
-        _concat_stream_audio(messages, "borrowed-slot-stream"),
+        _concat_stream_audio(messages, "stream-after-offline"),
         reference_waveform(rows[:, 1:]).numpy(),
     )
-
-
-def test_offline_borrowed_slot_is_leased_and_reset_after_failure(monkeypatch) -> None:
-    processor = FakeProcessor()
-    scheduler = _make_scheduler(
-        monkeypatch,
-        processor,
-        stream_slots=2,
-        max_batch_size=2,
-        stream_chunk_frames=3,
-        initial_chunk_frames=3,
-    )
-    scheduler._on_chunk("held", _stream_item(_rows(1, seed=85)[0], _metadata()))
-    session = scheduler._ensure_session()
-    borrowed_slot = session._free_stream_slots[-1]
-    original_step = session.step
-
-    def fail_after_step(slot_codes):
-        assert borrowed_slot not in session._free_stream_slots
-        original_step(slot_codes)
-        raise RuntimeError("injected offline decode failure")
-
-    monkeypatch.setattr(session, "step", fail_after_step)
-    offline_codes = [
-        rows[:, 1:].transpose(0, 1).contiguous()
-        for rows in (_rows(2, seed=86), _rows(2, seed=87))
-    ]
-    with pytest.raises(RuntimeError, match="injected offline decode failure"):
-        session.decode_offline(offline_codes, max_step_frames=3, max_batch_size=2)
-
-    monkeypatch.setattr(session, "step", original_step)
-    assert session._free_stream_slots == [borrowed_slot]
-    rows = _rows(2, seed=88)
-    messages = _run_stream(scheduler, rows, request_id="after-failure")
-    np.testing.assert_array_equal(
-        _concat_stream_audio(messages, "after-failure"),
-        reference_waveform(rows[:, 1:]).numpy(),
-    )
-
-
-def test_offline_borrowed_slot_is_quarantined_without_masking_failure(
-    monkeypatch,
-) -> None:
-    processor = FakeProcessor()
-    scheduler = _make_scheduler(
-        monkeypatch,
-        processor,
-        stream_slots=2,
-        max_batch_size=2,
-    )
-    session = scheduler._ensure_session()
-    borrowed_slot = session._free_stream_slots[-1]
-    original_step = session.step
-    original_reset = session._reset_slots
-    reset_calls = 0
-
-    def fail_after_step(slot_codes):
-        original_step(slot_codes)
-        raise ValueError("injected decode failure")
-
-    def fail_cleanup_reset(slots):
-        nonlocal reset_calls
-        reset_calls += 1
-        if reset_calls == 2:
-            raise RuntimeError("injected reset failure")
-        original_reset(slots)
-
-    monkeypatch.setattr(session, "step", fail_after_step)
-    monkeypatch.setattr(session, "_reset_slots", fail_cleanup_reset)
-    offline_codes = [
-        rows[:, 1:].transpose(0, 1).contiguous()
-        for rows in (_rows(2, seed=89), _rows(2, seed=90))
-    ]
-    with pytest.raises(ValueError, match="injected decode failure"):
-        session.decode_offline(offline_codes, max_step_frames=3, max_batch_size=2)
-
-    assert borrowed_slot not in session._free_stream_slots
 
 
 def test_stop_closes_persistent_streaming_session(monkeypatch) -> None:
@@ -1474,8 +1453,8 @@ def test_create_vocoder_executor_uses_separate_codec(monkeypatch) -> None:
 
     assert processor.decode_calls == 0
     assert processor.audio_tokenizer.decode_calls == 0
-    assert codec.decode_calls == 1
-    assert codec.decode_decoders == [scheduler._nonstream_decoder]
+    assert codec.decode_calls == 0
+    assert codec.quantizer.calls == 1
     np.testing.assert_array_equal(
         _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
     )
@@ -1611,10 +1590,13 @@ def test_factory_captures_graphs_before_returning(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("trigger", ["chunk", "slot_starved", "no_chunk_done"])
-def test_streaming_recaptures_graph_after_nonstreaming(monkeypatch, trigger) -> None:
-    """Non-streaming traffic closes the graphed startup session; the next streaming session must be
-    re-captured. Covers all three streaming session-creation paths: a first chunk (_ensure_slot), a
-    slot-starved finish (on_stream_done offline lane), a no-chunk finish (_decode_payload_codes).
+def test_streaming_reuses_graphed_session_after_nonstreaming(
+    monkeypatch, trigger
+) -> None:
+    """Non-streaming traffic leaves the graphed startup session intact; later streaming work
+    reuses it with no re-capture. Streaming sessions are created by the first-chunk path
+    (_ensure_slot), or by the factory warmup; a slot-starved finish and a no-chunk finish use
+    the batched non-streaming route and never create a session by themselves.
     """
     calls: list = []
     _install_fake_capture(monkeypatch, calls, seal=True)
@@ -1628,15 +1610,15 @@ def test_streaming_recaptures_graph_after_nonstreaming(monkeypatch, trigger) -> 
     )
     assert scheduler._session is not None
     assert scheduler._session.has_cuda_graph_runner()
-    # Hold the object, not id(): a GC'd session's address can be reused, so an id()
-    # check risks a false negative. `is not` on the retained ref is reliable.
     startup_session = scheduler._session
 
-    # Non-streaming traffic closes the idle startup session.
+    # note (Zhang Yiyang): non-streaming decode uses the batched path and
+    # leaves the startup session untouched.
     nonstream_rows = _rows(5, seed=1)
     (result,) = scheduler._vocode_batch([_offline_payload(nonstream_rows, "n1")])
-    assert scheduler._session is None
-    assert startup_session._closed
+    assert scheduler._session is startup_session
+    assert not startup_session._closed
+    assert len(calls) == 1
     np.testing.assert_array_equal(
         _decode_audio(result.data), reference_waveform(nonstream_rows[:, 1:]).numpy()
     )
@@ -1644,7 +1626,9 @@ def test_streaming_recaptures_graph_after_nonstreaming(monkeypatch, trigger) -> 
     if trigger == "chunk":
         scheduler._on_chunk("s", _stream_item(_rows(6, seed=2)[0], _metadata()))
     elif trigger == "slot_starved":
-        # "hold" takes the only slot; "starve" buffers without a slot, then finishes offline.
+        # note (Zhang Yiyang): "hold" takes the persistent session's only
+        # slot; "starve" buffers without a slot, then finishes through the
+        # batched path.
         for i, row in enumerate(_rows(5, seed=3)):
             scheduler._on_chunk("hold", _stream_item(row, _metadata(), i))
         for i, row in enumerate(_rows(6, seed=4)):
@@ -1659,17 +1643,25 @@ def test_streaming_recaptures_graph_after_nonstreaming(monkeypatch, trigger) -> 
             "nc", _terminal_payload(_rows(5, seed=5), request_id="nc")
         )
 
-    assert scheduler._session is not None
+    if trigger == "no_chunk_done":
+        # note (Zhang Yiyang): batched non-streaming decode creates no session;
+        # the factory-captured startup session stays the only one.
+        assert scheduler._session is startup_session
+        assert len(calls) == 1
+        messages = _drain(scheduler)
+        np.testing.assert_array_equal(
+            _concat_stream_audio(messages, "nc"),
+            reference_waveform(_rows(5, seed=5)[:, 1:]).numpy(),
+        )
+        return
+
+    # note (Zhang Yiyang): streaming work reuses the factory-captured session —
+    # no re-capture.
+    assert scheduler._session is startup_session
     assert (
-        scheduler._session is not startup_session
-    ), "a fresh session must have been created, not the closed startup one"
-    # Factory warmup (1) + this recapture (1): exactly one recapture happened.
-    assert (
-        len(calls) == 2
-    ), f"{trigger}: expected 2 warmups (factory + recapture), got {len(calls)}"
-    assert (
-        scheduler._session.has_cuda_graph_runner()
-    ), f"{trigger}: the new streaming session must be re-captured"
+        len(calls) == 1
+    ), f"{trigger}: expected 1 warmup (factory only, no recapture), got {len(calls)}"
+    assert scheduler._session.has_cuda_graph_runner()
 
 
 def test_low_vram_capture_attempted_once_no_reprobe(monkeypatch) -> None:

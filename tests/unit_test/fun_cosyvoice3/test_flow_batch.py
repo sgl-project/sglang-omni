@@ -197,7 +197,9 @@ def test_flow_batch_cfg_uses_two_times_request_batch() -> None:
         assert call["x"].shape[0] == 6
         assert call["mask"].shape[0] == 6
         assert call["mu"].shape[0] == 6
-        assert call["t"].shape[0] == 6
+        # The ODE time is a scalar shared by the batch and by both CFG halves,
+        # so only one row is materialised; the DiT broadcasts it.
+        assert call["t"].shape[0] == 1
         assert call["spks"].shape[0] == 6
         assert call["cond"].shape[0] == 6
         assert call["streaming"] is False

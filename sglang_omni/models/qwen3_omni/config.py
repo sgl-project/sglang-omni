@@ -182,6 +182,15 @@ def _decode_stage(*, process: str) -> StageConfig:
     )
 
 
+def _talker_stage_env() -> dict[str, str]:
+    if not current_platform.is_rocm():
+        return {}
+    # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
+    # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
+    # greedy Talker request would corrupt its first codec token.
+    return {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}
+
+
 def _talker_stage(
     *,
     gpu: int,
@@ -191,6 +200,7 @@ def _talker_stage(
     return EngineStageConfig(
         name="talker_ar",
         process=process,
+        env=_talker_stage_env(),
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.request_builders.merge_for_talker",

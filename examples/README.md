@@ -59,6 +59,16 @@ sgl-omni serve \
   --port 8000
 ```
 
+Qwen3-Omni BF16, one-GPU colocated AMD MI355X (gfx950, ROCm):
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_colocated_gfx950_bf16.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8000
+```
+
 ## Ming-Omni Server
 
 Text output:

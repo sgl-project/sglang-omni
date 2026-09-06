@@ -154,6 +154,9 @@ class ModelWorker:
         model_config.num_key_value_heads = text_cfg.num_key_value_heads
         model_config.hidden_size = text_cfg.hidden_size
         model_config.num_hidden_layers = text_cfg.num_hidden_layers
+        # note(ratish): SGLang sizes the KV pool from the larger of these two
+        # and set the second from the root text config at construction.
+        model_config.num_attention_layers = text_cfg.num_hidden_layers
         if arch == "MingTTSSGLangModel":
             model_config.head_dim = int(text_cfg.head_dim)
             model_config.v_head_dim = model_config.head_dim

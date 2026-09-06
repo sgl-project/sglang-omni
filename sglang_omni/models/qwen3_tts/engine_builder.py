@@ -8,7 +8,12 @@ from typing import Any
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 
 
 def _is_truthy(value: Any) -> bool:
@@ -21,6 +26,16 @@ def _is_truthy(value: Any) -> bool:
     return False
 
 
+# note (luojiaxuan): the generic ladder starts at 4, and a replay falls back to
+# eager when its bucket exceeds twice the real token count, so a 1-token prefill
+# lands in bucket 4 and misses. Measured over 3203 prefills at 10 and 20 RPS on
+# H100 CustomVoice, 1301 of them (40.6%) are exactly one token, and they are the
+# only shapes that fall back: 2 and 3 already replay inside bucket 4. Adding the
+# single 1 bucket takes the fallback rate to zero, so the default is the shared
+# ladder plus that bucket rather than a hand-picked list.
+QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
+
+
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     model_name = "Qwen3-TTS"
     context_length = 8192
@@ -29,10 +44,22 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
 
-    def __init__(self, *, attn_implementation: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        attn_implementation: str | None = None,
+        prefill_coalesce_requests: int = 0,
+        prefill_coalesce_wait_ms: float = 60.0,
+    ) -> None:
         self.attn_implementation = attn_implementation
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None
+        # note (luojiaxuan): the factory assigns this before generation_defaults
+        # runs, but Qwen3TTSPipelineConfig.generation_admission_defaults builds a
+        # bare builder just to read the admission keys, so it needs a value.
+        self.checkpoint_dir: str = ""
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
@@ -52,7 +79,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
-        return {
+        defaults: dict[str, Any] = {
             "max_running_requests": 16,
             "max_queued_requests": 16,
             "cuda_graph_max_bs": 32,
@@ -66,6 +93,18 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
         }
+        if (
+            self.checkpoint_dir
+            and qwen3_tts_checkpoint_model_type(self.checkpoint_dir) == "custom_voice"
+        ):
+            # note (luojiaxuan): the ladder is sized from the text-only prompt
+            # length distribution, and under load prefills coalesce into one
+            # extend batch, so it must reach well past a single prompt. Base
+            # prefills also carry reference audio, giving them a different shape
+            # distribution, so they keep the eager path until measured.
+            defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+            defaults["cuda_graph_bs_prefill"] = list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
+        return defaults
 
     def setup_model(
         self,
@@ -108,6 +147,27 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
 
+    def setup_model_resources(
+        self,
+        model: Any,
+        server_args: Any,
+        *,
+        generation_cuda_graph_enabled: bool,
+    ) -> None:
+        del server_args
+        if not generation_cuda_graph_enabled:
+            return
+        # note(ratish): the bucket warmups also build cuDNN's attention plans,
+        # which otherwise land inside the first serving step of each batch size.
+        subtalker = request_builders.resolve_subtalker_sampling(
+            self.wrapper._merge_generate_kwargs()
+        )
+        model.capture_predictor_graphs(
+            do_sample=subtalker.do_sample,
+            top_k=subtalker.top_k,
+            top_p=subtalker.top_p,
+        )
+
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.qwen3_tts.model_runner"
@@ -129,6 +189,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "stream_output_builder": self._stream_output_builder,
             "request_build_max_workers": 4,
             "request_build_max_pending": 16,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
     def make_abort_callback(self) -> Any | None:

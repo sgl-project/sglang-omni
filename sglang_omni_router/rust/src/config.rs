@@ -6,10 +6,22 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::error::ConfigError;
+use crate::worker_pool::profile::{
+    ServiceProfile, WorkerConfig, validate_identifier, validate_workers,
+};
 
+const DEFAULT_BUFFERED_REQUEST_MAX_BYTES: u64 = 8_388_608;
+const DEFAULT_BUFFERED_REQUEST_TOTAL_BYTES: u64 = 268_435_456;
+const DEFAULT_STREAMED_REQUEST_MAX_BYTES: u64 = 536_870_912;
+const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 1_800_000;
+const DEFAULT_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
+const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 8;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 30_000;
 const SCHEMA_VERSION: u32 = 1;
+const MAX_GLOBAL_ADMISSION: u32 = 1_000_000;
+const MAX_CLASS_ADMISSION: u32 = 65_535;
 
 /// Fully parsed and validated process configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -22,6 +34,236 @@ pub struct Config {
     pub shutdown: ShutdownConfig,
     /// Structured diagnostic output configuration.
     pub logging: LoggingConfig,
+    pub(crate) router: RouterConfig,
+    pub(crate) admission: AdmissionConfig,
+    pub(crate) health: HealthConfig,
+    #[serde(default)]
+    pub(crate) http: HttpConfig,
+    pub(crate) http_generation: Option<HttpGenerationConfig>,
+    pub(crate) http_media: Option<HttpMediaConfig>,
+    pub(crate) workers: Vec<WorkerConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct HttpConfig {
+    pub(crate) buffered_request_total_bytes: u64,
+    connect_timeout_ms: u64,
+    pool_idle_timeout_ms: u64,
+    pub(crate) pool_max_idle_per_host: usize,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self {
+        Self {
+            buffered_request_total_bytes: DEFAULT_BUFFERED_REQUEST_TOTAL_BYTES,
+            connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
+            pool_idle_timeout_ms: DEFAULT_POOL_IDLE_TIMEOUT_MS,
+            pool_max_idle_per_host: DEFAULT_POOL_MAX_IDLE_PER_HOST,
+        }
+    }
+}
+
+impl HttpConfig {
+    pub(crate) const fn connect_timeout(&self) -> Duration {
+        Duration::from_millis(self.connect_timeout_ms)
+    }
+
+    pub(crate) const fn pool_idle_timeout(&self) -> Duration {
+        Duration::from_millis(self.pool_idle_timeout_ms)
+    }
+
+    pub(crate) fn buffered_total_usize(&self) -> Result<usize, ConfigError> {
+        usize::try_from(self.buffered_request_total_bytes).map_err(|_| {
+            ConfigError::invalid(
+                "http.buffered_request_total_bytes",
+                "cannot be represented on this platform",
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct HttpMediaConfig {
+    pub(crate) routes: Vec<HttpMediaRoute>,
+    pub(crate) trust_domain: String,
+    pub(crate) buffered_request_max_bytes: u64,
+    pub(crate) streamed_request_max_bytes: u64,
+    request_timeout_ms: u64,
+}
+
+impl Default for HttpMediaConfig {
+    fn default() -> Self {
+        Self {
+            routes: Vec::new(),
+            trust_domain: String::from("local"),
+            buffered_request_max_bytes: DEFAULT_BUFFERED_REQUEST_MAX_BYTES,
+            streamed_request_max_bytes: DEFAULT_STREAMED_REQUEST_MAX_BYTES,
+            request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+        }
+    }
+}
+
+impl HttpMediaConfig {
+    pub(crate) const fn request_timeout(&self) -> Duration {
+        Duration::from_millis(self.request_timeout_ms)
+    }
+
+    pub(crate) fn buffered_max_usize(&self) -> Result<usize, ConfigError> {
+        usize::try_from(self.buffered_request_max_bytes).map_err(|_| {
+            ConfigError::invalid(
+                "http_media.buffered_request_max_bytes",
+                "cannot be represented on this platform",
+            )
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HttpMediaRoute {
+    Speech,
+    SpeechBatch,
+    Transcription,
+    Translation,
+}
+
+impl HttpMediaRoute {
+    pub(crate) const fn service_class(self) -> crate::worker_pool::profile::ServiceClass {
+        use crate::worker_pool::profile::ServiceClass;
+        match self {
+            Self::Speech => ServiceClass::SpeechHttp,
+            Self::SpeechBatch => ServiceClass::SpeechBatch,
+            Self::Transcription | Self::Translation => ServiceClass::TranscriptionHttp,
+        }
+    }
+
+    pub(crate) const fn speech_to_text_task(
+        self,
+    ) -> Option<crate::worker_pool::profile::SpeechToTextTask> {
+        use crate::worker_pool::profile::SpeechToTextTask;
+        match self {
+            Self::Transcription => Some(SpeechToTextTask::Transcribe),
+            Self::Translation => Some(SpeechToTextTask::Translate),
+            Self::Speech | Self::SpeechBatch => None,
+        }
+    }
+
+    pub(crate) fn matches_profile(
+        self,
+        profile: &crate::worker_pool::profile::ServiceProfile,
+    ) -> bool {
+        use crate::worker_pool::profile::ServiceProfile;
+        match (self, profile) {
+            (Self::Speech, ServiceProfile::SpeechHttp { .. })
+            | (Self::SpeechBatch, ServiceProfile::SpeechBatch { .. }) => true,
+            (
+                Self::Transcription | Self::Translation,
+                ServiceProfile::TranscriptionHttp { task, .. },
+            ) => Some(*task) == self.speech_to_text_task(),
+            _ => false,
+        }
+    }
+}
+
+/// Bounded transport and buffering policy for chat generation HTTP.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct HttpGenerationConfig {
+    pub(crate) trust_domain: String,
+    pub(crate) buffered_request_max_bytes: u64,
+    pub(crate) streamed_request_max_bytes: u64,
+    request_timeout_ms: u64,
+}
+
+impl Default for HttpGenerationConfig {
+    fn default() -> Self {
+        Self {
+            trust_domain: String::from("local"),
+            buffered_request_max_bytes: DEFAULT_BUFFERED_REQUEST_MAX_BYTES,
+            streamed_request_max_bytes: DEFAULT_STREAMED_REQUEST_MAX_BYTES,
+            request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+        }
+    }
+}
+
+impl HttpGenerationConfig {
+    pub(crate) const fn request_timeout(&self) -> Duration {
+        Duration::from_millis(self.request_timeout_ms)
+    }
+
+    pub(crate) fn buffered_max_usize(&self) -> Result<usize, ConfigError> {
+        usize::try_from(self.buffered_request_max_bytes).map_err(|_| {
+            ConfigError::invalid(
+                "http_generation.buffered_request_max_bytes",
+                "cannot be represented on this platform",
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RouterConfig {
+    #[serde(default)]
+    pub(crate) strategy: RoutingStrategy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RoutingStrategy {
+    #[default]
+    RoundRobin,
+    LeastRequests,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AdmissionConfig {
+    pub(crate) global: u32,
+    pub(crate) generation_http: Option<u32>,
+    pub(crate) speech_http: Option<u32>,
+    pub(crate) speech_batch: Option<u32>,
+    pub(crate) transcription_http: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct HealthConfig {
+    interval_ms: u64,
+    timeout_ms: u64,
+    success_threshold: u8,
+    failure_threshold: u8,
+}
+
+impl Default for HealthConfig {
+    fn default() -> Self {
+        Self {
+            interval_ms: 5_000,
+            timeout_ms: 5_000,
+            success_threshold: 2,
+            failure_threshold: 3,
+        }
+    }
+}
+
+impl HealthConfig {
+    pub(crate) fn interval(&self) -> Duration {
+        Duration::from_millis(self.interval_ms)
+    }
+
+    pub(crate) fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms)
+    }
+
+    pub(crate) fn success_threshold(&self) -> u8 {
+        self.success_threshold
+    }
+
+    pub(crate) fn failure_threshold(&self) -> u8 {
+        self.failure_threshold
+    }
 }
 
 /// Listener configuration for router-local endpoints.
@@ -158,6 +400,257 @@ impl Config {
                 reason: "invalid filter expression",
             }
         })?;
+        self.validate_admission()?;
+        self.validate_health()?;
+        validate_workers(&self.workers)?;
+        if self.http_generation.is_none() && self.http_media.is_none() {
+            return Err(ConfigError::invalid(
+                "http_generation",
+                "must configure generation or at least one media HTTP route",
+            ));
+        }
+        self.validate_http()?;
+        self.validate_http_generation()?;
+        self.validate_http_media()?;
+        Ok(())
+    }
+
+    fn validate_http(&self) -> Result<(), ConfigError> {
+        let largest_buffered_request = self
+            .http_generation
+            .as_ref()
+            .map(|config| config.buffered_request_max_bytes)
+            .into_iter()
+            .chain(
+                self.http_media
+                    .as_ref()
+                    .map(|config| config.buffered_request_max_bytes),
+            )
+            .max()
+            .unwrap_or(0);
+        if self.http.buffered_request_total_bytes < largest_buffered_request
+            || self.http.buffered_request_total_bytes > 2_147_483_647
+        {
+            return Err(ConfigError::invalid(
+                "http.buffered_request_total_bytes",
+                "must cover every per-request buffer and be at most 2147483647",
+            ));
+        }
+        let buffered_total = self.http.buffered_total_usize()?;
+        if buffered_total > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(ConfigError::invalid(
+                "http.buffered_request_total_bytes",
+                "exceeds the platform semaphore permit limit",
+            ));
+        }
+        if !(1..=60_000).contains(&self.http.connect_timeout_ms) {
+            return Err(ConfigError::invalid(
+                "http.connect_timeout_ms",
+                "must be between 1 and 60000",
+            ));
+        }
+        if !(1_000..=300_000).contains(&self.http.pool_idle_timeout_ms) {
+            return Err(ConfigError::invalid(
+                "http.pool_idle_timeout_ms",
+                "must be between 1000 and 300000",
+            ));
+        }
+        if !(1..=1_024).contains(&self.http.pool_max_idle_per_host) {
+            return Err(ConfigError::invalid(
+                "http.pool_max_idle_per_host",
+                "must be between 1 and 1024",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_http_media(&self) -> Result<(), ConfigError> {
+        let Some(media) = self.http_media.as_ref() else {
+            return Ok(());
+        };
+        if media.routes.is_empty()
+            || media
+                .routes
+                .iter()
+                .enumerate()
+                .any(|(index, route)| media.routes[..index].contains(route))
+        {
+            return Err(ConfigError::invalid(
+                "http_media.routes",
+                "must contain at least one route without duplicates",
+            ));
+        }
+        validate_identifier(&media.trust_domain, "http_media.trust_domain")?;
+        if !(1..=67_108_864).contains(&media.buffered_request_max_bytes) {
+            return Err(ConfigError::invalid(
+                "http_media.buffered_request_max_bytes",
+                "must be between 1 and 67108864",
+            ));
+        }
+        let _buffered_max = media.buffered_max_usize()?;
+        if media.streamed_request_max_bytes < media.buffered_request_max_bytes
+            || media.streamed_request_max_bytes > 4_294_967_296
+        {
+            return Err(ConfigError::invalid(
+                "http_media.streamed_request_max_bytes",
+                "must be at least the buffered limit and at most 4294967296",
+            ));
+        }
+        if media.request_timeout_ms < self.http.connect_timeout_ms
+            || media.request_timeout_ms > 3_600_000
+        {
+            return Err(ConfigError::invalid(
+                "http_media.request_timeout_ms",
+                "must be at least http.connect_timeout_ms and at most 3600000",
+            ));
+        }
+        for route in &media.routes {
+            let class_limit = match route {
+                HttpMediaRoute::Speech => self.admission.speech_http,
+                HttpMediaRoute::SpeechBatch => self.admission.speech_batch,
+                HttpMediaRoute::Transcription | HttpMediaRoute::Translation => {
+                    self.admission.transcription_http
+                }
+            };
+            if class_limit.is_none() {
+                return Err(ConfigError::invalid(
+                    "admission",
+                    "every enabled media route requires its class limit",
+                ));
+            }
+            let available = self.workers.iter().any(|worker| {
+                worker.trust_domain == media.trust_domain
+                    && worker.service_profiles.iter().any(|profile| match route {
+                        HttpMediaRoute::Speech => matches!(
+                            profile,
+                            crate::worker_pool::profile::ServiceProfile::SpeechHttp { .. }
+                        ),
+                        HttpMediaRoute::SpeechBatch => matches!(
+                            profile,
+                            crate::worker_pool::profile::ServiceProfile::SpeechBatch { .. }
+                        ),
+                        HttpMediaRoute::Transcription => matches!(
+                            profile,
+                            crate::worker_pool::profile::ServiceProfile::TranscriptionHttp {
+                                task: crate::worker_pool::profile::SpeechToTextTask::Transcribe,
+                                ..
+                            }
+                        ),
+                        HttpMediaRoute::Translation => matches!(
+                            profile,
+                            crate::worker_pool::profile::ServiceProfile::TranscriptionHttp {
+                                task: crate::worker_pool::profile::SpeechToTextTask::Translate,
+                                ..
+                            }
+                        ),
+                    })
+            });
+            if !available {
+                return Err(ConfigError::invalid(
+                    "http_media.routes",
+                    "every enabled route requires a matching worker profile",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_http_generation(&self) -> Result<(), ConfigError> {
+        let Some(generation) = self.http_generation.as_ref() else {
+            return Ok(());
+        };
+        if self.admission.generation_http.is_none() {
+            return Err(ConfigError::invalid(
+                "admission.generation_http",
+                "is required while chat generation is enabled",
+            ));
+        }
+        validate_identifier(&generation.trust_domain, "http_generation.trust_domain")?;
+        if !(1..=67_108_864).contains(&generation.buffered_request_max_bytes) {
+            return Err(ConfigError::invalid(
+                "http_generation.buffered_request_max_bytes",
+                "must be between 1 and 67108864",
+            ));
+        }
+        let _buffered_max = generation.buffered_max_usize()?;
+        if generation.streamed_request_max_bytes < generation.buffered_request_max_bytes
+            || generation.streamed_request_max_bytes > 4_294_967_296
+        {
+            return Err(ConfigError::invalid(
+                "http_generation.streamed_request_max_bytes",
+                "must be at least the buffered limit and at most 4294967296",
+            ));
+        }
+        if generation.request_timeout_ms < self.http.connect_timeout_ms
+            || generation.request_timeout_ms > 3_600_000
+        {
+            return Err(ConfigError::invalid(
+                "http_generation.request_timeout_ms",
+                "must be at least http.connect_timeout_ms and at most 3600000",
+            ));
+        }
+        if !self.workers.iter().any(|worker| {
+            worker.trust_domain == generation.trust_domain
+                && worker
+                    .service_profiles
+                    .iter()
+                    .any(|profile| matches!(profile, ServiceProfile::GenerationHttp { .. }))
+        }) {
+            return Err(ConfigError::invalid(
+                "http_generation.trust_domain",
+                "must contain at least one generation worker",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_admission(&self) -> Result<(), ConfigError> {
+        if !(1..=MAX_GLOBAL_ADMISSION).contains(&self.admission.global) {
+            return Err(ConfigError::invalid(
+                "admission.global",
+                "must be between 1 and 1000000",
+            ));
+        }
+        for limit in [
+            self.admission.generation_http,
+            self.admission.speech_http,
+            self.admission.speech_batch,
+            self.admission.transcription_http,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !(1..=MAX_CLASS_ADMISSION).contains(&limit) {
+                return Err(ConfigError::invalid(
+                    "admission",
+                    "configured class limits must be between 1 and 65535",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_health(&self) -> Result<(), ConfigError> {
+        if !(100..=300_000).contains(&self.health.interval_ms) {
+            return Err(ConfigError::invalid(
+                "health.interval_ms",
+                "must be between 100 and 300000",
+            ));
+        }
+        if self.health.timeout_ms < 10 || self.health.timeout_ms > self.health.interval_ms {
+            return Err(ConfigError::invalid(
+                "health.timeout_ms",
+                "must be between 10 and interval_ms",
+            ));
+        }
+        if !(1..=32).contains(&self.health.success_threshold)
+            || !(1..=32).contains(&self.health.failure_threshold)
+        {
+            return Err(ConfigError::invalid(
+                "health",
+                "thresholds must be between 1 and 32",
+            ));
+        }
         Ok(())
     }
 }
@@ -165,7 +658,6 @@ impl Config {
 const fn default_max_connections() -> usize {
     DEFAULT_MAX_CONNECTIONS
 }
-
 const fn default_header_read_timeout_ms() -> u64 {
     DEFAULT_HEADER_READ_TIMEOUT_MS
 }
