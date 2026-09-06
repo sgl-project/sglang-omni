@@ -14,6 +14,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
     """Single-request audio prefill and cached Hugging Face Torch decoding."""
 
     model_name = "Audio ASR"
+    prefill_chunk_size: int | None = None
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
@@ -39,6 +40,30 @@ class AudioTorchMpsModelRunner(ModelRunner):
             can_run_cuda_graph=False,
         )
 
+    def _validate_audio_positions(self, audio_positions: list[int]) -> None:
+        audio_start = audio_positions[0]
+        if audio_positions != list(
+            range(audio_start, audio_start + len(audio_positions))
+        ):
+            raise ValueError(
+                f"{self.model_name} Torch MPS audio placeholders must be contiguous"
+            )
+
+    def _get_audio_feature(self, item: Any, forward_batch: Any) -> torch.Tensor:
+        del forward_batch
+        return self.model.get_audio_feature([item])
+
+    def _assign_audio_features(
+        self,
+        input_embeddings: torch.Tensor,
+        audio_features: torch.Tensor,
+        audio_positions: list[int],
+    ) -> None:
+        audio_start = audio_positions[0]
+        input_embeddings[0, audio_start : audio_start + len(audio_positions), :] = (
+            audio_features[0]
+        )
+
     @torch.inference_mode()
     def custom_prefill_forward(
         self,
@@ -46,7 +71,6 @@ class AudioTorchMpsModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list[Any],
     ) -> Any:
-        del forward_batch
         scheduler_request = self._one_request(requests)
         req = scheduler_request.data.req
         mm_inputs = req.multimodal_inputs
@@ -80,13 +104,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise ValueError(
                 f"{self.model_name} Torch MPS prefill has no audio placeholders"
             )
-        audio_start = audio_positions[0]
-        if audio_positions != list(
-            range(audio_start, audio_start + len(audio_positions))
-        ):
-            raise ValueError(
-                f"{self.model_name} Torch MPS audio placeholders must be contiguous"
-            )
+        self._validate_audio_positions(audio_positions)
 
         language_model = self.model.language_model
         input_ids = torch.tensor(
@@ -99,7 +117,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
         # kernel left pending across that read is dispatched short: leading rows
         # of the prompt come back unwritten, or the gather itself selects zero
         # frames and the encoder fails on an empty reshape.
-        audio_features = self.model.get_audio_feature([item])
+        audio_features = self._get_audio_feature(item, forward_batch)
         input_embeddings = language_model.model.embed_tokens(input_ids)
         audio_features = audio_features.to(
             device=self.device,
@@ -117,15 +135,29 @@ class AudioTorchMpsModelRunner(ModelRunner):
                 f"{self.model_name} Torch MPS audio embedding shape does not match its "
                 f"placeholder span: {tuple(audio_features.shape)}"
             )
-        input_embeddings[0, audio_start : audio_start + len(audio_positions), :] = (
-            audio_features[0]
-        )
+        self._assign_audio_features(input_embeddings, audio_features, audio_positions)
 
-        output = language_model(
-            inputs_embeds=input_embeddings,
-            use_cache=True,
-            logits_to_keep=1,
-        )
+        chunk_size = self.prefill_chunk_size or input_embeddings.shape[1]
+        past_key_values = None
+        if self.prefill_chunk_size is not None:
+            from transformers import StaticCache
+
+            past_key_values = StaticCache(
+                language_model.config,
+                max_cache_len=(
+                    input_embeddings.shape[1] + int(req.sampling_params.max_new_tokens)
+                ),
+            )
+        output = None
+        for start in range(0, input_embeddings.shape[1], chunk_size):
+            output = language_model(
+                inputs_embeds=input_embeddings[:, start : start + chunk_size],
+                past_key_values=past_key_values,
+                use_cache=True,
+                logits_to_keep=1,
+            )
+            past_key_values = output.past_key_values
+        assert output is not None
         self._past_key_values[scheduler_request.request_id] = output.past_key_values
         return self._next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
