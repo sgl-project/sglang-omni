@@ -64,9 +64,9 @@ dependencies = [
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
     "mistral_common[audio]>=1.11.0",
-    # /v1/realtime — server-side VAD
+    # /v1/realtime — server-side turn detection
     "silero-vad>=5.1",
-    "onnxruntime>=1.17",
+    "onnxruntime-gpu>=1.17",  # CUDAExecutionProvider for the FP32 Smart Turn model
     "websockets>=12.0",       # FastAPI WebSocket library + example clients
     # Testing
     "pytest>=7.0.0",

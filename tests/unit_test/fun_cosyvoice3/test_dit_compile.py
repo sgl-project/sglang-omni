@@ -25,7 +25,7 @@ class _FakeFlow(torch.nn.Module):
 
 
 class _NonModuleEstimator:
-    """Placeholder for a non-PyTorch estimator (e.g. a TensorRT wrapper)."""
+    pass
 
 
 def test_compile_dit_backbone_compiles_estimator_forward_dynamic(monkeypatch) -> None:
@@ -136,3 +136,4 @@ def test_vocoder_factory_exposes_dit_torch_compile_flag() -> None:
 
     signature = inspect.signature(stages.create_vocoder_executor)
     assert signature.parameters["enable_dit_torch_compile"].default is False
+    assert signature.parameters["enable_flow_estimator_trt"].default is False

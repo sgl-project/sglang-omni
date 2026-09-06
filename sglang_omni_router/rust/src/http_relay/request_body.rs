@@ -3,13 +3,14 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::error::HttpFault;
 use axum::body::Body;
 use bytes::Bytes;
 use http_body::{Frame, SizeHint};
 use sync_wrapper::SyncWrapper;
 use thiserror::Error;
 use tokio::sync::OwnedSemaphorePermit;
+
+use crate::error::HttpFault;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UploadState {
@@ -30,15 +31,6 @@ impl SharedUploadState {
         }
     }
 
-    pub(crate) fn for_length(length: u64) -> Self {
-        let state = if length == 0 {
-            UploadState::Complete
-        } else {
-            UploadState::Incomplete
-        };
-        Self::new(state)
-    }
-
     pub(crate) fn snapshot(&self) -> Result<UploadState, HttpFault> {
         self.inner
             .lock()
@@ -52,19 +44,33 @@ impl SharedUploadState {
     }
 }
 
-/// One already-classified request body retaining its aggregate byte budget
-/// until Reqwest consumes or drops the body.
-pub(crate) struct BufferedBody {
-    data: Option<Bytes>,
+struct BudgetedBytes {
+    data: Bytes,
     _budget: OwnedSemaphorePermit,
 }
 
+impl AsRef<[u8]> for BudgetedBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.data.as_ref()
+    }
+}
+
+/// One already-classified request body whose shared byte budget follows the
+/// payload into the upstream transport.
+pub(crate) struct BufferedBody {
+    data: Option<Bytes>,
+}
+
 impl BufferedBody {
-    pub(crate) fn new(data: Bytes, budget: OwnedSemaphorePermit) -> Self {
-        Self {
-            data: Some(data),
-            _budget: budget,
-        }
+    pub(crate) fn new(data: Bytes, budget: Option<OwnedSemaphorePermit>) -> Self {
+        let data = match budget {
+            Some(budget) => Bytes::from_owner(BudgetedBytes {
+                data,
+                _budget: budget,
+            }),
+            None => data,
+        };
+        Self { data: Some(data) }
     }
 }
 
@@ -95,7 +101,8 @@ pub(crate) struct UploadError;
 
 pub(crate) struct DirectRequestBody {
     inner: SyncWrapper<Body>,
-    expected: u64,
+    expected: Option<u64>,
+    maximum: u64,
     observed: u64,
     final_frame_returned: bool,
     state: SharedUploadState,
@@ -103,10 +110,16 @@ pub(crate) struct DirectRequestBody {
 }
 
 impl DirectRequestBody {
-    pub(crate) fn new(body: Body, expected: u64, state: SharedUploadState) -> Self {
+    pub(crate) fn new(
+        body: Body,
+        expected: Option<u64>,
+        maximum: u64,
+        state: SharedUploadState,
+    ) -> Self {
         Self {
             inner: SyncWrapper::new(body),
             expected,
+            maximum,
             observed: 0,
             final_frame_returned: false,
             state,
@@ -149,11 +162,13 @@ impl http_body::Body for DirectRequestBody {
                     let Some(observed) = self.observed.checked_add(length) else {
                         return self.fail(HttpFault::RequestBodyTooLarge);
                     };
-                    if observed > self.expected {
+                    if observed > self.maximum
+                        || self.expected.is_some_and(|expected| observed > expected)
+                    {
                         return self.fail(HttpFault::RequestBodyTooLarge);
                     }
                     self.observed = observed;
-                    if observed == self.expected {
+                    if self.expected == Some(observed) {
                         // Axum/Hyper owns fixed-length wire framing; do not hold this frame for a synthetic EOF.
                         if self.state.publish(UploadState::Complete).is_err() {
                             return self.fail(HttpFault::InternalError);
@@ -167,7 +182,10 @@ impl http_body::Body for DirectRequestBody {
             Poll::Ready(Some(Err(_source))) => self.fail(HttpFault::MalformedRequest),
             Poll::Ready(None) => {
                 self.terminal = true;
-                if self.observed != self.expected {
+                if self
+                    .expected
+                    .is_some_and(|expected| self.observed != expected)
+                {
                     return self.fail(HttpFault::MalformedRequest);
                 }
                 if self.state.publish(UploadState::Complete).is_err() {
@@ -184,7 +202,9 @@ impl http_body::Body for DirectRequestBody {
     }
 
     fn size_hint(&self) -> SizeHint {
-        SizeHint::with_exact(self.expected.saturating_sub(self.observed))
+        self.expected.map_or_else(SizeHint::default, |expected| {
+            SizeHint::with_exact(expected.saturating_sub(self.observed))
+        })
     }
 }
 
@@ -203,10 +223,11 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use super::{DirectRequestBody, HttpFault, SharedUploadState, UploadState};
+    use super::{BufferedBody, DirectRequestBody, HttpFault, SharedUploadState, UploadState};
     use axum::body::Body;
     use bytes::{Bytes, BytesMut};
     use http_body::{Body as _, Frame};
+    use tokio::sync::Semaphore;
 
     struct Frames(VecDeque<Result<Frame<Bytes>, io::Error>>);
 
@@ -241,8 +262,8 @@ mod tests {
     }
 
     async fn drive(body: Body, expected: u64) -> (Bytes, UploadState) {
-        let state = SharedUploadState::for_length(expected);
-        let mut direct = DirectRequestBody::new(body, expected, state.clone());
+        let state = SharedUploadState::new(UploadState::Incomplete);
+        let mut direct = DirectRequestBody::new(body, Some(expected), expected, state.clone());
         let mut output = BytesMut::new();
         while let Some(Ok(frame)) = poll_fn(|cx| Pin::new(&mut direct).poll_frame(cx)).await {
             output.extend_from_slice(
@@ -269,6 +290,108 @@ mod tests {
         assert_eq!(short, UploadState::Failed(HttpFault::MalformedRequest));
         let (_, long) = drive(Body::from("abcd"), 3).await;
         assert_eq!(long, UploadState::Failed(HttpFault::RequestBodyTooLarge));
+    }
+
+    #[test]
+    fn buffered_upload_budget_follows_the_last_payload_reference() {
+        let budget = Arc::new(Semaphore::new(4));
+        let permit = Arc::clone(&budget)
+            .try_acquire_many_owned(4)
+            .expect("reserve buffered payload");
+        let mut body = BufferedBody::new(Bytes::from_static(b"data"), Some(permit));
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        let frame = Pin::new(&mut body).poll_frame(&mut context);
+        assert!(matches!(&frame, Poll::Ready(Some(Ok(_)))));
+        let Poll::Ready(Some(Ok(frame))) = frame else {
+            return;
+        };
+        let payload = frame.into_data().expect("buffered data frame");
+        let slice = payload.slice(1..);
+        drop(body);
+        assert_eq!(budget.available_permits(), 0);
+
+        drop(payload);
+        assert_eq!(budget.available_permits(), 0);
+        drop(slice);
+        assert_eq!(budget.available_permits(), 4);
+    }
+
+    #[tokio::test]
+    async fn stalled_upstream_retains_buffered_budget_until_send_is_cancelled() {
+        const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled upstream");
+        let address = listener
+            .local_addr()
+            .expect("read stalled upstream address");
+        let (body_seen_tx, body_seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _peer) = listener.accept().expect("accept stalled upload");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("bound stalled upload read");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let count = stream.read(&mut chunk).expect("read stalled upload");
+                assert_ne!(count, 0, "stalled upload closed before its body");
+                request.extend_from_slice(&chunk[..count]);
+                if request
+                    .windows(4)
+                    .position(|part| part == b"\r\n\r\n")
+                    .is_some_and(|head_end| request.len() > head_end + 4)
+                {
+                    let _sent = body_seen_tx.send(());
+                    break;
+                }
+            }
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release stalled upstream");
+        });
+
+        let budget = Arc::new(Semaphore::new(PAYLOAD_BYTES));
+        let permits = u32::try_from(PAYLOAD_BYTES).expect("payload fits semaphore permit count");
+        let permit = Arc::clone(&budget)
+            .try_acquire_many_owned(permits)
+            .expect("reserve complete buffered payload");
+        let body = BufferedBody::new(Bytes::from(vec![0_u8; PAYLOAD_BYTES]), Some(permit));
+        let client = reqwest::Client::builder()
+            .http1_only()
+            .build()
+            .expect("build stalled upstream client");
+        let send = tokio::spawn(async move {
+            client
+                .post(format!("http://{address}/upload"))
+                .header("content-length", PAYLOAD_BYTES)
+                .body(reqwest::Body::wrap(body))
+                .send()
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), body_seen_rx)
+            .await
+            .expect("upstream observed request body")
+            .expect("stalled upstream stayed available");
+        let held_while_queued = budget.available_permits() == 0
+            && Arc::clone(&budget).try_acquire_many_owned(permits).is_err();
+
+        send.abort();
+        let _cancelled = send.await;
+        release_tx.send(()).expect("release stalled upstream");
+        server.join().expect("join stalled upstream");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while budget.available_permits() != PAYLOAD_BYTES {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled upload released its budget");
+
+        assert!(held_while_queued);
     }
 
     #[tokio::test]
@@ -303,6 +426,7 @@ mod tests {
                 ]),
                 polls: Arc::clone(&polls),
             }),
+            Some(2),
             2,
             state.clone(),
         );
@@ -336,8 +460,9 @@ mod tests {
             Ok(Frame::data(Bytes::new())),
             Ok(Frame::data(Bytes::new())),
         ]));
-        let empty_state = SharedUploadState::for_length(0);
-        let mut empty = DirectRequestBody::new(Body::new(empty_frames), 0, empty_state.clone());
+        let empty_state = SharedUploadState::new(UploadState::Incomplete);
+        let mut empty =
+            DirectRequestBody::new(Body::new(empty_frames), Some(0), 0, empty_state.clone());
         assert!(Pin::new(&mut empty).poll_frame(&mut context).is_pending());
         assert!(Pin::new(&mut empty).poll_frame(&mut context).is_pending());
         assert!(matches!(
@@ -386,8 +511,8 @@ mod tests {
             .build()
             .expect("build pool client");
         for _ in 0..2 {
-            let state = SharedUploadState::for_length(2);
-            let body = DirectRequestBody::new(Body::from("{}"), 2, state);
+            let state = SharedUploadState::new(UploadState::Incomplete);
+            let body = DirectRequestBody::new(Body::from("{}"), Some(2), 2, state);
             let response = client
                 .post(format!("http://{address}/v1/chat/completions"))
                 .header("content-length", 2)

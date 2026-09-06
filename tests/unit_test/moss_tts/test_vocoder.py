@@ -147,8 +147,8 @@ def test_moss_tts_vocoder_copies_only_valid_waveforms() -> None:
         torch.float32,
     ]
     assert [waveform.tolist() for waveform in waveforms] == [
-        [1.0, 2.0],
-        [3.0, 4.0, 5.0],
+        [[1.0, 2.0]],
+        [[3.0, 4.0, 5.0]],
     ]
 
 

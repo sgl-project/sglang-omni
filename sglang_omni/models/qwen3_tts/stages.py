@@ -238,6 +238,8 @@ def create_vocoder_executor(
     followup_cuda_graph: bool = True,
     fused_snake_activation: bool = False,
     enable_stateful_codec_decoder: bool = False,
+    suppress_bootstrap_silence: bool = True,
+    suppress_bootstrap_max_streams: int = 24,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
     tokenizer = _load_qwen3_tts_tokenizer(
@@ -268,6 +270,8 @@ def create_vocoder_executor(
         followup_cuda_graph=followup_cuda_graph,
         fused_snake_activation=fused_snake_activation,
         enable_stateful_codec_decoder=enable_stateful_codec_decoder,
+        suppress_bootstrap_silence=suppress_bootstrap_silence,
+        suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work

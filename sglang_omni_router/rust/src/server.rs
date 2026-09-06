@@ -10,16 +10,20 @@ use axum::routing::{any, get};
 use hyper::server::conn::http1;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
-use tokio::sync::{Semaphore, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::{error, info, trace};
 
-use crate::config::Config;
+use crate::classification::ClassificationExecutor;
+use crate::config::{Config, HttpMediaRoute};
 use crate::error::RouterError;
 use crate::http_generation::{self, HttpGeneration};
+use crate::http_media::{self, HttpMedia};
+use crate::http_relay::HttpRelay;
 use crate::lifecycle::Lifecycle;
 use crate::request_id::{self, RequestIds};
 use crate::shutdown;
+use crate::websocket::{self, SessionTracker, WebsocketGateway};
 use crate::worker_pool::{HealthSupervisor, WorkerPool};
 
 mod bounded_listener;
@@ -33,24 +37,40 @@ const READY_BODY: &str = "ready\n";
 #[derive(Clone)]
 struct AppState {
     lifecycle: Arc<Lifecycle>,
-    generation: Arc<HttpGeneration>,
+    generation: Option<Arc<HttpGeneration>>,
+    media: Option<Arc<HttpMedia>>,
+    websocket: Option<Arc<WebsocketGateway>>,
 }
 
 pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
     let lifecycle = Arc::new(Lifecycle::starting());
     let pool = Arc::new(WorkerPool::build(&config)?);
-    let classification_slots = Arc::new(Semaphore::new(
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
-    ));
-    let generation = HttpGeneration::build(&config, Arc::clone(&pool), classification_slots)?;
+    let classifier = ClassificationExecutor::new();
+    let relay = HttpRelay::new(
+        pool.http_client(),
+        config
+            .http
+            .buffered_total_usize()
+            .map_err(RouterError::Config)?,
+        Arc::clone(&classifier),
+    );
+    let generation = HttpGeneration::build(&config, Arc::clone(&pool), Arc::clone(&relay))?;
+    let media = HttpMedia::build(&config, Arc::clone(&pool), relay)?;
+    let sessions = SessionTracker::new();
+    let websocket =
+        WebsocketGateway::build(&config, Arc::clone(&pool), classifier, sessions.clone());
     let request_ids = RequestIds::new();
     let mut signal_observer = shutdown::SignalObserver::install().map_err(RouterError::Signal)?;
     let app = route_table(
         AppState {
             lifecycle: Arc::clone(&lifecycle),
-            generation: Arc::clone(&generation),
+            generation: generation.clone(),
+            media: media.clone(),
+            websocket: websocket.clone(),
         },
         generation,
+        media,
+        websocket,
         request_ids,
     );
     let listener = tokio::net::TcpListener::bind(config.server.listen)
@@ -76,7 +96,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
         biased;
         task_result = &mut server_task => {
             let cause = unexpected_server_exit(task_result);
-            return Err(finalize_failure(&lifecycle, None, &mut health, cause).await);
+            return Err(finalize_failure(&lifecycle, None, &mut health, &sessions, cause).await);
         }
         health_result = health.join_next(), if !health.is_empty() => {
             let cause = unexpected_health_exit(health_result);
@@ -84,6 +104,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                 &lifecycle,
                 Some(&mut server_task),
                 &mut health,
+                &sessions,
                 cause,
             ).await);
         }
@@ -94,6 +115,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                     &lifecycle,
                     Some(&mut server_task),
                     &mut health,
+                    &sessions,
                     RouterError::Signal(source),
                 ).await);
             }
@@ -105,11 +127,13 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
             &lifecycle,
             Some(&mut server_task),
             &mut health,
+            &sessions,
             RouterError::Lifecycle,
         )
         .await);
     }
     pool.drain();
+    sessions.drain();
     health.cancel();
     info!(state = "draining", reason = ?first_signal, "graceful shutdown started");
     if shutdown_sender.send(()).is_err() {
@@ -117,6 +141,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
             &lifecycle,
             Some(&mut server_task),
             &mut health,
+            &sessions,
             RouterError::ShutdownNotify,
         )
         .await);
@@ -124,7 +149,8 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
 
     let deadline = tokio::time::Instant::now() + config.shutdown.drain_timeout();
     let mut server_done = false;
-    while !server_done || !health.is_empty() {
+    let mut sessions_done = false;
+    while !server_done || !health.is_empty() || !sessions_done {
         tokio::select! {
             biased;
             task_result = &mut server_task, if !server_done => {
@@ -135,6 +161,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                             &lifecycle,
                             None,
                             &mut health,
+                            &sessions,
                             RouterError::Server(source),
                         ).await);
                     }
@@ -143,6 +170,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                             &lifecycle,
                             None,
                             &mut health,
+                            &sessions,
                             RouterError::ServerTask(source),
                         ).await);
                     }
@@ -152,8 +180,17 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                 if !expected_health_shutdown(&health_result) {
                     let cause = unexpected_health_exit(health_result);
                     let server = (!server_done).then_some(&mut server_task);
-                    return Err(finalize_failure(&lifecycle, server, &mut health, cause).await);
+                    return Err(finalize_failure(
+                        &lifecycle,
+                        server,
+                        &mut health,
+                        &sessions,
+                        cause,
+                    ).await);
                 }
+            }
+            () = sessions.wait_empty(), if !sessions_done => {
+                sessions_done = true;
             }
             second_signal = signal_observer.next() => {
                 let signal = match second_signal {
@@ -164,6 +201,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                             &lifecycle,
                             server,
                             &mut health,
+                            &sessions,
                             RouterError::Signal(source),
                         ).await);
                     }
@@ -174,6 +212,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                     &lifecycle,
                     server,
                     &mut health,
+                    &sessions,
                     RouterError::ForcedShutdown,
                 ).await);
             }
@@ -184,6 +223,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
                     &lifecycle,
                     server,
                     &mut health,
+                    &sessions,
                     RouterError::DrainTimeout,
                 ).await);
             }
@@ -283,21 +323,68 @@ async fn handle_accept_error(error: &io::Error) {
 
 fn route_table(
     state: AppState,
-    generation: Arc<HttpGeneration>,
+    generation: Option<Arc<HttpGeneration>>,
+    media: Option<Arc<HttpMedia>>,
+    websocket: Option<Arc<WebsocketGateway>>,
     request_ids: Arc<RequestIds>,
 ) -> Router {
-    Router::new()
+    let mut app = Router::new()
         .route("/live", get(live).head(reject_head))
         .route("/ready", get(ready).head(reject_head))
-        .with_state(state)
-        .route(
+        .with_state(state);
+    if let Some(generation) = generation {
+        app = app.route(
             http_generation::CHAT_PATH,
             any(http_generation::chat).with_state(generation),
-        )
-        .layer(middleware::from_fn_with_state(
-            request_ids,
-            request_id::canonicalize,
-        ))
+        );
+    }
+    if let Some(media) = media {
+        for route in [
+            HttpMediaRoute::Speech,
+            HttpMediaRoute::SpeechBatch,
+            HttpMediaRoute::Transcription,
+            HttpMediaRoute::Translation,
+        ] {
+            if !media.enables(route) {
+                continue;
+            }
+            let path = route.path();
+            app = match route {
+                HttpMediaRoute::Speech => {
+                    app.route(path, any(http_media::speech).with_state(Arc::clone(&media)))
+                }
+                HttpMediaRoute::SpeechBatch => {
+                    app.route(path, any(http_media::batch).with_state(Arc::clone(&media)))
+                }
+                HttpMediaRoute::Transcription => app.route(
+                    path,
+                    any(http_media::transcription).with_state(Arc::clone(&media)),
+                ),
+                HttpMediaRoute::Translation => app.route(
+                    path,
+                    any(http_media::translation).with_state(Arc::clone(&media)),
+                ),
+            };
+        }
+    }
+    if let Some(websocket) = websocket {
+        if websocket.speech_enabled() {
+            app = app.route(
+                websocket::SPEECH_PATH,
+                get(websocket::speech).with_state(Arc::clone(&websocket)),
+            );
+        }
+        if websocket.realtime_enabled() {
+            app = app.route(
+                websocket::REALTIME_PATH,
+                get(websocket::realtime).with_state(websocket),
+            );
+        }
+    }
+    app.layer(middleware::from_fn_with_state(
+        request_ids,
+        request_id::canonicalize,
+    ))
 }
 
 async fn live(State(state): State<AppState>) -> (StatusCode, &'static str) {
@@ -309,7 +396,17 @@ async fn live(State(state): State<AppState>) -> (StatusCode, &'static str) {
 }
 
 async fn ready(State(state): State<AppState>) -> (StatusCode, &'static str) {
-    if state.lifecycle.is_serving() && state.generation.is_ready() {
+    if state.lifecycle.is_serving()
+        && state
+            .generation
+            .as_ref()
+            .is_none_or(|generation| generation.is_ready())
+        && state.media.as_ref().is_none_or(|media| media.is_ready())
+        && state
+            .websocket
+            .as_ref()
+            .is_none_or(|websocket| websocket.is_ready())
+    {
         (StatusCode::OK, READY_BODY)
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, NOT_READY_BODY)
@@ -346,8 +443,10 @@ async fn finalize_failure(
     lifecycle: &Lifecycle,
     server_task: Option<&mut JoinHandle<std::io::Result<()>>>,
     health: &mut HealthSupervisor,
+    sessions: &SessionTracker,
     cause: RouterError,
 ) -> RouterError {
+    sessions.force();
     health.cancel();
     if let Some(server_task) = server_task
         && let Err(cleanup) = abort_and_join_server(server_task).await
@@ -357,6 +456,7 @@ async fn finalize_failure(
     for cleanup in health.abort_and_join_all().await {
         error!(primary = %cause, %cleanup, "health cleanup failed after primary failure");
     }
+    sessions.wait_empty().await;
     if let Err(cleanup) = lifecycle.enter_failed() {
         error!(primary = %cause, %cleanup, "lifecycle finalization failed after primary failure");
     }
@@ -394,6 +494,7 @@ mod tests {
     use super::{BoundedTcpListener, Router, finalize_failure, serve_http, unexpected_health_exit};
     use crate::error::RouterError;
     use crate::lifecycle::Lifecycle;
+    use crate::websocket::SessionTracker;
     use crate::worker_pool::HealthSupervisor;
 
     const TEST_TIMEOUT: Duration = Duration::from_millis(100);
@@ -403,6 +504,7 @@ mod tests {
         let lifecycle = Lifecycle::starting();
         lifecycle.enter_serving().expect("enter serving state");
         let mut health = HealthSupervisor::empty();
+        let sessions = SessionTracker::new();
         let mut server = tokio::spawn(async { Err(io::Error::other("secondary failure")) });
         while !server.is_finished() {
             tokio::task::yield_now().await;
@@ -412,6 +514,7 @@ mod tests {
             &lifecycle,
             Some(&mut server),
             &mut health,
+            &sessions,
             RouterError::DrainTimeout,
         )
         .await;
