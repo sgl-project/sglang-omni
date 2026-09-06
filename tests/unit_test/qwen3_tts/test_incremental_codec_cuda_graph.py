@@ -370,20 +370,17 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
     device = torch.device("cuda", torch.cuda.current_device())
     scheduler = _async_incremental_scheduler(device)
 
-    graph_state = _state(1, offset=20, device=device)
     graph_waveform = torch.tensor([[[10.0, 11.0]]], device=device)
 
     class GraphRunner:
         calls = 0
+        arena_bound = True
 
-        def decode(self, codes, state):
+        def decode_slots(self, codes, slots):
             self.calls += 1
             assert codes.shape == (1, 2, 2)
-            assert state.frame_positions is not None
-            return IncrementalCodecGraphResult(
-                waveform=graph_waveform,
-                state=graph_state,
-            )
+            assert list(slots) == [0]
+            return graph_waveform
 
     class EagerDecoder:
         calls = 0
@@ -396,7 +393,8 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
     eager_decoder = EagerDecoder()
     scatters = []
     arena = SimpleNamespace(
-        scatter=lambda slots, state: scatters.append((slots, state))
+        scatter=lambda slots, state: scatters.append((slots, state)),
+        gather=lambda slots: (_ for _ in ()).throw(AssertionError("no gather on a hit")),
     )
     scheduler._initial_incremental_decode_graphs = None
     scheduler._followup_incremental_graph_holders = (graph_runner,)
@@ -409,12 +407,7 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
         generated_frames=2,
         emitted_generated_frames=0,
     )
-    batch = _IncrementalDecodeBatch(
-        decoder=eager_decoder,
-        arena=arena,
-        slots=[0],
-        cohort_state=_state(1, device=device),
-    )
+    batch = _IncrementalDecodeBatch(decoder=eager_decoder, arena=arena, slots=[0])
 
     handle = scheduler._launch_decode_plans(
         [plan],
@@ -425,8 +418,8 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
 
     assert graph_runner.calls == 1
     assert eager_decoder.calls == 0
-    assert batch.cohort_state is graph_state
-    assert scatters == [([0], graph_state)]
+    assert batch.cohort_state is None, "the graph reads and writes the arena itself"
+    assert scatters == []
     assert len(deltas) == 1
     assert deltas[0].tolist() == [10.0, 11.0]
 
@@ -442,11 +435,12 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
 
     class GraphRunner:
         calls = 0
+        arena_bound = True
 
-        def decode(self, codes, state):
+        def decode_slots(self, codes, slots):
             self.calls += 1
             assert codes.shape == (1, 2, 2)
-            assert state is cohort_state
+            assert list(slots) == [0]
             return None
 
     class EagerDecoder:
@@ -463,7 +457,8 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
     eager_decoder = EagerDecoder()
     scatters = []
     arena = SimpleNamespace(
-        scatter=lambda slots, state: scatters.append((slots, state))
+        scatter=lambda slots, state: scatters.append((slots, state)),
+        gather=lambda slots: cohort_state,
     )
     scheduler._initial_incremental_decode_graphs = None
     scheduler._followup_incremental_graph_holders = (graph_runner,)
@@ -476,12 +471,7 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
         generated_frames=2,
         emitted_generated_frames=0,
     )
-    batch = _IncrementalDecodeBatch(
-        decoder=eager_decoder,
-        arena=arena,
-        slots=[0],
-        cohort_state=cohort_state,
-    )
+    batch = _IncrementalDecodeBatch(decoder=eager_decoder, arena=arena, slots=[0])
 
     handle = scheduler._launch_decode_plans(
         [plan],
