@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 import time
 from collections import defaultdict
@@ -395,11 +396,32 @@ def _prepare_hift_for_inference(hift: Any) -> None:
     )
 
 
+def _import_modelscope_preserving_root_handlers() -> None:
+    # note (db-ol): the first modelscope import sets every root StreamHandler
+    # to ERROR once torch.distributed is initialized, which silences the stage
+    # process that hosts both the engine and this vocoder. Undo that change.
+    saved = [(handler, handler.level) for handler in logging.getLogger().handlers]
+    try:
+        importlib.import_module("modelscope")
+    except ImportError:
+        # cosyvoice imports modelscope itself and raises a clearer error below.
+        pass
+    for handler, level in saved:
+        if handler.level != level:
+            handler.setLevel(level)
+            logger.info(
+                "Restored root log handler level to %s after the modelscope "
+                "import changed it",
+                logging.getLevelName(level),
+            )
+
+
 def _load_cosyvoice3_flow_hift(
     checkpoint_dir: str,
     device: str,
     fp16: bool = False,
 ) -> tuple[Any, Any]:
+    _import_modelscope_preserving_root_handlers()
     try:
         from cosyvoice.cli.cosyvoice import CosyVoice3
     except ImportError as exc:
