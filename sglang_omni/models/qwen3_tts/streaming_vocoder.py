@@ -7,7 +7,7 @@ import logging
 import queue
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 from typing import Any, Mapping
 
@@ -40,6 +40,7 @@ DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 # of eight, and the ramp restores a full playback cushion within four chunks.
 DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
+_FOLLOWUP_WINDOW_PADDINGS = frozenset({"exact", "bucket", "max", "fixed"})
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 # note (luojiaxuan): fail-closed acoustic guard for bootstrap-frame
 # suppression, in linear amplitude: RMS cap 1e-3 is -60 dBFS, peak cap
@@ -418,6 +419,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         initial_max_batch_size: int = 32,
         initial_batch_wait_ms: int = 2,
         followup_max_batch_size: int = 8,
+        followup_window_padding: str = "exact",
         followup_batch_wait_ms: int = 1,
         followup_worker_count: int = 2,
         initial_cuda_graph: bool = True,
@@ -565,6 +567,16 @@ class Qwen3TTSStreamingVocoderScheduler(
                     )
                 )
             )
+        if followup_window_padding == "bucket":
+            graph_frames = tuple(
+                sorted(
+                    set(graph_frames)
+                    | {
+                        int(stream_followup_stride),
+                        int(stream_left_context_frames),
+                    }
+                )
+            )
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
             self._decoder,
             device=self._device,
@@ -593,6 +605,15 @@ class Qwen3TTSStreamingVocoderScheduler(
             for _ in range(worker_count)
         )
         self._followup_decode_graphs = self._followup_graph_holders[0]
+        self._followup_window_buckets = tuple(
+            sorted(
+                {
+                    int(stream_followup_stride),
+                    int(stream_left_context_frames),
+                    int(stream_left_context_frames) + int(stream_followup_stride),
+                }
+            )
+        )
         self._samples_per_frame = int(self._decoder.total_upsample)
         self._stream_stride = int(stream_stride)
         self._stream_followup_stride = int(stream_followup_stride)
@@ -608,6 +629,12 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._initial_max_batch_size = int(initial_max_batch_size)
         self._initial_batch_wait_s = float(initial_batch_wait_ms) / 1000.0
         self._followup_max_batch_size = int(followup_max_batch_size)
+        self._followup_window_padding = str(followup_window_padding)
+        if self._followup_window_padding not in _FOLLOWUP_WINDOW_PADDINGS:
+            raise ValueError(
+                "followup_window_padding must be one of "
+                f"{sorted(_FOLLOWUP_WINDOW_PADDINGS)}"
+            )
         self._followup_batch_wait_s = float(followup_batch_wait_ms) / 1000.0
         self._default_initial_chunk_frames = int(initial_chunk_frames)
         self._stream_left_context_frames = int(stream_left_context_frames)
@@ -1725,6 +1752,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     continue
                 planned.append((request_id, state, plan))
 
+        planned = self._pad_decode_windows(planned)
         for group in self._group_decode_plans(planned):
             decoded = self._decode_group(
                 group,
@@ -1737,6 +1765,63 @@ class Qwen3TTSStreamingVocoderScheduler(
             for entry, delta in zip(*decoded):
                 request_id, state, plan = entry
                 self._commit_followup(request_id, state, plan, delta)
+
+    def _pad_decode_windows(
+        self,
+        planned: list[tuple[str, _Qwen3TTSStreamState, _Qwen3TTSDecodePlan]],
+    ) -> list[tuple[str, _Qwen3TTSStreamState, _Qwen3TTSDecodePlan]]:
+        """Widen decode windows so streams mid-ramp can share a decode.
+
+        A decode batch holds one tensor shape, and the chunk ramp puts every
+        stream through a different window width before it saturates, so under
+        load most decodes carry a single row. Padding on the right is safe: the
+        decoder is causal along the frame axis, so appended frames cannot reach
+        the samples a plan emits, and ``_extract_delta`` slices forward from the
+        window start.
+
+        Which width to pad to is a throughput trade, not a free win. A padded
+        launch is nearly free at batch 1, where the decoder is launch bound, and
+        expensive at batch 8, where it is not, so ``bucket`` quantizes to the
+        stride ladder while ``max`` and ``fixed`` collapse everything into one
+        decode.
+        """
+        if self._followup_window_padding == "exact" or not planned:
+            return planned
+        widths = [int(entry[2].decoder_input.shape[-1]) for entry in planned]
+        if self._followup_window_padding == "max":
+            targets = [max(widths)] * len(widths)
+        elif self._followup_window_padding == "fixed":
+            ceiling = self._followup_window_buckets[-1]
+            targets = [max(width, ceiling) for width in widths]
+        else:
+            targets = [
+                next(
+                    (
+                        bucket
+                        for bucket in self._followup_window_buckets
+                        if bucket >= width
+                    ),
+                    width,
+                )
+                for width in widths
+            ]
+        return [
+            (
+                entry
+                if width == target
+                else (
+                    entry[0],
+                    entry[1],
+                    replace(
+                        entry[2],
+                        decoder_input=torch.nn.functional.pad(
+                            entry[2].decoder_input, (0, target - width)
+                        ),
+                    ),
+                )
+            )
+            for entry, width, target in zip(planned, widths, targets)
+        ]
 
     def _commit_followup(
         self,

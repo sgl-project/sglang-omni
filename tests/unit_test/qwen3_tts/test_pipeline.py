@@ -6686,3 +6686,104 @@ def test_qwen3_tts_prompt_frontend_loads_only_prompt_weights(tmp_path) -> None:
                 str(tmp_path), names - {"talker.model.text_embedding.weight"}
             )
         )
+
+
+def _qwen3_tts_two_ramp_positions(
+    scheduler: Qwen3TTSStreamingVocoderScheduler,
+) -> list[tuple[str, _Qwen3TTSStreamState]]:
+    batch: list[tuple[str, _Qwen3TTSStreamState]] = []
+    for request_id, frames in (("narrow", 4), ("wide", 8)):
+        state = scheduler.create_stream_state(request_id)
+        state.num_quantizers = 2
+        state.code_chunks.append(
+            torch.arange(1, frames + 1, dtype=torch.long).unsqueeze(1).repeat(1, 2)
+        )
+        state.total_frames = frames
+        state.emitted_generated_frames = frames - 2
+        state.decoded_chunks = 1
+        state.next_decode_generated_frames = frames
+        scheduler._stream_states[request_id] = state
+        batch.append((request_id, state))
+    return batch
+
+
+def test_qwen3_tts_followup_aligns_ramp_windows_into_one_decode() -> None:
+    """Streams at different ramp positions share one decode and still emit their own audio."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_stride=2,
+        stream_followup_stride=2,
+        initial_chunk_frames=2,
+        followup_window_padding="max",
+    )
+    batch: list[tuple[str, object]] = []
+    for request_id, frames in (("narrow", 4), ("wide", 8)):
+        state = scheduler.create_stream_state(request_id)
+        state.num_quantizers = 2
+        state.code_chunks.append(
+            torch.arange(1, frames + 1, dtype=torch.long).unsqueeze(1).repeat(1, 2)
+        )
+        state.total_frames = frames
+        state.emitted_generated_frames = frames - 2
+        state.decoded_chunks = 1
+        state.next_decode_generated_frames = frames
+        scheduler._stream_states[request_id] = state
+        batch.append((request_id, state))
+
+    scheduler._run_followup_batch(batch)
+
+    assert len(scheduler._decoder.decode_inputs) == 1, "both windows decode together"
+    decoded = scheduler._decoder.decode_inputs[0]
+    assert tuple(decoded.shape) == (2, 2, 8)
+    assert torch.equal(decoded[0, 0, :4], torch.arange(1, 5, dtype=torch.long))
+    assert torch.equal(decoded[0, 0, 4:], torch.zeros(4, dtype=torch.long)), (
+        "the narrow window is padded past its own frames, never before them"
+    )
+
+    emitted = {}
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        if message.type == "stream":
+            emitted[message.request_id] = np.frombuffer(
+                message.data["audio_waveform"], dtype=np.float32
+            )
+    assert list(emitted["narrow"]) == [3.0] * 4 + [4.0] * 4
+    assert list(emitted["wide"]) == [7.0] * 4 + [8.0] * 4
+
+
+def test_qwen3_tts_followup_exact_padding_keeps_windows_apart() -> None:
+    """The default policy leaves widths alone, so the two ramp positions decode apart."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_stride=2,
+        stream_followup_stride=2,
+        initial_chunk_frames=2,
+    )
+    batch = _qwen3_tts_two_ramp_positions(scheduler)
+
+    scheduler._run_followup_batch(batch)
+
+    assert [int(x.shape[-1]) for x in scheduler._decoder.decode_inputs] == [4, 8]
+
+
+def test_qwen3_tts_followup_bucket_padding_quantizes_to_the_stride_ladder() -> None:
+    """Bucketing rounds each window up the ladder instead of up to the widest row."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        stream_stride=2,
+        stream_followup_stride=2,
+        stream_left_context_frames=6,
+        initial_chunk_frames=2,
+        followup_window_padding="bucket",
+    )
+    assert scheduler._followup_window_buckets == (2, 6, 8)
+    batch = _qwen3_tts_two_ramp_positions(scheduler)
+
+    scheduler._run_followup_batch(batch)
+
+    # a 4-frame window rounds to 6 and an 8-frame one is already a bucket, so
+    # they stay in separate decodes rather than both paying the widest width
+    assert [int(x.shape[-1]) for x in scheduler._decoder.decode_inputs] == [6, 8]
