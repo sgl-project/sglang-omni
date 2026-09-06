@@ -642,3 +642,9 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
   omni 模型只放行 breakable/disabled——不是 Qwen3-TTS 特有的能力声明,而是 omni 的 prefill 输入
   注入(`attach_omni_prefill_inputs`)只接了 breakable 路径。做 B 要把 input_embeds 注入接进
   SGLang 的 full prefill 图捕获(固定 token 桶、注意力在图内),属第十三轮 model runner 工作。
+
+### 第十二轮:单帧 bootstrap(2026-09-06 14:50 PT)
+
+`suppress_bootstrap_silence: false`(首块只等 1 帧)r1:47/47、0 underrun、**first playable p50
+27.7ms、min 24.8、p95 40**(默认 35.6 / 32.3 / 50)。即首帧比默认少 8ms,落到 Nari 26ms 的量级。
+可闻 TTFA 与 r20 underrun 见下。
