@@ -205,20 +205,32 @@ graphs also require separate validation.
 
 ## Performance characteristics
 
-Per-request RTF is above realtime. The codec emits 12.5 frames per second, so a
-step must finish within 80 ms to reach RTF 1, while `decode_frames` alone needs
-about 101 ms at one request and 137 ms at sixteen. The cause is structural:
-`num_codebooks` is 16, so every audio frame runs 15 sequential 12-layer depth
-forwards (180 layer passes) against 28 backbone layer passes, and each depth
-forward costs a fixed ~6.3 ms of host dispatch versus ~4.3 ms of device time,
-unchanged from 2 to 32 rows. With sequence length 1 the loop is dispatch bound
-rather than compute bound, which is why device utilization stays near 29%.
+Per-request RTF is above realtime, and the cost is host dispatch rather than
+compute. The codec emits 12.5 frames per second, so a step must finish within
+80 ms to reach RTF 1. Three measured effects explain the gap.
 
-Because that cost does not grow with batch size, concurrency raises aggregate
+First, `num_codebooks` is 16, so every audio frame runs 15 sequential 12-layer
+depth forwards (180 layer passes) against 28 backbone layer passes. Each depth
+forward costs a fixed ~6.3 ms of host dispatch versus ~4.3 ms of device time,
+unchanged from 2 to 32 rows, so `decode_frames` needs about 101 ms at one
+request and 137 ms at sixteen.
+
+Second, the vocoder stage decodes one stream at a time (`max_batch_size=1`) with
+CUDA graphs disabled, at about 10.8 ms per 2-frame chunk regardless of chunk
+size. At concurrency 16 that is roughly 86 ms of serial vocoder work per
+autoregressive step.
+
+Third, all three stages run as threads in one process, so the autoregressive and
+vocoder threads contend for the interpreter instead of overlapping: with a
+concurrent vocoder thread a depth frame grows from 99 to 227 ms at one request
+and from 134 to 307 ms at sixteen, while chunk decode grows from 10.8 to 23.9 ms.
+
+Because these costs do not grow with batch size, concurrency raises aggregate
 throughput but cannot bring per-request RTF near 1 on its own. Known
 optimization candidates, none of them applied or measured end to end yet, are
-CUDA-graphing the static depth loop, vectorizing per-request sampling across the
-batch, removing per-step host synchronization, and re-enabling backbone CUDA
-graphs.
+CUDA-graphing the static depth loop, running the vocoder in its own process,
+re-enabling cross-stream vocoder batching and graph capture, vectorizing
+per-request sampling, removing per-step host synchronization, and re-enabling
+backbone CUDA graphs.
 
 Reference implementation: [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts/tree/43e2ea1595297c4059477e2e4a300653761c759b).
