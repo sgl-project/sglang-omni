@@ -823,3 +823,69 @@ def test_incremental_decoder_routes_only_precompiled_shapes_to_the_kernel(
     assert calls == [(2, 3)] * 4, "eager decodes never enter the kernel"
     with pytest.raises(RuntimeError, match="not precompiled"):
         incremental.decode(codes[..., :4], other, compiled=True)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
+    """A captured graph gathers, decodes and scatters arena rows exactly like the eager path."""
+    from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
+    from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
+        Qwen3TTSIncrementalCodecCudaGraphRunner,
+    )
+
+    torch.manual_seed(7)
+    device = torch.device("cuda", torch.cuda.current_device())
+    decoder = _Decoder().to(device)
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    arena = Qwen3TTSCodecStateArena(
+        incremental, num_slots=3, device=device, dtype=torch.float32
+    )
+    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
+        incremental,
+        device=device,
+        dtype=torch.float32,
+        num_quantizers=2,
+        mode="warm",
+        fresh_frames=(2,),
+        batch_sizes=(1, 2),
+        min_free_gb=0.0,
+        arena=arena,
+    )
+    runner.capture()
+    assert runner.arena_bound and runner.stats()["build"]["capture_complete"]
+
+    slots = [arena.acquire(), arena.acquire()]
+    bystander = arena.acquire()
+    codes = torch.randint(0, 16, (2, 2, 6), device=device)
+
+    # eager reference on private copies of the same zeroed rows
+    reference = Qwen3TTSIncrementalCodecState()
+    reference.frame_positions = torch.zeros(2, dtype=torch.long, device=device)
+    expected = torch.cat(
+        [incremental.decode(codes[..., i : i + 2], reference) for i in range(0, 6, 2)],
+        dim=-1,
+    )
+
+    actual = []
+    for i in range(0, 6, 2):
+        waveform = runner.decode_slots(codes[..., i : i + 2], slots)
+        assert waveform is not None
+        actual.append(waveform.clone())
+    torch.cuda.synchronize()
+    torch.testing.assert_close(torch.cat(actual, dim=-1), expected, rtol=2e-4, atol=2e-5)
+
+    advanced = arena.gather(slots)
+    assert advanced.frame_positions.tolist() == [6, 6]
+    torch.testing.assert_close(
+        advanced.transformer_keys[0], reference.transformer_keys[0], rtol=2e-4, atol=2e-5
+    )
+    untouched = arena.gather([bystander])
+    assert untouched.frame_positions.tolist() == [0]
+    assert torch.count_nonzero(untouched.transformer_keys[0]).item() == 0
+
+    # a one-row cohort replays the two-row bucket; the padded row lands on scratch
+    single = runner.decode_slots(codes[:1, :, :2], slots[:1])
+    assert single is not None and single.shape[0] == 1
+    torch.cuda.synchronize()
+    assert arena.gather(slots).frame_positions.tolist() == [8, 6]
