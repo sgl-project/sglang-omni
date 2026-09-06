@@ -19,20 +19,28 @@ hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 
 ## Apple Silicon
 
-Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the [Apple Silicon installer](../get_started/installation.md#-option-b-macos-apple-silicon-installer)
+Fun-ASR runs on Apple Silicon through native MLX and a Torch/MPS compatibility
+path. Install with the
+[Apple Silicon installer](../get_started/installation.md#-option-b-macos-apple-silicon-installer)
 and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
 needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
 
-Use the official `FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized
-BF16 weights; no converted artifact is needed.
-Inference runs one request at a time and additional requests queue. Use
-`temperature=0` and upload audio segments no longer than 30 seconds. JSON and
-SSE transcription are supported; quantized checkpoints are not.
+Both backends load the official `FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint
+with unquantized BF16 weights; no converted MLX artifact or `mlx-audio` runtime
+package is needed. Inference runs one request at a time and additional requests
+queue. Use `temperature=0` and upload audio segments no longer than 30 seconds.
+JSON and SSE transcription are supported; quantized checkpoints are not.
+
+### MLX
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
 
 ### Torch/MPS
 
-Native MLX support is added separately; until then, set `SGLANG_USE_MLX=0`:
+Without `SGLANG_USE_MLX=1`, the same checkpoint runs through PyTorch MPS:
 
 ```bash
 SGLANG_USE_MLX=0 sgl-omni serve \
