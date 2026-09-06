@@ -900,14 +900,8 @@ impl ServiceProfile {
     }
 
     fn contains_model(&self, model: &str) -> bool {
-        match self {
-            Self::GenerationHttp { model_ids, .. }
-            | Self::SpeechHttp { model_ids, .. }
-            | Self::SpeechBatch { model_ids, .. }
-            | Self::TranscriptionHttp { model_ids, .. }
-            | Self::SpeechWebsocket { model_ids, .. } => model_ids.iter().any(|item| item == model),
-            Self::RealtimeWebsocket => true,
-        }
+        self.model_ids()
+            .is_none_or(|ids| ids.iter().any(|id| id == model))
     }
 
     pub(crate) fn model_ids(&self) -> Option<&[String]> {
