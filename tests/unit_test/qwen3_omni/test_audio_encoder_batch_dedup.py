@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Qwen3-Omni encoder batching behavior."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -86,3 +87,79 @@ def test_audio_encoder_batch_without_cache_keys_runs_every_request() -> None:
 
     assert model.calls == [2]
     assert len(out) == 2
+
+
+def test_audio_encoder_cache_preserves_hits_in_mixed_batch():
+    from sglang_omni.scheduling.stage_cache import StageOutputCache
+
+    model = _FakeAudioEncoder()
+    cache = StageOutputCache(max_size=64, max_bytes=4 * 1024**3, cache_device="cpu")
+    first = _batch_audio_encoder_payloads(
+        [_payload("a1", "a", 3), _payload("b1", "b", 5), _payload("a2", "a", 3)],
+        model=model,
+        cache=cache,
+    )
+    second = _batch_audio_encoder_payloads(
+        [_payload("b2", "b", 5), _payload("c", "c", 2), _payload("a3", "a", 3)],
+        model=model,
+        cache=cache,
+    )
+    assert model.calls == [2, 1]
+    for old, new in [(first[1], second[0]), (first[0], second[2])]:
+        old_state = Qwen3OmniPipelineState.from_dict(old.data).encoder_outs[
+            "audio_encoder"
+        ]
+        new_state = Qwen3OmniPipelineState.from_dict(new.data).encoder_outs[
+            "audio_encoder"
+        ]
+        assert old_state.keys() == new_state.keys()
+        for key in old_state:
+            assert torch.equal(old_state[key], new_state[key])
+
+
+@pytest.mark.accelerator
+def test_audio_encoder_cache_owns_cuda_output_before_replay():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    cuda_device = torch.device("cuda", torch.cuda.current_device())
+    from sglang_omni.scheduling.stage_cache import StageOutputCache
+
+    class ReusedOutputEncoder:
+        def __init__(self):
+            self.calls = 0
+            self.buffer = torch.zeros(8, 1, device=cuda_device)
+            self.length = torch.zeros(1, dtype=torch.long, device=cuda_device)
+
+        def __call__(self, **kwargs):
+            self.calls += 1
+            size = int(kwargs["audio_feature_lengths"].sum())
+            self.buffer.fill_(self.calls)
+            self.length.fill_(size)
+            return {
+                "audio_embeds": self.buffer[:size],
+                "audio_feature_lengths": self.length,
+                "audio_output_lengths": self.length,
+            }
+
+    model = ReusedOutputEncoder()
+    cache = StageOutputCache(max_size=64, max_bytes=4 * 1024**3, cache_device="cpu")
+    first = _batch_audio_encoder_payloads(
+        [_payload("a1", "a", 3)], model=model, cache=cache
+    )
+    expected = {
+        key: value.cpu().clone()
+        for key, value in Qwen3OmniPipelineState.from_dict(first[0].data)
+        .encoder_outs["audio_encoder"]
+        .items()
+    }
+    _batch_audio_encoder_payloads([_payload("b", "b", 5)], model=model, cache=cache)
+    again = _batch_audio_encoder_payloads(
+        [_payload("a2", "a", 3)], model=model, cache=cache
+    )
+    assert model.calls == 2
+    actual = Qwen3OmniPipelineState.from_dict(again[0].data).encoder_outs[
+        "audio_encoder"
+    ]
+    for key, value in expected.items():
+        assert actual[key].device.type == "cpu"
+        assert torch.equal(actual[key], value)

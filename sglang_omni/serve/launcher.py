@@ -45,6 +45,7 @@ from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
+from sglang_omni.serve.boot_warmup import run_boot_warmup
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
@@ -456,6 +457,14 @@ async def _run_server(
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
         _mount_profiler_routes(app, profiler_ctl, profiler_dir)
+
+        # Note (wenyao): Clients poll /v1/models for readiness, so opening the port
+        # before warmup completes would let real requests race the warmup burst.
+        await run_boot_warmup(
+            client,
+            model_name=model_name or pipeline_config.name,
+            num_requests=pipeline_config.boot_warmup_requests,
+        )
 
         config = uvicorn.Config(
             app,

@@ -802,6 +802,7 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_seq_len: int | None = None,
+    max_concurrency: int = 4,
     video_fps: float | None = None,
     video_max_frames: int | None = None,
     video_min_pixels: int | None = None,
@@ -823,7 +824,9 @@ def create_preprocessing_executor(
     async def _preprocess(payload: StagePayload) -> StagePayload:
         return await preprocessor(payload)
 
-    return SimpleScheduler(_preprocess)
+    # Note (wenyao): Serial dispatch makes CPU tokenization and feature
+    # extraction block later requests; their per-request state allows concurrency.
+    return SimpleScheduler(_preprocess, max_concurrency=max_concurrency)
 
 
 def create_aggregate_executor():

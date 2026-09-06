@@ -598,6 +598,12 @@ class PipelineConfig(BaseModel):
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
+    boot_warmup_requests: int = Field(default=0, ge=0)
+    """Synthetic speech requests to drive through the pipeline before serving.
+
+    All of them are issued at once, so the burst width is also the batch width
+    the warmup reaches. Zero disables the warmup entirely.
+    """
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         """Dump with each stage serialized by its runtime class.

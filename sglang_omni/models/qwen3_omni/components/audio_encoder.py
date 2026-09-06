@@ -215,22 +215,25 @@ class Qwen3OmniAudioEncoder(nn.Module):
                 "audio_feature_lengths or feature_attention_mask is required"
             )
 
-        audio_feature_lengths = audio_feature_lengths.to(self._device, dtype=torch.long)
+        lengths_cpu = audio_feature_lengths.to("cpu", dtype=torch.long)
+        audio_feature_lengths = lengths_cpu.to(self._device, non_blocking=True)
         input_features = input_features.to(
             device=self._device, dtype=self.audio_tower.dtype
         )
         tower = self.audio_tower
         padded_feature, chunk_lengths = hf_modeling.chunk_and_pad_features(
-            input_features, audio_feature_lengths, tower.n_window
+            input_features, lengths_cpu, tower.n_window
         )
         valid_indices = hf_modeling.get_valid_indices(chunk_lengths)
         cu_seqlens = hf_modeling.get_audio_cu_seqlens(
             chunk_lengths,
-            audio_feature_lengths,
+            lengths_cpu,
             tower.n_window_infer,
             tower.n_window,
         )
         self._segment_splits.value = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        valid_indices = valid_indices.to(self._device, non_blocking=True)
+        cu_seqlens = cu_seqlens.to(self._device, non_blocking=True)
         try:
             outputs = tower(
                 input_features,
