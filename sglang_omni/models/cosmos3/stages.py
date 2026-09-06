@@ -22,6 +22,7 @@ def create_preprocessing_executor(
     *,
     revision: str | None = None,
     max_seq_len: int | None = None,
+    enable_vision: bool = True,
 ) -> SimpleScheduler:
     """Create the CPU-only text preprocessing stage."""
 
@@ -29,8 +30,30 @@ def create_preprocessing_executor(
         model_path=model_path,
         max_seq_len=max_seq_len,
         revision=revision,
+        enable_vision=enable_vision,
     )
     return SimpleScheduler(preprocessor)
+
+
+def create_vision_encoder_executor(
+    model_path: str,
+    *,
+    revision: str | None = None,
+    device: str = "cuda",
+    dtype: str | None = None,
+) -> SimpleScheduler:
+    """Create the separately scheduled vision encoder stage."""
+
+    from sglang_omni.models.cosmos3.vision_encoder_scheduler import (
+        create_vision_encoder_scheduler,
+    )
+
+    return create_vision_encoder_scheduler(
+        model_path,
+        revision=revision,
+        device=device,
+        dtype=dtype,
+    )
 
 
 def create_sglang_text_executor_from_config(
@@ -104,4 +127,5 @@ __all__ = [
     "create_decode_executor",
     "create_preprocessing_executor",
     "create_sglang_text_executor_from_config",
+    "create_vision_encoder_executor",
 ]

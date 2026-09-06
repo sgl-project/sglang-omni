@@ -7,9 +7,17 @@ from collections.abc import Iterable
 from typing import Any
 
 import torch
+from sglang.srt.distributed import get_pp_group
+from sglang.srt.layers.logits_processor import LogitsProcessor
+from sglang.srt.layers.pooler import Pooler, PoolingType
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.utils import PPMissingLayer
+from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+from sglang.srt.models.qwen3_vl import Qwen3LLMModel
+from sglang.srt.runtime_context import get_server_args
+from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.cosmos3.hf_config import Cosmos3OmniConfig
 
@@ -75,13 +83,35 @@ class Cosmos3TextForCausalLM(Qwen3ForCausalLM):
         quant_config: QuantizationConfig | None = None,
         prefix: str = "",
     ) -> None:
+        torch.nn.Module.__init__(self)
         text_config = config.text_config
         text_config.tie_word_embeddings = bool(config.tie_word_embeddings)
-        super().__init__(
-            text_config,
+        text_config.vision_config = config.vision_config
+
+        self.pp_group = get_pp_group()
+        self.config = text_config
+        self.quant_config = quant_config
+        self.model = Qwen3LLMModel(
+            config=text_config,
             quant_config=quant_config,
-            prefix=prefix,
+            prefix=add_prefix("model", prefix),
         )
+        if self.pp_group.is_last_rank:
+            if self.pp_group.world_size == 1 and text_config.tie_word_embeddings:
+                self.lm_head = self.model.embed_tokens
+            else:
+                self.lm_head = ParallelLMHead(
+                    text_config.vocab_size,
+                    text_config.hidden_size,
+                    quant_config=quant_config,
+                    use_attn_tp_group=get_server_args().enable_dp_lm_head,
+                    prefix=add_prefix("lm_head", prefix),
+                )
+        else:
+            self.lm_head = PPMissingLayer()
+        self.logits_processor = LogitsProcessor(text_config)
+        self.pooler = Pooler(pooling_type=PoolingType.LAST, normalize=True)
+        self.capture_aux_hidden_states = False
         self.root_config = config
 
     @torch.no_grad()
@@ -89,8 +119,9 @@ class Cosmos3TextForCausalLM(Qwen3ForCausalLM):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        forward_batch: Any,
+        forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
+        input_deepstack_embeds: torch.Tensor | None = None,
         get_embedding: bool = False,
         pp_proxy_tensors: Any = None,
     ) -> torch.Tensor:
@@ -98,13 +129,36 @@ class Cosmos3TextForCausalLM(Qwen3ForCausalLM):
         # Cosmos3 follows Qwen3-VL's explicit T/H/W text-position convention,
         # so route SGLang's computed mRoPE positions into every decoder layer.
         positions = resolve_cosmos3_text_positions(forward_batch)
-        return super().forward(
-            input_ids=input_ids,
-            positions=positions,
-            forward_batch=forward_batch,
-            input_embeds=input_embeds,
-            get_embedding=get_embedding,
+        if input_deepstack_embeds is None:
+            return super().forward(
+                input_ids=input_ids,
+                positions=positions,
+                forward_batch=forward_batch,
+                input_embeds=input_embeds,
+                get_embedding=get_embedding,
+                pp_proxy_tensors=pp_proxy_tensors,
+            )
+        hidden_states = self.model(
+            input_ids,
+            positions,
+            forward_batch,
+            input_embeds,
             pp_proxy_tensors=pp_proxy_tensors,
+            input_deepstack_embeds=input_deepstack_embeds,
+        )
+        aux_hidden_states = None
+        if self.capture_aux_hidden_states:
+            hidden_states, aux_hidden_states = hidden_states
+        if not self.pp_group.is_last_rank:
+            return hidden_states
+        if get_embedding:
+            return self.pooler(hidden_states, forward_batch)
+        return self.logits_processor(
+            input_ids,
+            hidden_states,
+            self.lm_head,
+            forward_batch,
+            aux_hidden_states,
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> Any:

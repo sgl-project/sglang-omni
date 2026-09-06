@@ -11,11 +11,12 @@ from typing_extensions import NotRequired
 
 
 class PromptInputs(TypedDict):
-    """Tokenized text prompt passed to the Cosmos3 AR stage."""
+    """Tokenized prompt passed to the Cosmos3 AR stage."""
 
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     prompt_text: str
+    mm_token_type_ids: torch.Tensor
 
 
 class TextOutput(TypedDict):
@@ -34,6 +35,10 @@ class Cosmos3PipelineState:
     """Typed, process-safe state shared by Cosmos3 pipeline stages."""
 
     prompt: PromptInputs | None = None
+    mm_inputs: dict[str, Any] = field(default_factory=dict)
+    encoder_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    encoder_outs: dict[str, Any] = field(default_factory=dict)
+    thinker_inputs: dict[str, Any] = field(default_factory=dict)
     text_out: TextOutput | None = None
     engine_outputs: dict[str, Any] = field(default_factory=dict)
     stream_state: dict[str, Any] = field(default_factory=dict)
@@ -46,6 +51,14 @@ class Cosmos3PipelineState:
         data: dict[str, Any] = {}
         if self.prompt is not None:
             data["prompt"] = self.prompt
+        if self.mm_inputs:
+            data["mm_inputs"] = self.mm_inputs
+        if self.encoder_inputs:
+            data["encoder_inputs"] = self.encoder_inputs
+        if self.encoder_outs:
+            data["encoder_outs"] = self.encoder_outs
+        if self.thinker_inputs:
+            data["thinker_inputs"] = self.thinker_inputs
         if self.text_out is not None:
             data["text_out"] = self.text_out
         if self.engine_outputs:

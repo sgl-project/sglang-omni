@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 import torch
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+from torch import nn
 
+from sglang_omni.models.cosmos3.components import sglang_text
 from sglang_omni.models.cosmos3.components.sglang_text import (
     Cosmos3TextForCausalLM,
     map_cosmos3_text_weight_name,
@@ -75,27 +77,51 @@ def test_load_weights_forwards_only_mapped_text_tensors(monkeypatch) -> None:
 def test_text_wrapper_uses_nested_text_config(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_init(self, config, quant_config=None, prefix=""):
+    class _FakeTextModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed_tokens = nn.Embedding(2, 2)
+
+    def fake_init(*, config, quant_config=None, prefix=""):
         captured.update(
             config=config,
             quant_config=quant_config,
             prefix=prefix,
         )
+        return _FakeTextModel()
 
-    monkeypatch.setattr(Qwen3ForCausalLM, "__init__", fake_init)
-    text_config = SimpleNamespace(tie_word_embeddings=True)
+    monkeypatch.setattr(sglang_text, "Qwen3LLMModel", fake_init)
+    monkeypatch.setattr(
+        sglang_text,
+        "get_pp_group",
+        lambda: SimpleNamespace(is_last_rank=True, world_size=1),
+    )
+    monkeypatch.setattr(
+        sglang_text, "ParallelLMHead", lambda *args, **kwargs: nn.Identity()
+    )
+    monkeypatch.setattr(sglang_text, "LogitsProcessor", lambda config: object())
+    monkeypatch.setattr(sglang_text, "Pooler", lambda **kwargs: object())
+    monkeypatch.setattr(
+        sglang_text,
+        "get_server_args",
+        lambda: SimpleNamespace(enable_dp_lm_head=False),
+    )
+    text_config = SimpleNamespace(
+        tie_word_embeddings=True,
+        vocab_size=10,
+        hidden_size=4,
+    )
     root_config = SimpleNamespace(
         text_config=text_config,
+        vision_config=SimpleNamespace(deepstack_visual_indexes=[1, 2, 3]),
         tie_word_embeddings=False,
     )
 
     model = Cosmos3TextForCausalLM(root_config, quant_config="quant", prefix="p")
 
-    assert captured == {
-        "config": text_config,
-        "quant_config": "quant",
-        "prefix": "p",
-    }
+    assert captured["config"] is text_config
+    assert captured["quant_config"] == "quant"
+    assert captured["prefix"] == "p.model"
     assert text_config.tie_word_embeddings is False
     assert model.root_config is root_config
 
@@ -130,3 +156,36 @@ def test_text_forward_prefers_scheduler_mrope_positions(monkeypatch) -> None:
     assert result == "output"
     assert captured["positions"] is mrope_positions
     assert captured["forward_batch"] is forward_batch
+
+
+def test_multimodal_forward_passes_deepstack_to_qwen3_vl_text_model() -> None:
+    captured: dict[str, object] = {}
+
+    class _TextModel(nn.Module):
+        def forward(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return torch.ones((2, 4))
+
+    model = object.__new__(Cosmos3TextForCausalLM)
+    nn.Module.__init__(model)
+    model.model = _TextModel()
+    model.pp_group = SimpleNamespace(is_last_rank=True)
+    model.capture_aux_hidden_states = False
+    model.lm_head = nn.Identity()
+    model.logits_processor = lambda *args: "logits"
+    deepstack = torch.ones((2, 12))
+    positions = torch.arange(2).unsqueeze(0).expand(3, -1)
+    forward_batch = SimpleNamespace(mrope_positions=positions)
+
+    result = model.forward(
+        input_ids=torch.tensor([1, 2]),
+        positions=torch.tensor([0, 1]),
+        forward_batch=forward_batch,
+        input_embeds=torch.ones((2, 4)),
+        input_deepstack_embeds=deepstack,
+    )
+
+    assert result == "logits"
+    assert captured["kwargs"]["input_deepstack_embeds"] is deepstack
+    assert captured["args"][1] is positions

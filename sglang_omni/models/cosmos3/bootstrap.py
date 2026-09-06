@@ -62,6 +62,49 @@ def _refuse_weight_update(payload: dict[str, Any]) -> tuple[bool, str]:
     )
 
 
+def resolve_vision_encoder_path(
+    model_path: str,
+    *,
+    revision: str | None = None,
+) -> str:
+    """Resolve the standalone Qwen3-VL vision checkpoint."""
+
+    local_path = Path(model_path)
+    if local_path.exists():
+        vision_path = local_path / "vision_encoder"
+    else:
+        allow_patterns = [
+            "config.json",
+            "vision_encoder/*.json",
+            "vision_encoder/*.safetensors",
+        ]
+        try:
+            snapshot_path = snapshot_download(
+                model_path,
+                allow_patterns=allow_patterns,
+                revision=revision,
+                local_files_only=True,
+            )
+        except FileNotFoundError:
+            snapshot_path = None
+        vision_path = (
+            Path(snapshot_path) / "vision_encoder"
+            if snapshot_path is not None
+            else None
+        )
+        if not _has_transformer_weights(vision_path):
+            snapshot_path = snapshot_download(
+                model_path, allow_patterns=allow_patterns, revision=revision
+            )
+            vision_path = Path(snapshot_path) / "vision_encoder"
+
+    if vision_path is None or not _has_transformer_weights(vision_path):
+        raise FileNotFoundError(
+            f"Cosmos3 vision encoder weights not found under {model_path!r}"
+        )
+    return str(vision_path)
+
+
 def create_thinker_scheduler(
     server_args: Any,
     gpu_id: int = 0,
@@ -76,7 +119,7 @@ def create_thinker_scheduler(
 
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
-    from sglang_omni.model_runner.base import ModelRunner
+    from sglang_omni.models.cosmos3.model_runner import Cosmos3ThinkerModelRunner
     from sglang_omni.models.cosmos3.request_builders import (
         make_text_scheduler_adapters,
         make_text_stream_output_builder,
@@ -116,7 +159,7 @@ def create_thinker_scheduler(
         setattr(model_worker, admin_method, _refuse_weight_update)
 
     output_processor = SGLangOutputProcessor(capture_hidden=False)
-    model_runner = ModelRunner(model_worker, output_processor)
+    model_runner = Cosmos3ThinkerModelRunner(model_worker, output_processor)
     tokenizer = get_tokenizer(
         server_args.model_path,
         trust_remote_code=True,
@@ -126,6 +169,7 @@ def create_thinker_scheduler(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,
         generation_config=model_config.hf_generation_config,
+        thinker_config=model_config.hf_config,
     )
 
     return OmniScheduler(
@@ -144,4 +188,8 @@ def create_thinker_scheduler(
     )
 
 
-__all__ = ["create_thinker_scheduler", "resolve_transformer_weights_path"]
+__all__ = [
+    "create_thinker_scheduler",
+    "resolve_transformer_weights_path",
+    "resolve_vision_encoder_path",
+]

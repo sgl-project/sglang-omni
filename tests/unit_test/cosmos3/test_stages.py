@@ -4,20 +4,21 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sglang_omni.models.cosmos3 import stages
+from sglang_omni.models.cosmos3 import stages, vision_encoder_scheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 
 def test_preprocessing_factory_returns_simple_scheduler(monkeypatch) -> None:
     sentinel = object()
-    calls: list[tuple[str, int | None, str | None]] = []
+    calls: list[tuple[str, int | None, str | None, bool]] = []
 
     def fake_preprocessor(
         model_path: str,
         max_seq_len: int | None,
         revision: str | None,
+        enable_vision: bool,
     ):
-        calls.append((model_path, max_seq_len, revision))
+        calls.append((model_path, max_seq_len, revision, enable_vision))
         return sentinel
 
     monkeypatch.setattr(stages, "Cosmos3TextPreprocessor", fake_preprocessor)
@@ -30,7 +31,38 @@ def test_preprocessing_factory_returns_simple_scheduler(monkeypatch) -> None:
 
     assert isinstance(scheduler, SimpleScheduler)
     assert scheduler._fn is sentinel
-    assert calls == [("nvidia/Cosmos3-Nano", 8192, "cosmos-revision")]
+    assert calls == [("nvidia/Cosmos3-Nano", 8192, "cosmos-revision", True)]
+
+
+def test_vision_encoder_factory_delegates_to_scheduler(monkeypatch) -> None:
+    sentinel = object()
+    calls: list[tuple[str, str | None, str, str | None]] = []
+
+    def fake_create(
+        model_path: str,
+        *,
+        revision: str | None = None,
+        device: str,
+        dtype: str | None,
+    ):
+        calls.append((model_path, revision, device, dtype))
+        return sentinel
+
+    monkeypatch.setattr(
+        vision_encoder_scheduler,
+        "create_vision_encoder_scheduler",
+        fake_create,
+    )
+
+    result = stages.create_vision_encoder_executor(
+        "nvidia/Cosmos3-Nano",
+        revision="cosmos-revision",
+        device="cuda:1",
+        dtype="bfloat16",
+    )
+
+    assert result is sentinel
+    assert calls == [("nvidia/Cosmos3-Nano", "cosmos-revision", "cuda:1", "bfloat16")]
 
 
 def test_text_factory_passes_through_tensor_parallelism(
