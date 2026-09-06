@@ -2,7 +2,7 @@
 """Opt-in HTTP validation against an already-running Fun-ASR Apple server.
 
 FUN_ASR_APPLE_URL=http://127.0.0.1:8000 pytest tests/test_model/test_fun_asr_apple.py -q
-Start the server with SGLANG_USE_MLX=0. No server is started here.
+Run once with SGLANG_USE_MLX=1 and once with SGLANG_USE_MLX=0. No server is started here.
 """
 
 from __future__ import annotations

@@ -120,14 +120,21 @@ class FunASREngineBuilder(AsrEngineBuilder):
             and self.device.split(":")[0] == "mps"
         )
 
+    def _uses_apple(self) -> bool:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        return use_mlx() or self._uses_torch_mps()
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        if self._uses_torch_mps():
+        if self._uses_apple():
             overrides["enable_torch_compile"] = False
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
-        if self._uses_torch_mps():
+        if self._uses_apple():
             if not current_platform.is_mps():
-                raise ValueError("Fun-ASR Torch/MPS requires the Apple Metal platform")
+                raise ValueError(
+                    "Fun-ASR Apple backends require the Apple Metal platform"
+                )
             if server_args.max_running_requests != 1:
                 raise ValueError(
                     "Fun-ASR Apple currently requires max_running_requests=1"
@@ -150,6 +157,14 @@ class FunASREngineBuilder(AsrEngineBuilder):
         super().validate_before_infrastructure(server_args)
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            from sglang_omni.model_runner.mlx_model_worker import (
+                MlxSchedulerModelRunner,
+            )
+
+            return MlxSchedulerModelRunner(model_worker, output_proc)
         if self._uses_torch_mps():
             from .torch_mps_runner import FunASRTorchMpsModelRunner
 
@@ -183,14 +198,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        from sglang.srt.utils.tensor_bridge import use_mlx
-
-        if use_mlx():
-            raise ValueError(
-                "Fun-ASR MLX support is not available yet; set SGLANG_USE_MLX=0 "
-                "for Torch/MPS"
-            )
-        if self._uses_torch_mps():
+        if self._uses_apple():
             # Audio embeddings are inserted only at first prefill. Token-only
             # prefix reuse and split prefill cannot reconstruct that sidecar.
             return {
@@ -237,7 +245,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        if self._uses_torch_mps():
+        if self._uses_apple():
             return
         del generation_cuda_graph_enabled
         if self.enable_encoder_cuda_graph:
@@ -274,7 +282,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
-        if self._uses_torch_mps() or not self.enable_pre_lm_encoder:
+        if self._uses_apple() or not self.enable_pre_lm_encoder:
             return
         self.audio_encoder_service = FunASRPreLMEncoderService(
             model,
@@ -298,7 +306,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
             max_new_tokens=self.max_new_tokens,
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
-            greedy_only=self._uses_torch_mps(),
+            greedy_only=self._uses_apple(),
         )
 
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
@@ -321,11 +329,11 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 min_emit_interval_s=self.stream_emit_interval_s,
             ),
             "enable_async_decode": (
-                False if self._uses_torch_mps() else self.enable_async_decode
+                False if self._uses_apple() else self.enable_async_decode
             ),
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "prefill_coalesce_requests": (
-                0 if self._uses_torch_mps() else self.prefill_coalesce_requests
+                0 if self._uses_apple() else self.prefill_coalesce_requests
             ),
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
@@ -336,7 +344,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 self.prefill_coalesce_after_builds_during_decode
             ),
             "request_build_max_workers": (
-                1 if self._uses_torch_mps() else self.request_build_max_workers
+                1 if self._uses_apple() else self.request_build_max_workers
             ),
             "request_build_max_pending": self.request_build_max_pending,
         }

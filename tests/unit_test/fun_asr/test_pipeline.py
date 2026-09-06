@@ -353,7 +353,7 @@ def _apple_builder(monkeypatch, *, mlx):
     return builder
 
 
-@pytest.mark.parametrize("mlx", [False])
+@pytest.mark.parametrize("mlx", [False, True])
 def test_apple_profile_skips_cuda_resources_and_uses_greedy_requests(monkeypatch, mlx):
     builder = _apple_builder(monkeypatch, mlx=mlx)
     defaults = builder.generation_defaults(dtype="bfloat16")
@@ -382,7 +382,7 @@ def test_apple_profile_skips_cuda_resources_and_uses_greedy_requests(monkeypatch
     assert builder.make_adapters(object())["greedy_only"]
 
 
-@pytest.mark.parametrize("mlx", [False])
+@pytest.mark.parametrize("mlx", [False, True])
 @pytest.mark.parametrize(
     "override,match",
     [
@@ -403,9 +403,3 @@ def test_apple_rejects_unsupported_runtime_options(monkeypatch, mlx, override, m
     }
     with pytest.raises(ValueError, match=match):
         builder.validate_before_infrastructure(SimpleNamespace(**args))
-
-
-def test_mlx_rejected_before_infrastructure(monkeypatch):
-    builder = _apple_builder(monkeypatch, mlx=True)
-    with pytest.raises(ValueError, match="set SGLANG_USE_MLX=0"):
-        builder.generation_defaults(dtype="bfloat16")

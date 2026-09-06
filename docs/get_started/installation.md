@@ -87,7 +87,7 @@ defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 
 This path currently supports macOS `arm64` only and is intended for the
 Apple-Silicon Qwen3-ASR MLX/Torch-MPS paths and the experimental
-[Fun-ASR Torch/MPS path](../cookbook/fun_asr.md#experimental-apple-silicon-support).
+[Fun-ASR Apple paths](../cookbook/fun_asr.md#experimental-apple-silicon-support).
 Other platforms should use the
 Docker, manual, or Intel XPU instructions below. Common failures are a missing
 Homebrew/uv on `PATH`, an unavailable Python 3.12 toolchain, or forgetting the
