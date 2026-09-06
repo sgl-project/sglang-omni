@@ -6976,3 +6976,46 @@ def test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_
     idle.join(5)
     busy.join(5)
     assert not idle.is_alive() and not busy.is_alive()
+
+
+def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AR side orders its stream after preprocessing and pins the tensors."""
+    waited: list[object] = []
+    recorded: list[tuple[object, object]] = []
+
+    class SchedulerStream:
+        def wait_event(self, event):
+            waited.append(event)
+
+    scheduler_stream = SchedulerStream()
+    monkeypatch.setattr(
+        torch.cuda, "current_stream", lambda device: scheduler_stream
+    )
+    monkeypatch.setattr(
+        torch.Tensor,
+        "record_stream",
+        lambda tensor, stream: recorded.append((tensor, stream)),
+    )
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
+
+    ready = object()
+    embeds = torch.zeros((3, 4))
+    prepared = qwen3_request_builders.Qwen3TTSPreparedRequest(
+        state=object(),
+        input_ids_list=[1, 2, 3],
+        input_ids=torch.tensor([1, 2, 3]),
+        attention_mask=torch.ones((1, 3), dtype=torch.long),
+        trailing_text_hidden=torch.zeros((1, 4)),
+        ref_code=None,
+        prompt_input_embeds=embeds,
+        tts_pad_embed=torch.zeros(4),
+        gen_kwargs={},
+        ready_event=ready,
+    )
+    qwen3_request_builders._adopt_prepared_tensors(prepared)
+
+    assert waited == [ready]
+    assert [stream for _, stream in recorded] == [scheduler_stream] * 4
+    assert any(tensor is embeds for tensor, _ in recorded)
