@@ -28,6 +28,41 @@ _DECODER_PREFILL_TOKENS_PER_REQUEST = (
 )
 
 
+def _max_reachable_decoder_prefill_tokens(
+    *,
+    budget: int,
+    encoder_token_count: int,
+    request_limit: int,
+) -> int:
+    """Return the largest decoder-token batch allowed by atomic admission."""
+    max_request_tokens = (
+        encoder_token_count + _DECODER_PREFILL_TOKENS_PER_REQUEST
+    )
+    lower_request_count = min(
+        request_limit,
+        max(1, budget // max_request_tokens),
+    )
+    upper_request_count = min(
+        request_limit,
+        max(1, (budget + max_request_tokens - 1) // max_request_tokens),
+    )
+
+    # note (xuanyili): This is the O(1) equivalent of enumerating request_count
+    # and maximizing min(request_count * decoder_tokens,
+    # budget - request_count * encoder_tokens). The lower envelope of those
+    # increasing and decreasing lines peaks next to their intersection.
+    lower_cap = min(
+        lower_request_count * _DECODER_PREFILL_TOKENS_PER_REQUEST,
+        max(0, budget - lower_request_count * encoder_token_count),
+    )
+    upper_cap = min(
+        upper_request_count * _DECODER_PREFILL_TOKENS_PER_REQUEST,
+        max(0, budget - upper_request_count * encoder_token_count),
+    )
+    # The scheduler always admits the first whole request.
+    return max(_DECODER_PREFILL_TOKENS_PER_REQUEST, lower_cap, upper_cap)
+
+
 def _reachable_prefill_cuda_graph_max_bs(
     overrides: dict[str, Any],
     *,
@@ -47,18 +82,13 @@ def _reachable_prefill_cuda_graph_max_bs(
     if max_running_requests is not None and int(max_running_requests) >= 1:
         request_limit = min(request_limit, int(max_running_requests))
 
-    # The first whole request is always admissible. For larger batches, shorter
-    # decoder prompts can admit more requests than the maximum-size request does.
-    decoder_tokens_per_request = _DECODER_PREFILL_TOKENS_PER_REQUEST
-    reachable_cap = decoder_tokens_per_request
-    for request_count in range(1, request_limit + 1):
-        decoder_budget = max(0, budget - request_count * encoder_token_count)
-        reachable_cap = max(
-            reachable_cap,
-            min(request_count * decoder_tokens_per_request, decoder_budget),
+    caps = [
+        _max_reachable_decoder_prefill_tokens(
+            budget=budget,
+            encoder_token_count=encoder_token_count,
+            request_limit=request_limit,
         )
-
-    caps = [reachable_cap]
+    ]
     for key in ("cuda_graph_max_bs_prefill", "max_prefill_tokens", "max_total_tokens"):
         value = overrides.get(key)
         if value is not None and int(value) > 0:
