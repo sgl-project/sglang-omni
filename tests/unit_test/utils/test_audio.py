@@ -99,6 +99,22 @@ def test_load_audio_falls_back_when_torchcodec_is_unavailable(monkeypatch) -> No
     assert samples.shape == (1, 1600)
 
 
+def test_load_audio_soundfile_fallback_error_matches_bad_request_pattern(
+    monkeypatch,
+) -> None:
+    # Regression: the soundfile fallback (taken whenever TorchCodec can't
+    # load, which is the common case on Apple/no-FFmpeg setups) raised a
+    # message that didn't match the "Could not decode .+ audio input"
+    # bad-request pattern in openai_errors.py, so invalid uploads surfaced
+    # as HTTP 500 instead of 400 on any deployment without TorchCodec.
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: False)
+
+    with pytest.raises(
+        AudioDecodeError, match=r"^Could not decode Fun-ASR audio input$"
+    ):
+        load_audio(b"not audio data", source_name="Fun-ASR")
+
+
 def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
     decoder_oom = audio.torch.OutOfMemoryError("decoder out of memory")
 
