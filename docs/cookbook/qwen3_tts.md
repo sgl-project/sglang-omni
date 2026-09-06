@@ -109,6 +109,35 @@ HTTP **503** (`The request queue is full.`) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.
 
+### Breakable prefill CUDA graphs
+
+Non-Base checkpoints (CustomVoice, VoiceDesign) default to the breakable
+prefill CUDA-graph backend with a token ladder up to 512:
+
+| Knob | Meaning | Default |
+|---|---|---|
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` on CustomVoice, unset elsewhere |
+| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
+| `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
+
+The default is the shared ladder with one bucket added. A replay falls
+back to eager when its bucket exceeds twice the real token count, and the
+shared ladder starts at 4, so a 1-token prefill lands in bucket 4 and
+misses. Measured over 3203 prefills at 10 and 20 RPS, 1301 of them (40.6%)
+are exactly one token, and they are the only shapes that fall back: 2 and
+3 already replay inside bucket 4. Adding the single `1` bucket takes the
+fallback rate to zero.
+
+Only CustomVoice takes this default, selected by the checkpoint's
+`tts_model_type`. Base prefills also carry reference audio, so their shape
+distribution differs, and VoiceDesign has not been measured; both keep the
+eager path.
+
+Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
+default costs extra graph capture during startup. Raising
+`cuda_graph_max_bs_prefill` on its own regrows the default ladder to the
+new cap; declaring `cuda_graph_bs_prefill` yourself keeps your list as is.
+
 Raising `max_running_requests` does **not** automatically raise the waiting
 bound. For a ceiling-32 experiment:
 
@@ -342,10 +371,20 @@ true incremental codec and vocoder streaming, for both this HTTP endpoint and
 `--preprocessing.factory.stream_codec_output false`, to restore whole-utterance
 decoding.
 
-When `initial_codec_chunk_frames` is omitted, Qwen3-TTS defaults to `8`
-codec frames for the first vocoder chunk so concurrent streams stay continuous.
-Pass a smaller value only when trading continuity for lower time-to-first-audio.
-Utterances that finish in fewer than `8` generated codec frames never reach the
+Streamed CustomVoice output on validated voice/language pairs (currently
+Ryan/English with default sampling) withholds the model's silent bootstrap
+codec frame, removing about 80 ms of leading silence from the first chunk. The
+frame still feeds the vocoder, so every later sample is unchanged, and a
+runtime silence check emits the audio unmodified whenever the first frame is
+not actually silent. Opt out per request with
+`"suppress_bootstrap_silence": false` or per deployment with
+`--vocoder.factory.suppress_bootstrap_silence false`.
+
+When `initial_codec_chunk_frames` is omitted, Qwen3-TTS ramps its first chunks
+`1 -> 2 -> 4` codec frames before the steady stride, so first audio leaves after a
+single AR step while the playback cushion is rebuilt within four chunks. Pass an
+explicit value to trade continuity against time-to-first-audio.
+Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
 
 #### First-audio chunk ramp
@@ -370,9 +409,10 @@ python -m sglang_omni.cli serve --config qwen3_tts_ramp.yaml
 ```
 
 Smaller early chunks lower time-to-first-audio but start playback with less
-buffered audio, so the continuity cost grows with concurrency: keep
-`[2, 4, 8]` to low concurrency, prefer `[4, 8]` up to moderate concurrency,
-and keep the default schedule for saturated serving. The ramp is mutually
+buffered audio, so the continuity cost grows with concurrency. The default
+`[1, 2, 4]` is the most aggressive schedule and suits low concurrency; prefer
+`[2, 4, 8]` at moderate concurrency and `[4, 8]` for saturated serving, where
+the wider first chunk buys back the playback cushion. The ramp is mutually
 exclusive with the legacy `initial_chunk_frames` /
 `stream_initial_followup_stride` options, its first entry must not exceed the
 steady stride, and a per-request `initial_codec_chunk_frames` still overrides
@@ -395,8 +435,9 @@ only the first chunk.
 | `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
-| `initial_codec_chunk_frames` | `8` (model default when omitted) | First streaming vocoder chunk size in codec frames. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
+| `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
 | `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
+| `suppress_bootstrap_silence` | `true` | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence |
 
 ## Model Variants
 

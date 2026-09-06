@@ -22,6 +22,12 @@ stages:
     process: pipeline
 ```
 
+MOSS-TTS delay ships the isolated layout as its default, with declared GPU
+memory fractions 0.10 / 0.72 / 0.18 for `preprocessing`, `tts_engine` and
+`vocoder`. `config_cls: MossTTSSingleProcessPipelineConfig` selects the
+single-process variant, which the bounded 24 GB and 32 GB configurations and
+the MPS DP2 recipe pin because their measured budgets describe that layout.
+
 ## Changing Placement at Launch
 
 The same field is set from the command line with the dotted spelling, without
