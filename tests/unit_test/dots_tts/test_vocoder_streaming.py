@@ -100,6 +100,7 @@ def _codec(*, latent_dim: int = 5, patch_size: int = 3) -> SimpleNamespace:
         latent_dim=latent_dim,
         device=torch.device("cpu"),
         hop_size=2,
+        maybe_log_lock_stats=lambda: None,
     )
 
 
