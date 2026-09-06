@@ -387,7 +387,11 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                         capture_error_mode="thread_local",
                     ),
                 ):
-                    waveform = self._decoder.decode(static_codes, output_state)
+                    waveform = self._decoder.decode(
+                        static_codes,
+                        output_state,
+                        compiled=key.fresh_frames in self._compile_fresh_frames,
+                    )
             finally:
                 torch.cuda.set_stream(current_stream)
             resources.keepalives.append(waveform)
@@ -432,7 +436,11 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                     dtype=self._dtype,
                 )
                 resources.keepalives.append(warmup_state)
-                self._decoder.decode(static_codes, warmup_state)
+                self._decoder.decode(
+                    static_codes,
+                    warmup_state,
+                    compiled=key.fresh_frames in self._compile_fresh_frames,
+                )
         capture_stream.synchronize()
         del resources.keepalives[1:]
 

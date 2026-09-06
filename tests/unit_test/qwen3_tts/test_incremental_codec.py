@@ -806,7 +806,10 @@ def test_incremental_decoder_routes_only_precompiled_shapes_to_the_kernel(
     state = Qwen3TTSIncrementalCodecState()
     state.frame_positions = torch.zeros(2, dtype=torch.long)
     actual = torch.cat(
-        [incremental.decode(codes[..., i : i + 3], state) for i in range(0, 9, 3)],
+        [
+            incremental.decode(codes[..., i : i + 3], state, compiled=True)
+            for i in range(0, 9, 3)
+        ],
         dim=-1,
     )
     assert calls == [(2, 3)] * 4, "every 3-frame step runs through the kernel"
@@ -816,5 +819,7 @@ def test_incremental_decoder_routes_only_precompiled_shapes_to_the_kernel(
 
     other = Qwen3TTSIncrementalCodecState()
     other.frame_positions = torch.zeros(2, dtype=torch.long)
-    incremental.decode(codes[..., :4], other)
-    assert calls == [(2, 3)] * 4, "an unseen shape stays on the eager path"
+    incremental.decode(codes[..., :3], other)
+    assert calls == [(2, 3)] * 4, "eager decodes never enter the kernel"
+    with pytest.raises(RuntimeError, match="not precompiled"):
+        incremental.decode(codes[..., :4], other, compiled=True)

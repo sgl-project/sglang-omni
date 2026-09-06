@@ -571,6 +571,8 @@ class Qwen3TTSIncrementalDecoder:
         self,
         codes: torch.Tensor,
         state: Qwen3TTSIncrementalCodecState,
+        *,
+        compiled: bool = False,
     ) -> torch.Tensor:
         if codes.ndim != 3:
             raise ValueError(
@@ -585,12 +587,16 @@ class Qwen3TTSIncrementalDecoder:
             raise ValueError(
                 "Qwen3-TTS incremental codec decoding requires fresh frames"
             )
+        # note (luojiaxuan): the compiled kernel is opt-in per call. Only the
+        # graph runner asks for it, at capture time, on static buffers; every
+        # eager decode stays off Dynamo, whose value guards would otherwise
+        # recompile once per stream position and hit the recompile limit.
         shape = (int(codes.shape[0]), fresh_frames)
-        kernel = (
-            self._compiled_kernel
-            if self._compiled_kernel is not None and shape in self._compiled_shapes
-            else self._decode_tensors
-        )
+        if compiled and shape not in self._compiled_shapes:
+            raise RuntimeError(
+                f"Qwen3-TTS incremental codec shape {shape} was not precompiled"
+            )
+        kernel = self._compiled_kernel if compiled else self._decode_tensors
         waveform = kernel(codes, state)
         expected_samples = fresh_frames * self.total_upsample
         if int(waveform.shape[-1]) != expected_samples:
