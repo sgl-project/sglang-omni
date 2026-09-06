@@ -1,5 +1,8 @@
 config_cls: DotsTTSPipelineConfig
-model_path: dots-studio/dots.tts-mf
+# The checkpoint is pinned to the snapshot this config was validated
+# against, the same <repo-id>@<revision> spec ensure_hf_models.sh uses.
+# Bump the revision deliberately after revalidating the pipeline.
+model_path: dots-studio/dots.tts-mf@c28105adc8228143392b4e346994ff613ee48a06
 
 # The solver settings feed two consumers: the latent AR engine solves with
 # them, and preprocessing sizes its generation schedule from them. The

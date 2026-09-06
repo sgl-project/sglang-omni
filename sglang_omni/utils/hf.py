@@ -52,7 +52,9 @@ def architecture_from_hf_config(hf_config: Any) -> str | None:
     return None
 
 
-def load_mistral_params_json(model_path: str) -> dict | None:
+def load_mistral_params_json(
+    model_path: str, revision: str | None = None
+) -> dict | None:
     """Load Mistral-format ``params.json`` from a local dir or Hugging Face hub id.
     Official Voxtral TTS checkpoints ship without ``config.json``; architecture is
     only indicated by ``model_type`` inside ``params.json`` (see Hub repo files).
@@ -67,23 +69,29 @@ def load_mistral_params_json(model_path: str) -> dict | None:
     try:
         from huggingface_hub import hf_hub_download
 
-        cached = hf_hub_download(repo_id=model_path, filename="params.json")
+        cached = hf_hub_download(
+            repo_id=model_path, filename="params.json", revision=revision
+        )
         with open(cached) as f:
             return json.load(f)
     except Exception:
         return None
 
 
-def try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
+def try_resolve_arch_from_mistral_config(
+    model_path: str, revision: str | None = None
+) -> str | None:
     """Resolve architecture from Mistral-format params.json (local or Hub)."""
-    params = load_mistral_params_json(model_path)
+    params = load_mistral_params_json(model_path, revision=revision)
     if params is None:
         return None
     model_type = params.get("model_type", "")
     return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
-def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
+def try_resolve_arch_from_raw_config(
+    model_path: str, revision: str | None = None
+) -> str | None:
     """Resolve architecture by reading raw ``config.json`` as plain JSON.
 
     This is useful when ``AutoConfig.from_pretrained`` fails (e.g. because the
@@ -103,7 +111,9 @@ def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
         try:
             from huggingface_hub import hf_hub_download
 
-            cached = hf_hub_download(repo_id=model_path, filename="config.json")
+            cached = hf_hub_download(
+                repo_id=model_path, filename="config.json", revision=revision
+            )
             with open(cached) as f:
                 raw = json.load(f)
         except Exception:
