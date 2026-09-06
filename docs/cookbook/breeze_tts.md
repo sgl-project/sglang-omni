@@ -16,9 +16,12 @@ mentions Mimi, but the released inference runtime actually encodes and decodes
 with the Qwen tokenizer in `audio_tokenizer/`. No Mimi weights or runtime are
 needed here.
 
-**Validation status:** CPU tests cover request contracts, component loading,
-CFG/depth decoding, state ownership and streaming lifecycle. Full-checkpoint
-CUDA quality, end-to-end serving and performance validation are still pending.
+**Validation status:** Full-checkpoint CUDA serving has been exercised on H20
+for English/Chinese cloning, design and direction, including streaming,
+uploaded voice references, cancellation and queued-request isolation. CPU tests
+cover request contracts, component loading, CFG/depth decoding and state ownership.
+This remains an experimental eager baseline: successful synthesis does not imply
+production latency, perceptual quality or support for the optimizations below.
 Do not interpret the upstream H100 latency numbers as SGLang-Omni results.
 Tracking issue: [#1973](https://github.com/sgl-project/sglang-omni/issues/1973).
 
@@ -139,11 +142,28 @@ Run the CPU regression suite:
 CUDA_VISIBLE_DEVICES='' .venv/bin/python -m pytest tests/unit_test/breeze_tts -q
 ```
 
-On an idle CUDA device, validate clone/design/direction in both languages and
-streaming vs non-streaming output, then cancellation and concurrent queued
-requests. Report checkpoint/code revisions, environment, WER/CER and sample
-counts, TTFA, RTF, end-to-end latency and peak VRAM at concurrency 1/8/32. The
-latter concurrency values measure queued-load behavior for this baseline, not
-AR batch sizes. Dynamic batching and CUDA graphs require separate validation.
+The opt-in real-weight suite runs against a dedicated server; it does not launch
+or stop a server. Prepare `en/samples.json` and `zh/samples.json` under a fixture
+directory, each containing a list of entries with `ref_audio` (an absolute path
+on the server), `ref_text` and `target_text`. Use matching transcripts and permit
+that directory with the server's `--allowed-local-media-path` option. Then run:
+
+```bash
+BREEZE_TEST_BASE_URL=http://127.0.0.1:8000 \
+BREEZE_TEST_FIXTURE_DIR=/path/to/seedtts-fixtures \
+  .venv/bin/python -m pytest tests/test_model/test_breeze_tts.py -v
+```
+
+The suite covers clone/design/direction in both languages, supported audio formats,
+uploaded references, streaming/offline sample preservation, single-frame terminal
+flushes, long-form output, cancellation, queued-request isolation and input errors.
+Without `BREEZE_TEST_BASE_URL`, the real-weight tests are skipped.
+
+For performance and quality evaluation, use a controlled CUDA device and record
+checkpoint/code revisions, environment, WER/CER and sample counts, TTFA, RTF,
+end-to-end latency and GPU memory at concurrency 1/8/32. Those concurrency values
+measure queued-load behavior for this baseline, not AR batch sizes. Listening
+checks remain necessary for voice similarity and instruction-following quality;
+dynamic batching and CUDA graphs require separate validation.
 
 Reference implementation: [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts/tree/43e2ea1595297c4059477e2e4a300653761c759b).

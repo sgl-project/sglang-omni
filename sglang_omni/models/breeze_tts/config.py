@@ -52,6 +52,12 @@ class BreezeTTSPipelineConfig(PipelineConfig):
         ),
     ]
 
+    def requires_uploaded_voice_for_named_voice(self) -> bool:
+        return True
+
+    def supports_uploaded_voice_references(self) -> bool:
+        return True
+
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:
         # Two SGLang rows form one logical CFG request. HTTP requests can queue.

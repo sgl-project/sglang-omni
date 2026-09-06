@@ -361,7 +361,7 @@ class CreateSpeechRequest(BaseModel):
 
     # Generation parameters
     max_new_tokens: int | None = None
-    temperature: float | None = None
+    temperature: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     top_p: float | None = None
     top_k: int | None = None
     repetition_penalty: float | None = None

@@ -6,6 +6,8 @@ for both complete branches avoids splitting a CFG pair or retracting feedback
 state. Preprocessing and vocoder stages still overlap AR execution.
 """
 
+from sglang.srt.managers.schedule_batch import NextBatchPlan
+
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 from .frontend import CONTEXT_LENGTH
@@ -56,7 +58,7 @@ class BreezeScheduler(OmniScheduler):
 
     def _get_new_pair(self, running_batch):
         if running_batch.reqs or not self.waiting_queue:
-            return None
+            return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
         if len(self.waiting_queue) < 2:
             raise RuntimeError("Breeze admission found an incomplete CFG pair")
         # Upstream must see only the first complete pair, never another prompt
@@ -64,10 +66,11 @@ class BreezeScheduler(OmniScheduler):
         deferred = self.waiting_queue[2:]
         del self.waiting_queue[2:]
         try:
-            batch = super().get_new_batch_prefill(running_batch)
+            plan = super().get_new_batch_prefill(running_batch)
+            batch = plan.batch_to_run
             if batch is not None and len(batch.reqs) != 2:
                 raise RuntimeError("Breeze CFG pair was split by prefill admission")
-            return batch
+            return plan
         finally:
             self.waiting_queue.extend(deferred)
 

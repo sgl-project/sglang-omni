@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import NextBatchPlan
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.breeze_tts.depth_decoder import BreezeDepthDecoder
@@ -176,18 +177,39 @@ def test_scheduler_admits_whole_pair_only_and_restores_waiting_queue(monkeypatch
     scheduler._request_admission_lock = RLock()
     scheduler.waiting_queue = list(range(6))
     seen = []
+    updated_running = SimpleNamespace(reqs=[])
 
     def prefill(self, running):
         seen.append(list(self.waiting_queue))
         self.waiting_queue.clear()
-        return SimpleNamespace(reqs=["cond", "uncond"])
+        return NextBatchPlan(
+            batch_to_run=SimpleNamespace(reqs=["cond", "uncond"]),
+            running_batch=updated_running,
+        )
 
     monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", prefill)
-    assert scheduler.get_new_batch_prefill(SimpleNamespace(reqs=["active"])) is None
+    active = SimpleNamespace(reqs=["active"])
+    held = scheduler.get_new_batch_prefill(active)
+    assert held.batch_to_run is None
+    assert held.running_batch is active
     assert scheduler.waiting_queue == list(range(6))
-    scheduler.get_new_batch_prefill(SimpleNamespace(reqs=[]))
+    plan = scheduler.get_new_batch_prefill(SimpleNamespace(reqs=[]))
+    assert plan.batch_to_run.reqs == ["cond", "uncond"]
+    assert plan.running_batch is updated_running
     assert seen == [[0, 1]]
     assert scheduler.waiting_queue == [2, 3, 4, 5]
+
+
+def test_idle_scheduler_returns_upstream_plan_before_first_request():
+    scheduler = object.__new__(BreezeScheduler)
+    scheduler._request_admission_lock = RLock()
+    scheduler.waiting_queue = []
+    running = SimpleNamespace(reqs=[])
+    plan = scheduler.get_new_batch_prefill(running)
+    # The real SGLang event loop dereferences this even before the first HTTP
+    # request. Returning None crashes the worker immediately after startup.
+    assert plan.batch_to_run is None
+    assert plan.running_batch is running
 
 
 def test_scheduler_abort_also_retires_cfg_twin(monkeypatch):

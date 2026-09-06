@@ -1,13 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
+from sglang_omni.models.breeze_tts.config import BreezeTTSPipelineConfig
 from sglang_omni.models.breeze_tts.frontend import text_segments
 from sglang_omni.models.breeze_tts.request import parse_request
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.serve.protocol import CreateSpeechRequest
-from sglang_omni.serve.speech_service import _build_sampling_params, _build_tts_params
+from sglang_omni.serve.speech_errors import SpeechAPIError, speech_generation_error
+from sglang_omni.serve.speech_service import (
+    SpeechRequestValidator,
+    _build_sampling_params,
+    _build_tts_params,
+)
 
 
 def make_payload(*, text="Hello", tts=None, params=None):
@@ -105,6 +113,28 @@ def test_cfg_scale_http_validation(value):
         CreateSpeechRequest(input="Hello", cfg_scale=value)
 
 
+@pytest.mark.parametrize("temperature", [-0.1, float("nan"), float("inf")])
+def test_invalid_http_temperature_is_rejected_before_pipeline(temperature):
+    validator = SpeechRequestValidator(default_model="BreezeBlue/Breeze-TTS-2")
+    with pytest.raises(SpeechAPIError) as error:
+        validator.parse_generation_request(
+            {"input": "Hello", "instructions": "Warm voice", "temperature": temperature}
+        )
+    assert error.value.status_code == 400
+
+
+@pytest.mark.parametrize("tts", [{"speed": 2}, {"language": "Japanese"}])
+def test_model_input_errors_keep_client_error_status_across_stage_transport(tts):
+    with pytest.raises(ValueError) as error:
+        parse_request(make_payload(tts=tts))
+    transported = RuntimeError(str(error.value))
+    assert speech_generation_error(transported).status_code == 400
+    assert (
+        speech_generation_error(RuntimeError("Breeze depth decoder failed")).status_code
+        == 500
+    )
+
+
 def test_cfg_branches_keep_reference_but_remove_only_instruction():
     request = parse_request(
         make_payload(
@@ -144,6 +174,41 @@ def test_cfg_branches_keep_reference_but_remove_only_instruction():
 def test_invalid_reference_contract(tts, inputs):
     with pytest.raises(ValueError):
         parse_request(make_payload(text=inputs, tts=tts))
+
+
+def test_uploaded_voice_is_lowered_to_breeze_reference_audio():
+    config = BreezeTTSPipelineConfig(model_path="BreezeBlue/Breeze-TTS-2")
+    uploaded = SimpleNamespace(
+        voice=SimpleNamespace(
+            ref_text="Reference text", normalized_name="speaker", created_at=1
+        ),
+        ref_audio="data:audio/wav;base64,YWJj",
+    )
+    validator = SpeechRequestValidator(
+        default_model=config.model_path,
+        requires_uploaded_voice_for_named_voice=config.requires_uploaded_voice_for_named_voice(),
+        supports_uploaded_voice_references=config.supports_uploaded_voice_references(),
+        voice_store=SimpleNamespace(
+            resolve_reference=lambda name: uploaded if name == "speaker" else None
+        ),
+    )
+    prepared = validator.parse_generation_request(
+        {"input": "Hello", "voice": "speaker"}
+    )
+    request = parse_request(
+        make_payload(
+            tts={
+                "instructions": None,
+                **_build_tts_params(
+                    prepared.request, uploaded_voice=prepared.uploaded_voice
+                ),
+            }
+        )
+    )
+    assert request.ref_audio == uploaded.ref_audio
+    assert request.ref_text == "Reference text"
+    with pytest.raises(SpeechAPIError, match="Unknown voice"):
+        validator.parse_generation_request({"input": "Hello", "voice": "unknown"})
 
 
 def test_clone_without_instructions_and_inline_reference():

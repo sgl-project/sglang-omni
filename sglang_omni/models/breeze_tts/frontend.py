@@ -18,7 +18,7 @@ from transformers.models.t5gemma2.modeling_t5gemma2 import T5Gemma2TextEncoder
 from sglang_omni.proto import StagePayload
 
 from .checkpoint import load_component, read_config
-from .request import BreezeRequest, parse_request
+from .request import BreezeRequest, BreezeRequestError, parse_request
 
 CONTEXT_LENGTH = 1024
 
@@ -66,7 +66,9 @@ class BreezeFrontend(nn.Module):
     def encode_text(self, tokenizer, text: str) -> torch.Tensor:
         ids = tokenizer(text, add_special_tokens=True, return_tensors="pt")["input_ids"]
         if ids.shape[1] >= CONTEXT_LENGTH:
-            raise ValueError("Breeze-TTS-2 text segment exceeds the 1024-token context")
+            raise BreezeRequestError(
+                "Breeze-TTS-2 text segment exceeds the 1024-token context"
+            )
         ids = ids.to(self.audio_embeddings.weight.device)
         hidden = self.text_encoder(input_ids=ids).last_hidden_state
         return self.text_encoder_proj(hidden)[0]
@@ -91,7 +93,7 @@ class BreezeFrontend(nn.Module):
             rate = audio_tokenizer.get_input_sample_rate()
             waveform = load_audio(request.ref_audio, target_sample_rate=rate)
             if waveform.size == 0:
-                raise ValueError("Breeze-TTS-2 reference audio is empty")
+                raise BreezeRequestError("Breeze-TTS-2 reference audio is empty")
             encoded = audio_tokenizer.encode(waveform, sr=rate)
             codes = encoded.audio_codes[0].to(device=device, dtype=torch.long)
             if codes.ndim != 2 or codes.shape[1] != self.num_codebooks:
@@ -117,7 +119,7 @@ class BreezeFrontend(nn.Module):
         # runtime's bounded generation window without dropping the final frame.
         remaining = CONTEXT_LENGTH - prompt_len
         if remaining < 1:
-            raise ValueError(
+            raise BreezeRequestError(
                 "Breeze-TTS-2 prompt leaves no generation room in the 1024-token context"
             )
         sampling = asdict(request.sampling)
