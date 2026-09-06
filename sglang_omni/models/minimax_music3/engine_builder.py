@@ -3,17 +3,10 @@
 
 from __future__ import annotations
 
-import json
-import logging
-from pathlib import Path
 from typing import Any
 
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
-
-logger = logging.getLogger(__name__)
-
-_AUDIO_WEIGHT_PREFIXES = ("model.audio_decoder.", "model.audio_extra_embedding.")
 
 
 def _rvq_graph_buckets(max_running_requests: int) -> list[int]:
@@ -29,7 +22,6 @@ def _rvq_graph_buckets(max_running_requests: int) -> list[int]:
 class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
     model_name = "minimax_music3"
     context_length = 10240
-    model_arch_override = "Qwen3ForCausalLM"
 
     def __init__(self, *, max_running_requests: int = 16) -> None:
         self.max_running_requests = int(max_running_requests)
@@ -43,11 +35,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
 
         paths = resolve_checkpoint(model_path)
         self._checkpoint_root = str(paths.root)
-        return str(paths.qwen_dir)
-
-    def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        self._normalize_backbone_config(Path(checkpoint_dir) / "config.json")
-        self._filter_audio_weights()
+        return str(paths.language_model_dir)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
@@ -75,6 +63,11 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         overrides["max_running_requests"] = rows
         overrides["cuda_graph_max_bs"] = rows
         overrides["cuda_graph_bs"] = build_default_cuda_graph_bs(rows)
+        for name in ("prefill_max_requests", "max_queued_requests"):
+            value = overrides.get(name)
+            if value is not None:
+                overrides[name] = 2 * int(value)
+        overrides["disable_overlap_schedule"] = True
         overrides["disable_radix_cache"] = True
         overrides["chunked_prefill_size"] = 0
         if not bool(overrides.get("disable_cuda_graph", False)):
@@ -171,44 +164,6 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
             "stream_output_builder": build_stream_output,
             "enable_async_decode": False,
         }
-
-    @staticmethod
-    def _normalize_backbone_config(config_path: Path) -> None:
-        """Rewrite the backbone config so HuggingFace resolves a Qwen3 config."""
-        config = json.loads(config_path.read_text())
-        if config.get("model_type") == "qwen3":
-            return
-        backup_path = config_path.with_suffix(".json.bak")
-        if not backup_path.exists():
-            backup_path.write_text(config_path.read_text())
-        config["model_type"] = "qwen3"
-        config_path.unlink()
-        config_path.write_text(json.dumps(config, indent=2))
-        logger.info(
-            f"MiniMax Music 3: rewrote {config_path} model_type to qwen3 (backup at {backup_path})"
-        )
-
-    @staticmethod
-    def _filter_audio_weights() -> None:
-        from sglang.srt.models.qwen3 import Qwen3ForCausalLM
-
-        if getattr(Qwen3ForCausalLM.load_weights, "_minimax_filtered", False):
-            return
-        load_weights = Qwen3ForCausalLM.load_weights
-
-        def filtered_load_weights(self, weights):
-            return load_weights(
-                self,
-                (
-                    (name, tensor)
-                    for name, tensor in weights
-                    if not name.startswith(_AUDIO_WEIGHT_PREFIXES)
-                ),
-            )
-
-        filtered_load_weights._minimax_filtered = True
-        Qwen3ForCausalLM.load_weights = filtered_load_weights
-        logger.info("MiniMax Music 3: Qwen3 weight loader now skips audio-module keys")
 
 
 __all__ = ["MiniMaxMusic3EngineBuilder"]
