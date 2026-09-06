@@ -305,8 +305,7 @@ def test_vocoder_factory_selects_torch_mps_compatibility_path(
 ) -> None:
     from sglang.srt.utils import tensor_bridge
 
-    from sglang_omni.models.qwen3_tts import stages
-    from sglang_omni.models.qwen3_tts import torch_mps_vocoder
+    from sglang_omni.models.qwen3_tts import stages, torch_mps_vocoder
 
     tokenizer = object()
     scheduler = object()
