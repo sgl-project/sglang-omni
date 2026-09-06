@@ -513,3 +513,28 @@ r1(47 请求,first playable p50 47.5ms)与 r20(795 请求,p50 79ms)的服务端�
 准入等待(+10ms,新请求要等正在跑的 batch-48 decode step 结束)、preprocessing(+2ms)和
 vocoder 首块排队。**prefill→首帧 16ms 是最大单项**:1.7B talker 短 prompt prefill 不该要 16ms,
 里面含首帧的 code predictor 自回归(16 个量化器)——下一步分别计时。
+
+### 第十轮:vocoder 与 Talker 的默认流耦合(2026-09-06 12:55 PT)
+
+首块探针把 r1 下 vocoder 首块的 25.8ms 拆开后,两项异常:`arena.acquire()` 的 52 个清零 kernel
+在 CPU 侧要 5.4ms(孤立 0.19ms),`resolve` 等 GPU 8.2ms(COLD 图孤立 replay 只要 3.2ms)。
+先证伪了 GIL 切换间隔(改 0.2ms 无变化);把清零挪到解码流后 plan 降到 0.4ms 但 resolve 升到
+13.4ms,总量不变——说明整段都在等同一件事。读代码找到根因:**Talker 的 omni model runner 不建流,
+整个 AR 步跑在 legacy 默认流上;Talker 把 codes 以 CUDA tensor 直接交给同进程的 vocoder,vocoder
+在自己线程的默认流上 `torch.cat` 这些 codes,再让解码流 `wait_stream(默认流)`**。于是每次解码都
+排在 Talker 当时已入队的整步(含 launch-ahead 的下一步)之后:r1 约 5-10ms,r20 batch-48 一步
+12ms+——这正是第六轮外审归因为"SM 干扰"的那 5.5ms(2ms 计算等 7.5ms),实为流顺序,不是算力。
+跳过 `wait_stream` 直接崩(device assert:codes 未就绪就被编译内核 embedding),证明依赖真实存在。
+
+修法(5ad19d18,按"消费者等生产者的事件,不等生产者的整条流"设计):
+- Talker 每步在 `post_process_outputs` 的 codes 快照后记录一个 CUDA event,随 stream chunk 的
+  metadata(`codes_ready_event`)交给 vocoder;跨进程发送时由 transport 剥掉(那条路径本就自行保证就绪);
+- vocoder 的每个解码 worker 线程 `torch.cuda.set_stream(自己的解码流)`,规划、槽位清零、cat、发射
+  全部落在自己的流上;`_build_*_plan` 在 cat 之前 `wait_event(state.codes_ready)`(同一 talker 流
+  按序生产,最新 chunk 的 event 覆盖更早的);`_launch_async` 不再 `wait_stream(默认流)`;
+  scheduler 线程的同步 flush 路径包在解码流上下文里。
+
+r1 验收(47 请求,100% 完成,0 underrun):**first playable p50 35.8ms(此前 45.5)、min 32.7ms**;
+初始解码 plan 0.38 / launch 0.28 / resolve 4.3 / commit 0.11 ms,合计 4.6ms(此前 17-18ms)。
+单测 507 过(3 个 test_compat 文档测试在该 rsync 树上失败,与本改动无关,server-30ms 树上通过)。
+三 seed r20 与事件剖面在跑。
