@@ -43,7 +43,7 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
     assert vocoder.factory.model_extra == {
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 8000,
-        "enable_dit_torch_compile": False,
+        "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
     }
 
@@ -68,7 +68,7 @@ def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
     assert vocoder.factory.model_extra == {
         "flow_batch_bucket_frames": 100,
         "flow_batch_admission_frames": 4000,
-        "enable_dit_torch_compile": False,
+        "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
     }
     args = resolve_stage_typed_kwargs(vocoder)

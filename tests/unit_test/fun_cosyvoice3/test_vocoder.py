@@ -616,7 +616,7 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
         "flow_batch_admission_frames": 8000,
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
-        "enable_dit_torch_compile": False,
+        "enable_dit_torch_compile": True,
         "enable_flow_estimator_trt": False,
     }
 
