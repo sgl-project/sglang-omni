@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import random
+import threading
 
 import pytest
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
@@ -409,12 +411,239 @@ def test_incremental_decoder_reference_prefix_matches_generated_waveform() -> No
     assert actual.shape[-1] == (9 - reference_frames) * decoder.total_upsample
 
 
-def test_incremental_decoder_rejects_batch_greater_than_one() -> None:
+def test_incremental_decoder_rejects_malformed_codes() -> None:
     decoder = _Decoder()
     incremental = Qwen3TTSIncrementalDecoder(decoder)
+    state = Qwen3TTSIncrementalCodecState()
 
-    with pytest.raises(ValueError, match="\[1, Q, T\]"):
-        incremental.decode(
-            torch.ones(2, 2, 1, dtype=torch.long),
-            Qwen3TTSIncrementalCodecState(),
+    with pytest.raises(ValueError, match=r"\[B, Q, T\]"):
+        incremental.decode(torch.ones(2, 1, dtype=torch.long), state)
+    with pytest.raises(ValueError, match="fresh frames"):
+        incremental.decode(torch.ones(1, 2, 0, dtype=torch.long), state)
+
+
+def test_incremental_decoder_batches_rows_sharing_a_position() -> None:
+    """A batch of identical-position rows must equal the same rows decoded alone."""
+    torch.manual_seed(11)
+    decoder = _Decoder()
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    codes = torch.randint(0, 16, (3, 2, 6))
+
+    batched_state = Qwen3TTSIncrementalCodecState(
+        frame_positions=torch.zeros(3, dtype=torch.long)
+    )
+    batched = incremental.decode(codes, batched_state)
+
+    for row in range(3):
+        single = incremental.decode(
+            codes[row : row + 1], Qwen3TTSIncrementalCodecState()
         )
+        torch.testing.assert_close(batched[row : row + 1], single, rtol=2e-5, atol=2e-6)
+    assert batched_state.frame_positions.tolist() == [6, 6, 6]
+
+
+def _arena_decode(
+    incremental: Qwen3TTSIncrementalDecoder,
+    arena: Qwen3TTSCodecStateArena,
+    slots: list[int],
+    positions: list[int],
+    codes: torch.Tensor,
+) -> torch.Tensor:
+    """Run one cohort decode the way the vocoder does: gather, decode, scatter."""
+    state = arena.gather(slots)
+    state.frame_positions = torch.tensor(positions, dtype=torch.long)
+    waveform = incremental.decode(codes, state)
+    arena.scatter(slots, state)
+    return waveform
+
+
+def _make_arena(
+    decoder: _Decoder, slots: int = 4
+) -> tuple[Qwen3TTSIncrementalDecoder, Qwen3TTSCodecStateArena]:
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    arena = Qwen3TTSCodecStateArena(
+        incremental,
+        num_slots=slots,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    return incremental, arena
+
+
+def test_state_spec_covers_every_key_the_decode_creates() -> None:
+    """The arena preallocates from the spec, so it must match what decode uses."""
+    torch.manual_seed(12)
+    decoder = _Decoder()
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    spec = incremental.state_spec()
+
+    state = Qwen3TTSIncrementalCodecState()
+    incremental.decode(torch.randint(0, 16, (1, 2, 5)), state)
+
+    assert {key for key, _, _ in spec.conv_histories} == set(state.conv_histories)
+    assert {key for key, _, _ in spec.transconv_overlaps} == set(
+        state.transconv_overlaps
+    )
+    assert spec.num_layers == len(state.transformer_keys)
+    for key, channels, length in spec.conv_histories:
+        assert tuple(state.conv_histories[key].shape) == (1, channels, length)
+    for key, channels, length in spec.transconv_overlaps:
+        assert tuple(state.transconv_overlaps[key].shape) == (1, channels, length)
+    assert spec.bytes_per_stream(torch.float32) > 0
+
+
+def test_state_spec_reports_every_allocated_state_byte() -> None:
+    incremental = Qwen3TTSIncrementalDecoder(_Decoder())
+    state = incremental.init_state(
+        1,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    tensors = [
+        state.frame_positions,
+        *state.conv_histories.values(),
+        *state.transconv_overlaps.values(),
+        *state.transformer_keys.values(),
+        *state.transformer_values.values(),
+    ]
+    actual_bytes = sum(
+        tensor.numel() * tensor.element_size()
+        for tensor in tensors
+        if tensor is not None
+    )
+
+    assert incremental.state_bytes_per_stream(torch.float32) == actual_bytes
+
+
+def test_arena_backed_decode_matches_the_lazy_state() -> None:
+    """Full-width buffers plus negative-position masking must be exact.
+
+    An arena slot always carries the full retained window, so a stream that has
+    not filled it reads zeros at negative nominal positions. If the mask did not
+    exclude them the early chunks would drift from the lazily grown state, which
+    the whole-sequence parity tests above already pin to the reference decoder.
+    """
+    torch.manual_seed(13)
+    decoder = _Decoder()
+    incremental, arena = _make_arena(decoder)
+    codes = torch.randint(0, 16, (1, 2, 11))
+    partitions = [2, 1, 5, 3]
+
+    lazy_state = Qwen3TTSIncrementalCodecState()
+    slot = arena.acquire()
+    assert slot is not None
+
+    offset = 0
+    position = 0
+    for length in partitions:
+        chunk = codes[..., offset : offset + length]
+        expected = incremental.decode(chunk, lazy_state)
+        actual = _arena_decode(incremental, arena, [slot], [position], chunk)
+        torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+        offset += length
+        position += length
+
+
+def test_arena_cohort_matches_per_stream_decodes() -> None:
+    """Streams at different playback positions must batch without changing output.
+
+    This is the property the per-row position work exists for: the cohort holds
+    one cold stream and two warm streams whose absolute positions differ, and
+    every row must match what it produces decoded on its own.
+    """
+    torch.manual_seed(14)
+    decoder = _Decoder()
+    incremental, arena = _make_arena(decoder, slots=8)
+
+    warmups = [0, 3, 9]
+    fresh = 2
+    streams = [torch.randint(0, 16, (1, 2, warmup + fresh)) for warmup in warmups]
+
+    cohort_slots: list[int] = []
+    solo_slots: list[int] = []
+    for stream, warmup in zip(streams, warmups):
+        cohort_slot = arena.acquire()
+        solo_slot = arena.acquire()
+        assert cohort_slot is not None and solo_slot is not None
+        cohort_slots.append(cohort_slot)
+        solo_slots.append(solo_slot)
+        for index in range(warmup):
+            chunk = stream[..., index : index + 1]
+            for slot in (cohort_slot, solo_slot):
+                _arena_decode(incremental, arena, [slot], [index], chunk)
+
+    expected = [
+        _arena_decode(incremental, arena, [slot], [warmup], stream[..., warmup:])
+        for slot, warmup, stream in zip(solo_slots, warmups, streams)
+    ]
+    batched = _arena_decode(
+        incremental,
+        arena,
+        cohort_slots,
+        warmups,
+        torch.cat([stream[..., warmup:] for stream, warmup in zip(streams, warmups)]),
+    )
+
+    assert batched.shape[0] == 3
+    for row, single in enumerate(expected):
+        torch.testing.assert_close(batched[row : row + 1], single, rtol=2e-5, atol=2e-6)
+    assert fresh == 2
+
+
+def test_arena_slot_reuse_starts_from_a_cold_state() -> None:
+    torch.manual_seed(15)
+    decoder = _Decoder()
+    incremental, arena = _make_arena(decoder, slots=1)
+    codes = torch.randint(0, 16, (1, 2, 3))
+
+    slot = arena.acquire()
+    assert slot == 0
+    cold = _arena_decode(incremental, arena, [slot], [0], codes)
+    _arena_decode(incremental, arena, [slot], [3], codes)
+    assert arena.active_slots() == 1
+
+    arena.release(slot)
+    assert arena.active_slots() == 0
+    reused = arena.acquire()
+    assert reused == slot
+    again = _arena_decode(incremental, arena, [reused], [0], codes)
+
+    torch.testing.assert_close(again, cold)
+
+
+def test_arena_reports_exhaustion_and_retirement() -> None:
+    decoder = _Decoder()
+    _, arena = _make_arena(decoder, slots=1)
+
+    slot = arena.acquire()
+    assert slot is not None
+    assert arena.acquire() is None
+    assert arena.exhausted_count == 1
+
+    arena.release(slot)
+    reused = arena.acquire()
+    assert reused is not None
+    arena.retire(reused)
+    assert arena.acquire() is None
+    assert arena.active_slots() == 0
+    # Note (Qihao Liu): a retired slot stays withdrawn even if its owner
+    # releases it later.
+    arena.release(reused)
+    assert arena.acquire() is None
+    assert arena.describe()["bytes_per_slot"] == arena.bytes_per_slot
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_arena_indices_use_pinned_non_blocking_staging() -> None:
+    arena = object.__new__(Qwen3TTSCodecStateArena)
+    arena._device = torch.device("cuda")
+    arena._index_staging = threading.local()
+
+    first = arena._index([3, 1])
+    second = arena._index([2, 0])
+    torch.cuda.synchronize()
+
+    assert first.tolist() == [3, 1]
+    assert second.tolist() == [2, 0]
+    assert arena._index_staging.slot.view(2).is_pinned()

@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     preprocess_qwen3_tts_payload,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
+    DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
@@ -238,6 +239,7 @@ def create_vocoder_executor(
     followup_cuda_graph: bool = True,
     fused_snake_activation: bool = False,
     enable_stateful_codec_decoder: bool = False,
+    codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
 ) -> SimpleScheduler:
@@ -270,6 +272,7 @@ def create_vocoder_executor(
         followup_cuda_graph=followup_cuda_graph,
         fused_snake_activation=fused_snake_activation,
         enable_stateful_codec_decoder=enable_stateful_codec_decoder,
+        codec_state_slots=codec_state_slots,
         suppress_bootstrap_silence=suppress_bootstrap_silence,
         suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
     )
