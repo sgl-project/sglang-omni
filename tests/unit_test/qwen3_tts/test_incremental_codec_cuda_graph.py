@@ -104,6 +104,8 @@ def _async_incremental_scheduler(
     scheduler._decode_staging = threading.local()
     scheduler._decode_stream = torch.cuda.Stream(device=device)
     scheduler._followup_decode_stream = torch.cuda.Stream(device=device)
+    scheduler._followup_decode_streams = (scheduler._followup_decode_stream,)
+    scheduler._worker_ctx = SimpleNamespace(graphs=None)
     return scheduler
 
 
