@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 SPECIAL_TOKEN_IDS: dict[str, int] = {
     "<|im_start|>": 151644,
@@ -77,6 +80,21 @@ def _strip_text_after_leading_tags(text: str) -> str:
     return "\n".join(output)
 
 
+def dropped_lyric_lines(lyrics: str) -> list[int]:
+    """1-based line numbers whose words `_strip_text_after_leading_tags` discards.
+
+    A line that opens with a structure tag keeps only its tags, so anything
+    written after `[Verse]` on the same line never reaches the model.
+    """
+
+    dropped: list[int] = []
+    for number, line in enumerate(lyrics.split("\n"), start=1):
+        match = _LEADING_TAGS_RE.match(line)
+        if match and line[match.end() :].strip():
+            dropped.append(number)
+    return dropped
+
+
 def normalize_lyrics(lyrics: str) -> str:
     """Apply source _normalize_lyrics_text byte-for-byte for strings."""
     text = _strip_text_after_leading_tags(lyrics)
@@ -89,6 +107,15 @@ def normalize_lyrics(lyrics: str) -> str:
 
 
 def build_prompt(caption: str, lyrics: str) -> str:
+    dropped = dropped_lyric_lines(lyrics)
+    if dropped:
+        logger.warning(
+            "MiniMax Music 3 lyrics: %d line(s) put words after a structure tag on "
+            "the same line (line %s); normalization keeps only the tag, so those "
+            "words are not sung. Move the tag to its own line to keep them.",
+            len(dropped),
+            ", ".join(str(number) for number in dropped),
+        )
     return (
         "<|im_start|><|caption_start|>"
         f"{clean_caption(caption)}"
@@ -115,6 +142,7 @@ __all__ = [
     "SPECIAL_TOKEN_IDS",
     "build_prompt",
     "clean_caption",
+    "dropped_lyric_lines",
     "normalize_lyrics",
     "validate_tokenizer_ids",
 ]

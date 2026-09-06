@@ -53,14 +53,20 @@ Two fields carry the request. `input` is the lyrics; `instructions` is the capti
 
 Structure tags in the lyrics (`[Verse]`, `[Chorus]`, `[Bridge]`, `[Outro]`) steer the arrangement and are part of the prompt contract.
 
-**Put a tag on its own line.** Normalization keeps only the tags on a line that starts with one and drops the rest of that line, so lyrics written next to a tag are silently lost:
+**Put a tag on its own line.** Normalization keeps only the tags on a line that starts with one and drops the rest of that line, so lyrics written next to a tag are lost:
 
 ```text
 "[Verse]\nWalking down the street"   ->   [start] [verse] Walking down the street
 "[Verse] Walking down the street"    ->   [start] [verse]
 ```
 
-The second form generates a song with that line missing, and nothing warns you.
+The second form generates a song with that line missing. The server logs a warning naming the lyric lines it dropped, so check the log when a line you wrote never turns up in the audio:
+
+```text
+WARNING  MiniMax Music 3 lyrics: 1 line(s) put words after a structure tag on the
+same line (line 1); normalization keeps only the tag, so those words are not sung.
+Move the tag to its own line to keep them.
+```
 
 ### A first song
 
