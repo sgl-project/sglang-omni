@@ -19,6 +19,7 @@ from sglang_omni.models.moss_tts_local import stages as moss_local_stages
 from sglang_omni.models.moss_tts_local.request_builders import (
     MossTTSLocalSGLangRequestData,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
@@ -30,7 +31,11 @@ from sglang_omni.scheduling.engine_factory import (
 if TYPE_CHECKING:
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
+    from sglang_omni.models.moss_tts_local.mlx.runner import MossTTSLocalMlxModelRunner
     from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
+        MossTTSLocalMlxSchedulerModelRunner,
+    )
     from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
@@ -80,13 +85,29 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             applied_codec_mem_reserve=0.0,
         )
         self.profile_total_gpu_memory_fraction: float | None = None
-        self.model: MossTTSLocalSGLangModel | None = None
+        self.model: MossTTSLocalSGLangModel | MossTTSLocalMlxModelRunner | None = None
 
     def generation_defaults(
         self,
         *,
         dtype: str,
     ) -> GenerationDefaults:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            if not current_platform.is_mps():
+                raise RuntimeError("MOSS-TTS Local MLX requires Apple Silicon")
+            return {
+                "max_running_requests": 1,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "mem_fraction_static": 0.6,
+            }
         defaults: GenerationDefaults = {
             "max_running_requests": 16,
             "dtype": dtype,
@@ -170,11 +191,21 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         server_args: object,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
-        self.model = model_worker.model_runner.model
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        self.model = (
+            model_worker._mlx_runner
+            if use_mlx()
+            else model_worker.model_runner.model
+        )
 
     def post_cuda_graph_setup(
         self, model: MossTTSLocalSGLangModel, server_args: ServerArgs
     ) -> None:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            return
         from sglang_omni.scheduling.generation_batch_policy import (
             get_decode_cuda_graph_bs,
         )
@@ -192,7 +223,15 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         self,
         model_worker: ModelWorker | MlxTpModelWorker,
         output_proc: SGLangOutputProcessor,
-    ) -> MossTTSLocalModelRunner:
+    ) -> MossTTSLocalModelRunner | MossTTSLocalMlxSchedulerModelRunner:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
+                MossTTSLocalMlxSchedulerModelRunner,
+            )
+
+            return MossTTSLocalMlxSchedulerModelRunner(model_worker, output_proc)
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.moss_tts_local.model_runner"
         )
@@ -203,7 +242,11 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         Callable[[StagePayload], MossTTSLocalSGLangRequestData],
         Callable[[MossTTSLocalSGLangRequestData], StagePayload],
     ]:
-        return request_builders.make_moss_tts_local_scheduler_adapters(model=model)
+        del model
+        assert self.model is not None
+        return request_builders.make_moss_tts_local_scheduler_adapters(
+            model=self.model
+        )
 
     def make_abort_callback(self) -> Callable[[str], None]:
         assert self.model is not None
