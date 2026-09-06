@@ -161,9 +161,26 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   WARM 图 4ms 一致),但省下的时间被 14ms 的 CPU launch 吃光。1 行 cohort 18.5ms,
   8 行 26.6ms(3.3ms/行)——固定开销 14ms 与行数无关。
 - **假设"launch 是 arena 的 52 个小张量搬运"被实测否定**:单独计时(真模型,B=1..8)
-  gather 0.24 + copy_in 0.5 + slice 0.06 + scatter 0.26 ≈ **1.0ms**。剩余 ~12ms 在
-  `_launch_async` 的增量分支里别的地方(graph replay 的 CPU 成本?每 cohort 的 H2D
-  positions 同步?)——已装更细的探针(stage / copyin+replay / slice / scatter 分开)。
+  gather 0.24 + copy_in 0.5 + slice 0.06 + scatter 0.26 ≈ **1.0ms**。
+- **细探针定位到真凶:`arena.scatter` 生产中 8.0ms、单测 0.26ms。** 它用
+  `torch.as_tensor(list, device=cuda)` 建索引,这是 pageable 内存的同步 H2D,会阻塞 host
+  直到该 stream 上已排队的 kernel(刚发射的整个 graph)跑完——等于每次 gather/scatter
+  都隐式 `resolve()` 一次,两个 worker 的 CPU 全被堵住。stage 段 3.8ms 里的
+  `frame_positions = torch.tensor(list, device)` 同理。
+- **修法**:arena 按线程预分配 pinned host + device 索引/positions 缓冲,`copy_(...,
+  non_blocking=True)`;worker 只在 `resolve()` 同步过上一 cohort 后才复用 staging。
+  commit 7ef0e8cf。
+- **修后(P3/P4,2 worker,COLD cohort,r20)**:underrun 42.8% / 45.4%,First playable
+  p50 106 / 98ms——**没有改善**。探针:launch 14.0→7.1ms(scatter 8.0→1.5),时间转移
+  到 resolve 3.2→8.9ms,cohort 墙钟 20.6→18.0ms。即 **每个 cohort 真实要等 GPU 约 9-11ms**,
+  而测量窗口内 GPU SM 利用率只有 60-69%。PR 自测 WARM 图 B1 4.0ms / B8 9.0ms 是单流空闲
+  GPU 下的数字;生产里 2 个 follow-up stream + 1 个 initial stream 交错,每个 cohort 的
+  graph 含 8 层 transformer + ~30 个因果卷积 + 52 个状态拷贝,在 B≈2、T=8 下全是微型
+  kernel,launch-latency 受限(~10µs/kernel),三条流交错并不能重叠。**增量路径每次调用
+  的 kernel 比 legacy 多、每个更小,"少 3 倍算力"没有换成"少 3 倍时间"。**
+- 由此杠杆变成**把 cohort 做宽**(B8 时 9.0ms/8 = 1.1ms/行):增量路径的 follow-up 几乎
+  全是 fresh_frames=8 同形状,加大收集窗口这次应该真能变宽(legacy 加窗口失败是因为
+  形状碎片化)。第五轮:wait {4, 8} × ramp {(1,2,4), (2,4)},2 worker,带探针。
 
 ## 决策日志
 
