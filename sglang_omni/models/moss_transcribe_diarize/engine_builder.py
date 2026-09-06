@@ -49,6 +49,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         request_build_max_workers: int,
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
+        buffered_no_progress_marker_segments: int,
+        buffered_no_progress_repeat_segments: int,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.requested_max_new_tokens = max_new_tokens
@@ -75,6 +77,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
         self.stream_emit_interval_s = stream_emit_interval_s
+        self.buffered_no_progress_marker_segments = buffered_no_progress_marker_segments
+        self.buffered_no_progress_repeat_segments = buffered_no_progress_repeat_segments
         self.processor: Any = None
         self.tokenizer: Any = None
         self.audio_encoder_service: BatchedAudioEncoderService | None = None
@@ -178,6 +182,12 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
                 request_builders.make_moss_transcribe_diarize_stream_output_builder(
                     tokenizer=self.tokenizer,
                     min_emit_interval_s=self.stream_emit_interval_s,
+                    buffered_no_progress_marker_segments=(
+                        self.buffered_no_progress_marker_segments
+                    ),
+                    buffered_no_progress_repeat_segments=(
+                        self.buffered_no_progress_repeat_segments
+                    ),
                 )
             ),
             "enable_async_decode": self.enable_async_decode,

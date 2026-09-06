@@ -31,6 +31,8 @@ class MossTDFactoryArgs(FactoryArgs):
 
     encoder_cache_size_bytes: int | None = Field(default=None, ge=0)
     encoder_max_batch_size: int | None = Field(default=None, ge=1)
+    buffered_no_progress_marker_segments: int = Field(default=0, ge=0)
+    buffered_no_progress_repeat_segments: int = Field(default=0, ge=0)
 
 
 class MossTDStageConfig(EngineStageConfig):

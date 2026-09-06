@@ -3,16 +3,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import (
+    FINISH_MATCHED_STR,
     Modality,
     MultimodalDataItem,
     MultimodalInputs,
@@ -35,10 +38,22 @@ _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_START = "<|audio_start|>"
 _AUDIO_END = "<|audio_end|>"
 _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:im_start|im_end|endoftext)\|>")
+_COMPLETE_SEGMENT_RE = re.compile(
+    r"^\s*\[(?P<start>\d+(?:\.\d+)?)\]\s*"
+    r"\[(?P<speaker>S\d{2,})\]"
+    r"(?P<body>.*?)"
+    r"\[(?P<end>\d+(?:\.\d+)?)\]",
+    re.DOTALL | re.IGNORECASE,
+)
 _WHISPER_ENCODER_STRIDE = 2
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 0.95
 DEFAULT_TOP_K = 50
+MOSS_TD_MARKER_LOOP_REASON = "moss_td_no_progress_marker_loop"
+MOSS_TD_REPEATED_SEGMENT_REASON = "moss_td_no_progress_repeated_segment"
+_NO_PROGRESS_MAX_PENDING_TOKEN_IDS = 256
+_NO_PROGRESS_MAX_INCOMPLETE_CHARS = 65536
+_NO_PROGRESS_MAX_INCOMPLETE_DECODE_STEPS = 256
 
 # note (db-ol): dense multi speaker meetings decode to about 4.5 output
 # tokens per audio second including time markers, so 10 leaves roughly 2x
@@ -64,6 +79,131 @@ DEFAULT_TRANSCRIBE_DIARIZE_PROMPT = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _NoProgressDecision:
+    reason: str
+    completed_segments: int
+    marker_only_segments: int
+    repeated_segments: int
+    detected_completion_tokens: int
+
+
+@dataclass(slots=True)
+class _MossTDNoProgressState:
+    marker_segment_limit: int
+    repeat_segment_limit: int
+    pending_token_ids: list[int] = field(default_factory=list)
+    buffer: str = ""
+    completed_segments: int = 0
+    marker_only_segments: int = 0
+    repeated_segments: int = 0
+    observed_tokens: int = 0
+    incomplete_decode_steps: int = 0
+    last_content_signature: tuple[str, str, str, str] | None = None
+    disabled: bool = False
+
+    def observe_token_id(
+        self,
+        token_id: int,
+        decode_fn: Callable[[list[int]], str],
+    ) -> _NoProgressDecision | None:
+        if self.disabled:
+            return None
+        self.observed_tokens += 1
+        if len(self.pending_token_ids) >= _NO_PROGRESS_MAX_PENDING_TOKEN_IDS:
+            # note (JiaxinD): some valid tokenizer IDs decode to a trailing
+            # replacement forever. Bound full-prefix decode work and fail open.
+            self._disable()
+            return None
+        self.pending_token_ids.append(token_id)
+        try:
+            decoded = decode_fn(self.pending_token_ids)
+        except Exception:
+            # note (JiaxinD): tokenizer plugins can surface different ordinary
+            # exception types for malformed IDs. The optional detector must
+            # fail open instead of escalating one request into a batch failure;
+            # process-control BaseException subclasses are intentionally not caught.
+            self._disable()
+            return None
+        if decoded.endswith("\ufffd"):
+            return None
+        if "\ufffd" in decoded:
+            self._disable()
+            return None
+        self.pending_token_ids.clear()
+        self.buffer += decoded
+        pending_reason: str | None = None
+
+        while match := _COMPLETE_SEGMENT_RE.match(self.buffer):
+            self.buffer = self.buffer[match.end() :]
+            self.completed_segments += 1
+            pending_reason = None
+            body = match.group("body")
+            if not body.strip():
+                self.marker_only_segments += 1
+                self.repeated_segments = 0
+                self.last_content_signature = None
+                if (
+                    self.marker_segment_limit > 0
+                    and self.marker_only_segments >= self.marker_segment_limit
+                ):
+                    pending_reason = MOSS_TD_MARKER_LOOP_REASON
+                continue
+
+            self.marker_only_segments = 0
+            signature = (
+                match.group("start"),
+                match.group("speaker"),
+                body,
+                match.group("end"),
+            )
+            if signature == self.last_content_signature:
+                self.repeated_segments += 1
+            else:
+                self.repeated_segments = 0
+                self.last_content_signature = signature
+            if (
+                self.repeat_segment_limit > 0
+                and self.repeated_segments >= self.repeat_segment_limit
+            ):
+                pending_reason = MOSS_TD_REPEATED_SEGMENT_REASON
+
+        # note (JiaxinD): a trigger is actionable only when the observed token
+        # ends exactly on a segment boundary. Streaming output cannot retract
+        # an incomplete suffix, so a partial next segment postpones the stop.
+        if not self.buffer.strip():
+            self.incomplete_decode_steps = 0
+            return self._decision(pending_reason) if pending_reason else None
+        self.incomplete_decode_steps += 1
+        if (
+            len(self.buffer) > _NO_PROGRESS_MAX_INCOMPLETE_CHARS
+            or self.incomplete_decode_steps >= _NO_PROGRESS_MAX_INCOMPLETE_DECODE_STEPS
+        ):
+            # note (JiaxinD): unknown output is not loop evidence. Disable the
+            # detector for this request instead of attempting a lossy resync
+            # or repeatedly rescanning an ever-growing incomplete segment.
+            self._disable()
+        return None
+
+    def _disable(self) -> None:
+        self.disabled = True
+        self.pending_token_ids.clear()
+        self.buffer = ""
+        self.marker_only_segments = 0
+        self.repeated_segments = 0
+        self.incomplete_decode_steps = 0
+        self.last_content_signature = None
+
+    def _decision(self, reason: str) -> _NoProgressDecision:
+        return _NoProgressDecision(
+            reason=reason,
+            completed_segments=self.completed_segments,
+            marker_only_segments=self.marker_only_segments,
+            repeated_segments=self.repeated_segments,
+            detected_completion_tokens=self.observed_tokens,
+        )
+
+
 @dataclass
 class MossTranscribeDiarizeRequestData(SGLangARRequestData):
     prompt_token_ids: list[int] | None = None
@@ -71,6 +211,14 @@ class MossTranscribeDiarizeRequestData(SGLangARRequestData):
     audio_duration_s: float = 0.0
     language: str = "auto"
     engine_start_s: float = 0.0
+    no_progress_termination_reason: str | None = None
+    no_progress_completed_segments: int = 0
+    no_progress_marker_only_segments: int = 0
+    no_progress_repeated_segments: int = 0
+    no_progress_detected_completion_tokens: int = 0
+    no_progress_marker_limit: int = 0
+    no_progress_repeat_limit: int = 0
+    no_progress_response_mode: str = ""
     # note (db-ol): the scheduler clamps max_new_tokens to the remaining
     # context, required once the duration scaled default can exceed it.
     enforce_request_limits: bool = True
@@ -560,22 +708,46 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
         )
+        result_data = {
+            "text": text,
+            "token_ids": output_ids,
+            "language": data.language,
+            "duration_s": data.audio_duration_s,
+            "asr_latency_s": engine_time_s,
+            "prompt_tokens": len(data.prompt_token_ids or []),
+            "completion_tokens": len(output_ids),
+            "usage": {"engine_time_s": engine_time_s},
+            "finish_reason": data.finish_reason,
+            "weight_version": getattr(data, "weight_version", None),
+            "modality": "text",
+        }
+        if data.no_progress_termination_reason is not None:
+            termination_record = {
+                "schema_version": 1,
+                "server_request_id_sha256": hashlib.sha256(
+                    str(payload.request_id).encode("utf-8")
+                ).hexdigest(),
+                "output_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "reason": data.no_progress_termination_reason,
+                "completed_segments": data.no_progress_completed_segments,
+                "marker_only_segments": data.no_progress_marker_only_segments,
+                "repeated_segments": data.no_progress_repeated_segments,
+                "detected_completion_tokens": data.no_progress_detected_completion_tokens,
+                "raw_completion_tokens": len(output_ids),
+                "applied_max_new_tokens": data.max_new_tokens,
+                "marker_limit": data.no_progress_marker_limit,
+                "repeat_limit": data.no_progress_repeat_limit,
+                "response_mode": data.no_progress_response_mode,
+                "complete_boundary": True,
+            }
+            logger.warning(
+                "MOSS_TD_TERMINATION_JSON %s",
+                json.dumps(termination_record, separators=(",", ":"), sort_keys=True),
+            )
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,
-            data={
-                "text": text,
-                "token_ids": output_ids,
-                "language": data.language,
-                "duration_s": data.audio_duration_s,
-                "asr_latency_s": engine_time_s,
-                "prompt_tokens": len(data.prompt_token_ids or []),
-                "completion_tokens": len(output_ids),
-                "usage": {"engine_time_s": engine_time_s},
-                "finish_reason": data.finish_reason,
-                "weight_version": getattr(data, "weight_version", None),
-                "modality": "text",
-            },
+            data=result_data,
         )
 
     return request_builder, result_adapter
@@ -585,6 +757,8 @@ def make_moss_transcribe_diarize_stream_output_builder(
     tokenizer: Any,
     eos_token_id: int | None = None,
     min_emit_interval_s: float = 0.0,
+    buffered_no_progress_marker_segments: int = 0,
+    buffered_no_progress_repeat_segments: int = 0,
 ) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
     tokenizer_eos = tokenizer.eos_token_id
     resolved_eos = (
@@ -592,7 +766,7 @@ def make_moss_transcribe_diarize_stream_output_builder(
         if eos_token_id is not None
         else (int(tokenizer_eos) if tokenizer_eos is not None else None)
     )
-    return make_token_text_stream_output_builder(
+    stream_output_builder = make_token_text_stream_output_builder(
         decode_fn=lambda ids: _decode_token_ids(
             tokenizer, ids, skip_special_tokens=True
         ),
@@ -612,11 +786,93 @@ def make_moss_transcribe_diarize_stream_output_builder(
         allow_terminal_flush=False,
         emit_trailing_replacement_on_terminal=False,
     )
+    marker_limit = int(buffered_no_progress_marker_segments)
+    repeat_limit = int(buffered_no_progress_repeat_segments)
+    if marker_limit < 0 or repeat_limit < 0:
+        raise ValueError("MOSS-TD buffered no-progress limits must be non-negative")
+    if marker_limit == 0 and repeat_limit == 0:
+        return stream_output_builder
+
+    def decode_no_progress_ids(token_ids: list[int]) -> str:
+        return _decode_token_ids(
+            tokenizer,
+            token_ids,
+            skip_special_tokens=True,
+        )
+
+    def guarded_stream_output_builder(
+        request_id: str, req_data: Any, req_output: Any
+    ) -> list[OutgoingMessage]:
+        req = req_data.req
+        stage_payload = getattr(req_data, "stage_payload", None)
+        request = getattr(stage_payload, "request", None)
+        params = getattr(request, "params", None) or {}
+        token_data = getattr(req_output, "data", None)
+        if (
+            not bool(params.get("stream"))
+            and req is not None
+            and getattr(req, "inflight_middle_chunks", 0) == 0
+            and token_data is not None
+            and getattr(req, "finished_reason", None) is None
+            and getattr(req, "to_finish", None) is None
+        ):
+            try:
+                token_id = int(token_data)
+            except (TypeError, ValueError):
+                token_id = None
+            if token_id is not None and token_id != resolved_eos:
+                state = getattr(req, "_moss_no_progress_state", None)
+                if state is None:
+                    state = _MossTDNoProgressState(
+                        marker_segment_limit=marker_limit,
+                        repeat_segment_limit=repeat_limit,
+                    )
+                    req._moss_no_progress_state = state
+                decision = state.observe_token_id(token_id, decode_no_progress_ids)
+                if decision is not None and not getattr(req, "output_ids", None):
+                    # note (JiaxinD): the scheduler callback precedes SGLang's
+                    # first prefill-token commit. Finishing at this point makes
+                    # the result processor drop the boundary token. Suppress
+                    # only this decision; a later complete decode boundary can
+                    # safely confirm the same no-progress sequence.
+                    decision = None
+                if decision is not None and getattr(req, "to_finish", None) is None:
+                    req.to_finish = FINISH_MATCHED_STR(matched=decision.reason)
+                    req_data.no_progress_termination_reason = decision.reason
+                    req_data.no_progress_completed_segments = (
+                        decision.completed_segments
+                    )
+                    req_data.no_progress_marker_only_segments = (
+                        decision.marker_only_segments
+                    )
+                    req_data.no_progress_repeated_segments = decision.repeated_segments
+                    req_data.no_progress_detected_completion_tokens = (
+                        decision.detected_completion_tokens
+                    )
+                    req_data.no_progress_marker_limit = marker_limit
+                    req_data.no_progress_repeat_limit = repeat_limit
+                    req_data.no_progress_response_mode = "buffered"
+                    logger.warning(
+                        "MOSS-TD no-progress termination request_id_sha256=%s "
+                        "reason=%s completion_tokens=%d completed_segments=%d "
+                        "marker_only_segments=%d repeated_segments=%d",
+                        hashlib.sha256(str(request_id).encode("utf-8")).hexdigest(),
+                        decision.reason,
+                        decision.detected_completion_tokens,
+                        decision.completed_segments,
+                        decision.marker_only_segments,
+                        decision.repeated_segments,
+                    )
+        return stream_output_builder(request_id, req_data, req_output)
+
+    return guarded_stream_output_builder
 
 
 __all__ = [
     "DEFAULT_TRANSCRIBE_DIARIZE_PROMPT",
     "MossTranscribeDiarizeRequestData",
+    "MOSS_TD_MARKER_LOOP_REASON",
+    "MOSS_TD_REPEATED_SEGMENT_REASON",
     "make_moss_transcribe_diarize_scheduler_adapters",
     "make_moss_transcribe_diarize_stream_output_builder",
     "postprocess_moss_transcribe_diarize_text",

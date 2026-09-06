@@ -98,6 +98,8 @@ def create_sglang_moss_transcribe_diarize_executor(
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
+    buffered_no_progress_marker_segments: int = 0,
+    buffered_no_progress_repeat_segments: int = 0,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
@@ -135,6 +137,8 @@ def create_sglang_moss_transcribe_diarize_executor(
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
         stream_emit_interval_s=stream_emit_interval_s,
+        buffered_no_progress_marker_segments=buffered_no_progress_marker_segments,
+        buffered_no_progress_repeat_segments=buffered_no_progress_repeat_segments,
     ).build(
         model_path,
         device=device,

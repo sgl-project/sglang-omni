@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from typing import Any
 
@@ -329,6 +330,53 @@ class SuccessfulTranscriptionClient:
             text="hello world",
             finish_reason="stop",
         )
+
+
+class DiagnosticTranscriptionClient(SuccessfulTranscriptionClient):
+    termination = {
+        "reason": "moss_td_no_progress_marker_loop",
+        "completed_segments": 41,
+        "marker_only_segments": 32,
+        "repeated_segments": 0,
+        "detected_completion_tokens": 518,
+        "applied_max_new_tokens": 4096,
+    }
+
+    async def completion(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str,
+        audio_format: str = "wav",
+    ):
+        from sglang_omni.client.types import CompletionResult, UsageInfo
+
+        del request, audio_format
+        result = CompletionResult(
+            request_id=request_id,
+            text="[0.00][S01][0.18]",
+            finish_reason="stop",
+            usage=UsageInfo(completion_tokens=518),
+        )
+        result.termination = self.termination
+        return result
+
+    async def generate(
+        self,
+        request: GenerateRequest,
+        request_id: str | None = None,
+    ):
+        from sglang_omni.client.types import UsageInfo
+
+        del request
+        chunk = GenerateChunk(
+            request_id=request_id or "transcription-1",
+            text="[0.00][S01][0.18]",
+            finish_reason="stop",
+            usage=UsageInfo(completion_tokens=518),
+        )
+        chunk.termination = self.termination
+        yield chunk
 
 
 class ChunkRecordingTranscriptionClient:
@@ -2561,6 +2609,8 @@ def test_transcription_endpoint_returns_text_json() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"text": "hello world"}
+    assert "x-termination-reason" not in response.headers
+    assert "x-finish-reason" not in response.headers
     assert transcription_client.requests
     request = transcription_client.requests[0]
     assert request.model == "openai/whisper-large-v3"
@@ -2860,6 +2910,66 @@ def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
     assert '"delta":"hello "' in body
     assert '"delta":"world"' in body
     assert '"text":"hello world"' in body
+    done_line = next(
+        line for line in body.splitlines() if '"type":"transcript.text.done"' in line
+    )
+    done = json.loads(done_line.removeprefix("data: "))
+    assert "termination" not in done
+    assert "finish_reason" not in done
+    assert "completion_tokens" not in done
+
+
+def test_transcription_does_not_surface_internal_diagnostics_in_headers() -> None:
+    client = TestClient(
+        create_app(
+            DiagnosticTranscriptionClient(),
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "[0.00][S01][0.18]"}
+    assert not any(
+        name.startswith(("x-termination-", "x-finish-", "x-completion-"))
+        or name == "x-applied-max-new-tokens"
+        for name in response.headers
+    )
+
+
+def test_transcription_stream_does_not_surface_internal_diagnostics() -> None:
+    client = TestClient(
+        create_app(
+            DiagnosticTranscriptionClient(),
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stream": "true",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    done_line = next(
+        line
+        for line in response.text.splitlines()
+        if '"type":"transcript.text.done"' in line
+    )
+    done = json.loads(done_line.removeprefix("data: "))
+    assert done == {
+        "type": "transcript.text.done",
+        "text": "[0.00][S01][0.18]",
+    }
 
 
 def test_transcription_stream_maps_input_length_error_to_400() -> None:
