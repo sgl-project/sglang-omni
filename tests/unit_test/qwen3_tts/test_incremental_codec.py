@@ -337,6 +337,9 @@ def test_incremental_transformer_matches_whole_across_window(
             )
         )
         state.frame_position += length
+        state.transformer_context_length = min(
+            transformer.window_size - 1, state.transformer_context_length + length
+        )
         offset += length
 
     torch.testing.assert_close(torch.cat(actual, dim=1), expected)
