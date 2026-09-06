@@ -246,9 +246,7 @@ def resolve_speech_to_text_adapter(
 # Codecs whose container header states the exact sample count, so
 # soundfile's frame count is arithmetic, not an estimate. Notably absent:
 # MPEG_LAYER_III, legal inside RIFF/WAVE, where libsndfile extrapolates
-# from early-frame bitrate and mismeasures VBR streams severalfold. ULAW and
-# ALAW are one byte per sample, so G.711 telephony uploads (wrapped at read
-# time) measure exactly too.
+# from early-frame bitrate and mismeasures VBR streams severalfold.
 _EXACT_LENGTH_SUBTYPES = frozenset(
     {
         "PCM_S8",
