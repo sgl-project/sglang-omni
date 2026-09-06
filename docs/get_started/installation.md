@@ -66,6 +66,8 @@ Homebrew formulae `ffmpeg@7` and `uv` (and `git` only when a working git is not
 already available), installs SGLang `v0.5.19` from source with its `all_mps`
 extra, and installs this checkout with `uv pip`. SGLang's optional Rust
 extensions are not needed by this Apple Silicon path and are skipped.
+Qwen3-ASR and MOSS-Transcribe-Diarize can then run with either native MLX or
+Torch MPS; their cookbook pages show how to select the backend.
 `ffmpeg@7` is intentional: `torchcodec==0.15.0` ships loaders for FFmpeg 4 through 8
 only, and the unversioned formula installs FFmpeg 9. At runtime, expose its libraries:
 
@@ -86,8 +88,8 @@ defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 
 This path currently supports macOS 14 or newer on `arm64` only (the pinned
 `torch==2.13.0`, `torchvision==0.28.0` and `torchcodec==0.15.0` wheels are built
-for `macosx_14_0_arm64`) and is intended for the Apple-Silicon Qwen3-ASR
-MLX/Torch-MPS paths. Other platforms should use the
+for `macosx_14_0_arm64`) and is intended for the Apple-Silicon Qwen3-ASR and
+MOSS-Transcribe-Diarize MLX/Torch-MPS paths. Other platforms should use the
 Docker, manual, or Intel XPU instructions below. Common failures are a missing
 Homebrew/uv on `PATH`, an unavailable Python 3.12 toolchain, or forgetting the
 `DYLD_LIBRARY_PATH` export when starting an audio server.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install sglang-omni and the Apple Silicon Qwen3-ASR runtime.
+# Install sglang-omni and its Apple Silicon audio runtimes.
 #
 # This file intentionally does not bootstrap Homebrew. Homebrew's official
 # bootstrapper can require administrator approval and changes system state;
@@ -66,7 +66,7 @@ usage() {
   cat <<'EOF'
 Usage: ./install.sh [OPTIONS]
 
-Install sglang-omni and the Apple Silicon Qwen3-ASR runtime into an isolated
+Install sglang-omni and the Apple Silicon audio runtimes into an isolated
 Python 3.12 virtual environment. Homebrew must already be installed.
 
 Options:
@@ -263,8 +263,8 @@ else
 fi
 
 log "Installing SGLang $SGLANG_REF with the all_mps extra"
-# The optional SGLang Rust extensions are not used by the MLX/Torch-MPS
-# Qwen3-ASR path. Skipping them avoids requiring a Rust toolchain on a clean Mac.
+# The optional SGLang Rust extensions are not used by the MLX/Torch-MPS audio
+# paths. Skipping them avoids requiring a Rust toolchain on a clean Mac.
 SGLANG_BUILD_RUST_EXTS=none \
   "${UV_PIP_INSTALL[@]}" --prerelease=allow "$SGLANG_STAGE_DIR/python[all_mps]"
 
@@ -310,6 +310,7 @@ Activate it with:
 For TorchCodec/FFmpeg audio decoding, export:
   export DYLD_LIBRARY_PATH="$FFMPEG_LIB\${DYLD_LIBRARY_PATH:+:\$DYLD_LIBRARY_PATH}"
 
-The Apple Silicon Qwen3-ASR examples are documented at:
+The Apple Silicon audio examples are documented at:
   $PROJECT_DIR/docs/cookbook/qwen3_asr.md
+  $PROJECT_DIR/docs/cookbook/moss_transcribe_diarize.md
 EOF
