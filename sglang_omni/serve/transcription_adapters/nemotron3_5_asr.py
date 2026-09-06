@@ -29,8 +29,8 @@ class Nemotron3_5ASRTranscriptionAdapter(DefaultTranscriptionAdapter):
         if len(detected) == 1:
             return next(iter(detected.values()))
         if len(detected) > 1:
-            # One OpenAI response has one language field. Do not report an
-            # invented single locale for genuinely mixed-locale output.
+            # Note (LG-0927): One OpenAI response has one language field. Do not
+            # report an invented single locale for genuinely mixed-locale output.
             return None
 
         requested = (requested_language or "").strip()

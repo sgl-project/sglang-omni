@@ -49,7 +49,7 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 - **Omni chat and speech**: [Qwen3-Omni](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_omni.html), [Ming-Omni](https://sgl-project.github.io/sglang-omni/cookbook/ming_omni.html) — multimodal in, text/audio out.
 - **Music generation**: [MiniMax Music 3](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html) — lyrics + caption → 32 kHz stereo song.
 - **Speech generation**: [Higgs Audio v3](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html), [MOSS-TTS](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts.html), [MOSS-TTS Local](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html), [Fish Speech S2-Pro](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_s2_pro.html), [Qwen3-TTS](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_tts.html), [Voxtral TTS](https://sgl-project.github.io/sglang-omni/cookbook/voxtral_tts.html), [Ming-Omni-TTS](https://sgl-project.github.io/sglang-omni/cookbook/ming_tts.html), [dots.tts](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html), [ZONOS2](https://sgl-project.github.io/sglang-omni/cookbook/zonos2.html) — `/v1/audio/speech`, batch, streaming, uploaded voices.
-- **Audio transcription and diarization**: [Qwen3-ASR](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html), [Fun-ASR](https://sgl-project.github.io/sglang-omni/cookbook/fun_asr.html), [ARK-ASR](https://sgl-project.github.io/sglang-omni/cookbook/arkasr.html), [MOSS-Transcribe-Diarize](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html) via `/v1/audio/transcriptions`. MOSS-TD supports speaker labels and timestamps (`response_format=verbose_json`).
+- **Audio transcription and diarization**: [Qwen3-ASR](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html), [Fun-ASR](https://sgl-project.github.io/sglang-omni/cookbook/fun_asr.html), [ARK-ASR](https://sgl-project.github.io/sglang-omni/cookbook/arkasr.html), [Nemotron 3.5 ASR](https://sgl-project.github.io/sglang-omni/cookbook/nemotron3_5_asr.html), [MOSS-Transcribe-Diarize](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html) via `/v1/audio/transcriptions`. MOSS-TD supports speaker labels and timestamps (`response_format=verbose_json`).
 - **SGLang-Omni Router**: Multi-worker OpenAI-compatible front door — health, readiness, lifecycle, capability discovery. [Router guide](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html).
 
 ## Hardware Support
@@ -67,6 +67,7 @@ Additional model guides, including experimental and research-oriented paths, are
 - [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
 - [Qwen3-Omni usage](https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html)
 - [Qwen3-ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html)
+- [Nemotron 3.5 ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/nemotron3_5_asr.html)
 - [MOSS-Transcribe-Diarize cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html)
 - [Omni router](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html)
 - [Developer reference](https://sgl-project.github.io/sglang-omni/developer_reference/main.html)

@@ -75,8 +75,8 @@ class Nemotron3_5ASRModelRunner:
             local_files_only=True,
         ).to(self.device)
         self.model.eval()
-        # Upstream generate stores encoder/decoder progress on the model. Even
-        # callers outside SimpleScheduler must never overlap calls.
+        # Note (LG-0927): Upstream generate stores encoder/decoder progress on
+        # the model. Even callers outside SimpleScheduler must never overlap calls.
         self._model_lock = threading.Lock()
 
     @property
@@ -150,9 +150,9 @@ class Nemotron3_5ASRModelRunner:
         if not requests:
             return []
 
-        # GenerationConfig has one output cap for a whole tensor batch. Keep
-        # explicit per-request caps exact by batching only compatible requests;
-        # the normal endpoint path (no override) remains one true generate call.
+        # Note (LG-0927): GenerationConfig has one output cap for a whole tensor
+        # batch. Keep explicit per-request caps exact by batching only compatible
+        # requests; the normal endpoint path remains one true generate call.
         groups: OrderedDict[int | None, list[tuple[int, Nemotron3_5ASRRequest]]] = (
             OrderedDict()
         )
@@ -176,8 +176,9 @@ class Nemotron3_5ASRModelRunner:
         return self.run_batch([request])[0]
 
     def close(self) -> None:
-        # The worker process normally exits after shutdown; dropping references
-        # here also makes explicit scheduler teardown release model ownership.
+        # Note (LG-0927): The worker process normally exits after shutdown;
+        # dropping references here also makes explicit scheduler teardown release
+        # model ownership.
         self.model = None  # type: ignore[assignment]
         self.processor = None  # type: ignore[assignment]
 

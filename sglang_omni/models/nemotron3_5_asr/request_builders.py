@@ -37,9 +37,9 @@ def _normalize_language(
     else:
         language = value.strip() or "auto"
 
-    # The checkpoint owns the language vocabulary. A case-insensitive lookup
-    # accepts normal HTTP spellings such as en-us without maintaining a second
-    # locale table in SGLang-Omni.
+    # Note (LG-0927): The checkpoint owns the language vocabulary. A
+    # case-insensitive lookup accepts normal HTTP spellings such as en-us without
+    # maintaining a second locale table in SGLang-Omni.
     canonical = {key.casefold(): key for key in prompt_dictionary}
     resolved = canonical.get(language.casefold())
     if resolved is None:
