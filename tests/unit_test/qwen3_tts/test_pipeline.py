@@ -2672,21 +2672,30 @@ def test_qwen3_tts_decode_plan_waits_for_the_talker_chunk_event(
     state.codes_ready = ready
 
     waited: list[object] = []
+    recorded: list[object] = []
 
     class WorkerStream:
         def wait_event(self, event):
             waited.append(event)
 
-    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: WorkerStream())
+    worker_stream = WorkerStream()
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: worker_stream)
+    monkeypatch.setattr(
+        torch.Tensor, "record_stream", lambda chunk, stream: recorded.append(stream)
+    )
 
     plan = scheduler._build_decode_plan(state, is_final=True)
     assert plan is not None
     assert waited == [ready]
+    # note (luojiaxuan): every retained chunk is pinned to this stream so the
+    # talker cannot reuse its storage under a queued read.
+    assert recorded == [worker_stream]
 
     state.codes_ready = None
     waited.clear()
+    recorded.clear()
     assert scheduler._build_decode_plan(state, is_final=True) is not None
-    assert waited == []
+    assert waited == [] and recorded == []
 
 
 def test_qwen3_tts_ingest_keeps_the_newest_chunk_event() -> None:

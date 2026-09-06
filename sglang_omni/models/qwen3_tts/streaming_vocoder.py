@@ -1562,10 +1562,19 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
 
     def _wait_codes_ready(self, state: _Qwen3TTSStreamState) -> None:
-        """Order this thread's stream after the talker's newest chunk."""
+        """Order this thread's stream after the talker's newest chunk.
+
+        The chunks were allocated on the talker's stream, so the caching
+        allocator would hand their storage back to the talker as soon as this
+        stream's last Python reference drops, even with a read still queued
+        here; record_stream defers that reuse until this stream's work is done.
+        """
         if state.codes_ready is None:
             return
-        torch.cuda.current_stream(self._device).wait_event(state.codes_ready)
+        stream = torch.cuda.current_stream(self._device)
+        stream.wait_event(state.codes_ready)
+        for chunk in state.code_chunks:
+            chunk.record_stream(stream)
 
     def _decode_stream_context(self) -> Any:
         if self._decode_stream is None:
