@@ -96,6 +96,54 @@ Unlike TTS where the same reference voice is reused across many prompts (high hi
 
 ## Model Usage
 
+### Apple Silicon (native MLX)
+
+On a macOS `arm64` checkout, install the Apple runtime and expose FFmpeg 7 to
+TorchCodec:
+
+```bash
+./install.sh
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Select the native MLX backend and start the server:
+
+```bash
+export SGLANG_USE_MLX=1
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000
+```
+
+The initial Apple profile is a draft that uses BF16 checkpoint weights, one active request,
+greedy decoding (`temperature=0`), and disables radix reuse, split/chunked
+prefill, async decode, and CUDA-only encoder services. Quantized checkpoints
+are not supported yet. A 24 GB Apple Silicon machine is sufficient for
+short-form inference. To bound the MLX token pool during development, add:
+
+```bash
+--asr.engine.context_length 8192
+```
+
+The checkpoint exposes a 128K context and advertises an approximately 90-minute
+input limit, but this initial Apple profile does not claim that limit. It
+disables chunked decoder prefill and currently encodes all 30-second Whisper
+windows in one batch. The Apple path has been validated locally with short-form
+audio on 24 GB; qualify longer inputs on a higher-memory machine (such as 60 GB)
+before production use. Bounded encoder-window batches and embedding-aware
+chunked prefill remain follow-up work for the 90-minute path.
+
+Send the same OpenAI-compatible request, explicitly retaining greedy decoding:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  -F file=@tests/data/query_to_cars.wav \
+  -F response_format=verbose_json \
+  -F temperature=0
+```
+
 ### Launching Commands
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:

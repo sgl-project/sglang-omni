@@ -57,7 +57,7 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 | Backend | Status | Notes |
 |---------|--------|-------|
 | **NVIDIA CUDA** | Supported | Default backend with full model coverage. |
-| **Apple Silicon** | Experimental | Qwen3-ASR runs through native MLX or Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon-mlx). |
+| **Apple Silicon** | Experimental | Qwen3-ASR and MOSS-Transcribe-Diarize run through native MLX on macOS arm64; Qwen3-ASR also supports Torch MPS. Install with [`install.sh`](./install.sh), then follow the [Qwen3-ASR](./docs/cookbook/qwen3_asr.md#apple-silicon-mlx) or [MOSS-TD](./docs/cookbook/moss_transcribe_diarize.md#apple-silicon-native-mlx) guide. |
 | **Intel GPU (XPU)** | Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni serve end-to-end** (Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
 
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/).
