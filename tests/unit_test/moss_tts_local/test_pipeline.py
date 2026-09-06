@@ -951,6 +951,33 @@ def test_colocated_moss_ar_abort_callback_requires_model(monkeypatch):
     assert reset_calls == ["req-1"]
 
 
+def test_moss_ar_adapters_use_the_model_captured_during_setup(monkeypatch):
+    from sglang_omni.models.moss_tts_local import request_builders
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+    native_model = object()
+    builder.model = native_model
+    captured = []
+    monkeypatch.setattr(
+        request_builders,
+        "make_moss_tts_local_scheduler_adapters",
+        lambda *, model: captured.append(model) or (object(), object()),
+    )
+
+    adapters = builder.make_adapters(object())
+
+    assert len(adapters) == 2
+    assert captured == [native_model]
+
+
 def test_colocated_moss_ar_factory_accepts_explicit_effective_budget():
     pytest.importorskip("PIL")
 
