@@ -85,10 +85,8 @@ padding at all). HiFT is prepared for this at load time by folding away its `wei
 parametrizations. Right-zero-padding matches the zero padding HiFT applies in single-request
 inference, so batched output is identical except in the final mel frame of padded requests.
 
-The built-in Flow implementation supports the pinned CosyVoice PyTorch estimator and buffered
-`streaming=False, finalize=True` inference only. TensorRT Flow is not supported by this
-integration and fails during vocoder initialization rather than falling back to another
-inference path.
+The built-in Flow implementation supports the pinned CosyVoice PyTorch estimator, an opt-in
+TensorRT estimator (see below), and buffered `streaming=False, finalize=True` inference only.
 
 Change the mel-frame bucket size, for example to 100 frames:
 
@@ -134,7 +132,8 @@ stages:
 The remaining vocoder `factory` options are `max_batch_size` (16) and `max_batch_wait_ms` (30)
 for the scheduler batch, `dtype` (`bfloat16`) for the Flow autocast, `hift_dtype` (`float32`,
 independent of `dtype`; `bfloat16` measured no faster for HiFT on H200 and lowers output fidelity)
-for the HiFT autocast, and `enable_dit_torch_compile` (see below). The
+for the HiFT autocast, `enable_dit_torch_compile`, and `enable_flow_estimator_trt`
+(see below; mutually exclusive DiT accelerators). The
 `tts_engine` stage takes `onnx_intra_op_threads` (16) for the speech tokenizer and speaker
 encoder ONNX sessions, and `preprocessing` takes `max_concurrency` (8) for concurrent reference
 conditioning.
@@ -162,6 +161,65 @@ sgl-omni serve \
   --vocoder.factory.enable_dit_torch_compile true \
   --port 8000
 ```
+
+Do not enable this together with TensorRT for the same DiT (see below).
+
+### TensorRT for the DiT backbone
+
+The same `flow.decoder.estimator` can be replaced with a TensorRT engine built
+from the checkpoint's bundled ONNX (`flow.decoder.estimator.fp32.onnx` is
+preferred). This is opt-in: TensorRT is not a `sglang-omni` extra, first
+startup builds and caches a `.plan` under `COSYVOICE3_TRT_CACHE` or
+`~/.cache/sglang-omni/cosyvoice3_trt`, and the official CosyVoice ONNX freezes
+CFG batch at 2 (t and spks are static; only the mel time dim is dynamic).
+Packed Flow (CFG batch = `2 * request_batch`) still works by chunking
+request-wise cond/uncond pairs into that CFG=2 engine.
+
+TensorRT and `torch.compile` both replace the same DiT, so they are mutually
+exclusive. Enable only one:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
+  --vocoder.factory.enable_flow_estimator_trt true \
+  --port 8000
+```
+
+On one H200, packed Flow + HiFT (80 target tokens, 25 prompt tokens,
+6 timed iters after 2 warmups) was:
+
+| Backend | B | Flow latency | Vocoder RTF |
+|---|---|---|---|
+| eager | 1 | 1131 ms | 0.359 |
+| torch.compile | 1 | 1070 ms | 0.340 |
+| TensorRT (CFG batch=2 engine) | 1 | 20 ms | 0.012 |
+| eager | 4 | 267 ms | 0.026 |
+| torch.compile | 4 | 220 ms | 0.022 |
+| TensorRT (chunked 4× CFG pairs) | 4 | 77 ms | 0.011 |
+
+TensorRT here is not bit-exact with eager PyTorch (FP16 TensorRT tactics on
+the fp32 ONNX; cosine similarity about 0.995 on one packed mel).
+
+The same three vocoder backends on the full SeedTTS EN set (1088 samples),
+buffered `/v1/audio/speech` (non-streaming, generate-only), one H200, 0
+failures. ASR WER was not remeasured; vocoder-only mel cosine vs eager is
+about 0.995.
+
+| Backend | Concurrency | Latency mean | RTF mean | Throughput |
+|---|---|---|---|---|
+| eager | 1 | 1.091 s | 0.241 | 0.916 req/s |
+| torch.compile | 1 | 1.016 s | 0.221 | 0.984 req/s |
+| TensorRT | 1 | 0.871 s | 0.189 | 1.147 req/s |
+| eager | 16 | 5.690 s | 1.300 | 2.800 req/s |
+| torch.compile | 16 | 3.151 s | 0.706 | 5.059 req/s |
+| TensorRT | 16 | 2.549 s | 0.570 | 6.243 req/s |
+
+At concurrency 1 the pipeline is still mostly preprocessing + AR, so TensorRT
+is about 1.17× `torch.compile`. At concurrency 16 the vocoder is the bottleneck
+and TensorRT is about 1.23× compile throughput (2.23× eager). It remains
+opt-in because TensorRT is a separate install and the first engine build takes
+about a minute.
 
 ## Synthesizing Speech
 
@@ -321,9 +379,12 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
 - **Streaming decode.** The current implementation buffers all speech tokens before Flow + HiFT
   decoding. Incremental PCM output is planned but is not yet available.
-- **Flow batch scope.** Flow batching currently supports only the PyTorch estimator, and HiFT
-  batches only the mels produced by one Flow bucket, only while the padding waste stays within
-  `hift_max_padding_waste`. Streaming Flow/HiFT batching is outside the current buffered decoder.
+- **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator
+  and the opt-in TensorRT estimator (`enable_flow_estimator_trt`). Do not enable
+  TensorRT together with `enable_dit_torch_compile`. HiFT batches only the mels
+  produced by one Flow bucket while padding waste stays within
+  `hift_max_padding_waste`. Streaming Flow/HiFT batching is outside the current
+  buffered decoder.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be
   installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
   only the CosyVoice Flow and HiFT paths are used by the buffered decoder.

@@ -497,6 +497,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-decoder-batching">Flow Decoder Batching</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-compile-for-the-dit-backbone">torch.compile for the DiT backbone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensorrt-for-the-dit-backbone">TensorRT for the DiT backbone</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -597,10 +598,8 @@ padding budget <code class="docutils literal notranslate"><span class="pre">hift
 padding at all). HiFT is prepared for this at load time by folding away its <code class="docutils literal notranslate"><span class="pre">weight_norm</span></code>
 parametrizations. Right-zero-padding matches the zero padding HiFT applies in single-request
 inference, so batched output is identical except in the final mel frame of padded requests.</p>
-<p>The built-in Flow implementation supports the pinned CosyVoice PyTorch estimator and buffered
-<code class="docutils literal notranslate"><span class="pre">streaming=False,</span> <span class="pre">finalize=True</span></code> inference only. TensorRT Flow is not supported by this
-integration and fails during vocoder initialization rather than falling back to another
-inference path.</p>
+<p>The built-in Flow implementation supports the pinned CosyVoice PyTorch estimator, an opt-in
+TensorRT estimator (see below), and buffered <code class="docutils literal notranslate"><span class="pre">streaming=False,</span> <span class="pre">finalize=True</span></code> inference only.</p>
 <p>Change the mel-frame bucket size, for example to 100 frames:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
@@ -637,7 +636,8 @@ single request.</p>
 <p>The remaining vocoder <code class="docutils literal notranslate"><span class="pre">factory</span></code> options are <code class="docutils literal notranslate"><span class="pre">max_batch_size</span></code> (16) and <code class="docutils literal notranslate"><span class="pre">max_batch_wait_ms</span></code> (30)
 for the scheduler batch, <code class="docutils literal notranslate"><span class="pre">dtype</span></code> (<code class="docutils literal notranslate"><span class="pre">bfloat16</span></code>) for the Flow autocast, <code class="docutils literal notranslate"><span class="pre">hift_dtype</span></code> (<code class="docutils literal notranslate"><span class="pre">float32</span></code>,
 independent of <code class="docutils literal notranslate"><span class="pre">dtype</span></code>; <code class="docutils literal notranslate"><span class="pre">bfloat16</span></code> measured no faster for HiFT on H200 and lowers output fidelity)
-for the HiFT autocast, and <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code> (see below). The
+for the HiFT autocast, <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>, and <code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>
+(see below; mutually exclusive DiT accelerators). The
 <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> stage takes <code class="docutils literal notranslate"><span class="pre">onnx_intra_op_threads</span></code> (16) for the speech tokenizer and speaker
 encoder ONNX sessions, and <code class="docutils literal notranslate"><span class="pre">preprocessing</span></code> takes <code class="docutils literal notranslate"><span class="pre">max_concurrency</span></code> (8) for concurrent reference
 conditioning.</p>
@@ -662,6 +662,131 @@ prefix is implied in the CLI dotted path):</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>Do not enable this together with TensorRT for the same DiT (see below).</p>
+</section>
+<section id="tensorrt-for-the-dit-backbone">
+<h3>TensorRT for the DiT backbone<a class="headerlink" href="#tensorrt-for-the-dit-backbone" title="Link to this heading">#</a></h3>
+<p>The same <code class="docutils literal notranslate"><span class="pre">flow.decoder.estimator</span></code> can be replaced with a TensorRT engine built
+from the checkpoint’s bundled ONNX (<code class="docutils literal notranslate"><span class="pre">flow.decoder.estimator.fp32.onnx</span></code> is
+preferred). This is opt-in: TensorRT is not a <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> extra, first
+startup builds and caches a <code class="docutils literal notranslate"><span class="pre">.plan</span></code> under <code class="docutils literal notranslate"><span class="pre">COSYVOICE3_TRT_CACHE</span></code> or
+<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/cosyvoice3_trt</span></code>, and the official CosyVoice ONNX freezes
+CFG batch at 2 (t and spks are static; only the mel time dim is dynamic).
+Packed Flow (CFG batch = <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">*</span> <span class="pre">request_batch</span></code>) still works by chunking
+request-wise cond/uncond pairs into that CFG=2 engine.</p>
+<p>TensorRT and <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> both replace the same DiT, so they are mutually
+exclusive. Enable only one:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/fun_cosyvoice3_0_5b.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.factory.enable_flow_estimator_trt<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>On one H200, packed Flow + HiFT (80 target tokens, 25 prompt tokens,
+6 timed iters after 2 warmups) was:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Backend</p></th>
+<th class="head"><p>B</p></th>
+<th class="head"><p>Flow latency</p></th>
+<th class="head"><p>Vocoder RTF</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>eager</p></td>
+<td><p>1</p></td>
+<td><p>1131 ms</p></td>
+<td><p>0.359</p></td>
+</tr>
+<tr class="row-odd"><td><p>torch.compile</p></td>
+<td><p>1</p></td>
+<td><p>1070 ms</p></td>
+<td><p>0.340</p></td>
+</tr>
+<tr class="row-even"><td><p>TensorRT (CFG batch=2 engine)</p></td>
+<td><p>1</p></td>
+<td><p>20 ms</p></td>
+<td><p>0.012</p></td>
+</tr>
+<tr class="row-odd"><td><p>eager</p></td>
+<td><p>4</p></td>
+<td><p>267 ms</p></td>
+<td><p>0.026</p></td>
+</tr>
+<tr class="row-even"><td><p>torch.compile</p></td>
+<td><p>4</p></td>
+<td><p>220 ms</p></td>
+<td><p>0.022</p></td>
+</tr>
+<tr class="row-odd"><td><p>TensorRT (chunked 4× CFG pairs)</p></td>
+<td><p>4</p></td>
+<td><p>77 ms</p></td>
+<td><p>0.011</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>TensorRT here is not bit-exact with eager PyTorch (FP16 TensorRT tactics on
+the fp32 ONNX; cosine similarity about 0.995 on one packed mel).</p>
+<p>The same three vocoder backends on the full SeedTTS EN set (1088 samples),
+buffered <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> (non-streaming, generate-only), one H200, 0
+failures. ASR WER was not remeasured; vocoder-only mel cosine vs eager is
+about 0.995.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Backend</p></th>
+<th class="head"><p>Concurrency</p></th>
+<th class="head"><p>Latency mean</p></th>
+<th class="head"><p>RTF mean</p></th>
+<th class="head"><p>Throughput</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>eager</p></td>
+<td><p>1</p></td>
+<td><p>1.091 s</p></td>
+<td><p>0.241</p></td>
+<td><p>0.916 req/s</p></td>
+</tr>
+<tr class="row-odd"><td><p>torch.compile</p></td>
+<td><p>1</p></td>
+<td><p>1.016 s</p></td>
+<td><p>0.221</p></td>
+<td><p>0.984 req/s</p></td>
+</tr>
+<tr class="row-even"><td><p>TensorRT</p></td>
+<td><p>1</p></td>
+<td><p>0.871 s</p></td>
+<td><p>0.189</p></td>
+<td><p>1.147 req/s</p></td>
+</tr>
+<tr class="row-odd"><td><p>eager</p></td>
+<td><p>16</p></td>
+<td><p>5.690 s</p></td>
+<td><p>1.300</p></td>
+<td><p>2.800 req/s</p></td>
+</tr>
+<tr class="row-even"><td><p>torch.compile</p></td>
+<td><p>16</p></td>
+<td><p>3.151 s</p></td>
+<td><p>0.706</p></td>
+<td><p>5.059 req/s</p></td>
+</tr>
+<tr class="row-odd"><td><p>TensorRT</p></td>
+<td><p>16</p></td>
+<td><p>2.549 s</p></td>
+<td><p>0.570</p></td>
+<td><p>6.243 req/s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>At concurrency 1 the pipeline is still mostly preprocessing + AR, so TensorRT
+is about 1.17× <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code>. At concurrency 16 the vocoder is the bottleneck
+and TensorRT is about 1.23× compile throughput (2.23× eager). It remains
+opt-in because TensorRT is a separate install and the first engine build takes
+about a minute.</p>
 </section>
 </section>
 <section id="synthesizing-speech">
@@ -886,9 +1011,12 @@ on every request instead of being cached by URL alone.</p></li>
 <li><p><strong>Voice conversion.</strong> Voice conversion is outside the current zero-shot TTS scope.</p></li>
 <li><p><strong>Streaming decode.</strong> The current implementation buffers all speech tokens before Flow + HiFT
 decoding. Incremental PCM output is planned but is not yet available.</p></li>
-<li><p><strong>Flow batch scope.</strong> Flow batching currently supports only the PyTorch estimator, and HiFT
-batches only the mels produced by one Flow bucket, only while the padding waste stays within
-<code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>. Streaming Flow/HiFT batching is outside the current buffered decoder.</p></li>
+<li><p><strong>Flow batch scope.</strong> Flow batching supports the CosyVoice PyTorch estimator
+and the opt-in TensorRT estimator (<code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>). Do not enable
+TensorRT together with <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>. HiFT batches only the mels
+produced by one Flow bucket while padding waste stays within
+<code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>. Streaming Flow/HiFT batching is outside the current
+buffered decoder.</p></li>
 <li><p><strong>cosyvoice dependency.</strong> The <code class="docutils literal notranslate"><span class="pre">cosyvoice</span></code> package has no PyPI release and must be
 installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
 only the CosyVoice Flow and HiFT paths are used by the buffered decoder.</p></li>
@@ -929,6 +1057,7 @@ only the CosyVoice Flow and HiFT paths are used by the buffered decoder.</p></li
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-decoder-batching">Flow Decoder Batching</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-compile-for-the-dit-backbone">torch.compile for the DiT backbone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensorrt-for-the-dit-backbone">TensorRT for the DiT backbone</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
