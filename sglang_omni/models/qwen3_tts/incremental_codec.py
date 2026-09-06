@@ -325,10 +325,6 @@ def _incremental_transformer(
 
     state.transformer_keys = next_keys
     state.transformer_values = next_values
-    state.transformer_context_length = min(
-        retained_context,
-        state.transformer_context_length + fresh_frames,
-    )
     return transformer.output_proj(transformer.norm(hidden_states))
 
 
@@ -457,6 +453,8 @@ class Qwen3TTSIncrementalDecoder:
         self._decoder = decoder
         self.total_upsample = int(decoder.total_upsample)
         self._state_spec: Qwen3TTSIncrementalCodecStateSpec | None = None
+        self._compiled_kernel: Any = None
+        self._compiled_shapes: set[tuple[int, int]] = set()
 
     @staticmethod
     def _require_attrs(module: Any, path: str, *names: str) -> None:
@@ -587,7 +585,36 @@ class Qwen3TTSIncrementalDecoder:
             raise ValueError(
                 "Qwen3-TTS incremental codec decoding requires fresh frames"
             )
+        shape = (int(codes.shape[0]), fresh_frames)
+        kernel = (
+            self._compiled_kernel
+            if self._compiled_kernel is not None and shape in self._compiled_shapes
+            else self._decode_tensors
+        )
+        waveform = kernel(codes, state)
+        expected_samples = fresh_frames * self.total_upsample
+        if int(waveform.shape[-1]) != expected_samples:
+            raise RuntimeError(
+                "Qwen3-TTS incremental codec decoder returned the wrong sample count"
+            )
+        state.transformer_context_length = min(
+            self.state_spec().retained_context,
+            state.transformer_context_length + fresh_frames,
+        )
+        state.advance(fresh_frames)
+        return waveform
 
+    def _decode_tensors(
+        self,
+        codes: torch.Tensor,
+        state: Qwen3TTSIncrementalCodecState,
+    ) -> torch.Tensor:
+        """The tensor-only decode step: every op here is traceable and capturable.
+
+        Python-side bookkeeping (frame counters, retained-context length) lives
+        in ``decode`` so this function carries no value-specialised scalars and
+        one compiled variant serves a shape for the stream's whole lifetime.
+        """
         hidden_states = self._decoder.quantizer.decode(codes)
         hidden_states = incremental_causal_conv1d(
             self._decoder.pre_conv,
@@ -638,13 +665,36 @@ class Qwen3TTSIncrementalDecoder:
                     f"decoder.{block_index}.residual.{residual_index}",
                 )
         waveform = self._decoder.decoder[-2](waveform)
-        waveform = incremental_causal_conv1d(
+        return incremental_causal_conv1d(
             self._decoder.decoder[-1], waveform, state, "decoder.final"
         ).clamp(min=-1, max=1)
-        expected_samples = fresh_frames * self.total_upsample
-        if int(waveform.shape[-1]) != expected_samples:
-            raise RuntimeError(
-                "Qwen3-TTS incremental codec decoder returned the wrong sample count"
+
+    def precompile(
+        self, batch_size: int, fresh_frames: int, *, num_quantizers: int
+    ) -> None:
+        """Compile the tensor-only step for one static shape.
+
+        ``decode`` routes a shape through the compiled kernel only after it was
+        precompiled here, so an unforeseen shape at serving time takes the eager
+        path instead of a multi-second compile on a request's critical path.
+        """
+        if self._compiled_kernel is None:
+            self._compiled_kernel = torch.compile(
+                self._decode_tensors, dynamic=False, fullgraph=True
             )
-        state.advance(fresh_frames)
-        return waveform
+        shape = (int(batch_size), int(fresh_frames))
+        if shape in self._compiled_shapes:
+            return
+        parameter = next(self._decoder.parameters())
+        codes = torch.zeros(
+            (shape[0], int(num_quantizers), shape[1]),
+            dtype=torch.long,
+            device=parameter.device,
+        )
+        state = self.init_state(shape[0], device=parameter.device, dtype=parameter.dtype)
+        state.frame_positions = torch.zeros(
+            shape[0], dtype=torch.long, device=parameter.device
+        )
+        with torch.inference_mode():
+            self._compiled_kernel(codes, state)
+        self._compiled_shapes.add(shape)

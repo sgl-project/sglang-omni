@@ -508,6 +508,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         enable_stateful_codec_decoder: bool = False,
         codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
         incremental_codec_cuda_graph: bool = False,
+        incremental_codec_compile: bool = False,
         incremental_codec_cuda_graph_cold_frames: Sequence[int] = (),
         incremental_codec_cuda_graph_min_free_gb: float = 3.0,
         suppress_bootstrap_silence: bool = True,
@@ -742,6 +743,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             num_quantizers=num_quantizers,
             codec_state_slots=int(codec_state_slots),
             enabled=incremental_codec_cuda_graph,
+            compile_steady=bool(incremental_codec_compile),
             cold_frames=incremental_codec_cuda_graph_cold_frames,
             min_free_gb=incremental_codec_cuda_graph_min_free_gb,
         )
@@ -865,6 +867,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         num_quantizers: int,
         codec_state_slots: int,
         enabled: bool,
+        compile_steady: bool,
         cold_frames: Sequence[int],
         min_free_gb: float,
     ) -> tuple[
@@ -929,6 +932,9 @@ class Qwen3TTSStreamingVocoderScheduler(
                 batch_sizes=graph_batch_sizes,
                 min_free_gb=min_free_gb,
                 enabled=graph_enabled,
+                compile_fresh_frames=(
+                    (self._stream_followup_stride,) if compile_steady else ()
+                ),
             )
             for _ in range(worker_count)
         )

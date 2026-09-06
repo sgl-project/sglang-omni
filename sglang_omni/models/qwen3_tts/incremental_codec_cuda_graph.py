@@ -9,6 +9,7 @@ import math
 import os
 from collections import Counter
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import torch
@@ -198,8 +199,10 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         batch_sizes: tuple[int, ...] = (1, 2, 4, 8),
         min_free_gb: float = 3.0,
         enabled: bool = True,
+        compile_fresh_frames: Sequence[int] = (),
     ) -> None:
         self._decoder = decoder
+        self._compile_fresh_frames = frozenset(int(f) for f in compile_fresh_frames)
         self._device = torch.device(device)
         self._dtype = dtype
         self._num_quantizers = int(num_quantizers)
@@ -414,6 +417,12 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         capture_stream = resources.stream
         if capture_stream is None:
             raise RuntimeError("incremental Codec graph warmup requires a CUDA stream")
+        if key.fresh_frames in self._compile_fresh_frames:
+            self._decoder.precompile(
+                key.batch_bucket,
+                key.fresh_frames,
+                num_quantizers=self._num_quantizers,
+            )
         capture_stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(capture_stream), torch.inference_mode():
             for _ in range(self._WARMUP_ITERATIONS):

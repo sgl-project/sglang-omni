@@ -242,6 +242,7 @@ def create_vocoder_executor(
     enable_stateful_codec_decoder: bool = False,
     codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     incremental_codec_cuda_graph: bool = False,
+    incremental_codec_compile: bool = False,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] = (),
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
@@ -278,6 +279,7 @@ def create_vocoder_executor(
         enable_stateful_codec_decoder=enable_stateful_codec_decoder,
         codec_state_slots=codec_state_slots,
         incremental_codec_cuda_graph=incremental_codec_cuda_graph,
+        incremental_codec_compile=incremental_codec_compile,
         incremental_codec_cuda_graph_cold_frames=(
             incremental_codec_cuda_graph_cold_frames
         ),
