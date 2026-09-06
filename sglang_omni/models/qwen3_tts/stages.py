@@ -241,14 +241,21 @@ def create_vocoder_executor(
     fused_snake_activation: bool = False,
     enable_stateful_codec_decoder: bool = True,
     codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
-    incremental_codec_cuda_graph: bool = True,
-    incremental_codec_compile: bool = True,
+    incremental_codec_cuda_graph: bool | None = None,
+    incremental_codec_compile: bool | None = None,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
+    # note (luojiaxuan): the graph and compile switches follow the decoder
+    # they belong to unless set explicitly, so turning the stateful decoder
+    # off for a rollback is one flag.
+    if incremental_codec_cuda_graph is None:
+        incremental_codec_cuda_graph = enable_stateful_codec_decoder
+    if incremental_codec_compile is None:
+        incremental_codec_compile = enable_stateful_codec_decoder
     tokenizer = _load_qwen3_tts_tokenizer(
         model_path,
         device=device,

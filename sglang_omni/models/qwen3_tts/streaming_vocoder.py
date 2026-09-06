@@ -598,7 +598,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             raise ValueError(
                 "incremental_codec_cuda_graph requires enable_stateful_codec_decoder"
             )
-        if any(int(frames) <= 0 for frames in incremental_codec_cuda_graph_cold_frames):
+        if incremental_codec_cuda_graph_cold_frames is not None and any(
+            int(frames) <= 0 for frames in incremental_codec_cuda_graph_cold_frames
+        ):
             raise ValueError(
                 "incremental_codec_cuda_graph_cold_frames must be positive"
             )
