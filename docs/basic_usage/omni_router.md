@@ -299,15 +299,17 @@ compatible. Current worker load does not change readiness.
 
 `/v1/models` returns a sorted, deduplicated inventory built from worker defaults
 and correlated profile model IDs. `/metrics` exposes Prometheus lifecycle,
-readiness, health, admission, and worker-load gauges. `/diagnostics` returns
-bounded deterministic JSON for lifecycle, readiness, admission, and configured
-workers.
+readiness, health, admission, worker-load, listener, buffered-byte,
+classification, and WebSocket-session gauges. `/diagnostics` returns bounded
+deterministic JSON for the same router-local state and marks the configured
+voice owner.
 
 Operations responses snapshot router-local state and never contact workers.
 Admission values come from the semaphores that enforce router limits. Worker
 load comes from the same counters used by `least_requests`. Metric labels use
 fixed vocabularies instead of worker IDs, model IDs, request IDs, paths, or
-client input.
+client input. Listener usage includes the slot reserved by the pending accept;
+registered WebSocket sessions represent callbacks retained for shutdown.
 
 Structured logging covers lifecycle events, health transitions, and exceptional
 conditions. `logging.filter` accepts a tracing filter expression, and

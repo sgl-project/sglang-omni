@@ -84,6 +84,14 @@ impl Lifecycle {
 }
 
 impl State {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Starting,
+        Self::Serving,
+        Self::Draining,
+        Self::Stopped,
+        Self::Failed,
+    ];
+
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Starting => "starting",

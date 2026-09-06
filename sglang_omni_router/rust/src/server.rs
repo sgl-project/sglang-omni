@@ -22,7 +22,7 @@ use crate::http_generation::{self, HttpGeneration};
 use crate::http_media::{self, HttpMedia};
 use crate::http_relay::HttpRelay;
 use crate::lifecycle::Lifecycle;
-use crate::operations::Operations;
+use crate::operations::{Operations, ResourceSnapshot, ResourceUsage};
 use crate::request_id::{self, RequestIds};
 use crate::shutdown;
 use crate::websocket::{self, SessionTracker, WebsocketGateway};
@@ -30,7 +30,7 @@ use crate::worker_pool::{HealthSupervisor, WorkerPool};
 
 mod bounded_listener;
 
-use bounded_listener::BoundedTcpListener;
+use bounded_listener::{BoundedTcpListener, ListenerCapacity};
 
 const LIVE_BODY: &str = "live\n";
 const NOT_READY_BODY: &str = "not ready\n";
@@ -44,20 +44,38 @@ struct AppState {
     media: Option<Arc<HttpMedia>>,
     websocket: Option<Arc<WebsocketGateway>>,
     operations: Arc<Operations>,
+    listener_capacity: ListenerCapacity,
+    relay: Arc<HttpRelay>,
+    classifier: Arc<ClassificationExecutor>,
+    sessions: SessionTracker,
 }
 
 impl AppState {
-    fn is_ready(&self) -> bool {
-        self.lifecycle.is_serving()
-            && self
-                .generation
-                .as_ref()
-                .is_none_or(|generation| generation.is_ready())
+    fn services_ready(&self) -> bool {
+        self.generation
+            .as_ref()
+            .is_none_or(|generation| generation.is_ready())
             && self.media.as_ref().is_none_or(|media| media.is_ready())
             && self
                 .websocket
                 .as_ref()
                 .is_none_or(|websocket| websocket.is_ready())
+    }
+
+    fn is_ready(&self) -> bool {
+        self.lifecycle.is_serving() && self.services_ready()
+    }
+
+    fn resource_snapshot(&self) -> ResourceSnapshot {
+        let (listener_limit, listener_in_use) = self.listener_capacity.usage();
+        let (buffer_limit, buffer_in_use) = self.relay.buffered_usage();
+        let (classification_limit, classification_in_use) = self.classifier.usage();
+        ResourceSnapshot::new(
+            ResourceUsage::new(listener_limit, listener_in_use),
+            ResourceUsage::new(buffer_limit, buffer_in_use),
+            ResourceUsage::new(classification_limit, classification_in_use),
+            self.sessions.active(),
+        )
     }
 }
 
@@ -74,13 +92,22 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
         Arc::clone(&classifier),
     );
     let generation = HttpGeneration::build(&config, Arc::clone(&pool), Arc::clone(&relay))?;
-    let media = HttpMedia::build(&config, Arc::clone(&pool), relay)?;
+    let media = HttpMedia::build(&config, Arc::clone(&pool), Arc::clone(&relay))?;
     let sessions = SessionTracker::new();
-    let websocket =
-        WebsocketGateway::build(&config, Arc::clone(&pool), classifier, sessions.clone());
+    let websocket = WebsocketGateway::build(
+        &config,
+        Arc::clone(&pool),
+        Arc::clone(&classifier),
+        sessions.clone(),
+    );
     let operations = Arc::new(Operations::build(&config)?);
     let request_ids = RequestIds::new();
     let mut signal_observer = shutdown::SignalObserver::install().map_err(RouterError::Signal)?;
+    let listener = tokio::net::TcpListener::bind(config.server.listen)
+        .await
+        .map_err(RouterError::Bind)?;
+    let listener = BoundedTcpListener::new(listener, config.server.max_connections);
+    let listener_capacity = listener.capacity();
     let app = route_table(
         AppState {
             lifecycle: Arc::clone(&lifecycle),
@@ -89,16 +116,16 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
             media: media.clone(),
             websocket: websocket.clone(),
             operations,
+            listener_capacity,
+            relay,
+            classifier,
+            sessions: sessions.clone(),
         },
         generation,
         media,
         websocket,
         request_ids,
     );
-    let listener = tokio::net::TcpListener::bind(config.server.listen)
-        .await
-        .map_err(RouterError::Bind)?;
-    let listener = BoundedTcpListener::new(listener, config.server.max_connections);
     let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
     lifecycle.enter_serving()?;
     let mut health = pool.start_health(&config);
@@ -456,9 +483,11 @@ async fn metrics(State(state): State<AppState>, request: Request<Body>) -> Respo
         Err(_) => return HttpFault::InternalError.into_response(),
     };
     let snapshot = state.pool.operations_snapshot();
+    let resources = state.resource_snapshot();
+    let ready = lifecycle == crate::lifecycle::State::Serving && state.services_ready();
     state
         .operations
-        .metrics_response(lifecycle, state.is_ready(), &snapshot)
+        .metrics_response(lifecycle, ready, &snapshot, &resources)
 }
 
 async fn diagnostics(State(state): State<AppState>, request: Request<Body>) -> Response<Body> {
@@ -470,9 +499,11 @@ async fn diagnostics(State(state): State<AppState>, request: Request<Body>) -> R
         Err(_) => return HttpFault::InternalError.into_response(),
     };
     let snapshot = state.pool.operations_snapshot();
+    let resources = state.resource_snapshot();
+    let ready = lifecycle == crate::lifecycle::State::Serving && state.services_ready();
     state
         .operations
-        .diagnostics_response(lifecycle, state.is_ready(), &snapshot)
+        .diagnostics_response(lifecycle, ready, &snapshot, &resources)
         .unwrap_or_else(HttpFault::into_response)
 }
 

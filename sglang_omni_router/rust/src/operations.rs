@@ -10,12 +10,46 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{HttpFault, RouterError};
 use crate::lifecycle::State as LifecycleState;
-use crate::worker_pool::{CapacityClass, OperationsSnapshot};
+use crate::worker_pool::{OperationsSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth};
 
 const JSON_CONTENT_TYPE: &str = "application/json";
 const METRICS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
-const LIFECYCLE_STATES: [&str; 5] = ["starting", "serving", "draining", "stopped", "failed"];
-const HEALTH_STATES: [&str; 3] = ["unknown", "healthy", "unhealthy"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ResourceUsage {
+    limit: usize,
+    in_use: usize,
+}
+
+impl ResourceUsage {
+    pub(crate) const fn new(limit: usize, in_use: usize) -> Self {
+        Self { limit, in_use }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct ResourceSnapshot {
+    listener_slots: ResourceUsage,
+    buffered_request_bytes: ResourceUsage,
+    classification_slots: ResourceUsage,
+    websocket_sessions_registered: usize,
+}
+
+impl ResourceSnapshot {
+    pub(crate) const fn new(
+        listener_slots: ResourceUsage,
+        buffered_request_bytes: ResourceUsage,
+        classification_slots: ResourceUsage,
+        websocket_sessions_registered: usize,
+    ) -> Self {
+        Self {
+            listener_slots,
+            buffered_request_bytes,
+            classification_slots,
+            websocket_sessions_registered,
+        }
+    }
+}
 
 /// Immutable model inventory plus scrape-time operations rendering.
 pub(crate) struct Operations {
@@ -48,11 +82,12 @@ impl Operations {
         lifecycle: LifecycleState,
         ready: bool,
         snapshot: &OperationsSnapshot,
+        resources: &ResourceSnapshot,
     ) -> Response<Body> {
         response(
             StatusCode::OK,
             METRICS_CONTENT_TYPE,
-            Bytes::from(render_metrics(lifecycle, ready, snapshot)),
+            Bytes::from(render_metrics(lifecycle, ready, snapshot, resources)),
         )
     }
 
@@ -61,8 +96,9 @@ impl Operations {
         lifecycle: LifecycleState,
         ready: bool,
         snapshot: &OperationsSnapshot,
+        resources: &ResourceSnapshot,
     ) -> Result<Response<Body>, HttpFault> {
-        let diagnostics = Diagnostics::from_snapshot(lifecycle, ready, snapshot);
+        let diagnostics = Diagnostics::from_snapshot(lifecycle, ready, snapshot, resources);
         let bytes = serde_json::to_vec(&diagnostics).map_err(|_| HttpFault::InternalError)?;
         Ok(response(
             StatusCode::OK,
@@ -148,15 +184,21 @@ fn render_models<'a>(ids: impl Iterator<Item = &'a str>) -> Result<Bytes, Router
         .map_err(|_| RouterError::WorkerPoolInvariant)
 }
 
-fn render_metrics(lifecycle: LifecycleState, ready: bool, snapshot: &OperationsSnapshot) -> String {
+fn render_metrics(
+    lifecycle: LifecycleState,
+    ready: bool,
+    snapshot: &OperationsSnapshot,
+    resources: &ResourceSnapshot,
+) -> String {
     let mut output = String::new();
     output.push_str("# HELP sglang_omni_router_lifecycle Router lifecycle state.\n");
     output.push_str("# TYPE sglang_omni_router_lifecycle gauge\n");
-    for state in LIFECYCLE_STATES {
-        let value = u8::from(state == lifecycle.label());
+    for state in LifecycleState::ALL {
+        let value = u8::from(state == lifecycle);
         let _ = writeln!(
             output,
-            "sglang_omni_router_lifecycle{{state=\"{state}\"}} {value}"
+            "sglang_omni_router_lifecycle{{state=\"{}\"}} {value}",
+            state.label()
         );
     }
     output.push_str("# HELP sglang_omni_router_ready Router readiness state.\n");
@@ -165,15 +207,16 @@ fn render_metrics(lifecycle: LifecycleState, ready: bool, snapshot: &OperationsS
 
     output.push_str("# HELP sglang_omni_router_workers_by_health Workers by health state.\n");
     output.push_str("# TYPE sglang_omni_router_workers_by_health gauge\n");
-    for health in HEALTH_STATES {
+    for health in WorkerHealth::ALL {
         let count = snapshot
             .workers
             .iter()
-            .filter(|worker| worker.health.label() == health)
+            .filter(|worker| worker.health == health)
             .count();
         let _ = writeln!(
             output,
-            "sglang_omni_router_workers_by_health{{health=\"{health}\"}} {count}"
+            "sglang_omni_router_workers_by_health{{health=\"{}\"}} {count}",
+            health.label()
         );
     }
 
@@ -188,6 +231,7 @@ fn render_metrics(lifecycle: LifecycleState, ready: bool, snapshot: &OperationsS
 
     render_admission_metrics(&mut output, snapshot);
     render_worker_metrics(&mut output, snapshot);
+    render_resource_metrics(&mut output, resources);
     output
 }
 
@@ -233,15 +277,14 @@ fn render_worker_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
         "sglang_omni_router_worker_active_requests {active_requests}"
     );
 
-    let classes = [
-        CapacityClass::SpeechWebsocket,
-        CapacityClass::RealtimeWebsocket,
-    ];
     let mut limits = [0_usize; 2];
     let mut in_flight = [0_usize; 2];
     for worker in &snapshot.workers {
         for capacity in &worker.session_capacity {
-            if let Some(index) = classes.iter().position(|class| *class == capacity.class) {
+            if let Some(index) = SESSION_CAPACITY_CLASSES
+                .iter()
+                .position(|class| *class == capacity.class)
+            {
                 limits[index] += capacity.limit;
                 in_flight[index] += capacity.in_flight;
             }
@@ -251,7 +294,7 @@ fn render_worker_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
         "# HELP sglang_omni_router_worker_capacity_limit Aggregate configured worker capacity.\n",
     );
     output.push_str("# TYPE sglang_omni_router_worker_capacity_limit gauge\n");
-    for (index, class) in classes.into_iter().enumerate() {
+    for (index, class) in SESSION_CAPACITY_CLASSES.into_iter().enumerate() {
         let _ = writeln!(
             output,
             "sglang_omni_router_worker_capacity_limit{{class=\"{}\"}} {}",
@@ -263,7 +306,7 @@ fn render_worker_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
         "# HELP sglang_omni_router_worker_capacity_in_flight Aggregate current worker capacity use.\n",
     );
     output.push_str("# TYPE sglang_omni_router_worker_capacity_in_flight gauge\n");
-    for (index, class) in classes.into_iter().enumerate() {
+    for (index, class) in SESSION_CAPACITY_CLASSES.into_iter().enumerate() {
         let _ = writeln!(
             output,
             "sglang_omni_router_worker_capacity_in_flight{{class=\"{}\"}} {}",
@@ -273,10 +316,80 @@ fn render_worker_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
     }
 }
 
+fn render_resource_metrics(output: &mut String, resources: &ResourceSnapshot) {
+    output.push_str(
+        "# HELP sglang_omni_router_listener_slots_limit Configured accepted-socket limit.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_listener_slots_limit gauge\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_listener_slots_limit {}",
+        resources.listener_slots.limit
+    );
+    output.push_str(
+        "# HELP sglang_omni_router_listener_slots_reserved Reserved accepted-socket slots, including the pending accept reservation.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_listener_slots_reserved gauge\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_listener_slots_reserved {}",
+        resources.listener_slots.in_use
+    );
+
+    output.push_str(
+        "# HELP sglang_omni_router_buffered_request_bytes_limit Configured aggregate buffered-request byte budget.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_buffered_request_bytes_limit gauge\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_buffered_request_bytes_limit {}",
+        resources.buffered_request_bytes.limit
+    );
+    output.push_str(
+        "# HELP sglang_omni_router_buffered_request_bytes_reserved Reserved buffered-request bytes.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_buffered_request_bytes_reserved gauge\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_buffered_request_bytes_reserved {}",
+        resources.buffered_request_bytes.in_use
+    );
+
+    output.push_str(
+        "# HELP sglang_omni_router_classification_slots_limit Configured CPU-parallel classification slots.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_classification_slots_limit gauge\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_classification_slots_limit {}",
+        resources.classification_slots.limit
+    );
+    output.push_str(
+        "# HELP sglang_omni_router_classification_slots_in_use Active classification slots.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_classification_slots_in_use gauge\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_classification_slots_in_use {}",
+        resources.classification_slots.in_use
+    );
+
+    output.push_str(
+        "# HELP sglang_omni_router_websocket_sessions_registered Registered WebSocket callbacks retained for shutdown.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_websocket_sessions_registered gauge\n");
+    let _ = writeln!(
+        output,
+        "sglang_omni_router_websocket_sessions_registered {}",
+        resources.websocket_sessions_registered
+    );
+}
+
 #[derive(Serialize)]
 struct Diagnostics<'a> {
     lifecycle: &'static str,
     ready: bool,
+    resources: ResourceSnapshot,
     admission: Vec<DiagnosticCapacity>,
     workers: Vec<DiagnosticWorker<'a>>,
 }
@@ -292,6 +405,7 @@ struct DiagnosticCapacity {
 struct DiagnosticWorker<'a> {
     worker_id: &'a str,
     registration_ordinal: usize,
+    voice_owner: bool,
     health: &'static str,
     routable: bool,
     active_requests: usize,
@@ -303,10 +417,12 @@ impl<'a> Diagnostics<'a> {
         lifecycle: LifecycleState,
         ready: bool,
         snapshot: &'a OperationsSnapshot,
+        resources: &ResourceSnapshot,
     ) -> Self {
         Self {
             lifecycle: lifecycle.label(),
             ready,
+            resources: *resources,
             admission: snapshot
                 .admission
                 .iter()
@@ -322,6 +438,7 @@ impl<'a> Diagnostics<'a> {
                 .map(|worker| DiagnosticWorker {
                     worker_id: &worker.worker_id,
                     registration_ordinal: worker.registration_ordinal,
+                    voice_owner: worker.voice_owner,
                     health: worker.health.label(),
                     routable: worker.routable,
                     active_requests: worker.active_requests,
@@ -351,7 +468,10 @@ mod tests {
         SessionCapacitySnapshot, WorkerHealth, WorkerSnapshot,
     };
 
-    use super::{Diagnostics, render_metrics, render_model_sources, render_models};
+    use super::{
+        Diagnostics, ResourceSnapshot, ResourceUsage, render_metrics, render_model_sources,
+        render_models,
+    };
 
     fn admission(class: AdmissionClass, limit: usize, in_flight: usize) -> AdmissionSnapshot {
         AdmissionSnapshot {
@@ -400,6 +520,7 @@ mod tests {
                 WorkerSnapshot {
                     worker_id: String::from("worker-a"),
                     registration_ordinal: 0,
+                    voice_owner: true,
                     health: WorkerHealth::Unknown,
                     routable: false,
                     active_requests: 3,
@@ -411,6 +532,7 @@ mod tests {
                 WorkerSnapshot {
                     worker_id: String::from("worker-b"),
                     registration_ordinal: 1,
+                    voice_owner: false,
                     health: WorkerHealth::Healthy,
                     routable: true,
                     active_requests: 1,
@@ -418,6 +540,15 @@ mod tests {
                 },
             ],
         }
+    }
+
+    const fn resources() -> ResourceSnapshot {
+        ResourceSnapshot::new(
+            ResourceUsage::new(1024, 3),
+            ResourceUsage::new(268_435_456, 4096),
+            ResourceUsage::new(8, 2),
+            1,
+        )
     }
 
     #[test]
@@ -452,7 +583,12 @@ mod tests {
 
     #[test]
     fn metrics_text_is_complete_exact_and_fixed_order() {
-        let rendered = render_metrics(LifecycleState::Serving, true, &representative_snapshot());
+        let rendered = render_metrics(
+            LifecycleState::Serving,
+            true,
+            &representative_snapshot(),
+            &resources(),
+        );
         assert_eq!(
             rendered,
             concat!(
@@ -503,6 +639,27 @@ mod tests {
                 "# TYPE sglang_omni_router_worker_capacity_in_flight gauge\n",
                 "sglang_omni_router_worker_capacity_in_flight{class=\"speech_websocket\"} 0\n",
                 "sglang_omni_router_worker_capacity_in_flight{class=\"realtime_websocket\"} 2\n",
+                "# HELP sglang_omni_router_listener_slots_limit Configured accepted-socket limit.\n",
+                "# TYPE sglang_omni_router_listener_slots_limit gauge\n",
+                "sglang_omni_router_listener_slots_limit 1024\n",
+                "# HELP sglang_omni_router_listener_slots_reserved Reserved accepted-socket slots, including the pending accept reservation.\n",
+                "# TYPE sglang_omni_router_listener_slots_reserved gauge\n",
+                "sglang_omni_router_listener_slots_reserved 3\n",
+                "# HELP sglang_omni_router_buffered_request_bytes_limit Configured aggregate buffered-request byte budget.\n",
+                "# TYPE sglang_omni_router_buffered_request_bytes_limit gauge\n",
+                "sglang_omni_router_buffered_request_bytes_limit 268435456\n",
+                "# HELP sglang_omni_router_buffered_request_bytes_reserved Reserved buffered-request bytes.\n",
+                "# TYPE sglang_omni_router_buffered_request_bytes_reserved gauge\n",
+                "sglang_omni_router_buffered_request_bytes_reserved 4096\n",
+                "# HELP sglang_omni_router_classification_slots_limit Configured CPU-parallel classification slots.\n",
+                "# TYPE sglang_omni_router_classification_slots_limit gauge\n",
+                "sglang_omni_router_classification_slots_limit 8\n",
+                "# HELP sglang_omni_router_classification_slots_in_use Active classification slots.\n",
+                "# TYPE sglang_omni_router_classification_slots_in_use gauge\n",
+                "sglang_omni_router_classification_slots_in_use 2\n",
+                "# HELP sglang_omni_router_websocket_sessions_registered Registered WebSocket callbacks retained for shutdown.\n",
+                "# TYPE sglang_omni_router_websocket_sessions_registered gauge\n",
+                "sglang_omni_router_websocket_sessions_registered 1\n",
             )
         );
     }
@@ -514,6 +671,7 @@ mod tests {
             .map(|registration_ordinal| WorkerSnapshot {
                 worker_id: format!("worker-{registration_ordinal:03}"),
                 registration_ordinal,
+                voice_owner: registration_ordinal == 0,
                 health: match registration_ordinal % 3 {
                     0 => WorkerHealth::Unknown,
                     1 => WorkerHealth::Healthy,
@@ -532,6 +690,7 @@ mod tests {
             LifecycleState::Draining,
             false,
             &snapshot,
+            &resources(),
         ))
         .expect("serialize maximum diagnostics");
         assert!(bytes.len() < 256 * 1_024);
@@ -546,8 +705,12 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            BTreeSet::from(["admission", "lifecycle", "ready", "workers"])
+            BTreeSet::from(["admission", "lifecycle", "ready", "resources", "workers"])
         );
+        assert_eq!(value["lifecycle"], "draining");
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["workers"][0]["voice_owner"], true);
+        assert_eq!(value["workers"][1]["voice_owner"], false);
         assert_eq!(value["workers"][0]["registration_ordinal"], 0);
         assert_eq!(value["workers"][255]["registration_ordinal"], 255);
         let text = String::from_utf8(bytes).expect("diagnostics are UTF-8");

@@ -594,6 +594,10 @@ fn serves_exact_local_health_and_operations_routes_and_shuts_down_cleanly() {
     assert!(metrics.contains("sglang_omni_router_admission_limit{class=\"generation_http\"} 64\n"));
     assert!(metrics.contains("sglang_omni_router_admission_limit{class=\"speech_http\"} 0\n"));
     assert!(metrics.contains("sglang_omni_router_worker_active_requests 0\n"));
+    assert!(metrics.contains("sglang_omni_router_listener_slots_limit 1024\n"));
+    assert!(metrics.contains("sglang_omni_router_buffered_request_bytes_reserved 0\n"));
+    assert!(metrics.contains("sglang_omni_router_classification_slots_in_use 0\n"));
+    assert!(metrics.contains("sglang_omni_router_websocket_sessions_registered 0\n"));
     assert!(
         metrics
             .contains("sglang_omni_router_worker_capacity_limit{class=\"speech_websocket\"} 0\n")
@@ -621,12 +625,29 @@ fn serves_exact_local_health_and_operations_routes_and_shuts_down_cleanly() {
     );
     assert_eq!(diagnostic_value["workers"][0]["worker_id"], "worker-a");
     assert_eq!(diagnostic_value["workers"][0]["registration_ordinal"], 0);
+    assert_eq!(diagnostic_value["workers"][0]["voice_owner"], false);
     assert!(matches!(
         diagnostic_value["workers"][0]["health"].as_str(),
         Some("unknown" | "unhealthy")
     ));
     assert_eq!(diagnostic_value["workers"][0]["routable"], false);
     assert_eq!(diagnostic_value["workers"][0]["active_requests"], 0);
+    assert_eq!(
+        diagnostic_value["resources"]["listener_slots"]["limit"],
+        1024
+    );
+    assert_eq!(
+        diagnostic_value["resources"]["buffered_request_bytes"]["in_use"],
+        0
+    );
+    assert_eq!(
+        diagnostic_value["resources"]["classification_slots"]["in_use"],
+        0
+    );
+    assert_eq!(
+        diagnostic_value["resources"]["websocket_sessions_registered"],
+        0
+    );
     assert_eq!(
         diagnostic_value["workers"][0]["capacity"]
             .as_array()

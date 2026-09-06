@@ -17,6 +17,8 @@ pub(crate) enum WorkerHealth {
 }
 
 impl WorkerHealth {
+    pub(crate) const ALL: [Self; 3] = [Self::Unknown, Self::Healthy, Self::Unhealthy];
+
     fn from_atomic(value: u8) -> Self {
         match value {
             1 => Self::Healthy,

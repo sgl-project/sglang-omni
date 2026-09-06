@@ -28,6 +28,7 @@ pub(crate) use headers::{
 
 pub(crate) struct HttpRelay {
     client: reqwest::Client,
+    buffered_budget_limit: usize,
     buffered_budget: Arc<Semaphore>,
     classifier: Arc<ClassificationExecutor>,
 }
@@ -60,9 +61,17 @@ impl HttpRelay {
     ) -> Arc<Self> {
         Arc::new(Self {
             client,
+            buffered_budget_limit: buffered_budget,
             buffered_budget: Arc::new(Semaphore::new(buffered_budget)),
             classifier,
         })
+    }
+
+    pub(crate) fn buffered_usage(&self) -> (usize, usize) {
+        (
+            self.buffered_budget_limit,
+            self.buffered_budget_limit - self.buffered_budget.available_permits(),
+        )
     }
 
     pub(crate) async fn classify<T>(
@@ -427,6 +436,7 @@ mod tests {
     fn relay_with_slots(budget: usize, slots: usize) -> Arc<HttpRelay> {
         Arc::new(HttpRelay {
             client: reqwest::Client::new(),
+            buffered_budget_limit: budget,
             buffered_budget: Arc::new(Semaphore::new(budget)),
             classifier: ClassificationExecutor::for_test(slots),
         })

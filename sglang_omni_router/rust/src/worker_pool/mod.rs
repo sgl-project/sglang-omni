@@ -69,6 +69,7 @@ pub(crate) struct AdmissionSnapshot {
 pub(crate) struct WorkerSnapshot {
     pub(crate) worker_id: String,
     pub(crate) registration_ordinal: usize,
+    pub(crate) voice_owner: bool,
     pub(crate) health: WorkerHealth,
     pub(crate) routable: bool,
     pub(crate) active_requests: usize,
@@ -595,24 +596,32 @@ impl WorkerPool {
         let workers = self
             .records
             .iter()
-            .map(|record| WorkerSnapshot {
-                worker_id: record.worker_id.as_str().to_owned(),
-                registration_ordinal: record.registration_id.startup_ordinal(),
-                health: record.health.load(),
-                routable: record.is_routable(),
-                active_requests: record.load(),
-                session_capacity: SESSION_CAPACITY_CLASSES
-                    .into_iter()
-                    .filter_map(|class| {
-                        record
-                            .session_capacity(class)
-                            .map(|capacity| SessionCapacitySnapshot {
-                                class,
-                                limit: capacity.limit,
-                                in_flight: capacity.limit - capacity.semaphore.available_permits(),
-                            })
-                    })
-                    .collect(),
+            .map(|record| {
+                let health = record.health.load();
+                WorkerSnapshot {
+                    worker_id: record.worker_id.as_str().to_owned(),
+                    registration_ordinal: record.registration_id.startup_ordinal(),
+                    voice_owner: self
+                        .voice_owner
+                        .as_ref()
+                        .is_some_and(|owner| Arc::ptr_eq(owner, record)),
+                    health,
+                    routable: health == WorkerHealth::Healthy,
+                    active_requests: record.load(),
+                    session_capacity: SESSION_CAPACITY_CLASSES
+                        .into_iter()
+                        .filter_map(|class| {
+                            record
+                                .session_capacity(class)
+                                .map(|capacity| SessionCapacitySnapshot {
+                                    class,
+                                    limit: capacity.limit,
+                                    in_flight: capacity.limit
+                                        - capacity.semaphore.available_permits(),
+                                })
+                        })
+                        .collect(),
+                }
             })
             .collect();
         OperationsSnapshot { admission, workers }
@@ -852,7 +861,7 @@ fn generation_rows_equal(left: &[ServiceProfile], right: &[ServiceProfile]) -> b
     service_rows_equal(left, right, ServiceClass::GenerationHttp, None)
 }
 
-const SESSION_CAPACITY_CLASSES: [CapacityClass; 2] = [
+pub(crate) const SESSION_CAPACITY_CLASSES: [CapacityClass; 2] = [
     CapacityClass::SpeechWebsocket,
     CapacityClass::RealtimeWebsocket,
 ];
@@ -1759,6 +1768,7 @@ mod tests {
         assert_eq!(initial.admission[2].limit, 0);
         assert_eq!(initial.workers[0].worker_id, "worker-0");
         assert_eq!(initial.workers[0].registration_ordinal, 0);
+        assert!(!initial.workers[0].voice_owner);
         assert_eq!(initial.workers[0].health, WorkerHealth::Healthy);
         assert!(initial.workers[0].routable);
         assert_eq!(initial.workers[0].active_requests, 0);
@@ -2049,6 +2059,9 @@ mod tests {
                 AdmissionController::new(8, [None, Some(4), Some(4), None, Some(4), None]);
 
             assert!(pool.voice_owner_ready());
+            let snapshot = pool.operations_snapshot();
+            assert!(snapshot.workers[0].voice_owner);
+            assert!(!snapshot.workers[1].voice_owner);
             assert!(
                 pool.content_blind_media_http(
                     &TrustDomain::new(String::from("local")),
