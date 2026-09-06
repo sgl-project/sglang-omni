@@ -13,9 +13,9 @@ import subprocess
 import threading
 import wave
 from dataclasses import dataclass
-from functools import cache
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.nn as nn
@@ -29,6 +29,21 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 
 SPEAKER_EMBEDDING_DIM = 2048
+# Source sample rates come from caller-provided reference audio. Keep enough common
+# rates hot without allowing device-resident resamplers to grow without bound.
+_RESAMPLER_CACHE_MAX_ITEMS = 8
+
+
+def _make_resampler_getter(
+    *, target_sample_rate: int, device: str
+) -> Callable[[int], nn.Module]:
+    @lru_cache(maxsize=_RESAMPLER_CACHE_MAX_ITEMS)
+    def _get_resampler(orig_sample_rate: int) -> nn.Module:
+        return torchaudio.transforms.Resample(orig_sample_rate, target_sample_rate).to(
+            device
+        )
+
+    return _get_resampler
 
 
 class Qwen3SpeakerEmbedding(nn.Module):
@@ -59,6 +74,11 @@ class Qwen3SpeakerEmbedding(nn.Module):
         self.model.to(device)
         self.model.eval()
 
+        self._get_resampler = _make_resampler_getter(
+            target_sample_rate=self.TARGET_SAMPLE_RATE,
+            device=device,
+        )
+
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
             sample_rate=self.TARGET_SAMPLE_RATE,
             n_fft=self.N_FFT,
@@ -78,12 +98,6 @@ class Qwen3SpeakerEmbedding(nn.Module):
     @property
     def dtype(self):
         return next(self.model.parameters()).dtype
-
-    @cache
-    def _get_resampler(self, orig_sample_rate: int):
-        return torchaudio.transforms.Resample(
-            orig_sample_rate, self.TARGET_SAMPLE_RATE
-        ).to(self.device)
 
     def prepare_input(self, wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
         assert wav.ndim < 3
