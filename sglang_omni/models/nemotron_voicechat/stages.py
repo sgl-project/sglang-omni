@@ -107,7 +107,13 @@ def create_perception_executor(model_path: str, *, dtype=None, device=None):
 
 
 def create_thinker_executor(
-    model_path, *, dtype=None, device=None, gpu_id=None, **overrides
+    model_path,
+    *,
+    dtype=None,
+    device=None,
+    gpu_id=None,
+    server_args_overrides=None,
+    **overrides,
 ):
     builder = NemotronVoiceChatEngineBuilder(max_running_requests=1)
     return builder.build(
@@ -115,7 +121,7 @@ def create_thinker_executor(
         device=device,
         gpu_id=gpu_id,
         dtype=dtype or "float32",
-        server_args_overrides=overrides or None,
+        server_args_overrides={**overrides, **(server_args_overrides or {})} or None,
     )
 
 
@@ -132,6 +138,7 @@ def create_talker_executor(
     device=None,
     gpu_id=None,
     context_length=None,
+    server_args_overrides=None,
     **overrides,
 ):
     builder = NemotronVoiceChatTalkerEngineBuilder(
@@ -143,7 +150,7 @@ def create_talker_executor(
         device=device,
         gpu_id=gpu_id,
         dtype=dtype or "bfloat16",
-        server_args_overrides=overrides or None,
+        server_args_overrides={**overrides, **(server_args_overrides or {})} or None,
     )
 
 

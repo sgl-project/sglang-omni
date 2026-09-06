@@ -225,11 +225,6 @@ class NemotronVoiceChatTalkerEngineBuilder(_VoiceChatEngineBuilder):
         (shim / "config.json").write_text(json.dumps(_talker_config(source)))
         return str(shim)
 
-    def generation_defaults(self, *, dtype):
-        defaults = super().generation_defaults(dtype=dtype or "bfloat16")
-        defaults["mem_fraction_static"] = 0.35
-        return defaults
-
     def make_model_runner(self, model_worker, output_proc):
         return NemotronVoiceChatTalkerModelRunner(model_worker, output_proc)
 
