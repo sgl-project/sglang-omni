@@ -9,6 +9,7 @@ from typing import Any
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from transformers import AutoFeatureExtractor, AutoTokenizer
 
+from sglang_omni.models.weight_loader import resolve_cached_model_path
 from sglang_omni.models.fun_asr import request_builders
 from sglang_omni.models.fun_asr.encoder_service import (
     FunASRPreLMEncoderService,
@@ -92,11 +93,15 @@ class FunASREngineBuilder(AsrEngineBuilder):
         self.context_length = 0
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
+        # When the checkpoint is fully cached, hand every from_pretrained the
+        # local directory so none of them revalidates against the Hub. On a
+        # cache miss this resolves to the original string and nothing changes.
+        local_dir = str(resolve_cached_model_path(checkpoint_dir) or checkpoint_dir)
         self.tokenizer = AutoTokenizer.from_pretrained(
-            checkpoint_dir, trust_remote_code=True
+            local_dir, trust_remote_code=True
         )
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(
-            checkpoint_dir, trust_remote_code=True
+            local_dir, trust_remote_code=True
         )
         encoder_token_count = int(
             fun_asr_low_frame_rate_length(self.feature_extractor.nb_max_frames)
