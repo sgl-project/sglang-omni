@@ -39,7 +39,7 @@ for details.
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | `examples/configs/s2pro_tts.yaml` | Supports plain TTS and voice cloning with `references` |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | `examples/configs/voxtral_tts.yaml` | Uses `input`, `voice`, `response_format`, and `max_new_tokens`. Use `--no-ref-audio` for SeedTTS benchmarking |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b.yaml`, `examples/configs/qwen3_tts_1_7b.yaml` | Requires reference audio through `ref_audio` or `references[0].audio_path`. `language` defaults to `auto` |
-| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Text-only requests use the checkpoint speaker table. Set `voice` to the desired checkpoint speaker |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml`, `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Text-only synthesis with built-in speakers; omit `voice` for Vivian. Both sizes support streaming; use 1.7B for instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; streaming; the provided config uses TP1 |
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | `examples/configs/fun_cosyvoice3_0_5b.yaml` | Requires one reference audio clip via `ref_audio` or `references`. Supports zero-shot cloning, cross-lingual, instruct mode, and buffered speed control |
@@ -107,12 +107,14 @@ For Qwen3-TTS CustomVoice:
 
 ```bash
 sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
-  --config examples/configs/qwen3_tts_0_6b_customvoice.yaml \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
   --allowed-media-domain huggingface.co \
   --allowed-media-domain cas-bridge.xethub.hf.co \
   --port 8000
 ```
+
+For 0.6B CustomVoice, use `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` with `examples/configs/qwen3_tts_0_6b_customvoice.yaml`.
 
 For Qwen3-TTS VoiceDesign:
 
@@ -218,6 +220,23 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   }' \
   --output output.wav
 ```
+
+Qwen3-TTS CustomVoice uses a built-in speaker without reference audio:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "input": "Hello from Qwen CustomVoice.",
+    "voice": "Ryan",
+    "language": "English",
+    "instructions": "Speak clearly and calmly."
+  }' \
+  --output custom-voice.wav
+```
+
+Omit cloning fields (`ref_audio`, `ref_text`, `references`, and `x_vector_only_mode`) and omit `task_type` or set it to `CustomVoice`. For 0.6B, omit `instructions`: it remains accepted for compatibility, but reliable instruction control is not supported. See [CustomVoice checkpoints](../cookbook/qwen3_tts.md#customvoice-checkpoints) for speaker discovery, streaming, and Eric/Dylan language behavior.
 
 Qwen3-TTS VoiceDesign uses text plus voice instructions:
 
@@ -447,6 +466,8 @@ List preset and uploaded voices:
 ```bash
 curl http://localhost:8000/v1/audio/voices
 ```
+
+For CustomVoice, the response's `voices` list contains `default` and the served checkpoint's built-in speakers. Uploaded reference voices are not used for CustomVoice synthesis.
 
 Use the uploaded voice by name:
 

@@ -57,7 +57,7 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
-from sglang_omni.config import ResolvedAudioChunking
+from sglang_omni.config import CustomVoiceConfig, ResolvedAudioChunking
 from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS
 from sglang_omni.http.admin_auth import (
     make_admin_auth_dependency,
@@ -178,6 +178,7 @@ def create_app(
     model_name: str | None = None,
     requires_uploaded_voice_for_named_voice: bool = False,
     supports_uploaded_voice_references: bool = True,
+    custom_voice_config: CustomVoiceConfig | None = None,
     supports_audio_translation: bool = False,
     required_speech_reference_count: int | None = None,
     speech_reference_text_required: bool = False,
@@ -202,6 +203,8 @@ def create_app(
             names must resolve to uploaded voices before reaching the model.
         supports_uploaded_voice_references: Whether uploaded voice names can be
             lowered into backend reference-audio requests.
+        custom_voice_config: Checkpoint speaker names and task type for CustomVoice.
+            When present, reference inputs and uploaded-voice resolution are disabled.
         supports_audio_translation: Whether the configured pipeline supports
             ``/v1/audio/translations``.
         required_speech_reference_count: Exact reference count required before
@@ -254,6 +257,7 @@ def create_app(
     app.state.speaker_sample_store = SpeakerSampleStore()
     app.state.speech_service = SpeechRequestValidator(
         default_model=app.state.model_name,
+        custom_voice_config=custom_voice_config,
         requires_uploaded_voice_for_named_voice=(
             requires_uploaded_voice_for_named_voice
         ),
@@ -300,7 +304,13 @@ def _register_voices(app: FastAPI) -> None:
             return JSONResponse(
                 content={"uploaded_voice_names": voice_store.uploaded_voice_names()}
             )
-        response = VoiceListResponse.model_validate(voice_store.list_response())
+        voice_list = voice_store.list_response()
+        custom_voice_config = app.state.speech_service.custom_voice_config
+        if custom_voice_config is not None:
+            voices = {name.casefold(): name for name in custom_voice_config.speakers}
+            voices["default"] = "default"
+            voice_list["voices"] = sorted(voices.values(), key=str.casefold)
+        response = VoiceListResponse.model_validate(voice_list)
         return JSONResponse(content=response.model_dump(exclude_none=True))
 
     @app.post("/v1/audio/voices")
