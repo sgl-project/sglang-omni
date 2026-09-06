@@ -97,9 +97,36 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   作对照;若增量路径胜出,再按 `_followup_graph_holders` 的样式做每 worker runner。
 - 单测:`test_incremental_codec*.py` + `test_pipeline.py` **266 passed**(修了两处
   仅涉及测试夹具的 main 新属性:`_followup_graph_holders`、`_followup_decode_streams`)。
-- 实测臂(r20,slots 128,1 worker):`l-w1` / `i-off`(增量 eager)/ `i-on`(WARM 图)/
-  `i-on-cold`(另捕获 COLD 1、2 帧)/ `i-on-r24`(WARM 图 + ramp (2,4))。
-  **结果待填。**
+- 首轮实测(r20,slots 128,**1 worker**):
+
+  | 臂 | 成功 | underrun | TTFA p50 | 备注 |
+  |---|---|---|---|---|
+  | l-w1(legacy,1 worker) | 100% | 50.3% | 168ms | 1 worker 本身已不够 |
+  | i-off(增量 eager) | 1.0% | 62.0% | 481ms | 崩 |
+  | i-on(WARM 图) | 17.9% | 79.2% | 292ms | 图全捕获、0 回退、arena 93/128 在用 |
+  | i-on-cold(+COLD 1,2 帧图) | 61.7% | 85.8% | 214ms | |
+  | i-on-r24(WARM 图 + ramp (2,4)) | 82.6% | 87.6% | 245ms | |
+
+  定位到两处并修掉:`_decode_incremental_group` 硬走 `_followup_decode_stream` 不用
+  worker 自己的 stream;WARM 图只捕获 ramp∪稳态 = {2,4,8},到达抖动/尾块给出 1/3/5/6/7
+  帧,60s 内 **423 次 miss 回落 eager**(legacy 为此捕获 17..24 全段)。改为捕获
+  1..stride 全段(12 张图实测 0.4GB,32 张 ×2 worker 约 2GB,余量 9.5GB)。
+- 第二轮(**2 worker,每 worker 一份 WARM runner,全段 WARM 图**):
+
+  | 臂 | 成功 | underrun | First playable p50 | TTFA p50 | WARM replays/miss |
+  |---|---|---|---|---|---|
+  | w2-i-off(增量 eager) | 1.5% | 61.3% | 200ms | 560ms | 0 / 909+912 eager |
+  | w2-i-on | 98.9% | 53.1% | **1611ms** | 1686ms | 3123+3129 / **0 miss** |
+  | w2-i-on-r24 | 100% | 45.1% | 1477ms | 1559ms | 2801+2813 / 0 miss |
+
+  WARM 路径已无回退,但 **首帧可播时间 p50 从 legacy 的 82ms 涨到 1.6s**:瓶颈从
+  follow-up 转移到了 bootstrap。原因在 `_run_initial_batch`:#1846 把每个 bootstrap 都
+  按 B=1 eager 增量解码(注释理由是 Base 的 ref 前缀长度不一、天然 ragged),COLD 图
+  又是 opt-in 且只捕 B=1;CustomVoice 没有 ref 前缀,所有 bootstrap 同宽(1 帧,
+  抑制时 2 帧),本可以像 WARM 一样成 cohort。60s 内 1526 次 COLD 全走 eager。
+- 第三轮(进行中):(a) 只开 COLD 图 `[1,2]`(config)看 TTFA 是否回落;(b) r1 低负载
+  测增量路径的固定成本;(c) 代码改动:bootstrap 按 fresh_frames 成 cohort、COLD runner
+  也用 1/2/4/8 桶(ragged 的 Base 请求自然落成单元素 cohort,行为不变)。
 
 ## 决策日志
 
