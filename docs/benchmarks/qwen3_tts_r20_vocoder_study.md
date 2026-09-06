@@ -638,3 +638,7 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
   每帧 4.4 → ~2.5-3ms:首帧 −3ms(prefill finalize + 第二帧),每步 −1.5ms(低 batch 下 Talker 提速
   约 20%,r20 的准入等待与 decode 步同步缩短)。这是第十二轮的候选,需要先过外审(改 Talker 侧的
   采样路径,涉及数值/种子一致性)。
+- **B(full prefill 图)的门槛**:`generation_batch_policy._validate_prefill_graph_policy` 对所有
+  omni 模型只放行 breakable/disabled——不是 Qwen3-TTS 特有的能力声明,而是 omni 的 prefill 输入
+  注入(`attach_omni_prefill_inputs`)只接了 breakable 路径。做 B 要把 input_embeds 注入接进
+  SGLang 的 full prefill 图捕获(固定 token 桶、注意力在图内),属第十三轮 model runner 工作。
