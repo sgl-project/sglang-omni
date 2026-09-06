@@ -393,6 +393,16 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 
 - Corpus WER stayed 0.0122 for every configuration at every level.
 
+The pre-LM encoder cache (`pre_lm_cache_size_bytes=2GiB`) stores embeddings
+on the host with an LRU byte budget. By default
+`pre_lm_cache_pinned_size_bytes=512MiB` caps how much of that cache is held
+in page-locked memory so async device-to-host copies can run without pinning
+the full 2GiB budget. Entries are variable-length, so pinned blocks are not
+returned to the OS until process exit or eviction. Set
+`--asr.factory.pre_lm_cache_pin_host_memory false` to keep the entire cache
+pageable, or raise `pre_lm_cache_pinned_size_bytes` when the host can spare
+more lockable memory.
+
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.

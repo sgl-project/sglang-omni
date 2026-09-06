@@ -37,8 +37,10 @@ class Qwen3ASRFactoryArgs(FactoryArgs):
     enable_pre_lm_encoder: bool | None = None
     pre_lm_cache_max_entries: int | None = Field(default=None, ge=1)
     pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)
+    pre_lm_cache_pinned_size_bytes: int | None = Field(default=None, ge=0)
     pre_lm_max_batch_size: int | None = Field(default=None, ge=1)
     pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
+    pre_lm_cache_pin_host_memory: bool | None = None
 
 
 class Qwen3ASRStageConfig(EngineStageConfig):
@@ -73,8 +75,10 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 enable_pre_lm_encoder=True,
                 pre_lm_cache_max_entries=4096,
                 pre_lm_cache_size_bytes=2 * 1024**3,
+                pre_lm_cache_pinned_size_bytes=512 * 1024**2,
                 pre_lm_max_batch_size=8,
                 pre_lm_max_batch_wait_ms=0,
+                pre_lm_cache_pin_host_memory=True,
                 request_build_max_workers=8,
                 request_build_max_pending=32,
                 prefill_coalesce_requests=16,

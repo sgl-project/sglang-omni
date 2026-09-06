@@ -32,6 +32,7 @@ from .encoder_cuda_graph import (
     eager_preamble,
     window_lens_from_token_counts,
 )
+from .gpu_mel import AudioFrontend, log_mel_spectrogram
 
 logger = logging.getLogger(__name__)
 fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
@@ -156,6 +157,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         _enable_fused_asr_qk_norm_rope(self.language_model)
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self._encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
+        self._audio_frontend: AudioFrontend | None = None
 
     def init_encoder_graphs(
         self, *, max_batch_size: int, max_tokens_per_clip: int
@@ -176,11 +178,38 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
 
+    def _item_feature_and_mask(
+        self, item: MultimodalDataItem, device: torch.device
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        extra = item.model_specific_data
+        waveform = extra.get("waveform")
+        if waveform is None:
+            return item.feature, item.feature_attention_mask
+
+        wave = waveform.to(device=device, dtype=torch.float32, non_blocking=True)
+        feature = log_mel_spectrogram(wave, self._audio_frontend).unsqueeze(0)
+        # note (guozhihao-224): drop the pinned waveform after h2d so
+        # page-locked host memory does not live through lm decode
+        # (~1.9 mb per 30s clip).
+        extra.pop("waveform", None)
+        mask = extra.get("feature_attention_mask")
+        if mask is None:
+            mask = torch.ones((1, feature.shape[-1]), dtype=torch.long, device=device)
+        return feature, mask
+
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         device = next(self.audio_tower.parameters()).device
 
-        features = [item.feature for item in items]
-        masks = [getattr(item, "feature_attention_mask", None) for item in items]
+        features = []
+        masks = []
+        for item in items:
+            # note (guozhihao-224): look up on the class; unit tests call this
+            # as an unbound method on a SimpleNamespace stand-in for the module.
+            feature, mask = Qwen3ASRForConditionalGeneration._item_feature_and_mask(
+                self, item, device
+            )
+            features.append(feature)
+            masks.append(mask)
 
         # SGLang batches every cache miss in the forward batch into a single
         # data_embedding_func call (_batch_encode_per_image_misses), so
@@ -253,7 +282,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 )
                 graphed = runner.run(hidden, window_lens)
                 if graphed is not None:
-                    return graphed.unsqueeze(0)
+                    # note (guozhihao-224): graph run returns a view of the static
+                    # buffer. clone before leaving get_audio_feature so a later
+                    # replay cannot mutate lm embeddings (pre-lm off) or any
+                    # caller that holds this tensor across encodes.
+                    # split_embeddings still copies packed slices for the lru.
+                    return graphed.unsqueeze(0).clone()
 
         audio_outputs = self.audio_tower(
             input_features,

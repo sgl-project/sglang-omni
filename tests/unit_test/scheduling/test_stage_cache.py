@@ -159,6 +159,24 @@ def test_pin_memory_requires_cpu_cache_device() -> None:
         StageOutputCache(cache_device="cuda", pin_memory=True)
 
 
+def test_max_pinned_bytes_cannot_exceed_max_bytes() -> None:
+    with pytest.raises(ValueError, match="max_pinned_bytes cannot exceed max_bytes"):
+        StageOutputCache(max_bytes=64, max_pinned_bytes=128)
+
+
+def test_max_pinned_bytes_rejects_negative_capacity() -> None:
+    with pytest.raises(ValueError, match="max_pinned_bytes must be non-negative"):
+        StageOutputCache(max_pinned_bytes=-1)
+
+
+def test_can_pin_respects_zero_cap_without_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    cache = StageOutputCache(cache_device="cpu", pin_memory=True, max_pinned_bytes=0)
+    assert cache.can_pin(1) is False
+
+
 def test_pin_memory_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
@@ -215,3 +233,43 @@ def test_pinned_cache_falls_back_to_pageable_on_alloc_failure(
     assert cached is not None
     assert cached.device.type == "cpu" and not cached.is_pinned()
     assert torch.equal(cached, src.cpu())
+
+
+@pytest.mark.accelerator
+@_requires_cuda
+def test_pin_budget_caps_pinned_bytes() -> None:
+    cache = StageOutputCache(
+        cache_device="cpu",
+        pin_memory=True,
+        max_bytes=1024,
+        max_pinned_bytes=32,
+    )
+    src = torch.ones(4, dtype=torch.float32, device="cuda")
+    cache.put("a", src)
+    cache.put("b", src)
+    cache.put("c", src)
+    assert cache.current_pinned_bytes <= 32
+    pinned = [
+        bool(cache.get(key).is_pinned())  # type: ignore[union-attr]
+        for key in ("a", "b", "c")
+    ]
+    assert sum(pinned) == 2
+    assert pinned[2] is False
+
+
+@pytest.mark.accelerator
+@_requires_cuda
+def test_can_pin_tracks_current_pinned_bytes() -> None:
+    cache = StageOutputCache(
+        cache_device="cpu",
+        pin_memory=True,
+        max_bytes=1024,
+        max_pinned_bytes=32,
+    )
+    src = torch.ones(4, dtype=torch.float32, device="cuda")
+    assert cache.can_pin(16) is True
+    cache.put("a", src)
+    assert cache.can_pin(16) is True
+    cache.put("b", src)
+    assert cache.can_pin(16) is False
+    assert cache.current_pinned_bytes == 32

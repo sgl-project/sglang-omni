@@ -6,9 +6,9 @@ Qwen3-ASR is a Qwen3 causal LM that ingests audio as multimodal embeddings:
 the prompt contains an ``<|audio_pad|>`` placeholder repeated once per audio
 token, and the model's ``general_mm_embed_routine`` scatters the encoder output
 into those positions. So request_builder must:
-  * reuse a cached LM-ready embedding before mel extraction when available,
-  * otherwise extract mel features (WhisperFeatureExtractor) + attention mask,
-  * compute how many audio tokens the encoder will emit,
+  * reuse a cached LM-ready embedding before GPU mel when available,
+  * otherwise attach the raw waveform (STFT runs on the encoder stream),
+  * compute how many audio tokens the encoder will emit from hop length,
   * build the chat prompt with that many ``<|audio_pad|>`` tokens,
   * hand features or precomputed embeddings over as a ``MultimodalDataItem``,
   * on a cache miss, submit encode and wait or return deferred admission.
@@ -110,6 +110,18 @@ def _encode_literal(tokenizer: Any, text: str) -> list[int]:
     else:
         input_ids = encoded["input_ids"]
     return list(input_ids)
+
+
+def _require_hop_length(feature_extractor: Any) -> int:
+    try:
+        hop_length = feature_extractor.hop_length
+    except AttributeError as exc:
+        raise ValueError(
+            "Qwen3-ASR feature extractor is missing its hop length"
+        ) from exc
+    if hop_length <= 0:
+        raise ValueError("Qwen3-ASR feature extractor has an invalid hop length")
+    return hop_length
 
 
 def make_qwen3_asr_scheduler_adapters(
@@ -226,35 +238,24 @@ def make_qwen3_asr_scheduler_adapters(
                 math.ceil(audio_duration_s * QWEN3_ASR_OUTPUT_TOKENS_PER_SECOND),
             )
 
-        estimated_audio_tokens = None
-        if context_length is not None or audio_encoder_service is not None:
-            try:
-                hop_length = int(feature_extractor.hop_length)
-            except AttributeError as exc:
-                raise ValueError(
-                    "Qwen3-ASR feature extractor is missing its hop length"
-                ) from exc
-            if hop_length <= 0:
-                raise ValueError(
-                    "Qwen3-ASR feature extractor has an invalid hop length"
-                )
-            estimated_mel_frames = len(audio) // hop_length
-            estimated_audio_tokens = qwen3_asr_num_audio_tokens(estimated_mel_frames)
+        hop_length = _require_hop_length(feature_extractor)
+        # note (guozhihao-224): the checkpoint extractor stft drops the Nyquist
+        # bin, so the frame count is samples divided by hop length. Qwen3's
+        # encoder is variable-length; do not pad or truncate to a 30s window
+        # (transformers issue 26241).
+        estimated_mel_frames = len(audio) // hop_length
+        estimated_audio_tokens = qwen3_asr_num_audio_tokens(estimated_mel_frames)
 
         cached_embedding = None
         if audio_encoder_service is not None:
-            assert estimated_audio_tokens is not None
             cached_embedding = audio_encoder_service.lookup_cached_embedding(
                 fingerprint, estimated_audio_tokens
             )
 
         estimated_input_ids = None
         if context_length is not None:
-            assert estimated_audio_tokens is not None
-            # WhisperFeatureExtractor emits floor(samples / hop_length) frames.
-            # Check the resulting prompt before the mel FFT so requests that
-            # cannot fit the configured context do not consume preprocessing
-            # memory and CPU.
+            # note (guozhihao-224): check the prompt before GPU mel so requests
+            # that cannot fit the configured context do not consume encoder time.
             estimated_input_ids = _build_prompt_ids(
                 estimated_audio_tokens, forced_language, bias_context
             )
@@ -267,43 +268,33 @@ def make_qwen3_asr_scheduler_adapters(
             _validate_context_budget(estimated_input_ids, request_max_new_tokens)
 
         if cached_embedding is None:
-            # note (Jeffro Qu): unlike Whisper's default 30s window, here we pad the mel to the clip's true length.
-            # WhisperFeatureExtractor defaults to padding="max_length", padding every clip to nb_max_frames=3000 (~30s),
-            # so a short clip pays the full 30s of mel FFT on silence.
-            # This is safe for Qwen3-ASR because its encoder is variable-length and keeps only the
-            # valid frames via feature_attention_mask; vanilla Whisper's fixed-length encoder would instead break on padding="longest" (see ref: transformers#26241).
-            # refs:
-            #  https://github.com/huggingface/transformers/blob/main/src/transformers/models/whisper/feature_extraction_whisper.py
-            #  https://github.com/huggingface/transformers/issues/26241
-            extracted = feature_extractor(
-                audio,
-                sampling_rate=_SAMPLE_RATE,
-                return_tensors="pt",
-                return_attention_mask=True,
-                padding="longest",
-                # note (Junnan Li): Qwen3-ASR's encoder accepts mel sequences beyond
-                # Whisper's 30-second window, so preprocessing must not truncate them.
-                truncation=False,
-            )
-            features = extracted.input_features
-            feature_attention_mask = getattr(extracted, "attention_mask", None)
-            if feature_attention_mask is None:
-                # WhisperFeatureExtractor normally returns one; fall back to all-valid.
-                feature_attention_mask = torch.ones(
-                    (features.shape[0], features.shape[-1]), dtype=torch.long
-                )
-            # note (Jeffro Qu): get_audio_feature uses the mask to select valid
-            # frames; its no-mask branch transposes wrong, so the mask path must be taken.
-            num_mel_frames = int(feature_attention_mask.sum().item())
-            num_audio_tokens = int(qwen3_asr_num_audio_tokens(num_mel_frames))
+            # note (guozhihao-224): skip the CPU extractor STFT; the encoder
+            # stream runs GPU log-mel from this waveform. pin when CUDA is
+            # present so waveform H2D is non-blocking.
+            waveform = torch.as_tensor(audio, dtype=torch.float32)
+            if torch.cuda.is_available():
+                try:
+                    waveform = waveform.pin_memory()
+                except RuntimeError as exc:
+                    logger.warning(
+                        "Qwen3-ASR request builder: pinning waveform failed "
+                        "(%s); waveform H2D will be synchronous",
+                        exc,
+                    )
+            features = None
+            # note (guozhihao-224): GPU log-mel knows the frame count, so skip
+            # a CPU ones-mask H2D.
+            feature_attention_mask = None
+            num_audio_tokens = estimated_audio_tokens
             logger.debug(
-                f"[qwen3-asr] mel_frames={num_mel_frames} "
-                f"num_audio_tokens={num_audio_tokens} feat_shape={tuple(features.shape)}"
+                f"[qwen3-asr] waveform_samples={waveform.numel()} "
+                f"mel_frames={estimated_mel_frames} "
+                f"num_audio_tokens={num_audio_tokens}"
             )
         else:
+            waveform = None
             features = None
             feature_attention_mask = None
-            assert estimated_audio_tokens is not None
             num_audio_tokens = estimated_audio_tokens
 
         input_ids = (
@@ -324,6 +315,7 @@ def make_qwen3_asr_scheduler_adapters(
                 # split batched encoder output and key its embedding cache.
                 "num_audio_tokens": num_audio_tokens,
                 "audio_fingerprint": fingerprint,
+                **({"waveform": waveform} if waveform is not None else {}),
             },
         )
         # general_mm_embed_routine locates audio positions by matching each

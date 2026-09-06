@@ -313,8 +313,10 @@ def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     assert stage.factory.enable_pre_lm_encoder is True
     assert stage.factory.pre_lm_cache_max_entries == 4096
     assert stage.factory.pre_lm_cache_size_bytes == 2 * 1024**3
+    assert stage.factory.pre_lm_cache_pinned_size_bytes == 512 * 1024**2
     assert stage.factory.pre_lm_max_batch_size == 8
     assert stage.factory.pre_lm_max_batch_wait_ms == 0
+    assert stage.factory.pre_lm_cache_pin_host_memory is True
     assert type(config).stage_config_cls("asr").engine_stage
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("Qwen3ASRForConditionalGeneration")
@@ -354,8 +356,12 @@ def test_qwen3_asr_stage_default_enables_pre_lm_encoder() -> None:
     assert signature.parameters["enable_pre_lm_encoder"].default is True
     assert signature.parameters["pre_lm_cache_max_entries"].default == 4096
     assert signature.parameters["pre_lm_cache_size_bytes"].default == 2 * 1024**3
+    assert signature.parameters["pre_lm_cache_pinned_size_bytes"].default == (
+        512 * 1024**2
+    )
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
     assert signature.parameters["pre_lm_max_batch_wait_ms"].default == 0
+    assert signature.parameters["pre_lm_cache_pin_host_memory"].default is True
 
 
 @pytest.mark.parametrize(
@@ -451,7 +457,14 @@ def _patch_engine_dependencies(
     monkeypatch.setattr(
         qwen3_asr_builder.AutoFeatureExtractor,
         "from_pretrained",
-        lambda *args, **kwargs: SimpleNamespace(nb_max_frames=55072),
+        lambda *args, **kwargs: SimpleNamespace(
+            nb_max_frames=55072,
+            hop_length=160,
+            n_fft=400,
+            feature_size=128,
+            dither=0.0,
+            mel_filters=[[0.0] * 128] * 201,
+        ),
     )
     monkeypatch.setattr(
         qwen3_asr_builder,

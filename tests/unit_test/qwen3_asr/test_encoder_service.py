@@ -83,7 +83,15 @@ class _StubModel(torch.nn.Module):
         for item in items:
             rows = _expected_audio_tokens(item) + self.row_offset
             fill = float((getattr(item, "hash", None) or 0) % 97 + 1)
-            parts.append(torch.full((rows, _HIDDEN_SIZE), fill, dtype=self.dtype))
+            device = next(self.audio_tower.parameters()).device
+            parts.append(
+                torch.full(
+                    (rows, _HIDDEN_SIZE),
+                    fill,
+                    dtype=self.dtype,
+                    device=device,
+                )
+            )
         packed = torch.cat(parts, dim=0)
         if self.packed_3d_output:
             # Mirrors the real audio tower: one packed frame stream in, so
@@ -98,6 +106,7 @@ def _make_service(
     cache_max_entries: int = 16,
     cache_max_bytes: int = 1 << 20,
     max_batch_size: int = 8,
+    pin_host_memory: bool = True,
 ) -> Qwen3ASRPreLMEncoderService:
     service = Qwen3ASRPreLMEncoderService(
         model or _StubModel(),
@@ -105,6 +114,7 @@ def _make_service(
         cache_max_entries=cache_max_entries,
         cache_max_bytes=cache_max_bytes,
         max_batch_size=max_batch_size,
+        pin_host_memory=pin_host_memory,
     )
     _SERVICES.append(service)
     return service
@@ -115,13 +125,16 @@ def _item(
     num_audio_tokens: int,
     *,
     with_feature: bool = True,
+    waveform: torch.Tensor | None = None,
 ) -> SimpleNamespace:
+    extra = {"waveform": waveform} if waveform is not None else {}
     return SimpleNamespace(
         hash=audio_hash,
         audio_fingerprint=str(audio_hash) if audio_hash is not None else None,
         num_audio_tokens=num_audio_tokens,
         feature=torch.zeros(1, 128, 300) if with_feature else None,
         precomputed_embeddings=None,
+        model_specific_data=extra,
     )
 
 
@@ -143,6 +156,16 @@ def test_encode_attaches_lm_ready_embedding_and_clears_feature() -> None:
     assert model.encode_calls == 1
     assert model.grad_enabled_during_encode is False
     assert service.stats()["misses"] == 1
+
+
+def test_encode_clears_consumed_waveform() -> None:
+    service = _make_service()
+    item = _item(7, 3, waveform=torch.zeros(1600))
+
+    service.encode_item(item)
+
+    assert item.feature is None
+    assert "waveform" not in item.model_specific_data
 
 
 def test_submit_returns_before_encoding_completes() -> None:
@@ -696,3 +719,91 @@ def test_the_device_cache_is_really_reclaimed_after_an_oom() -> None:
 
         device_module.synchronize()
         assert device_module.memory_reserved() < reserved_before
+
+
+def test_pinning_is_off_without_cuda_device() -> None:
+    service = _make_service()
+    assert service.pin_host_memory is False
+    assert service._cache.pin_memory is False
+
+
+_requires_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="pinned host memory needs a CUDA context"
+)
+
+
+def _cuda_model() -> _StubModel:
+    return _StubModel(dtype=torch.float16).to("cuda")
+
+
+def _cached_entry(
+    service: Qwen3ASRPreLMEncoderService, fingerprint: str, tokens: int = 3
+) -> torch.Tensor:
+    cached = service.lookup_cached_embedding(fingerprint, tokens)
+    assert cached is not None
+    return cached
+
+
+@pytest.mark.accelerator
+@_requires_cuda
+def test_cuda_cache_entries_are_pinned_and_match_device_result() -> None:
+    model = _cuda_model()
+    service = _make_service(model)
+    assert service.pin_host_memory is True
+    item = _item(11, 3)
+    service.encode_item(item)
+    cached = _cached_entry(service, item.audio_fingerprint)
+    assert cached.device.type == "cpu"
+    assert cached.is_pinned()
+    assert cached.dtype == torch.float16
+    torch.cuda.synchronize()
+    assert torch.equal(cached.to("cuda"), item.precomputed_embeddings)
+    anonymous = _item(None, 3)
+    assert service.stage_host_copy(anonymous, item.precomputed_embeddings) is None
+
+
+@pytest.mark.accelerator
+@_requires_cuda
+def test_cuda_hit_attaches_device_tensor_from_pinned_entry() -> None:
+    model = _cuda_model()
+    service = _make_service(model)
+    first = _item(12, 3)
+    second = _item(12, 3)
+    service.encode_item(first)
+    service.encode_item(second)
+    torch.cuda.synchronize()
+    assert model.encode_calls == 1
+    assert second.precomputed_embeddings.is_cuda
+    assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
+
+
+@pytest.mark.accelerator
+@_requires_cuda
+def test_pin_host_memory_flag_disables_pinning() -> None:
+    service = _make_service(_cuda_model(), pin_host_memory=False)
+    assert service.pin_host_memory is False
+    item = _item(13, 3)
+    service.encode_item(item)
+    cached = _cached_entry(service, item.audio_fingerprint)
+    assert not cached.is_pinned()
+
+
+@pytest.mark.accelerator
+@_requires_cuda
+def test_pinned_allocation_failure_falls_back_to_pageable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _make_service(_cuda_model())
+    assert service.pin_host_memory is True
+
+    def _boom(_tokens: int) -> torch.Tensor:
+        raise RuntimeError("cudaHostAlloc failed")
+
+    monkeypatch.setattr(service, "_new_pinned_host", _boom)
+    item = _item(14, 3)
+    service.encode_item(item)
+    cached = _cached_entry(service, item.audio_fingerprint)
+    assert cached.device.type == "cpu"
+    assert not cached.is_pinned()
+    assert service.pin_host_memory is False
+    assert service.stats()["pin_failures"] >= 1

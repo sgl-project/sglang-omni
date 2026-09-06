@@ -99,6 +99,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self._graphs: dict[int, _CapturedGraph] = {}  # bucket size -> recorded graph
         self._failed: set[int] = set()
         self._capture_attention_metadata: VisionAttentionMetadata | None = None
+        self._cu_host: dict[int, torch.Tensor] = {}
 
     @property
     def tokens_per_window(self) -> int:
@@ -239,17 +240,33 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         bounds = [0]
         for size in window_lens + dummy_sizes:
             bounds.append(bounds[-1] + size)
-        cu = torch.tensor(bounds, dtype=torch.int32)
+        n = len(bounds)
+        host = self._cu_host.get(n)
+        if host is None:
+            host = torch.empty(
+                n,
+                dtype=torch.int32,
+                pin_memory=self._device.type == "cuda",
+            )
+            self._cu_host[n] = host
+        # note (guozhihao-224): write the prefix-sum in place so replay does
+        # not allocate a pageable tensor just to fill the pinned host buffer.
+        host.numpy()[:] = bounds
 
         entry.hidden_states[:total].copy_(hidden_states)
-        entry.cu_seqlens.copy_(cu, non_blocking=True)
+        entry.cu_seqlens.copy_(host, non_blocking=True)
         if entry.attention_metadata is not None:
-            entry.attention_metadata.seq_lens.copy_(cu[1:] - cu[:-1], non_blocking=True)
+            entry.attention_metadata.seq_lens.copy_(
+                entry.cu_seqlens[1:] - entry.cu_seqlens[:-1], non_blocking=True
+            )
         entry.graph.replay()
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]
             out = out.squeeze(0)
-        return out[:total].clone()
+        # note (guozhihao-224): view into the static graph buffer.
+        # get_audio_feature clones before returning to lm embed / pre-lm
+        # encode; callers that keep this tensor across runs must copy.
+        return out[:total]
 
     def _plan(self, total: int, real_windows: int) -> tuple[int, list[int]] | None:
         """Pick a bucket and the dummy-window sizes that absorb its padding."""
@@ -287,26 +304,31 @@ def eager_preamble(
     import torch.nn.functional as F
 
     chunk_width = tower.n_window * 2
-    chunk_num = torch.ceil(feature_lens / chunk_width).long()
-    chunk_lengths = torch.tensor(
-        [chunk_width] * chunk_num.sum(),
-        dtype=torch.long,
-        device=feature_lens.device,
-    )
-    tail_chunk_index = F.pad(chunk_num, (1, 0), value=-1).cumsum(0)[1:]
-    chunk_lengths[tail_chunk_index] = feature_lens % chunk_width
-    chunk_lengths[chunk_lengths == 0] = chunk_width
+    # note (guozhihao-224): one small d2h of the length vector, then the chunk
+    # plan stays on the host so conv preamble does not call item() or tolist()
+    # mid-kernel.
+    lengths = [int(x) for x in feature_lens.detach().cpu().tolist()]
+    chunk_lengths_py: list[int] = []
+    after_cnn_py: list[int] = []
+    for length in lengths:
+        n_chunk = (length + chunk_width - 1) // chunk_width
+        if n_chunk <= 0:
+            continue
+        tail = length % chunk_width
+        if tail == 0:
+            tail = chunk_width
+        chunks = [chunk_width] * (n_chunk - 1) + [tail]
+        chunk_lengths_py.extend(chunks)
+        after_cnn_py.extend(_get_feat_extract_output_lengths_int(c) for c in chunks)
 
-    chunk_list = input_features.T.split(chunk_lengths.tolist(), dim=0)
+    chunk_list = input_features.T.split(chunk_lengths_py, dim=0)
     padded_feature = torch.nn.utils.rnn.pad_sequence(
         chunk_list, batch_first=True
     ).transpose(1, 2)
 
-    feature_lens_after_cnn = _get_feat_extract_output_lengths_tensor(chunk_lengths)
-    max_len_after_cnn = (
-        int(feature_lens_after_cnn.max().item())
-        if feature_lens_after_cnn.numel()
-        else 0
+    max_len_after_cnn = max(after_cnn_py) if after_cnn_py else 0
+    feature_lens_after_cnn = torch.tensor(
+        after_cnn_py, dtype=torch.long, device=padded_feature.device
     )
     idx = torch.arange(max_len_after_cnn, device=padded_feature.device)
     padded_mask_after_cnn = idx.unsqueeze(0) < feature_lens_after_cnn.unsqueeze(1)
@@ -336,14 +358,6 @@ def eager_preamble(
     )
     padded_embed = padded_embed + positional_embedding
     return padded_embed[padded_mask_after_cnn]
-
-
-def _get_feat_extract_output_lengths_tensor(
-    input_lengths: torch.Tensor,
-) -> torch.Tensor:
-    leave = input_lengths % 100
-    feat = (leave - 1) // 2 + 1
-    return ((feat - 1) // 2 + 1 - 1) // 2 + 1 + (input_lengths // 100) * 13
 
 
 def window_lens_from_token_counts(

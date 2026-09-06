@@ -130,11 +130,19 @@ def test_qwen3_asr_max_audio_tokens_covers_the_native_limit() -> None:
     assert qwen3_asr_max_output_tokens() == 12_000
 
 
+def _callable_feature_extractor():
+    def extractor(*args, **kwargs):
+        return SimpleNamespace(
+            input_features=torch.zeros((1, 128, 100)),
+            attention_mask=torch.ones((1, 100), dtype=torch.long),
+        )
+
+    extractor.hop_length = 160
+    return extractor
+
+
 def _budget_test_builder(monkeypatch, num_samples: int):
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 100)),
-        attention_mask=torch.ones((1, 100), dtype=torch.long),
-    )
+    feature_extractor = _callable_feature_extractor()
     monkeypatch.setattr(
         transcription,
         "load_audio",
@@ -256,10 +264,7 @@ def test_qwen3_asr_request_builder_uses_canonical_language_prompt(
     expected_language: str,
 ) -> None:
     tokenizer = _FakeTokenizer()
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 100)),
-        attention_mask=torch.ones((1, 100), dtype=torch.long),
-    )
+    feature_extractor = _callable_feature_extractor()
     monkeypatch.setattr(
         transcription,
         "load_audio",
@@ -291,10 +296,7 @@ def test_qwen3_asr_request_builder_omits_language_prompt_for_auto_detection(
     monkeypatch,
 ) -> None:
     tokenizer = _FakeTokenizer()
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 100)),
-        attention_mask=torch.ones((1, 100), dtype=torch.long),
-    )
+    feature_extractor = _callable_feature_extractor()
     monkeypatch.setattr(
         transcription,
         "load_audio",
@@ -324,10 +326,7 @@ def test_qwen3_asr_request_builder_caches_prompt_template_per_language(
     monkeypatch,
 ) -> None:
     tokenizer = _FakeTokenizer()
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 100)),
-        attention_mask=torch.ones((1, 100), dtype=torch.long),
-    )
+    feature_extractor = _callable_feature_extractor()
     monkeypatch.setattr(
         transcription,
         "load_audio",
@@ -449,16 +448,15 @@ def test_qwen3_asr_blank_prompt_leaves_the_template_unchanged(monkeypatch) -> No
 
 
 def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:
-    num_mel_frames = 101
+    num_samples = 1600
+    hop_length = 160
+    num_mel_frames = num_samples // hop_length
     num_audio_tokens = qwen3_asr_num_audio_tokens(num_mel_frames)
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 3000)),
-        attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
-    )
+    feature_extractor = SimpleNamespace(hop_length=hop_length)
     monkeypatch.setattr(
         transcription,
         "load_audio",
-        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+        lambda source, **kwargs: np.zeros(num_samples, dtype=np.float32),
     )
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
@@ -474,12 +472,58 @@ def test_qwen3_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) 
     data = request_builder(payload)
 
     audio_item = data.req.multimodal_inputs.mm_items[0]
+    extra = audio_item.model_specific_data
+    assert audio_item.feature is None
+    assert extra.get("feature_attention_mask") is None
+    assert extra["num_audio_tokens"] == num_audio_tokens
+    assert extra["waveform"].numel() == num_samples
     start, end = audio_item.offsets[0]
-    assert audio_item.feature_attention_mask.shape == (1, num_mel_frames)
     assert end - start + 1 == num_audio_tokens
     assert data.prompt_token_ids[start : end + 1] == (
         [audio_item.pad_value] * num_audio_tokens
     )
+
+
+def test_qwen3_asr_request_builder_rejects_missing_hop_length(monkeypatch) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    payload = StagePayload(
+        request_id="req-missing-hop",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="hop length"):
+        request_builder(payload)
+
+
+def test_qwen3_asr_request_builder_rejects_invalid_hop_length(monkeypatch) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    request_builder, _ = make_qwen3_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=SimpleNamespace(hop_length=0),
+    )
+    payload = StagePayload(
+        request_id="req-bad-hop",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+        data={},
+    )
+
+    with pytest.raises(ValueError, match="invalid hop length"):
+        request_builder(payload)
 
 
 @pytest.mark.parametrize(
@@ -501,10 +545,7 @@ def test_qwen3_asr_request_builder_preserves_sampling_mode(
     expected_sampling_temperature: float,
     expected_top_k: int,
 ) -> None:
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 3000)),
-        attention_mask=torch.ones((1, 101), dtype=torch.long),
-    )
+    feature_extractor = _callable_feature_extractor()
     monkeypatch.setattr(
         transcription,
         "load_audio",
@@ -594,8 +635,13 @@ def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     data = request_builder(payload)
 
     audio_item = data.req.multimodal_inputs.mm_items[0]
-    assert audio_item.feature.shape == (1, 128, 3100)
-    assert int(audio_item.feature_attention_mask.sum().item()) == 3100
+    extra = audio_item.model_specific_data
+    assert audio_item.feature is None
+    assert extra.get("feature_attention_mask") is None
+    assert extra["waveform"].numel() == sample_rate * audio_duration_s
+    assert extra["num_audio_tokens"] == qwen3_asr_num_audio_tokens(
+        sample_rate * audio_duration_s // 160
+    )
     assert data.audio_duration_s == audio_duration_s
 
 
@@ -781,6 +827,7 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
         def __init__(self) -> None:
             self.lookup: tuple[str, int] | None = None
             self.encoded_feature: torch.Tensor | None = None
+            self.encoded_waveform: torch.Tensor | None = None
 
         def lookup_cached_embedding(
             self, audio_fingerprint: str, expected_tokens: int
@@ -796,6 +843,7 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
 
         def submit_item(self, item):
             self.encoded_feature = item.feature
+            self.encoded_waveform = item.model_specific_data.get("waveform")
             item.precomputed_embeddings = torch.zeros((item.num_audio_tokens, 4))
             item.feature = None
             future: concurrent.futures.Future[torch.Tensor] = (
@@ -828,8 +876,10 @@ def test_qwen3_asr_embedding_cache_miss_extracts_and_encodes(monkeypatch) -> Non
     assert isinstance(result, DeferredAdmission)
     data = _unwrap_built(result)
     assert encoder_service.lookup == (data.req.extra_key, 13)
-    assert feature_extractor.calls == 1
-    assert encoder_service.encoded_feature is not None
+    assert feature_extractor.calls == 0
+    assert encoder_service.encoded_feature is None
+    assert encoder_service.encoded_waveform is not None
+    assert encoder_service.encoded_waveform.numel() == 16000
     assert data.req.multimodal_inputs.mm_items[0].feature is None
 
 
@@ -945,17 +995,15 @@ def test_qwen3_asr_result_adapter_normalizes_none_language(
 def test_qwen3_asr_request_builder_encodes_after_offsets_are_final(
     monkeypatch,
 ) -> None:
-    num_mel_frames = 101
+    num_samples = 1600
+    hop_length = 160
+    num_mel_frames = num_samples // hop_length
     num_audio_tokens = qwen3_asr_num_audio_tokens(num_mel_frames)
-    feature_extractor = lambda *args, **kwargs: SimpleNamespace(
-        input_features=torch.zeros((1, 128, 3000)),
-        attention_mask=torch.ones((1, num_mel_frames), dtype=torch.long),
-    )
-    feature_extractor.hop_length = 160
+    feature_extractor = SimpleNamespace(hop_length=hop_length)
     monkeypatch.setattr(
         transcription,
         "load_audio",
-        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+        lambda source, **kwargs: np.zeros(num_samples, dtype=np.float32),
     )
     observed: dict[str, object] = {}
 

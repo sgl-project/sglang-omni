@@ -32,10 +32,12 @@ def create_sglang_qwen3_asr_executor(
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
     pre_lm_cache_size_bytes: int = 2 * 1024**3,
+    pre_lm_cache_pinned_size_bytes: int = 512 * 1024**2,
     pre_lm_max_batch_size: int = 8,
     pre_lm_max_batch_wait_ms: int = 0,
     enable_encoder_cuda_graph: bool = True,
     max_audio_clip_s: float | None = None,
+    pre_lm_cache_pin_host_memory: bool = True,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
@@ -65,10 +67,12 @@ def create_sglang_qwen3_asr_executor(
         enable_pre_lm_encoder=enable_pre_lm_encoder,
         pre_lm_cache_max_entries=pre_lm_cache_max_entries,
         pre_lm_cache_size_bytes=pre_lm_cache_size_bytes,
+        pre_lm_cache_pinned_size_bytes=pre_lm_cache_pinned_size_bytes,
         pre_lm_max_batch_size=pre_lm_max_batch_size,
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         enable_encoder_cuda_graph=enable_encoder_cuda_graph,
         max_audio_clip_s=max_audio_clip_s,
+        pre_lm_cache_pin_host_memory=pre_lm_cache_pin_host_memory,
     ).build(
         model_path,
         device=device,

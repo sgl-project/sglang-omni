@@ -65,6 +65,31 @@ def test_get_audio_feature_routing(monkeypatch):
     assert torch.equal(get(model, [item]), torch.full((1, 65, 8), 7.0))
 
 
+def test_get_audio_feature_clones_graph_output_before_return(monkeypatch):
+    buffer = torch.ones(65, 8)
+    monkeypatch.setattr(sglang_model, "eager_preamble", lambda *a: torch.zeros(65, 4))
+    tower = torch.nn.Linear(4, 4)
+    tower.dtype = torch.float32
+    model = object.__new__(sglang_model.Qwen3ASRForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.audio_tower = tower
+    item = SimpleNamespace(
+        feature=torch.zeros(1, 128, 500),
+        feature_attention_mask=None,
+        model_specific_data={"num_audio_tokens": 65},
+    )
+    model._encoder_graph_runner = SimpleNamespace(
+        tokens_per_window=104, run=lambda h, w: buffer
+    )
+
+    output = sglang_model.Qwen3ASRForConditionalGeneration.get_audio_feature(
+        model, [item]
+    )
+    buffer.fill_(0)
+
+    assert torch.equal(output, torch.ones(1, 65, 8))
+
+
 def test_layer_stack_forwards_precomputed_attention_metadata():
     seen = {}
 
