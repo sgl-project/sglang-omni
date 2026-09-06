@@ -122,3 +122,17 @@ runs:
         # container, so reap nvidia-invisible orphans (spawn workers) that would
         # otherwise hold VRAM and time out the cleanup wait. setup must NOT.
         bash .github/scripts/delete_gpu_process.sh --kill-orphans
+
+    - name: Record CI observation summary
+      if: always()
+      shell: bash
+      env:
+        DISPLAY_STAGE_LABEL: ${{ inputs.stage-label }}
+        OBSERVATION_STAGE_LABEL: ${{ env.OMNI_CI_STAGE_LABEL || github.job }}
+      run: |
+        if ! timeout 30s python3 .github/scripts/record_omni_ci_observation.py post-stage \
+          --stage-label "${OBSERVATION_STAGE_LABEL}" \
+          --display-label "${DISPLAY_STAGE_LABEL}"; then
+          echo "::warning::Failed to summarize or prune Omni CI observations; continuing without telemetry."
+        fi
+        exit 0
