@@ -462,3 +462,17 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
   (`device=0`);GPU 6/7 是 omni-ci runner 在用。停 server 时 `pkill -f main-arm-` 只杀父进程,
   multiprocessing spawn 出来的 stage worker(`spawn_main`,持有 ~72GB)会成为孤儿继续占卡,后续
   server 全部 OOM。各 launcher 的收尾改为连 `spawn_main|compile_worker|resource_tracker` 一起杀。
+- **r1 真根因:collect 锁 + 提前发射的互相等待(2026-09-06 11:30 PT)**。环形 staging 修复后 r1 仍
+  35% 失败,于是做 r1 二分(每臂 47 请求,带请求事件记录器):关掉增量解码 47/47 全成功、0 underrun;
+  增量路径不论 CUDA graph 开关都失败 28-49%。客户端逐请求记录显示失败几乎都不是挂死,而是
+  **每条请求恰好一次 0.5-3.9 s 的停顿,起点正好在首块音频播完之时**——即第二块(bootstrap 段)
+  迟迟不到。进程内栈采样器(20ms 采样,只记经过 streaming_vocoder 的线程)给出答案:follow-up
+  worker 一共 22 s 停在 `with self._followup_collect_lock:` 这一行。机制:两个 follow-up worker
+  共用一把 collect 锁保证批收集原子;空闲的 worker 甲在锁内无限期 `queue.get`;worker 乙刚把新流的
+  第二段提前发射出去、要回来 resolve+commit,却先得拿锁——而让队列再有东西的唯一来源恰恰是乙的
+  这次 commit(它会把该流重新入队)。于是第二块要等到无关流量(下一批 talker 帧或下一条请求)
+  唤醒甲才能发出。r20 流量密集所以只剩 0.1-0.2% 挂流,r1 则每条请求都中招。提前发射之前 commit
+  是同步做完再回到 collect,所以从未暴露。修法(74914eb0):持有 in-flight 段的 worker 对锁只等
+  `followup_batch_wait_ms`(4ms),等不到就先 drain(keep=0) 再回来;回归单测
+  `test_qwen3_tts_vocoder_in_flight_worker_commits_while_sibling_holds_collect_lock`。
+  教训:**低负载(r1)是并发 bug 最灵敏的探针**,任何改动执行顺序的优化都要跑 r1 完整率验收。
