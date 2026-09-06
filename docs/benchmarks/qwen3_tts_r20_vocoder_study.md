@@ -616,3 +616,6 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
   能跑,47/47、0 underrun、首帧 p50 36.1ms(与默认持平);但 E2E p95 1.34s / p99 3.75s(默认 0.73 /
   0.92s)——低负载下尾部明显变差,说明混批让部分请求的 decode 步被拉长。它瞄准的是 r20 那 ~14ms
   准入等待,三 seed r20 已排队;若 r20 首帧无收益或尾部照样变差,此路作废。
+- **prefill 图 `full` 后端**:server 启动即被 `generation_batch_policy` 拒绝("invalid generation batch
+  policy: prefill CUDA graph ...")——Qwen3-TTS 只声明支持 breakable。要压 22-token prefill 的 6.2ms
+  得改 model runner 的 prefill 图路径,不是配置能开的。
