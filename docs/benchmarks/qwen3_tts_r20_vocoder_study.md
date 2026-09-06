@@ -557,3 +557,22 @@ r20 p50 **68.7ms**(第九轮 79.1)。r20 各阶段均值:preprocessing 8.9ms、�
 13.9ms、prefill→首帧 13.9ms、vocoder 整个请求 14.3ms(第九轮 19.8);r1 的 vocoder 生命周期 8.6ms
 (第九轮 10.6)。剩下的首帧预算里最大的三项都在 Talker 侧:准入等一整个 decode step、prefill 本身、
 以及 preprocessing——下一步分别拆。
+
+### 第十一轮(进行中,2026-09-06 13:30 PT):同病相怜的 preprocessing,以及图捕获优先级
+
+- **preprocessing 也在默认流上**:CustomVoice 的 preprocessing = 文本 tokenize(CPU)+ 说话人/特殊
+  token 的 embedding 查表(GPU 小 kernel + `torch.tensor(..., device)` 同步 H2D),8 个线程都在
+  各自线程的默认流上做——同一条 legacy 默认流,于是也排在 Talker 当时那一步之后:r1 均值 2.8ms
+  但 p95 16.6ms,r20 均值 8.9ms、p95 17ms,正好是一步的长度。改法(0578cb81)与 vocoder 同构:
+  同进程的 preprocessing context 持有自己的流,`preprocess_qwen3_tts_payload` 在该流上做准备并
+  记 ready event 挂到 `Qwen3TTSPreparedRequest`;AR 侧 request builder 拿到后在当前流(默认流)
+  `wait_event` + `record_stream`。跨进程(standalone)路径不变。预期 r20 preprocessing 8.9 → ~1-2ms。
+- **图捕获优先级**(cf6ef922):按外审提示在解码流同优先级的流上捕获。第一次 A/B 只跑完 ramp(2,4)
+  臂就被我排错的链撞死(0.51/0.17/0.58%,对事件树的 0.26/0/0%,偏差在噪声内但方向不利);
+  两臂三 seed 重跑中,不利就撤。
+- **准入等待 13.9ms(r20)的机制**:scheduler 主循环每轮 `process_input_requests` 一次,而每轮都在
+  `_resolve_and_process` 里等上一步的 GPU 事件,所以新请求平均要等一整个 decode step 才进等待
+  队列;prefill 又要先 flush 在飞的 decode 步。`prefill_coalesce_requests` 默认 0(未开合并等待)。
+  要压这 14ms 得让 prefill 混进 decode 步(SGLang `enable_mixed_chunk` + chunked prefill)或
+  在 resolve 等待期间做准入——属于 scheduler 结构改动,先用 prefill 探针把 prefill 自身的
+  13.9ms 拆开再定。
