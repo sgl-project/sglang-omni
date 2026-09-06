@@ -11,7 +11,12 @@ from fastapi.responses import Response
 
 from sglang_omni.client import Client
 from sglang_omni.serve import speech_to_text
-from sglang_omni.serve.speech_errors import openai_error_response
+from sglang_omni.serve.speech_errors import (
+    SpeechAPIError,
+    openai_error_response,
+    resolve_served_model,
+    speech_error_response,
+)
 
 TRANSLATIONS_ENDPOINT = "/v1/audio/translations"
 TRANSLATION_RESPONSE_FORMATS = (
@@ -56,16 +61,12 @@ def register_translations(app: FastAPI) -> None:
     ) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
-        model = form.model or default_model
         request_id = f"translation-{uuid.uuid4()}"
 
-        if model != default_model:
-            return _invalid_request(
-                f"The model {model!r} does not exist.",
-                param="model",
-                status_code=404,
-                code="model_not_found",
-            )
+        try:
+            model = resolve_served_model(form.model, default_model)
+        except SpeechAPIError as exc:
+            return speech_error_response(exc)
 
         if not app.state.supports_audio_translation:
             return _invalid_request(
