@@ -10,11 +10,90 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+
+
+_TASK_PREFIX_SLACK_TOKENS = 8
+_DECODER_PREFILL_TOKENS_PER_REQUEST = (
+    MAX_PREV_CONTEXT_TOKENS + _TASK_PREFIX_SLACK_TOKENS
+)
+
+
+def _max_reachable_decoder_prefill_tokens(
+    *,
+    budget: int,
+    encoder_token_count: int,
+    request_limit: int,
+) -> int:
+    """Return the largest decoder-token batch allowed by atomic admission."""
+    max_request_tokens = encoder_token_count + _DECODER_PREFILL_TOKENS_PER_REQUEST
+    lower_request_count = min(
+        request_limit,
+        max(1, budget // max_request_tokens),
+    )
+    upper_request_count = min(
+        request_limit,
+        max(1, (budget + max_request_tokens - 1) // max_request_tokens),
+    )
+
+    # note (xuanyili): This is the O(1) equivalent of enumerating request_count
+    # and maximizing min(request_count * decoder_tokens,
+    # budget - request_count * encoder_tokens). The lower envelope of those
+    # increasing and decreasing lines peaks next to their intersection.
+    lower_cap = min(
+        lower_request_count * _DECODER_PREFILL_TOKENS_PER_REQUEST,
+        max(0, budget - lower_request_count * encoder_token_count),
+    )
+    upper_cap = min(
+        upper_request_count * _DECODER_PREFILL_TOKENS_PER_REQUEST,
+        max(0, budget - upper_request_count * encoder_token_count),
+    )
+    # The scheduler always admits the first whole request.
+    return max(_DECODER_PREFILL_TOKENS_PER_REQUEST, lower_cap, upper_cap)
+
+
+def _reachable_prefill_cuda_graph_max_bs(
+    overrides: dict[str, Any],
+    *,
+    encoder_token_count: int,
+    max_running_requests: int | None,
+) -> int | None:
+    """Cap the prefill graph ladder at the largest decoder batch admission can form.
+
+    Admission charges each request its encoder placeholders as well, while the
+    graph sees only the admitted requests' decoder tokens.
+    """
+    max_prefill_tokens = overrides.get("max_prefill_tokens")
+    if encoder_token_count < 1 or not max_prefill_tokens or int(max_prefill_tokens) < 1:
+        return None
+    budget = int(max_prefill_tokens)
+    request_limit = max(1, budget // encoder_token_count)
+    if max_running_requests is not None and int(max_running_requests) >= 1:
+        request_limit = min(request_limit, int(max_running_requests))
+
+    caps = [
+        _max_reachable_decoder_prefill_tokens(
+            budget=budget,
+            encoder_token_count=encoder_token_count,
+            request_limit=request_limit,
+        )
+    ]
+    for key in ("cuda_graph_max_bs_prefill", "max_prefill_tokens", "max_total_tokens"):
+        value = overrides.get(key)
+        if value is not None and int(value) > 0:
+            caps.append(int(value))
+    cap = min(caps)
+    overrides["cuda_graph_max_bs_prefill"] = cap
+    return cap
 
 
 def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
@@ -62,6 +141,7 @@ def _resolve_encoder_graph_buckets(
 class WhisperASREngineBuilder(AsrEngineBuilder):
     model_name = "Whisper ASR"
     model_arch_override = "WhisperForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -136,10 +216,6 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
 
-        from sglang_omni.models.whisper_asr.request_builders import (
-            MAX_PREV_CONTEXT_TOKENS,
-        )
-
         self.processor = AutoProcessor.from_pretrained(checkpoint_dir)
         self.tokenizer = self.processor.tokenizer
         self.generation_config = GenerationConfig.from_pretrained(checkpoint_dir)
@@ -147,7 +223,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             self.processor.feature_extractor.nb_max_frames // 2
         )
         self.context_length = (
-            self.encoder_token_count + MAX_PREV_CONTEXT_TOKENS + self.max_new_tokens + 8
+            self.encoder_token_count
+            + MAX_PREV_CONTEXT_TOKENS
+            + self.max_new_tokens
+            + _TASK_PREFIX_SLACK_TOKENS
         )
         self.decoder_context_len = int(
             AutoConfig.from_pretrained(checkpoint_dir).max_target_positions or 448
@@ -236,6 +315,20 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
         overrides["enable_custom_logit_processor"] = True
+        if (
+            overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED
+            or "cuda_graph_bs_prefill" in overrides
+        ):
+            return
+
+        cap = _reachable_prefill_cuda_graph_max_bs(
+            overrides,
+            encoder_token_count=self.encoder_token_count,
+            max_running_requests=overrides.get("max_running_requests"),
+        )
+        if cap is None:
+            return
+        overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
@@ -248,6 +341,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",
             "dtype": dtype,
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
