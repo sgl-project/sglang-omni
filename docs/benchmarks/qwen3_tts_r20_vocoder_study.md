@@ -426,3 +426,13 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
   的 GPU 工作**(52 次状态拷入、52 次 scatter、gather、切片、D2H)在交错下的耗时。
   下一刀:让 graph 直接消费 arena 状态(静态 slot 索引张量,index_select/index_copy 进
   graph),把这些散 kernel 收进一次 replay。
+
+## 第九轮:graph 直接消费 arena(2026-09-06 09:40 PT)
+
+- 改动(5bd83547 / 2aa92f9b):arena 多一行 scratch;`gather_by_index` / `scatter_by_index`
+  接受设备端索引张量;runner 绑定 arena 后,捕获区内是 `gather(static_index) → decode →
+  scatter(static_index)`,每 key 不再分配静态输入/输出状态;`decode_slots(codes, slots)`
+  每 cohort 只写 slot 索引(pinned 非阻塞)与码、replay,未用的桶行指向 scratch。调度器的
+  launch 不再预先 gather,positions 以 arena 行为准(host 镜像只用于规划);graph miss 才
+  `gathered()` + eager + scatter。267 单测过。三 seed 验收(默认 ramp 与 (2,4))进行中,
+  对照第八轮:3.6% / 20.9%。
