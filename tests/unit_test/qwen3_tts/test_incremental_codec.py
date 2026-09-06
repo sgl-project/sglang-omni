@@ -777,3 +777,41 @@ def test_arena_reports_exhaustion_and_retirement() -> None:
     arena.release(reused)
     assert arena.acquire() is None
     assert arena.describe()["bytes_per_slot"] == arena.bytes_per_slot
+
+
+def test_incremental_decoder_routes_only_precompiled_shapes_to_the_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch.manual_seed(6)
+    decoder = _Decoder()
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    calls: list[tuple[int, int]] = []
+
+    def fake_compile(fn, **kwargs):
+        def wrapped(codes, state):
+            calls.append((int(codes.shape[0]), int(codes.shape[-1])))
+            return fn(codes, state)
+
+        return wrapped
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    incremental.precompile(2, 3, num_quantizers=2)
+    assert calls == [(2, 3)], "precompile traces the requested shape once"
+
+    codes = torch.randint(0, 16, (2, 2, 9))
+    expected = decoder(codes)
+    state = Qwen3TTSIncrementalCodecState()
+    state.frame_positions = torch.zeros(2, dtype=torch.long)
+    actual = torch.cat(
+        [incremental.decode(codes[..., i : i + 3], state) for i in range(0, 9, 3)],
+        dim=-1,
+    )
+    assert calls == [(2, 3)] * 4, "every 3-frame step runs through the kernel"
+    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+    assert state.frame_position == 9
+    assert state.transformer_context_length == decoder.pre_transformer.window_size - 1
+
+    other = Qwen3TTSIncrementalCodecState()
+    other.frame_positions = torch.zeros(2, dtype=torch.long)
+    incremental.decode(codes[..., :4], other)
+    assert calls == [(2, 3)] * 4, "an unseen shape stays on the eager path"
