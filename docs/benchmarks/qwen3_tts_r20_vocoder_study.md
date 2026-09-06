@@ -124,9 +124,23 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   按 B=1 eager 增量解码(注释理由是 Base 的 ref 前缀长度不一、天然 ragged),COLD 图
   又是 opt-in 且只捕 B=1;CustomVoice 没有 ref 前缀,所有 bootstrap 同宽(1 帧,
   抑制时 2 帧),本可以像 WARM 一样成 cohort。60s 内 1526 次 COLD 全走 eager。
-- 第三轮(进行中):(a) 只开 COLD 图 `[1,2]`(config)看 TTFA 是否回落;(b) r1 低负载
-  测增量路径的固定成本;(c) 代码改动:bootstrap 按 fresh_frames 成 cohort、COLD runner
-  也用 1/2/4/8 桶(ragged 的 Base 请求自然落成单元素 cohort,行为不变)。
+- 第三轮(2 worker,只改 config 开 COLD 图):
+
+  | 臂 | 成功 | underrun | First playable p50 / p95 | TTFA p50 | COLD/WARM replays |
+  |---|---|---|---|---|---|
+  | w2-cold(COLD 图 [1,2]) | 100% | 40.9% | 114 / 580ms | 193ms | 1535 / 2944+2973,0 miss |
+  | w2-cold-r24(+ramp (2,4),COLD [2,3]) | 100% | 19.4% | 152 / 492ms | 225ms | 1554 / 2684+2715,0 miss |
+  | w2-i-on-r1(r1 低负载) | 100% | 0% | 54 / 90ms | 54ms | COLD 87 eager |
+
+  读法:COLD 图一开,首帧从 1.6s 回到 114ms,证实 1.6s 全是 eager bootstrap 排队。
+  但 underrun 仍 41%(legacy 2-worker 同 ramp 17.3%),(2,4) ramp 下 19.4%(legacy
+  5.4%)。低负载固定成本:增量路径 First playable p50 54ms 对 legacy 44ms,差 10ms
+  (COLD 在 r1 臂未开图)。**增量路径每 cohort 的 GPU 成本按 PR 自测应为 legacy 的
+  1/3,但 underrun 没有相应改善——每 cohort 必有别的固定开销(arena gather/scatter、
+  每 cohort 一次 `resolve_partial()` 同步、状态行拷贝),需要探针归因。**
+- 第四轮(进行中):(a) `server-1855c`:bootstrap 按 fresh_frames 成 cohort,COLD runner
+  也用 1/2/4/8 桶;(b) `server-1855p`:在 (a) 之上装四段探针,r20 归因每个增量 cohort
+  的 plan / gather+launch / resolve / commit。
 
 ## 决策日志
 
