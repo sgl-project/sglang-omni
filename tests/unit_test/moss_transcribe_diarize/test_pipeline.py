@@ -88,13 +88,15 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     assert MossTranscribeDiarizePipelineConfig.stage_config_cls("asr").engine_stage
 
 
-def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
+def test_moss_transcribe_diarize_generation_backend_policy() -> None:
     builder = _make_moss_engine_builder()
 
     assert type(builder).supports_breakable_prefill_cuda_graph is True
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
     assert defaults["torch_compile_max_bs"] == 4
+    assert defaults["decode_attention_backend"] == "flashinfer"
+    assert defaults["kv_cache_dtype"] == "bfloat16"
     assert defaults["cuda_graph_backend_prefill"] == "breakable"
     assert defaults["cuda_graph_bs_prefill"] == [
         1,
@@ -128,6 +130,21 @@ def test_moss_transcribe_diarize_compile_cap_survives_batch_overrides() -> None:
         **builder.generation_defaults(dtype="bfloat16"),
     )
     assert operator["torch_compile_max_bs"] == 8
+
+
+def test_moss_transcribe_diarize_preserves_explicit_decode_overrides() -> None:
+    builder = _make_moss_engine_builder()
+
+    overrides = build_generation_batch_overrides(
+        server_args_overrides={
+            "decode_attention_backend": "fa3",
+            "kv_cache_dtype": "auto",
+        },
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+
+    assert overrides["decode_attention_backend"] == "fa3"
+    assert overrides["kv_cache_dtype"] == "auto"
 
 
 @pytest.mark.parametrize(
