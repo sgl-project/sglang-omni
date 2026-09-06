@@ -1065,13 +1065,24 @@ def create_sglang_thinker_executor_from_config(
         server_args=server_args,
     )
     if total_gpu_memory_fraction is None:
-        encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
-            server_args,
-            has_explicit_mem_fraction_static=(
-                memory_contract.mem_fraction_static_pinned
-            ),
-            encoder_mem_reserve=encoder_mem_reserve,
-        )
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        # Note (Jiaxin Deng): under a byte budget the KV configurator ignores
+        # mem_fraction_static, so an encoder reserve would be a silent no-op.
+        if peek_stage_kv_cache_bytes() is not None:
+            logger.info(
+                "thinker declares engine.kv_cache_bytes; skipping the "
+                f"encoder_mem_reserve={encoder_mem_reserve} fraction adjustment"
+            )
+            encoder_reserve_applied = False
+        else:
+            encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
+                server_args,
+                has_explicit_mem_fraction_static=(
+                    memory_contract.mem_fraction_static_pinned
+                ),
+                encoder_mem_reserve=encoder_mem_reserve,
+            )
         effective_total_gpu_memory_fraction = total_gpu_memory_fraction
         applied_encoder_reserve = (
             encoder_mem_reserve if encoder_reserve_applied else 0.0

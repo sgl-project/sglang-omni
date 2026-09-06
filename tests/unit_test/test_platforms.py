@@ -62,6 +62,43 @@ def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
     )
 
 
+def test_rocm_platform_maps_tp_rank_through_hip_visible_devices() -> None:
+    platform = ROCMOmniPlatform()
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    mapped_env = platform.get_stage_process_env(spec, {"HIP_VISIBLE_DEVICES": "3,4"})
+
+    assert mapped_env["HIP_VISIBLE_DEVICES"] == "4"
+    assert mapped_env["CUDA_VISIBLE_DEVICES"] == "4"
+    assert mapped_env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
+
+
+def test_rocm_platform_prefers_hip_visibility_over_cuda_alias() -> None:
+    """HIP_VISIBLE_DEVICES wins in the HIP runtime, so the rank maps through it;
+    the CUDA alias mirrors the same physical id for the CUDA-named helpers."""
+    platform = ROCMOmniPlatform()
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    mapped_env = platform.get_stage_process_env(
+        spec,
+        {
+            "HIP_VISIBLE_DEVICES": "3,5",
+            "CUDA_VISIBLE_DEVICES": "6,7",
+        },
+    )
+
+    assert mapped_env["HIP_VISIBLE_DEVICES"] == "5"
+    assert mapped_env["CUDA_VISIBLE_DEVICES"] == "5"
+
+
+def test_rocm_platform_without_hip_visibility_sets_only_the_cuda_alias() -> None:
+    platform = ROCMOmniPlatform()
+    spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=0)
+
+    assert "HIP_VISIBLE_DEVICES" not in platform.get_stage_process_env(spec, {})
+    assert platform.get_stage_process_env(spec, {})["CUDA_VISIBLE_DEVICES"] == "0"
+
+
 def test_rocm_platform_uses_conservative_omni_capabilities() -> None:
     from sglang_omni.comm.data_ref import TransportKind
 
@@ -167,3 +204,46 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True
     assert CPUOmniPlatform().enable_thinker_decode_graph() is True
+
+
+def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
+    """The accelerators that capture name a backend; the rest answer None.
+
+    NPU, CPU and Apple keep the base None: before this hook they would have run
+    a CUDA capture path and failed inside it.
+    """
+    from sglang_omni.platforms.apple import AppleOmniPlatform
+    from sglang_omni.platforms.device_graph import (
+        CudaDeviceGraphBackend,
+        XpuDeviceGraphBackend,
+    )
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+    from sglang_omni.platforms.npu import NPUOmniPlatform
+
+    expected = {
+        CUDAOmniPlatform: CudaDeviceGraphBackend,
+        ROCMOmniPlatform: CudaDeviceGraphBackend,
+        MUSAOmniPlatform: CudaDeviceGraphBackend,
+        xpu_platform.XPUOmniPlatform: XpuDeviceGraphBackend,
+        NPUOmniPlatform: None,
+        CPUOmniPlatform: None,
+        AppleOmniPlatform: None,
+        OmniPlatform: None,
+    }
+    for platform_class, backend_class in expected.items():
+        platform = platform_class()
+        device = SimpleNamespace(type=platform.device_type)
+        backend = platform.get_device_graph_backend(device)
+        if backend_class is None:
+            assert backend is None, platform_class.__name__
+        else:
+            assert isinstance(backend, backend_class), platform_class.__name__
+
+
+def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
+    """A caller holding a tensor's device does not have to check that first."""
+    platform = CUDAOmniPlatform()
+
+    assert platform.get_device_graph_backend(torch.device("xpu", 0)) is None
+    assert platform.get_device_graph_backend(torch.device("meta")) is None
+    assert platform.get_device_graph_backend(torch.device("cpu")) is None

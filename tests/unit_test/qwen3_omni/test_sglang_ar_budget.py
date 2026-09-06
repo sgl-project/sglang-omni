@@ -15,7 +15,9 @@ import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.platforms import current_platform
 
 
-def _configurator(*, total_gpu_memory_fraction: float | None):
+def _configurator(
+    *, total_gpu_memory_fraction: float | None, kv_cache_bytes: int | None = None
+):
     """Build the profiling surface without upstream's full field set.
 
     ``_OmniKVCacheConfigurator`` is a slots dataclass with ~25 required fields,
@@ -28,7 +30,117 @@ def _configurator(*, total_gpu_memory_fraction: float | None):
     configurator.device = "cuda"
     configurator.server_args = SimpleNamespace(mem_fraction_static=0.9)
     configurator.total_gpu_memory_fraction = total_gpu_memory_fraction
+    configurator.kv_cache_bytes = kv_cache_bytes
+    configurator.mambaish_config = None
     return configurator
+
+
+def test_kv_cache_bytes_budget_is_returned_verbatim(monkeypatch) -> None:
+    configurator = _configurator(
+        total_gpu_memory_fraction=None, kv_cache_bytes=2 * 1024**3
+    )
+    monkeypatch.setattr(
+        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
+    )
+
+    assert configurator._profile_available_bytes(0) == 2 * 1024**3
+
+
+def test_kv_cache_bytes_budget_wins_over_stage_fraction(monkeypatch) -> None:
+    configurator = _configurator(
+        total_gpu_memory_fraction=0.4, kv_cache_bytes=2 * 1024**3
+    )
+    monkeypatch.setattr(
+        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
+    )
+
+    assert configurator._profile_available_bytes(0) == 2 * 1024**3
+
+
+def test_kv_cache_bytes_rejects_mambaish_models() -> None:
+    """The byte branch bypasses upstream's mamba cache derivation; it must
+    refuse instead of booting a mamba model with the cache never sized."""
+    configurator = _configurator(
+        total_gpu_memory_fraction=None, kv_cache_bytes=2 * 1024**3
+    )
+    configurator.mambaish_config = object()
+
+    with pytest.raises(ValueError, match="mamba"):
+        configurator._profile_available_bytes(0)
+
+
+def test_kv_cache_bytes_over_free_memory_raises_actionable_error(monkeypatch) -> None:
+    configurator = _configurator(
+        total_gpu_memory_fraction=None, kv_cache_bytes=8 * 1024**3
+    )
+    monkeypatch.setattr(
+        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 3 * 1024**3
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        configurator._profile_available_bytes(0)
+
+    message = str(exc_info.value)
+    assert "8.00GiB" in message
+    assert "3.00GiB" in message
+    assert "gpu_id=0" in message
+
+
+def test_post_capture_resize_shrinking_a_byte_budget_raises(monkeypatch) -> None:
+    from sglang.srt.model_executor.model_runner import ModelRunner
+
+    runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
+    runner._kv_cache_bytes = 4 * 1024**3
+    runner.max_total_num_tokens = 1000
+    runner.gpu_id = 0
+    runner.device = "cuda"
+
+    def _shrinking_resize(self):
+        self.max_total_num_tokens = 600
+
+    monkeypatch.setattr(ModelRunner, "post_capture_resize_kv_pool", _shrinking_resize)
+    monkeypatch.setattr(
+        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 1024**3
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        runner.post_capture_resize_kv_pool()
+
+    message = str(exc_info.value)
+    assert "4.00GiB" in message
+    assert "1000" in message
+    assert "600" in message
+
+
+def test_post_capture_resize_without_byte_budget_delegates(monkeypatch) -> None:
+    from sglang.srt.model_executor.model_runner import ModelRunner
+
+    runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
+    runner._kv_cache_bytes = None
+    runner.max_total_num_tokens = 1000
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        ModelRunner,
+        "post_capture_resize_kv_pool",
+        lambda self: calls.append("upstream"),
+    )
+
+    runner.post_capture_resize_kv_pool()
+
+    assert calls == ["upstream"]
+
+
+def test_post_capture_resize_preserving_byte_budget_passes(monkeypatch) -> None:
+    from sglang.srt.model_executor.model_runner import ModelRunner
+
+    runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
+    runner._kv_cache_bytes = 4 * 1024**3
+    runner.max_total_num_tokens = 1000
+
+    monkeypatch.setattr(ModelRunner, "post_capture_resize_kv_pool", lambda self: None)
+
+    runner.post_capture_resize_kv_pool()
 
 
 def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:

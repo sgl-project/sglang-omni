@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import pickle
+import subprocess
+import sys
 import threading
 import time
 
@@ -265,6 +267,52 @@ def test_handle_file_for_model_uses_class_name(tmp_path):
     assert handle_file_for_model(str(tmp_path), TinyModel()).endswith(
         "TinyModel.weights-ipc"
     )
+
+
+def test_reduction_compat_covers_processes_without_a_share_role(monkeypatch):
+    """A relay-only stage unpickles the engine's tensors and needs the patch."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "sglang.srt.utils.patch_torch.monkey_patch_torch_reductions",
+        lambda: calls.append(1),
+    )
+    monkeypatch.delenv(ipc_weights.ENV_WEIGHT_SHARE, raising=False)
+
+    monkeypatch.delenv(ipc_weights.ENV_WEIGHT_SHARE_COMPAT, raising=False)
+    ipc_weights.prepare_weight_share_process_compat()
+    assert calls == []
+
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE_COMPAT, "1")
+    ipc_weights.prepare_weight_share_process_compat()
+    assert calls == [1]
+
+
+def test_reduction_compat_keeps_cpu_tensors_crossing_a_queue_intact():
+    """TP leader fanout pickles CPU tensors through multiprocessing queues.
+
+    Run in a subprocess because the reductions patch is process global.
+    """
+    pytest.importorskip("sglang.srt.utils.patch_torch")
+    script = """
+import os, pickle, sys
+import torch
+from multiprocessing.reduction import ForkingPickler
+os.environ["SGLANG_OMNI_WEIGHT_SHARE_COMPAT"] = "1"
+from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
+from sglang_omni.pipeline.tp_control import TPWorkMessage
+prepare_weight_share_process_compat()
+prepare_weight_share_process_compat()
+msg = TPWorkMessage(request_id="r1", data={"x": torch.arange(6.0).view(2, 3)})
+out = pickle.loads(ForkingPickler.dumps(msg))
+assert torch.equal(out.data["x"], msg.data["x"]), out
+assert out.data["x"].device.type == "cpu"
+print("cpu round trip ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=300
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "cpu round trip ok" in result.stdout
 
 
 def test_validate_weight_share_architecture_allows_and_rejects():

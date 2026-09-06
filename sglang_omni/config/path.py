@@ -178,7 +178,9 @@ _REMOVED_FIELD_GUIDANCE: dict[str, str] = {
     "runtime": (
         "the runtime group was removed: resources.total_gpu_memory_fraction "
         "is now the stage-level gpu_memory_fraction, sglang_server_args is "
-        "now engine.* and the remaining fields moved to factory.*"
+        "now engine.*, memory.kv_cache_bytes is now engine.kv_cache_bytes, "
+        "memory.total_reserve_bytes and enforce_total_reserve are stage-level "
+        "fields, and the remaining fields moved to factory.*"
     ),
     "runtime_arg_map": (
         "runtime_arg_map was removed: stage factories take canonical "

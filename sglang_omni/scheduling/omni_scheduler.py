@@ -1287,8 +1287,13 @@ class OmniScheduler:
         if required_tokens <= kv_capacity:
             return None
 
+        kv_cache_bytes = getattr(
+            getattr(self, "tp_worker", None), "kv_cache_bytes", None
+        )
         mem_fraction = self.server_args.mem_fraction_static
-        if mem_fraction is not None:
+        if kv_cache_bytes is not None:
+            mem_hint = " Try raising engine.kv_cache_bytes."
+        elif mem_fraction is not None:
             mem_hint = (
                 f" Current mem_fraction_static is {mem_fraction:.3f}; try setting "
                 "--thinker-mem-fraction-static higher."

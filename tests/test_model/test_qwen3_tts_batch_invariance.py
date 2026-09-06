@@ -14,6 +14,7 @@ from typing import NamedTuple
 
 import aiohttp
 import pytest
+import requests
 import torch
 import yaml
 
@@ -26,6 +27,12 @@ MODEL_PATH = os.environ.get(
     "QWEN3_TTS_TEST_MODEL",
     "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
 )
+CUSTOM_VOICE_MODEL_PATH = os.environ.get(
+    "QWEN3_TTS_TEST_CUSTOM_VOICE_MODEL",
+    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+)
+CUSTOM_VOICE = os.environ.get("QWEN3_TTS_TEST_CUSTOM_VOICE", "Ryan")
+CUSTOM_VOICE_LANGUAGE = os.environ.get("QWEN3_TTS_TEST_CUSTOM_LANGUAGE", "English")
 DATASET = os.environ.get("QWEN3_TTS_TEST_DATASET", DATASETS["seedtts-50"])
 SEED = 123456
 STARTUP_TIMEOUT = 600
@@ -120,17 +127,46 @@ def _payload(sample, *, subtalker_dosample: bool | None = None) -> dict:
     }
 
 
+def _tts_engine_prefill_graph_info(base_url: str) -> dict:
+    """Read the resolved prefill-graph state from the running engine stage."""
+    response = requests.post(
+        f"{base_url}/model_info",
+        json={"stages": ["tts_engine"], "timeout_s": 30},
+        timeout=60,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    items = [item for item in payload["stages"] if item.get("stage") == "tts_engine"]
+    assert len(items) == 1, payload
+    assert items[0]["success"], items[0]
+    return items[0]["data"]["prefill_cuda_graph"]
+
+
+def _custom_voice_payload(text: str, *, subtalker_dosample: bool | None = None) -> dict:
+    return {
+        "model": CUSTOM_VOICE_MODEL_PATH,
+        "input": text,
+        "voice": CUSTOM_VOICE,
+        "language": CUSTOM_VOICE_LANGUAGE,
+        "response_format": "wav",
+        "seed": SEED,
+        "max_new_tokens": 2048,
+        "stage_params": {"tts_engine": {"subtalker_dosample": subtalker_dosample}},
+    }
+
+
 @contextmanager
 def _qwen3_tts_server(
     tmp_path_factory: pytest.TempPathFactory,
     name: str,
+    model_path: str = MODEL_PATH,
 ) -> Iterator[Qwen3TTSServer]:
     config_path = tmp_path_factory.mktemp(f"qwen3_tts_{name}") / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
                 "config_cls": "Qwen3TTSPipelineConfig",
-                "model_path": MODEL_PATH,
+                "model_path": model_path,
                 "enable_deterministic_inference": True,
                 "stages": {
                     "tts_engine": {
@@ -151,7 +187,7 @@ def _qwen3_tts_server(
     port = _find_available_port_range(1)
     log_file = tmp_path_factory.mktemp(f"qwen3_tts_{name}_logs") / "server.log"
     with managed_omni_server(
-        model_path=MODEL_PATH,
+        model_path=model_path,
         port=port,
         host="127.0.0.1",
         log_file=log_file,
@@ -230,6 +266,51 @@ def test_qwen3_tts_mixed_sampled_argmax_batch_invariance(
     with _qwen3_tts_server(tmp_path_factory, "b8") as server:
         mixed_b8 = asyncio.run(_generate_batch(server.base_url, payloads))
         _assert_uncached_reference_encode(server.log_file)
+        repeated_b8 = asyncio.run(_generate_batch(server.base_url, [payload] * 8))
+
+    assert mixed_b8 == b1
+    assert all(pcm == b1[0] for pcm in repeated_b1)
+    assert all(pcm == b1[0] for pcm in repeated_b8)
+
+
+@pytest.mark.benchmark
+def test_qwen3_tts_custom_voice_deterministic_batch_invariance(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Match batch-one and batch-eight on the checkpoints that graph prefill.
+
+    CustomVoice rejects ref_audio, so the Base tests above cannot cover it, yet
+    it is the family that takes the breakable prefill graph by default. Padded
+    graph buckets are the failure mode this guards: a bucket that changes the
+    numerics shows up as a batch-one/batch-eight mismatch.
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("Qwen3-TTS batch invariance requires CUDA")
+    if not Path(DATASET).exists():
+        download_dataset(DATASET, quiet=True)
+
+    payloads = []
+    for sample in load_seedtts_samples(DATASET, 8, split="en"):
+        payloads.append(_custom_voice_payload(" ".join([sample.target_text] * 3)))
+    assert len({payload["input"] for payload in payloads}) == 8
+
+    payload = payloads[0]
+    with _qwen3_tts_server(
+        tmp_path_factory, "cv-b1", model_path=CUSTOM_VOICE_MODEL_PATH
+    ) as server:
+        b1 = asyncio.run(_generate_serial(server.base_url, payloads))
+        repeated_b1 = asyncio.run(_generate_serial(server.base_url, [payload] * 2))
+        # PCM equality alone stays green when the feature is absent: a stage
+        # default that fails eligibility degrades to eager with a warning. Pin
+        # that the graphs actually captured and replayed.
+        info = _tts_engine_prefill_graph_info(server.base_url)
+        assert info["backend"] == "breakable", info
+        assert info["replay_count"] > 0, info
+
+    with _qwen3_tts_server(
+        tmp_path_factory, "cv-b8", model_path=CUSTOM_VOICE_MODEL_PATH
+    ) as server:
+        mixed_b8 = asyncio.run(_generate_batch(server.base_url, payloads))
         repeated_b8 = asyncio.run(_generate_batch(server.base_url, [payload] * 8))
 
     assert mixed_b8 == b1

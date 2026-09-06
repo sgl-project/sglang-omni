@@ -115,6 +115,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTTSLocalModel"
     requires_model_capabilities: ClassVar[bool] = True
+    max_speech_input_chars: ClassVar[int | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "MossTTSLocal",
         "MossTTSLocalForConditionalGeneration",

@@ -117,6 +117,7 @@ def create_sglang_infrastructure(
 
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
     from sglang_omni.scheduling.sglang_backend import create_tree_cache
+    from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 
     if get_context().is_config_namespace_published("model"):
         raise RuntimeError(
@@ -127,16 +128,25 @@ def create_sglang_infrastructure(
 
     logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
 
+    kv_cache_bytes = consume_stage_kv_cache_bytes()
     worker_config = ModelWorkerConfig(
         model_arch_override=model_arch_override,
         weight_prefix=weight_prefix,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        kv_cache_bytes=kv_cache_bytes,
         enable_prefill_input_embeds=enable_prefill_input_embeds,
     )
     from sglang.srt.utils.tensor_bridge import use_mlx
 
     if use_mlx():
+        # Note (Jiaxin Deng): the MLX worker sizes no SGLang KV pool, so a
+        # declared byte budget could only be ignored; refuse instead.
+        if kv_cache_bytes is not None:
+            raise ValueError(
+                "engine.kv_cache_bytes is not supported on the MLX path; "
+                "remove it or run this stage on CUDA"
+            )
         from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
 
         model_worker = create_mlx_model_worker(

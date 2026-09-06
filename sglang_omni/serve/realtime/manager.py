@@ -5,6 +5,7 @@ import logging
 from fastapi import WebSocket
 
 from sglang_omni.client import Client
+from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel
 from sglang_omni.serve.realtime.session import RealtimeSession
 
 logger = logging.getLogger(__name__)
@@ -17,10 +18,12 @@ class RealtimeSessionManager:
         client: Client,
         model_name: str,
         supports_audio_output: bool = False,
+        smart_turn_model: SemanticEOUModel | None = None,
     ) -> None:
         self.client = client
         self.model_name = model_name
         self.supports_audio_output = supports_audio_output
+        self.smart_turn_model = smart_turn_model
         self.sessions: dict[str, RealtimeSession] = {}
 
     def open(self, websocket: WebSocket) -> RealtimeSession:
@@ -29,6 +32,7 @@ class RealtimeSessionManager:
             client=self.client,
             model_name=self.model_name,
             supports_audio_output=self.supports_audio_output,
+            smart_turn_model=self.smart_turn_model,
         )
         self.sessions[session.session_id] = session
         logger.info(f"Realtime session opened: {session.session_id}")

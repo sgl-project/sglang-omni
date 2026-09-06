@@ -23,3 +23,36 @@ def test_speech_generation_error_keeps_other_failures_as_500() -> None:
     err = speech_generation_error(RuntimeError("cuda out of memory"))
     assert err.status_code == 500
     assert "cuda out of memory" in err.message
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "The request is longer than the model's context length",
+        "Requested token count exceeds the model's maximum context length",
+        "Request requires more tokens than the thinker KV cache can hold",
+        "Request req-1 exceeds the maximum number of tokens: 8193 > 8192",
+        "Request req-1 requires too many SWA KV tokens for decode preallocation",
+    ],
+)
+def test_speech_generation_error_maps_context_rejection_to_400(
+    message: str,
+) -> None:
+    err = speech_generation_error(RuntimeError(message))
+
+    assert err.status_code == 400
+    assert err.error_type == "BadRequestError"
+    assert err.code == 400
+    assert err.message == message
+
+
+def test_speech_generation_error_does_not_match_unrelated_token_message() -> None:
+    err = speech_generation_error(
+        RuntimeError(
+            "kernel assertion: Request req-1 exceeds the maximum number of "
+            "tokens: temporary buffer"
+        )
+    )
+
+    assert err.status_code == 500
+    assert err.error_type == "server_error"

@@ -38,13 +38,18 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             name="preprocessing",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            factory=FactoryArgs(max_concurrency=8),
             next="tts_engine",
         ),
         EngineStageConfig(
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(device=current_platform.device_type, dtype="bfloat16"),
+            factory=FactoryArgs(
+                device=current_platform.device_type,
+                dtype="bfloat16",
+                onnx_intra_op_threads=16,
+            ),
             gpu=0,
             next="vocoder",
         ),
@@ -55,7 +60,9 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(
                 dtype="bfloat16",
                 flow_batch_bucket_frames=50,
-                flow_batch_admission_frames=2000,
+                flow_batch_admission_frames=8000,
+                max_batch_size=16,
+                max_batch_wait_ms=30,
                 # Opt-in; off by default (one-time startup compile cost).
                 enable_dit_torch_compile=False,
             ),
