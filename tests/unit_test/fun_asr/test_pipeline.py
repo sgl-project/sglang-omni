@@ -19,6 +19,16 @@ from sglang_omni.models.fun_asr.config import FunASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 
+@pytest.fixture(autouse=True)
+def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sglang.srt.utils.tensor_bridge as tensor_bridge
+
+    # Backend-specific tests (e.g. _apple_builder) opt into MLX explicitly.
+    # Keep CUDA/ROCm/Torch MPS profile tests independent of the caller's
+    # SGLANG_USE_MLX environment.
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+
+
 def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     config = FunASRPipelineConfig(model_path="FunAudioLLM/Fun-ASR-Nano-2512-hf")
 
