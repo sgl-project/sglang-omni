@@ -129,17 +129,33 @@ class Qwen3TTSCodecStateArena:
             buffer[slot].zero_()
         self._storage.frame_positions[slot] = 0
 
+    _STAGING_RING = 4
+
     def _staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
         count = len(values)
         if count == 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
-        host = getattr(self._staging, f"{name}_host", None)
-        if host is None:
-            host = torch.empty(self._num_slots, dtype=torch.long).pin_memory()
-            device = torch.empty(self._num_slots, dtype=torch.long, device=self._device)
-            setattr(self._staging, f"{name}_host", host)
-            setattr(self._staging, f"{name}_device", device)
-        device = getattr(self._staging, f"{name}_device")
+        # note (luojiaxuan): a follow-up worker keeps one cohort in flight while
+        # staging the next, so a single pinned buffer would be overwritten
+        # before its pending copy ran and the earlier cohort would decode the
+        # later cohort's slots. Each call takes the next pair of a small ring;
+        # a thread never has more than two cohorts between launch and resolve.
+        ring = getattr(self._staging, f"{name}_ring", None)
+        if ring is None:
+            ring = [
+                (
+                    torch.empty(self._num_slots + 1, dtype=torch.long).pin_memory(),
+                    torch.empty(
+                        self._num_slots + 1, dtype=torch.long, device=self._device
+                    ),
+                )
+                for _ in range(self._STAGING_RING)
+            ]
+            setattr(self._staging, f"{name}_ring", ring)
+            setattr(self._staging, f"{name}_turn", 0)
+        turn = (getattr(self._staging, f"{name}_turn") + 1) % self._STAGING_RING
+        setattr(self._staging, f"{name}_turn", turn)
+        host, device = ring[turn]
         host[:count].copy_(torch.as_tensor(list(values), dtype=torch.long))
         device[:count].copy_(host[:count], non_blocking=True)
         return device[:count]
