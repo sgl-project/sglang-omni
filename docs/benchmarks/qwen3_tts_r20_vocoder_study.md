@@ -193,10 +193,47 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   的争抢就少。这与外审"干扰而非节点数"的判断一致,也否定了我"做宽 cohort"的假设。
   **c-w4-r24(5.1% / 177ms)与 legacy 的 r-24(5.4% / 176ms)统计上打平**:增量路径修到
   现在,最好配置只追平 legacy 的最好配置,没有超越。
-- 外审(见 `docs/reviews/2026-09-06-qwen3-tts-incremental-codec-cohort-latency.md`)
-  的证伪实验已排队:同一探针 r1 低负载、r20 单 follow-up worker,对照 P4(r20 双 worker)
-  的 resolve 8.9ms。若孤立时 4-6ms 则为干扰/排队,下一步是 T-PR10 式的单 dispatcher
-  单流 + 让 graph 直接消费 arena 状态;若孤立也 8-9ms 则是 graph 本身,去看 52 个状态拷贝。
+- **证伪实验(外审 (b) 的等价物)结果反转了它的"干扰"猜测**:
+
+  | 臂 | 负载 | worker | rows/cohort | launch | **resolve** |
+  |---|---|---|---|---|---|
+  | p-r1 | r1(GPU 近乎空闲) | 2 | 1.00 | 1.5ms | **12.8ms** |
+  | p-w1 | r20 | 1 | 2.90 | 4.6ms | **8.6ms** |
+  | P4 | r20 | 2 | 2.30 | 7.1ms | **8.9ms** |
+
+  单 worker 与双 worker 的 resolve 几乎相同 → 两个 follow-up worker 之间**没有互相干扰**;
+  低负载 B=1 反而最慢(12.8ms;空闲 GPU 降频对 launch-bound 的 graph 最不利)。慢在
+  graph 本身。
+- **孤立测量(容器内,CUDA event,背靠背 replay)**:
+
+  | B | WARM 图 replay | 增量 eager | legacy 24 帧图 |
+  |---|---|---|---|
+  | 1 | 3.4ms | 10.9ms | 9.3ms |
+  | 2 | 4.0ms | 11.3ms | 10.7ms |
+  | 4 | 6.6ms | 11.3ms | 14.5ms |
+  | 8 | 8.6ms | 11.5ms | 24.5ms |
+
+  与 PR 自测一致:孤立时增量图比 legacy 快 2.3-2.9×。**但生产里 resolve 8.6-12.8ms,是
+  孤立值的 2-4 倍。** 原因在 kernel 数:
+
+  | 路径(B2) | CUDA kernel 数 | 设备时间合计 |
+  |---|---|---|
+  | legacy 24 帧 eager | 955 | 6.5ms |
+  | legacy + fused SnakeBeta | 694 | 5.3ms |
+  | **增量 WARM 图** | **1147** | 3.7ms |
+  | 增量 eager + fused SnakeBeta | 887 | 3.2ms |
+
+  增量路径每 cohort **1147 个 kernel 只做 3.7ms 的活,平均每个 3.2µs**——完全是节点过渡/
+  依赖延迟受限,不是算力。其中 elementwise 约 550 个(transformer 的 norm/rope/softmax/
+  残差/layer-scale + SnakeBeta 的 exp/sin/pow 链)、cudnn nchw↔nhwc 布局转换 62 个
+  (0.55ms,纯浪费)、微型 GEMM 57 个、状态 cat/index_select 66 个。孤立背靠背时节点
+  流水化得好(3.4ms);生产里 Talker 与 initial 流的 kernel 插进这 1147 个节点之间,每个
+  节点都可能等一下,墙钟翻倍。legacy 节点少三成、每个 kernel 大得多,对插队不敏感。
+  **"少 3 倍算力"没换成时间,是因为换来了"多 1.6 倍节点"。**
+- 第六轮(进行中):config 开 `fused_snake_activation`(仓库已有 #1794 的融合 kernel,
+  增量路径会自动用上,1147→约 890 节点),wait 4,ramp (1,2,4) / (2,4)。之后的方向是
+  真正砍节点:去掉 cudnn 布局转换、原地/环形状态代替 cat+copy、融合 transformer 的
+  elementwise 链(T-PR18 列的 QK-norm+RoPE、RMSNorm)。
 
 ## 决策日志
 
