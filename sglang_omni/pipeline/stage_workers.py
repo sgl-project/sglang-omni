@@ -581,6 +581,41 @@ def _reclaim_process_cuda_memory(
         )
 
 
+def _describe_set_device_failure(
+    spec: StageLaunchConfig, gpu_id: int, exc: Exception
+) -> str:
+    """Explain why a stage process could not select the device it is placed on.
+
+    SGLang falls back to its generic platform when it finds no CUDA/ROCm/XPU
+    device and no platform plugin, and that platform's set_device is a stub
+    raising NotImplementedError. A real set_device raises RuntimeError when the
+    accelerator cannot be initialized or the ordinal does not exist. Both are
+    reported with the stage, the device visibility the process runs with, and
+    the platform this pipeline resolved, since the platform may have been
+    inherited from the launcher rather than resolved in this process.
+    """
+    placed_on = f"gpu_id={gpu_id}"
+    if spec.placement_gpu_id is not None and spec.placement_gpu_id != gpu_id:
+        placed_on += f" (placement gpu_id={spec.placement_gpu_id})"
+    platform_spec = get_platform_spec(current_platform)
+    if isinstance(exc, NotImplementedError):
+        import torch
+
+        reason = (
+            f"the platform resolved for this pipeline is {platform_spec}, which does "
+            "not implement set_device. SGLang resolves that platform when no accelerator "
+            "is visible to the process (or to the launcher it inherited the platform "
+            f"from); in this process torch.cuda.is_available() is {torch.cuda.is_available()}"
+        )
+    else:
+        reason = f"{platform_spec}.set_device failed: {exc}"
+    return (
+        f"Stage {spec.stage_name!r} is placed on {placed_on}, but {reason}. "
+        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r}, "
+        f"SGLANG_OMNI_PLATFORM_SPEC={os.environ.get('SGLANG_OMNI_PLATFORM_SPEC')!r}."
+    )
+
+
 def _construct_stage(
     spec: StageLaunchConfig,
     log: logging.Logger,
@@ -588,7 +623,12 @@ def _construct_stage(
 ) -> Stage:
     gpu_id = spec.gpu_id
     if gpu_id is not None:
-        current_platform.set_device(int(gpu_id))
+        try:
+            current_platform.set_device(int(gpu_id))
+        except (NotImplementedError, RuntimeError) as exc:
+            raise RuntimeError(
+                _describe_set_device_failure(spec, int(gpu_id), exc)
+            ) from exc
         log.info("Set current device to %s for stage %s", gpu_id, spec.stage_name)
 
     # --- Build scheduler via factory ---

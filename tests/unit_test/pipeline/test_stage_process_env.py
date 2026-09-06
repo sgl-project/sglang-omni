@@ -367,6 +367,87 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     assert seen_gpu_ids == [0, 0]
 
 
+def test_construct_stage_names_the_platform_when_set_device_is_a_stub(
+    monkeypatch,
+) -> None:
+    """A platform without set_device (SGLang's generic fallback) is reported by
+    name together with the process's device visibility, not as a bare
+    NotImplementedError from the stub (#1697)."""
+
+    class _GenericPlatform(platforms.OmniPlatform):
+        _omni_platform_qualname = "sglang.srt.platforms.interface.SRTPlatform"
+
+    monkeypatch.setattr(stage_workers, "current_platform", _GenericPlatform())
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.delenv("SGLANG_OMNI_PLATFORM_SPEC", raising=False)
+    spec = StageLaunchConfig(
+        stage_name="minimax_music3_dit_dav",
+        factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+        factory_arg_defaults={"gpu_id": 1},
+        gpu_id=1,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        stage_workers._construct_stage(spec, _RecordingLog())
+
+    message = str(excinfo.value)
+    assert "'minimax_music3_dit_dav'" in message
+    assert "gpu_id=1" in message
+    assert "placement gpu_id" not in message
+    assert "sglang.srt.platforms.interface.SRTPlatform" in message
+    assert "does not implement set_device" in message
+    assert f"torch.cuda.is_available() is {torch.cuda.is_available()}" in message
+    assert "CUDA_VISIBLE_DEVICES='1'" in message
+    assert "SGLANG_OMNI_PLATFORM_SPEC=None" in message
+    assert isinstance(excinfo.value.__cause__, NotImplementedError)
+
+
+def test_construct_stage_reports_placement_when_set_device_fails(
+    monkeypatch,
+) -> None:
+    """A real set_device that cannot initialize the accelerator (#1697, torch's
+    "no NVIDIA driver") is reported with the stage, its placement and the
+    visibility the process runs with, and keeps the original error as cause."""
+
+    class _DriverlessPlatform(platforms.OmniPlatform):
+        _omni_platform_qualname = "sglang_omni.platforms.cuda.CUDAOmniPlatform"
+
+        def set_device(self, device) -> None:
+            raise RuntimeError("Found no NVIDIA driver on your system.")
+
+    monkeypatch.setattr(stage_workers, "current_platform", _DriverlessPlatform())
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.setenv(
+        "SGLANG_OMNI_PLATFORM_SPEC", "sglang_omni.platforms.cuda.CUDAOmniPlatform"
+    )
+    spec = StageLaunchConfig(
+        stage_name="minimax_music3_dit_dav",
+        factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+        factory_arg_defaults={"gpu_id": 0},
+        gpu_id=0,
+        placement_gpu_id=1,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        stage_workers._construct_stage(spec, _RecordingLog())
+
+    message = str(excinfo.value)
+    assert "'minimax_music3_dit_dav'" in message
+    assert "gpu_id=0 (placement gpu_id=1)" in message
+    assert (
+        "sglang_omni.platforms.cuda.CUDAOmniPlatform.set_device failed: "
+        "Found no NVIDIA driver on your system." in message
+    )
+    assert "torch.cuda.is_available()" not in message
+    assert "CUDA_VISIBLE_DEVICES='1'" in message
+    assert (
+        "SGLANG_OMNI_PLATFORM_SPEC='sglang_omni.platforms.cuda.CUDAOmniPlatform'"
+        in message
+    )
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "Found no NVIDIA driver on your system."
+
+
 def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:
     def _unexpected_lock(gpu_id: int):
         raise AssertionError(f"unexpected GPU lock for {gpu_id}")
