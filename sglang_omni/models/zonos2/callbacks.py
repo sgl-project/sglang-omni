@@ -20,6 +20,10 @@ from __future__ import annotations
 
 import torch
 
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.zonos2.streaming_contract import (
     zonos2_producer_first_flush_rows,
 )
@@ -129,5 +133,10 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
 
 def zonos2_prefill_forward(runner, forward_batch, schedule_batch, requests):
     del schedule_batch
-    forward_batch.input_embeds = runner._build_prefill_embeds(forward_batch, requests)
+    attach_omni_prefill_inputs(
+        forward_batch,
+        OmniPrefillInputs(
+            input_embeds=runner._build_prefill_embeds(forward_batch, requests)
+        ),
+    )
     return None

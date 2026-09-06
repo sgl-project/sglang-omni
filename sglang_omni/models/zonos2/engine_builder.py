@@ -11,6 +11,7 @@ import shutil
 import tempfile
 from typing import Any
 
+from sglang_omni.models.zonos2 import CAPABILITIES
 from sglang_omni.models.zonos2.hf_config import (
     Zonos2Config,
     load_zonos2_pretrained_config,
@@ -114,6 +115,9 @@ def _cuda_graph_buckets(max_bs: int) -> list[int]:
 class Zonos2EngineBuilder(TtsEngineBuilder):
     model_name = "ZONOS2"
     model_arch_override = "Zonos2SGLangModel"
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,

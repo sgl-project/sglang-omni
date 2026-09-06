@@ -193,6 +193,54 @@ class Zonos2DecoderLayer(nn.Module):
         return h, residual, router_states
 
 
+class Zonos2TransformerBody(nn.Module):
+    """Transformer body captured by SGLang's breakable prefill graph.
+
+    The body deliberately starts at the already-composed ``input_embeds``
+    boundary.  Speaker/reference conditioning and decode feedback are owned by
+    the outer wrapper, while this registered submodule contains only the
+    graph-capturable transformer stack and final hidden-state normalization.
+    """
+
+    def __init__(self, cfg: Zonos2Config, quant_config: Optional[Any] = None) -> None:
+        super().__init__()
+        self.emb_norm_eps = cfg.norm_eps
+        self.layers = nn.ModuleList(
+            [Zonos2DecoderLayer(cfg, i, quant_config) for i in range(cfg.n_layers)]
+        )
+        self.out_norm = nn.Parameter(torch.empty(cfg.dim))
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run the transformer stack and return hidden states as a Tensor."""
+        del input_ids
+        if input_embeds is None:
+            raise RuntimeError(
+                "ZONOS2 transformer body requires pre-composed input_embeds"
+            )
+
+        x = F.rms_norm(
+            input_embeds,
+            (input_embeds.shape[-1],),
+            None,
+            self.emb_norm_eps,
+        )
+        residual = None
+        router_states = None
+        for layer in self.layers:
+            x, residual, router_states = layer(
+                x, residual, router_states, positions, forward_batch
+            )
+        return F.rms_norm(
+            x + residual, (x.shape[-1],), self.out_norm, self.emb_norm_eps
+        )
+
+
 class Zonos2SGLangModel(nn.Module):
     """ZONOS2 backbone for the SGLang scheduler.
 
@@ -225,15 +273,11 @@ class Zonos2SGLangModel(nn.Module):
             ]
             + [VocabParallelEmbedding(cfg.text_vocab + 1, cfg.dim)]
         )
-        self.emb_norm_eps = cfg.norm_eps
         self.speaker_lda_projection = nn.Linear(
             cfg.speaker_embedding_dim, cfg.speaker_lda_dim, bias=True
         )
         self.speaker_projection = nn.Linear(cfg.speaker_lda_dim, cfg.dim, bias=True)
-        self.layers = nn.ModuleList(
-            [Zonos2DecoderLayer(cfg, i, quant_config) for i in range(cfg.n_layers)]
-        )
-        self.out_norm = nn.Parameter(torch.empty(cfg.dim))
+        self.model = Zonos2TransformerBody(cfg, quant_config)
         self.multi_output = nn.Parameter(
             torch.empty(self.audio_vocab * self.n_codebooks, cfg.dim)
         )
@@ -323,17 +367,11 @@ class Zonos2SGLangModel(nn.Module):
                 input_embeds = self._decode_input_embedding(input_ids)
             else:
                 input_embeds = self._warmup_embed(input_ids)
-        x = input_embeds
-        x = F.rms_norm(x, (x.shape[-1],), None, self.emb_norm_eps)
-
-        residual = None
-        router_states = None
-        for layer in self.layers:
-            x, residual, router_states = layer(
-                x, residual, router_states, positions, forward_batch
-            )
-        hidden = F.rms_norm(
-            x + residual, (x.shape[-1],), self.out_norm, self.emb_norm_eps
+        hidden = self.model(
+            input_ids,
+            positions,
+            forward_batch,
+            input_embeds,
         )
         return LogitsProcessorOutput(
             next_token_logits=hidden.new_empty((hidden.shape[0], 1)),
@@ -484,7 +522,7 @@ class Zonos2SGLangModel(nn.Module):
                 self.embedders[i].weight,
                 fixed[f"multi_embedder.embedders.{i}.weight"],
             )
-        copy("out_norm.weight", self.out_norm, fixed["out_norm.weight"])
+        copy("out_norm.weight", self.model.out_norm, fixed["out_norm.weight"])
         copy("multi_output.weight", self.multi_output, fixed["multi_output.weight"])
         copy(
             "speaker_lda_projection.weight",
@@ -510,7 +548,7 @@ class Zonos2SGLangModel(nn.Module):
         else:
             self.speaker_lda_projection.bias.data.zero_()
 
-        for i, layer in enumerate(self.layers):
+        for i, layer in enumerate(self.model.layers):
             p = f"layers.{i}."
             a = layer.attention
             copy(p + "attention.wq.weight", a.wq, fixed[p + "attention.wq.weight"])
