@@ -1,16 +1,19 @@
 //! Standalone SGLang-Omni Rust router.
 //!
-//! This crate owns strict startup configuration, a static generation worker
-//! pool, bounded routing and health, byte-preserving chat relay, route-aware
+//! This crate owns strict startup configuration, a static worker pool, bounded
+//! routing and health, byte-preserving chat and media HTTP relays, route-aware
 //! readiness, and joined process shutdown.
 
 mod config;
 mod error;
 mod http_generation;
+mod http_media;
+mod http_relay;
 mod lifecycle;
 mod request_id;
 mod server;
 mod shutdown;
+mod speech_facts;
 mod worker_pool;
 
 use std::path::Path;

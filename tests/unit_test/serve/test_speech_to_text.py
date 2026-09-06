@@ -29,6 +29,31 @@ def _build_request(*, task: str = "transcribe"):
     )
 
 
+def test_build_request_marks_repetition_penalty_explicit() -> None:
+    req = speech_to_text.build_speech_to_text_generate_request(
+        audio_bytes=b"RIFF",
+        filename="sample.wav",
+        content_type="audio/wav",
+        model="openai/whisper-large-v3",
+        language="en",
+        prompt=None,
+        temperature=None,
+        repetition_penalty=1.3,
+    )
+
+    assert req.metadata["explicit_generation_params"] == ["repetition_penalty"]
+    assert req.sampling.repetition_penalty == 1.3
+
+
+def test_build_request_leaves_repetition_penalty_implicit_by_default() -> None:
+    req = _build_request()
+
+    assert "repetition_penalty" not in req.metadata.get(
+        "explicit_generation_params", []
+    )
+    assert req.sampling.repetition_penalty == 1.0
+
+
 def test_transcription_builder_import_keeps_shared_callable() -> None:
     """Keep the pre-extraction import stable while stacked consumers migrate."""
     assert (

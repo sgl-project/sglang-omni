@@ -371,6 +371,15 @@ true incremental codec and vocoder streaming, for both this HTTP endpoint and
 `--preprocessing.factory.stream_codec_output false`, to restore whole-utterance
 decoding.
 
+Streamed CustomVoice output on validated voice/language pairs (currently
+Ryan/English with default sampling) withholds the model's silent bootstrap
+codec frame, removing about 80 ms of leading silence from the first chunk. The
+frame still feeds the vocoder, so every later sample is unchanged, and a
+runtime silence check emits the audio unmodified whenever the first frame is
+not actually silent. Opt out per request with
+`"suppress_bootstrap_silence": false` or per deployment with
+`--vocoder.factory.suppress_bootstrap_silence false`.
+
 When `initial_codec_chunk_frames` is omitted, Qwen3-TTS ramps its first chunks
 `1 -> 2 -> 4` codec frames before the steady stride, so first audio leaves after a
 single AR step while the playback cushion is rebuilt within four chunks. Pass an
@@ -428,6 +437,7 @@ only the first chunk.
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
 | `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
+| `suppress_bootstrap_silence` | `true` | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence |
 
 ## Model Variants
 

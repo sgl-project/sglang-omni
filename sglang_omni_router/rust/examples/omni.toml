@@ -25,15 +25,17 @@ timeout_ms = 5000
 success_threshold = 2
 failure_threshold = 3
 
+[http]
+buffered_request_total_bytes = 268435456
+connect_timeout_ms = 5000
+pool_idle_timeout_ms = 90000
+pool_max_idle_per_host = 8
+
 [http_generation]
 trust_domain = "local"
 buffered_request_max_bytes = 8388608
-buffered_request_total_bytes = 268435456
 streamed_request_max_bytes = 536870912
-connect_timeout_ms = 5000
 request_timeout_ms = 1800000
-pool_idle_timeout_ms = 90000
-pool_max_idle_per_host = 8
 
 [[workers]]
 worker_id = "omni-1"

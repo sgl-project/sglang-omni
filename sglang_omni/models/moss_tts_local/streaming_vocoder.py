@@ -3,9 +3,9 @@
 
 Streaming requests share one persistent batched ``codec.streaming()`` session.
 The remote codec uses SDPA for the lifetime of that session because its
-FlashAttention streaming path is unreliable. Pure non-streaming traffic uses
-the MOSS decoder with packed SGLang FlashAttention when no live streaming
-session owns the codec state.
+FlashAttention streaming path is unreliable. Non-streaming traffic always runs
+the batched full-sequence decode (decode_codes_batch); it never holds session
+slots.
 """
 
 from __future__ import annotations
@@ -23,6 +23,10 @@ from sglang_omni.models.moss_tts.attention import (
     SDPA_ATTENTION_BACKEND,
 )
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoderDecoder
+from sglang_omni.models.moss_tts.vocoder import decode_codes_batch
+from sglang_omni.models.moss_tts.vocoder_quantizer import (
+    MossAudioTokenizerQuantizerDecoder,
+)
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -35,14 +39,13 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 logger = logging.getLogger(__name__)
 
 _SOURCE_HINT = "MOSS-TTS Local"
-_SESSION_RESERVED_OFFLINE_SLOTS = 1
 
 
 class _CodecStreamSession:
     """Persistent batched ``codec.streaming()`` session with slot bookkeeping.
 
-    Live requests hold stream slots for their lifetime. Offline work always has
-    reserved slots and can also borrow currently idle stream slots. All methods
+    Live requests hold stream slots for their lifetime. Non-streaming work never
+    enters the session; it uses the batched full-sequence decode path. All methods
     run on the scheduler-loop thread.
     """
 
@@ -51,13 +54,11 @@ class _CodecStreamSession:
         codec: Any,
         *,
         stream_slots: int,
-        offline_slots: int,
         n_vq: int,
     ) -> None:
         self._codec = codec
         self._stream_slots = int(stream_slots)
-        self._offline_slots = int(offline_slots)
-        self._batch_size = self._stream_slots + self._offline_slots
+        self._batch_size = self._stream_slots
         self._n_vq = int(n_vq)
         self._device = next(codec.parameters()).device
         self._free_stream_slots = list(range(self._stream_slots))
@@ -276,79 +277,6 @@ class _CodecStreamSession:
             out[slot] = audio_cpu[index, :, :n_samples]
         return out
 
-    def decode_offline(
-        self,
-        codes_list: list[torch.Tensor],
-        *,
-        max_step_frames: int,
-        max_batch_size: int,
-    ) -> list[torch.Tensor]:
-        """Decode complete utterances ``[n_vq, T]`` through offline slots in the
-        persistent codec session."""
-        if not codes_list:
-            return []
-        wavs: list[torch.Tensor] = []
-        reserved = list(range(self._stream_slots, self._batch_size))
-        requested_wave_size = min(max(int(max_batch_size), 1), len(codes_list))
-        borrow_count = min(
-            max(requested_wave_size - len(reserved), 0),
-            len(self._free_stream_slots),
-        )
-        borrowed = self._free_stream_slots[-borrow_count:] if borrow_count else []
-        if borrowed:
-            del self._free_stream_slots[-borrow_count:]
-        available = reserved + borrowed
-        # Note(Chenchen Hong): Under stream saturation, offline batches degrade
-        # to serial waves and block the scheduler pump until decoding completes.
-        wave_size = min(requested_wave_size, len(available))
-        decode_succeeded = False
-        try:
-            for wave_start in range(0, len(codes_list), wave_size):
-                wave = codes_list[wave_start : wave_start + wave_size]
-                slots = available[: len(wave)]
-                self._reset_slots(slots)
-                cursors = [0] * len(wave)
-                chunks: list[list[torch.Tensor]] = [[] for _ in wave]
-                while True:
-                    remaining = [
-                        int(codes.shape[1]) - cur for codes, cur in zip(wave, cursors)
-                    ]
-                    positive = [r for r in remaining if r > 0]
-                    if not positive:
-                        break
-                    if any(r >= max_step_frames for r in positive):
-                        step_t = max_step_frames
-                    else:
-                        step_t = min(positive)
-                    plan = {
-                        slots[i]: wave[i][:, cursors[i] : cursors[i] + step_t]
-                        for i, rem in enumerate(remaining)
-                        if rem >= step_t
-                    }
-                    decoded = self.step(plan)
-                    for i in range(len(wave)):
-                        if slots[i] in plan:
-                            chunks[i].append(decoded[slots[i]])
-                            cursors[i] += step_t
-                for item_chunks in chunks:
-                    wavs.append(torch.cat(item_chunks, dim=-1))
-            decode_succeeded = True
-        finally:
-            if borrowed:
-                try:
-                    self._reset_slots(borrowed)
-                except Exception:
-                    logger.exception(
-                        "MOSS vocoder failed to reset borrowed stream slots %s; "
-                        "quarantining them",
-                        borrowed,
-                    )
-                    if decode_succeeded:
-                        raise
-                else:
-                    self._free_stream_slots.extend(borrowed)
-        return wavs
-
 
 @dataclass
 class _LocalStreamState:
@@ -379,7 +307,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         *,
         n_vq: int,
         sample_rate: int,
-        stream_slots: int = 15,
+        stream_slots: int = 16,
         stream_chunk_frames: int = 25,
         attention_backend: str = AUTO_ATTENTION_BACKEND,
         initial_chunk_frames: int = 5,
@@ -426,6 +354,36 @@ class MossTTSLocalStreamingVocoderScheduler(
         )
         self._codec = codec
         self._nonstream_decoder = nonstream_decoder
+        quantizer = getattr(codec, "quantizer", None)
+        if quantizer is None or not callable(getattr(quantizer, "decode_codes", None)):
+            raise RuntimeError(
+                "MOSS-TTS Local audio tokenizer has no quantizer.decode_codes; "
+                "the batched non-streaming decode path is unavailable"
+            )
+        try:
+            quantizer_decoder = MossAudioTokenizerQuantizerDecoder(quantizer)
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            logger.exception(
+                "MOSS-TTS Local quantizer is incompatible with the cached FP32 "
+                "decoder; using source quantizer decode"
+            )
+            quantizer_decoder = None
+        self._quantizer_decode = (
+            quantizer_decoder.decode_codes
+            if quantizer_decoder is not None
+            else quantizer.decode_codes
+        )
+        self._compute_dtype = getattr(codec, "compute_dtype", None)
+        # note (Zhang Yiyang): matches the codec's _restore_channels_from_codec:
+        # stereo v2 decoders interleave channels into the sample axis, so the
+        # interleaved layout must be restored before slicing.
+        number_channels = int(getattr(codec, "number_channels", 1) or 1)
+        self._interleaved_channels = (
+            number_channels
+            if number_channels > 1
+            and bool(getattr(codec, "enable_channel_interleave", False))
+            else 1
+        )
         self._attention_backend = attention_backend
         self._stream_slots = int(stream_slots)
         # Coalesce up to one full set of streaming lanes per pump, not the offline batch width.
@@ -438,13 +396,8 @@ class MossTTSLocalStreamingVocoderScheduler(
             0, min(int(coalesce_floor_frames), int(stream_chunk_frames))
         )
         self._max_step_frames = int(max_step_frames)
-        # Pure non-streaming traffic closes the idle session and uses the packed
-        # batch path. Keep one overflow lane for progress while streams are live
-        # instead of reserving half of every streaming CUDA graph for that case.
-        self._offline_slots = _SESSION_RESERVED_OFFLINE_SLOTS
         self._n_vq = int(n_vq)
         self._session: _CodecStreamSession | None = None
-        self._session_used_by_streaming = False
         self._cuda_graph = bool(cuda_graph)
         self._cuda_graph_frames = (
             [int(t) for t in cuda_graph_frames] if cuda_graph_frames else None
@@ -472,7 +425,6 @@ class MossTTSLocalStreamingVocoderScheduler(
         if self._session is not None:
             self._session.close()
             self._session = None
-        self._session_used_by_streaming = False
 
     def create_stream_state(self, request_id: str) -> _LocalStreamState:
         del request_id
@@ -545,21 +497,18 @@ class MossTTSLocalStreamingVocoderScheduler(
         self, request_id: str, state: _LocalStreamState, *, is_final: bool
     ) -> torch.Tensor | None:
         """Stream-done drain: pending frames go through the request's session
-        slot (released afterwards) or the offline lane when slot-starved;
-        steady-state chunks decode through the coalesced step hooks instead."""
+        slot (released afterwards) or the batched non-streaming path when
+        slot-starved; steady-state chunks decode through the coalesced step
+        hooks instead."""
         del request_id, is_final
         audio_parts: list[torch.Tensor] = []
         if state.slot is None and state.pending:
-            # Slot-starved: every frame is still buffered, decode offline.
-            codes = torch.stack(state.pending, dim=1)
+            # note (Zhang Yiyang): slot-starved — every frame is still
+            # buffered; decode batched in one full-sequence call
+            # (non-streaming route).
+            codes = torch.stack(state.pending, dim=1).transpose(0, 1).contiguous()
             state.pending = []
-            audio_parts.extend(
-                self._ensure_session_graphed().decode_offline(
-                    [codes],
-                    max_step_frames=self._max_step_frames,
-                    max_batch_size=self._max_batch_size,
-                )
-            )
+            audio_parts.append(self._decode_codes_rows([codes])[0])
         elif state.slot is not None:
             session = self._ensure_session_graphed()
             while state.pending:
@@ -682,20 +631,9 @@ class MossTTSLocalStreamingVocoderScheduler(
             self._session = _CodecStreamSession(
                 self._codec,
                 stream_slots=self._stream_slots,
-                offline_slots=self._offline_slots,
                 n_vq=self._n_vq,
             )
         return self._session
-
-    def _close_idle_startup_session_locked(self) -> None:
-        if (
-            self._session is not None
-            and not self._session_used_by_streaming
-            and not self._stream_states
-            and not self._stream_payloads
-        ):
-            self._session.close()
-            self._session = None
 
     def _cuda_graph_capture_frames(self) -> list[int]:
         """Step lengths T to capture. Config ``cuda_graph_frames`` overrides the default."""
@@ -712,13 +650,10 @@ class MossTTSLocalStreamingVocoderScheduler(
             return False
 
     def _ensure_session_graphed(self) -> _CodecStreamSession:
-        """Live session with CUDA graphs captured (at most once). Streaming paths call this instead
-        of _ensure_session so a session created after non-streaming traffic closed the graphed
-        startup session is re-captured; a low-VRAM skip is remembered (no per-step re-probe).
-
-        That first post-non-streaming streaming request pays a one-time warmup latency (the recapture
-        runs synchronously here, fail-safe to eager on low VRAM); streaming-only traffic uses the
-        factory session and never hits this path.
+        """Live session with CUDA graphs captured (at most once per session). Streaming paths
+        call this instead of _ensure_session so a lazily created session (factory warmup
+        skipped, e.g. non-CUDA codec) still gets its one capture attempt here, synchronously,
+        fail-safe to eager on low VRAM; a low-VRAM skip is remembered (no per-step re-probe).
         """
         with self._state_lock:
             session = self._ensure_session()
@@ -757,7 +692,6 @@ class MossTTSLocalStreamingVocoderScheduler(
 
     def _ensure_slot(self, state: _LocalStreamState) -> None:
         if state.slot is None:
-            self._session_used_by_streaming = True
             state.slot = self._ensure_session_graphed().acquire()
 
     def _latch_thresholds(
@@ -783,13 +717,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         rows = torch.as_tensor(state.audio_codes, dtype=torch.long)
         if rows.numel() == 0:
             return None
-        codes = rows[:, : self._n_vq].transpose(0, 1).contiguous()
-        self._session_used_by_streaming = True
-        return self._ensure_session_graphed().decode_offline(
-            [codes],
-            max_step_frames=self._max_step_frames,
-            max_batch_size=self._max_batch_size,
-        )[0]
+        return self._decode_codes_rows([rows])[0]
 
     def _prepare_codes(
         self, payload: StagePayload
@@ -824,80 +752,21 @@ class MossTTSLocalStreamingVocoderScheduler(
             payload.data["usage"] = usage
         return payload
 
-    def _decode_codes_rows_nonstream(
-        self, codes_list: list[torch.Tensor]
-    ) -> list[torch.Tensor]:
-        n_vq = self._n_vq
-        device = next(self._codec.parameters()).device
-        codes_channels_first = [
-            codes[:, :n_vq]
-            .transpose(0, 1)
-            .contiguous()
-            .to(device=device, dtype=torch.long)
-            for codes in codes_list
-        ]
-        max_len = max(int(codes.shape[1]) for codes in codes_channels_first)
-        audio_codes = torch.zeros(
-            n_vq,
-            len(codes_channels_first),
-            max_len,
-            device=device,
-            dtype=torch.long,
-        )
-        padding_mask = torch.zeros(
-            len(codes_channels_first), max_len, device=device, dtype=torch.bool
-        )
-        for index, codes in enumerate(codes_channels_first):
-            length = int(codes.shape[1])
-            audio_codes[:, index, :length] = codes
-            padding_mask[index, :length] = True
-
-        decoded = self._codec.decode(
-            audio_codes,
-            padding_mask=padding_mask,
-            num_quantizers=n_vq,
-            return_dict=True,
-            chunk_duration=None,
-        )
-        audio = decoded.audio
-        audio_lengths = decoded.audio_lengths
-        if audio is None or audio_lengths is None:
-            raise RuntimeError(
-                "audio_tokenizer.decode did not return audio/audio_lengths."
-            )
-        audio_cpu = audio.detach().to("cpu", torch.float32)
-        lengths_cpu = audio_lengths.detach().to("cpu")
-        return [
-            audio_cpu[index, :, : int(lengths_cpu[index])].contiguous()
-            for index in range(int(audio_cpu.shape[0]))
-        ]
-
     def _decode_codes_rows(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
-        """Decode ``[T, >=n_vq]`` row tensors to fp32 CPU waveforms."""
-        with self._state_lock:
-            self._close_idle_startup_session_locked()
-        if self._session is None:
-            # The processor helper forces chunk_duration=8 and enters the
-            # tokenizer streaming loop. This decoder is non-streaming, so it must
-            # run through the tokenizer's full-sequence decode path.
-            original_decoder = self._codec.decoder
-            self._codec.decoder = self._nonstream_decoder
-            try:
-                return self._decode_codes_rows_nonstream(codes_list)
-            finally:
-                self._codec.decoder = original_decoder
-        channels_first = [
-            codes[:, : self._n_vq].transpose(0, 1).contiguous() for codes in codes_list
-        ]
-        # abort() resets slots under _state_lock from other threads; serialize
-        # every session access on the same lock.
-        with self._state_lock:
-            wavs = self._session.decode_offline(
-                channels_first,
-                max_step_frames=self._max_step_frames,
-                max_batch_size=self._max_batch_size,
-            )
-        return [wav.detach().to("cpu", torch.float32).contiguous() for wav in wavs]
+        """Decode ``[T, >=n_vq]`` row tensors to fp32 CPU waveforms via the
+        batched full-sequence path shared with MOSS-TTS Delay (decode_codes_batch);
+        non-streaming work never enters the streaming session and touches no
+        session-owned state."""
+        rows = [codes[:, : self._n_vq] for codes in codes_list]
+        return decode_codes_batch(
+            rows,
+            quantizer_decode=self._quantizer_decode,
+            decoder=self._nonstream_decoder,
+            device=next(self._codec.parameters()).device,
+            compute_dtype=self._compute_dtype,
+            max_batch_size=self._max_batch_size,
+            interleaved_channels=self._interleaved_channels,
+        )
 
     def _vocode_batch(self, payloads: list[StagePayload]) -> list[StagePayload]:
         prepared = [self._prepare_codes(payload) for payload in payloads]

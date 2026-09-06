@@ -11,7 +11,7 @@ use crate::worker_pool::RequestLease;
 #[error("upstream response body terminated")]
 pub(crate) struct RelayError;
 
-/// Direct upstream response body whose terminal owner retains admission.
+/// Direct upstream response body whose terminal owner retains request admission.
 pub(crate) struct DirectResponseBody {
     inner: Option<reqwest::Body>,
     lease: Option<RequestLease>,

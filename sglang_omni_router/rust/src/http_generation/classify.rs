@@ -3,10 +3,11 @@ use std::fmt;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use crate::error::HttpFault;
+use crate::speech_facts::ScalarFactSeed;
 use crate::worker_pool::profile::{InputModality, OutputModality, StreamMode};
 use crate::worker_pool::{
-    ChatAudioFormat, DefaultModelResolution, MediaPlacement, MessageContentForm, ModelSelection,
-    ProfileRequirement, RouteRequirement, ServiceClass, TrustDomain, WorkerPool,
+    ChatAudioFormat, MediaPlacement, MessageContentForm, ModelSelection, ProfileRequirement,
+    RouteRequirement, TrustDomain,
 };
 
 /// Worker-eligibility facts derived without reconstructing the request body.
@@ -16,13 +17,13 @@ pub(crate) struct ClassifiedRequest {
 
 #[derive(Default)]
 struct Facts {
-    model: Option<Option<String>>,
-    messages: Option<MessageFacts>,
+    model: Option<String>,
+    messages: MessageFacts,
     top_audio: bool,
     top_image: bool,
     top_video: bool,
-    modalities: Option<Vec<OutputModality>>,
-    audio_format: Option<Option<ChatAudioFormat>>,
+    modalities: Vec<OutputModality>,
+    audio_format: Option<ChatAudioFormat>,
     stream: Option<bool>,
 }
 
@@ -34,15 +35,18 @@ struct MessageFacts {
     audio: bool,
     image: bool,
     video: bool,
-    typed_media: bool,
+}
+
+#[derive(Default)]
+struct PartFacts {
+    text: bool,
+    audio: bool,
+    image: bool,
+    video: bool,
 }
 
 /// Extracts routing facts while leaving worker-owned request validation upstream.
-pub(crate) fn classify(
-    bytes: &[u8],
-    pool: &WorkerPool,
-    trust: &TrustDomain,
-) -> Result<ClassifiedRequest, HttpFault> {
+pub(crate) fn classify(bytes: &[u8], trust: &TrustDomain) -> Result<ClassifiedRequest, HttpFault> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let facts = RootSeed
         .deserialize(&mut deserializer)
@@ -51,23 +55,16 @@ pub(crate) fn classify(
         .end()
         .map_err(|_| HttpFault::MalformedRequest)?;
 
-    let messages = facts.messages.unwrap_or_default();
-    let model = match facts.model.flatten() {
-        Some(model) => ModelSelection::Explicit(model),
-        None => match pool.resolve_default_model_id(trust, ServiceClass::GenerationHttp) {
-            DefaultModelResolution::Unique(model) => ModelSelection::WorkerDefault {
-                expected_model_id: model.to_owned(),
-            },
-            DefaultModelResolution::Ambiguous => return Err(HttpFault::AmbiguousModel),
-            DefaultModelResolution::NoService => return Err(HttpFault::RouterUnavailable),
-        },
-    };
+    let model = facts
+        .model
+        .filter(|model| !model.is_empty())
+        .map_or(ModelSelection::UnresolvedDefault, ModelSelection::Explicit);
 
     let mut message_content_forms = Vec::with_capacity(2);
-    if messages.string {
+    if facts.messages.string {
         message_content_forms.push(MessageContentForm::String);
     }
-    if messages.typed {
+    if facts.messages.typed {
         message_content_forms.push(MessageContentForm::TypedParts);
     }
     let top_media = facts.top_audio || facts.top_image || facts.top_video;
@@ -75,29 +72,30 @@ pub(crate) fn classify(
     if top_media {
         media_placements.push(MediaPlacement::TopLevel);
     }
-    if messages.typed_media {
+    if facts.messages.audio || facts.messages.image || facts.messages.video {
         media_placements.push(MediaPlacement::TypedParts);
     }
     let mut input_modalities = Vec::with_capacity(4);
-    if messages.text {
+    if facts.messages.text {
         input_modalities.push(InputModality::Text);
     }
-    if facts.top_audio || messages.audio {
+    if facts.top_audio || facts.messages.audio {
         input_modalities.push(InputModality::Audio);
     }
-    if facts.top_image || messages.image {
+    if facts.top_image || facts.messages.image {
         input_modalities.push(InputModality::Image);
     }
-    if facts.top_video || messages.video {
+    if facts.top_video || facts.messages.video {
         input_modalities.push(InputModality::Video);
     }
-    let output_modalities = facts
-        .modalities
-        .filter(|modalities| !modalities.is_empty())
-        .unwrap_or_else(|| vec![OutputModality::Text]);
+    let output_modalities = if facts.modalities.is_empty() {
+        vec![OutputModality::Text]
+    } else {
+        facts.modalities
+    };
     let audio_requested = output_modalities.contains(&OutputModality::Audio);
     let audio_format = if audio_requested {
-        Some(facts.audio_format.flatten().unwrap_or(ChatAudioFormat::Wav))
+        Some(facts.audio_format.unwrap_or(ChatAudioFormat::Wav))
     } else {
         None
     };
@@ -151,15 +149,13 @@ impl<'de> Visitor<'de> for RootVisitor {
         let mut facts = Facts::default();
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "model" => facts.model = Some(map.next_value_seed(ScalarFactSeed)?.into_string()),
-                "messages" => facts.messages = Some(map.next_value_seed(MessagesSeed)?),
+                "model" => facts.model = map.next_value_seed(ScalarFactSeed)?.into_string(),
+                "messages" => facts.messages = map.next_value_seed(MessagesSeed)?,
                 "audios" => facts.top_audio = map.next_value_seed(NonEmptyArraySeed)?,
                 "images" => facts.top_image = map.next_value_seed(NonEmptyArraySeed)?,
                 "videos" => facts.top_video = map.next_value_seed(NonEmptyArraySeed)?,
-                "modalities" => {
-                    facts.modalities = Some(map.next_value_seed(NullableModalitiesSeed)?)
-                }
-                "audio" => facts.audio_format = Some(map.next_value_seed(NullableAudioSeed)?),
+                "modalities" => facts.modalities = map.next_value_seed(NullableModalitiesSeed)?,
+                "audio" => facts.audio_format = map.next_value_seed(NullableAudioSeed)?,
                 "stream" => facts.stream = map.next_value_seed(ScalarFactSeed)?.into_bool(),
                 _ => {
                     let _ignored = map.next_value::<IgnoredAny>()?;
@@ -188,136 +184,6 @@ where
     Ok(())
 }
 
-enum ScalarFact {
-    String(String),
-    Bool(bool),
-    Signed(i64),
-    Unsigned(u64),
-    Float(f64),
-    Other,
-}
-
-impl ScalarFact {
-    fn into_string(self) -> Option<String> {
-        match self {
-            Self::String(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn into_bool(self) -> Option<bool> {
-        match self {
-            Self::Bool(value) => Some(value),
-            Self::Signed(value) => bool_from_integer(value),
-            Self::Unsigned(value) => bool_from_integer(value),
-            Self::Float(0.0) => Some(false),
-            Self::Float(1.0) => Some(true),
-            Self::String(value) => parse_bool_fact(&value),
-            Self::Float(_) | Self::Other => None,
-        }
-    }
-}
-
-fn bool_from_integer<T>(value: T) -> Option<bool>
-where
-    T: Eq + From<u8>,
-{
-    if value == T::from(0) {
-        Some(false)
-    } else if value == T::from(1) {
-        Some(true)
-    } else {
-        None
-    }
-}
-
-struct ScalarFactSeed;
-
-impl<'de> DeserializeSeed<'de> for ScalarFactSeed {
-    type Value = ScalarFact;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct ScalarVisitor;
-
-        impl<'de> Visitor<'de> for ScalarVisitor {
-            type Value = ScalarFact;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a scalar or worker-owned value")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-                Ok(ScalarFact::String(value.to_owned()))
-            }
-
-            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-                Ok(ScalarFact::String(value))
-            }
-
-            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Bool(value))
-            }
-
-            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Signed(value))
-            }
-
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Unsigned(value))
-            }
-
-            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Float(value))
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Other)
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E> {
-                Ok(ScalarFact::Other)
-            }
-
-            fn visit_seq<A>(self, sequence: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                ignore_sequence(sequence)?;
-                Ok(ScalarFact::Other)
-            }
-
-            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                ignore_map(map)?;
-                Ok(ScalarFact::Other)
-            }
-        }
-
-        deserializer.deserialize_any(ScalarVisitor)
-    }
-}
-
-fn parse_bool_fact(value: &str) -> Option<bool> {
-    if ["1", "on", "t", "true", "y", "yes"]
-        .iter()
-        .any(|candidate| value.eq_ignore_ascii_case(candidate))
-    {
-        Some(true)
-    } else if ["0", "off", "f", "false", "n", "no"]
-        .iter()
-        .any(|candidate| value.eq_ignore_ascii_case(candidate))
-    {
-        Some(false)
-    } else {
-        None
-    }
-}
-
 struct NonEmptyArraySeed;
 
 impl<'de> DeserializeSeed<'de> for NonEmptyArraySeed {
@@ -342,10 +208,6 @@ impl<'de> DeserializeSeed<'de> for NonEmptyArraySeed {
                     nonempty = true;
                 }
                 Ok(nonempty)
-            }
-
-            fn visit_none<E>(self) -> Result<bool, E> {
-                Ok(false)
             }
 
             fn visit_unit<E>(self) -> Result<bool, E> {
@@ -411,13 +273,8 @@ impl<'de> DeserializeSeed<'de> for MessagesSeed {
                     all.audio |= message.audio;
                     all.image |= message.image;
                     all.video |= message.video;
-                    all.typed_media |= message.typed_media;
                 }
                 Ok(all)
-            }
-
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
             }
 
             fn visit_unit<E>(self) -> Result<MessageFacts, E> {
@@ -475,19 +332,15 @@ impl<'de> DeserializeSeed<'de> for MessageSeed {
             where
                 A: MapAccess<'de>,
             {
-                let mut content = None;
+                let mut content = MessageFacts::default();
                 while let Some(key) = map.next_key::<String>()? {
                     if key == "content" {
-                        content = Some(map.next_value_seed(ContentSeed)?);
+                        content = map.next_value_seed(ContentSeed)?;
                     } else {
                         let _ignored = map.next_value::<IgnoredAny>()?;
                     }
                 }
-                Ok(content.unwrap_or_default())
-            }
-
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+                Ok(content)
             }
 
             fn visit_unit<E>(self) -> Result<MessageFacts, E> {
@@ -565,13 +418,8 @@ impl<'de> DeserializeSeed<'de> for ContentSeed {
                     facts.audio |= part.audio;
                     facts.image |= part.image;
                     facts.video |= part.video;
-                    facts.typed_media |= part.audio || part.image || part.video;
                 }
                 Ok(facts)
-            }
-
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
             }
 
             fn visit_unit<E>(self) -> Result<MessageFacts, E> {
@@ -608,15 +456,15 @@ impl<'de> DeserializeSeed<'de> for ContentSeed {
 
 struct PartSeed;
 
-fn text_part_facts() -> MessageFacts {
-    MessageFacts {
+fn text_part_facts() -> PartFacts {
+    PartFacts {
         text: true,
-        ..MessageFacts::default()
+        ..PartFacts::default()
     }
 }
 
 impl<'de> DeserializeSeed<'de> for PartSeed {
-    type Value = MessageFacts;
+    type Value = PartFacts;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
@@ -624,33 +472,35 @@ impl<'de> DeserializeSeed<'de> for PartSeed {
     {
         struct PartVisitor;
         impl<'de> Visitor<'de> for PartVisitor {
-            type Value = MessageFacts;
+            type Value = PartFacts;
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("a typed content-part object")
             }
-            fn visit_map<A>(self, mut map: A) -> Result<MessageFacts, A::Error>
+            fn visit_map<A>(self, mut map: A) -> Result<PartFacts, A::Error>
             where
                 A: MapAccess<'de>,
             {
-                let mut part_type: Option<Option<String>> = None;
+                let mut part_type = None;
+                let mut type_present = false;
                 while let Some(key) = map.next_key::<String>()? {
                     if key == "type" {
-                        part_type = Some(map.next_value_seed(ScalarFactSeed)?.into_string());
+                        type_present = true;
+                        part_type = map.next_value_seed(ScalarFactSeed)?.into_string();
                     } else {
                         let _ignored = map.next_value::<IgnoredAny>()?;
                     }
                 }
-                let mut facts = MessageFacts::default();
+                let mut facts = PartFacts::default();
                 match part_type {
-                    None => facts.text = true,
-                    Some(Some(value)) if value == "text" => facts.text = true,
-                    Some(Some(value)) if matches!(value.as_str(), "audio_url" | "input_audio") => {
+                    None if !type_present => facts.text = true,
+                    Some(value) if value == "text" => facts.text = true,
+                    Some(value) if matches!(value.as_str(), "audio_url" | "input_audio") => {
                         facts.audio = true;
                     }
-                    Some(Some(value)) if matches!(value.as_str(), "image_url" | "image") => {
+                    Some(value) if matches!(value.as_str(), "image_url" | "image") => {
                         facts.image = true;
                     }
-                    Some(Some(value)) if matches!(value.as_str(), "video_url" | "video") => {
+                    Some(value) if matches!(value.as_str(), "video_url" | "video") => {
                         facts.video = true;
                     }
                     _ => {}
@@ -658,40 +508,36 @@ impl<'de> DeserializeSeed<'de> for PartSeed {
                 Ok(facts)
             }
 
-            fn visit_str<E>(self, _value: &str) -> Result<MessageFacts, E> {
+            fn visit_str<E>(self, _value: &str) -> Result<PartFacts, E> {
                 Ok(text_part_facts())
             }
 
-            fn visit_none<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_unit<E>(self) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_unit<E>(self) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_bool<E>(self, _value: bool) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_bool<E>(self, _value: bool) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_i64<E>(self, _value: i64) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_i64<E>(self, _value: i64) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_u64<E>(self, _value: u64) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_u64<E>(self, _value: u64) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
+            fn visit_f64<E>(self, _value: f64) -> Result<PartFacts, E> {
+                Ok(PartFacts::default())
             }
 
-            fn visit_f64<E>(self, _value: f64) -> Result<MessageFacts, E> {
-                Ok(MessageFacts::default())
-            }
-
-            fn visit_seq<A>(self, sequence: A) -> Result<MessageFacts, A::Error>
+            fn visit_seq<A>(self, sequence: A) -> Result<PartFacts, A::Error>
             where
                 A: SeqAccess<'de>,
             {
                 ignore_sequence(sequence)?;
-                Ok(MessageFacts::default())
+                Ok(PartFacts::default())
             }
         }
         deserializer.deserialize_any(PartVisitor)
@@ -736,17 +582,8 @@ impl<'de> DeserializeSeed<'de> for NullableModalitiesSeed {
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an output-modality array or worker-owned value")
             }
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(Vec::new())
-            }
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
                 Ok(Vec::new())
-            }
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                deserializer.deserialize_seq(self)
             }
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
             where
@@ -810,31 +647,22 @@ impl<'de> DeserializeSeed<'de> for NullableAudioSeed {
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an audio configuration object or worker-owned value")
             }
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(None)
-            }
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
                 Ok(None)
-            }
-            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                deserializer.deserialize_map(self)
             }
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
                 A: MapAccess<'de>,
             {
-                let mut format: Option<Option<String>> = None;
+                let mut format = None;
                 while let Some(key) = map.next_key::<String>()? {
                     if key == "format" {
-                        format = Some(map.next_value_seed(ScalarFactSeed)?.into_string());
+                        format = map.next_value_seed(ScalarFactSeed)?.into_string();
                     } else {
                         let _ignored = map.next_value::<IgnoredAny>()?;
                     }
                 }
-                let Some(Some(format)) = format else {
+                let Some(format) = format else {
                     return Ok(None);
                 };
                 Ok(parse_audio_format(&format))
@@ -892,7 +720,7 @@ fn parse_audio_format(value: &str) -> Option<ChatAudioFormat> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::fs;
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -901,7 +729,7 @@ mod tests {
     use http_body::Body as _;
 
     use crate::config::Config;
-    use crate::worker_pool::WorkerPool;
+    use crate::worker_pool::{ModelSelection, ProfileRequirement, WorkerPool};
 
     use super::{ClassifiedRequest, HttpFault, TrustDomain, classify};
 
@@ -960,8 +788,8 @@ stream_modes = ["non_streaming", "streaming"]
         classify_full(body.as_bytes(), pool).map(drop)
     }
 
-    fn classify_full(bytes: &[u8], pool: &WorkerPool) -> Result<ClassifiedRequest, HttpFault> {
-        classify(bytes, pool, &TrustDomain::new(String::from("local")))
+    fn classify_full(bytes: &[u8], _pool: &WorkerPool) -> Result<ClassifiedRequest, HttpFault> {
+        classify(bytes, &TrustDomain::new(String::from("local")))
     }
 
     fn permutations(fields: &mut [&str], index: usize, output: &mut Vec<String>) {
@@ -1121,7 +949,7 @@ stream_modes = ["non_streaming", "streaming"]
     }
 
     #[test]
-    fn ignored_nesting_is_iterative_and_ambiguous_defaults_fail_closed() {
+    fn ignored_nesting_is_iterative_and_default_resolution_is_deferred() {
         let base_pool = pool("");
         let nested = format!(
             "{{\"messages\":[{{\"content\":\"x\"}}],\"ignored\":{}0{}}}",
@@ -1146,10 +974,13 @@ chat_audio_formats = ["wav", "mp3", "flac", "pcm", "aac", "opus"]
 stream_modes = ["non_streaming", "streaming"]
 "#;
         let ambiguous = pool(second);
-        assert_eq!(
-            classify_with(r#"{"messages":[{"content":"x"}]}"#, &ambiguous),
-            Err(HttpFault::AmbiguousModel)
-        );
+        let classified = classify_full(br#"{"messages":[{"content":"x"}]}"#, &ambiguous)
+            .expect("classification defers default resolution to dispatch");
+        let ProfileRequirement::GenerationHttp { model, .. } = classified.requirement.profile()
+        else {
+            panic!("generation requirement")
+        };
+        assert!(matches!(model, ModelSelection::UnresolvedDefault));
         assert!(
             classify_with(
                 r#"{"model":"omni","messages":[{"content":"x"}]}"#,
@@ -1285,6 +1116,7 @@ stream_modes = ["non_streaming", "streaming"]
             &[
                 r#"{"messages":[{"content":"x"}]}"#,
                 r#"{"messages":[{"content":"x"}],"model":null}"#,
+                r#"{"messages":[{"content":"x"}],"model":""}"#,
             ],
             &[
                 r#"{"messages":[{"content":"x"}]}"#,

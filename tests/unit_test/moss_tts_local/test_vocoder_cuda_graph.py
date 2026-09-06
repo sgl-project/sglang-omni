@@ -15,7 +15,6 @@ pytestmark = pytest.mark.accelerator
 CODEC_MODEL_ID = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 N_VQ = 12  # MOSS-TTS-Local v1.5 uses the first 12 RVQ codebooks
 STREAM_SLOTS = 8
-OFFLINE_SLOTS = 8
 # T values the gate exercises (chunk sizes); warmup captures these + remainders.
 CHUNK_TS = [1, 5, 25, 100]
 _HAS_CUDA = torch.cuda.is_available()
@@ -58,9 +57,7 @@ def session_bundle():
     )
     n_vq = N_VQ
     vocab = _codebook_size(codec)
-    session = _CodecStreamSession(
-        codec, stream_slots=STREAM_SLOTS, offline_slots=OFFLINE_SLOTS, n_vq=n_vq
-    )
+    session = _CodecStreamSession(codec, stream_slots=STREAM_SLOTS, n_vq=n_vq)
     # Capture every length the test emits (each chunk_t and its remainder) once, sealed.
     wanted = set()
     for chunk_t in CHUNK_TS:
@@ -232,7 +229,7 @@ def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
     session, n_vq, vocab, captured = session_bundle
     guarded = MossVocoderCudaGraphRunner(
         session._codec,
-        batch_size=STREAM_SLOTS + OFFLINE_SLOTS,
+        batch_size=STREAM_SLOTS,
         n_vq=n_vq,
         min_free_gb=100000.0,  # 100 TB headroom -> always trips
     )
@@ -251,7 +248,7 @@ def test_capture_failure_falls_back_to_eager(session_bundle):
 
     session, n_vq, vocab, captured = session_bundle
     runner = MossVocoderCudaGraphRunner(
-        session._codec, batch_size=STREAM_SLOTS + OFFLINE_SLOTS, n_vq=n_vq
+        session._codec, batch_size=STREAM_SLOTS, n_vq=n_vq
     )
 
     def boom(frame_count):

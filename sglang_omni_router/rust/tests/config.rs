@@ -38,7 +38,7 @@ impl Drop for TestDir {
 
 fn valid_config(listen: &str, drain_timeout_ms: u64, filter: &str) -> String {
     format!(
-        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 2\nfailure_threshold = 3\n\n[http_generation]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nbuffered_request_total_bytes = 8388608\nstreamed_request_max_bytes = 16777216\nconnect_timeout_ms = 1000\nrequest_timeout_ms = 5000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
+        "schema_version = 1\n\n[server]\nlisten = \"{listen}\"\n\n[shutdown]\ndrain_timeout_ms = {drain_timeout_ms}\n\n[logging]\nformat = \"json\"\nfilter = \"{filter}\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 128\ngeneration_http = 64\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 2\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 8388608\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[http_generation]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n\n[[workers]]\nworker_id = \"worker-a\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"omni\"\nhealth_path = \"/health\"\n\n[[workers.service_profiles]]\nservice = \"generation_http\"\nmodel_ids = [\"omni\"]\nmessage_content_forms = [\"string\"]\nmedia_placements = []\ninput_modalities = [\"text\"]\noutput_modalities = [\"text\"]\nchat_audio_formats = []\nstream_modes = [\"non_streaming\"]\n"
     )
 }
 
@@ -71,6 +71,22 @@ fn append_worker(base: &str, worker_id: &str, port: u16) -> String {
     format!("{base}\n{worker}")
 }
 
+fn valid_translation_config() -> String {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "generation_http = 64",
+        "generation_http = 64\ntranscription_http = 16",
+    );
+    format!(
+        "{base}\n[[workers.service_profiles]]\nservice = \"transcription_http\"\nmodel_ids = [\"omni\"]\ntask = \"translate\"\nresponse_formats = [\"json\", \"text\", \"verbose_json\", \"srt\", \"vtt\", \"sse\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\n\n[http_media]\nroutes = [\"translation\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
+    )
+}
+
+fn media_only_config() -> String {
+    String::from(
+        "schema_version = 1\n\n[server]\nlisten = \"127.0.0.1:30000\"\n\n[shutdown]\ndrain_timeout_ms = 30000\n\n[logging]\nformat = \"json\"\nfilter = \"info\"\n\n[router]\nstrategy = \"round_robin\"\n\n[admission]\nglobal = 16\ntranscription_http = 8\n\n[health]\ninterval_ms = 1000\ntimeout_ms = 500\nsuccess_threshold = 1\nfailure_threshold = 3\n\n[http]\nbuffered_request_total_bytes = 8388608\nconnect_timeout_ms = 1000\npool_idle_timeout_ms = 30000\npool_max_idle_per_host = 8\n\n[http_media]\nroutes = [\"transcription\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n\n[[workers]]\nworker_id = \"asr\"\nbase_url = \"http://127.0.0.1:8000/\"\ntrust_domain = \"local\"\ndefault_model_id = \"asr\"\n\n[[workers.service_profiles]]\nservice = \"transcription_http\"\nmodel_ids = [\"asr\"]\ntask = \"transcribe\"\nresponse_formats = [\"json\", \"text\", \"verbose_json\", \"srt\", \"vtt\", \"sse\"]\nstream_modes = [\"non_streaming\", \"streaming\"]\n",
+    )
+}
+
 #[test]
 fn omitted_server_limits_use_bounded_defaults() {
     let config = load_bytes(valid_config("127.0.0.1:30000", 30_000, "info").as_bytes())
@@ -82,11 +98,88 @@ fn omitted_server_limits_use_bounded_defaults() {
 }
 
 #[test]
+fn shipped_examples_match_the_strict_schema() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for name in ["omni.toml", "tts.toml", "asr.toml"] {
+        let path = root.join("examples").join(name);
+        Config::load(&path).unwrap_or_else(|error| panic!("{name} must load: {error}"));
+    }
+}
+
+#[test]
 fn compact_logging_format_selects_compact_output() {
     let config = valid_config("127.0.0.1:30000", 30_000, "info")
         .replace("format = \"json\"", "format = \"compact\"");
     let config = load_bytes(config.as_bytes()).expect("compact logging format should be valid");
     assert_eq!(config.logging.format, LogFormat::Compact);
+}
+
+#[test]
+fn media_routes_require_exact_task_capacity_and_owned_transport_contracts() {
+    let base = valid_translation_config();
+    assert!(load_bytes(base.as_bytes()).is_ok());
+    for invalid in [
+        base.replace("\ntranscription_http = 16", ""),
+        base.replace("task = \"translate\"", "task = \"transcribe\""),
+        base.replace(
+            "routes = [\"translation\"]",
+            "routes = [\"translation\", \"translation\"]",
+        ),
+        base.replace(
+            "buffered_request_max_bytes = 1048576",
+            "buffered_request_max_bytes = 9000000",
+        ),
+        base.replace("connect_timeout_ms = 1000", "connect_timeout_ms = 6000"),
+        base.replace(
+            "pool_max_idle_per_host = 8",
+            "pool_max_idle_per_host = 1025",
+        ),
+    ] {
+        assert!(load_bytes(invalid.as_bytes()).is_err());
+    }
+}
+
+#[test]
+fn generation_and_media_handlers_are_independently_configurable() {
+    assert!(load_bytes(media_only_config().as_bytes()).is_ok());
+
+    let generation_without_admission =
+        valid_config("127.0.0.1:30000", 30_000, "info").replace("generation_http = 64\n", "");
+    assert!(load_bytes(generation_without_admission.as_bytes()).is_err());
+
+    let media_only = media_only_config();
+    let (prefix, media_and_workers) = media_only
+        .split_once("[http_media]")
+        .expect("media section");
+    let (_, workers) = media_and_workers
+        .split_once("[[workers]]")
+        .expect("worker section");
+    let no_handler = format!("{prefix}[[workers]]{workers}");
+    assert!(load_bytes(no_handler.as_bytes()).is_err());
+}
+
+#[test]
+fn speech_batch_profile_maximum_is_independent_from_admission_limit() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "generation_http = 64",
+        "generation_http = 64\nspeech_batch = 2",
+    ) + "\n[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"wav\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 3\n";
+    let config = format!(
+        "{base}\n[http_media]\nroutes = [\"speech_batch\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
+    );
+    assert!(load_bytes(config.as_bytes()).is_ok());
+}
+
+#[test]
+fn speech_batch_admission_counts_items_independently_from_global() {
+    let base = valid_config("127.0.0.1:30000", 30_000, "info").replace(
+        "global = 128\ngeneration_http = 64",
+        "global = 2\ngeneration_http = 2\nspeech_batch = 3",
+    ) + "\n[[workers.service_profiles]]\nservice = \"speech_batch\"\nmodel_ids = [\"omni\"]\nresponse_formats = [\"wav\"]\ntasks = [\"text_to_speech\"]\nreference_forms = [\"none\"]\nvoice_name_policy = \"preset\"\nmax_batch_size = 3\n";
+    let config = format!(
+        "{base}\n[http_media]\nroutes = [\"speech_batch\"]\ntrust_domain = \"local\"\nbuffered_request_max_bytes = 1048576\nstreamed_request_max_bytes = 16777216\nrequest_timeout_ms = 5000\n"
+    );
+    assert!(load_bytes(config.as_bytes()).is_ok());
 }
 
 #[test]
@@ -219,6 +312,7 @@ fn routing_schema_rejects_unknowns_invalid_bounds_and_profile_counterexamples() 
     );
     let cases = [
         base.replace("global = 128", "global = 0"),
+        base.replace("generation_http = 64", "generation_http = 65536"),
         base.replace(
             "buffered_request_max_bytes = 1048576",
             "buffered_request_max_bytes = 0",

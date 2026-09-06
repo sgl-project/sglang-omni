@@ -30,6 +30,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
@@ -103,20 +104,6 @@ def load_code2wav_model(
     return model.eval()
 
 
-# Note (wenyao): identity equality — the pools ask which slot this is, and
-# dataclass value equality would compare buffers, which raises on tensors.
-@dataclass(eq=False)
-class _PinnedSlot:
-    """Pool-owned pinned staging buffer for one in-flight D2H window copy.
-
-    The event is reused across windows rather than reallocated per copy, and
-    the buffer only grows, so a steady-state stream never allocates.
-    """
-
-    buffer: torch.Tensor
-    event: torch.cuda.Event
-
-
 @dataclass
 class _PendingWindow:
     """Depth-2 pipeline slot reference held by a stream state.
@@ -125,7 +112,7 @@ class _PendingWindow:
     shape back from the device.
     """
 
-    slot: _PinnedSlot
+    slot: PinnedTransferSlot
     samples: int
 
 
@@ -201,13 +188,15 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self._eos_lazy_scan = self._enable_output_overlap and not self._enable_batching
         self._pipeline_active = self._eos_lazy_scan and self._device.type == "cuda"
         self._default_slot_samples = self._stream_chunk_size * self._total_upsample
-        self._pinned_free: list[_PinnedSlot] = []
+        # Note (jiannan-17): Each slot only grows its buffer and reuses one
+        # event, avoiding steady-state allocations.
+        self._pinned_free: list[PinnedTransferSlot] = []
         self._pinned_created = 0
         # Note (wenyao): a slot must have exactly one owner at any time.
         # Quarantined slots are never reused but still count against
         # _MAX_PINNED_SLOTS, so an event failure cannot inflate the cap.
-        self._pinned_retired: list[_PinnedSlot] = []
-        self._pinned_quarantined: list[_PinnedSlot] = []
+        self._pinned_retired: list[PinnedTransferSlot] = []
+        self._pinned_quarantined: list[PinnedTransferSlot] = []
 
     @property
     def _chunk_aligned_dispatch(self) -> bool:
@@ -345,7 +334,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         samples = int(wav.numel())
         prev_wait_ns = 0
         prev_waveform: torch.Tensor | None = None
-        slot: _PinnedSlot | None = None
+        slot: PinnedTransferSlot | None = None
         # Note (edwardzh): the first window stays synchronous so
         # time-to-first-audio is unchanged.
         if self._pipeline_active and not is_final and start > 0 and samples > 0:
@@ -395,10 +384,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             # Note (edwardzh): same stream is what makes this safe — the
             # copy is ordered before any later replay, so the borrowed static
             # output cannot be overwritten while it drains.
-            slot.buffer[:samples].copy_(
+            slot.view(samples).copy_(
                 wav.reshape(-1).to(torch.float32), non_blocking=True
             )
-            slot.event.record()
+            slot.record(torch.cuda.current_stream(self._device))
             event_recorded = True
             if profile_metadata is not None:
                 _emit_event(
@@ -422,6 +411,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 # Note (wenyao): a failed copy or record leaves no trustworthy
                 # completion marker, so this buffer must never go back into
                 # rotation even though it was never handed to a request.
+                # Note (jiannan-17): The slot tracks record failures, but not
+                # copy failures before record(); quarantine covers both cases.
                 self._quarantine_slot(slot)
             raise
         state.pending = _PendingWindow(slot=slot, samples=samples)
@@ -450,7 +441,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         # would hold drained audio for a whole window arrival.
         messages: list[OutgoingMessage] = []
         pending = state.pending
-        if pending is not None and pending.slot.event.query():
+        if pending is not None and pending.slot.query():
             _, waveform = self._flush_pending(request_id, state)
             if waveform is not None:
                 self._mark_stream_emitted(request_id)
@@ -469,9 +460,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             return 0, None
         slot = pending.slot
         wait_start = time.monotonic_ns()
-        slot.event.synchronize()
+        slot.synchronize()
         wait_ns = time.monotonic_ns() - wait_start
-        audio = slot.buffer[: pending.samples].numpy().copy()
+        audio = slot.view(pending.samples).numpy().copy()
 
         # Note (wenyao): every operation above may raise, so the request must
         # keep owning the slot until synchronization and the host copy both
@@ -492,51 +483,36 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             return wait_ns, None
         return wait_ns, torch.from_numpy(audio)
 
-    def _alloc_pinned(self, samples: int) -> torch.Tensor:
-        return torch.empty(samples, dtype=torch.float32, pin_memory=True)
-
-    def _acquire_slot(self, samples: int) -> _PinnedSlot | None:
+    def _acquire_slot(self, samples: int) -> PinnedTransferSlot | None:
         self._reap_retired_slots()
         if self._pinned_free:
             slot = self._pinned_free.pop()
-        elif self._pinned_created < self._MAX_PINNED_SLOTS:
-            slot = _PinnedSlot(
-                buffer=self._alloc_pinned(max(samples, self._default_slot_samples)),
-                event=torch.cuda.Event(),
-            )
-            self._pinned_created += 1
-        else:
-            return None
-        if slot.buffer.numel() < samples:
             try:
-                slot.buffer = self._alloc_pinned(samples)
+                slot.ensure_capacity(samples)
             except Exception:
-                # Note (wenyao): the popped slot is not in flight, so returning
-                # it with its original smaller buffer is safe.
+                # Note (wenyao): the popped slot is not in flight, and a failed
+                # growth keeps its original smaller buffer, so returning it to
+                # the pool is safe.
                 self._release_slot(slot)
                 raise
-        return slot
+            return slot
+        if self._pinned_created < self._MAX_PINNED_SLOTS:
+            slot = PinnedTransferSlot(
+                self._device,
+                torch.float32,
+                initial_capacity=max(samples, self._default_slot_samples),
+            )
+            self._pinned_created += 1
+            return slot
+        return None
 
-    def _release_slot(self, slot: _PinnedSlot) -> None:
+    def _release_slot(self, slot: PinnedTransferSlot) -> None:
         self._pinned_free.append(slot)
 
-    def _event_query(self, slot: _PinnedSlot) -> bool:
-        if self._device.type == "cuda":
-            with torch.cuda.device(self._device):
-                return bool(slot.event.query())
-        return bool(slot.event.query())
-
-    def _event_synchronize(self, slot: _PinnedSlot) -> None:
-        if self._device.type == "cuda":
-            with torch.cuda.device(self._device):
-                slot.event.synchronize()
-            return
-        slot.event.synchronize()
-
-    def _retire_slot(self, slot: _PinnedSlot) -> None:
+    def _retire_slot(self, slot: PinnedTransferSlot) -> None:
         self._pinned_retired.append(slot)
 
-    def _quarantine_slot(self, slot: _PinnedSlot) -> None:
+    def _quarantine_slot(self, slot: PinnedTransferSlot) -> None:
         self._pinned_quarantined.append(slot)
         self._pipeline_active = False
 
@@ -548,10 +524,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         """
         if not self._pinned_retired:
             return
-        still_retired: list[_PinnedSlot] = []
+        still_retired: list[PinnedTransferSlot] = []
         for slot in self._pinned_retired:
             try:
-                complete = self._event_query(slot)
+                complete = slot.query()
             except Exception:
                 logger.exception("code2wav failed to query a retired D2H copy")
                 self._quarantine_slot(slot)
@@ -764,7 +740,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self._pinned_retired = []
         for slot in retired:
             try:
-                self._event_synchronize(slot)
+                slot.synchronize()
             except Exception:
                 logger.exception(
                     "code2wav failed to synchronize a retired D2H copy on shutdown"

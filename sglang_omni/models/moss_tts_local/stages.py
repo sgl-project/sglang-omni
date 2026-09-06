@@ -661,7 +661,7 @@ def create_vocoder_executor(
     codec_model_path: str | None = None,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 2,
-    stream_slots: int = 15,
+    stream_slots: int = 16,
     stream_chunk_frames: int = 25,
     initial_chunk_frames: int = 5,
     coalesce_floor_frames: int = 5,
