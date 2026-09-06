@@ -67,6 +67,9 @@ Supported Models
    * - `OpenMOSS-Team/MOSS-Transcribe-Diarize <https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize>`_
      - ASR
      - Multi-speaker transcription + diarization + timestamps
+   * - `mistralai/Voxtral-Mini-4B-Realtime-2602 <https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602>`_
+     - ASR
+     - Experimental realtime transcription prototype; offline/batched mode first
    * - `openai/whisper-large-v3 <https://huggingface.co/openai/whisper-large-v3>`_
      - ASR
      - Experimental transcription and speech-to-English translation routes; see the `audio translation support matrix <basic_usage/audio_translations.html>`_
@@ -108,6 +111,7 @@ Supported Models
    cookbook/qwen3_asr.md
    cookbook/fun_asr.md
    cookbook/arkasr.md
+   cookbook/voxtral_asr.md
    cookbook/moss_transcribe_diarize.md
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md

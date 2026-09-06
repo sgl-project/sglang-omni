@@ -1,0 +1,3 @@
+config_cls: VoxtralASRPipelineConfig
+name: voxtral-asr
+model_path: mistralai/Voxtral-Mini-4B-Realtime-2602

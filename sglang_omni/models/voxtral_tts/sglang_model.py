@@ -107,12 +107,28 @@ class VoxtralSGLangDecoderLayer(nn.Module):
         self.attention_norm = RMSNorm(cfg.dim, eps=cfg.norm_eps)
         self.ffn_norm = RMSNorm(cfg.dim, eps=cfg.norm_eps)
 
+        ada_dim = getattr(cfg, "ada_rms_norm_t_cond_dim", None)
+        if ada_dim is not None:
+            self.ada_rms_norm_t_cond = nn.Sequential(
+                nn.Linear(cfg.dim, ada_dim, bias=False),
+                nn.GELU(),
+                nn.Linear(ada_dim, cfg.dim, bias=False),
+            )
+            import logging
+
+            logging.getLogger(__name__).info(
+                "Created ada_rms_norm_t_cond with dim=%s", ada_dim
+            )
+        else:
+            self.ada_rms_norm_t_cond = None
+
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor],
+        t_cond: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
             residual = hidden_states
@@ -121,6 +137,9 @@ class VoxtralSGLangDecoderLayer(nn.Module):
             hidden_states, residual = self.attention_norm(hidden_states, residual)
         hidden_states = self.self_attn(positions, hidden_states, forward_batch)
         hidden_states, residual = self.ffn_norm(hidden_states, residual)
+        if self.ada_rms_norm_t_cond is not None:
+            assert t_cond is not None
+            hidden_states = hidden_states * (1 + self.ada_rms_norm_t_cond(t_cond))
         gate_up, _ = self.gate_up_proj(hidden_states)
         gate, up = gate_up.chunk(2, dim=-1)
         hidden_states = torch.nn.functional.silu(gate) * up
@@ -152,6 +171,7 @@ class VoxtralSGLangTextModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
+        t_cond: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = (
             self.embed_tokens(input_ids) if input_embeds is None else input_embeds
@@ -163,6 +183,7 @@ class VoxtralSGLangTextModel(nn.Module):
                 hidden_states,
                 forward_batch,
                 residual,
+                t_cond=t_cond,
             )
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
