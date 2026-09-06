@@ -24,7 +24,7 @@ pub(crate) use profile::{
 pub(crate) use resolver::{ConnectTarget, ResolvedTarget};
 
 use admission::AdmissionController;
-use health::{AtomicHealth, AtomicProbe};
+use health::{AtomicHealth, ProbeState};
 use profile::{
     CAPACITY_CLASS_COUNT, MAX_WORKERS, RegistrationId, ServiceProfile, VoiceNamePolicy,
     WorkerCapacityConfig, WorkerId,
@@ -95,7 +95,7 @@ pub(super) struct WorkerRecord {
     active_requests: AtomicUsize,
     session_capacity: [Option<SessionCapacity>; 2],
     health: AtomicHealth,
-    probe: AtomicProbe,
+    probe: ProbeState,
     immediate_probe: Notify,
 }
 
@@ -233,7 +233,7 @@ impl WorkerPool {
                 active_requests: AtomicUsize::new(0),
                 session_capacity: build_session_capacity(&worker.capacity)?,
                 health: AtomicHealth::unknown(),
-                probe: AtomicProbe::pending(),
+                probe: ProbeState::pending(),
                 immediate_probe: Notify::new(),
             }));
         }
@@ -1031,7 +1031,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health,
-            probe: AtomicProbe::pending(),
+            probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -1936,7 +1936,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health,
-            probe: AtomicProbe::pending(),
+            probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -2059,7 +2059,7 @@ mod tests {
                 None,
             ],
             health,
-            probe: AtomicProbe::pending(),
+            probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
         })
     }
