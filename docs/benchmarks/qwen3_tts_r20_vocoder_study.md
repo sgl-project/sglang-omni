@@ -1,6 +1,6 @@
 # Qwen3-TTS r20 vocoder 瓶颈拆解与 Nari 对标(2026-09-05/06)
 
-跟踪 issue:sgl-project/sglang-omni#1754。主机 eval-h100(H200 ×1,GPU 0),
+跟踪 issue:sgl-project/sglang-omni#1754。主机 eval-h100(85.234.79.62,NVIDIA H100 80GB HBM3 ×1,GPU 0;此前误写为 H200,2026-09-06 10:30 PT 按 nvidia-smi 更正),
 容器 `sglang-omni-jaxan-1`,run 根 `/data/jaxan/runs/20260902-mainline-nari-ab`。
 harness:tts-bench 开环 Poisson,`--rps 20 --seed 0 --warmup 30s --duration 60s`,
 CustomVoice `Ryan`,seed-tts-eval 英文集,1173 请求/臂。所有时间 PT。

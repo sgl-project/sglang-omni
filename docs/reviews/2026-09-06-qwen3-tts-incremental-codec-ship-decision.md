@@ -50,7 +50,7 @@ kernel 替代 Talker,若 vocoder 延迟≈该 kernel 的剩余寿命,机制被�
 伪影的前提下不构成阻塞;保留音频回归套件,但别追 bit 等价。
 接着发**有界的单 cohort 提前发射**——只要实验在首帧与内存上中性或更好;低复杂度,让流水线
 结构更健康。然后若 Talker-off 测试让 7.5ms 崩塌,走**显式 GPU 资源隔离**而不是"打开 MPS":
-在 H200 上给延迟敏感的 vocoder 一个小静态 SM 分区,其余给 Talker,对分区大小扫 Talker 吞吐
+在 H200(原文;实际主机是 H100 80GB)上给延迟敏感的 vocoder 一个小静态 SM 分区,其余给 Talker,对分区大小扫 Talker 吞吐
 与 vocoder p95/p99;静态分区才是真正的空间隔离,普通的 active-thread 限制是软 QoS,NVIDIA
 明确说它本身不预留资源。
 顺序:**新路径 → 提前发射 → 证明 Talker 因果 → SM 隔离 → 最后才更多融合。**
