@@ -2443,7 +2443,7 @@ def test_qwen3_tts_vocoder_serializes_followup_batch_collection() -> None:
     held = threading.Event()
     released = threading.Event()
 
-    def _blocking_collect():
+    def _blocking_collect(**kwargs):
         held.set()
         released.wait(5)
         return None
