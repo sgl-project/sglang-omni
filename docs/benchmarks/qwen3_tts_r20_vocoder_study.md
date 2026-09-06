@@ -388,3 +388,18 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
 - 分支 `qwen3-tts-pr1855-rebase`(origin)共 20 个 commit:#1855 与 main 合并、6 个修复、
   张量-only 内核 + 编译、每 worker runner、提前发射、默认翻转、测试。下一步:把这些整理成
   面向 #1846/#1855 的评审说明与(或)独立 PR。
+
+## 默认配置验收与噪声带(2026-09-06 05:00 PT)
+
+- 零覆盖默认(stateful + 图 + 编译 + wait 4,ramp (1,2,4),COLD 自动推导为 (1,2)):
+  underrun **20.1%**,First playable p50 89 / p95 123ms,TTFA p50 140ms。legacy 默认单次
+  17.3% / 82 / 155ms。**默认 ramp 下新旧路径打平**(TTFA 稍好,underrun 稍差,均在噪声内)。
+- 仅覆盖 ramp (2,4)(COLD 自动推导为 (2,3)):underrun **5.12%**,p50 109 / p95 151ms。
+- 同一配置((2,4) ramp,2 worker,wait 4,编译)迄今 6 次单 seed 结果:2.39、2.73、3.67、
+  3.92、4.01/4.09(带探针)、5.12 → **均值约 3.7%,极差 2.7 个百分点**。之前汇报的
+  "2.7% 对 5.4%"取的是这条带的下沿,不诚实;legacy (2,4) 只有一次 5.37%。正在跑
+  3 seed × {新, 旧} × {默认 ramp, (2,4)} 的正式对比,以均值 ± 极差下结论。
+- 提前发射版的 CUDA 事件探针(host 侧部分):resolve 里的 host 等待均值 2.9ms(p50 2.0),
+  但从发射到完成 20.5ms(p50 17、p95 46)——两个 cohort 在飞时串行排队,每 cohort 的 GPU
+  服务时间仍约 8-10ms。replay 事件本身的 GPU 时长(判定 Talker 是插在节点之间还是挡在
+  第一个节点之前)因探针读 keepalives 的时机错了没记到,已修,排在多 seed 之后重跑。
