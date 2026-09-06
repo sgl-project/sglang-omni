@@ -21,6 +21,7 @@ import types
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from itertools import islice
 from typing import Any, Callable
 
@@ -1397,9 +1398,23 @@ class OmniScheduler:
             return _Upstream.get_new_batch_prefill(self, running_batch)
         return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
 
+    def _tp_forward_context(self):
+        group = getattr(self, "tp_group", None)
+        comm = getattr(group, "pynccl_comm", None)
+        if (
+            comm is None
+            or not comm.available
+            or group.world_size <= 1
+            or torch.device(self.device).type != "cuda"
+        ):
+            return nullcontext()
+        # Note (wenyao): Avoid a second NCCL communicator's per-rank memory cost.
+        return comm.change_state(enable=True)
+
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
-            return self._run_batch(batch, pp_proxy_tensors)
+            with self._tp_forward_context():
+                return self._run_batch(batch, pp_proxy_tensors)
         except Exception as exc:
             self._handle_batch_failure(batch, exc)
             return _FAILED_BATCH_RESULT
@@ -1569,7 +1584,8 @@ class OmniScheduler:
         self._emit_prefill_start_for_batch(batch)
         self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
-        pending_step = self._model_runner.execute_launch(sched_output)
+        with self._tp_forward_context():
+            pending_step = self._model_runner.execute_launch(sched_output)
         return sched_output, pending_step
 
     def _run_batch_resolve(self, batch, sched_output, pending_step, skip_rids=()):
