@@ -504,7 +504,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-mode">Speech Mode</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Launch the Server</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-stage-placement">Speech Stage Placement</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-speech-with-server-vad">Realtime Speech with Server VAD</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-speech-with-server-side-turn-detection">Realtime Speech with Server-Side Turn Detection</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#single-gpu-fp8-on-h100-h20">Single-GPU FP8 on H100/H20</a></li>
@@ -850,8 +850,8 @@ GPUs, so these numbers describe that experiment’s topology change, not the
 default code2wav placement. Streaming TTS workloads should prefer this
 layout regardless, since TTFA is the latency users notice first.</p>
 </section>
-<section id="realtime-speech-with-server-vad">
-<h3>Realtime Speech with Server VAD<a class="headerlink" href="#realtime-speech-with-server-vad" title="Link to this heading">#</a></h3>
+<section id="realtime-speech-with-server-side-turn-detection">
+<h3>Realtime Speech with Server-Side Turn Detection<a class="headerlink" href="#realtime-speech-with-server-side-turn-detection" title="Link to this heading">#</a></h3>
 <p>The speech pipeline can stream spoken responses over <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>. Enable the
 WebSocket endpoint on the standard speech pipeline:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
@@ -867,24 +867,41 @@ output:</p>
 <span class="w">  </span><span class="nt">"session"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">"modalities"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"text"</span><span class="p">,</span><span class="w"> </span><span class="s2">"audio"</span><span class="p">],</span>
 <span class="w">    </span><span class="nt">"input_audio_format"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pcm16"</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">"output_audio_format"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pcm16"</span>
+<span class="w">    </span><span class="nt">"output_audio_format"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pcm16"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"turn_detection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"semantic_vad"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"eagerness"</span><span class="p">:</span><span class="w"> </span><span class="s2">"medium"</span>
+<span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>Stream mono 16 kHz PCM16 input with <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code>. Server VAD
-automatically commits each utterance and starts generation. Text arrives in
-<code class="docutils literal notranslate"><span class="pre">response.text.delta</span></code> events; spoken output arrives as base64-encoded mono
-24 kHz PCM16 in <code class="docutils literal notranslate"><span class="pre">response.audio.delta</span></code> events, followed by
+<p>Stream mono 16 kHz PCM16 input with <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code>. Turn
+detection auto-commits each utterance and starts generation. Check
+<code class="docutils literal notranslate"><span class="pre">session.created.capabilities.turn_detection</span></code> before requesting
+<code class="docutils literal notranslate"><span class="pre">semantic_vad</span></code> — older servers only support <code class="docutils literal notranslate"><span class="pre">server_vad</span></code>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">server_vad</span></code> (default) ends a turn after a fixed silence duration.
+<code class="docutils literal notranslate"><span class="pre">semantic_vad</span></code> adds a GPU Smart Turn v3.2 model on top of Silero speech
+detection, so a natural mid-thought pause doesn’t end the turn early.
+<code class="docutils literal notranslate"><span class="pre">eagerness</span></code> (<code class="docutils literal notranslate"><span class="pre">low</span></code>/<code class="docutils literal notranslate"><span class="pre">medium</span></code>/<code class="docutils literal notranslate"><span class="pre">high</span></code>, default <code class="docutils literal notranslate"><span class="pre">medium</span></code>) trades latency for
+patience; <code class="docutils literal notranslate"><span class="pre">silence_duration_ms</span></code> only applies to <code class="docutils literal notranslate"><span class="pre">server_vad</span></code>.</p>
+<p>To enable <code class="docutils literal notranslate"><span class="pre">semantic_vad</span></code>, provision the BSD-2 licensed
+<a class="reference external" href="https://huggingface.co/pipecat-ai/smart-turn-v3">Smart Turn v3.2</a>
+<code class="docutils literal notranslate"><span class="pre">smart-turn-v3.2-gpu.onnx</span></code> model and set <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_SMART_TURN_MODEL_PATH</span></code>
+to its path (file or containing directory). The server never downloads it and
+verifies its SHA-256 on load. If the model is missing or invalid, the
+endpoint still works — semantic requests just fall back to <code class="docutils literal notranslate"><span class="pre">server_vad</span></code>.</p>
+<p>Text arrives in <code class="docutils literal notranslate"><span class="pre">response.text.delta</span></code> events; spoken output arrives as
+base64-encoded mono 24 kHz PCM16 in <code class="docutils literal notranslate"><span class="pre">response.audio.delta</span></code> events, followed by
 <code class="docutils literal notranslate"><span class="pre">response.audio.done</span></code> and <code class="docutils literal notranslate"><span class="pre">response.done</span></code>.</p>
 <p>Audio output is opt-in: sessions remain text-only unless both modalities are
 requested. A thinker-only server rejects audio negotiation because it has no
 <code class="docutils literal notranslate"><span class="pre">code2wav</span></code> stage.</p>
 <p>For text-and-audio sessions, server-owned barge-in is enabled by default. When
-server VAD emits <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.speech_started</span></code>, the active response is
-cancelled with reason <code class="docutils literal notranslate"><span class="pre">turn_detected</span></code>; its user transcription still completes
-and enters conversation history before the next queued turn runs. Cancelled
-assistant output is not added to conversation history.</p>
+the active turn detector emits <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.speech_started</span></code>, the active
+response is cancelled with reason <code class="docutils literal notranslate"><span class="pre">turn_detected</span></code>; its user transcription still
+completes and enters conversation history before the next queued turn runs.
+Cancelled assistant output is not added to conversation history.</p>
 <p>Clients must stop buffered playback on <code class="docutils literal notranslate"><span class="pre">speech_started</span></code> and reject every later
 <code class="docutils literal notranslate"><span class="pre">response.audio.delta</span></code> for that response until its <code class="docutils literal notranslate"><span class="pre">response.done</span></code>. If speech
 starts before <code class="docutils literal notranslate"><span class="pre">response.created</span></code>, retain a pending-interruption flag and reject
@@ -898,13 +915,14 @@ also send <code class="docutils literal notranslate"><span class="pre">conversat
 removes that assistant item from conversation history. The whole assistant
 transcript is removed because the endpoint cannot align text with played audio.</p>
 <p>Set <code class="docutils literal notranslate"><span class="pre">turn_detection.interrupt_response</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> in <code class="docutils literal notranslate"><span class="pre">session.update</span></code> to opt
-out. This is the only <code class="docutils literal notranslate"><span class="pre">turn_detection</span></code> field applied dynamically by the current
-endpoint. Server VAD remains fixed at its startup defaults; <code class="docutils literal notranslate"><span class="pre">threshold</span></code>,
-<code class="docutils literal notranslate"><span class="pre">prefix_padding_ms</span></code>, and <code class="docutils literal notranslate"><span class="pre">silence_duration_ms</span></code> do not reconfigure it. Text-only
-responses are not interrupted automatically.</p>
+out. Partial updates preserve the active detector type and settings, so clients
+can change interruption behavior without dropping semantic VAD or its
+eagerness. Changing detector behavior rebuilds the detector and clears pending
+input audio; <code class="docutils literal notranslate"><span class="pre">interrupt_response</span></code> changes independently. Text-only responses
+are not interrupted automatically.</p>
 <p>The browser example in <code class="docutils literal notranslate"><span class="pre">playground/qwen-omni/realtime</span></code> captures microphone
-input and lets the user select text-only output or text plus streamed PCM16
-audio playback.</p>
+input, negotiates turn-detection support per connection, and lets the user
+select text-only output or text plus streamed PCM16 audio playback.</p>
 </section>
 </section>
 <section id="single-gpu-fp8-on-h100-h20">
@@ -1244,7 +1262,7 @@ with the AutoRound checkpoint:</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-mode">Speech Mode</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Launch the Server</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-stage-placement">Speech Stage Placement</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-speech-with-server-vad">Realtime Speech with Server VAD</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-speech-with-server-side-turn-detection">Realtime Speech with Server-Side Turn Detection</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#single-gpu-fp8-on-h100-h20">Single-GPU FP8 on H100/H20</a></li>
