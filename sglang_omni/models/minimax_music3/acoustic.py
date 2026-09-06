@@ -36,7 +36,6 @@ from .constants import (
     SUPPORTED_ACOUSTIC_DTYPES,
 )
 from .dav import MiniMaxMusic3DAV, remove_weight_norm, select_decoder_state
-from .dit import MiniMaxMusic3DIT
 from .payload_types import MiniMaxMusic3State
 
 logger = logging.getLogger(__name__)
@@ -209,6 +208,8 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_residual_diff_threshold: float,
         cache_dit_max_continuous_cached_steps: int,
     ) -> None:
+        from .dit import MiniMaxMusic3DIT
+
         logger.info(
             f"Loading MiniMax Music 3 PyTorch DIT from {dit_path} on device={self.device} dtype={self.dtype}"
         )
@@ -316,8 +317,8 @@ class _AcousticStreamState:
     final_state: MiniMaxMusic3State | None = None
     wave_chunks: list[Tensor] = field(default_factory=list)
     hidden_frames: int = 0
-    last_latent: Tensor | None = None
-    last_condition: Tensor | None = None
+    last_latent: Any | None = None
+    last_condition: Any | None = None
     started_at: float = field(default_factory=time.perf_counter)
     abort_event: threading.Event = field(default_factory=threading.Event)
     next_chunk_idx: int = 0
@@ -329,7 +330,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
 
     def __init__(
         self,
-        decoder: MiniMaxMusic3AcousticDecoder,
+        decoder: Any,
     ) -> None:
         self._decoder = decoder
         self._stream_states: dict[str, _AcousticStreamState] = {}
