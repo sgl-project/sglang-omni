@@ -373,3 +373,18 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
 `analyze_shapes.py`、`bench_decode.py`(窗口×batch 成本面)、
 `test_causal3.py`(补齐数值等价对照)、各 `arm-*.yaml` / `main-arm-*.py` /
 `run_sweep_*.sh`。
+
+## 发布状态(2026-09-06 04:45 PT)
+
+- **默认翻转已在分支上落地(61611615 / c36f6acb)**:`create_vocoder_executor` 的默认改为
+  `enable_stateful_codec_decoder=True`、`followup_batch_wait_ms=4`;图与编译开关默认跟随
+  stateful(显式指定才独立生效),COLD 形状默认按首块推导(首块帧数,抑制时 +1);
+  scheduler 类的默认不变(单测用假解码器)。回滚只需 `enable_stateful_codec_decoder: false`。
+  cookbook 增加"Codec decoding defaults"。ramp 默认仍为 (1,2,4),(2,4) 作为高并发剖面写在
+  文档里。零覆盖默认配置的 r20 验收与 (2,4) 剖面排队中。
+- CUDA 事件判别实验第一次跑坏了:`IncrementalCodecGraphResult` 是冻结 dataclass,给它挂
+  属性抛错,每个 cohort 都回落 legacy(891 次),underrun 74%——探针自身的 bug,与产品代码
+  无关;改为把事件挂在 handle 的 keepalives 上重跑(排队)。
+- 分支 `qwen3-tts-pr1855-rebase`(origin)共 20 个 commit:#1855 与 main 合并、6 个修复、
+  张量-only 内核 + 编译、每 worker runner、提前发射、默认翻转、测试。下一步:把这些整理成
+  面向 #1846/#1855 的评审说明与(或)独立 PR。
