@@ -37,6 +37,7 @@ from sglang_omni.pipeline.runtime_config import (
     build_comm_config,
     prepare_pipeline_runtime,
 )
+from sglang_omni.pipeline.sm_cap import validate_capped_process, validate_stage_sm_cap
 from sglang_omni.pipeline.stage_workers import (
     StageGroup,
     StageLaunchConfig,
@@ -99,6 +100,7 @@ def _build_stage_groups(
         ctx = multiprocessing.get_context("spawn")
     if replica_topology is None:
         replica_topology = ReplicaTopology()
+    _validate_sm_caps(stages_cfg, process_plan)
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
     rank_endpoints = {
@@ -151,6 +153,7 @@ def _build_stage_groups(
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
             env_defaults={**config.resolved_env_defaults(), **stage_cfg.env},
+            sm_cap=stage_cfg.sm_cap,
             wait_for=stage_cfg.wait_for,
             wait_for_fn=stage_cfg.wait_for_fn,
             merge_fn=stage_cfg.merge_fn,
@@ -258,6 +261,20 @@ def _attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
                     stage_spec.factory_arg_defaults[
                         "process_total_gpu_memory_fraction"
                     ] = process_loaded_fraction
+
+
+def _validate_sm_caps(
+    stages_cfg: list[StageConfig], process_plan: ProcessTopologyPlan
+) -> None:
+    """Every stage in one OS process must agree about that process's cap."""
+    by_process: dict[str, list[StageConfig]] = {}
+    for stage_cfg in stages_cfg:
+        process = process_plan.stage_to_process.get(stage_cfg.name, stage_cfg.name)
+        by_process.setdefault(process, []).append(stage_cfg)
+    for grouped in by_process.values():
+        validate_capped_process(grouped)
+    for stage_cfg in stages_cfg:
+        validate_stage_sm_cap(stage_cfg)
 
 
 def _resolve_same_process_targets(
