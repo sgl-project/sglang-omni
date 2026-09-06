@@ -110,19 +110,39 @@ def test_min_emit_interval_first_delta_immediate_then_eos_flushes() -> None:
 
     assert [m.data["text"] for m in builder("r", rd, _make_req_output(1))] == ["A"]
     assert builder("r", rd, _make_req_output(2)) == []
-    assert [m.data["text"] for m in builder("r", rd, _make_req_output(_EOS))] == ["B"]
+
+    msgs = builder("r", rd, _make_req_output(_EOS))
+
+    assert [m.data["text"] for m in msgs] == ["B"]
+    assert [m.metadata for m in msgs] == [{"modality": "text", "token_id": _EOS}]
 
 
 def test_terminal_finish_flushes_rate_limited_pending_tokens() -> None:
     builder = _builder({1: b"A", 2: b"B"}, interval_s=3600.0)
     rd = _make_req_data()
 
+    assert callable(builder.flush)
     assert [m.data["text"] for m in builder("r", rd, _make_req_output(1))] == ["A"]
     assert builder("r", rd, _make_req_output(2)) == []
 
     rd.req.finished = lambda: True
-    msgs = builder("r", rd, _make_req_output(None))
+    msgs = builder.flush("r", rd)
+
     assert [m.data["text"] for m in msgs] == ["B"]
+    assert [m.metadata for m in msgs] == [{"modality": "text", "token_id": None}]
+
+
+def test_terminal_finish_emits_incomplete_utf8_replacement() -> None:
+    builder = _builder({1: b"\xe4"})
+    rd = _make_req_data()
+
+    assert builder("r", rd, _make_req_output(1)) == []
+    rd.req.finished = lambda: True
+    msgs = builder.flush("r", rd)
+
+    assert [m.data["text"] for m in msgs] == ["\ufffd"]
+    assert [m.metadata for m in msgs] == [{"modality": "text", "token_id": None}]
+    assert rd.req._fun_asr_stream_pending_ids == []
 
 
 def test_missing_required_scheduler_contract_fails_visibly() -> None:
