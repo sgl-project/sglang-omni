@@ -17,6 +17,28 @@ then download the model:
 hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ```
 
+## Experimental Apple Silicon support
+
+Follow the [Apple Silicon installation instructions](../get_started/installation.md#macos-apple-silicon).
+Fun-ASR provides a Torch/MPS compatibility path. Use the official
+`FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized BF16 weights.
+Set `SGLANG_USE_MLX=0`; native MLX support is added separately.
+
+```bash
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+# Torch/MPS compatibility
+SGLANG_USE_MLX=0 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
+
+Apple inference runs one request at a time; additional requests queue.
+Use `temperature=0` and upload audio segments no longer than 30 seconds.
+JSON and SSE transcription are supported. Quantized checkpoints are not supported.
+
+See [the Torch/MPS PR](https://github.com/sgl-project/sglang-omni/pull/1982) for hardware validation and benchmark results.
+
 ## Server Configuration
 
 Fun-ASR-Nano runs a single ASR stage on one GPU.
