@@ -715,9 +715,14 @@ fn build_content_blind_media_cohorts(
             let Some(first) = members.first() else {
                 continue;
             };
-            if service == ServiceClass::SpeechHttp
-                && let Some(owner) = voice_owner
-                && !members.iter().all(|member| Arc::ptr_eq(member, owner))
+            let requires_voice_owner = service == ServiceClass::SpeechHttp
+                && first.profiles.iter().any(|row| {
+                    row.service_class() == service
+                        && row.voice_name_policy() == Some(VoiceNamePolicy::Uploaded)
+                });
+            if requires_voice_owner
+                && !voice_owner
+                    .is_some_and(|owner| members.iter().all(|member| Arc::ptr_eq(member, owner)))
             {
                 continue;
             }
@@ -2008,6 +2013,45 @@ mod tests {
         pool.voice_owner = Some(owner);
         pool.homogeneous_media_http =
             build_content_blind_media_cohorts(&pool.records, pool.voice_owner.as_ref());
+        assert!(
+            pool.content_blind_media_http(
+                &TrustDomain::new(String::from("local")),
+                crate::config::HttpMediaRoute::Speech,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn uploaded_voice_speech_without_an_owner_requires_classification() {
+        let pool = media_pool(vec![voice_speech_record(0)]);
+
+        assert!(
+            pool.content_blind_media_http(
+                &TrustDomain::new(String::from("local")),
+                crate::config::HttpMediaRoute::Speech,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unrelated_voice_owner_does_not_disable_preset_content_blind_proof() {
+        let mut owner = voice_speech_record(0);
+        Arc::get_mut(&mut owner)
+            .expect("new test record is uniquely owned")
+            .trust_domain = TrustDomain::new(String::from("owner"));
+        let preset = record_with_profile(
+            1,
+            "local",
+            "custom",
+            named_speech_profile("custom", VoiceNamePolicy::Preset),
+        );
+        let mut pool = media_pool(vec![Arc::clone(&owner), preset]);
+        pool.voice_owner = Some(owner);
+        pool.homogeneous_media_http =
+            build_content_blind_media_cohorts(&pool.records, pool.voice_owner.as_ref());
+
         assert!(
             pool.content_blind_media_http(
                 &TrustDomain::new(String::from("local")),
