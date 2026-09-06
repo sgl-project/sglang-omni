@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import math
 import os
@@ -16,6 +17,10 @@ from typing import Any
 import torch
 
 logger = logging.getLogger(__name__)
+
+_CODE2WAV_GRAPH_TRACE_ENV = "SGLANG_OMNI_TRACE_CODE2WAV_GRAPH"
+_CODE2WAV_GRAPH_TRACE_REPORT_INTERVAL = 2000
+_FALSE_ENV_VALUES = {"", "0", "false", "no", "off"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +202,15 @@ class Code2WavCudaGraphRunner:
         self._fallback_counts: Counter[str] = Counter()
         self._graph_replays = 0
         self._replay_failures = 0
+        trace_value = os.getenv(_CODE2WAV_GRAPH_TRACE_ENV, "")
+        self._shape_trace_enabled = trace_value.strip().lower() not in _FALSE_ENV_VALUES
+        self._shape_graph_counts: Counter[GraphKey] | None = (
+            Counter() if self._shape_trace_enabled else None
+        )
+        self._shape_fallback_counts: Counter[tuple[GraphKey, str]] | None = (
+            Counter() if self._shape_trace_enabled else None
+        )
+        self._shape_trace_executions = 0
 
     @classmethod
     def build(
@@ -629,6 +643,8 @@ class Code2WavCudaGraphRunner:
             self._disable_runtime(reason)
             raise
         self._graph_replays += 1
+        if self._shape_trace_enabled:
+            self._record_shape_execution(key=key, fallback_reason=None)
         return Code2WavRunResult(
             output=captured.static_output,
             execution_mode="cuda_graph",
@@ -658,6 +674,11 @@ class Code2WavCudaGraphRunner:
         reason: str,
     ) -> Code2WavRunResult:
         self._fallback_counts[reason] += 1
+        if self._shape_trace_enabled:
+            self._record_shape_execution(
+                key=self._shape_key_if_available(codes),
+                fallback_reason=reason,
+            )
         with torch.inference_mode():
             output = self._model(codes)
         return Code2WavRunResult(
@@ -685,8 +706,108 @@ class Code2WavCudaGraphRunner:
             )
         logger.exception("Code2Wav CUDA graph replay disabled the runner")
 
+    @staticmethod
+    def _shape_key_if_available(codes: torch.Tensor) -> GraphKey | None:
+        """Return the graph lookup shape without imposing graph validation.
+
+        The ``disabled``/``ineligible`` fallbacks run before ``_validate_codes``,
+        so optional observability must not assume the ``[B, Q, T]`` contract.
+        """
+
+        if codes.ndim != 3:
+            return None
+        return GraphKey(
+            batch_size=int(codes.shape[0]),
+            frames=int(codes.shape[2]),
+        )
+
+    def _record_shape_execution(
+        self,
+        *,
+        key: GraphKey | None,
+        fallback_reason: str | None,
+    ) -> None:
+        if key is None:
+            return
+        graph_counts = self._shape_graph_counts
+        fallback_counts = self._shape_fallback_counts
+        assert graph_counts is not None
+        assert fallback_counts is not None
+        if fallback_reason is None:
+            graph_counts[key] += 1
+        else:
+            fallback_counts[(key, fallback_reason)] += 1
+        self._shape_trace_executions += 1
+        if self._shape_trace_executions % _CODE2WAV_GRAPH_TRACE_REPORT_INTERVAL == 0:
+            self.log_shape_telemetry(trigger="periodic")
+
+    def _shape_telemetry_stats(self) -> dict[str, Any]:
+        graph_counts = self._shape_graph_counts
+        fallback_counts = self._shape_fallback_counts
+        assert graph_counts is not None
+        assert fallback_counts is not None
+
+        fallbacks_by_key: dict[GraphKey, dict[str, int]] = {}
+        for (key, reason), count in sorted(
+            fallback_counts.items(),
+            key=lambda item: (item[0][0].batch_size, item[0][0].frames, item[0][1]),
+        ):
+            fallbacks_by_key.setdefault(key, {})[reason] = count
+
+        shapes: list[dict[str, Any]] = []
+        for key in sorted(
+            set(graph_counts) | set(fallbacks_by_key),
+            key=lambda item: (item.batch_size, item.frames),
+        ):
+            graph_replays = graph_counts[key]
+            per_reason = fallbacks_by_key.get(key, {})
+            eager_fallbacks = sum(per_reason.values())
+            shapes.append(
+                {
+                    "batch_size": key.batch_size,
+                    "frames": key.frames,
+                    "graph_replays": graph_replays,
+                    "eager_fallbacks": eager_fallbacks,
+                    "fallback_counts": per_reason,
+                    "hit_rate": graph_replays / (graph_replays + eager_fallbacks),
+                }
+            )
+
+        graph_replays = sum(graph_counts.values())
+        eager_fallbacks = sum(fallback_counts.values())
+        total = graph_replays + eager_fallbacks
+        return {
+            "total_executions": total,
+            "graph_replays": graph_replays,
+            "eager_fallbacks": eager_fallbacks,
+            "hit_rate": graph_replays / total if total else None,
+            "shapes": shapes,
+        }
+
+    def log_shape_telemetry(self, *, trigger: str) -> None:
+        """Log one cumulative per-shape snapshot when tracing is enabled."""
+
+        if not self._shape_trace_enabled:
+            return
+        stats = self._shape_telemetry_stats()
+        if not stats["total_executions"]:
+            return
+        logger.info(
+            "Code2Wav CUDA graph shape telemetry trigger=%s stats=%s",
+            trigger,
+            json.dumps(stats, sort_keys=True, separators=(",", ":")),
+        )
+
     def stats(self) -> dict[str, Any]:
         """Return a strict JSON-safe snapshot of build and runtime state."""
+
+        runtime: dict[str, Any] = {
+            "graph_replays": self._graph_replays,
+            "replay_failures": self._replay_failures,
+            "fallback_counts": dict(sorted(self._fallback_counts.items())),
+        }
+        if self._shape_trace_enabled:
+            runtime["shape_telemetry"] = self._shape_telemetry_stats()
 
         return {
             "enabled": self._enabled,
@@ -708,11 +829,7 @@ class Code2WavCudaGraphRunner:
             },
             "build": deepcopy(self._build_stats),
             "memory": deepcopy(self._memory_stats),
-            "runtime": {
-                "graph_replays": self._graph_replays,
-                "replay_failures": self._replay_failures,
-                "fallback_counts": dict(sorted(self._fallback_counts.items())),
-            },
+            "runtime": runtime,
         }
 
 

@@ -194,7 +194,25 @@ the model.
 The feature derives the exact `B=1` threshold windows from
 `stream_chunk_size` and `left_context_size`; the defaults capture
 `T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
-Capture-time incompatibilities also fall back to eager execution.
+Capture-time incompatibilities also fall back to eager execution. With
+batching enabled, `batch_size > 1` graphs are captured best-effort, so a
+batched window may also fall back to eager when its graph was skipped.
+
+To observe the graph hit rate under serving traffic, enable per-shape
+telemetry:
+
+```bash
+SGLANG_OMNI_TRACE_CODE2WAV_GRAPH=1 sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
+  --colocate
+```
+
+The Code2Wav stage then logs cumulative graph replays and eager fallbacks as
+JSON, grouped by `(batch_size, frames)` with per-reason fallback counts and
+hit rates. It reports every 2,000 executions and once when the scheduler
+exits. Telemetry is disabled by default; when disabled, the decode path only
+checks a cached boolean and allocates no per-shape counters.
 
 Output overlap is also enabled by default on CUDA devices: each threshold
 window's waveform readback runs as an asynchronous device-to-host copy into a

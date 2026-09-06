@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
@@ -1048,3 +1049,219 @@ def test_runtime_disable_clears_tier1_availability() -> None:
 
     assert runner.available_batch_sizes(10) == ()
     assert runner.stats()["enabled"] is False
+
+
+_TRACE_ENV = code2wav_cuda_graph._CODE2WAV_GRAPH_TRACE_ENV
+_TRACE_LOGGER = code2wav_cuda_graph.__name__
+
+
+def _enable_shape_trace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(_TRACE_ENV, "1")
+
+
+def test_shape_trace_counts_match_constructed_workload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_shape_trace(monkeypatch)
+    runner, backend, _model = _build_runner()
+
+    for _ in range(3):
+        runner.run(_codes(backend, 1, 10))
+    runner.run(_codes(backend, 1, 20))
+    for _ in range(2):
+        runner.run(_codes(backend, 1, 40))
+    runner.run(_codes(backend, 1, 10), eligible=False)
+
+    telemetry = runner.stats()["runtime"]["shape_telemetry"]
+    assert telemetry == {
+        "total_executions": 7,
+        "graph_replays": 4,
+        "eager_fallbacks": 3,
+        "hit_rate": 4 / 7,
+        "shapes": [
+            {
+                "batch_size": 1,
+                "frames": 10,
+                "graph_replays": 3,
+                "eager_fallbacks": 1,
+                "fallback_counts": {"ineligible": 1},
+                "hit_rate": 3 / 4,
+            },
+            {
+                "batch_size": 1,
+                "frames": 20,
+                "graph_replays": 1,
+                "eager_fallbacks": 0,
+                "fallback_counts": {},
+                "hit_rate": 1.0,
+            },
+            {
+                "batch_size": 1,
+                "frames": 40,
+                "graph_replays": 0,
+                "eager_fallbacks": 2,
+                "fallback_counts": {"key_miss": 2},
+                "hit_rate": 0.0,
+            },
+        ],
+    }
+    assert runner.stats()["runtime"]["fallback_counts"] == {
+        "ineligible": 1,
+        "key_miss": 2,
+    }
+
+
+def test_shape_trace_records_batched_tier_hits_and_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_shape_trace(monkeypatch)
+    backend = _SequencedBackend(
+        snapshots=[
+            (100, 120),  # before
+            (100, 120),  # attempt baseline
+            (300, 340),  # after b4t20
+            (360, 400),  # after b4t10
+            (390, 430),  # after b2t20
+            (400, 440),  # after b2t10
+            (420, 460),  # final combined footprint
+        ],
+    )
+    runner = _build_tiered_runner(backend)
+
+    assert runner.run(_codes(backend, 4, 20)).execution_mode == "cuda_graph"
+    assert runner.run(_codes(backend, 8, 20)).fallback_reason == "key_miss"
+
+    telemetry = runner.stats()["runtime"]["shape_telemetry"]
+    assert telemetry["shapes"] == [
+        {
+            "batch_size": 4,
+            "frames": 20,
+            "graph_replays": 1,
+            "eager_fallbacks": 0,
+            "fallback_counts": {},
+            "hit_rate": 1.0,
+        },
+        {
+            "batch_size": 8,
+            "frames": 20,
+            "graph_replays": 0,
+            "eager_fallbacks": 1,
+            "fallback_counts": {"key_miss": 1},
+            "hit_rate": 0.0,
+        },
+    ]
+
+
+@pytest.mark.parametrize("trace_value", [None, "", "0", "false", "no", "off", " OFF "])
+def test_shape_trace_disabled_values_keep_runtime_stats_unchanged(
+    trace_value: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    if trace_value is None:
+        monkeypatch.delenv(_TRACE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(_TRACE_ENV, trace_value)
+    runner, backend, _model = _build_runner()
+
+    runner.run(_codes(backend, 1, 10))
+    runner.run(_codes(backend, 1, 40))
+    with caplog.at_level(logging.INFO, logger=_TRACE_LOGGER):
+        runner.log_shape_telemetry(trigger="shutdown")
+
+    assert runner._shape_graph_counts is None
+    assert runner._shape_fallback_counts is None
+    assert runner.stats()["runtime"] == {
+        "graph_replays": 1,
+        "replay_failures": 0,
+        "fallback_counts": {"key_miss": 1},
+    }
+    assert caplog.records == []
+
+
+def test_shape_trace_periodic_report_fires_exactly_on_interval(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _enable_shape_trace(monkeypatch)
+    monkeypatch.setattr(code2wav_cuda_graph, "_CODE2WAV_GRAPH_TRACE_REPORT_INTERVAL", 3)
+    runner, backend, _model = _build_runner()
+
+    with caplog.at_level(logging.INFO, logger=_TRACE_LOGGER):
+        runner.run(_codes(backend, 1, 10))
+        runner.run(_codes(backend, 1, 40))
+        assert not [r for r in caplog.records if "shape telemetry" in r.getMessage()]
+        runner.run(_codes(backend, 1, 20))
+        first = [r for r in caplog.records if "shape telemetry" in r.getMessage()]
+        assert len(first) == 1
+        for _ in range(3):
+            runner.run(_codes(backend, 1, 10))
+        reports = [r for r in caplog.records if "shape telemetry" in r.getMessage()]
+        assert len(reports) == 2
+
+    message = reports[1].getMessage()
+    assert "trigger=periodic" in message
+    payload = json.loads(message.split("stats=", 1)[1])
+    assert payload["total_executions"] == 6
+    assert payload["graph_replays"] == 5
+    assert payload["eager_fallbacks"] == 1
+
+
+def test_shape_trace_keeps_counting_after_runtime_disable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_shape_trace(monkeypatch)
+    runner, backend, _model = _build_runner()
+    runner.run(_codes(backend, 1, 10))
+    graph = next(
+        g for g in backend.graphs if tuple(g.static_input.shape) == (1, 16, 20)
+    )
+    graph.fail_replay = RuntimeError("replay exploded")
+
+    with pytest.raises(RuntimeError, match="replay exploded"):
+        runner.run(_codes(backend, 1, 20))
+    runner.run(_codes(backend, 1, 20))
+
+    telemetry = runner.stats()["runtime"]["shape_telemetry"]
+    # Note (edwardzh): the raising replay mirrors fallback_counts and records
+    # nothing; only the replay before it and the disabled retry after it count.
+    assert telemetry["total_executions"] == 2
+    assert telemetry["shapes"] == [
+        {
+            "batch_size": 1,
+            "frames": 10,
+            "graph_replays": 1,
+            "eager_fallbacks": 0,
+            "fallback_counts": {},
+            "hit_rate": 1.0,
+        },
+        {
+            "batch_size": 1,
+            "frames": 20,
+            "graph_replays": 0,
+            "eager_fallbacks": 1,
+            "fallback_counts": {"disabled": 1},
+            "hit_rate": 0.0,
+        },
+    ]
+
+
+def test_shape_trace_stats_stay_json_safe_and_shutdown_log_skips_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _enable_shape_trace(monkeypatch)
+    runner, backend, _model = _build_runner()
+
+    json.dumps(runner.stats(), allow_nan=False)
+    with caplog.at_level(logging.INFO, logger=_TRACE_LOGGER):
+        runner.log_shape_telemetry(trigger="shutdown")
+    assert caplog.records == []
+
+    runner.run(_codes(backend, 1, 10))
+    json.dumps(runner.stats(), allow_nan=False)
+    with caplog.at_level(logging.INFO, logger=_TRACE_LOGGER):
+        runner.log_shape_telemetry(trigger="shutdown")
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 1
+    assert "trigger=shutdown" in messages[0]
