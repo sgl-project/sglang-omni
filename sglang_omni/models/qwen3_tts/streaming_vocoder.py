@@ -890,7 +890,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             num_quantizers=num_quantizers,
             mode="cold",
             fresh_frames=tuple(sorted({int(frames) for frames in cold_frames})),
-            batch_sizes=(1,),
+            batch_sizes=graph_batch_sizes,
             min_free_gb=min_free_gb,
             enabled=graph_enabled,
         )
@@ -908,9 +908,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         if enabled:
             logger.info(
                 "Qwen3-TTS incremental Codec graph shapes: "
-                "cold_frames=%s cold_batch_sizes=(1,) "
+                "cold_frames=%s cold_batch_sizes=%s "
                 "warm_frames=%s warm_batch_sizes=%s",
                 tuple(sorted({int(frames) for frames in cold_frames})),
+                graph_batch_sizes,
                 warm_fresh_frames,
                 graph_batch_sizes,
             )
@@ -2157,19 +2158,22 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else:
                     planned.append((request_id, state, plan))
 
-        # Note (Qihao Liu): a bootstrap decode consumes ref_frames + the first
-        # chunk, and reference length is per request, so these shapes are
-        # inherently ragged. Keep them at B=1 rather than padding; only the
-        # uniform follow-up decodes are worth cohorting.
-        for entry in planned_incremental:
-            decoded = self._decode_incremental_group(
-                [entry], stream=self._decode_stream
-            )
-            if decoded is None:
-                continue
-            for decoded_entry, delta in zip(*decoded):
-                request_id, state, plan = decoded_entry
-                self._commit_initial(request_id, state, plan, delta)
+        # note (luojiaxuan): a bootstrap decode consumes ref_frames + the first
+        # chunk, so cohorts key on that width. Reference-prefixed requests are
+        # ragged and fall into singleton cohorts on their own; CustomVoice has
+        # no reference prefix, so every bootstrap shares one width and batches.
+        for cohort in self._group_incremental_plans(planned_incremental):
+            for group in self._split_incremental_group_for_graph(
+                cohort, runner=self._initial_incremental_decode_graphs
+            ):
+                decoded = self._decode_incremental_group(
+                    group, stream=self._decode_stream
+                )
+                if decoded is None:
+                    continue
+                for decoded_entry, delta in zip(*decoded):
+                    request_id, state, plan = decoded_entry
+                    self._commit_initial(request_id, state, plan, delta)
 
         for group in self._group_decode_plans(planned):
             decoded = self._decode_group(group, stream=self._decode_stream)
@@ -2230,13 +2234,14 @@ class Qwen3TTSStreamingVocoderScheduler(
     def _split_incremental_group_for_graph(
         self,
         group: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
+        *,
+        runner: Qwen3TTSIncrementalCodecCudaGraphRunner | None,
     ) -> list[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]]]:
         """Split cohorts above the largest captured bucket instead of falling back."""
 
-        holders = self._followup_incremental_graph_holders
-        if not group or not holders:
+        if not group or runner is None:
             return [group] if group else []
-        batch_sizes = holders[0].available_batch_sizes(
+        batch_sizes = runner.available_batch_sizes(
             group[0][2].fresh_frames
         )
         if not batch_sizes:
@@ -2495,7 +2500,9 @@ class Qwen3TTSStreamingVocoderScheduler(
                     planned.append((request_id, state, plan))
 
         for cohort in self._group_incremental_plans(planned_incremental):
-            for group in self._split_incremental_group_for_graph(cohort):
+            for group in self._split_incremental_group_for_graph(
+                cohort, runner=getattr(self._worker_ctx, "incremental_graphs", None)
+            ):
                 decoded = self._decode_incremental_group(
                     group,
                     stream=getattr(

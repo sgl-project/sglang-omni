@@ -522,7 +522,8 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
         )
 
     group = [(str(index), None, plan(index)) for index in range(10)]
-    split = scheduler._split_incremental_group_for_graph(group)
+    runner = scheduler._followup_incremental_graph_holders[0]
+    split = scheduler._split_incremental_group_for_graph(group, runner=runner)
 
     assert [len(item) for item in split] == [4, 4, 2]
     assert [entry[0] for subgroup in split for entry in subgroup] == [
@@ -530,7 +531,9 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
     ]
 
     terminal = [("terminal", None, plan(11, fresh_frames=3))]
-    assert scheduler._split_incremental_group_for_graph(terminal) == [terminal]
+    assert scheduler._split_incremental_group_for_graph(terminal, runner=runner) == [
+        terminal
+    ]
 
 
 def test_incremental_codec_warm_graph_uses_standard_batch_bucket_prefix() -> None:
