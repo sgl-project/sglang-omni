@@ -41,6 +41,17 @@ DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
+_QWEN3_TTS_DECODE_GRAPH_BATCH_SIZES = (1, 2, 4, 8)
+
+
+def _decode_graph_batch_sizes(max_batch_size: int) -> tuple[int, ...]:
+    """Return the shortest bucket prefix that preserves graph-covered batches."""
+    for index, batch_size in enumerate(_QWEN3_TTS_DECODE_GRAPH_BATCH_SIZES):
+        if batch_size >= max_batch_size:
+            return _QWEN3_TTS_DECODE_GRAPH_BATCH_SIZES[: index + 1]
+    return _QWEN3_TTS_DECODE_GRAPH_BATCH_SIZES
+
+
 # note (luojiaxuan): fail-closed acoustic guard for bootstrap-frame
 # suppression, in linear amplitude: RMS cap 1e-3 is -60 dBFS, peak cap
 # 3.2e-3 is -50 dBFS. Calibrated against the Ryan/English corpus, whose
@@ -314,7 +325,7 @@ class _Qwen3TTSInitialDecodeGraphs:
         device: torch.device,
         num_quantizers: int,
         input_frames: int | tuple[int, ...],
-        batch_sizes: tuple[int, ...] = (1, 2, 4, 8),
+        batch_sizes: tuple[int, ...] = _QWEN3_TTS_DECODE_GRAPH_BATCH_SIZES,
         enabled: bool = True,
     ) -> None:
         self._decoder = decoder
@@ -492,6 +503,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             )
         if stream_left_context_frames < 0:
             raise ValueError("stream_left_context_frames must be >= 0")
+        initial_max_batch_size = int(initial_max_batch_size)
+        followup_max_batch_size = int(followup_max_batch_size)
         if initial_max_batch_size <= 0 or followup_max_batch_size <= 0:
             raise ValueError("async batch sizes must be > 0")
         if followup_worker_count < 1:
@@ -570,7 +583,11 @@ class Qwen3TTSStreamingVocoderScheduler(
             device=self._device,
             num_quantizers=num_quantizers,
             input_frames=graph_frames,
-            batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
+            batch_sizes=(
+                (1,)
+                if self._deterministic_inference
+                else _decode_graph_batch_sizes(initial_max_batch_size)
+            ),
             enabled=bool(
                 initial_cuda_graph
                 and num_quantizers > 0
@@ -583,7 +600,11 @@ class Qwen3TTSStreamingVocoderScheduler(
                 device=self._device,
                 num_quantizers=num_quantizers,
                 input_frames=graph_frames,
-                batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
+                batch_sizes=(
+                    (1,)
+                    if self._deterministic_inference
+                    else _decode_graph_batch_sizes(followup_max_batch_size)
+                ),
                 enabled=bool(
                     followup_cuda_graph
                     and num_quantizers > 0
@@ -605,9 +626,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         # from the parameter or from the shipped default; the legacy branch only
         # fits the single follow-up stride schedule.
         self._chunk_ramp_configured = ramp_in_effect
-        self._initial_max_batch_size = int(initial_max_batch_size)
+        self._initial_max_batch_size = initial_max_batch_size
         self._initial_batch_wait_s = float(initial_batch_wait_ms) / 1000.0
-        self._followup_max_batch_size = int(followup_max_batch_size)
+        self._followup_max_batch_size = followup_max_batch_size
         self._followup_batch_wait_s = float(followup_batch_wait_ms) / 1000.0
         self._default_initial_chunk_frames = int(initial_chunk_frames)
         self._stream_left_context_frames = int(stream_left_context_frames)
