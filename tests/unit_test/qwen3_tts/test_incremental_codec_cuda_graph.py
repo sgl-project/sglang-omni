@@ -348,7 +348,7 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     )
     scheduler._async_decode = True
     scheduler._initial_decode_graphs = graph_holder("whole-sequence-initial")
-    scheduler._followup_decode_graphs = graph_holder("whole-sequence-followup")
+    scheduler._followup_graph_holders = (graph_holder("whole-sequence-followup"),)
     scheduler._initial_incremental_decode_graphs = graph_holder("cold")
     scheduler._followup_incremental_decode_graphs = graph_holder("warm")
 

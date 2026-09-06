@@ -974,12 +974,12 @@ class Qwen3TTSStreamingVocoderScheduler(
         if not self._async_decode:
             return
         self._initial_decode_graphs.capture()
+        for holder in self._followup_graph_holders:
+            holder.capture()
         if self._followup_incremental_decode_graphs is not None:
             self._followup_incremental_decode_graphs.capture()
         if self._initial_incremental_decode_graphs is not None:
             self._initial_incremental_decode_graphs.capture()
-        for holder in self._followup_graph_holders:
-            holder.capture()
 
     def on_serving_start(self) -> None:
         if not self._async_decode:
