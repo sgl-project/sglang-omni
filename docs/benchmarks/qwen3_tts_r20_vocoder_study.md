@@ -576,3 +576,26 @@ r20 p50 **68.7ms**(第九轮 79.1)。r20 各阶段均值:preprocessing 8.9ms、�
   要压这 14ms 得让 prefill 混进 decode 步(SGLang `enable_mixed_chunk` + chunked prefill)或
   在 resolve 等待期间做准入——属于 scheduler 结构改动,先用 prefill 探针把 prefill 自身的
   13.9ms 拆开再定。
+
+第十一轮结果(2026-09-06 13:50 PT,树 = 事件解耦 + record_stream + 图捕获优先级 + preprocessing 独立流;
+全部 100% 完成):
+
+| arm | underrun 三 seed | 均值 | 上一轮 | first playable p50 / p95 | 上一轮 |
+|---|---|---|---|---|---|
+| 默认 ramp (1,2,4) | 1.11 / 0.69 / 1.08% | 0.96% | 1.18% | 55-57 / 78-81 ms | 64-66 / 88-91 |
+| ramp (2,4) | 0.51 / 0.09 / 0.00% | 0.20% | 0.09% | 70-73 / 98-103 ms | ~81 / ~109 |
+
+- **preprocessing 独立流(0578cb81)**:事件剖面 r1 preprocessing 2.8 → 2.1ms(p95 16.6 → 2.5),
+  r20 8.9 → 3.2ms(p95 17 → 6.3);r20 首帧 p50 68.7 → 60.2ms(剖面口径),三 seed 口径 65 → 56ms。
+  underrun 持平(噪声内)。
+- **图捕获优先级(cf6ef922)**:单独跑的 ramp(2,4) 臂 0.51/0.17/0.58%,合并跑 0.51/0.09/0.00%,对
+  事件树 0.26/0/0%——无可测收益,方向略不利但在噪声内。保留(语义正确:图 kernel 优先级随捕获流),
+  不宣称收益。
+- **prefill 探针(r1,55 次 prefill)**:`execute()` 12.0ms = build 0.2 + prepare_forward 7.0
+  (embeds 0.2 + **forward 6.2** + sample 0.5)+ code predictor 发射 0.1 + **finalize 4.6**(等 GPU:
+  16 个量化器的 code predictor 图 replay + D2H)。prefill 只有 22 个 token 却要 6.2ms:当前
+  `cuda_graph_backend_prefill=breakable`(注意力在图外、逐层分段)——对小 token 数是发射开销主导;
+  decode 步的 forward 约 2ms。候选:`full` 后端(SGLang 另有 tc_piecewise),冒烟已排队。
+  code predictor 4.4ms/步是 16 个串行子步,已在一个图里;要再降要动子解码器的 kernel。
+- **r1 首帧账**(p50 35.6-35.9ms):preprocessing 2.1 + 准入 3.3 + prefill 12 + 首帧 code 到 vocoder
+  发出 ~5 + 第二帧等待(bootstrap 静音抑制要 2 帧,一步 ≈ forward 2 + predictor 4.4 ≈ 7)+ hop/HTTP。
