@@ -28,6 +28,7 @@ from sglang_omni.serve.realtime.events import (
     parse_client_event,
 )
 from sglang_omni.serve.realtime.vad import (
+    VAD_FRAME_SAMPLES,
     VAD_SAMPLE_RATE,
     StreamingVAD,
     VADConfig,
@@ -36,7 +37,6 @@ from sglang_omni.serve.realtime.vad import (
 )
 from sglang_omni.serve.transcription_chunking import (
     SILENT_CHUNK_PEAK_THRESHOLD,
-    check_total_duration,
     join_transcript_parts,
 )
 
@@ -339,19 +339,7 @@ class RealtimeTranscriptionSession:
                 "PCM16 audio must contain complete 16-bit samples.",
             )
             return
-        absolute_end = self.buffer_origin_samples + self.audio_buffer.num_samples
-        duration_s = (absolute_end + len(pcm) // 2) / VAD_SAMPLE_RATE
-        try:
-            check_total_duration(duration_s, self.audio_chunking)
-        except ValueError as exc:
-            await self.send_error(
-                "invalid_request_error",
-                "audio_too_long",
-                str(exc),
-            )
-            return
-
-        append_start_sample = absolute_end
+        append_start_sample = self.buffer_origin_samples + self.audio_buffer.num_samples
         try:
             self.audio_buffer.append_bytes(pcm)
         except BufferOverflow as exc:
@@ -368,6 +356,7 @@ class RealtimeTranscriptionSession:
                 await self._handle_vad_emit(emit)
 
         await self._enforce_hard_limit()
+        self._trim_idle_prefix()
         self._maybe_schedule_partial()
 
     def _absolute_vad_sample(self, sample_offset: int) -> int:
@@ -432,6 +421,27 @@ class RealtimeTranscriptionSession:
             cut = self.active_segment.start_sample + max_samples
             await self._queue_final(cut)
             self._start_segment(cut)
+
+    def _trim_idle_prefix(self) -> None:
+        """Bound the buffer while server VAD holds no active speech turn.
+
+        Audio that arrives between turns is silence the model never decodes
+        and that :meth:`_queue_final` never drains. Retaining only the VAD
+        prefix padding (plus a frame of slack for audio the VAD has not
+        consumed yet) keeps a long silent stretch from growing the buffer
+        into ``BufferOverflow``.
+        """
+        if self.vad is None or self.active_segment is not None:
+            return
+        keep_samples = (
+            self.vad.config.prefix_padding_ms * VAD_SAMPLE_RATE // 1000
+            + 2 * VAD_FRAME_SAMPLES
+        )
+        excess_bytes = self.audio_buffer.num_bytes - keep_samples * 2
+        if excess_bytes <= 0:
+            return
+        self.audio_buffer.drop_prefix(excess_bytes)
+        self.buffer_origin_samples += excess_bytes // 2
 
     async def _finalize_through(self, end_sample: int) -> None:
         if self.active_segment is None:

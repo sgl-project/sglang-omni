@@ -250,7 +250,8 @@ Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
 in the active segment. After the first two refreshes, the server rolls five
 tokens back from the prior hypothesis and uses the retained text as the next
 prompt prefix. No decoder KV cache or worker affinity is retained. Segments are
-also finalized at the model's configured 60-second audio-chunk boundary.
+also finalized at the configured `audio_chunking.max_audio_clip_s` boundary
+(30 seconds by default).
 
 Partial results are full replacements, not append-only deltas:
 

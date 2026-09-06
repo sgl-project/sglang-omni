@@ -15,7 +15,7 @@ from sglang_omni.serve.realtime import transcription_session as session_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
 )
-from sglang_omni.serve.realtime.vad import Emit, VADEvent
+from sglang_omni.serve.realtime.vad import Emit, VADConfig, VADEvent
 
 
 class RecordingWebSocket:
@@ -36,6 +36,7 @@ class RecordingWebSocket:
 class FakeVAD:
     def __init__(self) -> None:
         self.reset_calls = 0
+        self.config = VADConfig()
 
     def process(self, _pcm: bytes) -> list[Any]:
         return []
@@ -345,3 +346,34 @@ async def test_hard_limit_finalizes_in_audio_order(
     assert [event["segment_id"] for event in finals] == [0, 1, 2]
     assert websocket.events[-1]["type"] == "transcription.completed"
     assert websocket.events[-1]["text"] == "text-1 text-2 text-3"
+
+
+@pytest.mark.asyncio
+async def test_vad_idle_silence_keeps_buffer_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: FakeVAD())
+    websocket = RecordingWebSocket()
+    session = RealtimeTranscriptionSession(
+        websocket,  # type: ignore[arg-type]
+        client=FakeClient([]),  # type: ignore[arg-type]
+        model_name="qwen3-asr",
+        capability=RealtimeTranscriptionConfig(
+            strategy_cls=FakeStrategy,
+            decode_interval_ms=2000,
+        ),
+        audio_chunking=AudioChunkingConfig(max_audio_clip_s=1.0),
+        strategy=FakeStrategy(),
+        session_id="sess-idle",
+    )
+
+    # Server VAD never reports speech, so no segment starts and _queue_final
+    # never drains the buffer. Streaming past max_audio_clip_s + 4s of audio
+    # must still not raise BufferOverflow.
+    for _ in range(8):
+        await session.dispatch(_audio_event(_pcm(1.0, amplitude=0)))
+
+    assert session.active_segment is None
+    assert not [event for event in websocket.events if event["type"] == "error"]
+    assert session.audio_buffer.num_bytes < session.audio_buffer.max_bytes
+    await session.teardown()
