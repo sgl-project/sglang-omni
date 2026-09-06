@@ -737,6 +737,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             self._initial_incremental_decode_graphs,
             self._followup_incremental_graph_holders,
         ) = self._build_incremental_graph_runners(
+            worker_count=worker_count,
             dtype=codec_state_dtype,
             num_quantizers=num_quantizers,
             codec_state_slots=int(codec_state_slots),
@@ -859,6 +860,7 @@ class Qwen3TTSStreamingVocoderScheduler(
     def _build_incremental_graph_runners(
         self,
         *,
+        worker_count: int,
         dtype: torch.dtype,
         num_quantizers: int,
         codec_state_slots: int,
@@ -927,7 +929,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 min_free_gb=min_free_gb,
                 enabled=graph_enabled,
             )
-            for _ in range(self._followup_worker_count)
+            for _ in range(worker_count)
         )
         return initial, followups
 
