@@ -517,7 +517,12 @@
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-variants">Model Variants</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#customvoice-checkpoints">CustomVoice Checkpoints</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-base">0.6B Base</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-customvoice">1.7B CustomVoice</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
             </nav>
@@ -1038,8 +1043,57 @@ only the first chunk.</p>
 <p>Both expose an identical request API. The 1.7B model has higher capacity (typically better
 quality) at a larger memory and latency cost; the 0.6B model is lighter and faster.</p>
 </section>
+<section id="customvoice-checkpoints">
+<h2>CustomVoice Checkpoints<a class="headerlink" href="#customvoice-checkpoints" title="Link to this heading">#</a></h2>
+<p>CustomVoice generates speech with built-in speakers through the same pipeline. Use it without reference audio; omit <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code>, <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, <code class="docutils literal notranslate"><span class="pre">references</span></code>, and <code class="docutils literal notranslate"><span class="pre">x_vector_only_mode</span></code>. Omit <code class="docutils literal notranslate"><span class="pre">task_type</span></code> or set it to <code class="docutils literal notranslate"><span class="pre">CustomVoice</span></code>.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Checkpoint</p></th>
+<th class="head"><p>Config</p></th>
+<th class="head"><p>Instruction guidance</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_0_6b_customvoice.yaml</span></code></p></td>
+<td><p>Accepted for backward compatibility, but not recommended</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_1_7b_customvoice.yaml</span></code></p></td>
+<td><p>Supported</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Both released checkpoints provide <code class="docutils literal notranslate"><span class="pre">Serena</span></code>, <code class="docutils literal notranslate"><span class="pre">Vivian</span></code>, <code class="docutils literal notranslate"><span class="pre">Uncle_Fu</span></code>, <code class="docutils literal notranslate"><span class="pre">Ryan</span></code>, <code class="docutils literal notranslate"><span class="pre">Aiden</span></code>, <code class="docutils literal notranslate"><span class="pre">Ono_Anna</span></code>, <code class="docutils literal notranslate"><span class="pre">Sohee</span></code>, <code class="docutils literal notranslate"><span class="pre">Eric</span></code>, and <code class="docutils literal notranslate"><span class="pre">Dylan</span></code>. Speaker matching is case-insensitive; an omitted or <code class="docutils literal notranslate"><span class="pre">default</span></code> voice selects <code class="docutils literal notranslate"><span class="pre">Vivian</span></code>. <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/audio/voices</span></code> lists <code class="docutils literal notranslate"><span class="pre">default</span></code> and the served checkpoint’s speakers. Unknown speakers or supplied cloning fields return HTTP 400; uploaded reference voices are not used for CustomVoice synthesis.</p>
+<p>Both sizes support buffered speech, batch requests, incremental HTTP PCM output, and WebSocket audio output. HTTP streaming requires <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> with <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code>; WebSocket sessions use <code class="docutils literal notranslate"><span class="pre">stream_audio=true</span></code> with <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code>.</p>
+<p><strong>0.6B instruction compatibility:</strong> SGLang-Omni continues to pass optional <code class="docutils literal notranslate"><span class="pre">instructions</span></code> into the 0.6B prompt, preserving existing behavior. The released 0.6B model does not provide reliable instruction control; omit this field or use 1.7B when style control is needed.</p>
+<p><strong>Eric/Dylan language behavior:</strong> For both sizes, <code class="docutils literal notranslate"><span class="pre">language:</span> <span class="pre">Auto</span></code> selects Eric’s Sichuan dialect token or Dylan’s Beijing dialect token. An explicit language takes precedence: <code class="docutils literal notranslate"><span class="pre">language:</span> <span class="pre">Chinese</span></code> keeps the Chinese language token. This preserves existing SGLang-Omni behavior and differs from the QwenLM/Qwen3-TTS Python wrapper (<code class="docutils literal notranslate"><span class="pre">qwen-tts</span></code> 0.1.1), which also selects dialect tokens for <code class="docutils literal notranslate"><span class="pre">Chinese</span></code>. This is a conditioning choice, not a guarantee that the speaker’s accent disappears.</p>
+<p>Start the 1.7B checkpoint with its matching config:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_customvoice.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Then select a built-in speaker in the request. For 0.6B, use its model/config pair from the table and omit <code class="docutils literal notranslate"><span class="pre">instructions</span></code>.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",</span>
+<span class="s1">    "input": "SGLang-Omni serves Qwen CustomVoice.",</span>
+<span class="s1">    "voice": "Ryan",</span>
+<span class="s1">    "language": "English",</span>
+<span class="s1">    "instructions": "Speak clearly and calmly."</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>custom-voice.wav
+</pre></div>
+</div>
+</section>
 <section id="benchmark-results">
 <h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
+<section id="b-base">
+<h3>0.6B Base<a class="headerlink" href="#b-base" title="Link to this heading">#</a></h3>
 <p>Qwen3-TTS-12Hz-0.6B-Base on Seed-TTS EN (1088 utterances, reference voice cloning from each
 prompt), concurrency 16, WER scored with HF Whisper-large-v3. Hardware: 1× H200 SXM.</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1081,6 +1135,81 @@ repetition loop and generated ~164 s of looping audio up to <code class="docutil
 the raw micro-average to 18.29%; excluding those, corpus WER is 1.07%. RTF &gt; 1 reflects the
 0.6B codec pipeline at concurrency 16, not single-stream latency. The 1.7B checkpoint trades
 latency for quality.</p>
+</section>
+<section id="b-customvoice">
+<h3>1.7B CustomVoice<a class="headerlink" href="#b-customvoice" title="Link to this heading">#</a></h3>
+<p>Qwen3-TTS-12Hz-1.7B-CustomVoice on the full Seed-TTS-Eval EN and ZH splits, concurrency 16, with 16 warmup requests per language/mode and <code class="docutils literal notranslate"><span class="pre">max_new_tokens=2048</span></code>. EN used Ryan/English and ZH used Vivian/Chinese, without reference audio or instructions. WER/CER was scored with Qwen3-ASR-1.7B at concurrency 32. Hardware: 1× H200 141 GB, BF16, TP1. Sampling overrides and seed were unset.</p>
+<p>The server used <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.max_running_requests</span> <span class="pre">64</span></code>, <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.cuda_graph_max_bs</span> <span class="pre">64</span></code>, <code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.torch_compile_max_bs</span> <span class="pre">64</span></code>, <code class="docutils literal notranslate"><span class="pre">--vocoder.process</span> <span class="pre">vocoder</span></code>, <code class="docutils literal notranslate"><span class="pre">--tts_engine.gpu_memory_fraction</span> <span class="pre">0.85</span></code>, and <code class="docutils literal notranslate"><span class="pre">--vocoder.gpu_memory_fraction</span> <span class="pre">0.10</span></code>; <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> remained disabled. Streaming used the default <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">-&gt;</span> <span class="pre">2</span> <span class="pre">-&gt;</span> <span class="pre">4</span></code> chunk ramp without a request-level override. Each language/mode was measured once, in non-streaming EN/ZH then streaming EN/ZH order on the same warmed server. The target GPU had no external GPU process during timed windows; host CPU, memory, and I/O were shared with another profiling task.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Metric</p></th>
+<th class="head text-right"><p>Non-streaming EN</p></th>
+<th class="head text-right"><p>Non-streaming ZH</p></th>
+<th class="head text-right"><p>Streaming EN</p></th>
+<th class="head text-right"><p>Streaming ZH</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Samples</p></td>
+<td class="text-right"><p>1088</p></td>
+<td class="text-right"><p>2020</p></td>
+<td class="text-right"><p>1088</p></td>
+<td class="text-right"><p>2020</p></td>
+</tr>
+<tr class="row-odd"><td><p>Corpus WER/CER</p></td>
+<td class="text-right"><p>1.608%</p></td>
+<td class="text-right"><p>0.984%</p></td>
+<td class="text-right"><p>2.085%</p></td>
+<td class="text-right"><p>0.927%</p></td>
+</tr>
+<tr class="row-even"><td><p>Corpus WER/CER (excl. &gt;50% outliers)</p></td>
+<td class="text-right"><p>1.359%</p></td>
+<td class="text-right"><p>0.984%</p></td>
+<td class="text-right"><p>1.454%</p></td>
+<td class="text-right"><p>0.927%</p></td>
+</tr>
+<tr class="row-odd"><td><p>Samples above 50% WER/CER</p></td>
+<td class="text-right"><p>3</p></td>
+<td class="text-right"><p>0</p></td>
+<td class="text-right"><p>4</p></td>
+<td class="text-right"><p>0</p></td>
+</tr>
+<tr class="row-even"><td><p>UTMOS</p></td>
+<td class="text-right"><p>4.1723</p></td>
+<td class="text-right"><p>3.1824</p></td>
+<td class="text-right"><p>4.1500</p></td>
+<td class="text-right"><p>3.1789</p></td>
+</tr>
+<tr class="row-odd"><td><p>QPS</p></td>
+<td class="text-right"><p>14.788</p></td>
+<td class="text-right"><p>13.307</p></td>
+<td class="text-right"><p>10.098</p></td>
+<td class="text-right"><p>8.333</p></td>
+</tr>
+<tr class="row-even"><td><p>Latency mean (s)</p></td>
+<td class="text-right"><p>1.075</p></td>
+<td class="text-right"><p>1.198</p></td>
+<td class="text-right"><p>1.573</p></td>
+<td class="text-right"><p>1.915</p></td>
+</tr>
+<tr class="row-odd"><td><p>RTF mean</p></td>
+<td class="text-right"><p>0.2335</p></td>
+<td class="text-right"><p>0.2079</p></td>
+<td class="text-right"><p>0.3380</p></td>
+<td class="text-right"><p>0.3332</p></td>
+</tr>
+<tr class="row-even"><td><p>TTFA mean (s)</p></td>
+<td class="text-right"><p>N/A</p></td>
+<td class="text-right"><p>N/A</p></td>
+<td class="text-right"><p>0.1213</p></td>
+<td class="text-right"><p>0.1047</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference words / characters and includes every sample. The filtered row excludes samples whose own WER/CER exceeds 50% and recomputes the corpus rate. UTMOS is the mean predicted audio-quality score, not a listening-test score. These independently sampled runs are not a paired comparison of streaming and non-streaming quality; the Base result also uses different conditioning and a different ASR evaluator.</p>
+<p>TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see <a class="reference internal" href="#first-audio-chunk-ramp"><span class="std std-ref">First-audio chunk ramp</span></a> for the buffering tradeoff.</p>
+</section>
 </section>
 <section id="known-limitations">
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
@@ -1170,7 +1299,12 @@ checkpoint is less prone.</p></li>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-variants">Model Variants</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#customvoice-checkpoints">CustomVoice Checkpoints</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-base">0.6B Base</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#b-customvoice">1.7B CustomVoice</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
   </nav></div>

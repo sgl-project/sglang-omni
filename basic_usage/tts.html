@@ -573,9 +573,9 @@ for details.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_0_6b.yaml</span></code>, <code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_1_7b.yaml</span></code></p></td>
 <td><p>Requires reference audio through <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> or <code class="docutils literal notranslate"><span class="pre">references[0].audio_path</span></code>. <code class="docutils literal notranslate"><span class="pre">language</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">auto</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS CustomVoice</span></a></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_0_6b_customvoice.yaml</span></code></p></td>
-<td><p>Text-only requests use the checkpoint speaker table. Set <code class="docutils literal notranslate"><span class="pre">voice</span></code> to the desired checkpoint speaker</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice-checkpoints"><span class="std std-ref">Qwen3-TTS CustomVoice</span></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_0_6b_customvoice.yaml</span></code>, <code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_1_7b_customvoice.yaml</span></code></p></td>
+<td><p>Text-only synthesis with built-in speakers; omit <code class="docutils literal notranslate"><span class="pre">voice</span></code> for Vivian. Both sizes support streaming; use 1.7B for instruction control</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS VoiceDesign</span></a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_1_7b_voicedesign.yaml</span></code></p></td>
@@ -660,13 +660,14 @@ references, or data URLs.</p>
 </div>
 <p>For Qwen3-TTS CustomVoice:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_0_6b_customvoice.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_customvoice.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--allowed-media-domain<span class="w"> </span>huggingface.co<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--allowed-media-domain<span class="w"> </span>cas-bridge.xethub.hf.co<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>For 0.6B CustomVoice, use <code class="docutils literal notranslate"><span class="pre">Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice</span></code> with <code class="docutils literal notranslate"><span class="pre">examples/configs/qwen3_tts_0_6b_customvoice.yaml</span></code>.</p>
 <p>For Qwen3-TTS VoiceDesign:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign<span class="w"> </span><span class="se">\</span>
@@ -755,6 +756,20 @@ Qwen3-TTS CustomVoice, Voxtral, and S2-Pro. It is not valid for Qwen3-TTS Base.<
 <span class="w">  </span>--output<span class="w"> </span>output.wav
 </pre></div>
 </div>
+<p>Qwen3-TTS CustomVoice uses a built-in speaker without reference audio:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",</span>
+<span class="s1">    "input": "Hello from Qwen CustomVoice.",</span>
+<span class="s1">    "voice": "Ryan",</span>
+<span class="s1">    "language": "English",</span>
+<span class="s1">    "instructions": "Speak clearly and calmly."</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>custom-voice.wav
+</pre></div>
+</div>
+<p>Omit cloning fields (<code class="docutils literal notranslate"><span class="pre">ref_audio</span></code>, <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, <code class="docutils literal notranslate"><span class="pre">references</span></code>, and <code class="docutils literal notranslate"><span class="pre">x_vector_only_mode</span></code>) and omit <code class="docutils literal notranslate"><span class="pre">task_type</span></code> or set it to <code class="docutils literal notranslate"><span class="pre">CustomVoice</span></code>. For 0.6B, omit <code class="docutils literal notranslate"><span class="pre">instructions</span></code>: it remains accepted for compatibility, but reliable instruction control is not supported. See <a class="reference internal" href="../cookbook/qwen3_tts.html#customvoice-checkpoints"><span class="std std-ref">CustomVoice checkpoints</span></a> for speaker discovery, streaming, and Eric/Dylan language behavior.</p>
 <p>Qwen3-TTS VoiceDesign uses text plus voice instructions:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -966,6 +981,7 @@ stored voices and defaults to <code class="docutils literal notranslate"><span c
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>http://localhost:8000/v1/audio/voices
 </pre></div>
 </div>
+<p>For CustomVoice, the response’s <code class="docutils literal notranslate"><span class="pre">voices</span></code> list contains <code class="docutils literal notranslate"><span class="pre">default</span></code> and the served checkpoint’s built-in speakers. Uploaded reference voices are not used for CustomVoice synthesis.</p>
 <p>Use the uploaded voice by name:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
