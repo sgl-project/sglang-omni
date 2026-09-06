@@ -35,9 +35,7 @@ def _max_reachable_decoder_prefill_tokens(
     request_limit: int,
 ) -> int:
     """Return the largest decoder-token batch allowed by atomic admission."""
-    max_request_tokens = (
-        encoder_token_count + _DECODER_PREFILL_TOKENS_PER_REQUEST
-    )
+    max_request_tokens = encoder_token_count + _DECODER_PREFILL_TOKENS_PER_REQUEST
     lower_request_count = min(
         request_limit,
         max(1, budget // max_request_tokens),
