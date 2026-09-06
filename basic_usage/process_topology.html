@@ -1,0 +1,952 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Process Topology, Replicas, and GPU Sharing &#8212; SGLang</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=4418a689" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=23027dbc"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=ccdb6887"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'basic_usage/process_topology';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
+    <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
+    <link rel="icon" href="../_static/logo.ico"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="TTS Process Topology" href="tts_process_topology.html" />
+    <link rel="prev" title="TTS Model Usage" href="tts.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.1.4" />
+    <meta name="docbuild:last-update" content="Sep 06, 2026"/>
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">🚀 Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">Installation — Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">🚀 Installation — Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">🚀 Installation — Intel CPU</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/higgs_tts.html">Higgs TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/voxtral_tts.html">Voxtral TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_tts.html">Qwen3 TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/dots_tts.html">dots.tts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/minimax_music3.html">MiniMax Music 3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/zonos2.html">ZONOS2</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/arkasr.html">ARK-ASR-3B</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/whisper_asr.html">Whisper ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="qwen3_omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="audio_translations.html">Audio Translations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Process Topology, Replicas, and GPU Sharing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tts_process_topology.html">TTS Process Topology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="process_topology_migration.html">Process Topology Migration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="omni_router.html">SGLang-Omni Rust Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Benchmarks</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../benchmarks/relay.html">Benchmark Relay</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/apiserver_design.html">API Server Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/pipeline.html">Pipeline Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/adding_parameters.html">Adding a Parameter</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/reference_encode_service.html">Reference Encode Service</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../developer_reference/bump_version.html">Bumping the SGLang Pin</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/basic_usage/process_topology.md?plain=1" target="_blank"
+   class="btn btn-sm btn-source-file-button dropdown-item"
+   title="Show source"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-code"></i>
+  </span>
+<span class="btn__text-container">Show source</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/basic_usage/process_topology.md" target="_blank"
+   class="btn btn-sm btn-source-edit-button dropdown-item"
+   title="Suggest edit"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-pencil-alt"></i>
+  </span>
+<span class="btn__text-container">Suggest edit</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fbasic_usage/process_topology.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../_sources/basic_usage/process_topology.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Process Topology, Replicas, and GPU Sharing</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stages-and-process-topology">Stages and process topology</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#process-replicas">Process replicas</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#placement">Placement</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda-mps">CUDA MPS</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda-ipc-weight-sharing">CUDA IPC weight sharing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#putting-it-together">Putting it together</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#replicas-across-gpus">Replicas across GPUs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#replicas-on-one-gpu">Replicas on one GPU</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#replicas-on-one-gpu-with-mps-and-weight-sharing">Replicas on one GPU with MPS and weight sharing</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance-and-correctness">Performance and correctness</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#migration">Migration</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="process-topology-replicas-and-gpu-sharing">
+<h1>Process Topology, Replicas, and GPU Sharing<a class="headerlink" href="#process-topology-replicas-and-gpu-sharing" title="Link to this heading">#</a></h1>
+<p>Four mechanisms decide how an SGLang-Omni pipeline occupies its GPUs. They
+compose, and each answers a different question:</p>
+<ol class="arabic simple">
+<li><p><strong>Process topology</strong> defines which stages run together.</p></li>
+<li><p><strong>Process replicas</strong> define how many copies run.</p></li>
+<li><p><strong>Placement</strong> defines where they run.</p></li>
+<li><p><strong>CUDA MPS</strong> improves kernel scheduling between processes on one GPU.</p></li>
+<li><p><strong>CUDA IPC weight sharing</strong> removes duplicate weight copies on one GPU.</p></li>
+</ol>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Mechanism</p></th>
+<th class="head"><p>Configured per</p></th>
+<th class="head"><p>What it changes</p></th>
+<th class="head"><p>What it does not do</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Process topology</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">StageConfig.process</span></code></p></td>
+<td><p>non-TP logical Process membership; TP materializes per rank</p></td>
+<td><p>replica count, placement</p></td>
+</tr>
+<tr class="row-odd"><td><p>Process replica</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">PipelineConfig.processes[&lt;name&gt;]</span></code></p></td>
+<td><p>copies a whole logical Process, sticky per request</p></td>
+<td><p>model parallelism for one request, MPS</p></td>
+</tr>
+<tr class="row-even"><td><p>Placement</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">replica_devices</span></code></p></td>
+<td><p>the GPU each replica or rank lands on</p></td>
+<td><p>GPU context scheduling</p></td>
+</tr>
+<tr class="row-odd"><td><p>CUDA MPS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mps</span></code></p></td>
+<td><p>kernel overlap between colocated CUDA contexts</p></td>
+<td><p>routing, weight or KV sharing</p></td>
+</tr>
+<tr class="row-even"><td><p>CUDA IPC weight sharing</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">weight_share</span></code></p></td>
+<td><p>followers alias the leader’s immutable weights</p></td>
+<td><p>KV, CUDA graphs, sampler, request state</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Which one you want:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Your question</p></th>
+<th class="head"><p>Mechanism</p></th>
+<th class="head"><p>What it will not solve</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Which stages share one OS process and its local state?</p></td>
+<td><p>Process topology</p></td>
+<td><p>replica count and GPU placement</p></td>
+</tr>
+<tr class="row-odd"><td><p>Which bottleneck Process needs more capacity?</p></td>
+<td><p>Process replica</p></td>
+<td><p>model parallelism for a single request</p></td>
+</tr>
+<tr class="row-even"><td><p>Which GPU does each replica run on?</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">replica_devices</span></code></p></td>
+<td><p>CUDA context scheduling</p></td>
+</tr>
+<tr class="row-odd"><td><p>How do colocated processes use idle compute?</p></td>
+<td><p>CUDA MPS</p></td>
+<td><p>replica creation and request routing</p></td>
+</tr>
+<tr class="row-even"><td><p>Full replicas on one GPU do not fit in VRAM?</p></td>
+<td><p>CUDA IPC weight sharing</p></td>
+<td><p>KV, CUDA graph, and request-state sharing</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<section id="stages-and-process-topology">
+<h2>Stages and process topology<a class="headerlink" href="#stages-and-process-topology" title="Link to this heading">#</a></h2>
+<p>A stage is one logical execution unit of the pipeline DAG. It declares its
+factory, wiring (<code class="docutils literal notranslate"><span class="pre">next</span></code>, <code class="docutils literal notranslate"><span class="pre">stream_to</span></code>, <code class="docutils literal notranslate"><span class="pre">wait_for</span></code>), GPU, TP size, runtime
+resources, and process name.</p>
+<p>For a non-TP stage, <code class="docutils literal notranslate"><span class="pre">StageConfig.process</span></code> defines Process membership. Stages
+sharing a Process Name share an OS process, Python heap, asyncio event loop,
+and local dispatch path; GPU members also share one CUDA context. A TP stage
+owns its logical Process and materializes one OS process per rank.</p>
+<p>A logical Process is a grouping, spawn, and placement boundary. It is not a
+recovery boundary: any child stage process dying still stops the pipeline.</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">talker_ar</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">process</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">talker_ar</span>
+<span class="w">  </span><span class="nt">code2wav</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">process</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">code2wav</span>
+</pre></div>
+</div>
+<p>Inspect the resolved result with <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">config</span> <span class="pre">resolve</span> <span class="pre">--config</span> <span class="pre">&lt;config.yaml&gt;</span> <span class="pre">--show</span> <span class="pre">config</span></code>.</p>
+</section>
+<section id="process-replicas">
+<h2>Process replicas<a class="headerlink" href="#process-replicas" title="Link to this heading">#</a></h2>
+<p>A replica copies a whole logical Process, not a single stage. Stages inside one
+Process are copied together under the same replica index. The runtime names
+physical instances <code class="docutils literal notranslate"><span class="pre">&lt;name&gt;&#64;rN</span></code>, while models and routes keep referring to
+logical names.</p>
+<p>At admission the coordinator picks one replica per replicated Process the
+request touches. That binding rides the message and stays fixed for the whole
+request lifetime, across payload, stream, completion, and abort paths. The
+default policy is per-Process thread-safe round robin, chosen independently for
+each Process.</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">processes</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">talker_ar</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">num_replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">replica_devices</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">code2wav</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">num_replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">replica_devices</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+</section>
+<section id="placement">
+<h2>Placement<a class="headerlink" href="#placement" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">replica_devices</span></code> sets the GPU each replica uses, including replica 0, and
+overrides the placement of every GPU stage inside that replica. CPU stages are
+unaffected and stay on the host.</p>
+<p>A GPU Process with <code class="docutils literal notranslate"><span class="pre">num_replicas</span> <span class="pre">&gt;</span> <span class="pre">1</span></code> must declare <code class="docutils literal notranslate"><span class="pre">replica_devices</span></code>: <code class="docutils literal notranslate"><span class="pre">N</span></code>
+device ids for a non-TP Process, <code class="docutils literal notranslate"><span class="pre">N</span> <span class="pre">x</span> <span class="pre">T</span></code> for a Process with TP size <code class="docutils literal notranslate"><span class="pre">T</span></code>. Every
+GPU stage in that Process must also come from a factory that declares a
+<code class="docutils literal notranslate"><span class="pre">gpu_id</span></code> parameter, otherwise startup refuses the placement by name; not all
+model stages do yet.
+Different replicas may repeat a device id, which is how same-GPU data
+parallelism is expressed:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">processes</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">code2wav</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">num_replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">replica_devices</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+<p>That places two non-TP replicas on GPU 1. It does not mean two ranks of one TP
+replica may share a GPU.</p>
+<p>When <code class="docutils literal notranslate"><span class="pre">replica_devices</span></code> colocates Process groups on one GPU, every GPU stage
+involved must declare <code class="docutils literal notranslate"><span class="pre">gpu_memory_fraction</span></code>, whether or not the general
+colocation check is enabled. The value is a placement-time budget, not a
+runtime memory limit:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">code2wav</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gpu_memory_fraction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.014</span>
+</pre></div>
+</div>
+</section>
+<section id="cuda-mps">
+<h2>CUDA MPS<a class="headerlink" href="#cuda-mps" title="Link to this heading">#</a></h2>
+<p>MPS only schedules multiple CUDA contexts on one GPU. It does not create
+replicas, choose routes, or share weights, KV, or CUDA graphs. When a single
+context already saturates the GPU, MPS can add contention and tail latency
+rather than throughput.</p>
+<p>The runtime manages the daemon itself. Modes (<code class="docutils literal notranslate"><span class="pre">--mps</span></code> on the CLI or <code class="docutils literal notranslate"><span class="pre">mps:</span></code> in
+the config, default <code class="docutils literal notranslate"><span class="pre">off</span></code>):</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">off</span></code>: MPS is never touched.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">auto</span></code>: enabled on every GPU hosting two or more single-GPU, non-TP CUDA
+processes of this pipeline, including process replicas.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">on</span></code>: one eligible process is enough, and an MPS-incapable platform is a hard
+error instead of a warning.</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>&lt;config.yaml&gt;<span class="w"> </span>--mps<span class="w"> </span>auto<span class="w"> </span>--port<span class="w"> </span><span class="m">8091</span>
+</pre></div>
+</div>
+<p>The daemon is shared per physical GPU, keyed by device UUID. See
+<a class="reference internal" href="mps_dp.html"><span class="std std-doc">Same-GPU Data Parallelism with CUDA MPS</span></a> for the full lifecycle,
+verification, and operator notes.</p>
+</section>
+<section id="cuda-ipc-weight-sharing">
+<h2>CUDA IPC weight sharing<a class="headerlink" href="#cuda-ipc-weight-sharing" title="Link to this heading">#</a></h2>
+<p>Weight sharing removes duplicate weight VRAM; it does not change scheduling.
+Within one sharing group, the lowest replica index is the leader: it loads the
+checkpoint and publishes CUDA-IPC handles. Followers build the same module tree
+with dummy weights and alias the leader’s immutable parameters and buffers by
+assignment. KV cache, CUDA graphs, sampler state, request state, and any tensor
+the architecture’s share policy marks replica-private stay per replica.</p>
+<p>Use it to make a replica count fit, or to free VRAM for KV, CUDA graphs, and
+more replicas. It is a capacity mechanism, not a throughput optimization.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>&lt;config.yaml&gt;<span class="w"> </span>--mps<span class="w"> </span>on<span class="w"> </span>--weight-share<span class="w"> </span>on<span class="w"> </span>--port<span class="w"> </span><span class="m">8091</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">weight_share</span></code> is <code class="docutils literal notranslate"><span class="pre">off</span></code> or <code class="docutils literal notranslate"><span class="pre">on</span></code> (default <code class="docutils literal notranslate"><span class="pre">off</span></code>). When <code class="docutils literal notranslate"><span class="pre">on</span></code>, every logical
+Process whose replicas repeat a GPU id becomes a sharing group on that GPU, and
+the runtime assigns roles itself; <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_WEIGHT_SHARE</span></code> must not be set in
+the environment. Replicas of the same Process that are alone on their GPU keep
+loading their own weights and still serve requests normally.</p>
+<p>Requirements, all checked before any process is spawned:</p>
+<ul class="simple">
+<li><p>the sharing Process has exactly one SGLang engine stage, with <code class="docutils literal notranslate"><span class="pre">tp=pp=1</span></code>;</p></li>
+<li><p>that stage pins <code class="docutils literal notranslate"><span class="pre">max_total_tokens</span></code>, because a follower attaches after its
+dummy weights are freed and memory profiling cannot derive a stable KV
+budget;</p></li>
+<li><p>the architecture is on the share-policy allowlist, which the engine enforces
+when the leader loads.</p></li>
+</ul>
+<p>Because sharing rides on process replicas, it is available to a model only when
+that model’s GPU stage factories accept <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code> as described under Placement.
+Models on the allowlist whose factories do not can still share weights through
+the multi-serve <code class="docutils literal notranslate"><span class="pre">examples/mps_dp/launch.sh</span></code> recipe.</p>
+<p>Followers are spawned only after every leader is ready, and are shut down
+before their leader. Sharing is a whole-group lifecycle: the leader must
+outlive its followers, online weight updates are refused while sharing is
+active, and a dead leader fails the pipeline rather than serving aliased
+memory. Restart the pipeline as a whole.</p>
+<p>Weight sharing does not require MPS, and MPS does not require weight sharing.
+<code class="docutils literal notranslate"><span class="pre">--mps</span> <span class="pre">on</span> <span class="pre">--weight-share</span> <span class="pre">on</span></code> is the usual same-GPU DP combination: MPS gives
+the replicas kernel overlap, weight sharing gives them room to fit.</p>
+</section>
+<section id="putting-it-together">
+<h2>Putting it together<a class="headerlink" href="#putting-it-together" title="Link to this heading">#</a></h2>
+<p>Configure in this order:</p>
+<ol class="arabic simple">
+<li><p>decide which stages share a process;</p></li>
+<li><p>choose the replica count;</p></li>
+<li><p>place each replica on a GPU;</p></li>
+<li><p>enable MPS when processes share a GPU;</p></li>
+<li><p>enable weight sharing when duplicate weights are the capacity limit.</p></li>
+</ol>
+<section id="replicas-across-gpus">
+<h3>Replicas across GPUs<a class="headerlink" href="#replicas-across-gpus" title="Link to this heading">#</a></h3>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">config_cls</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Qwen3OmniSpeechPipelineConfig</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">qwen3-omni-speech-replica2</span>
+<span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Qwen/Qwen3-Omni-30B-A3B-Instruct</span>
+
+<span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">talker_ar</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gpu_memory_fraction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.123</span>
+<span class="w">  </span><span class="nt">code2wav</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gpu_memory_fraction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.014</span>
+
+<span class="nt">processes</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">talker_ar</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">num_replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">replica_devices</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">]</span>
+<span class="w">  </span><span class="nt">code2wav</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">num_replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">replica_devices</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+<p>Resolved layout:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">GPU</span> <span class="mi">0</span><span class="p">:</span> <span class="n">image_encoder</span> <span class="o">+</span> <span class="n">audio_encoder</span> <span class="o">+</span> <span class="n">thinker</span>
+<span class="n">GPU</span> <span class="mi">1</span><span class="p">:</span> <span class="n">talker_ar</span><span class="nd">@r0</span> <span class="o">+</span> <span class="n">code2wav</span><span class="nd">@r0</span>
+<span class="n">GPU</span> <span class="mi">2</span><span class="p">:</span> <span class="n">talker_ar</span><span class="nd">@r1</span> <span class="o">+</span> <span class="n">code2wav</span><span class="nd">@r1</span>
+</pre></div>
+</div>
+<p>Run it with <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span> <span class="pre">--config</span> <span class="pre">examples/configs/qwen3_omni_speech_replica2.yaml</span> <span class="pre">--port</span> <span class="pre">8091</span></code>; the full file is
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_omni_speech_replica2.yaml"><code class="docutils literal notranslate"><span class="pre">qwen3_omni_speech_replica2.yaml</span></code></a>.</p>
+</section>
+<section id="replicas-on-one-gpu">
+<h3>Replicas on one GPU<a class="headerlink" href="#replicas-on-one-gpu" title="Link to this heading">#</a></h3>
+<p>Repeat the device id and declare the memory budget for every GPU stage on
+that card. Without <code class="docutils literal notranslate"><span class="pre">--mps</span></code>, the replicas time-slice the GPU. MOSS TTS local is
+used here because its engine factory accepts <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code> and its architecture is
+on the weight-share allowlist, so the same file also serves the next example:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">config_cls</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">MossTTSLocalPipelineConfig</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mossl</span>
+<span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5</span>
+
+<span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">preprocessing</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">gpu_memory_fraction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.05</span>
+<span class="w">  </span><span class="nt">tts_engine</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">gpu_memory_fraction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.35</span>
+<span class="w">    </span><span class="nt">engine</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">mem_fraction_static</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.30</span>
+<span class="w">      </span><span class="nt">max_total_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30000</span>
+<span class="w">  </span><span class="nt">vocoder</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<span class="w">    </span><span class="nt">gpu_memory_fraction</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.15</span>
+
+<span class="nt">processes</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">pipeline</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">num_replicas</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">replica_devices</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+</section>
+<section id="replicas-on-one-gpu-with-mps-and-weight-sharing">
+<h3>Replicas on one GPU with MPS and weight sharing<a class="headerlink" href="#replicas-on-one-gpu-with-mps-and-weight-sharing" title="Link to this heading">#</a></h3>
+<p>Same config, plus the two runtime flags. <code class="docutils literal notranslate"><span class="pre">max_total_tokens</span></code> above is what
+weight sharing requires of the engine stage:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>&lt;config.yaml&gt;<span class="w"> </span>--mps<span class="w"> </span>on<span class="w"> </span>--weight-share<span class="w"> </span>on<span class="w"> </span>--port<span class="w"> </span><span class="m">8091</span>
+</pre></div>
+</div>
+<p>The leader holds the shared weights; the follower attaches over CUDA IPC and
+carries only its own KV, graphs, and request state.</p>
+</section>
+</section>
+<section id="performance-and-correctness">
+<h2>Performance and correctness<a class="headerlink" href="#performance-and-correctness" title="Link to this heading">#</a></h2>
+<p>Replicas mainly help under queueing and higher concurrency. At low concurrency
+they can be slightly slower, because the parallelism gain does not cover
+routing and process overhead. MPS helps only when colocated processes have
+overlappable GPU work. Weight sharing saves memory and does not by itself
+improve scheduling.</p>
+<p>Validate a topology change on: serial output consistency, concurrent routing
+and request isolation, abort and recovery, clean exit of processes, ports, and
+GPU memory, and, when enabled, MPS attachment and the weight-share lifecycle.</p>
+</section>
+<section id="migration">
+<h2>Migration<a class="headerlink" href="#migration" title="Link to this heading">#</a></h2>
+<p>Removed interfaces and their replacements are covered in
+<a class="reference internal" href="process_topology_migration.html"><span class="std std-doc">Process Topology Migration</span></a>: express process
+membership with <code class="docutils literal notranslate"><span class="pre">StageConfig.process</span></code>, and replica count and placement with the
+top-level <code class="docutils literal notranslate"><span class="pre">processes</span></code> block.</p>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="tts.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">TTS Model Usage</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="tts_process_topology.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">TTS Process Topology</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stages-and-process-topology">Stages and process topology</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#process-replicas">Process replicas</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#placement">Placement</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda-mps">CUDA MPS</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda-ipc-weight-sharing">CUDA IPC weight sharing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#putting-it-together">Putting it together</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#replicas-across-gpus">Replicas across GPUs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#replicas-on-one-gpu">Replicas on one GPU</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#replicas-on-one-gpu-with-mps-and-weight-sharing">Replicas on one GPU with MPS and weight sharing</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance-and-correctness">Performance and correctness</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#migration">Migration</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By SGLang-Omni Team
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026, SGLang-Omni.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    <p class="last-updated">
+  Last updated on Sep 06, 2026.
+  <br/>
+</p>
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
