@@ -3,8 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method, Request, Response, StatusCode, Version};
 use axum::middleware;
 use axum::routing::{any, get};
 use hyper::server::conn::http1;
@@ -16,19 +17,21 @@ use tracing::{error, info, trace};
 
 use crate::classification::ClassificationExecutor;
 use crate::config::{Config, HttpMediaRoute};
-use crate::error::RouterError;
+use crate::error::{HttpFault, RouterError};
 use crate::http_generation::{self, HttpGeneration};
 use crate::http_media::{self, HttpMedia};
 use crate::http_relay::HttpRelay;
 use crate::lifecycle::Lifecycle;
-use crate::request_id::{self, RequestIds};
+use crate::metrics::RouterMetrics;
+use crate::operations::{Operations, ResourceSnapshot, ResourceUsage};
+use crate::request_id::{self, RequestBoundary, RequestIds};
 use crate::shutdown;
 use crate::websocket::{self, SessionTracker, WebsocketGateway};
 use crate::worker_pool::{HealthSupervisor, WorkerPool};
 
 mod bounded_listener;
 
-use bounded_listener::BoundedTcpListener;
+use bounded_listener::{BoundedTcpListener, ListenerCapacity};
 
 const LIVE_BODY: &str = "live\n";
 const NOT_READY_BODY: &str = "not ready\n";
@@ -37,14 +40,50 @@ const READY_BODY: &str = "ready\n";
 #[derive(Clone)]
 struct AppState {
     lifecycle: Arc<Lifecycle>,
+    pool: Arc<WorkerPool>,
     generation: Option<Arc<HttpGeneration>>,
     media: Option<Arc<HttpMedia>>,
     websocket: Option<Arc<WebsocketGateway>>,
+    operations: Arc<Operations>,
+    listener_capacity: ListenerCapacity,
+    relay: Arc<HttpRelay>,
+    classifier: Arc<ClassificationExecutor>,
+    sessions: SessionTracker,
+}
+
+impl AppState {
+    fn services_ready(&self) -> bool {
+        self.generation
+            .as_ref()
+            .is_none_or(|generation| generation.is_ready())
+            && self.media.as_ref().is_none_or(|media| media.is_ready())
+            && self
+                .websocket
+                .as_ref()
+                .is_none_or(|websocket| websocket.is_ready())
+    }
+
+    fn is_ready(&self) -> bool {
+        self.lifecycle.is_serving() && self.services_ready()
+    }
+
+    fn resource_snapshot(&self) -> ResourceSnapshot {
+        let (listener_limit, listener_in_use) = self.listener_capacity.usage();
+        let (buffer_limit, buffer_in_use) = self.relay.buffered_usage();
+        let (classification_limit, classification_in_use) = self.classifier.usage();
+        ResourceSnapshot::new(
+            ResourceUsage::new(listener_limit, listener_in_use),
+            ResourceUsage::new(buffer_limit, buffer_in_use),
+            ResourceUsage::new(classification_limit, classification_in_use),
+            self.sessions.active(),
+        )
+    }
 }
 
 pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
     let lifecycle = Arc::new(Lifecycle::starting());
-    let pool = Arc::new(WorkerPool::build(&config)?);
+    let metrics = RouterMetrics::new();
+    let pool = Arc::new(WorkerPool::build(&config, Arc::clone(&metrics))?);
     let classifier = ClassificationExecutor::new();
     let relay = HttpRelay::new(
         pool.http_client(),
@@ -53,30 +92,43 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
             .buffered_total_usize()
             .map_err(RouterError::Config)?,
         Arc::clone(&classifier),
+        Arc::clone(&metrics),
     );
     let generation = HttpGeneration::build(&config, Arc::clone(&pool), Arc::clone(&relay))?;
-    let media = HttpMedia::build(&config, Arc::clone(&pool), relay)?;
+    let media = HttpMedia::build(&config, Arc::clone(&pool), Arc::clone(&relay))?;
     let sessions = SessionTracker::new();
-    let websocket =
-        WebsocketGateway::build(&config, Arc::clone(&pool), classifier, sessions.clone());
-    let request_ids = RequestIds::new();
-    let mut signal_observer = shutdown::SignalObserver::install().map_err(RouterError::Signal)?;
-    let app = route_table(
-        AppState {
-            lifecycle: Arc::clone(&lifecycle),
-            generation: generation.clone(),
-            media: media.clone(),
-            websocket: websocket.clone(),
-        },
-        generation,
-        media,
-        websocket,
-        request_ids,
+    let websocket = WebsocketGateway::build(
+        &config,
+        Arc::clone(&pool),
+        Arc::clone(&classifier),
+        sessions.clone(),
     );
+    let operations = Arc::new(Operations::build(&config, Arc::clone(&metrics))?);
+    let request_boundary = RequestBoundary::new(RequestIds::new(), metrics);
+    let mut signal_observer = shutdown::SignalObserver::install().map_err(RouterError::Signal)?;
     let listener = tokio::net::TcpListener::bind(config.server.listen)
         .await
         .map_err(RouterError::Bind)?;
     let listener = BoundedTcpListener::new(listener, config.server.max_connections);
+    let listener_capacity = listener.capacity();
+    let app = route_table(
+        AppState {
+            lifecycle: Arc::clone(&lifecycle),
+            pool: Arc::clone(&pool),
+            generation: generation.clone(),
+            media: media.clone(),
+            websocket: websocket.clone(),
+            operations,
+            listener_capacity,
+            relay,
+            classifier,
+            sessions: sessions.clone(),
+        },
+        generation,
+        media,
+        websocket,
+        request_boundary,
+    );
     let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
     lifecycle.enter_serving()?;
     let mut health = pool.start_health(&config);
@@ -326,12 +378,12 @@ fn route_table(
     generation: Option<Arc<HttpGeneration>>,
     media: Option<Arc<HttpMedia>>,
     websocket: Option<Arc<WebsocketGateway>>,
-    request_ids: Arc<RequestIds>,
+    request_boundary: Arc<RequestBoundary>,
 ) -> Router {
     let mut app = Router::new()
         .route("/live", get(live).head(reject_head))
         .route("/ready", get(ready).head(reject_head))
-        .with_state(state);
+        .with_state(state.clone());
     if let Some(generation) = generation {
         app = app.route(
             http_generation::CHAT_PATH,
@@ -392,8 +444,12 @@ fn route_table(
             );
         }
     }
+    app = app
+        .route("/v1/models", any(models).with_state(state.clone()))
+        .route("/metrics", any(metrics).with_state(state.clone()))
+        .route("/diagnostics", any(diagnostics).with_state(state));
     app.layer(middleware::from_fn_with_state(
-        request_ids,
+        request_boundary,
         request_id::canonicalize,
     ))
 }
@@ -407,20 +463,71 @@ async fn live(State(state): State<AppState>) -> (StatusCode, &'static str) {
 }
 
 async fn ready(State(state): State<AppState>) -> (StatusCode, &'static str) {
-    if state.lifecycle.is_serving()
-        && state
-            .generation
-            .as_ref()
-            .is_none_or(|generation| generation.is_ready())
-        && state.media.as_ref().is_none_or(|media| media.is_ready())
-        && state
-            .websocket
-            .as_ref()
-            .is_none_or(|websocket| websocket.is_ready())
-    {
+    if state.is_ready() {
         (StatusCode::OK, READY_BODY)
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, NOT_READY_BODY)
+    }
+}
+
+async fn models(State(state): State<AppState>, request: Request<Body>) -> Response<Body> {
+    if let Err(fault) = validate_operation(&request) {
+        return operation_fault(fault);
+    }
+    state.operations.models_response()
+}
+
+async fn metrics(State(state): State<AppState>, request: Request<Body>) -> Response<Body> {
+    if let Err(fault) = validate_operation(&request) {
+        return operation_fault(fault);
+    }
+    let lifecycle = match state.lifecycle.snapshot() {
+        Ok(lifecycle) => lifecycle,
+        Err(_) => return HttpFault::InternalError.into_response(),
+    };
+    let snapshot = state.pool.operations_snapshot();
+    let resources = state.resource_snapshot();
+    let ready = lifecycle == crate::lifecycle::State::Serving && state.services_ready();
+    state
+        .operations
+        .metrics_response(lifecycle, ready, &snapshot, &resources)
+}
+
+async fn diagnostics(State(state): State<AppState>, request: Request<Body>) -> Response<Body> {
+    if let Err(fault) = validate_operation(&request) {
+        return operation_fault(fault);
+    }
+    let lifecycle = match state.lifecycle.snapshot() {
+        Ok(lifecycle) => lifecycle,
+        Err(_) => return HttpFault::InternalError.into_response(),
+    };
+    let snapshot = state.pool.operations_snapshot();
+    let resources = state.resource_snapshot();
+    let ready = lifecycle == crate::lifecycle::State::Serving && state.services_ready();
+    state
+        .operations
+        .diagnostics_response(lifecycle, ready, &snapshot, &resources)
+        .unwrap_or_else(HttpFault::into_response)
+}
+
+fn validate_operation(request: &Request<Body>) -> Result<(), HttpFault> {
+    if request.method() != Method::GET {
+        return Err(HttpFault::MethodNotAllowed);
+    }
+    if request.version() != Version::HTTP_11 {
+        return Err(HttpFault::HttpVersionNotSupported);
+    }
+    if request.uri().query().is_some() {
+        return Err(HttpFault::MalformedRequest);
+    }
+    http_media::validate_bodyless_request(request.headers())
+}
+
+fn operation_fault(fault: HttpFault) -> Response<Body> {
+    if fault == HttpFault::MethodNotAllowed {
+        fault.into_response_with_allow(HeaderValue::from_static("GET"))
+    } else {
+        fault.into_response()
     }
 }
 

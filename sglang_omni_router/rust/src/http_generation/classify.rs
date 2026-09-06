@@ -781,7 +781,8 @@ stream_modes = ["non_streaming", "streaming"]
         fs::write(&path, text).expect("write classifier config");
         let config = Config::load(&path).expect("load classifier config");
         let _removed = fs::remove_file(path);
-        WorkerPool::build(&config).expect("build classifier pool")
+        WorkerPool::build(&config, crate::metrics::RouterMetrics::new())
+            .expect("build classifier pool")
     }
 
     fn classify_with(body: &str, pool: &WorkerPool) -> Result<(), HttpFault> {

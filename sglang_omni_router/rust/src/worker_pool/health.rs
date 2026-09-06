@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinSet};
@@ -16,12 +16,113 @@ pub(crate) enum WorkerHealth {
     Unhealthy = 2,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProbeOutcome {
+    Pending,
+    Success,
+    HttpFailure,
+    TransportFailure,
+}
+
+impl ProbeOutcome {
+    pub(crate) const OBSERVED: [Self; 3] =
+        [Self::Success, Self::HttpFailure, Self::TransportFailure];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Success => "success",
+            Self::HttpFailure => "http_failure",
+            Self::TransportFailure => "transport_failure",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProbeSnapshot {
+    pub(crate) outcome: ProbeOutcome,
+    pub(crate) status: Option<u16>,
+    pub(crate) checked_at_unix_ms: Option<u64>,
+    pub(crate) consecutive_successes: u8,
+    pub(crate) consecutive_failures: u8,
+    pub(crate) successes: u64,
+    pub(crate) http_failures: u64,
+    pub(crate) transport_failures: u64,
+}
+
+pub(super) struct ProbeState {
+    snapshot: Mutex<ProbeSnapshot>,
+}
+
+impl ProbeState {
+    pub(super) const fn pending() -> Self {
+        Self {
+            snapshot: Mutex::new(ProbeSnapshot {
+                outcome: ProbeOutcome::Pending,
+                status: None,
+                checked_at_unix_ms: None,
+                consecutive_successes: 0,
+                consecutive_failures: 0,
+                successes: 0,
+                http_failures: 0,
+                transport_failures: 0,
+            }),
+        }
+    }
+
+    fn record(&self, outcome: ProbeOutcome, status: Option<u16>, tracker: &ProbeTracker) {
+        let checked_at_unix_ms = SystemTime::UNIX_EPOCH
+            .elapsed()
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+        let mut snapshot = self.state();
+        match outcome {
+            ProbeOutcome::Pending => {}
+            ProbeOutcome::Success => {
+                snapshot.successes = snapshot.successes.saturating_add(1);
+            }
+            ProbeOutcome::HttpFailure => {
+                snapshot.http_failures = snapshot.http_failures.saturating_add(1);
+            }
+            ProbeOutcome::TransportFailure => {
+                snapshot.transport_failures = snapshot.transport_failures.saturating_add(1);
+            }
+        }
+        snapshot.outcome = outcome;
+        snapshot.status = status;
+        snapshot.checked_at_unix_ms = checked_at_unix_ms;
+        snapshot.consecutive_successes = tracker.successes;
+        snapshot.consecutive_failures = tracker.failures;
+    }
+
+    pub(super) fn snapshot(&self) -> ProbeSnapshot {
+        *self.state()
+    }
+
+    fn state(&self) -> MutexGuard<'_, ProbeSnapshot> {
+        match self.snapshot.lock() {
+            Ok(snapshot) => snapshot,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
 impl WorkerHealth {
+    pub(crate) const ALL: [Self; 3] = [Self::Unknown, Self::Healthy, Self::Unhealthy];
+
     fn from_atomic(value: u8) -> Self {
         match value {
             1 => Self::Healthy,
             2 => Self::Unhealthy,
             _ => Self::Unknown,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Healthy => "healthy",
+            Self::Unhealthy => "unhealthy",
         }
     }
 }
@@ -134,11 +235,17 @@ async fn run_worker_health(
                 result
             }
         };
-        let success = response
-            .as_ref()
-            .is_ok_and(|response| response.status().is_success());
+        let (outcome, status) = match response.as_ref() {
+            Ok(response) if response.status().is_success() => {
+                (ProbeOutcome::Success, Some(response.status().as_u16()))
+            }
+            Ok(response) => (ProbeOutcome::HttpFailure, Some(response.status().as_u16())),
+            Err(_) => (ProbeOutcome::TransportFailure, None),
+        };
+        let success = outcome == ProbeOutcome::Success;
         let previous = record.health.load();
         let next = tracker.observe(success);
+        record.probe.record(outcome, status, &tracker);
         record.health.store(next);
         if previous != next {
             tracing::info!(
@@ -213,7 +320,9 @@ mod tests {
 
     use tokio::sync::Notify;
 
-    use super::{AtomicHealth, HealthSupervisor, ProbeTracker, WorkerHealth};
+    use super::{
+        AtomicHealth, HealthSupervisor, ProbeOutcome, ProbeState, ProbeTracker, WorkerHealth,
+    };
     use crate::worker_pool::WorkerRecord;
     use crate::worker_pool::profile::{
         InputModality, MessageContentForm, OutputModality, RegistrationId, ServiceProfile,
@@ -245,6 +354,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health: AtomicHealth::unknown(),
+            probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -276,6 +386,68 @@ mod tests {
         assert_eq!(tracker.observe(true), WorkerHealth::Unhealthy);
         assert_eq!(tracker.observe(true), WorkerHealth::Healthy);
         assert_eq!(tracker.observe(false), WorkerHealth::Healthy);
+    }
+
+    #[test]
+    fn probe_snapshot_never_combines_adjacent_results() {
+        const ITERATIONS: u64 = 20_000;
+
+        let probe = Arc::new(ProbeState::pending());
+        let complete = Arc::new(AtomicBool::new(false));
+        let writer_probe = Arc::clone(&probe);
+        let writer_complete = Arc::clone(&complete);
+        let writer = thread::spawn(move || {
+            let mut success = ProbeTracker::new(1, 1);
+            let _state = success.observe(true);
+            let mut failure = ProbeTracker::new(1, 1);
+            let _state = failure.observe(false);
+            for _ in 0..ITERATIONS {
+                writer_probe.record(ProbeOutcome::Success, Some(200), &success);
+                writer_probe.record(ProbeOutcome::HttpFailure, Some(503), &failure);
+            }
+            writer_complete.store(true, Ordering::Release);
+        });
+
+        while !complete.load(Ordering::Acquire) {
+            let snapshot = probe.snapshot();
+            match snapshot.outcome {
+                ProbeOutcome::Pending => {
+                    assert_eq!(snapshot.status, None);
+                    assert_eq!((snapshot.successes, snapshot.http_failures), (0, 0));
+                }
+                ProbeOutcome::Success => {
+                    assert_eq!(snapshot.status, Some(200));
+                    assert_eq!(
+                        (
+                            snapshot.consecutive_successes,
+                            snapshot.consecutive_failures
+                        ),
+                        (1, 0)
+                    );
+                    assert_eq!(snapshot.successes, snapshot.http_failures + 1);
+                }
+                ProbeOutcome::HttpFailure => {
+                    assert_eq!(snapshot.status, Some(503));
+                    assert_eq!(
+                        (
+                            snapshot.consecutive_successes,
+                            snapshot.consecutive_failures
+                        ),
+                        (0, 1)
+                    );
+                    assert_eq!(snapshot.successes, snapshot.http_failures);
+                }
+                ProbeOutcome::TransportFailure => {
+                    panic!("writer does not publish transport failures")
+                }
+            }
+            assert_eq!(snapshot.transport_failures, 0);
+        }
+        writer.join().expect("join probe writer");
+        let final_snapshot = probe.snapshot();
+        assert_eq!(final_snapshot.outcome, ProbeOutcome::HttpFailure);
+        assert_eq!(final_snapshot.successes, ITERATIONS);
+        assert_eq!(final_snapshot.http_failures, ITERATIONS);
     }
 
     #[tokio::test]
@@ -312,6 +484,12 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(record.health.load(), WorkerHealth::Healthy);
+        let probe = record.probe.snapshot();
+        assert_eq!(probe.outcome, ProbeOutcome::Success);
+        assert_eq!(probe.status, Some(200));
+        assert!(probe.checked_at_unix_ms.is_some());
+        assert_eq!(probe.consecutive_successes, 1);
+        assert_eq!(probe.successes, 1);
         supervisor.cancel();
         assert!(matches!(supervisor.join_next().await, Some(Ok(()))));
         server.join().expect("join health fixture server");
@@ -392,6 +570,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(record.health.load(), WorkerHealth::Unhealthy);
+        let probe = record.probe.snapshot();
+        assert_eq!(probe.outcome, ProbeOutcome::TransportFailure);
+        assert_eq!(probe.status, None);
+        assert_eq!(probe.consecutive_failures, 1);
+        assert_eq!(probe.transport_failures, 1);
         supervisor.cancel();
         assert!(matches!(supervisor.join_next().await, Some(Ok(()))));
         server.join().expect("join timeout fixture server");
@@ -427,6 +610,11 @@ mod tests {
         })
         .await
         .expect("non-2xx observation must complete");
+        let probe = record.probe.snapshot();
+        assert_eq!(probe.outcome, ProbeOutcome::HttpFailure);
+        assert_eq!(probe.status, Some(503));
+        assert_eq!(probe.consecutive_failures, 1);
+        assert_eq!(probe.http_failures, 1);
         supervisor.cancel();
         assert!(matches!(supervisor.join_next().await, Some(Ok(()))));
         server.join().expect("join non-2xx fixture server");
@@ -489,6 +677,7 @@ mod tests {
             .await
             .expect("stalled probe cancellation must be bounded");
         assert!(matches!(joined, Some(Ok(()))));
+        assert_eq!(record.probe.snapshot().outcome, ProbeOutcome::Pending);
         release.store(true, Ordering::Release);
         server.join().expect("join stalled fixture server");
         assert!(!overlap.load(Ordering::Acquire));

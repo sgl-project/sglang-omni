@@ -134,6 +134,7 @@ impl ConfigError {
 
 /// Stable topology-free failures generated before response commitment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
 pub(crate) enum HttpFault {
     MalformedRequest,
     AmbiguousModel,
@@ -153,6 +154,28 @@ pub(crate) enum HttpFault {
 }
 
 impl HttpFault {
+    pub(crate) const ALL: [Self; 15] = [
+        Self::MalformedRequest,
+        Self::AmbiguousModel,
+        Self::MethodNotAllowed,
+        Self::RequestTimeout,
+        Self::RequestBodyTooLarge,
+        Self::UnsupportedMediaType,
+        Self::UnsupportedContentEncoding,
+        Self::ExpectationFailed,
+        Self::NoCompatibleWorker,
+        Self::RouterOverloaded,
+        Self::InternalError,
+        Self::UpstreamProtocolError,
+        Self::RouterUnavailable,
+        Self::UpstreamTimeout,
+        Self::HttpVersionNotSupported,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
     const fn status(self) -> StatusCode {
         match self {
             Self::MalformedRequest | Self::AmbiguousModel => StatusCode::BAD_REQUEST,
@@ -173,7 +196,7 @@ impl HttpFault {
         }
     }
 
-    const fn code(self) -> &'static str {
+    pub(crate) const fn code(self) -> &'static str {
         match self {
             Self::MalformedRequest => "malformed_request",
             Self::AmbiguousModel => "ambiguous_model",
@@ -247,6 +270,7 @@ impl HttpFault {
         if self == Self::MethodNotAllowed {
             response.headers_mut().insert(ALLOW, allow);
         }
+        response.extensions_mut().insert(self);
         response
     }
 }

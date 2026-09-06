@@ -7,6 +7,7 @@ use tracing::error;
 use crate::error::HttpFault;
 
 pub(crate) struct ClassificationExecutor {
+    limit: usize,
     slots: Arc<Semaphore>,
 }
 
@@ -19,8 +20,13 @@ impl ClassificationExecutor {
 
     fn with_slots(slots: usize) -> Arc<Self> {
         Arc::new(Self {
+            limit: slots,
             slots: Arc::new(Semaphore::new(slots)),
         })
+    }
+
+    pub(crate) fn usage(&self) -> (usize, usize) {
+        (self.limit, self.limit - self.slots.available_permits())
     }
 
     pub(crate) async fn classify<T>(

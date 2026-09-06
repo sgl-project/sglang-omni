@@ -113,6 +113,10 @@ impl SessionTracker {
             notified.await;
         }
     }
+
+    pub(crate) fn active(&self) -> usize {
+        self.inner.state().active
+    }
 }
 
 impl Drop for SessionRegistration {

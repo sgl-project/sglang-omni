@@ -19,6 +19,7 @@ use crate::worker_pool::{CapacityClass, TrustDomain, WorkerPool};
 
 use classify::Classified;
 use headers::RequestKind;
+pub(crate) use headers::validate_bodyless_request;
 
 const SPEECH_PATH: &str = "/v1/audio/speech";
 const BATCH_PATH: &str = "/v1/audio/speech/batch";

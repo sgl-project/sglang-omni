@@ -14,6 +14,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::classification::ClassificationExecutor;
 use crate::error::HttpFault;
+use crate::metrics::{Rejection, RouterMetrics};
 use crate::request_id::REQUEST_ID_HEADER;
 use crate::worker_pool::{AdmissionError, DispatchError, RequestLease};
 
@@ -28,8 +29,10 @@ pub(crate) use headers::{
 
 pub(crate) struct HttpRelay {
     client: reqwest::Client,
+    buffered_budget_limit: usize,
     buffered_budget: Arc<Semaphore>,
     classifier: Arc<ClassificationExecutor>,
+    metrics: Arc<RouterMetrics>,
 }
 
 pub(crate) struct BufferedUpload {
@@ -57,12 +60,22 @@ impl HttpRelay {
         client: reqwest::Client,
         buffered_budget: usize,
         classifier: Arc<ClassificationExecutor>,
+        metrics: Arc<RouterMetrics>,
     ) -> Arc<Self> {
         Arc::new(Self {
             client,
+            buffered_budget_limit: buffered_budget,
             buffered_budget: Arc::new(Semaphore::new(buffered_budget)),
             classifier,
+            metrics,
         })
+    }
+
+    pub(crate) fn buffered_usage(&self) -> (usize, usize) {
+        (
+            self.buffered_budget_limit,
+            self.buffered_budget_limit - self.buffered_budget.available_permits(),
+        )
     }
 
     pub(crate) async fn classify<T>(
@@ -84,7 +97,7 @@ impl HttpRelay {
         deadline: tokio::time::Instant,
     ) -> Result<BufferedUpload, HttpFault> {
         let mut budget = match expected {
-            Some(bytes) => reserve_budget(&self.buffered_budget, bytes)?,
+            Some(bytes) => reserve_budget(&self.buffered_budget, bytes, &self.metrics)?,
             None => None,
         };
         let mut output = BytesMut::with_capacity(initial_buffer_capacity(expected));
@@ -114,7 +127,7 @@ impl HttpRelay {
                         if expected.is_none() && length != 0 {
                             merge_budget(
                                 &mut budget,
-                                reserve_budget(&self.buffered_budget, length)?,
+                                reserve_budget(&self.buffered_budget, length, &self.metrics)?,
                             );
                         }
                         output.extend_from_slice(&data);
@@ -212,7 +225,7 @@ impl HttpRelay {
                 return Err(fault);
             }
         };
-        let relay = DirectResponseBody::new(body, lease);
+        let relay = DirectResponseBody::new(body, lease, Arc::clone(&self.metrics));
         let mut downstream = Response::new(Body::new(relay));
         *downstream.status_mut() = parts.status;
         *downstream.headers_mut() = headers;
@@ -293,15 +306,19 @@ impl OutgoingRequest {
 fn reserve_budget(
     semaphore: &Arc<Semaphore>,
     bytes: u64,
+    metrics: &RouterMetrics,
 ) -> Result<Option<OwnedSemaphorePermit>, HttpFault> {
     if bytes == 0 {
         return Ok(None);
     }
     let permits = u32::try_from(bytes).map_err(|_| HttpFault::InternalError)?;
-    Arc::clone(semaphore)
+    let reserved = Arc::clone(semaphore)
         .try_acquire_many_owned(permits)
-        .map(Some)
-        .map_err(|_| HttpFault::RouterOverloaded)
+        .map(Some);
+    if reserved.is_err() {
+        metrics.record_rejection(Rejection::BufferedRequestBytes);
+    }
+    reserved.map_err(|_| HttpFault::RouterOverloaded)
 }
 
 fn merge_budget(
@@ -396,6 +413,7 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use crate::classification::ClassificationExecutor;
+    use crate::metrics::Rejection;
 
     use super::{
         HttpFault, HttpRelay, SharedUploadState, UploadState, check_precommit_deadline_at,
@@ -421,14 +439,17 @@ mod tests {
             reqwest::Client::new(),
             budget,
             ClassificationExecutor::for_test(1),
+            crate::metrics::RouterMetrics::new(),
         )
     }
 
     fn relay_with_slots(budget: usize, slots: usize) -> Arc<HttpRelay> {
         Arc::new(HttpRelay {
             client: reqwest::Client::new(),
+            buffered_budget_limit: budget,
             buffered_budget: Arc::new(Semaphore::new(budget)),
             classifier: ClassificationExecutor::for_test(slots),
+            metrics: crate::metrics::RouterMetrics::new(),
         })
     }
 
@@ -466,6 +487,7 @@ mod tests {
             )
             .await;
         assert!(matches!(rejected, Err(HttpFault::RouterOverloaded)));
+        assert_eq!(relay.metrics.rejections(Rejection::BufferedRequestBytes), 1);
         drop(held);
 
         let chunked = relay

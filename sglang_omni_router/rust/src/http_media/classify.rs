@@ -658,7 +658,8 @@ stream_modes = ["non_streaming", "streaming"]
         fs::write(&path, config).expect("write classifier config");
         let parsed = Config::load(&path).expect("load classifier config");
         let _removed = fs::remove_file(path);
-        WorkerPool::build(&parsed).expect("build classifier pool")
+        WorkerPool::build(&parsed, crate::metrics::RouterMetrics::new())
+            .expect("build classifier pool")
     }
 
     #[test]

@@ -10,11 +10,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Notify, Semaphore};
 
 use crate::config::{Config, RoutingStrategy};
+use crate::metrics::{Rejection, RouterMetrics};
 
 pub(crate) use admission::{
     AdmissionError, AdmissionLease, DispatchError, EnvelopeLease, RequestLease,
 };
-pub(crate) use health::{HealthSupervisor, WorkerHealth};
+pub(crate) use health::{HealthSupervisor, ProbeOutcome, ProbeSnapshot, WorkerHealth};
 pub(crate) use profile::{
     CapacityClass, ChatAudioFormat, MediaPlacement, MessageContentForm, ModelSelection,
     ProfileRequirement, ReferenceForm, RouteRequirement, ServiceClass, SpeechResponseFormat,
@@ -23,15 +24,64 @@ pub(crate) use profile::{
 pub(crate) use resolver::{ConnectTarget, ResolvedTarget};
 
 use admission::AdmissionController;
-use health::AtomicHealth;
+use health::{AtomicHealth, ProbeState};
 use profile::{
-    MAX_WORKERS, RegistrationId, ServiceProfile, VoiceNamePolicy, WorkerCapacityConfig, WorkerId,
+    CAPACITY_CLASS_COUNT, MAX_WORKERS, RegistrationId, ServiceProfile, VoiceNamePolicy,
+    WorkerCapacityConfig, WorkerId,
 };
 use resolver::{build_health_client, build_http_client};
 use selection::{Selector, SelectorGuard};
 
 struct SessionCapacity {
+    limit: usize,
     semaphore: Arc<Semaphore>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SessionCapacitySnapshot {
+    pub(crate) class: CapacityClass,
+    pub(crate) limit: usize,
+    pub(crate) in_flight: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AdmissionClass {
+    Global,
+    Service(CapacityClass),
+}
+
+impl AdmissionClass {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Service(class) => class.label(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AdmissionSnapshot {
+    pub(crate) class: AdmissionClass,
+    pub(crate) limit: usize,
+    pub(crate) in_flight: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WorkerSnapshot {
+    pub(crate) worker_id: String,
+    pub(crate) registration_ordinal: usize,
+    pub(crate) voice_owner: bool,
+    pub(crate) health: WorkerHealth,
+    pub(crate) probe: ProbeSnapshot,
+    pub(crate) routable: bool,
+    pub(crate) active_requests: usize,
+    pub(crate) session_capacity: Vec<SessionCapacitySnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OperationsSnapshot {
+    pub(crate) admission: [AdmissionSnapshot; CAPACITY_CLASS_COUNT + 1],
+    pub(crate) workers: Vec<WorkerSnapshot>,
 }
 
 /// One static startup registration with independently updated health and load.
@@ -45,6 +95,7 @@ pub(super) struct WorkerRecord {
     active_requests: AtomicUsize,
     session_capacity: [Option<SessionCapacity>; 2],
     health: AtomicHealth,
+    probe: ProbeState,
     immediate_probe: Notify,
 }
 
@@ -103,6 +154,7 @@ pub(crate) struct WorkerPool {
     homogeneous_media_http: Vec<HomogeneousMediaCohort>,
     health_client: reqwest::Client,
     http_client: reqwest::Client,
+    metrics: Arc<RouterMetrics>,
 }
 
 struct HomogeneousGenerationCohort {
@@ -133,7 +185,10 @@ pub(crate) struct ContentBlindMediaHttp<'a> {
 }
 
 impl WorkerPool {
-    pub(crate) fn build(config: &Config) -> Result<Self, crate::error::RouterError> {
+    pub(crate) fn build(
+        config: &Config,
+        metrics: Arc<RouterMetrics>,
+    ) -> Result<Self, crate::error::RouterError> {
         let targets: Vec<_> = config
             .workers
             .iter()
@@ -178,6 +233,7 @@ impl WorkerPool {
                 active_requests: AtomicUsize::new(0),
                 session_capacity: build_session_capacity(&worker.capacity)?,
                 health: AtomicHealth::unknown(),
+                probe: ProbeState::pending(),
                 immediate_probe: Notify::new(),
             }));
         }
@@ -206,6 +262,7 @@ impl WorkerPool {
             homogeneous_media_http,
             health_client,
             http_client,
+            metrics,
         })
     }
 
@@ -228,11 +285,16 @@ impl WorkerPool {
         class: CapacityClass,
         credits: u32,
     ) -> Result<AdmissionLease, AdmissionError> {
-        self.admission.try_admit(class, credits)
+        let envelope = self.try_admit_envelope()?;
+        self.try_admit_class(envelope, class, credits)
     }
 
     pub(crate) fn try_admit_envelope(&self) -> Result<EnvelopeLease, AdmissionError> {
-        self.admission.try_admit_envelope()
+        let admitted = self.admission.try_admit_envelope();
+        if matches!(admitted, Err(AdmissionError::Overloaded)) {
+            self.metrics.record_rejection(Rejection::GlobalAdmission);
+        }
+        admitted
     }
 
     pub(crate) fn try_admit_class(
@@ -241,7 +303,11 @@ impl WorkerPool {
         class: CapacityClass,
         credits: u32,
     ) -> Result<AdmissionLease, AdmissionError> {
-        self.admission.try_admit_class(envelope, class, credits)
+        let admitted = self.admission.try_admit_class(envelope, class, credits);
+        if matches!(admitted, Err(AdmissionError::Overloaded)) {
+            self.metrics.record_rejection(Rejection::admission(class));
+        }
+        admitted
     }
 
     pub(crate) fn dispatch(
@@ -300,7 +366,7 @@ impl WorkerPool {
                 .ok_or(DispatchError::Internal)?;
             let permit = Arc::clone(&capacity.semaphore)
                 .try_acquire_owned()
-                .map_err(|_| DispatchError::Overloaded)?;
+                .map_err(|_| self.session_overloaded(class))?;
             let lease = RequestLease::new_session(admission, permit, Arc::clone(owner));
             drop(selector);
             return Ok(lease);
@@ -346,7 +412,7 @@ impl WorkerPool {
             return Err(DispatchError::Unavailable);
         }
         if eligible_count == 0 {
-            return Err(DispatchError::Overloaded);
+            return Err(self.session_overloaded(class));
         }
 
         let eligible = &eligible[..eligible_count];
@@ -369,6 +435,13 @@ impl WorkerPool {
         let lease = RequestLease::new_session(admission, permit, selected);
         drop(selector);
         Ok(lease)
+    }
+
+    fn session_overloaded(&self, class: CapacityClass) -> DispatchError {
+        if let Some(rejection) = Rejection::worker(class) {
+            self.metrics.record_rejection(rejection);
+        }
+        DispatchError::Overloaded
     }
 
     fn matching_profiles(
@@ -532,6 +605,52 @@ impl WorkerPool {
                     && cohort.task == route.speech_to_text_task()
             })
             .map(|cohort| ContentBlindMediaHttp { pool: self, cohort })
+    }
+
+    pub(crate) fn operations_snapshot(&self) -> OperationsSnapshot {
+        let raw_admission = self.admission.snapshot();
+        let admission = std::array::from_fn(|index| AdmissionSnapshot {
+            class: if index == 0 {
+                AdmissionClass::Global
+            } else {
+                AdmissionClass::Service(CapacityClass::ALL[index - 1])
+            },
+            limit: raw_admission[index].0,
+            in_flight: raw_admission[index].1,
+        });
+        let workers = self
+            .records
+            .iter()
+            .map(|record| {
+                let health = record.health.load();
+                WorkerSnapshot {
+                    worker_id: record.worker_id.as_str().to_owned(),
+                    registration_ordinal: record.registration_id.startup_ordinal(),
+                    voice_owner: self
+                        .voice_owner
+                        .as_ref()
+                        .is_some_and(|owner| Arc::ptr_eq(owner, record)),
+                    health,
+                    probe: record.probe.snapshot(),
+                    routable: health == WorkerHealth::Healthy,
+                    active_requests: record.load(),
+                    session_capacity: SESSION_CAPACITY_CLASSES
+                        .into_iter()
+                        .filter_map(|class| {
+                            record
+                                .session_capacity(class)
+                                .map(|capacity| SessionCapacitySnapshot {
+                                    class,
+                                    limit: capacity.limit,
+                                    in_flight: capacity.limit
+                                        - capacity.semaphore.available_permits(),
+                                })
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        OperationsSnapshot { admission, workers }
     }
 
     pub(crate) fn generation_http_ready(&self, trust: &TrustDomain) -> bool {
@@ -768,6 +887,11 @@ fn generation_rows_equal(left: &[ServiceProfile], right: &[ServiceProfile]) -> b
     service_rows_equal(left, right, ServiceClass::GenerationHttp, None)
 }
 
+pub(crate) const SESSION_CAPACITY_CLASSES: [CapacityClass; 2] = [
+    CapacityClass::SpeechWebsocket,
+    CapacityClass::RealtimeWebsocket,
+];
+
 const fn session_capacity_index(class: CapacityClass) -> Option<usize> {
     match class {
         CapacityClass::SpeechWebsocket => Some(0),
@@ -789,6 +913,7 @@ fn build_session_capacity(
             .map_err(|_| crate::error::RouterError::WorkerPoolInvariant)
             .map(|limit| {
                 limit.map(|limit| SessionCapacity {
+                    limit,
                     semaphore: Arc::new(Semaphore::new(limit)),
                 })
             })
@@ -804,6 +929,8 @@ fn build_session_capacity(
 mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    use crate::metrics::Rejection;
 
     use super::profile::{
         InputModality, MessageContentForm, ModelSelection, OutputModality, ProfileRequirement,
@@ -904,6 +1031,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health,
+            probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -935,6 +1063,7 @@ mod tests {
             selector,
             health_client: client.clone(),
             http_client: client,
+            metrics: crate::metrics::RouterMetrics::new(),
         }
     }
 
@@ -1383,6 +1512,7 @@ mod tests {
             Arc::get_mut(&mut record)
                 .expect("new test record is uniquely owned")
                 .session_capacity[0] = Some(SessionCapacity {
+                limit: 1,
                 semaphore: Arc::new(Semaphore::new(1)),
             });
             record
@@ -1460,6 +1590,7 @@ mod tests {
             Arc::get_mut(&mut record)
                 .expect("new test record is uniquely owned")
                 .session_capacity[0] = Some(SessionCapacity {
+                limit: 1,
                 semaphore: Arc::new(Semaphore::new(1)),
             });
             record
@@ -1535,11 +1666,61 @@ mod tests {
     }
 
     #[test]
+    fn admission_rejections_are_counted_at_the_saturated_resource() {
+        let mut class_limited = pool(
+            RoutingStrategy::RoundRobin,
+            vec![record(0, "local", "omni")],
+            2,
+        );
+        class_limited.admission =
+            AdmissionController::new(2, [Some(1), None, None, None, None, None]);
+        let held = class_limited
+            .try_admit(CapacityClass::GenerationHttp, 1)
+            .expect("hold generation admission");
+        assert!(matches!(
+            class_limited.try_admit(CapacityClass::GenerationHttp, 1),
+            Err(AdmissionError::Overloaded)
+        ));
+        assert_eq!(
+            class_limited
+                .metrics
+                .rejections(Rejection::GenerationAdmission),
+            1
+        );
+        assert_eq!(
+            class_limited.metrics.rejections(Rejection::GlobalAdmission),
+            0
+        );
+        drop(held);
+
+        let global_limited = pool(
+            RoutingStrategy::RoundRobin,
+            vec![record(0, "local", "omni")],
+            1,
+        );
+        let held = global_limited
+            .try_admit_envelope()
+            .expect("hold global admission");
+        assert!(matches!(
+            global_limited.try_admit_envelope(),
+            Err(AdmissionError::Overloaded)
+        ));
+        assert_eq!(
+            global_limited
+                .metrics
+                .rejections(Rejection::GlobalAdmission),
+            1
+        );
+        drop(held);
+    }
+
+    #[test]
     fn websocket_sessions_hold_exact_worker_capacity_and_active_load() {
         let mut record = record_with_profile(0, "local", "omni", ServiceProfile::RealtimeWebsocket);
         Arc::get_mut(&mut record)
             .expect("new test record is uniquely owned")
             .session_capacity[1] = Some(SessionCapacity {
+            limit: 1,
             semaphore: Arc::new(Semaphore::new(1)),
         });
         let mut pool = pool(RoutingStrategy::LeastRequests, vec![Arc::clone(&record)], 2);
@@ -1557,6 +1738,15 @@ mod tests {
             )
             .expect("first session");
         assert_eq!(record.load(), 1);
+        let snapshot = pool.operations_snapshot();
+        assert_eq!(snapshot.workers[0].active_requests, 1);
+        assert_eq!(snapshot.workers[0].session_capacity.len(), 1);
+        assert_eq!(
+            snapshot.workers[0].session_capacity[0].class,
+            CapacityClass::RealtimeWebsocket
+        );
+        assert_eq!(snapshot.workers[0].session_capacity[0].limit, 1);
+        assert_eq!(snapshot.workers[0].session_capacity[0].in_flight, 1);
         assert!(matches!(
             pool.dispatch_session(
                 pool.try_admit(CapacityClass::RealtimeWebsocket, 1)
@@ -1565,6 +1755,10 @@ mod tests {
             ),
             Err(DispatchError::Overloaded)
         ));
+        assert_eq!(
+            pool.metrics.rejections(Rejection::RealtimeWebsocketWorker),
+            1
+        );
 
         drop(first);
         let reused = pool
@@ -1587,6 +1781,7 @@ mod tests {
             Arc::get_mut(&mut record)
                 .expect("new test record is uniquely owned")
                 .session_capacity[1] = Some(SessionCapacity {
+                limit: 1,
                 semaphore: Arc::new(Semaphore::new(1)),
             });
             record
@@ -1635,6 +1830,56 @@ mod tests {
             Err(DispatchError::Unavailable)
         ));
         assert_eq!((alpha.load(), beta.load()), (0, 0));
+    }
+
+    #[test]
+    fn operations_snapshot_reads_exact_permits_and_releases_with_the_lease() {
+        let pool = pool(
+            RoutingStrategy::RoundRobin,
+            vec![record(0, "local", "omni")],
+            4,
+        );
+        let initial = pool.operations_snapshot();
+        assert_eq!(initial.admission[0].class, AdmissionClass::Global);
+        assert_eq!(initial.admission[0].limit, 4);
+        assert_eq!(initial.admission[0].in_flight, 0);
+        assert_eq!(
+            initial.admission[1].class,
+            AdmissionClass::Service(CapacityClass::GenerationHttp)
+        );
+        assert_eq!(initial.admission[1].limit, 4);
+        assert_eq!(initial.admission[2].limit, 0);
+        assert_eq!(initial.workers[0].worker_id, "worker-0");
+        assert_eq!(initial.workers[0].registration_ordinal, 0);
+        assert!(!initial.workers[0].voice_owner);
+        assert_eq!(initial.workers[0].health, WorkerHealth::Healthy);
+        assert!(initial.workers[0].routable);
+        assert_eq!(initial.workers[0].active_requests, 0);
+        assert!(initial.workers[0].session_capacity.is_empty());
+
+        let lease = pool
+            .dispatch(
+                pool.try_admit(CapacityClass::GenerationHttp, 1)
+                    .expect("snapshot admission"),
+                &requirement("omni", "local"),
+            )
+            .expect("snapshot dispatch");
+        let occupied = pool.operations_snapshot();
+        assert_eq!(occupied.admission[0].in_flight, 1);
+        assert_eq!(occupied.admission[1].in_flight, 1);
+        assert_eq!(occupied.workers[0].active_requests, 1);
+
+        drop(lease);
+        let released = pool.operations_snapshot();
+        assert_eq!(released.admission[0].in_flight, 0);
+        assert_eq!(released.admission[1].in_flight, 0);
+        assert_eq!(released.workers[0].active_requests, 0);
+
+        pool.records[0].health.store(WorkerHealth::Unhealthy);
+        pool.drain();
+        let drained = pool.operations_snapshot();
+        assert_eq!(drained.workers[0].health, WorkerHealth::Unhealthy);
+        assert!(!drained.workers[0].routable);
     }
 
     #[test]
@@ -1691,6 +1936,7 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [None, None],
             health,
+            probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -1714,6 +1960,7 @@ mod tests {
             selector,
             health_client: client.clone(),
             http_client: client,
+            metrics: crate::metrics::RouterMetrics::new(),
         }
     }
 
@@ -1806,11 +2053,13 @@ mod tests {
             active_requests: AtomicUsize::new(0),
             session_capacity: [
                 Some(SessionCapacity {
+                    limit: 1,
                     semaphore: Arc::new(Semaphore::new(1)),
                 }),
                 None,
             ],
             health,
+            probe: ProbeState::pending(),
             immediate_probe: Notify::new(),
         })
     }
@@ -1896,6 +2145,9 @@ mod tests {
                 AdmissionController::new(8, [None, Some(4), Some(4), None, Some(4), None]);
 
             assert!(pool.voice_owner_ready());
+            let snapshot = pool.operations_snapshot();
+            assert!(snapshot.workers[0].voice_owner);
+            assert!(!snapshot.workers[1].voice_owner);
             assert!(
                 pool.content_blind_media_http(
                     &TrustDomain::new(String::from("local")),

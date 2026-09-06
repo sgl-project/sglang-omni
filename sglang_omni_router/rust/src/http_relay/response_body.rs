@@ -1,10 +1,12 @@
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http_body::{Frame, SizeHint};
 use thiserror::Error;
 
+use crate::metrics::RouterMetrics;
 use crate::worker_pool::RequestLease;
 
 #[derive(Debug, Error)]
@@ -15,14 +17,20 @@ pub(crate) struct RelayError;
 pub(crate) struct DirectResponseBody {
     inner: Option<reqwest::Body>,
     lease: Option<RequestLease>,
+    metrics: Arc<RouterMetrics>,
     terminal: bool,
 }
 
 impl DirectResponseBody {
-    pub(crate) fn new(inner: reqwest::Body, lease: RequestLease) -> Self {
+    pub(crate) fn new(
+        inner: reqwest::Body,
+        lease: RequestLease,
+        metrics: Arc<RouterMetrics>,
+    ) -> Self {
         Self {
             inner: Some(inner),
             lease: Some(lease),
+            metrics,
             terminal: false,
         }
     }
@@ -32,8 +40,11 @@ impl DirectResponseBody {
             return;
         }
         self.terminal = true;
-        if upstream_failure && let Some(lease) = self.lease.as_ref() {
-            lease.request_immediate_probe();
+        if upstream_failure {
+            self.metrics.record_relay_failure();
+            if let Some(lease) = self.lease.as_ref() {
+                lease.request_immediate_probe();
+            }
         }
         drop(self.inner.take());
         drop(self.lease.take());

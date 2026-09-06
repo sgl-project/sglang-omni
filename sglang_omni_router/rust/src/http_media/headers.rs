@@ -71,7 +71,7 @@ pub(super) fn validate_request(
     })
 }
 
-pub(super) fn validate_bodyless_request(headers: &HeaderMap) -> Result<(), HttpFault> {
+pub(crate) fn validate_bodyless_request(headers: &HeaderMap) -> Result<(), HttpFault> {
     let mut encodings = headers.get_all(CONTENT_ENCODING).iter();
     let encoding = encodings.next();
     if encodings.next().is_some()
