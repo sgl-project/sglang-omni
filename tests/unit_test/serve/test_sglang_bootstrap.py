@@ -74,6 +74,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     monkeypatch,
 ) -> None:
     events: list[str] = []
+    worker_kwargs: dict[str, object] = {}
     monkeypatch.setattr(
         bootstrap,
         "_describe_sglang_runtime_configuration",
@@ -98,7 +99,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         enable_prefill_input_embeds = False
 
         def __init__(self, **kwargs) -> None:
-            del kwargs
+            worker_kwargs.update(kwargs)
             events.append("model_worker")
             self.model_runner = FakeRunner()
 
@@ -123,7 +124,11 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         chunked_prefill_size=8,
         max_prefill_tokens=16,
     )
-    infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
+    infrastructure = bootstrap.create_sglang_infrastructure(
+        server_args,
+        0,
+        model_weights_path="/models/component",
+    )
 
     assert events == [
         "runtime_configuration",
@@ -134,6 +139,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         "get_memory_pool",
     ]
     assert infrastructure[0].model_runner.model is FakeRunner.model
+    assert worker_kwargs["config"].model_weights_path == "/models/component"
 
 
 def test_an_engine_is_refused_in_a_process_with_a_published_context(

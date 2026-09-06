@@ -9,11 +9,19 @@ from typing import Any, Mapping
 from transformers.utils.hub import cached_file
 
 
-def load_chat_template(model_path: str, *, local_files_only: bool = True) -> str | None:
+def load_chat_template(
+    model_path: str,
+    *,
+    local_files_only: bool = True,
+    revision: str | None = None,
+) -> str | None:
     """Load chat_template.json through the HF cache."""
     try:
         path = cached_file(
-            model_path, "chat_template.json", local_files_only=local_files_only
+            model_path,
+            "chat_template.json",
+            local_files_only=local_files_only,
+            revision=revision,
         )
     except (OSError, ValueError):
         return None
@@ -38,14 +46,20 @@ def ensure_chat_template(
     *,
     model_path: str,
     fallback_model_paths: tuple[str, ...] = (),
+    revision: str | None = None,
 ) -> None:
     """Ensure tokenizer.chat_template is populated when possible."""
     if tokenizer.chat_template:
         return
-    candidates = [(model_path, True)]
-    candidates.extend((fallback_path, False) for fallback_path in fallback_model_paths)
-    for candidate, local_files_only in candidates:
-        template = load_chat_template(candidate, local_files_only=local_files_only)
+    candidates = [(model_path, True, revision)]
+    candidates.extend(
+        (fallback_path, False, None) for fallback_path in fallback_model_paths
+    )
+    for candidate, local_files_only, candidate_revision in candidates:
+        kwargs: dict[str, Any] = {"local_files_only": local_files_only}
+        if candidate_revision is not None:
+            kwargs["revision"] = candidate_revision
+        template = load_chat_template(candidate, **kwargs)
         if template:
             tokenizer.chat_template = template
             return

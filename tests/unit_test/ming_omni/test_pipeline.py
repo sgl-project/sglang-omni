@@ -824,6 +824,7 @@ def test_ming_init_model_config_registers_auto_config_before_loading(
     worker = object.__new__(ModelWorker)
     worker.server_args = SimpleNamespace(model_path="dummy", revision=None)
     worker.model_arch_override = "BailingMoeV2ForCausalLM"
+    worker.model_weights_path = None
 
     worker._init_model_config()
 

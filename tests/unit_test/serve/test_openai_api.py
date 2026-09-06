@@ -613,6 +613,37 @@ def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     assert "cuda out of memory" in speech_resp.json()["error"]["message"]
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_chat_nonstring_text_part_maps_to_400_before_dispatch(stream: bool) -> None:
+    client = TestClient(
+        create_app(
+            Client(
+                FaultInjectingCoordinator(
+                    "decode", error="backend must not receive malformed request"
+                )
+            ),
+            model_name="test-model",
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": 7}],
+                }
+            ],
+            "stream": stream,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "messages[0].content[0].text must be a string"
+
+
 def test_speech_stream_admission_reject_returns_503_without_traceback(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

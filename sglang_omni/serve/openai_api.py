@@ -651,6 +651,24 @@ def _common_model_info_value(
     return None
 
 
+def _validate_chat_text_parts(req: ChatCompletionRequest) -> None:
+    """Reject malformed OpenAI text parts before dispatching the request."""
+    for message_index, message in enumerate(req.messages):
+        if not isinstance(message.content, list):
+            continue
+        for part_index, part in enumerate(message.content):
+            if not isinstance(part, dict) or part.get("type") != "text":
+                continue
+            if not isinstance(part.get("text"), str):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"messages[{message_index}].content[{part_index}].text "
+                        "must be a string"
+                    ),
+                )
+
+
 def _register_chat_completions(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
     async def chat_completions(req: ChatCompletionRequest) -> Response:
@@ -662,6 +680,7 @@ def _register_chat_completions(app: FastAPI) -> None:
         created = int(time.time())
         model = req.model or default_model
 
+        _validate_chat_text_parts(req)
         gen_req = _build_chat_generate_request(req)
 
         # Determine audio format from request
