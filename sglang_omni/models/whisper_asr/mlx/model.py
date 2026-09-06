@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx_lm.models.base import create_attention_mask
+from mlx_lm.models.cache import ArraysCache, CacheList, KVCache
 
 from .config import ModelConfig
 
@@ -51,15 +53,34 @@ class WhisperAttention(nn.Module):
         hidden_states: mx.array,
         key_value_states: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
+        cache: Optional[Any] = None,
     ) -> mx.array:
-        bsz, seq_len, _ = hidden_states.shape
-        # Cross-attention reads keys and values from the encoder output; self
-        # attention reads them from its own input.
-        kv_source = hidden_states if key_value_states is None else key_value_states
+        """Run attention, caching keys and values according to their lifetime.
 
+        Self-attention keys and values grow one step per decoded token, so they
+        use a ``KVCache`` that appends. Cross-attention keys and values are a
+        projection of the encoder output, which never changes during decoding,
+        so they are projected once into an ``ArraysCache`` and reused. Mixing
+        the two would either recompute the encoder projection every step or
+        append to a sequence that should stay fixed.
+        """
+        bsz, seq_len, _ = hidden_states.shape
         query_states = self._shape(self.q_proj(hidden_states) * self.scaling)
-        key_states = self._shape(self.k_proj(kv_source))
-        value_states = self._shape(self.v_proj(kv_source))
+
+        if key_value_states is None:
+            key_states = self._shape(self.k_proj(hidden_states))
+            value_states = self._shape(self.v_proj(hidden_states))
+            if cache is not None:
+                key_states, value_states = cache.update_and_fetch(
+                    key_states, value_states
+                )
+        elif cache is not None and cache[0] is not None:
+            key_states, value_states = cache[0], cache[1]
+        else:
+            key_states = self._shape(self.k_proj(key_value_states))
+            value_states = self._shape(self.v_proj(key_value_states))
+            if cache is not None:
+                cache[0], cache[1] = key_states, value_states
 
         attn_output = mx.fast.scaled_dot_product_attention(
             query_states, key_states, value_states, scale=1.0, mask=mask
@@ -144,20 +165,115 @@ class WhisperEncoder(nn.Module):
         return self.layer_norm(hidden_states)
 
 
+class WhisperDecoderLayer(nn.Module):
+    """A Whisper decoder block: self-attention, cross-attention, feed-forward.
+
+    The cross-attention module is named ``encoder_attn`` to match the
+    checkpoint keys.
+    """
+
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        self.embed_dim = config.d_model
+        self.self_attn = WhisperAttention(
+            config.d_model, config.decoder_attention_heads
+        )
+        self.self_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.encoder_attn = WhisperAttention(
+            config.d_model, config.decoder_attention_heads
+        )
+        self.encoder_attn_layer_norm = nn.LayerNorm(config.d_model)
+        self.fc1 = nn.Linear(config.d_model, config.decoder_ffn_dim)
+        self.fc2 = nn.Linear(config.decoder_ffn_dim, config.d_model)
+        self.final_layer_norm = nn.LayerNorm(config.d_model)
+
+    def __call__(
+        self,
+        hidden_states: mx.array,
+        encoder_hidden_states: mx.array,
+        mask: Optional[mx.array] = None,
+        cache: Optional[Any] = None,
+    ) -> mx.array:
+        self_cache = None if cache is None else cache[0]
+        cross_cache = None if cache is None else cache[1]
+
+        residual = hidden_states
+        hidden_states = self.self_attn_layer_norm(hidden_states)
+        hidden_states = self.self_attn(hidden_states, mask=mask, cache=self_cache)
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.encoder_attn_layer_norm(hidden_states)
+        # No mask: every decoder position may attend to the whole 30 s window.
+        hidden_states = self.encoder_attn(
+            hidden_states,
+            key_value_states=encoder_hidden_states,
+            cache=cross_cache,
+        )
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.final_layer_norm(hidden_states)
+        hidden_states = nn.gelu(self.fc1(hidden_states))
+        hidden_states = self.fc2(hidden_states)
+        return residual + hidden_states
+
+
+class WhisperDecoder(nn.Module):
+    """Whisper text decoder with learned token and position embeddings."""
+
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        self.config = config
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.d_model)
+        self.embed_positions = nn.Embedding(config.max_target_positions, config.d_model)
+        self.layers = [
+            WhisperDecoderLayer(config) for _ in range(config.decoder_layers)
+        ]
+        self.layer_norm = nn.LayerNorm(config.d_model)
+
+    def __call__(
+        self,
+        input_ids: mx.array,
+        encoder_hidden_states: mx.array,
+        mask: Optional[mx.array] = None,
+        cache: Optional[list[Any]] = None,
+        offset: int = 0,
+    ) -> mx.array:
+        """Decode one or more tokens.
+
+        Args:
+            offset: index of ``input_ids[:, 0]`` in the full output sequence, so
+                incremental steps pick up the right learned position rows.
+        """
+        length = input_ids.shape[1]
+        hidden_states = self.embed_tokens(input_ids)
+        hidden_states = (
+            hidden_states + self.embed_positions.weight[offset : offset + length]
+        )
+
+        layer_caches = [None] * len(self.layers) if cache is None else cache
+        for layer, layer_cache in zip(self.layers, layer_caches):
+            hidden_states = layer(
+                hidden_states,
+                encoder_hidden_states,
+                mask=mask,
+                cache=layer_cache,
+            )
+        return self.layer_norm(hidden_states)
+
+
 class WhisperInnerModel(nn.Module):
     """Container matching the checkpoint's ``model.*`` key prefix."""
 
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.encoder = WhisperEncoder(config)
+        self.decoder = WhisperDecoder(config)
 
 
 class WhisperMlxModel(nn.Module):
-    """Native MLX Whisper model.
-
-    Only the audio encoder is implemented so far; the decoder (self-attention
-    plus ``encoder_attn`` cross-attention) lands in a follow-up change.
-    """
+    """Native MLX Whisper encoder-decoder model."""
 
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -168,8 +284,51 @@ class WhisperMlxModel(nn.Module):
     def encoder(self) -> WhisperEncoder:
         return self.model.encoder
 
+    @property
+    def decoder(self) -> WhisperDecoder:
+        return self.model.decoder
+
     def encode(self, input_features: mx.array) -> mx.array:
         return self.model.encoder(input_features)
+
+    def make_cache(self) -> List[CacheList]:
+        """One cache pair per decoder layer.
+
+        Slot 0 is the self-attention ``KVCache``, which appends a step per
+        decoded token. Slot 1 is a two-entry ``ArraysCache`` holding the
+        cross-attention keys and values, projected once from the encoder output
+        and then fixed for the rest of the sequence.
+        """
+        return [
+            CacheList(KVCache(), ArraysCache(2))
+            for _ in range(self.config.decoder_layers)
+        ]
+
+    def decode(
+        self,
+        input_ids: mx.array,
+        encoder_hidden_states: mx.array,
+        cache: Optional[List[Any]] = None,
+        offset: Optional[int] = None,
+    ) -> mx.array:
+        """Return next-token logits for ``input_ids``.
+
+        The output projection is tied to the decoder token embedding, which is
+        why Whisper checkpoints carry no ``proj_out`` tensor.
+        """
+        if offset is None:
+            offset = 0 if cache is None else cache[0][0].offset
+        hidden_states = self.model.decoder(
+            input_ids,
+            encoder_hidden_states,
+            mask=create_attention_mask(
+                self.model.decoder.embed_tokens(input_ids),
+                None if cache is None else cache[0][0],
+            ),
+            cache=cache,
+            offset=offset,
+        )
+        return self.model.decoder.embed_tokens.as_linear(hidden_states)
 
     _CONV_WEIGHTS = ("model.encoder.conv1.weight", "model.encoder.conv2.weight")
 
@@ -179,12 +338,14 @@ class WhisperMlxModel(nn.Module):
         PyTorch stores Conv1d kernels as ``(out, in, kernel)`` while MLX expects
         ``(out, kernel, in)``. Re-running this on already-converted weights must
         be a no-op, so the decision is made from the module's own expected shape
-        rather than from a guess about which axis holds the kernel. Decoder
-        tensors are dropped until the decoder is implemented.
+        rather than from a guess about which axis holds the kernel.
+
+        ``proj_out.weight`` is dropped when present: the output projection is
+        tied to ``model.decoder.embed_tokens``.
         """
         sanitized = {}
         for k, v in weights.items():
-            if not k.startswith("model.encoder."):
+            if not k.startswith("model."):
                 continue
             if k in self._CONV_WEIGHTS:
                 v = self._to_mlx_conv1d(k, v)
