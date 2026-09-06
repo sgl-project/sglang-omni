@@ -306,6 +306,16 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
 - **SM 时钟假设被否**:r20 编译臂测量窗内以 100ms 采样 400 次,`clocks.sm` 恒为 1980MHz
   (min=median=max)。至此 Talker 交错、时钟降频都不成立;剩下的 5-6ms 只能靠时间线
   (进程内 torch.profiler 抓 CUDA 流时间线)看 replay 前后到底排了什么。
+- **"GPU 保持忙碌"诊断臂(进程内一条最低优先级微型 kernel 循环)**:resolve 7.6 → **4.7ms
+  (p50 3.1)**,但该循环抢 GIL/CPU,launch 5 → 10ms、首帧 p50 2s、underrun 79%,不能当
+  产品方案。它说明:**GPU 空闲后再被唤醒有毫秒级代价**(时钟采样 100ms 粒度看不到),
+  每个 cohort 前 2-5ms 的 CPU 段让流空转,replay 就付这个代价。产品化的对应设计是
+  **worker 内双缓冲/提前发射**:先发下一 cohort 再 resolve 上一个,让解码流不空转
+  (runner 每 key 需两套静态输入/输出缓冲)。等 profiler 时间线确认空隙位置后实施。
+- 真实码对照脚本的重编译来源已定位:裸 `Qwen3TTSIncrementalCodecState()` 在前 9 步里
+  conv 历史从无到有、K/V 从 8 宽长到 71 宽,每步一个新形状,加上 inference_mode 内外
+  的 dispatch key 差异;runner 用的是 arena 全宽状态,这些守卫在生产里恒定。脚本改为
+  arena 状态重跑(排队)。全量单测 267 过。
 
 ## 决策日志
 
