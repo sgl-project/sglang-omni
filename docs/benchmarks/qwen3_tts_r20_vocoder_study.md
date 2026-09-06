@@ -481,3 +481,35 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
   低负载下增量路径与 legacy 打平且无停顿。三 seed r20 与首帧事件剖面在同一棵树上重跑中。
 - 同一棵树关掉 CUDA graph 与编译内核(eager 增量)的 r1 对照:47/47、underrun 0、first playable
   p50 54.0ms / p95 94ms、E2E p99 907ms——同样无停顿,graph 在首帧上省约 9ms(p50)、尾部省 20-30ms。
+
+### 第九轮重验(锁等待有界 + 环形 staging,2026-09-06 11:55 PT,全部 100% 完成)
+
+| arm | seed 0 | seed 1 | seed 2 | 均值 | first playable p50 / p95(三 seed 范围) |
+|---|---|---|---|---|---|
+| 默认 ramp (1,2,4) | 2.98% | 2.41% | 3.08% | **2.8%** | 76-79 / 106-114 ms |
+| ramp (2,4) | 0.68% | 0.09% | 0.00% | **0.26%** | 95-98 / 127-137 ms |
+
+对照此前(有挂流、完成率 99.8-99.9%)的 4.2% / 0.54%:修掉停顿后 underrun 进一步下降,
+默认 ramp 从 legacy 的 20.9% 降到 2.8%(7.5×),ramp (2,4) 0.26% 已低于 Nari 的 0.5%。
+每 seed n≈1160-1200 请求;单 seed 噪声约 ±1 个百分点(默认 ramp)/ ±0.4(ramp 2,4)。
+
+### 首帧路径分解(请求事件记录器,同一棵树)
+
+r1(47 请求,first playable p50 47.5ms)与 r20(795 请求,p50 79ms)的服务端阶段均值:
+
+| 阶段 | r1 avg | r1 p95 | r20 avg | r20 p95 |
+|---|---|---|---|---|
+| preprocessing(input→complete) | 7.0 | 16.6 | 9.0 | 16.8 |
+| tts_engine request_build | 0.2 | 0.3 | 0.3 | 0.5 |
+| build_end→queue_enter(准入等当前 decode step) | 3.4 | 8.1 | **13.8** | 19.6 |
+| queue_enter→prefill_start | 1.0 | 1.1 | 1.1 | 2.0 |
+| prefill_start→first_emit(prefill + 首帧 code predictor) | **16.5** | 14.9 | 14.3 | 17.7 |
+| first_emit→first chunk sent | 0.2 | — | 0.2 | — |
+| vocoder 整个请求生命周期(非首块) | 10.6 | 18.1 | 19.8 | 35.2 |
+| hop vocoder→coordinator(每块) | 0.39 | 0.47 | 1.03 | 0.34 |
+
+读法:r1 的 47.5ms 里服务端可归因约 28ms(7.0 + 3.4 + 1.0 + 16.5 + 首块 vocoder ≈ 2-3 + hop),
+其余 ~15-20ms 在 HTTP/coordinator/客户端一侧,需要单独量。r20 比 r1 多出的 ~30ms 主要是
+准入等待(+10ms,新请求要等正在跑的 batch-48 decode step 结束)、preprocessing(+2ms)和
+vocoder 首块排队。**prefill→首帧 16ms 是最大单项**:1.7B talker 短 prompt prefill 不该要 16ms,
+里面含首帧的 code predictor 自回归(16 个量化器)——下一步分别计时。
