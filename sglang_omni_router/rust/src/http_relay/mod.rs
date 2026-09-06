@@ -11,8 +11,8 @@ use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
 use bytes::{Bytes, BytesMut};
 use http_body::Body as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::error;
 
+use crate::classification::ClassificationExecutor;
 use crate::error::HttpFault;
 use crate::request_id::REQUEST_ID_HEADER;
 use crate::worker_pool::{AdmissionError, DispatchError, RequestLease};
@@ -29,7 +29,7 @@ pub(crate) use headers::{
 pub(crate) struct HttpRelay {
     client: reqwest::Client,
     buffered_budget: Arc<Semaphore>,
-    classification_slots: Arc<Semaphore>,
+    classifier: Arc<ClassificationExecutor>,
 }
 
 pub(crate) struct BufferedUpload {
@@ -46,13 +46,15 @@ pub(crate) struct OutgoingRequest {
 }
 
 impl HttpRelay {
-    pub(crate) fn new(client: reqwest::Client, buffered_budget: usize) -> Arc<Self> {
+    pub(crate) fn new(
+        client: reqwest::Client,
+        buffered_budget: usize,
+        classifier: Arc<ClassificationExecutor>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             client,
             buffered_budget: Arc::new(Semaphore::new(buffered_budget)),
-            classification_slots: Arc::new(Semaphore::new(
-                std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
-            )),
+            classifier,
         })
     }
 
@@ -64,7 +66,7 @@ impl HttpRelay {
     where
         T: Send + 'static,
     {
-        classify_blocking(Arc::clone(&self.classification_slots), deadline, operation).await
+        self.classifier.classify(deadline, operation).await
     }
 
     pub(crate) async fn read_buffered(
@@ -266,41 +268,6 @@ fn initial_buffer_capacity(expected: Option<u64>) -> usize {
     expected.unwrap_or(0).min(usize::MAX as u64) as usize
 }
 
-async fn classify_blocking<T>(
-    slots: Arc<Semaphore>,
-    deadline: tokio::time::Instant,
-    operation: impl FnOnce() -> Result<T, HttpFault> + Send + 'static,
-) -> Result<T, HttpFault>
-where
-    T: Send + 'static,
-{
-    check_precommit_deadline_at(deadline, None, tokio::time::Instant::now())?;
-    let slot = tokio::select! {
-        biased;
-        () = tokio::time::sleep_until(deadline) => return Err(HttpFault::UpstreamTimeout),
-        result = slots.acquire_owned() => result.map_err(|_| HttpFault::InternalError)?,
-    };
-    let mut task = tokio::task::spawn_blocking(move || {
-        let _slot = slot;
-        check_precommit_deadline_at(deadline, None, tokio::time::Instant::now())?;
-        operation()
-    });
-    let classified = tokio::select! {
-        biased;
-        () = tokio::time::sleep_until(deadline) => {
-            task.abort();
-            return Err(HttpFault::UpstreamTimeout);
-        }
-        result = &mut task => result,
-    }
-    .map_err(|source| {
-        error!(error = %source, "classification task failed");
-        HttpFault::InternalError
-    })?;
-    check_precommit_deadline_at(deadline, None, tokio::time::Instant::now())?;
-    classified
-}
-
 pub(crate) fn snapshot_upload(state: &SharedUploadState) -> Result<UploadState, HttpFault> {
     state.snapshot()
 }
@@ -356,7 +323,7 @@ pub(crate) const fn map_dispatch(error: DispatchError) -> HttpFault {
         DispatchError::AmbiguousModel => HttpFault::AmbiguousModel,
         DispatchError::NoEligibleProfile => HttpFault::NoCompatibleWorker,
         DispatchError::Unavailable => HttpFault::RouterUnavailable,
-        DispatchError::Internal => HttpFault::InternalError,
+        DispatchError::Overloaded | DispatchError::Internal => HttpFault::InternalError,
     }
 }
 
@@ -374,6 +341,8 @@ mod tests {
     use bytes::Bytes;
     use http_body::Frame;
     use tokio::sync::Semaphore;
+
+    use crate::classification::ClassificationExecutor;
 
     use super::{
         HttpFault, HttpRelay, SharedUploadState, UploadState, check_precommit_deadline_at,
@@ -395,14 +364,18 @@ mod tests {
     }
 
     fn relay(budget: usize) -> Arc<HttpRelay> {
-        HttpRelay::new(reqwest::Client::new(), budget)
+        HttpRelay::new(
+            reqwest::Client::new(),
+            budget,
+            ClassificationExecutor::for_test(1),
+        )
     }
 
     fn relay_with_slots(budget: usize, slots: usize) -> Arc<HttpRelay> {
         Arc::new(HttpRelay {
             client: reqwest::Client::new(),
             buffered_budget: Arc::new(Semaphore::new(budget)),
-            classification_slots: Arc::new(Semaphore::new(slots)),
+            classifier: ClassificationExecutor::for_test(slots),
         })
     }
 
@@ -519,8 +492,9 @@ mod tests {
     #[tokio::test]
     async fn classification_waits_for_an_execution_slot() {
         let relay = relay_with_slots(1, 1);
-        let held = Arc::clone(&relay.classification_slots)
-            .try_acquire_owned()
+        let held = relay
+            .classifier
+            .try_hold_slot()
             .expect("hold classification slot");
         let (entered_tx, mut entered_rx) = tokio::sync::oneshot::channel();
         let classifier = tokio::spawn({
@@ -551,8 +525,9 @@ mod tests {
     #[tokio::test]
     async fn classification_deadline_includes_execution_slot_wait() {
         let relay = relay_with_slots(1, 1);
-        let _held = Arc::clone(&relay.classification_slots)
-            .try_acquire_owned()
+        let _held = relay
+            .classifier
+            .try_hold_slot()
             .expect("hold classification slot");
         let ran = Arc::new(AtomicBool::new(false));
         let ran_in_task = Arc::clone(&ran);
@@ -604,12 +579,12 @@ mod tests {
                 .expect("join classification fixture"),
             Err(HttpFault::UpstreamTimeout)
         );
-        assert_eq!(relay.classification_slots.available_permits(), 0);
+        assert_eq!(relay.classifier.available_slots(), 0);
         assert_eq!(relay.buffered_budget.available_permits(), 0);
 
         release_tx.send(()).expect("release classifier");
         tokio::time::timeout(Duration::from_secs(1), async {
-            while relay.classification_slots.available_permits() == 0
+            while relay.classifier.available_slots() == 0
                 || relay.buffered_budget.available_permits() == 0
             {
                 tokio::task::yield_now().await;
@@ -617,7 +592,7 @@ mod tests {
         })
         .await
         .expect("blocking closure eventually releases its resources");
-        assert_eq!(relay.classification_slots.available_permits(), 1);
+        assert_eq!(relay.classifier.available_slots(), 1);
         assert_eq!(relay.buffered_budget.available_permits(), 1);
     }
 

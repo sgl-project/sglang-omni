@@ -1146,6 +1146,9 @@ def _prepare_qwen3_tts_custom_voice_request(
     wrapper: Any,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
     input_id = wrapper._tokenize_texts([wrapper._build_assistant_text(state.text)])[0]
+    # Note(yzxiao): QwenLM/Qwen3-TTS (qwen-tts 0.1.1) drops 0.6B instructions
+    # in its wrapper. Preserve this path's existing prompt passthrough for both
+    # sizes; accepting an instruction does not guarantee 0.6B style control.
     instruct_id = _build_instruct_id(wrapper, state.instructions)
     with torch.no_grad():
         return model.build_custom_voice_inputs(

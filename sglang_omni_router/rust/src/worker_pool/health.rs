@@ -243,6 +243,7 @@ mod tests {
                 stream_modes: vec![StreamMode::NonStreaming],
             }],
             active_requests: AtomicUsize::new(0),
+            session_capacity: [None, None],
             health: AtomicHealth::unknown(),
             immediate_probe: Notify::new(),
         })

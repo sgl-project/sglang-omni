@@ -63,8 +63,9 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 flow_batch_admission_frames=8000,
                 max_batch_size=16,
                 max_batch_wait_ms=30,
-                # Opt-in; off by default (one-time startup compile cost).
+                # note (guozhihao-224): mutually exclusive DiT accelerators; both default off.
                 enable_dit_torch_compile=False,
+                enable_flow_estimator_trt=False,
             ),
             gpu=0,
             terminal=True,

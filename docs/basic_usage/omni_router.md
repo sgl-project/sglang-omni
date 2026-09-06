@@ -138,11 +138,11 @@ The top-level sections are:
 | `http` | Shared upstream connection pool and aggregate buffering budget |
 | `http_generation` | Chat trust domain, request limits, and deadline |
 | `http_media` | Enabled media routes, trust domain, request limits, and deadline |
-| `websocket` | Speech and realtime routes with setup, connection, and close bounds |
-| `workers` | Worker identity, endpoint, health path, and service profiles |
+| `websocket` | Speech and realtime routes with setup and close bounds |
+| `workers` | Worker identity, endpoint, health path, session capacity, and service profiles |
 
 Each worker has a stable ID, base URL, trust domain, optional default model,
-health path and one or more correlated service profiles.
+health path, session capacity, and one or more correlated service profiles.
 A profile row describes a combination the worker supports; the router never
 combines independent fields from different rows.
 
@@ -165,7 +165,7 @@ limits, and timeouts from the expected workload and worker topology.
 | `POST` | `/v1/audio/transcriptions` | Multipart transcription |
 | `POST` | `/v1/audio/translations` | Multipart translation |
 | `GET` | `/v1/audio/speech/stream` | Speech WebSocket |
-| `GET` | `/v1/realtime?model=<id>` | OpenAI-compatible realtime WebSocket |
+| `GET` | `/v1/realtime[?model=<id>]` | OpenAI-compatible realtime WebSocket |
 | `GET`, `POST` | `/v1/audio/voices` | List or upload worker-local voices |
 | `DELETE` | `/v1/audio/voices/{name}` | Delete a worker-local voice |
 | `GET` | `/v1/models` | Static model inventory |
@@ -260,9 +260,16 @@ transcode, or regenerate audio.
 
 Speech and realtime WebSockets terminate both handshakes and pin one worker for
 the complete session. Each frame awaits its destination send, preserving frame
-type and order without relay tasks or application queues. Setup, connection,
-initial speech configuration, and close convergence use explicit bounds.
-Application-level idle behavior remains worker-owned.
+type and order without relay tasks or application queues. Both links use a 16
+MiB message bound. Speech configuration, upstream transport setup, the first
+worker event, and close convergence use separate deadlines. Application-level
+idle behavior remains worker-owned. A realtime `model` query requires a worker
+with the matching default; an omitted model can use any compatible worker in
+the trust domain. `worker_setup_timeout_ms` is an operator safety bound on the
+initial worker application event; it does not limit session lifetime or mark a
+worker unhealthy when it expires.
+Speech configuration is replayed byte-for-byte; the router extracts routing
+facts while the worker owns protocol-value validation.
 
 Uploaded voices have one explicit owner configured by
 `router.voice_owner_worker_id`. Voice CRUD and requests that depend on a stored
