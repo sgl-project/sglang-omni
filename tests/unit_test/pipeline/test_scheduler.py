@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import gc
+import importlib
 import threading
 import weakref
 from array import array
@@ -483,6 +484,36 @@ def test_retracted_request_without_history_is_requeued_untouched() -> None:
 
     assert scheduler.waiting_queue == [retracted]
     assert retracted._omni_data.decode_input_embeds == []
+
+
+@pytest.mark.parametrize(
+    "module_name, class_name",
+    [
+        ("sglang_omni.models.moss_tts.request_builders", "MossTTSSGLangRequestData"),
+        (
+            "sglang_omni.models.moss_tts_local.request_builders",
+            "MossTTSLocalSGLangRequestData",
+        ),
+    ],
+)
+def test_retracted_request_with_model_owned_data_is_requeued(
+    module_name: str, class_name: str
+) -> None:
+    data_cls = getattr(importlib.import_module(module_name), class_name)
+    scheduler = _requeue_scheduler()
+    retracted = SimpleNamespace(
+        rid="req-model-owned",
+        priority=None,
+        is_retracted=True,
+        _omni_data=data_cls(),
+        time_stats=SimpleNamespace(set_wait_queue_entry_time=lambda: None),
+    )
+
+    OmniScheduler._add_request_to_queue(scheduler, retracted, is_retracted=True)
+
+    assert scheduler.waiting_queue == [retracted]
+    assert retracted._omni_data.decode_input_embeds == []
+    assert retracted._omni_data.prefill_input_embeds is None
 
 
 def _enqueue_limit_scheduler(monkeypatch):
