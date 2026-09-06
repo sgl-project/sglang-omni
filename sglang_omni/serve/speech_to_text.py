@@ -59,6 +59,7 @@ class SpeechToTextForm:
     prompt: str | None
     response_format: str
     temperature: float | None
+    repetition_penalty: float | None
     max_new_tokens: int | None
     stream: bool
 
@@ -70,6 +71,7 @@ async def parse_speech_to_text_form(
     prompt: str | None = Form(default=None),
     response_format: str = Form(default="json"),
     temperature: float | None = Form(default=None),
+    repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
     stream: bool = Form(default=False),
 ) -> SpeechToTextForm:
@@ -80,6 +82,7 @@ async def parse_speech_to_text_form(
         prompt=prompt,
         response_format=response_format,
         temperature=temperature,
+        repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
         stream=stream,
     )
@@ -130,6 +133,7 @@ def build_speech_to_text_generate_request(
     language: str | None,
     prompt: str | None,
     temperature: float | None,
+    repetition_penalty: float | None = None,
     max_new_tokens: int | None = None,
     stream: bool = False,
     task: str = "transcribe",
@@ -148,6 +152,8 @@ def build_speech_to_text_generate_request(
         params["prompt"] = prompt
     if temperature is not None:
         explicit_fields.append("temperature")
+    if repetition_penalty is not None:
+        explicit_fields.append("repetition_penalty")
     if max_new_tokens is not None:
         explicit_fields.append("max_new_tokens")
     if segment_timestamps:
@@ -155,6 +161,9 @@ def build_speech_to_text_generate_request(
     record_explicit_generation_params(metadata, sorted(explicit_fields))
     sampling = SamplingParams(
         temperature=temperature if temperature is not None else 0.0,
+        repetition_penalty=(
+            repetition_penalty if repetition_penalty is not None else 1.0
+        ),
         max_new_tokens=max_new_tokens,
     )
 

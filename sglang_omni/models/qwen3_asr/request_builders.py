@@ -57,9 +57,15 @@ _AUDIO_START = "<|audio_start|>"
 _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_END = "<|audio_end|>"
 _ASR_TEXT = "<asr_text>"
-# Qwen3-ASR's checkpoint chat template emits this empty system turn even
-# when no caller-provided system context is present.
+# Note(Audrey): the checkpoint's chat template emits this system turn even when
+# empty; caller biasing text goes inside it.
 _SYSTEM_PROMPT = "<|im_start|>system\n<|im_end|>\n"
+
+
+def _system_turn(context: str | None) -> str:
+    if not context:
+        return _SYSTEM_PROMPT
+    return f"<|im_start|>system\n{context}<|im_end|>\n"
 
 
 @dataclass
@@ -114,6 +120,7 @@ def make_qwen3_asr_scheduler_adapters(
     context_length: int | None = None,
     audio_encoder_service: Any = None,
     should_wait_for_encode: Callable[[], bool] | None = None,
+    greedy_only: bool = False,
 ) -> tuple[
     Callable[[StagePayload], Qwen3ASRRequestData | DeferredAdmission],
     Callable[[Any], StagePayload],
@@ -130,8 +137,10 @@ def make_qwen3_asr_scheduler_adapters(
     asr_text_token_ids = _encode_literal(tokenizer, _ASR_TEXT)
 
     @lru_cache(maxsize=None)
-    def _prompt_parts(language: str | None) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        prompt = _SYSTEM_PROMPT + (
+    def _prompt_parts(
+        language: str | None, context: str | None = None
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        prompt = _system_turn(context) + (
             f"<|im_start|>user\n"
             f"{_AUDIO_START}{_AUDIO_PAD}{_AUDIO_END}"
             f"<|im_end|>\n"
@@ -155,8 +164,10 @@ def make_qwen3_asr_scheduler_adapters(
             tuple(template_ids[audio_pad_index + 1 :]),
         )
 
-    def _build_prompt_ids(num_audio_tokens: int, language: str | None) -> list[int]:
-        prefix_ids, suffix_ids = _prompt_parts(language)
+    def _build_prompt_ids(
+        num_audio_tokens: int, language: str | None, context: str | None = None
+    ) -> list[int]:
+        prefix_ids, suffix_ids = _prompt_parts(language, context)
         return [*prefix_ids, *([audio_pad_token_id] * num_audio_tokens), *suffix_ids]
 
     def _validate_context_budget(
@@ -178,11 +189,21 @@ def make_qwen3_asr_scheduler_adapters(
         payload: StagePayload,
     ) -> Qwen3ASRRequestData | DeferredAdmission:
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
+        if greedy_only and temperature != 0.0:
+            raise ValueError(
+                "Qwen3-ASR Apple backend currently supports only greedy decoding; "
+                "set temperature=0"
+            )
         language = params.get("language")
         requested_language = None if language is None else str(language)
         forced_language = (
             None if requested_language is None else resolve_language(requested_language)
         )
+        # Note(Audrey): the checkpoint reads biasing text from the system turn.
+        raw_context = params.get("prompt")
+        bias_context = str(raw_context).strip() if raw_context else None
+        bias_context = bias_context or None
         try:
             prepared = prepare_audio(
                 payload, source_name="Qwen3-ASR", target_sample_rate=_SAMPLE_RATE
@@ -235,7 +256,7 @@ def make_qwen3_asr_scheduler_adapters(
             # cannot fit the configured context do not consume preprocessing
             # memory and CPU.
             estimated_input_ids = _build_prompt_ids(
-                estimated_audio_tokens, forced_language
+                estimated_audio_tokens, forced_language, bias_context
             )
 
             if explicit_max_new_tokens is None:
@@ -289,7 +310,7 @@ def make_qwen3_asr_scheduler_adapters(
             estimated_input_ids
             if estimated_input_ids is not None
             and num_audio_tokens == estimated_audio_tokens
-            else _build_prompt_ids(num_audio_tokens, forced_language)
+            else _build_prompt_ids(num_audio_tokens, forced_language, bias_context)
         )
         _validate_context_budget(input_ids, request_max_new_tokens)
 
@@ -335,7 +356,6 @@ def make_qwen3_asr_scheduler_adapters(
         # (mrope_fast_path.py) can skip the per-request position loop for it.
         setattr(mm_inputs, mrope_fast_path.DEGENERATE_MROPE_FLAG, True)
 
-        temperature = float(params.get("temperature") or 0.0)
         logger.debug(
             f"[qwen3-asr] sampling temp={temperature} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"

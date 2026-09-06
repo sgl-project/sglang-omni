@@ -120,15 +120,23 @@ class Qwen3OmniPlacementPolicy:
             )
 
     def _validate_colocated_qwen_runtime(self, stage_map) -> None:
+        # Note (Jiaxin Deng): the schema forbids fraction next to kv_cache_bytes,
+        # so requiring the fraction would outlaw every colocated byte budget.
         missing_budgets = [
             stage_name
             for stage_name in sorted(_COLOCATED_BUDGET_STAGES)
-            if stage_map[stage_name].gpu_memory_fraction is None
+            if (
+                stage_map[stage_name].gpu_memory_fraction is None
+                and (
+                    stage_map[stage_name].engine is None
+                    or stage_map[stage_name].engine.kv_cache_bytes is None
+                )
+            )
         ]
         if missing_budgets:
             raise ValueError(
-                "Qwen colocated speech requires gpu_memory_fraction for "
-                f"{missing_budgets}"
+                "Qwen colocated speech requires gpu_memory_fraction or "
+                f"engine.kv_cache_bytes for {missing_budgets}"
             )
 
         for stage_name in _AR_STAGES:

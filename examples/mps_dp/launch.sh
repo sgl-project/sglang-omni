@@ -337,6 +337,9 @@ up() {
   local extra_args=() mem_args=()
   local expected_max_total_tokens=${MAX_TOTAL_TOKENS:-}
   local engine_stage=""
+  local kv_cache_bytes=""
+  local mps_budget_manifest=""
+  local uuid=""
   local model_path_manifest=$model
   if [ -n "$config" ]; then
     [ -z "${MODEL:-}" ] || die "MODEL cannot be combined with CONFIG"
@@ -347,6 +350,16 @@ up() {
     model_path_manifest=from_config
     if [ -n "$model_name" ]; then
       model_name_args=(--model-name "$model_name")
+    fi
+    local kv_probe_args=("$config" --print-kv-cache-bytes)
+    if [ "$weight_share" = 1 ]; then
+      kv_probe_args+=(--weight-share)
+    fi
+    kv_cache_bytes=$("$PYTHON_BIN" "$SCRIPT_DIR/config.py" \
+      "${kv_probe_args[@]}") \
+      || die "could not resolve kv_cache_bytes from $config"
+    if [ -n "$kv_cache_bytes" ] && [ -n "${MAX_TOTAL_TOKENS:-}" ]; then
+      die "MAX_TOTAL_TOKENS conflicts with engine.kv_cache_bytes in $config; a lower token cap would silently shrink the byte-derived KV pool, keep exactly one"
     fi
     local config_resolver_args=("$config")
     if [ -n "$expected_max_total_tokens" ]; then
@@ -364,6 +377,16 @@ up() {
       || die "could not resolve max_total_tokens from $config"
     engine_stage=${resolved_stage_and_tokens%% *}
     expected_max_total_tokens=${resolved_stage_and_tokens##* }
+    # Note (Aditya Vaid Sharma): nvidia-smi resolves GPU_ID physically, so the
+    # budget helper runs in a single-UUID namespace and queries logical GPU 0.
+    uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
+    local budget_args=("$config" --print-mps-memory-budget --gpu-id 0 --replicas "$n")
+    if [ "$weight_share" = 1 ]; then
+      budget_args+=(--weight-share)
+    fi
+    mps_budget_manifest=$(env CUDA_VISIBLE_DEVICES="$uuid" \
+      "$PYTHON_BIN" "$SCRIPT_DIR/config.py" "${budget_args[@]}") \
+      || die "could not resolve MPS memory budget from $config"
   else
     # Note (Jiaxin Deng): without a pipeline config the supported-model check
     # cannot run until engine startup, which is after the MPS daemon and state
@@ -379,8 +402,8 @@ up() {
     # the stage name from the pipeline itself.
     engine_stage=${ENGINE_STAGE:-tts_engine}
   fi
-  if [ "$n" -gt 1 ] && [ -z "$expected_max_total_tokens" ]; then
-    die "MAX_TOTAL_TOKENS is required for N=$n so every replica has the same KV capacity"
+  if [ "$n" -gt 1 ] && [ -z "$expected_max_total_tokens" ] && [ -z "$kv_cache_bytes" ]; then
+    die "MAX_TOTAL_TOKENS is required for N=$n so every replica has the same KV capacity (or declare engine.kv_cache_bytes in CONFIG)"
   fi
   if [ -n "$expected_max_total_tokens" ]; then
     [[ "$expected_max_total_tokens" =~ ^[1-9][0-9]*$ ]] \
@@ -391,6 +414,14 @@ up() {
     extra_args+=("--${engine_stage}.engine.max_total_tokens" "$expected_max_total_tokens")
   fi
   if [ -n "${SERVE_EXTRA_ARGS:-}" ]; then
+    # Note (Jiaxin Deng): the byte-budget preflight resolves CONFIG alone, so a
+    # memory override smuggled in here would be validated by nothing and would
+    # silently replace the budget the MPS sizing was computed from.
+    case " $SERVE_EXTRA_ARGS " in
+      *kv_cache_bytes*|*total_reserve_bytes*|*mem-fraction-static*|*mem_fraction_static*)
+        die "SERVE_EXTRA_ARGS must not set a memory budget (kv_cache_bytes, total_reserve_bytes or mem_fraction_static); the preflight validates CONFIG only, declare it there"
+        ;;
+    esac
     # Extra sgl-omni serve flags, word-split intentionally (e.g.
     # "--tts_engine.engine.max_running_requests 32"). Applied identically to every replica.
     # shellcheck disable=SC2206
@@ -417,8 +448,10 @@ up() {
     fi
   done
 
-  local uuid node run state
-  uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
+  local node run state
+  if [ -z "$uuid" ]; then
+    uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
+  fi
   node=$(resolve_numa "$gpu")
   # Note (Jiaxin Deng): a caller (autodp) may pin RUN_ID so it can tear down exactly
   # the run it started, instead of rediscovering the newest dir.
@@ -447,6 +480,9 @@ up() {
     echo "base_port=$base_port"; echo "core_blocks=$CORE_BLOCKS"
     echo "max_total_tokens=${expected_max_total_tokens:-auto/profiled}"
     echo "weight_share=$weight_share"
+    if [ -n "$mps_budget_manifest" ]; then
+      printf '%s\n' "$mps_budget_manifest"
+    fi
   } > "$state/manifest"
   if [ "$weight_share" = 1 ]; then mkdir -p "$state/ipc_weights"; chmod 700 "$state/ipc_weights"; fi
 
@@ -474,6 +510,7 @@ up() {
     || die "MPS control daemon PID $control_pid exited during startup"
 
   local pid leader_start log resolved_tokens ws_env
+  local first_resolved_tokens=""
   for ((i=0; i<n; i++)); do
     port=$((base_port+i))
     log=$state/logs/replica_$i.log
@@ -527,8 +564,19 @@ up() {
     if [ "$n" -gt 1 ]; then
       [ -n "$resolved_tokens" ] \
         || die "replica $i is healthy but its resolved KV capacity is missing from $log"
-      [ "$resolved_tokens" = "$expected_max_total_tokens" ] \
-        || die "replica $i resolved $resolved_tokens KV tokens; expected $expected_max_total_tokens"
+      if [ -n "$expected_max_total_tokens" ]; then
+        [ "$resolved_tokens" = "$expected_max_total_tokens" ] \
+          || die "replica $i resolved $resolved_tokens KV tokens; expected $expected_max_total_tokens"
+      else
+        # Byte-budget mode: every replica must derive the same capacity from
+        # the shared kv_cache_bytes declaration.
+        if [ -z "$first_resolved_tokens" ]; then
+          first_resolved_tokens=$resolved_tokens
+        else
+          [ "$resolved_tokens" = "$first_resolved_tokens" ] \
+            || die "replica $i resolved $resolved_tokens KV tokens; replica 0 resolved $first_resolved_tokens"
+        fi
+      fi
     fi
     echo "replica $i KV #tokens: ${resolved_tokens:-not found}"
   done

@@ -31,6 +31,7 @@ class ModelWorkerConfig:
     weight_prefix: str | None = None
     nccl_port: int | None = None
     total_gpu_memory_fraction: float | None = None
+    kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
 
 
@@ -70,6 +71,7 @@ class ModelWorker:
         self.weight_prefix = config.weight_prefix
         self.nccl_port = config.nccl_port
         self.total_gpu_memory_fraction = config.total_gpu_memory_fraction
+        self.kv_cache_bytes = config.kv_cache_bytes
         self.enable_prefill_input_embeds = config.enable_prefill_input_embeds
 
         self.gpu_id = gpu_id
@@ -152,6 +154,9 @@ class ModelWorker:
         model_config.num_key_value_heads = text_cfg.num_key_value_heads
         model_config.hidden_size = text_cfg.hidden_size
         model_config.num_hidden_layers = text_cfg.num_hidden_layers
+        # note(ratish): SGLang sizes the KV pool from the larger of these two
+        # and set the second from the root text config at construction.
+        model_config.num_attention_layers = text_cfg.num_hidden_layers
         if arch == "MingTTSSGLangModel":
             model_config.head_dim = int(text_cfg.head_dim)
             model_config.v_head_dim = model_config.head_dim
@@ -243,6 +248,7 @@ class ModelWorker:
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
+            kv_cache_bytes=self.kv_cache_bytes,
         )
 
     def _init_dllm_algorithm(self):

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import functools
+import importlib
 import io
+import logging
 import math
 import os
 from collections.abc import Mapping
@@ -18,17 +20,66 @@ import torch
 import torchaudio
 import xxhash
 
+from sglang_omni.platforms import current_platform
+
 _DEFAULT_REQUEST_TIMEOUT = 5
+logger = logging.getLogger(__name__)
 
 
 class AudioDecodeError(ValueError):
     """Raised when supplied encoded audio cannot be decoded."""
 
 
-def _ensure_torchaudio_decoder_ready() -> None:
-    from torchcodec.decoders import AudioDecoder
+_TORCHCODEC_USABLE: bool | None = None
 
-    del AudioDecoder
+
+def check_torchcodec_ready() -> bool:
+    """Whether the torchcodec decoder backend can be imported and loaded.
+
+    torchaudio 2.10+ delegates decoding to torchcodec. CPU-only torch images
+    (e.g. Ascend NPU containers) may ship torchcodec wheels that cannot load
+    because they link CUDA-only libraries (libnvrtc/libc10_cuda); in that case
+    audio decoding falls back to the soundfile backend.
+    """
+    global _TORCHCODEC_USABLE
+    if _TORCHCODEC_USABLE is None:
+        try:
+            # Probe import via importlib so the module name never binds a name
+            # that an unused-import linter would strip (the probe relies on the
+            # import raising for missing/unloadable torchcodec wheels).
+            importlib.import_module("torchcodec.decoders")
+        except (ImportError, OSError, RuntimeError) as exc:
+            _TORCHCODEC_USABLE = False
+            logger.warning(
+                "TorchCodec decoder is unavailable; falling back to soundfile "
+                "for audio decoding: %s",
+                exc,
+            )
+        else:
+            _TORCHCODEC_USABLE = True
+    return _TORCHCODEC_USABLE
+
+
+def _decode_with_soundfile(
+    source: str | bytes | io.BytesIO,
+) -> tuple[torch.Tensor, int]:
+    """Decode audio with SoundFile when TorchCodec cannot be loaded.
+
+    Unlike torchaudio 2.10's TorchCodec-backed loader, SoundFile does not need
+    FFmpeg or CUDA-linked TorchCodec libraries. It covers the PCM/container
+    formats supported by libsndfile and is therefore a compatibility fallback,
+    not a general replacement for TorchCodec.
+    """
+    import soundfile as sf
+
+    decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
+    try:
+        data, sample_rate = sf.read(decoder_source, dtype="float32", always_2d=True)
+    except Exception as exc:
+        raise AudioDecodeError(
+            "Could not decode audio input with the soundfile backend"
+        ) from exc
+    return torch.from_numpy(np.ascontiguousarray(data.T)), int(sample_rate)
 
 
 def _has_operational_decoder_cause(exc: BaseException) -> bool:
@@ -81,20 +132,46 @@ def _is_invalid_audio_source(source: bytes | str) -> bool:
 def _load_with_torchaudio(
     source: bytes | str, *, source_name: str
 ) -> tuple[torch.Tensor, int]:
-    _ensure_torchaudio_decoder_ready()
     decoder_source = io.BytesIO(source) if isinstance(source, bytes) else source
+    if not check_torchcodec_ready():
+        return _decode_with_soundfile(decoder_source)
     try:
-        return torchaudio.load(decoder_source)
-    except (ImportError, MemoryError, torch.OutOfMemoryError):
+        # Function-scoped import so torchaudio is resolved from sys.modules at
+        # call time (upstream stages.py did the same, and unit tests rely on
+        # monkeypatching sys.modules["torchaudio"]).
+        import torchaudio as _torchaudio
+
+        return _torchaudio.load(decoder_source)
+    except ImportError:
+        return _decode_with_soundfile(decoder_source)
+    except (MemoryError, torch.OutOfMemoryError):
         raise
     except RuntimeError as exc:
-        if _has_operational_decoder_cause(exc) or not _is_invalid_audio_source(source):
+        if _has_operational_decoder_cause(exc):
+            # Operational failures (e.g. decoder OOM) must propagate unchanged;
+            # only decode-level failures are candidates for the fallback.
+            raise
+        if not _is_invalid_audio_source(source):
             raise
         raise AudioDecodeError(f"Could not decode {source_name} audio input") from exc
 
 
 def _is_riff_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
+
+def _resample_with_scipy(
+    audio_np: np.ndarray, sample_rate: int, target_sample_rate: int
+) -> np.ndarray:
+    import scipy.signal
+
+    orig_freq = int(sample_rate)
+    new_freq = target_sample_rate
+    gcd = math.gcd(orig_freq, new_freq)
+    up = new_freq // gcd
+    down = orig_freq // gcd
+    resampled_np = scipy.signal.resample_poly(audio_np, up, down, axis=-1)
+    return resampled_np.astype(np.float32)
 
 
 def _try_fast_wav_decode(
@@ -116,13 +193,16 @@ def _try_fast_wav_decode(
     if sample_rate == target_sample_rate:
         return audio
 
-    resampled = _cached_resample(
-        torch.from_numpy(audio),
-        sample_rate,
-        target_sample_rate,
-        resample_kwargs,
-    )
-    return resampled.numpy()
+    if current_platform.supports_torchaudio_resample():
+        resampled = _cached_resample(
+            torch.from_numpy(audio),
+            sample_rate,
+            target_sample_rate,
+            resample_kwargs,
+        )
+        return resampled.numpy()
+    else:
+        return _resample_with_scipy(audio, sample_rate, target_sample_rate)
 
 
 @functools.lru_cache(maxsize=32)
@@ -242,12 +322,19 @@ def load_audio(
         trimmed, _ = librosa.effects.trim(audio.numpy(), top_db=trim_top_db)
         audio = torch.from_numpy(trimmed)
     if sample_rate != target_sample_rate:
-        audio = torchaudio.functional.resample(
-            audio,
-            int(sample_rate),
-            target_sample_rate,
-            **dict(resample_kwargs or {}),
-        )
+        if current_platform.supports_torchaudio_resample():
+            audio = torchaudio.functional.resample(
+                audio,
+                int(sample_rate),
+                target_sample_rate,
+                **dict(resample_kwargs or {}),
+            )
+        else:
+            waveform_np = audio.cpu().numpy()
+            resampled_np = _resample_with_scipy(
+                waveform_np, int(sample_rate), target_sample_rate
+            )
+            audio = torch.from_numpy(resampled_np).float()
     if mono:
         audio = audio.squeeze(0)
     return audio.cpu().numpy()

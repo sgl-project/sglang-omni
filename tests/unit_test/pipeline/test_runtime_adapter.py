@@ -174,3 +174,17 @@ def test_a_plain_stage_carries_no_server_args() -> None:
     args = resolve_stage_factory_args(stage, config)
 
     assert "server_args_overrides" not in args
+
+
+def test_kv_cache_bytes_never_reaches_server_args_overrides() -> None:
+    """The byte budget rides the worker spec, not ServerArgs."""
+    from sglang_omni.config import EngineArgs
+    from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+
+    stage = _stage(engine=EngineArgs(kv_cache_bytes="2GiB", max_running_requests=8))
+
+    kwargs = resolve_stage_typed_kwargs(stage)
+
+    overrides = kwargs["server_args_overrides"]
+    assert overrides["max_running_requests"] == 8
+    assert "kv_cache_bytes" not in overrides

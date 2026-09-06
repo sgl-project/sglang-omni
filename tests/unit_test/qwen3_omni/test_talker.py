@@ -322,14 +322,19 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert queue[0].device.type == "meta"
 
 
-def test_pending_text_queue_rejects_unexpected_rank() -> None:
-    """Keeps queue shape handling explicit instead of flattening unknown ranks."""
+def test_pending_text_queue_rejects_invalid_shapes() -> None:
+    """Keeps queue shape validation explicit."""
     queue = PendingTextTensorQueue()
 
     with pytest.raises(ValueError, match="1D row tensor or a 2D row batch"):
         queue.append_rows(torch.zeros((1, 2, 3)))
     with pytest.raises(ValueError, match="non-empty hidden dimension"):
         queue.append_rows(torch.zeros((1, 0)))
+
+    queue = PendingTextTensorQueue.from_tensor(torch.zeros((2, 3)))
+    with pytest.raises(ValueError, match="hidden dimension must match"):
+        queue.append_rows(torch.zeros((1, 4)))
+    assert len(queue) == 2
 
 
 def test_pending_text_queue_rejects_non_tensor_input() -> None:
@@ -343,16 +348,98 @@ def test_pending_text_queue_rejects_non_tensor_input() -> None:
         coerce_pending_text_queue(object())
 
 
+def test_pending_text_queue_rejects_non_integer_indices() -> None:
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+
+    for idx in (slice(None), torch.tensor(0)):
+        with pytest.raises(
+            TypeError, match="PendingTextTensorQueue indices must be integers"
+        ):
+            queue.__getitem__(idx)
+
+
 def test_coerce_pending_text_queue_copies_cursor_state() -> None:
     """Avoids sharing mutable FIFO cursor state across request data objects."""
     queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    queue.append_rows(torch.tensor([[3.0], [4.0]]))
 
     copied = coerce_pending_text_queue(queue)
     copied.popleft()
+    copied.popleft()
 
     assert copied is not queue
-    assert len(copied) == 1
-    assert len(queue) == 2
+    assert [row.item() for row in copied] == [3.0, 4.0]
+    assert [row.item() for row in queue] == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_pending_text_queue_preserves_fifo_across_chunks() -> None:
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    queue.append_rows(torch.tensor([[3.0], [4.0]]))
+    queue.append(torch.tensor([5.0]))
+
+    assert len(queue) == 5
+    assert queue[0].item() == 1.0
+    assert queue[3].item() == 4.0
+    assert queue[-1].item() == 5.0
+    assert [queue.popleft().item() for _ in range(5)] == [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+    ]
+    assert not queue
+
+
+def test_pending_text_queue_appends_without_cat_after_partial_consumption(
+    monkeypatch,
+) -> None:
+    queue = PendingTextTensorQueue.from_tensor(
+        torch.tensor([[1.0], [2.0], [3.0]], dtype=torch.float32)
+    )
+
+    assert queue.popleft().item() == 1.0
+
+    def fail_cat(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("pending-text queue append must not invoke torch.cat")
+
+    monkeypatch.setattr(torch, "cat", fail_cat)
+    queue.append_rows(torch.tensor([[4.0], [5.0]], dtype=torch.float64))
+    queue.append(torch.tensor([6.0]))
+
+    assert [row.item() for row in queue] == [2.0, 3.0, 4.0, 5.0, 6.0]
+    assert all(row.dtype == torch.float32 for row in queue)
+
+
+def test_pending_text_queue_appends_after_exhausted_cursor() -> None:
+    queue = PendingTextTensorQueue(rows=torch.tensor([[1.0], [2.0]]), cursor=2)
+
+    assert len(queue) == 0
+    queue.append(torch.tensor([3.0]))
+
+    assert len(queue) == 1
+    assert queue.cursor == 0
+    assert queue[0].item() == 3.0
+
+
+def test_pending_text_queue_runtime_append_reuses_request_queue() -> None:
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._im_end_token_id = 99
+    builder.project_assistant_chunk = lambda chunk: torch.tensor([3.0])
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    req_data = SimpleNamespace(
+        thinker_chunks_done=False,
+        pending_text_queue=queue,
+        tts_eos_embed=torch.tensor([4.0]),
+    )
+
+    builder.append_text_chunk(req_data, SimpleNamespace(metadata={}))
+    assert req_data.pending_text_queue is queue
+
+    builder.mark_thinker_done(req_data)
+    assert req_data.pending_text_queue is queue
+    assert [row.item() for row in queue] == [1.0, 2.0, 3.0, 4.0]
 
 
 def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:
@@ -423,6 +510,27 @@ def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> Non
         )
         for call in graph_calls
     )
+
+
+def test_code_predictor_forward_runs_without_grad_tracking() -> None:
+    grad_enabled = []
+    source = torch.ones(1, requires_grad=True)
+
+    class FakeTalker:
+        def _code_predictor_forward_incremental(self, **_kwargs):
+            grad_enabled.append(torch.is_grad_enabled())
+            return torch.zeros(1, dtype=torch.long), source * 2
+
+    with torch.enable_grad():
+        result_codes, summed_embeddings = Qwen3OmniTalker.code_predictor_forward(
+            FakeTalker(), torch.zeros(1), torch.zeros(1)
+        )
+
+    assert grad_enabled == [False]
+    assert result_codes.requires_grad is False
+    assert summed_embeddings.requires_grad is False
+    assert result_codes.grad_fn is None
+    assert summed_embeddings.grad_fn is None
 
 
 class _FakePredictorLmHead(nn.Module):
@@ -553,9 +661,8 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
-    # SGLang 0.5.15 constructs nested model buffers while its outer runner is
-    # in inference mode. Replaying later from a no-grad capture must still be
-    # allowed to update those inference tensors in place.
+    # Note (zijiecode): SGLang runs the predictor from inference mode, so capture
+    # and replay are exercised in that mode here as well.
     with torch.inference_mode():
         talker.code_predictor_forward(layer0_codes, talker_hidden)
         torch.cuda.synchronize()
@@ -2323,3 +2430,25 @@ def test_talker_prefill_forward_invalidates_next_decode_reuse() -> None:
     )
 
     assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(("is_rocm", "expected"), [(True, False), (False, True)])
+def test_qwen_predictor_decode_graph_skips_outer_sglang_capture_on_rocm(
+    monkeypatch: pytest.MonkeyPatch, is_rocm: bool, expected: bool
+) -> None:
+    """SGLang's warmup forwards run inside model_capture_mode() before the
+    stream capture starts; ROCm keeps the predictor eager there, CUDA does not."""
+    monkeypatch.setattr(talker_module, "get_is_capture_mode", lambda: True)
+    monkeypatch.setattr(talker_module.current_platform, "is_rocm", lambda: is_rocm)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    talker = object.__new__(Qwen3OmniTalker)
+
+    assert (
+        talker._can_use_predictor_decode_graph(
+            layer0_codes=SimpleNamespace(dtype=torch.int, is_cuda=True),
+            talker_hidden=SimpleNamespace(is_cuda=True),
+            seq_len=1,
+        )
+        is expected
+    )

@@ -40,12 +40,11 @@ class WhisperASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Whisper checkpoints."""
 
     architecture: ClassVar[str] = "WhisperForConditionalGeneration"
-    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
-        allow_audio_chunking=True,
+    allow_audio_chunking: ClassVar[bool] = True
+    max_native_clip_s: ClassVar[float] = float(WHISPER_MAX_INPUT_SECONDS)
+    min_tail_s: ClassVar[float] = 1.0
+    audio_chunking: AudioChunkingConfig = AudioChunkingConfig(
         max_audio_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
-        max_native_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
-        min_tail_s=1.0,
-        condition_on_previous_text=False,
     )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {

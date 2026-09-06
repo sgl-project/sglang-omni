@@ -224,6 +224,14 @@ def make_fun_asr_scheduler_adapters(
             hotwords = [hotwords_raw]
         else:
             hotwords = list(hotwords_raw)
+        if not hotwords:
+            # Note(Audrey): the endpoint sends vocabulary hints as ``prompt``;
+            # comma-splitting round-trips through the ", " join below.
+            prompt_hint = params.get("prompt")
+            if prompt_hint:
+                hotwords = [
+                    term.strip() for term in str(prompt_hint).split(",") if term.strip()
+                ]
         prompt_text = _build_prompt_text(language, itn, hotwords)
         input_ids = _build_prompt_ids(num_audio_tokens, prompt_text)
 

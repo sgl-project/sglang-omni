@@ -89,7 +89,9 @@ Supported Models
    :caption: Get Started
 
    get_started/installation.md
+   get_started/installation_npu.md
    get_started/installation_xpu.md
+   get_started/installation_cpu.md
 
 
 .. toctree::
@@ -123,6 +125,7 @@ Supported Models
    basic_usage/qwen3_omni.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
+   basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
    basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
@@ -150,3 +153,4 @@ Supported Models
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/rl_admin_control.md
+   developer_reference/bump_version.md

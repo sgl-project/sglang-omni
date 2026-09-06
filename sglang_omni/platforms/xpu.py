@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 
 class XPUOmniPlatform(OmniPlatform):
@@ -44,6 +45,25 @@ class XPUOmniPlatform(OmniPlatform):
             )
             return None
         return fused_inplace_qknorm_rope
+
+    def enable_talker_graph(self) -> bool:
+        # The predictor's default SDPA dispatch is not capturable here.
+        return False
+
+    def enable_thinker_decode_graph(self) -> bool:
+        # Capture leaves the scheduler thread's stream recording; host reads fail.
+        return False
+
+    def _get_device_graph_backend(self) -> DeviceGraphBackend:
+        from sglang_omni.platforms.device_graph import XpuDeviceGraphBackend
+
+        return XpuDeviceGraphBackend()
+
+    def get_decode_cuda_graph_backend(self) -> str | None:
+        # SGLang leaves XPU decode capture opt-in and accepts only full.
+        from sglang.srt.model_executor.cuda_graph_config import Backend
+
+        return Backend.FULL
 
     def apply_model_worker_backend_policy(
         self,

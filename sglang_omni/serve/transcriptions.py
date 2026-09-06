@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from sglang_omni.client import Client, ClientError, GenerateRequest
-from sglang_omni.config import AudioChunkingConfig
+from sglang_omni.config import ResolvedAudioChunking
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import TranscriptionResponse, TranscriptionUsage
@@ -85,7 +85,7 @@ def register_transcriptions(app: FastAPI) -> None:
             form.file
         )
 
-        chunking: AudioChunkingConfig = app.state.audio_chunking
+        chunking: ResolvedAudioChunking = app.state.audio_chunking
 
         if form.stream:
             speech_to_text.validate_speech_to_text_response_format(
@@ -99,13 +99,20 @@ def register_transcriptions(app: FastAPI) -> None:
                 chunking.allow_audio_chunking
                 and duration_s > chunking.stream_clip_limit_s
             ):
+                if (
+                    chunking.max_total_audio_s is not None
+                    and chunking.max_total_audio_s <= chunking.stream_clip_limit_s
+                ):
+                    recovery = "use a shorter audio file"
+                else:
+                    recovery = (
+                        "use stream=false, which transcribes long audio in chunks"
+                    )
                 raise HTTPException(
                     status_code=400,
                     detail=(
                         "stream=true does not support audio longer than "
-                        f"{chunking.stream_clip_limit_s:g} seconds; "
-                        "use stream=false, which transcribes long audio in "
-                        "chunks"
+                        f"{chunking.stream_clip_limit_s:g} seconds; {recovery}"
                     ),
                 )
             gen_req = speech_to_text.build_speech_to_text_generate_request(
@@ -116,6 +123,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 language=form.language,
                 prompt=form.prompt,
                 temperature=form.temperature,
+                repetition_penalty=form.repetition_penalty,
                 max_new_tokens=form.max_new_tokens,
                 stream=True,
             )
@@ -173,6 +181,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 language=form.language,
                 prompt=form.prompt,
                 temperature=form.temperature,
+                repetition_penalty=form.repetition_penalty,
                 max_new_tokens=form.max_new_tokens,
                 segment_timestamps=segment_timestamps,
             )
@@ -209,6 +218,7 @@ def register_transcriptions(app: FastAPI) -> None:
                     language=form.language,
                     prompt=form.prompt,
                     temperature=form.temperature,
+                    repetition_penalty=form.repetition_penalty,
                     max_new_tokens=form.max_new_tokens,
                     max_concurrent=chunking.max_concurrent_chunks,
                     condition_on_previous_text=chunking.condition_on_previous_text,
@@ -298,6 +308,7 @@ def _build_chunk_generate_request(
     language: str | None,
     prompt: str | None,
     temperature: float | None,
+    repetition_penalty: float | None,
     max_new_tokens: int | None,
     stream: bool = False,
 ) -> GenerateRequest:
@@ -311,6 +322,7 @@ def _build_chunk_generate_request(
         language=language,
         prompt=prompt,
         temperature=temperature,
+        repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
         stream=stream,
     )
@@ -326,6 +338,7 @@ async def _transcribe_audio_chunks(
     language: str | None,
     prompt: str | None,
     temperature: float | None,
+    repetition_penalty: float | None,
     max_new_tokens: int | None,
     max_concurrent: int,
     condition_on_previous_text: bool,
@@ -363,6 +376,7 @@ async def _transcribe_audio_chunks(
                 language=language,
                 prompt=chunk_prompt,
                 temperature=temperature,
+                repetition_penalty=repetition_penalty,
                 max_new_tokens=max_new_tokens,
             )
             retry_suffix = "-retry" if retry else ""

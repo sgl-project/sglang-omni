@@ -243,6 +243,10 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.channels_closed = False
 
         @property
+        def process_specs(self) -> list[SimpleNamespace]:
+            return [SimpleNamespace(process_name=self.stage_name)] * len(self.processes)
+
+        @property
         def processes(self) -> list[FakeProcess]:
             return [self.process] if self.process is not None else []
 
@@ -376,7 +380,8 @@ async def test_mp_runner_stop_cleans_runtime_dir(
         def dead_summary(self) -> str:
             return "(none)"
 
-        async def shutdown(self) -> None:
+        async def shutdown(self, before_signal=None) -> None:
+            del before_signal
             self.shutdown_called = True
 
     group = FakeGroup()
@@ -451,13 +456,39 @@ async def _run_launcher_with_fake_runner(
     monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
     monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
     monkeypatch.setattr(launcher, "ProfilerControlClient", FakeProfilerControl)
-    monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)
+
+    def fake_create_app(*args, **kwargs):
+        del args
+        app.state.create_app_kwargs = kwargs
+        return app
+
+    monkeypatch.setattr(launcher, "create_app", fake_create_app)
     if serve_mock is not None:
         monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
 
     await launcher._run_server(config, port=8000)
     assert runner_ref is not None
     return runner_ref, app, profiler_calls
+
+
+@pytest.mark.asyncio
+async def test_launcher_passes_moss_tts_speech_input_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
+
+    config = MossTTSPipelineConfig(
+        model_path="OpenMOSS-Team/MOSS-TTS-v1.5",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+    )
+    _, app, _ = await _run_launcher_with_fake_runner(
+        config=config,
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+    )
+
+    assert app.state.create_app_kwargs["max_speech_input_chars"] is None
 
 
 @pytest.mark.asyncio

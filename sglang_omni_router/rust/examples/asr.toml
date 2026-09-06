@@ -1,0 +1,81 @@
+# Two replicas serving transcription and translation.
+schema_version = 1
+
+[server]
+listen = "0.0.0.0:30000"
+max_connections = 1024
+
+[shutdown]
+drain_timeout_ms = 30000
+
+[logging]
+format = "json"
+filter = "info"
+
+[router]
+strategy = "round_robin"
+
+[admission]
+global = 64
+transcription_http = 32
+
+[health]
+interval_ms = 5000
+timeout_ms = 5000
+success_threshold = 2
+failure_threshold = 3
+
+[http]
+buffered_request_total_bytes = 268435456
+connect_timeout_ms = 5000
+pool_idle_timeout_ms = 90000
+pool_max_idle_per_host = 8
+
+[http_media]
+routes = ["transcription", "translation"]
+trust_domain = "local"
+buffered_request_max_bytes = 8388608
+streamed_request_max_bytes = 536870912
+request_timeout_ms = 1800000
+
+[[workers]]
+worker_id = "asr-1"
+base_url = "http://127.0.0.1:8200/"
+trust_domain = "local"
+default_model_id = "asr-model"
+health_path = "/health"
+
+[[workers.service_profiles]]
+service = "transcription_http"
+model_ids = ["asr-model"]
+task = "transcribe"
+response_formats = ["json", "text", "verbose_json", "srt", "vtt", "sse"]
+stream_modes = ["non_streaming", "streaming"]
+
+[[workers.service_profiles]]
+service = "transcription_http"
+model_ids = ["asr-model"]
+task = "translate"
+response_formats = ["json", "text", "verbose_json", "sse"]
+stream_modes = ["non_streaming", "streaming"]
+
+[[workers]]
+worker_id = "asr-2"
+base_url = "http://127.0.0.1:8201/"
+trust_domain = "local"
+default_model_id = "asr-model"
+health_path = "/health"
+
+[[workers.service_profiles]]
+service = "transcription_http"
+model_ids = ["asr-model"]
+task = "transcribe"
+response_formats = ["json", "text", "verbose_json", "srt", "vtt", "sse"]
+stream_modes = ["non_streaming", "streaming"]
+
+[[workers.service_profiles]]
+service = "transcription_http"
+model_ids = ["asr-model"]
+task = "translate"
+response_formats = ["json", "text", "verbose_json", "sse"]
+stream_modes = ["non_streaming", "streaming"]

@@ -27,9 +27,15 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     context_length = 4096
     model_arch_override = "FunCosyVoice3SGLangModel"
 
-    def __init__(self) -> None:
+    def __init__(self, onnx_intra_op_threads: int = 16) -> None:
         super().__init__()
         self._checkpoint_root: str | None = None
+
+        # note (Dayuxiaoshui): both ONNX sessions get a pool of this size, so
+        # cap it at the host core count instead of trusting the default of 16.
+        self._onnx_intra_op_threads = max(
+            1, min(int(onnx_intra_op_threads), os.cpu_count() or 1)
+        )
 
     def _blanken_dir(self) -> str:
         assert self._checkpoint_root is not None, "checkpoint_root not set"
@@ -88,8 +94,16 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         campplus_path = os.path.join(root, "campplus.onnx")
 
         tokenizer = CosyVoice3Tokenizer(tokenizer_path)
-        speech_tokenizer = SpeechTokenizerV3(speech_tokenizer_path, device=device)
-        speaker_encoder = SpeakerEncoder(campplus_path, device=device)
+        speech_tokenizer = SpeechTokenizerV3(
+            speech_tokenizer_path,
+            device=device,
+            intra_op_threads=self._onnx_intra_op_threads,
+        )
+        speaker_encoder = SpeakerEncoder(
+            campplus_path,
+            device=device,
+            intra_op_threads=self._onnx_intra_op_threads,
+        )
 
         request_builders.set_cosyvoice3_preprocessing_context(
             model=model,

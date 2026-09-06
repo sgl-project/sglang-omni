@@ -133,6 +133,30 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     assert runner._weight_update_blocked_reason() is not None
 
 
+def test_follower_runs_post_attach_hook_after_aliasing(tmp_path, monkeypatch):
+    seen = []
+
+    class HookModel(SmallModel):
+        def on_weight_share_attached(self):
+            seen.append(float(self.linear.weight[0, 0]))
+
+    ipc_weights.export_weights(
+        HookModel(fill=7.0), str(tmp_path / "HookModel.weights-ipc")
+    )
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
+
+    def fake_load(self):
+        self.model = HookModel(fill=0.0)
+
+    with mock.patch.object(ModelRunner, "load_model", fake_load):
+        runner = _bare_runner()
+        runner.load_model()
+    runner._weight_ipc_leader_monitor.stop()
+
+    # Called once, and only after the follower aliased the leader's storage.
+    assert seen == [7.0]
+
+
 def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch):
     ipc_weights.export_weights(
         SmallModel(fill=7.0), str(tmp_path / "SmallModel.weights-ipc")

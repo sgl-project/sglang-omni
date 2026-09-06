@@ -51,6 +51,25 @@ def fast_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def cuda_platform_for_engine_builder_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the engine-builder platform to non-NPU for SM-validated CUDA tests.
+
+    On Ascend hosts torch.npu is available, so current_platform resolves to
+    NPU and these CUDA SM-scope tests would route into the NPU branch instead
+    of the SM-validated path they assert on.
+    """
+    from sglang_omni.models.fishaudio_s2_pro import engine_builder as fish_engine
+
+    monkeypatch.setattr(
+        fish_engine,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: False),
+    )
+
+
 def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     """Preserves S2-Pro topology, state tensor round-trip, and prompt VQ layout."""
     config = S2ProPipelineConfig(model_path="model")
@@ -552,6 +571,12 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
 
     monkeypatch.setattr(torch, "compile", fake_compile)
     monkeypatch.setenv("SGLANG_TORCH_COMPILE_MODE", "reduce-overhead")
+    warmup_calls: list[tuple[object, int]] = []
+    monkeypatch.setattr(
+        stages,
+        "_warmup_s2pro_codebook_decoder",
+        lambda model, *, max_batch_size: warmup_calls.append((model, max_batch_size)),
+    )
 
     class _Layer:
         def forward_kvcached(
@@ -587,9 +612,129 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     assert getattr(target, "__self__", None) is audio_decoder.layers[0]
     assert getattr(target, "__name__", "") == "forward_kvcached"
     assert mode == "reduce-overhead"
-    assert kwargs == {}
+    assert kwargs == {"dynamic": True}
     assert audio_decoder._compiled_forward_kvcached_layers == ["compiled-1"]
     assert audio_decoder._compiled_forward_kvcached_max_bs == 2
+    assert warmup_calls == [(model, 2)]
+
+
+def test_s2pro_compile_warmup_covers_batches_codebooks_and_resets() -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.embeddings = torch.nn.Embedding(32, 4, dtype=torch.bfloat16)
+            self.project_in = torch.nn.Identity()
+            self.config = SimpleNamespace(num_codebooks=10)
+            self.calls: list[tuple[int, int, torch.dtype, torch.device]] = []
+            self.reset_calls = 0
+
+        def reset_caches(self) -> None:
+            self.reset_calls += 1
+
+        def forward_kvcached(
+            self, decoder_input: torch.Tensor, *, codebook_idx: int
+        ) -> torch.Tensor:
+            self.calls.append(
+                (
+                    int(decoder_input.shape[0]),
+                    codebook_idx,
+                    decoder_input.dtype,
+                    decoder_input.device,
+                )
+            )
+            return decoder_input
+
+    audio_decoder = _AudioDecoder()
+    model = SimpleNamespace(_audio_decoder=audio_decoder)
+
+    stages._warmup_s2pro_codebook_decoder(model, max_batch_size=20)
+
+    expected = [
+        (batch_size, codebook_idx)
+        for _ in range(2)
+        for batch_size in (1, 2, 4, 8, 16, 20)
+        for codebook_idx in range(10)
+    ]
+    assert [
+        (batch_size, codebook_idx)
+        for batch_size, codebook_idx, _, _ in audio_decoder.calls
+    ] == expected
+    assert all(dtype is torch.bfloat16 for _, _, dtype, _ in audio_decoder.calls)
+    assert all(
+        device == audio_decoder.embeddings.weight.device
+        for _, _, _, device in audio_decoder.calls
+    )
+    assert audio_decoder.reset_calls == 2
+
+
+def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    fake_runner = ModuleType("sglang.srt.compilation.torch_compile_decoration")
+    fake_runner.set_torch_compile_config = lambda: None
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.compilation.torch_compile_decoration",
+        fake_runner,
+    )
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda target, **kwargs: target,
+    )
+
+    class _Layer:
+        def forward_kvcached(self, x: torch.Tensor) -> torch.Tensor:
+            return x
+
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.layers = [_Layer()]
+            self.embeddings = torch.nn.Embedding(32, 4)
+            self.config = SimpleNamespace(num_codebooks=10)
+            self._eager_forward_kvcached_layers = ["eager"]
+            self._compiled_forward_kvcached_layers = None
+            self._compiled_forward_kvcached_max_bs = 0
+            self.reset_calls = 0
+
+        def set_compiled_forward_kvcached_layers(
+            self,
+            forward_kvcached_layers: list[object],
+            *,
+            max_batch_size: int,
+        ) -> None:
+            self._compiled_forward_kvcached_layers = forward_kvcached_layers
+            self._compiled_forward_kvcached_max_bs = max_batch_size
+
+        def reset_caches(self) -> None:
+            self.reset_calls += 1
+
+        def forward_kvcached(
+            self, decoder_input: torch.Tensor, *, codebook_idx: int
+        ) -> torch.Tensor:
+            del decoder_input, codebook_idx
+            raise RuntimeError("injected warmup failure")
+
+        def select_forward_kvcached_layers(self) -> list[object]:
+            return (
+                self._compiled_forward_kvcached_layers
+                if self._compiled_forward_kvcached_layers is not None
+                else self._eager_forward_kvcached_layers
+            )
+
+    audio_decoder = _AudioDecoder()
+    stages._compile_s2pro_codebook_decoder(
+        SimpleNamespace(_audio_decoder=audio_decoder),
+        max_batch_size=8,
+    )
+
+    assert audio_decoder._compiled_forward_kvcached_layers is None
+    assert audio_decoder._compiled_forward_kvcached_max_bs == 0
+    assert audio_decoder.select_forward_kvcached_layers() == ["eager"]
+    assert audio_decoder.reset_calls == 3
 
 
 def _run_s2pro_engine_with_fake_buffers(
@@ -1133,20 +1278,15 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
     ref_path = tmp_path / "ref.wav"
     ref_path.write_bytes(b"version-a")
 
-    def load(path: str):
+    def load_audio(path: str, *, target_sample_rate: int, mono: bool):
         assert path == str(ref_path)
-        return torch.zeros((1, 8), dtype=torch.float32), 16000
+        assert target_sample_rate == 16000
+        assert mono is True
+        return np.zeros(8, dtype=np.float32)
 
-    monkeypatch.setitem(
-        sys.modules,
-        "torchaudio",
-        SimpleNamespace(
-            load=load,
-            functional=SimpleNamespace(
-                resample=lambda audio, sr, target_sr: audio,
-            ),
-        ),
-    )
+    from sglang_omni.utils import audio as audio_utils
+
+    monkeypatch.setattr(audio_utils, "load_audio", load_audio)
 
     class _Codec:
         sample_rate = 16000

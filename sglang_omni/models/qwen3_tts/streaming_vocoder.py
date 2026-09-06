@@ -13,6 +13,10 @@ from typing import Any, Mapping
 
 import torch
 
+from sglang_omni.models.qwen3_tts.incremental_codec import (
+    Qwen3TTSIncrementalCodecState,
+    Qwen3TTSIncrementalDecoder,
+)
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
@@ -31,8 +35,59 @@ DEFAULT_QWEN3_TTS_STREAM_STRIDE = 16
 DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE = 8
 DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE = 8
 DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
+# note (luojiaxuan): the first chunks ramp 1 -> 2 -> 4 before the steady
+# stride. A one-frame first chunk emits audio after a single AR step instead
+# of eight, and the ramp restores a full playback cushion within four chunks.
+DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
+# note (luojiaxuan): fail-closed acoustic guard for bootstrap-frame
+# suppression, in linear amplitude: RMS cap 1e-3 is -60 dBFS, peak cap
+# 3.2e-3 is -50 dBFS. Calibrated against the Ryan/English corpus, whose
+# loudest first frame measured -103.7 dBFS RMS; real speech onsets sit far
+# above -40 dBFS, so these thresholds separate the two by orders of
+# magnitude.
+_BOOTSTRAP_SILENCE_MAX_RMS = 1e-3
+_BOOTSTRAP_SILENCE_MAX_PEAK = 3.2e-3
+
+
+def _decode_graph_frame_counts(
+    *,
+    left_context: int,
+    initial_chunk_frames: int,
+    followup_stride_ramp: tuple[int, ...],
+    steady_stride: int,
+) -> tuple[int, ...]:
+    """Decode-window frame counts a streaming request can produce.
+
+    A decode spans window_start to window_end, so a chunk of s fresh frames
+    reaching the decoder with e frames already emitted and r reference frames
+    spans r + e + s, minus max(0, r + e - left_context). That collapses to two
+    families:
+
+    * saturated, once r + e has reached left_context: exactly left_context + s,
+      for every stride s the chunk schedule can ask for. The steady stride also
+      jitters with arrival timing, so every fresh-frame count from 1 up to a
+      full steady stride is reachable.
+    * filling, while r + e is still below left_context: r + e + s. With no
+      reference frames that is the running sum of the chunk schedule, and it
+      only ever falls short of the saturated count for the same stride.
+
+    Capturing this whole span keeps the common decodes on the CUDA-graph path
+    instead of the eager fallback.
+    """
+    counts: set[int] = set()
+    cumulative = 0
+    for stride in (initial_chunk_frames, *followup_stride_ramp, steady_stride):
+        if stride <= 0:
+            continue
+        saturated = left_context + stride
+        counts.add(saturated)
+        cumulative += stride
+        counts.add(min(cumulative, saturated))
+    for fresh in range(1, steady_stride + 1):
+        counts.add(left_context + fresh)
+    return tuple(sorted(counts))
 
 
 @dataclass
@@ -51,6 +106,9 @@ class _Qwen3TTSStreamState:
     followup_pending: bool = False
     final_pending: bool = False
     playback_deadline_s: float = 0.0
+    incremental_codec_state: Qwen3TTSIncrementalCodecState | None = None
+    incremental_codec_fallback: bool = False
+    suppress_bootstrap: bool = False
 
 
 class _Qwen3TTSInvalidCodeRows(ValueError):
@@ -351,7 +409,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
         stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
         stream_initial_followup_stride: int | None = None,
-        initial_chunk_frames: int = DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES,
+        initial_chunk_frames: int | None = None,
+        stream_chunk_ramp: tuple[int, ...] | list[int] | None = None,
         stream_left_context_frames: int = DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
@@ -360,9 +419,14 @@ class Qwen3TTSStreamingVocoderScheduler(
         initial_batch_wait_ms: int = 2,
         followup_max_batch_size: int = 8,
         followup_batch_wait_ms: int = 1,
+        followup_worker_count: int = 2,
         initial_cuda_graph: bool = True,
         enable_deterministic_inference: bool = False,
         followup_cuda_graph: bool = True,
+        fused_snake_activation: bool = False,
+        enable_stateful_codec_decoder: bool = False,
+        suppress_bootstrap_silence: bool = True,
+        suppress_bootstrap_max_streams: int = 24,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -371,60 +435,176 @@ class Qwen3TTSStreamingVocoderScheduler(
             and stream_initial_followup_stride <= 0
         ):
             raise ValueError("stream_initial_followup_stride must be > 0")
-        if initial_chunk_frames < 0:
+        if initial_chunk_frames is not None and initial_chunk_frames < 0:
             raise ValueError("initial_chunk_frames must be >= 0")
+        ramp_in_effect = False
+        if stream_chunk_ramp is not None:
+            # note (Junnan Li): the ramp is the generalized form of the two
+            # legacy knobs; a mixed configuration has no single source of
+            # truth, so refuse it.
+            if (
+                stream_initial_followup_stride is not None
+                or initial_chunk_frames is not None
+            ):
+                raise ValueError(
+                    "stream_chunk_ramp replaces initial_chunk_frames and "
+                    "stream_initial_followup_stride; set only one form"
+                )
+            if not isinstance(stream_chunk_ramp, (tuple, list)):
+                raise TypeError("stream_chunk_ramp must be a tuple or list of ints")
+            if not stream_chunk_ramp:
+                raise ValueError("stream_chunk_ramp must contain at least one entry")
+            if any(
+                isinstance(frames, bool) or not isinstance(frames, int)
+                for frames in stream_chunk_ramp
+            ):
+                raise TypeError("stream_chunk_ramp entries must be ints")
+            chunk_ramp = tuple(int(frames) for frames in stream_chunk_ramp)
+            if any(frames <= 0 for frames in chunk_ramp):
+                raise ValueError("stream_chunk_ramp entries must be > 0")
+            # note (Junnan Li): the request-time resolver clamps the first
+            # chunk to the steady stride, so a larger configured value would
+            # silently run a different schedule with unusable graph shapes.
+            if chunk_ramp[0] > stream_stride:
+                raise ValueError("stream_chunk_ramp[0] must be <= stream_stride")
+            initial_chunk_frames = chunk_ramp[0]
+            followup_stride_ramp = chunk_ramp[1:]
+            ramp_in_effect = True
+        elif initial_chunk_frames is None and stream_initial_followup_stride is None:
+            initial_chunk_frames = DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP[0]
+            followup_stride_ramp = tuple(
+                min(stride, stream_followup_stride)
+                for stride in DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP[1:]
+            )
+            ramp_in_effect = True
+        else:
+            if initial_chunk_frames is None:
+                initial_chunk_frames = DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES
+            followup_stride_ramp = (
+                (
+                    min(
+                        DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE,
+                        stream_followup_stride,
+                    )
+                    if stream_initial_followup_stride is None
+                    else stream_initial_followup_stride
+                ),
+            )
         if stream_left_context_frames < 0:
             raise ValueError("stream_left_context_frames must be >= 0")
         if initial_max_batch_size <= 0 or followup_max_batch_size <= 0:
             raise ValueError("async batch sizes must be > 0")
+        if followup_worker_count < 1:
+            raise ValueError("followup_worker_count must be >= 1")
         if initial_batch_wait_ms < 0 or followup_batch_wait_ms < 0:
             raise ValueError("async batch waits must be >= 0")
         self._tokenizer = tokenizer
         self._device = torch.device(device)
         self._decoder = tokenizer.model.decoder
+        if fused_snake_activation:
+            from sglang_omni.models.qwen3_tts.vocoder_kernels import (
+                fuse_vocoder_decoder,
+            )
+
+            logger.info(
+                "Qwen3-TTS vocoder fused SnakeBeta modules: %d",
+                fuse_vocoder_decoder(self._decoder),
+            )
         tokenizer_config = getattr(tokenizer.model, "config", None)
         decoder_config = getattr(tokenizer_config, "decoder_config", tokenizer_config)
         num_quantizers = int(getattr(decoder_config, "num_quantizers", 0) or 0)
         self._deterministic_inference = bool(enable_deterministic_inference)
+        # note (luojiaxuan): deterministic inference qualifies byte identity
+        # against serialized decoding, so it keeps a single follow-up worker.
+        worker_count = (
+            1 if self._deterministic_inference else int(followup_worker_count)
+        )
+        self._enable_stateful_codec_decoder = bool(enable_stateful_codec_decoder)
+        self._suppress_bootstrap_silence = bool(suppress_bootstrap_silence)
+        # note (luojiaxuan): the compensation below decodes one extra frame
+        # into a suppressed stream's first chunk. Near capacity that extra
+        # per-stream startup work is what the pipeline cannot spare, so the
+        # suppression is skipped once this many streams are already live
+        # (measured: a win to 10 RPS, a regression at 20 RPS).
+        self._suppress_bootstrap_max_streams = int(suppress_bootstrap_max_streams)
+        self._incremental_decoder = (
+            Qwen3TTSIncrementalDecoder(self._decoder)
+            if self._enable_stateful_codec_decoder
+            else None
+        )
+        # note (luojiaxuan): streaming delivers a wide, jittery range of decode
+        # window sizes, not just the exact ramp strides: the startup phase
+        # decodes the accumulating prefix before the left-context buffer fills
+        # (the running sums of the chunk schedule), and steady decodes vary by
+        # a few frames around the stride from arrival timing. Capturing only
+        # left_context + {ramp} left the majority of decodes on the eager path
+        # (measured ~72% eager, 4-5x slower). Capture the whole contiguous span
+        # the scheduler can produce so the hot path stays on the graph.
+        graph_frames = _decode_graph_frame_counts(
+            left_context=int(stream_left_context_frames),
+            initial_chunk_frames=int(initial_chunk_frames),
+            followup_stride_ramp=followup_stride_ramp,
+            steady_stride=int(stream_followup_stride),
+        )
+        if self._suppress_bootstrap_silence and initial_chunk_frames < stream_stride:
+            # note (luojiaxuan): a suppressed stream decodes one extra bootstrap
+            # frame into its first chunk, which shifts every startup window, not
+            # just the first. CustomVoice carries no reference codes, so those
+            # windows are the running sums of the bumped schedule rather than
+            # left_context + stride. Capture the whole bumped schedule.
+            graph_frames = tuple(
+                sorted(
+                    set(graph_frames)
+                    | set(
+                        _decode_graph_frame_counts(
+                            left_context=int(stream_left_context_frames),
+                            initial_chunk_frames=int(initial_chunk_frames) + 1,
+                            followup_stride_ramp=followup_stride_ramp,
+                            steady_stride=int(stream_followup_stride),
+                        )
+                    )
+                )
+            )
         self._initial_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
             self._decoder,
             device=self._device,
             num_quantizers=num_quantizers,
-            input_frames=int(stream_left_context_frames) + int(initial_chunk_frames),
+            input_frames=graph_frames,
             batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
-            enabled=bool(initial_cuda_graph and num_quantizers > 0),
-        )
-        followup_frames = (
-            int(stream_left_context_frames) + int(stream_followup_stride),
-            int(stream_left_context_frames)
-            + int(
-                min(
-                    DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE,
-                    stream_followup_stride,
-                )
-                if stream_initial_followup_stride is None
-                else stream_initial_followup_stride
+            enabled=bool(
+                initial_cuda_graph
+                and num_quantizers > 0
+                and not self._enable_stateful_codec_decoder
             ),
         )
-        self._followup_decode_graphs = _Qwen3TTSInitialDecodeGraphs(
-            self._decoder,
-            device=self._device,
-            num_quantizers=num_quantizers,
-            input_frames=followup_frames,
-            batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
-            enabled=bool(followup_cuda_graph and num_quantizers > 0),
+        self._followup_graph_holders = tuple(
+            _Qwen3TTSInitialDecodeGraphs(
+                self._decoder,
+                device=self._device,
+                num_quantizers=num_quantizers,
+                input_frames=graph_frames,
+                batch_sizes=(1,) if self._deterministic_inference else (1, 2, 4, 8),
+                enabled=bool(
+                    followup_cuda_graph
+                    and num_quantizers > 0
+                    and not self._enable_stateful_codec_decoder
+                ),
+            )
+            for _ in range(worker_count)
         )
+        self._followup_decode_graphs = self._followup_graph_holders[0]
         self._samples_per_frame = int(self._decoder.total_upsample)
         self._stream_stride = int(stream_stride)
         self._stream_followup_stride = int(stream_followup_stride)
-        self._stream_initial_followup_stride = int(
-            min(
-                DEFAULT_QWEN3_TTS_STREAM_INITIAL_FOLLOWUP_STRIDE,
-                self._stream_followup_stride,
-            )
-            if stream_initial_followup_stride is None
-            else stream_initial_followup_stride
+        # note (Junnan Li): ``_followup_stride_ramp[i]`` sizes decode chunk
+        # ``i + 2``; past the ramp the steady stride takes over.
+        self._followup_stride_ramp = tuple(
+            int(stride) for stride in followup_stride_ramp
         )
+        # note (luojiaxuan): a ramp is cursored by emitted frames whether it came
+        # from the parameter or from the shipped default; the legacy branch only
+        # fits the single follow-up stride schedule.
+        self._chunk_ramp_configured = ramp_in_effect
         self._initial_max_batch_size = int(initial_max_batch_size)
         self._initial_batch_wait_s = float(initial_batch_wait_ms) / 1000.0
         self._followup_max_batch_size = int(followup_max_batch_size)
@@ -432,7 +612,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._default_initial_chunk_frames = int(initial_chunk_frames)
         self._stream_left_context_frames = int(stream_left_context_frames)
         self._async_decode = (
-            self._device.type == "cuda" if async_decode is None else bool(async_decode)
+            False
+            if self._enable_stateful_codec_decoder
+            else (
+                self._device.type == "cuda"
+                if async_decode is None
+                else bool(async_decode)
+            )
         )
         self._decode_staging = threading.local()
         self._pinned_staging_disabled = self._device.type != "cuda"
@@ -444,16 +630,25 @@ class Qwen3TTSStreamingVocoderScheduler(
                 device=self._device,
                 priority=followup_priority,
             )
-            self._followup_decode_stream = (
-                torch.cuda.Stream(
-                    device=self._device,
-                    priority=followup_priority,
+            self._followup_decode_streams = (
+                tuple(
+                    torch.cuda.Stream(
+                        device=self._device,
+                        priority=followup_priority,
+                    )
+                    for _ in range(worker_count)
                 )
                 if self._async_decode
+                else ()
+            )
+            self._followup_decode_stream = (
+                self._followup_decode_streams[0]
+                if self._followup_decode_streams
                 else None
             )
         else:
             self._decode_stream = None
+            self._followup_decode_streams = ()
             self._followup_decode_stream = None
         self._initial_queue: queue.Queue[tuple[str, _Qwen3TTSStreamState] | None] = (
             queue.Queue()
@@ -465,6 +660,20 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._async_stop = threading.Event()
         self._initial_worker: threading.Thread | None = None
         self._followup_worker: threading.Thread | None = None
+        self._followup_workers: list[threading.Thread] = []
+        self._followup_worker_count = worker_count
+        # note (luojiaxuan): batch collection is serialized so a second worker
+        # waits for the collector instead of racing it for arrivals; two
+        # workers draining the queue in parallel split one batch into two
+        # single-request decodes. Only collection is serialized, so decodes
+        # still overlap.
+        self._followup_collect_lock = threading.Lock()
+        # note (luojiaxuan): each follow-up worker owns its decode graphs
+        # and stream. The graph holders keep static input/output buffers
+        # per captured shape, so two threads replaying one holder would
+        # race on those buffers; giving every worker its own removes the
+        # hazard instead of serialising the launch behind a lock.
+        self._worker_ctx = threading.local()
         sample_rate = int(tokenizer.get_output_sample_rate())
 
         super().__init__(
@@ -491,7 +700,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         if not self._async_decode:
             return
         self._initial_decode_graphs.capture()
-        self._followup_decode_graphs.capture()
+        for holder in self._followup_graph_holders:
+            holder.capture()
 
     def on_serving_start(self) -> None:
         if not self._async_decode:
@@ -505,13 +715,19 @@ class Qwen3TTSStreamingVocoderScheduler(
             name="qwen3-tts-vocoder-initial",
             daemon=True,
         )
-        self._followup_worker = threading.Thread(
-            target=self._run_followup_worker,
-            name="qwen3-tts-vocoder-followup",
-            daemon=True,
-        )
+        self._followup_workers = [
+            threading.Thread(
+                target=self._run_followup_worker,
+                args=(index,),
+                name=f"qwen3-tts-vocoder-followup-{index}",
+                daemon=True,
+            )
+            for index in range(self._followup_worker_count)
+        ]
+        self._followup_worker = self._followup_workers[0]
         self._initial_worker.start()
-        self._followup_worker.start()
+        for worker in self._followup_workers:
+            worker.start()
 
     def on_serving_stop(self) -> None:
         self._signal_async_stop()
@@ -522,16 +738,17 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._async_stop.set()
         if self._initial_worker is not None:
             self._initial_queue.put(_ASYNC_STOP)
-        if self._followup_worker is not None:
+        for _ in self._followup_workers or ():
             self._followup_queue.put(
                 (float("inf"), next(self._followup_sequence), "", _ASYNC_STOP)
             )
 
     def _join_async_workers(self) -> None:
-        for worker in (self._initial_worker, self._followup_worker):
+        for worker in (self._initial_worker, *self._followup_workers):
             if worker is not None and worker is not threading.current_thread():
                 worker.join()
         self._initial_worker = None
+        self._followup_workers = []
         self._followup_worker = None
 
     def create_stream_state(self, request_id: str) -> _Qwen3TTSStreamState:
@@ -592,6 +809,26 @@ class Qwen3TTSStreamingVocoderScheduler(
                 steady_chunk_frames=self._stream_stride,
                 default_frames=self._default_initial_chunk_frames,
             )
+        if metadata.get("bootstrap_silence_suppression"):
+            state.suppress_bootstrap = (
+                self._suppress_bootstrap_silence
+                and len(self._stream_states) <= self._suppress_bootstrap_max_streams
+            )
+            if state.suppress_bootstrap:
+                # note (luojiaxuan): the withheld frame is also withheld from
+                # the client's playback buffer, so decode one extra frame into
+                # the first chunk to keep the audible lead unchanged. Without
+                # that compensation the stream would emit a shorter lead than
+                # an unsuppressed one, so suppression only stays on when the
+                # bump actually applies.
+                bumped = min(state.initial_chunk_frames + 1, self._stream_stride)
+                if (
+                    state.initial_chunk_frames > 0
+                    and bumped > state.initial_chunk_frames
+                ):
+                    state.initial_chunk_frames = bumped
+                else:
+                    state.suppress_bootstrap = False
 
     def validate_chunk(
         self,
@@ -665,13 +902,128 @@ class Qwen3TTSStreamingVocoderScheduler(
         *,
         is_final: bool,
     ) -> torch.Tensor | None:
-        del request_id
-        plan = self._build_decode_plan(state, is_final=is_final)
+        force_legacy_decode = False
+        if self._enable_stateful_codec_decoder and not state.incremental_codec_fallback:
+            try:
+                incremental = self._decode_incremental_eager(state)
+            except Exception:
+                state.incremental_codec_fallback = True
+                force_legacy_decode = True
+                logger.warning(
+                    "Qwen3-TTS stateful codec decode failed for %r; using the "
+                    "legacy left-context decoder for the rest of the request",
+                    request_id,
+                    exc_info=True,
+                )
+            else:
+                if incremental is None:
+                    return None
+                plan, candidate_state, delta = incremental
+                delta = self._commit_decode_plan(state, plan, delta)
+                state.incremental_codec_state = candidate_state
+                self._prune_incremental_codes(state)
+                return delta
+
+        plan = self._build_decode_plan(state, is_final=is_final or force_legacy_decode)
         if plan is None:
             return None
         handle = self._launch_decode_plans([plan], stream=self._decode_stream)
         deltas = handle.resolve()
         return self._commit_decode_plan(state, plan, deltas[0])
+
+    def _decode_incremental_eager(
+        self,
+        state: _Qwen3TTSStreamState,
+    ) -> (
+        tuple[
+            _Qwen3TTSDecodePlan,
+            Qwen3TTSIncrementalCodecState,
+            torch.Tensor,
+        ]
+        | None
+    ):
+        available_generated_frames = state.total_frames - state.ref_frames
+        if available_generated_frames <= state.emitted_generated_frames:
+            return None
+
+        committed_state = state.incremental_codec_state
+        if committed_state is None:
+            if state.emitted_generated_frames:
+                raise RuntimeError(
+                    "Qwen3-TTS incremental codec state is missing after emitted frames"
+                )
+            candidate_state = Qwen3TTSIncrementalCodecState()
+        else:
+            candidate_state = committed_state.clone()
+        consumed_frames = candidate_state.frame_position
+        expected_consumed_frames = state.ref_frames + state.emitted_generated_frames
+        if committed_state is not None and consumed_frames != expected_consumed_frames:
+            raise RuntimeError(
+                "Qwen3-TTS incremental codec position does not match emitted frames"
+            )
+        end_frame = state.ref_frames + available_generated_frames
+        if consumed_frames < state.pruned_frames:
+            raise RuntimeError(
+                "Qwen3-TTS incremental codec codes were pruned too early"
+            )
+        codes = torch.cat(state.code_chunks, dim=0)
+        decoder_input = (
+            codes[
+                consumed_frames - state.pruned_frames : end_frame - state.pruned_frames
+            ]
+            .transpose(0, 1)
+            .unsqueeze(0)
+        )
+        bad_rows = self._screen_out_of_range_codes(decoder_input)
+        _raise_for_bad_rows(bad_rows, 1)
+        incremental_decoder = self._incremental_decoder
+        if incremental_decoder is None:
+            raise RuntimeError("Qwen3-TTS incremental codec decoder is unavailable")
+        with torch.inference_mode():
+            waveform = incremental_decoder.decode(
+                decoder_input.to(self._device), candidate_state
+            )
+        if candidate_state.frame_position != end_frame:
+            raise RuntimeError(
+                "Qwen3-TTS incremental codec position did not advance to the decode end"
+            )
+        waveform = self._split_batch_waveform(waveform, 1)[0]
+        reference_frames = max(0, state.ref_frames - consumed_frames)
+        trim_samples = reference_frames * self._samples_per_frame
+        emit_frames = available_generated_frames - state.emitted_generated_frames
+        emit_samples = emit_frames * self._samples_per_frame
+        delta = (
+            waveform[trim_samples : trim_samples + emit_samples]
+            .detach()
+            .to(dtype=torch.float32, device="cpu")
+            .contiguous()
+        )
+        if int(delta.numel()) != emit_samples:
+            raise RuntimeError(
+                "Qwen3-TTS incremental codec decoder returned the wrong delta length"
+            )
+        plan = _Qwen3TTSDecodePlan(
+            decoder_input=decoder_input,
+            absolute_emitted_frames=expected_consumed_frames,
+            generated_frames=available_generated_frames,
+            window_start=consumed_frames,
+            emitted_generated_frames=state.emitted_generated_frames,
+        )
+        return plan, candidate_state, delta
+
+    def _prune_incremental_codes(self, state: _Qwen3TTSStreamState) -> None:
+        committed_state = state.incremental_codec_state
+        assert committed_state is not None
+        retention_start = max(
+            0,
+            committed_state.frame_position - self._stream_left_context_frames,
+        )
+        while (
+            state.code_chunks
+            and state.pruned_frames + int(state.code_chunks[0].shape[0])
+            <= retention_start
+        ):
+            state.pruned_frames += int(state.code_chunks.pop(0).shape[0])
 
     def _build_decode_plan(
         self,
@@ -830,8 +1182,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                     self._initial_decode_graphs
                     if stream is self._decode_stream
                     else (
-                        self._followup_decode_graphs
-                        if stream is self._followup_decode_stream
+                        getattr(self._worker_ctx, "graphs", None)
+                        if stream in self._followup_decode_streams
                         else None
                     )
                 )
@@ -1034,18 +1386,62 @@ class Qwen3TTSStreamingVocoderScheduler(
         if delta.numel() == 0:
             raise RuntimeError("Qwen3-TTS streaming decoder returned an empty delta")
 
+        # note (luojiaxuan): trim before the deadline is credited, otherwise the
+        # stream is charged for the withheld frame it never emits and sorts late
+        # in the follow-up queue. The call is one-shot and self-gating.
+        delta = self._apply_bootstrap_suppression(state, delta)
+
         state.emitted_generated_frames = plan.generated_frames
         state.decoded_chunks += 1
-        followup_stride = (
-            self._stream_initial_followup_stride
-            if state.decoded_chunks == 1
-            else self._stream_followup_stride
+        state.next_decode_generated_frames = (
+            plan.generated_frames + self._next_followup_stride(state)
         )
-        state.next_decode_generated_frames = plan.generated_frames + followup_stride
         now = time.monotonic()
         duration_s = float(delta.numel()) / float(self._sample_rate)
         state.playback_deadline_s = max(state.playback_deadline_s, now) + duration_s
         return delta
+
+    def _apply_bootstrap_suppression(
+        self, state: _Qwen3TTSStreamState, delta: torch.Tensor
+    ) -> torch.Tensor:
+        """Withhold the bootstrap frame's samples from the first emitted chunk.
+
+        The frame stays in decoder history — only its emitted audio is
+        suppressed — so every later sample is identical to the unsuppressed
+        stream. The acoustic guard fails closed: a first frame that is not
+        actually silent is emitted unchanged.
+        """
+        if not state.suppress_bootstrap:
+            return delta
+        state.suppress_bootstrap = False
+        frame_samples = self._samples_per_frame
+        if int(delta.shape[-1]) <= frame_samples:
+            return delta
+        head = delta[..., :frame_samples].float()
+        rms = float(head.pow(2).mean().sqrt())
+        peak = float(head.abs().max())
+        if rms > _BOOTSTRAP_SILENCE_MAX_RMS or peak > _BOOTSTRAP_SILENCE_MAX_PEAK:
+            return delta
+        return delta[..., frame_samples:]
+
+    def _next_followup_stride(self, state: _Qwen3TTSStreamState) -> int:
+        """Stride of the next decode chunk after a commit.
+
+        A ramp is cursored by emitted frames, so a backlog that overshot the
+        ramp resumes at the steady stride; the legacy schedule keeps its
+        decode-count selection."""
+        if not self._chunk_ramp_configured:
+            return (
+                self._followup_stride_ramp[0]
+                if state.decoded_chunks == 1
+                else self._stream_followup_stride
+            )
+        cumulative = state.initial_chunk_frames or self._stream_stride
+        for stride in self._followup_stride_ramp:
+            if state.emitted_generated_frames < cumulative + stride:
+                return stride
+            cumulative += stride
+        return self._stream_followup_stride
 
     def _decode_and_emit(
         self,
@@ -1065,16 +1461,28 @@ class Qwen3TTSStreamingVocoderScheduler(
             return []
 
         self._mark_stream_emitted(request_id)
-        split_samples = state.initial_chunk_frames * self._samples_per_frame
-        if (
-            state.decoded_chunks == 1
-            and split_samples > 0
-            and split_samples < int(delta.shape[-1])
-        ):
-            return [
-                self._stream_chunk_message(request_id, delta[:split_samples]),
-                self._stream_chunk_message(request_id, delta[split_samples:]),
-            ]
+        if state.decoded_chunks == 1 and state.initial_chunk_frames > 0:
+            # note (Junnan Li): keep client-visible chunk sizes ramp-shaped
+            # when the first decode flushed a backlog; without a ramp only the
+            # legacy initial-boundary split applies.
+            split_frames = (state.initial_chunk_frames,)
+            if self._chunk_ramp_configured:
+                split_frames += self._followup_stride_ramp
+            slices: list[torch.Tensor] = []
+            total_samples = int(delta.shape[-1])
+            start = 0
+            for frames in split_frames:
+                end = min(start + frames * self._samples_per_frame, total_samples)
+                if end <= start:
+                    break
+                slices.append(delta[start:end])
+                start = end
+            if start < total_samples:
+                slices.append(delta[start:])
+            if len(slices) > 1:
+                return [
+                    self._stream_chunk_message(request_id, piece) for piece in slices
+                ]
         return [self._stream_chunk_message(request_id, delta)]
 
     def _schedule_initial(
@@ -1257,9 +1665,20 @@ class Qwen3TTSStreamingVocoderScheduler(
         if cleanup_abort:
             self._cleanup_aborted_request(request_id)
 
-    def _run_followup_worker(self) -> None:
+    def _run_followup_worker(self, index: int = 0) -> None:
+        self._worker_ctx.graphs = (
+            self._followup_graph_holders[index]
+            if index < len(self._followup_graph_holders)
+            else None
+        )
+        self._worker_ctx.stream = (
+            self._followup_decode_streams[index]
+            if index < len(self._followup_decode_streams)
+            else self._followup_decode_stream
+        )
         while True:
-            batch = self._collect_followup_batch()
+            with self._followup_collect_lock:
+                batch = self._collect_followup_batch()
             if batch is None:
                 return
             self._run_followup_batch(batch)
@@ -1307,7 +1726,12 @@ class Qwen3TTSStreamingVocoderScheduler(
                 planned.append((request_id, state, plan))
 
         for group in self._group_decode_plans(planned):
-            decoded = self._decode_group(group, stream=self._followup_decode_stream)
+            decoded = self._decode_group(
+                group,
+                stream=getattr(
+                    self._worker_ctx, "stream", self._followup_decode_stream
+                ),
+            )
             if decoded is None:
                 continue
             for entry, delta in zip(*decoded):

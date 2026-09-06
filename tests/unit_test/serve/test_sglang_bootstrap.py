@@ -439,3 +439,67 @@ def test_defer_cuda_graph_leaves_disabled_graph_capture_disabled(monkeypatch) ->
     assert want_cuda_graph is False
     assert seen == [(True, False)]
     assert server_args.disable_cuda_graph is True
+
+
+def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_describe_sglang_runtime_configuration",
+        lambda _server_args, _gpu_id: "runtime configuration",
+    )
+
+    class FakeRunner:
+        model = object()
+
+        def alloc_memory_pool(self) -> None:
+            pass
+
+        def init_attention_backends(self) -> None:
+            pass
+
+        def init_cuda_graphs(self) -> None:
+            pass
+
+    class FakeWorker:
+        model_config = SimpleNamespace(is_multimodal=False)
+        enable_prefill_input_embeds = False
+
+        def __init__(self, *, config, **kwargs) -> None:
+            del kwargs
+            captured["kv_cache_bytes"] = config.kv_cache_bytes
+            self.model_runner = FakeRunner()
+
+        def get_memory_pool(self):
+            return "req_pool", "kv_pool"
+
+    monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
+    monkeypatch.setattr(
+        sglang_backend,
+        "create_tree_cache",
+        lambda *args: ("tree_cache", args),
+    )
+
+    server_args = SimpleNamespace(
+        attention_backend=None,
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend=None,
+        page_size=1,
+        disable_overlap_schedule=False,
+        chunked_prefill_size=8,
+        max_prefill_tokens=16,
+    )
+
+    with stage_kv_cache_budget("thinker", 2 * 1024**3):
+        bootstrap.create_sglang_infrastructure(server_args, 0)
+    assert captured["kv_cache_bytes"] == 2 * 1024**3
+
+    captured.clear()
+    bootstrap.create_sglang_infrastructure(server_args, 0)
+    assert captured["kv_cache_bytes"] is None
