@@ -42,6 +42,7 @@ _MIN_GENERATION_TOKENS = 16
 
 @dataclass
 class FunASRRequestData(SGLangARRequestData):
+    enforce_request_limits: bool = True
     prompt_token_ids: list[int] | None = None
     output_ids: list[int] | None = None
     num_audio_tokens: int = 0
