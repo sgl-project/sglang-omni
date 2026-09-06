@@ -339,6 +339,24 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
   (b) **vocoder 独立进程 + CUDA MPS**(仓库已有 `--mps` 运行时与 `stages.vocoder.process`)
   ——让 vocoder 的微 kernel 与 Talker 的 kernel 在不同上下文里并发,而不是排队。MPS 首跑
   因控制 socket 路径超过 AF_UNIX 107 字节失败(state root 取自 TMPDIR),改短后重排。
+- **第八轮结果(r20,2 worker,wait 4,ramp (2,4),编译内核;单 seed 噪声约 ±1%)**:
+
+  | 臂 | underrun | First playable p50 / p95 / p99 | TTFA p50 |
+  |---|---|---|---|
+  | k(基线:同进程,无提前发射) | 2.73% | 110 / 155 / 220ms | 161ms |
+  | la(+提前发射) | 3.67% | 108 / 149 / 185ms | 148ms |
+  | n(vocoder 独立进程,无 MPS,+提前发射) | 4.77% | 99 / 145 / 204ms | 165ms |
+  | m(独立进程 + 原生 MPS,+提前发射) | **2.39%** | **93** / 130 / **542**ms | 148ms |
+  | la-w4(提前发射,ramp (1,2,4)) | **17.1%**(此前 22.6%) | 85 / 116 / 187ms | 142ms |
+
+  提前发射在 (2,4) 下中性、在默认 ramp (1,2,4) 下明显有效(22.6→17.1%);独立进程把
+  首帧 p50 提前 10-17ms;原生 MPS 的 underrun 最低但 p99 有 542ms 的尾巴,且服务收尾时
+  运行时报 "MPS health check failed … daemon identity query failed"——不作默认。
+- **第二轮外审**(`docs/reviews/2026-09-06-qwen3-tts-incremental-codec-ship-decision.md`):
+  根因是 GPU 调度干扰,优先级不能抢占;提前发射打空洞、分区 MPS 打干扰、原生 MPS 多为
+  仪式、融合是最后的清理;建议**现在就把增量路径发成默认(legacy 留回滚开关)→ 提前发射
+  → 用 replay 前后的 CUDA 事件证明 Talker 因果 → SM 静态分区 → 最后融合**。与实测一致,
+  采纳。
 
 ## 决策日志
 
