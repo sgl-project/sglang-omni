@@ -655,3 +655,14 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
 对听者有意义的是可闻 TTFA(默认路径 r1 p50 44ms)。可闻 TTFA 的下限 = 拿到第二帧的时刻 =
 prefill 12 + 一步 7 + vocoder 4.6 + 胶水,所以外审说的 B(full prefill 图,−3.7ms)与 A(predictor
 编译,−3~4ms)对可闻 TTFA 仍然成立,目标从 44 → ~36ms;r20 三 seed 跑完后本轮收口。
+
+r20 三 seed(单帧 bootstrap 对默认抑制,同树,100% 完成):
+
+| arm | underrun | first playable p50 | 可闻 TTFA p50 |
+|---|---|---|---|
+| 单帧 bootstrap | 1.19 / 1.03 / 1.17% | 46-47 ms | **124 ms** |
+| 默认抑制 | 1.53 / 1.72 / 2.33% | 57-58 ms | **66-72 ms** |
+
+underrun 在噪声内(这一轮默认臂偏高:同一棵树九个 seed 的默认臂 underrun 为 0.58-2.33%,
+均值 ~1.2%——单 seed 噪声带比早先估的 ±0.4 更宽,约 ±1 个百分点)。**决定:保留默认抑制**;
+Nari 对标时同时报 TTFB 与可闻 TTFA。
