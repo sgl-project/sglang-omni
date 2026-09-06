@@ -325,6 +325,10 @@ def _incremental_transformer(
 
     state.transformer_keys = next_keys
     state.transformer_values = next_values
+    state.transformer_context_length = min(
+        retained_context,
+        state.transformer_context_length + fresh_frames,
+    )
     return transformer.output_proj(transformer.norm(hidden_states))
 
 
@@ -597,10 +601,6 @@ class Qwen3TTSIncrementalDecoder:
             raise RuntimeError(
                 "Qwen3-TTS incremental codec decoder returned the wrong sample count"
             )
-        state.transformer_context_length = min(
-            self.state_spec().retained_context,
-            state.transformer_context_length + fresh_frames,
-        )
         state.advance(fresh_frames)
         return waveform
 
@@ -611,9 +611,9 @@ class Qwen3TTSIncrementalDecoder:
     ) -> torch.Tensor:
         """The tensor-only decode step: every op here is traceable and capturable.
 
-        Python-side bookkeeping (frame counters, retained-context length) lives
-        in ``decode`` so this function carries no value-specialised scalars and
-        one compiled variant serves a shape for the stream's whole lifetime.
+        The frame counter advance lives in ``decode``: it is the one Python
+        scalar that changes every step, and inside the traced region it would
+        force a recompile per step.
         """
         hidden_states = self._decoder.quantizer.decode(codes)
         hidden_states = incremental_causal_conv1d(
