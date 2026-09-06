@@ -648,3 +648,10 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
 `suppress_bootstrap_silence: false`(首块只等 1 帧)r1:47/47、0 underrun、**first playable p50
 27.7ms、min 24.8、p95 40**(默认 35.6 / 32.3 / 50)。即首帧比默认少 8ms,落到 Nari 26ms 的量级。
 可闻 TTFA 与 r20 underrun 见下。
+**但可闻 TTFA 反而从 44ms 变成 107ms**:模型的第一帧本来就是 ~80ms 的静音("bootstrap silence"),
+关掉抑制后首块立刻发出的就是这 80ms 静音,可闻音频要等第二帧——first playable −8ms 换来可闻延迟
++63ms,对听者是净损失。抑制的设计(解码两帧、扣掉静音帧)正是为此。**结论:保留默认抑制。**
+对标口径要写清楚:我们的 first playable(=TTFB)27.7ms 与 Nari 的 26ms 同量级,但那是"首字节",
+对听者有意义的是可闻 TTFA(默认路径 r1 p50 44ms)。可闻 TTFA 的下限 = 拿到第二帧的时刻 =
+prefill 12 + 一步 7 + vocoder 4.6 + 胶水,所以外审说的 B(full prefill 图,−3.7ms)与 A(predictor
+编译,−3~4ms)对可闻 TTFA 仍然成立,目标从 44 → ~36ms;r20 三 seed 跑完后本轮收口。
