@@ -892,11 +892,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             min_free_gb=min_free_gb,
             enabled=graph_enabled,
         )
+        # note (luojiaxuan): arrival jitter and terminal chunks hand the WARM
+        # path every fresh-frame count from 1 up to the steady stride, not only
+        # the ramp steps, so capture the whole span like the legacy holders do.
         warm_fresh_frames = tuple(
             sorted(
                 {
                     *self._followup_stride_ramp,
-                    self._stream_followup_stride,
+                    *range(1, self._stream_followup_stride + 1),
                 }
             )
         )
@@ -2492,7 +2495,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         for cohort in self._group_incremental_plans(planned_incremental):
             for group in self._split_incremental_group_for_graph(cohort):
                 decoded = self._decode_incremental_group(
-                    group, stream=self._followup_decode_stream
+                    group,
+                    stream=getattr(
+                        self._worker_ctx, "stream", self._followup_decode_stream
+                    ),
                 )
                 if decoded is None:
                     continue
