@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import struct
 import sys
 import types
@@ -520,7 +521,12 @@ def test_pipeline_stage_wiring():
         assert "moss_tts_local" in stage.factory_path
     assert stages["preprocessing"].process == "pipeline"
     assert stages["preprocessing"].gpu == 0
-    assert stages["preprocessing"].factory.device == "cuda:0"
+    expected_codec_device = (
+        "mps"
+        if sys.platform == "darwin" and platform.machine() == "arm64"
+        else "cuda:0"
+    )
+    assert stages["preprocessing"].factory.device == expected_codec_device
     assert stages["preprocessing"].factory.max_concurrency == 16
     preprocessing_kwargs = config.stage_factory_kwargs("preprocessing")
     assert preprocessing_kwargs["ref_audio_cache"] is True
@@ -536,7 +542,7 @@ def test_pipeline_stage_wiring():
     ] == pytest.approx(0.0)
     assert stages["vocoder"].process == "vocoder"
     assert stages["vocoder"].gpu == 0
-    assert stages["vocoder"].factory.device == "cuda:0"
+    assert stages["vocoder"].factory.device == expected_codec_device
     assert stages["vocoder"].gpu_memory_fraction == pytest.approx(0.18)
 
     placement = build_stage_placement_plan(config)
@@ -555,12 +561,12 @@ def test_pipeline_stage_wiring():
         model_path="OpenMOSS-Team/moss-local-test"
     )
     colocated_stages = {stage.name: stage for stage in colocated.stages}
-    assert colocated_stages["preprocessing"].factory.device == "cuda:0"
+    assert colocated_stages["preprocessing"].factory.device == expected_codec_device
     assert (
         colocated.stage_factory_kwargs("preprocessing")["ref_audio_cache_max_items"]
         == 8192
     )
-    assert colocated_stages["vocoder"].factory.device == "cuda:0"
+    assert colocated_stages["vocoder"].factory.device == expected_codec_device
 
     split = MossTTSLocalSplitPipelineConfig(model_path="OpenMOSS-Team/moss-local-test")
     split_stages = {stage.name: stage for stage in split.stages}
@@ -1073,6 +1079,33 @@ def test_colocated_moss_ar_abort_callback_requires_model(monkeypatch):
 
     assert cleanup_calls == ["req-1"]
     assert reset_calls == ["req-1"]
+
+
+def test_moss_ar_adapters_use_the_model_captured_during_setup(monkeypatch):
+    from sglang_omni.models.moss_tts_local import request_builders
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.0,
+    )
+    native_model = object()
+    builder.model = native_model
+    captured = []
+    monkeypatch.setattr(
+        request_builders,
+        "make_moss_tts_local_scheduler_adapters",
+        lambda *, model: captured.append(model) or (object(), object()),
+    )
+
+    adapters = builder.make_adapters(object())
+
+    assert len(adapters) == 2
+    assert captured == [native_model]
 
 
 def test_colocated_moss_ar_factory_accepts_explicit_effective_budget():
