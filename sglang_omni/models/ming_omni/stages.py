@@ -296,18 +296,30 @@ def create_sglang_thinker_executor_from_config(
 
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_generation_batch_overrides,
+        validate_generation_batch_policy,
+    )
     from sglang_omni.scheduling.sglang_backend import build_sglang_server_args
 
     register_ming_hf_config()
 
-    overrides = dict(server_args_overrides or {})
-    overrides.setdefault("sampling_backend", "pytorch")
-    overrides.setdefault("trust_remote_code", False)
+    overrides = build_generation_batch_overrides(
+        max_running_requests=16,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        sampling_backend="pytorch",
+        trust_remote_code=False,
+    )
     overrides["tp_size"] = tp_size
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
         **overrides,
+    )
+    validate_generation_batch_policy(
+        model_name="Ming-Omni thinker",
+        server_args=server_args,
     )
     return create_thinker_scheduler(
         server_args,

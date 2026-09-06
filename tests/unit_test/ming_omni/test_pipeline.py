@@ -695,6 +695,7 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
 
     call_order: list[str] = []
     captured_server_args_kwargs: dict[str, object] = {}
+    validations: list[str] = []
 
     registration_module = ModuleType("sglang_omni.models.ming_omni.registration")
 
@@ -724,6 +725,33 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         backend_module,
     )
 
+    policy_module = ModuleType("sglang_omni.scheduling.generation_batch_policy")
+
+    def build_generation_batch_overrides(
+        *,
+        max_running_requests,
+        server_args_overrides,
+        **defaults,
+    ):
+        return {
+            **defaults,
+            **(server_args_overrides or {}),
+            "max_running_requests": max_running_requests,
+        }
+
+    policy_module.build_generation_batch_overrides = build_generation_batch_overrides
+
+    def validate_generation_batch_policy(*, model_name, server_args):
+        assert server_args.tp_size == 1
+        validations.append(model_name)
+
+    policy_module.validate_generation_batch_policy = validate_generation_batch_policy
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.generation_batch_policy",
+        policy_module,
+    )
+
     bootstrap_module = ModuleType("sglang_omni.models.ming_omni.bootstrap")
 
     def create_thinker_scheduler(*args, **kwargs):
@@ -743,6 +771,9 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
     assert call_order == ["register", "build_server_args", "create_scheduler"]
     assert captured_server_args_kwargs["trust_remote_code"] is False
     assert captured_server_args_kwargs["sampling_backend"] == "pytorch"
+    assert captured_server_args_kwargs["disable_cuda_graph"] is False
+    assert captured_server_args_kwargs["max_running_requests"] == 16
+    assert validations == ["Ming-Omni thinker"]
 
 
 def test_ming_arch_override_uses_composite_llm_config() -> None:

@@ -6,10 +6,12 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 
 
 class MingThinkerModelRunner(ModelRunner):
@@ -55,18 +57,26 @@ class MingThinkerModelRunner(ModelRunner):
             value = fallback
         return int(value) if value is not None else None
 
-    def custom_prefill_forward(
+    def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
-    ):
-        """Custom prefill for multimodal inputs."""
+    ) -> None:
+        """Prepare the current prefill window before SGLang's standard forward."""
         del requests
         if not schedule_batch.forward_mode.is_extend():
             return None
+        if (
+            getattr(forward_batch, "input_embeds", None) is not None
+            or getattr(forward_batch, "replace_embeds", None) is not None
+        ):
+            return
 
         input_embeds = self._inject_multimodal_embeds(forward_batch, schedule_batch)
         if input_embeds is None:
-            return None
-        return self._forward_with_omni_embeds(forward_batch, input_embeds)
+            input_embeds = self._embed_tokens(forward_batch.input_ids)
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(input_embeds=input_embeds),
+        )
 
     def _inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
@@ -219,36 +229,4 @@ class MingThinkerModelRunner(ModelRunner):
             "Ming thinker multimodal embeds are shorter than placeholders for "
             f"{modality} request_id={req_id}: "
             f"needed={needed}, available={available}"
-        )
-
-    def _forward_with_omni_embeds(
-        self, forward_batch: Any, input_embeds: torch.Tensor
-    ) -> Any:
-        model_runner = self.tp_worker.model_runner
-        outer = self._outer_model
-
-        model_runner.attn_backend.init_forward_metadata(forward_batch)
-
-        positions = forward_batch.positions
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-
-        with attn_forward_context(model_runner.attn_backend):
-            hidden_states = outer.model(
-                input_ids=None,
-                positions=positions,
-                forward_batch=forward_batch,
-                input_embeds=input_embeds,
-            )
-
-            logits_output = outer.logits_processor(
-                forward_batch.input_ids,
-                hidden_states,
-                outer.lm_head,
-                forward_batch,
-            )
-
-        return GenerationBatchResult(
-            logits_output=logits_output,
-            can_run_cuda_graph=False,
         )

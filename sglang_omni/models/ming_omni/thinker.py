@@ -887,7 +887,9 @@ class BailingMoeV2ForCausalLM(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
+        omni_prefill_rids: Optional[list[str] | tuple[str, ...]] = None,
     ):
+        del omni_prefill_rids
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
 
         return self.logits_processor(

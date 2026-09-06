@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -47,12 +48,11 @@ def test_ming_thinker_runner_source_injects_multimodal_embeds() -> None:
     assert "continue" in source
     assert ".clamp(" in source
     assert "self._embed_tokens.num_embeddings - 1" in source
-    assert "outer.model(" in source
-    assert "input_ids=None" in source
-    assert "input_embeds=input_embeds" in source
-    assert "outer.logits_processor(" in source
-    assert "GenerationBatchResult(" in source
-    assert "can_run_cuda_graph=False" in source
+    assert "def before_prefill(" in source
+    assert "OmniPrefillInputs(input_embeds=input_embeds)" in source
+    assert "attach_omni_prefill_inputs(" in source
+    assert "def custom_prefill_forward(" not in source
+    assert "GenerationBatchResult" not in source
     assert "req.omni_model_inputs = None" in source
     assert "req._omni_consumed = None" in source
 
@@ -76,6 +76,15 @@ def test_ming_thinker_weight_loader_uses_qwen3_helper_path() -> None:
     assert "sglang_omni.models.qwen3_omni.thinker" not in source
     assert "sglang_omni.models.qwen3_omni.components.thinker_model" in source
     assert "extract_fused_experts" in source
+
+
+def test_ming_thinker_forward_accepts_the_sidecar_kwargs() -> None:
+    pytest.importorskip("sglang")
+    from sglang_omni.models.ming_omni.thinker import BailingMoeV2ForCausalLM
+
+    params = inspect.signature(BailingMoeV2ForCausalLM.forward).parameters
+    assert "input_embeds" in params
+    assert "omni_prefill_rids" in params
 
 
 def test_ming_image_encoder_keeps_its_tp_context_for_runtime_forward() -> None:
@@ -282,22 +291,16 @@ def test_ming_config_and_stages_do_not_import_ming_runner() -> None:
 def _load_runner_with_fake_sglang(monkeypatch):
     torch = pytest.importorskip("torch")
 
-    scheduler_module = ModuleType("sglang.srt.managers.scheduler")
+    base_module = ModuleType("sglang_omni.model_runner.base")
 
-    class GenerationBatchResult:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
+    class ModelRunner:
+        pass
 
-    scheduler_module.GenerationBatchResult = GenerationBatchResult
-    monkeypatch.setitem(sys.modules, "sglang", ModuleType("sglang"))
-    monkeypatch.setitem(sys.modules, "sglang.srt", ModuleType("sglang.srt"))
-    monkeypatch.setitem(
-        sys.modules, "sglang.srt.managers", ModuleType("sglang.srt.managers")
-    )
+    base_module.ModelRunner = ModelRunner
     monkeypatch.setitem(
         sys.modules,
-        "sglang.srt.managers.scheduler",
-        scheduler_module,
+        "sglang_omni.model_runner.base",
+        base_module,
     )
 
     module_name = "sglang_omni.model_runner.ming_thinker_model_runner"
@@ -340,9 +343,16 @@ def _fake_runner(torch_module, runner_cls, **token_ids):
 def _fake_batch(torch_module, input_ids, req):
     forward_batch = SimpleNamespace(
         input_ids=torch_module.tensor(input_ids, dtype=torch_module.long),
+        input_embeds=None,
+        replace_embeds=None,
+        batch_size=1,
+        rids=[req.rid],
         extend_seq_lens_cpu=[len(input_ids)],
     )
-    schedule_batch = SimpleNamespace(reqs=[req])
+    schedule_batch = SimpleNamespace(
+        reqs=[req],
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+    )
     return forward_batch, schedule_batch
 
 
@@ -430,48 +440,49 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     assert model_inputs == {"image_embeds": image_embeds}
 
 
-def test_ming_thinker_forward_publishes_sglang_forward_context() -> None:
-    import torch
-    from sglang.srt.model_executor.forward_context import (
-        get_forward_context,
-        has_forward_context,
+def test_ming_runner_text_prefill_attaches_private_sidecar(monkeypatch) -> None:
+    torch, runner_cls = _load_runner_with_fake_sglang(monkeypatch)
+    from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+
+    runner = _fake_runner(torch, runner_cls)
+    req = _fake_req(None, rid="text-only")
+    forward_batch, schedule_batch = _fake_batch(torch, [1, 2], req)
+
+    result = runner.before_prefill(forward_batch, schedule_batch, [req])
+
+    sidecar = get_omni_prefill_inputs(forward_batch)
+    assert sidecar is not None
+    assert torch.equal(
+        sidecar.input_embeds, runner._embed_tokens(forward_batch.input_ids)
     )
+    assert forward_batch.input_embeds is None
+    assert forward_batch.replace_embeds is None
+    assert result is None
 
-    from sglang_omni.model_runner.ming_thinker_model_runner import (
-        MingThinkerModelRunner,
+
+def test_ming_runner_multimodal_prefill_attaches_current_request_rows(
+    monkeypatch,
+) -> None:
+    torch, runner_cls = _load_runner_with_fake_sglang(monkeypatch)
+    from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+
+    runner = _fake_runner(torch, runner_cls, image=3, audio=5)
+    image_embeds = torch.tensor([[20.0, 21.0]])
+    audio_embeds = torch.tensor([[30.0, 31.0]])
+    req = _fake_req(
+        {"image_embeds": image_embeds, "audio_embeds": audio_embeds},
+        rid="sidecar-mm",
     )
+    forward_batch, schedule_batch = _fake_batch(torch, [3, 5, 1], req)
 
-    runner = MingThinkerModelRunner.__new__(MingThinkerModelRunner)
-    attn_backend = SimpleNamespace(init_forward_metadata=lambda _batch: None)
-    runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(attn_backend=attn_backend)
-    )
+    result = runner.before_prefill(forward_batch, schedule_batch, [req])
 
-    seen = []
-
-    def model(**kwargs):
-        seen.append(get_forward_context().attn_backend)
-        return torch.ones(1, 2)
-
-    def logits_processor(input_ids, hidden_states, lm_head, forward_batch):
-        seen.append(get_forward_context().attn_backend)
-        assert input_ids is forward_batch.input_ids
-        assert lm_head == "lm_head"
-        return "logits"
-
-    runner._outer_model = SimpleNamespace(
-        model=model,
-        logits_processor=logits_processor,
-        lm_head="lm_head",
-    )
-    forward_batch = SimpleNamespace(
-        positions=torch.tensor([0]),
-        mrope_positions=None,
-        input_ids=torch.tensor([1]),
-    )
-
-    assert not has_forward_context()
-    result = runner._forward_with_omni_embeds(forward_batch, torch.ones(1, 2))
-
-    assert seen == [attn_backend, attn_backend]
-    assert result.logits_output == "logits"
+    sidecar = get_omni_prefill_inputs(forward_batch)
+    assert sidecar is not None
+    assert torch.equal(sidecar.input_embeds[0], image_embeds[0])
+    assert torch.equal(sidecar.input_embeds[1], audio_embeds[0])
+    assert forward_batch.input_embeds is None
+    assert forward_batch.replace_embeds is None
+    assert req.omni_model_inputs is None
+    assert req._omni_consumed is None
+    assert result is None
