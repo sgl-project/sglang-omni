@@ -17,6 +17,7 @@ from sglang_omni.models.fun_asr.encoder_service import (
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -89,6 +90,8 @@ class FunASREngineBuilder(AsrEngineBuilder):
         self.tokenizer: Any = None
         self.feature_extractor: Any = None
         self.audio_encoder_service: FunASRPreLMEncoderService | None = None
+        self.device: str | None = None
+        self._torch_mps_model_runner: Any = None
         self.context_length = 0
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
@@ -108,7 +111,103 @@ class FunASREngineBuilder(AsrEngineBuilder):
             encoder_token_count + self.max_new_tokens + prompt_overhead
         )
 
+    def _uses_torch_mps(self) -> bool:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        return (
+            not use_mlx()
+            and self.device is not None
+            and self.device.split(":")[0] == "mps"
+        )
+
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if self._uses_torch_mps():
+            overrides["enable_torch_compile"] = False
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        if self._uses_torch_mps():
+            if not current_platform.is_mps():
+                raise ValueError("Fun-ASR Torch/MPS requires the Apple Metal platform")
+            if server_args.max_running_requests != 1:
+                raise ValueError(
+                    "Fun-ASR Apple currently requires max_running_requests=1"
+                )
+            if (
+                not server_args.disable_radix_cache
+                or server_args.chunked_prefill_size != -1
+            ):
+                raise ValueError(
+                    "Fun-ASR Apple requires disabled radix cache and chunked prefill"
+                )
+            if getattr(server_args, "mlx_enable_sampling", False):
+                raise ValueError(
+                    "Fun-ASR MLX currently requires mlx_enable_sampling=False"
+                )
+            if server_args.quantization is not None:
+                raise ValueError(
+                    "Fun-ASR Apple currently requires unquantized HF weights"
+                )
+        super().validate_before_infrastructure(server_args)
+
+    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        if self._uses_torch_mps():
+            from .torch_mps_runner import FunASRTorchMpsModelRunner
+
+            self._torch_mps_model_runner = FunASRTorchMpsModelRunner(
+                model_worker, output_proc
+            )
+            return self._torch_mps_model_runner
+        return super().make_model_runner(model_worker, output_proc)
+
+    def setup_model(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        if self._uses_torch_mps():
+            from .torch_mps_runner import install_torch_mps_language_model
+
+            install_torch_mps_language_model(
+                model_worker.model_runner.model, checkpoint_dir
+            )
+
+    def make_abort_callback(self) -> Any | None:
+        return (
+            self._torch_mps_model_runner.abort_request
+            if self._torch_mps_model_runner is not None
+            else None
+        )
+
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        if use_mlx():
+            raise ValueError(
+                "Fun-ASR MLX support is not available yet; set SGLANG_USE_MLX=0 "
+                "for Torch/MPS"
+            )
+        if self._uses_torch_mps():
+            # Audio embeddings are inserted only at first prefill. Token-only
+            # prefix reuse and split prefill cannot reconstruct that sidecar.
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_total_tokens": max(2048, self.context_length),
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "sampling_backend": "pytorch",
+                "mem_fraction_static": self.mem_fraction_static,
+                "dtype": dtype,
+            }
         defaults: dict[str, Any] = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -138,6 +237,8 @@ class FunASREngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
+        if self._uses_torch_mps():
+            return
         del generation_cuda_graph_enabled
         if self.enable_encoder_cuda_graph:
             # Capture needs the eager forwards; a dynamo-compiled callable
@@ -173,7 +274,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
-        if not self.enable_pre_lm_encoder:
+        if self._uses_torch_mps() or not self.enable_pre_lm_encoder:
             return
         self.audio_encoder_service = FunASRPreLMEncoderService(
             model,
@@ -197,6 +298,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
             max_new_tokens=self.max_new_tokens,
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
+            greedy_only=self._uses_torch_mps(),
         )
 
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
@@ -218,9 +320,13 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 tokenizer=self.tokenizer,
                 min_emit_interval_s=self.stream_emit_interval_s,
             ),
-            "enable_async_decode": self.enable_async_decode,
+            "enable_async_decode": (
+                False if self._uses_torch_mps() else self.enable_async_decode
+            ),
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
-            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_requests": (
+                0 if self._uses_torch_mps() else self.prefill_coalesce_requests
+            ),
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "prefill_coalesce_when_idle": self.prefill_coalesce_when_idle,
             "prefill_coalesce_requires_pending_builds": (
@@ -229,6 +335,8 @@ class FunASREngineBuilder(AsrEngineBuilder):
             "prefill_coalesce_after_builds_during_decode": (
                 self.prefill_coalesce_after_builds_during_decode
             ),
-            "request_build_max_workers": self.request_build_max_workers,
+            "request_build_max_workers": (
+                1 if self._uses_torch_mps() else self.request_build_max_workers
+            ),
             "request_build_max_pending": self.request_build_max_pending,
         }

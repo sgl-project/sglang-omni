@@ -127,6 +127,11 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     stream_builder_calls: list[dict[str, object]] = []
     stream_output_builder = object()
 
+    # Exercise the existing CUDA policy regardless of the host platform.
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_device_spec", lambda *args: "cuda:0"
+    )
+
     def tokenizer(text, add_special_tokens=False):
         return SimpleNamespace(input_ids=[0] * len(text))
 
@@ -318,3 +323,79 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
 
 def test_fun_asr_declares_breakable_prefill_cuda_graph_support() -> None:
     assert fun_asr_builder.FunASREngineBuilder.supports_breakable_prefill_cuda_graph
+
+
+def _apple_builder(monkeypatch, *, mlx):
+    from sglang.srt.utils import tensor_bridge
+
+    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: mlx)
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_mps", lambda: True)
+    captured = []
+    monkeypatch.setattr(
+        fun_asr_builder.FunASREngineBuilder,
+        "build",
+        lambda self, *args, **kwargs: captured.append(self),
+    )
+    fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+    builder = captured[0]
+    builder.device = "mps"
+    builder.context_length = 300
+    return builder
+
+
+@pytest.mark.parametrize("mlx", [False])
+def test_apple_profile_skips_cuda_resources_and_uses_greedy_requests(monkeypatch, mlx):
+    builder = _apple_builder(monkeypatch, mlx=mlx)
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["max_running_requests"] == 1
+    assert defaults["disable_cuda_graph"]
+    assert defaults["disable_radix_cache"]
+    assert defaults["chunked_prefill_size"] == -1
+    overrides = {"enable_torch_compile": True}
+    builder.adjust_overrides(overrides)
+    assert overrides["enable_torch_compile"] is False
+    builder.enable_encoder_cuda_graph = True
+    builder.enable_encoder_torch_compile = True
+    # Dummy models cannot compile or run an encoder; neither Apple path should try.
+    builder.setup_model_resources(
+        object(), object(), generation_cuda_graph_enabled=False
+    )
+    builder.setup_runtime_resources(object(), object())
+    assert builder.audio_encoder_service is None
+    options = builder.extra_scheduler_kwargs()
+    assert options["enable_async_decode"] is False
+    assert options["prefill_coalesce_requests"] == 0
+    assert options["request_build_max_workers"] == 1
+    monkeypatch.setattr(
+        request_builders, "make_fun_asr_scheduler_adapters", lambda **kwargs: kwargs
+    )
+    assert builder.make_adapters(object())["greedy_only"]
+
+
+@pytest.mark.parametrize("mlx", [False])
+@pytest.mark.parametrize(
+    "override,match",
+    [
+        ({"max_running_requests": 2}, "max_running_requests=1"),
+        ({"disable_radix_cache": False}, "disabled radix cache"),
+        ({"chunked_prefill_size": 128}, "chunked prefill"),
+        ({"mlx_enable_sampling": True}, "mlx_enable_sampling=False"),
+        ({"quantization": "mlx_q4"}, "unquantized"),
+    ],
+)
+def test_apple_rejects_unsupported_runtime_options(monkeypatch, mlx, override, match):
+    builder = _apple_builder(monkeypatch, mlx=mlx)
+    args = {
+        **builder.generation_defaults(dtype="bfloat16"),
+        "mlx_enable_sampling": False,
+        "quantization": None,
+        **override,
+    }
+    with pytest.raises(ValueError, match=match):
+        builder.validate_before_infrastructure(SimpleNamespace(**args))
+
+
+def test_mlx_rejected_before_infrastructure(monkeypatch):
+    builder = _apple_builder(monkeypatch, mlx=True)
+    with pytest.raises(ValueError, match="set SGLANG_USE_MLX=0"):
+        builder.generation_defaults(dtype="bfloat16")
