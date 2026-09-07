@@ -144,7 +144,11 @@ sgl-omni serve \
 This qualified profile keeps the model in BF16, limits the stage to 16 running
 requests, and sets `mem_fraction_static` to `0.65`. Its bounds are specific to
 the validated RTX 4090 layout; use the default configuration or a separately
-qualified profile on other GPU architectures.
+qualified profile on other GPU architectures. This profile was independently
+reproduced on a second RTX 4090 host: full SeedTTS EN WER 0.0122 and ZH CER
+0.0062 across concurrency 1-32, and a 30-minute mixed stability run completed
+47,486/47,486 requests. The complete reproduction report is recorded in
+#1168.
 
 For example, force synchronous decode when comparing modes:
 
