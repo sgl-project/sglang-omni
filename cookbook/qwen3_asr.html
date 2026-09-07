@@ -499,7 +499,10 @@
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
 </ul>
@@ -703,6 +706,62 @@ data: [DONE]
 </div>
 <p>Qwen3-ASR batches deltas for up to 50 ms by default. EOS and other terminal
 conditions flush any buffered text before the final transcript event.</p>
+<section id="live-pcm-transcription">
+<h3>Live PCM transcription<a class="headerlink" href="#live-pcm-transcription" title="Link to this heading">#</a></h3>
+<p>The SSE mode above starts decoding after a complete multipart upload. For live
+audio ingestion, mount the realtime WebSocket endpoint:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--enable-realtime<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Connect to <code class="docutils literal notranslate"><span class="pre">/v1/realtime?intent=transcription</span></code>, configure the session, and
+append base64-encoded mono 16 kHz PCM16 packets. <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.commit</span></code>
+finalizes the active segment manually; server VAD also finalizes after the
+configured silence interval. Send <code class="docutils literal notranslate"><span class="pre">transcription.done</span></code> after the final packet
+to receive <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code>. <code class="docutils literal notranslate"><span class="pre">input_audio_buffer.clear</span></code> discards the
+current segment and any partial hypothesis derived from it while keeping the
+WebSocket session open for new audio.</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"session.update"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"session"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"language"</span><span class="p">:</span><span class="w"> </span><span class="s2">"English"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"turn_detection"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"server_vad"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"threshold"</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"prefix_padding_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">300</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"silence_duration_ms"</span><span class="p">:</span><span class="w"> </span><span class="mi">500</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
+in the active segment. After the first two refreshes, the server rolls five
+tokens back from the prior hypothesis and uses the retained text as the next
+prompt prefix. No decoder KV cache or worker affinity is retained. Segments are
+also finalized at the configured <code class="docutils literal notranslate"><span class="pre">audio_chunking.max_audio_clip_s</span></code> boundary
+(30 seconds by default).</p>
+<p>Partial results are full replacements, not append-only deltas:</p>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"transcription.segment"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"event_index"</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"segment_id"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"hello wor"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"is_final"</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>A later event for the same <code class="docutils literal notranslate"><span class="pre">segment_id</span></code> replaces this text. An event with
+<code class="docutils literal notranslate"><span class="pre">is_final=true</span></code> is immutable. <code class="docutils literal notranslate"><span class="pre">transcription.completed</span></code> contains the joined
+text from all final segments.</p>
+<p>Append events are not idempotent. After a transport failure, reconnect and
+restart the transcription rather than retrying packets on the old session.
+Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
+rollback state.</p>
+</section>
 </section>
 <section id="request-parameters">
 <h2>Request Parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h2>
@@ -1026,7 +1085,8 @@ On memory-constrained GPUs, use the memory-conservative override:</p></li>
 <section id="known-limitations">
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>The endpoint accepts one uploaded file per request.</p></li>
+<li><p>The HTTP endpoint accepts one uploaded file per request. Live PCM uses
+<code class="docutils literal notranslate"><span class="pre">/v1/realtime?intent=transcription</span></code> and requires <code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code>.</p></li>
 <li><p>Non-streaming uploads up to <code class="docutils literal notranslate"><span class="pre">max_total_audio_s</span></code> (default one hour) are
 transcribed in full via chunking; see Long Audio above. Streaming requests
 are limited to <code class="docutils literal notranslate"><span class="pre">max_native_clip_s</span></code> (1,200s) on MLX/CUDA; Torch MPS caps both
@@ -1089,7 +1149,10 @@ native and whole-upload requests at 60 seconds.</p></li>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stream-transcription">Stream Transcription</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#live-pcm-transcription">Live PCM transcription</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hints">Language Hints</a></li>
 </ul>
