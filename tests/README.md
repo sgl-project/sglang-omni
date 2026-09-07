@@ -335,6 +335,14 @@ Relevant model CI ownership:
   threshold calibration (`asr` in `tune-ci-thresholds`). Its stdout uses the
   same boxed summary style as the other benchmark stages:
   `ASR WER Benchmark Result` followed by `ASR Speed Benchmark Result`.
+- `test_radix_evict_soak_ci.py`: nightly radix evict soak (Nightly CI stage 1,
+  not part of per-PR CI). Runs Qwen3-ASR-1.7B with radix forced on against a
+  capped pool, drives salted zero-hit traffic past saturation, and gates
+  post-saturation throughput/p99/decay ratio against the pre-saturation window
+  of the same run. Writes `/tmp/radix_evict_soak/results.json` (machine-readable) and
+  `/tmp/radix_evict_soak/results.md` (gate table, embedded in the alert issue).
+  Run locally with a single GPU:
+  `CUDA_VISIBLE_DEVICES=0 python3 -m pytest tests/test_model/test_radix_evict_soak_ci.py -v -s`.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant
