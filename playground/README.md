@@ -1,17 +1,22 @@
 # Playground
 
-Browser playgrounds for the three models served by SGLang-Omni.
+Browser playgrounds for models served by SGLang-Omni.
 
 | Subdirectory | Model | UI |
 |---|---|---|
 | `qwen-omni/` | Qwen3-Omni — multimodal chat (text / audio / image / video). | HTML / CSS / JS |
 | `s2pro/` | S2 Pro — text-to-speech with voice cloning, streaming and non-streaming. | Gradio |
 | `higgs/` | Higgs Audio v3 — multilingual TTS with inline control tokens (emotion / style / sfx / prosody) and streaming. | HTML / CSS / JS |
+| `qwen3_tts_mlx/` | Qwen3-TTS Base — voice cloning on Apple Silicon via MLX. Runs in-process, no backend. | Gradio |
 
 Each `start.sh` launches the backend, waits for `/health`, then launches the
 playground UI in the foreground. `Ctrl-C` stops both. The raw `sgl-omni serve`
 command is shown alongside in case you want to run the backend yourself (for
 example, on a separate host) and point the UI at it.
+
+`qwen3_tts_mlx/` is the exception: MLX is not wired into Omni's scheduler yet, so
+that playground loads the checkpoint into the UI process instead of talking to a
+backend over HTTP.
 
 ## Qwen3-Omni
 
@@ -95,3 +100,36 @@ From your local machine:
 ```bash
 ssh -L 8000:localhost:8000 -L 7860:localhost:7860 user@host
 ```
+
+## Qwen3-TTS voice cloning on MLX (Apple Silicon)
+
+Clone a voice from a reference clip, entirely on-device via MLX. There is no
+backend process — the UI loads the model itself.
+
+```bash
+# Voice cloning needs a *-Base checkpoint: CustomVoice and VoiceDesign ship no
+# speech-tokenizer encoder, so they cannot encode reference audio.
+huggingface-cli download Qwen/Qwen3-TTS-12Hz-0.6B-Base --local-dir q3tts-base
+
+./playground/qwen3_tts_mlx/start.sh --model-path ./q3tts-base
+```
+
+```bash
+# Or launch the UI directly
+python -m playground.qwen3_tts_mlx.app --model-path ./q3tts-base --port 7860
+```
+
+Open <http://localhost:7860>. Upload or record reference audio (any sample rate —
+it is resampled to 24 kHz), enter its transcript and the text to speak, then
+`Clone voice`. The run detail panel breaks down prefill / talker / vocoder time
+and the realtime factor.
+
+**The reference transcript must cover the whole clip.** A partial or mismatched
+transcript degrades output badly in the official implementation too — it is a
+conditioning requirement, not a tolerance. Trim audio and transcript together.
+
+Repeated runs against the same reference reuse its cached codes and skip
+re-encoding, so only the first request pays that cost.
+
+Requires `pip install mlx mlx-lm` on Apple Silicon. For scripted use without a
+UI, see `examples/qwen3_tts_mlx_clone.py`.
