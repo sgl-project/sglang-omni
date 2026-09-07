@@ -114,6 +114,10 @@ weights and unqualified overrides.
 
 Native MLX (`FishS2ProMlxModel`):
 
+The shared MLX worker resolves Fish through the lazy runner registry. Its
+`FishMlxWorkerAdapter` provides model initialization, the scheduler-facing model,
+and the KV-release hook; Fish-specific dispatch is confined to its registration.
+
 - The Slow AR transformer, its KV cache, and the entire Fast-AR greedy residual
   chain run in MLX. Only the semantic logits cross to CPU, for the shared Fish
   mask/RAS/top-k sampler. The residual chain then synchronizes once to publish

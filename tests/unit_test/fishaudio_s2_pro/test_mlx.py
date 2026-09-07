@@ -210,3 +210,33 @@ def test_native_mlx_requires_apple_metal(monkeypatch):
     builder = engine_builder.FishS2ProEngineBuilder(max_new_tokens=32, ras_window=16)
     with pytest.raises(ValueError, match="Fish MLX requires Apple Metal"):
         builder.pre_infra_setup("unused")
+
+
+def test_registry_adapter_binds_fish_model_and_preserves_cache_ownership(monkeypatch):
+    from sglang.srt.runtime_context import get_context
+
+    from sglang_omni.model_runner.mlx_model_worker import (
+        _create_registered_runner,
+        resolve_mlx_runner_factory,
+    )
+    from sglang_omni.models.fishaudio_s2_pro.mlx import runner
+
+    calls = []
+    model = SimpleNamespace(clear_request=lambda rid: calls.append(rid))
+
+    def create_model(path, *, context_length):
+        assert path == "checkpoint" and context_length == 4096
+        return model
+
+    monkeypatch.setattr(runner, "FishMlxModel", create_model)
+    factory = resolve_mlx_runner_factory("FishS2ProMlxModel")
+    with get_context().override_server_args(
+        model_path="checkpoint", context_length=4096, max_total_tokens=4096
+    ):
+        adapter = _create_registered_runner(factory())
+    assert adapter.scheduler_model is model
+    assert adapter.pool_size == 4096
+    adapter.prepare_for_kv_cache_release(SimpleNamespace(rid="r"))
+    # Preparing a release must not prematurely clear Fish's native state;
+    # completion/abort owns that operation.
+    assert calls == []

@@ -148,3 +148,27 @@ class FishMlxSchedulerRunner(FishS2ProModelRunner):
 
     def abort_request(self, request_id):
         self.model.clear_request(request_id)
+
+
+class FishMlxWorkerAdapter:
+    """Connect Fish's synchronous model to the registry-based MLX worker."""
+
+    @classmethod
+    def from_runtime_config(cls):
+        from sglang.srt.runtime_context import get_model, get_schedule
+
+        adapter = cls()
+        adapter.pool_size = get_schedule().max_total_tokens
+        adapter.scheduler_model = FishMlxModel(
+            get_model().model_path, context_length=get_model().context_length
+        )
+        return adapter
+
+    def prepare_for_kv_cache_release(self, req):
+        # Fish has no SGLang auxiliary/radix state to snapshot. The scheduler's
+        # completion/abort callbacks release its native per-request cache.
+        pass
+
+
+def make_fish_mlx_runner_class():
+    return FishMlxWorkerAdapter
