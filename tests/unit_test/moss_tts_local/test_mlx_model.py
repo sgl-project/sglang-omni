@@ -76,6 +76,12 @@ def test_mlx_module_names_match_the_official_checkpoint_layout() -> None:
     assert "local_text_lm_head.weight" in keys
 
 
+def test_mlx_config_exposes_scheduler_vocabulary_layout() -> None:
+    config = _tiny_config()
+
+    assert config.vocab_size_list == [64, 17, 17]
+
+
 def test_seeded_sampling_is_position_stable() -> None:
     logits = mx.array([[0.1, 0.2, 0.3, 0.4]], dtype=mx.float32)
     kwargs = {

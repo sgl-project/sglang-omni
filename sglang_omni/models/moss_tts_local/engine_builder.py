@@ -58,13 +58,19 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         )
         self.profile_total_gpu_memory_fraction: float | None = None
         self.model: Any | None = None
+        self.device: str | None = None
+
+    def _uses_torch_mps(self) -> bool:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        return not use_mlx() and self.device is not None and current_platform.is_mps()
 
     def generation_defaults(
         self,
         *,
         dtype: str,
     ) -> dict[str, Any]:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             if not current_platform.is_mps():
@@ -79,6 +85,24 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
                 "max_prefill_tokens": self.context_length,
                 "chunked_prefill_size": -1,
                 "mem_fraction_static": 0.6,
+                "skip_tokenizer_init": True,
+            }
+        if self._uses_torch_mps():
+            return {
+                "max_running_requests": 1,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_total_tokens": self.context_length,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "mem_fraction_static": 0.6,
+                "attention_backend": "torch_native",
+                "sampling_backend": "pytorch",
+                "trust_remote_code": True,
+                "skip_tokenizer_init": True,
             }
         defaults: dict[str, Any] = {
             "max_running_requests": 16,
@@ -89,6 +113,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "max_prefill_tokens": min(self.context_length, 8192),
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
+            "skip_tokenizer_init": True,
         }
         if self.total_gpu_memory_fraction is None:
             defaults["mem_fraction_static"] = (
@@ -156,18 +181,16 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         self.model = (
-            model_worker._mlx_runner
-            if use_mlx()
-            else model_worker.model_runner.model
+            model_worker._mlx_runner if use_mlx() else model_worker.model_runner.model
         )
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
-        if use_mlx():
+        if use_mlx() or self._uses_torch_mps():
             return
         from sglang_omni.scheduling.generation_batch_policy import (
             get_decode_cuda_graph_bs,
@@ -180,7 +203,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         model.init_frame_decode_graphs(list(get_decode_cuda_graph_bs(server_args)))
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             from sglang_omni.models.moss_tts_local.mlx.scheduler_runner import (
@@ -197,9 +220,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
         assert self.model is not None
-        return request_builders.make_moss_tts_local_scheduler_adapters(
-            model=self.model
-        )
+        return request_builders.make_moss_tts_local_scheduler_adapters(model=self.model)
 
     def make_abort_callback(self) -> Any | None:
         assert self.model is not None

@@ -11,6 +11,35 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
+_UINT64_MASK = (1 << 64) - 1
+_INT64_SEED_MASK = (1 << 63) - 1
+
+
+def multinomial_with_seed_host(
+    probs: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    """Deterministic host sampler for backends without a native seeded kernel."""
+    sampled = torch.empty(probs.shape[0], dtype=torch.long, device=probs.device)
+    for row_idx in range(probs.shape[0]):
+        row = probs[row_idx]
+        if float(row.sum().item()) <= 0.0:
+            sampled[row_idx] = 0
+            continue
+        seed = int(seeds[row_idx].item()) & _UINT64_MASK
+        position = int(positions[row_idx].item()) & _UINT64_MASK
+        mixed_seed = (
+            seed
+            ^ ((position + 0x9E3779B97F4A7C15) & _UINT64_MASK)
+            ^ ((position << 17) & _UINT64_MASK)
+        ) & _INT64_SEED_MASK
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(mixed_seed)
+        sampled[row_idx] = torch.multinomial(
+            row.cpu(), num_samples=1, generator=generator
+        ).to(device=probs.device)
+    return sampled
 
 
 @triton.jit
@@ -370,13 +399,17 @@ def sample_seeded_branchless(
 
     probs = torch.softmax(scores, dim=-1)
     probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
+    if logits.device.type == "mps":
+        sampled = multinomial_with_seed_host(probs, seeds, positions)
+    else:
+        sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
     fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
     return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)
 
 
 __all__ = [
     "MAX_FUSED_SAMPLE_VOCAB",
+    "multinomial_with_seed_host",
     "multinomial_with_seed_and_token_ids",
     "sample_seeded_branchless",
     "sample_seeded_fused",
