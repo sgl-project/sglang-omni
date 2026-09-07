@@ -94,18 +94,26 @@ class Zonos2ModelRunner(ModelRunner):
         )
 
     def _build_prefill_embeds(self, forward_batch, requests) -> torch.Tensor:
+        del forward_batch
         model = self.model
+        text_pad = model.config.text_vocab
         pieces = []
         for sr in requests:
             data = sr.data
             req = data.req
             prefix_len = len(req.prefix_indices)
             req_len = int(req.extend_range.length)
-            rows = data.prompt_rows[prefix_len : prefix_len + req_len].to(model.device)
+            prompt_rows = data.prompt_rows
+            prompt_len = int(prompt_rows.shape[0])
+            end = prefix_len + req_len
+
+            # Prompt portion: positions [prefix_len, min(end, prompt_len)).
+            prompt_hi = min(end, prompt_len)
+            rows = prompt_rows[prefix_len:prompt_hi].to(model.device)
             emb = model.embed_frames(rows)
             if data.speaker_emb is not None:
                 pos = int(data.speaker_position) - prefix_len
-                if 0 <= pos < req_len:
+                if 0 <= pos < emb.shape[0]:
                     s = model.speaker_lda_projection(
                         data.speaker_emb.to(
                             model.device, model.speaker_lda_projection.weight.dtype
@@ -115,8 +123,85 @@ class Zonos2ModelRunner(ModelRunner):
                         s.to(model.speaker_projection.weight.dtype)
                     )
                     emb[pos] = s.to(emb.dtype)
+
+            # Retraction re-prefill: the extend runs past the prompt into
+            # already-generated frames that prompt_rows never held. Rebuild them
+            # from the stored decode codes with the SAME summed embedding decode
+            # fed (embed_frames([codes, text_pad])); otherwise the row count is
+            # short of the extend length and the KV write shape-mismatches. The
+            # generated frames are the sequence tail, mapping 1:1 onto output_codes
+            # (populated only during decode -> no-op on a fresh prefill).
+            if end > prompt_len:
+                gen_lo = max(prefix_len, prompt_len) - prompt_len
+                gen_hi = end - prompt_len
+                gen = data.output_codes[gen_lo:gen_hi]
+                if gen:
+                    codes = torch.stack([c.reshape(-1) for c in gen], dim=0).to(
+                        device=model.device, dtype=torch.long
+                    )
+                    text_col = torch.full(
+                        (codes.shape[0], 1),
+                        text_pad,
+                        device=model.device,
+                        dtype=torch.long,
+                    )
+                    gen_rows = torch.cat([codes, text_col], dim=1)
+                    emb = torch.cat([emb, model.embed_frames(gen_rows)], dim=0)
+                # The per-row decode state (generation_step / rep_hist / rep_len /
+                # EOS machine) was wiped when release_inactive freed this request's
+                # pool row on retraction. Rehydrate it from the generated codes so
+                # the resumed sampling keeps its real rep-history + EOS timing
+                # instead of restarting from an empty row.
+                self._rehydrate_decode_row(sr.request_id, data, gen_hi)
+
+            if int(emb.shape[0]) != req_len:
+                raise RuntimeError(
+                    "ZONOS2 prefill row/token mismatch: "
+                    f"{int(emb.shape[0])} rows for extend length {req_len} "
+                    f"(prompt={prompt_len}, prefix={prefix_len})"
+                )
             pieces.append(emb)
         return torch.cat(pieces, dim=0).to(device=model.device, dtype=model.dtype)
+
+    def _rehydrate_decode_row(self, rid: str, data: Any, n_gen: int) -> None:
+        """Rebuild the per-request decode-state pool row from the generated codes
+        after a retraction wiped it (release_inactive -> reset_row). ``n_gen`` is
+        the count of already-generated frames now re-prefilled. Retraction-only:
+        a fresh prefill has no generated tail and never calls this."""
+        model = self.model
+        pool = model._decode_state_pool
+        row = pool.acquire_row(rid)  # idempotent; reclaims the (reset) row
+        pool.reset_row(row)  # clear any stale state before rebuilding
+        if n_gen <= 0:
+            return
+        stack = torch.stack(
+            [c.reshape(-1) for c in data.output_codes[:n_gen]], dim=0
+        ).to(device=pool.device, dtype=torch.long)  # [n_gen, n]
+        pool.generation_step[row] = n_gen
+        # Rep-history ring: the last rep_ring generated frames, left-padded with
+        # -1 (matches the scalar rep_hist layout the decode functions read).
+        ring = pool.rep_ring
+        k = min(n_gen, ring)
+        pool.rep_hist[row].fill_(-1)
+        pool.rep_hist[row, ring - k :] = stack[n_gen - k :]
+        pool.rep_len[row] = k
+        # EOS state machine: replay the "any code == eoa" transition over the
+        # generated frames so a request retracted mid-countdown resumes with the
+        # right eos_frame / countdown. A retracted request cannot have finished
+        # (finish -> terminalized, not retracted), so at most it is mid-countdown.
+        eoa = model.config.eoa_id
+        n = model.n_codebooks
+        hits = stack == eoa  # [n_gen, n]
+        any_hit = hits.any(dim=1)
+        if not bool(any_hit.any()):
+            return
+        first = int(torch.argmax(any_hit.to(torch.int64)))
+        jidx = torch.arange(n, device=stack.device)
+        last_hit_j = int((hits[first].to(torch.int64) * jidx).amax())
+        pool.eos_frame_set[row] = True
+        pool.eos_frame_val[row] = max(0, first - last_hit_j)
+        elapsed = (n_gen - 1) - first
+        pool.eos_countdown[row] = max(0, n - elapsed)
 
     # ---- frame collection (head + batched sample + EOS + feedback) ----
 

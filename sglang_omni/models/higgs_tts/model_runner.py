@@ -458,7 +458,45 @@ class HiggsTTSModelRunner(ModelRunner):
             text_embeds[mask_idx] = embed.to(text_embeds.dtype)
             offset = end
 
+        # Rebuild ALREADY-GENERATED audio positions with their fused all-codebook
+        # embedding. output_code_buffer already holds delayed codes (same form as
+        # reference_codes_delayed), so this mirrors the reference overlay above.
+        # Without it a retraction re-prefill leaves generated positions as
+        # embed_tokens(cb0) only -- dropping cb1..N -> silent audio drift. The
+        # extend always ends at the current sequence end, so the generated frames
+        # are the last min(extend_len, n_gen) rows of each request's extend,
+        # mapping 1:1 onto the output_code_buffer tail.
+        offset = 0
+        for sched_req in requests:
+            data = sched_req.data
+            ext_len = int(data.req.extend_range.length)
+            gen = self._generated_codes(data)
+            if gen is not None and int(gen.shape[0]) > 0 and ext_len > 0:
+                n_gen = int(gen.shape[0])
+                k = min(ext_len, n_gen)
+                sel = gen[n_gen - k : n_gen].to(device=device, dtype=torch.long)
+                with torch.no_grad():
+                    gen_embed = fused_embed(sel)
+                text_embeds[offset + ext_len - k : offset + ext_len] = gen_embed.to(
+                    text_embeds.dtype
+                )
+            offset += ext_len
+
         return text_embeds
+
+    @staticmethod
+    def _generated_codes(data: Any) -> torch.Tensor | None:
+        """Already-generated all-codebook codes for this request, [T, num_cb].
+        output_code_buffer stores them in delayed form (== reference_codes_delayed
+        form), which is exactly what fused_embed expects."""
+        buf = getattr(data, "output_code_buffer", None)
+        cnt = int(getattr(data, "output_code_count", 0) or 0)
+        if buf is not None and cnt > 0:
+            return buf[:cnt]
+        oc = getattr(data, "output_codes", None)
+        if oc:
+            return torch.stack([c.reshape(-1) for c in oc], dim=0)
+        return None
 
     def _collect_step_outputs(
         self, result: Any, requests: list, forward_batch: Any | None = None
