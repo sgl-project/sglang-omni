@@ -105,15 +105,34 @@ the accelerator and software stacks differ from the NPU run.
 
 ## Apple Silicon Support (Experimental)
 
-S2-Pro also runs on Apple Metal through a Torch/MPS compatibility path. There is
-no native MLX implementation: `SGLANG_USE_MLX=1` fails at startup rather than
-falling back silently.
+S2-Pro also runs on Apple Metal, through a native MLX path
+(`SGLANG_USE_MLX=1`) or a Torch/MPS compatibility path (`SGLANG_USE_MLX=0`).
+`SGLANG_USE_MLX=1` off Apple Metal fails at startup rather than falling back
+silently. Both share the Fish request, sampler, and stream adapters, the
+`max_running_requests=1` admission profile, and the same rejection of quantized
+weights and unqualified overrides.
 
-- The Slow AR runs as a native eager Torch module (`S2ProTorchMpsTextModel`)
-  that keeps Fish's interleaved BF16 RoPE, VQ embedding injection, and codebook
-  sampler, and replaces only the CUDA attention/KV-cache contract. One scheduler
-  request owns the native cache at a time, so the profile pins
-  `max_running_requests=1` and additional requests queue.
+Native MLX (`FishS2ProMlxModel`):
+
+- The Slow AR transformer, its KV cache, and the entire Fast-AR greedy residual
+  chain run in MLX. Only the semantic logits cross to CPU, for the shared Fish
+  mask/RAS/top-k sampler. The residual chain then synchronizes once to publish
+  all codebooks, instead of once per codebook.
+- RoPE phases are taken from the canonical Torch `precompute_freqs_cis` and cast
+  once to BF16, rather than recomputed in MLX, because recomputation can round
+  across a BF16 boundary and drift from the CUDA reference.
+- Weights load straight from the official checkpoint's safetensors under their
+  own names, strictly: a missing, extra, or mis-shaped tensor is an error. There
+  is no `mlx-audio` dependency and no converted MLX artifact.
+- Fish owns its per-request MLX cache, so the worker skips SGLang's MLX
+  KV-release bookkeeping and releases on scheduler completion/abort instead.
+
+Torch/MPS (`S2ProTorchMpsTextModel`):
+
+- The Slow AR runs as a native eager Torch module that keeps Fish's interleaved
+  BF16 RoPE, VQ embedding injection, and codebook sampler, and replaces only the
+  CUDA attention/KV-cache contract. One scheduler request owns the native cache
+  at a time.
 - Fast-AR attention appends one position per step into the dense NHD cache and
   attends over its initialized prefix with `scaled_dot_product_attention`, with
   GQA expanded explicitly because MPS has no grouped kernel.
@@ -131,12 +150,17 @@ Validation uses the official `fishaudio/s2-pro` checkpoint at revision
 `1de9996b6be38b745688de084d87a5633f714e4e` on an Apple M5 Pro with 48 GB RAM.
 The unit suite covers cached versus full prefill on CPU and MPS, Fast-AR cache
 masking, strict weight loading, deterministic sampler vectors, and request-cache
-cleanup. All six live HTTP checks passed. Three additional English plain-TTS,
-English reference-conditioned, and Chinese smoke clips produced finite mono
+cleanup; the MLX suite additionally checks the native Slow AR against the Torch
+module, the native Fast-AR chain against the MPS decoder, and reference-codebook
+mixing. All six live HTTP checks passed on both the MLX and the Torch/MPS
+server. Three additional English plain-TTS, English reference-conditioned, and
+Chinese smoke clips produced finite mono
 44.1 kHz audio and stopped at EOS. Local Fun-ASR recovered the intended text
 (ignoring punctuation). These short samples took about 3.4–3.6 seconds of wall
-time per second of generated audio, excluding ASR scoring; this is a smoke
-measurement, not a controlled throughput benchmark.
+time per second of generated audio on Torch/MPS and 2.3–2.5 on MLX, excluding
+ASR scoring; these are smoke measurements, not controlled throughput benchmarks. On the same host, steady-state
+Slow-AR decode was about 10 tokens/s under MLX against about 8 tokens/s under
+Torch/MPS, both at batch size 1.
 
 Run the live checks against a server started with the Apple cookbook command:
 
@@ -146,9 +170,15 @@ FISH_APPLE_URL=http://127.0.0.1:8000 python -m pytest \
 ```
 
 These exercise seeded repetition, reference-audio transport, streaming,
-queued requests, and disconnect recovery. They do not measure speaker similarity,
-corpus-level transcription accuracy, or cross-device numerical parity. Native
-MLX and production performance qualification remain future work.
+queued requests, and disconnect recovery, and are backend-agnostic: run them once
+per `SGLANG_USE_MLX` setting. They do not measure speaker similarity,
+corpus-level transcription accuracy, or cross-device numerical parity.
+Production performance qualification remains future work.
+
+The MLX numerical test compares MLX against Torch on a tiny random model. On M5,
+MLX defaults to reduced-precision (TF32) FP32 GEMM, so that check runs against a
+tolerance scaled to the logit magnitude; set `MLX_ENABLE_TF32=0` to run it at
+full FP32 precision (2e-5).
 
 ## Optimizations with SGLang Omni
 

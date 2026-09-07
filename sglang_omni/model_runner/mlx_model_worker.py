@@ -191,6 +191,7 @@ def create_mlx_model_worker(
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
     model_arch = config.model_arch_override
+    fish_mlx = model_arch == "FishS2ProMlxModel"
     if model_arch == "Qwen3ASRForConditionalGeneration":
         from sglang_omni.models.qwen3_asr.mlx.runner import (
             make_qwen3_asr_mlx_runner_class,
@@ -203,6 +204,10 @@ def create_mlx_model_worker(
         )
 
         make_runner_class = make_fun_cosyvoice3_mlx_runner_class
+    elif fish_mlx:
+        # Fish owns both AR networks and its codebook feedback. It uses the
+        # scheduler bookkeeping stub with a model-specific synchronous runner.
+        make_runner_class = None
     else:
         raise NotImplementedError(
             "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
@@ -230,40 +235,50 @@ def create_mlx_model_worker(
 
         def _init_model_runner(self):
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
-            if model_arch == "FunCosyVoice3SGLangModel":
-                # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
-                # 6,761-codec-token vocabulary rather than Qwen2 text tokens.
-                self.model_config.vocab_size = 6561 + 200
-            runner_class = make_runner_class()
-            mlx_model_path = (
-                config.mlx_model_path
-                if model_arch == "FunCosyVoice3SGLangModel"
-                else get_model().model_path
-            )
-            if mlx_model_path is None:
-                raise RuntimeError(
-                    "Fun-CosyVoice3 MLX worker requires its model bundle path"
+            if fish_mlx:
+                from sglang_omni.models.fishaudio_s2_pro.mlx.runner import FishMlxModel
+
+                self._mlx_runner = FishMlxModel(
+                    get_model().model_path,
+                    context_length=get_model().context_length,
                 )
-            init_kwargs = {
-                "model_path": mlx_model_path,
-                "trust_remote_code": get_model().trust_remote_code,
-                "disable_radix_cache": get_memory().disable_radix_cache,
-                "mem_fraction_static": get_schedule().mem_fraction_static,
-                "quantization": get_model().quantization,
-                "revision": (
-                    config.mlx_model_revision
+                pool_size = get_schedule().max_total_tokens
+            else:
+                if model_arch == "FunCosyVoice3SGLangModel":
+                    # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
+                    # 6,761-codec-token vocabulary rather than Qwen2 text tokens.
+                    self.model_config.vocab_size = 6561 + 200
+                runner_class = make_runner_class()
+                mlx_model_path = (
+                    config.mlx_model_path
                     if model_arch == "FunCosyVoice3SGLangModel"
-                    else get_model().revision
-                ),
-                "enable_sampling": get_device().mlx_enable_sampling,
-                "sampling_rng_seed": get_device().random_seed,
-                "deterministic_seeding": (
-                    get_exec().deterministic.enable_deterministic_inference
-                ),
-            }
-            if get_schedule().max_total_tokens is not None:
-                init_kwargs["pool_size"] = get_schedule().max_total_tokens
-            self._mlx_runner = runner_class(**init_kwargs)
+                    else get_model().model_path
+                )
+                if mlx_model_path is None:
+                    raise RuntimeError(
+                        "Fun-CosyVoice3 MLX worker requires its model bundle path"
+                    )
+                init_kwargs = {
+                    "model_path": mlx_model_path,
+                    "trust_remote_code": get_model().trust_remote_code,
+                    "disable_radix_cache": get_memory().disable_radix_cache,
+                    "mem_fraction_static": get_schedule().mem_fraction_static,
+                    "quantization": get_model().quantization,
+                    "revision": (
+                        config.mlx_model_revision
+                        if model_arch == "FunCosyVoice3SGLangModel"
+                        else get_model().revision
+                    ),
+                    "enable_sampling": get_device().mlx_enable_sampling,
+                    "sampling_rng_seed": get_device().random_seed,
+                    "deterministic_seeding": (
+                        get_exec().deterministic.enable_deterministic_inference
+                    ),
+                }
+                if get_schedule().max_total_tokens is not None:
+                    init_kwargs["pool_size"] = get_schedule().max_total_tokens
+                self._mlx_runner = runner_class(**init_kwargs)
+                pool_size = self._mlx_runner.pool_size
             self._model_runner = MlxModelRunnerStub(
                 model_config=self.model_config,
                 mem_fraction_static=get_schedule().mem_fraction_static,
@@ -275,10 +290,18 @@ def create_mlx_model_worker(
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
                 memory_pool_config=self.memory_pool_config,
-                mlx_pool_size=self._mlx_runner.pool_size,
+                mlx_pool_size=pool_size,
             )
+            if fish_mlx:
+                self._model_runner.model = self._mlx_runner
             self._mlx_active_rids = set()
             self._mlx_pool_initialized = False
+
+        def prepare_for_kv_cache_release(self, req):
+            if not fish_mlx:
+                super().prepare_for_kv_cache_release(req)
+            # Fish has no auxiliary/radix state. Its scheduler completion/abort
+            # callbacks release the native per-request cache.
 
         def get_tp_group(self):
             return self.model_runner.tp_group

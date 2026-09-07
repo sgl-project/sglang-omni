@@ -298,6 +298,9 @@ def test_fish_s2pro_accepts_default_top_k_sentinel() -> None:
 def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
     model = SimpleNamespace(
         vocab_size=80,
+        setup_decode_buffers=lambda **kwargs: S2ProSGLangTextModel.setup_decode_buffers(
+            model, **kwargs
+        ),
         embed_tokens=SimpleNamespace(weight=torch.empty(1, device="cpu")),
     )
     audio_decoder = SimpleNamespace(
@@ -384,6 +387,9 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
         _ras_top_p=torch.ones(1),
         _sampling_top_p=torch.ones(1),
         _sampling_rep_penalty=torch.ones(1),
+        _sample_semantic_token=lambda logits: S2ProSGLangTextModel._sample_semantic_token(
+            model, logits
+        ),
         _sample_semantic_choice=lambda probs, seeds, positions: S2ProSGLangTextModel._sample_semantic_choice(
             None, probs, seeds, positions
         ),
@@ -466,6 +472,9 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
         _ras_top_p=torch.ones(batch, device=device),
         _sampling_top_p=torch.ones(batch, device=device),
         _sampling_rep_penalty=torch.ones(batch, device=device),
+        _sample_semantic_token=lambda logits: S2ProSGLangTextModel._sample_semantic_token(
+            model, logits
+        ),
         _sample_semantic_choice=lambda probs, seeds, positions: S2ProSGLangTextModel._sample_semantic_choice(
             None, probs, seeds, positions
         ),

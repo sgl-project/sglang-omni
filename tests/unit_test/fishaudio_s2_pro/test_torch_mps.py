@@ -124,17 +124,20 @@ def test_apple_profile_rejects_unqualified_overrides(key, value):
     overrides = builder.generation_defaults(dtype="bfloat16")
     builder.adjust_overrides(overrides)
     overrides[key] = value
-    with pytest.raises(ValueError, match="Fish Torch/MPS requires"):
+    with pytest.raises(ValueError, match="Fish Apple requires"):
         builder.adjust_overrides(overrides)
 
 
-def test_native_mlx_switch_fails_before_loading(monkeypatch):
+def test_native_mlx_switch_selects_native_architecture(monkeypatch):
     import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
+    from sglang_omni.models.fishaudio_s2_pro import engine_builder
+
     monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
+    monkeypatch.setattr(engine_builder.current_platform, "is_mps", lambda: True)
     builder = FishS2ProEngineBuilder(max_new_tokens=32, ras_window=16)
-    with pytest.raises(ValueError, match="native MLX is not implemented"):
-        builder.pre_infra_setup("unused")
+    builder.pre_infra_setup("unused")
+    assert builder.model_arch_override == "FishS2ProMlxModel"
 
 
 @pytest.mark.parametrize("device", ["cpu", "mps"])
