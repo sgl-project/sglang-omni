@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 import math
 import re
-from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Tuple
 
@@ -17,6 +16,9 @@ from sglang.srt.runtime_context import get_forward, get_parallel
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
+from sglang_omni.models.ming_omni.talker.talker_module.execution import (
+    TalkerExecutionConfig,
+)
 from sglang_omni.models.ming_tts.flow_matching import (
     FlowLoss,
     build_cfm_sde_random,
@@ -129,33 +131,29 @@ class _MingTTSTailGraph:
             )
         )
 
-        context = (
-            torch.autocast(device_type="cuda", dtype=hidden_dtype)
-            if device.type == "cuda" and hidden_dtype in (torch.float16, torch.bfloat16)
-            else nullcontext()
-        )
-        with context:
-            warmup_stream = torch.cuda.Stream(device=device)
-            warmup_stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(warmup_stream):
-                for _ in range(2):
-                    self.model._compute_tail_step(
-                        self.inputs,
-                        noise=self.noise,
-                        timesteps=self.timesteps,
-                        sde_random=self.sde_random,
-                    )
-            torch.cuda.current_stream(device).wait_stream(warmup_stream)
-            torch.cuda.synchronize(device=device)
-
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                self.outputs = self.model._compute_tail_step(
+        warmup_stream = torch.cuda.Stream(device=device)
+        warmup_stream.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(warmup_stream):
+            for _ in range(2):
+                self.model._compute_tail_step(
                     self.inputs,
                     noise=self.noise,
                     timesteps=self.timesteps,
                     sde_random=self.sde_random,
                 )
+        torch.cuda.current_stream(device).wait_stream(warmup_stream)
+        torch.cuda.synchronize(device=device)
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.outputs = self.model._compute_tail_step(
+                self.inputs,
+                noise=self.noise,
+                timesteps=self.timesteps,
+                sde_random=self.sde_random,
+            )
+        graph.replay()
+        torch.cuda.synchronize(device)
         self.graph = graph
 
     def replay(
@@ -808,14 +806,37 @@ class MingTTSSGLangModel(nn.Module):
         )
         self.tail_attn_backend = tail_attn_backend
         aggregator_config = dict(self.config.aggregator_config)
-        aggregator_config["attn_backend"] = tail_attn_backend
+        ditar_config = dict(self.config.ditar_config)
+        if weight.device.type != "cuda" or weight.dtype not in (
+            torch.bfloat16,
+            torch.float16,
+            torch.float32,
+        ):
+            raise ValueError("Ming TTS acoustic execution requires CUDA BF16/FP16/FP32")
+        for component_config, seq_len, capacity in (
+            (aggregator_config, 1 + self.patch_size, max_batch_size),
+            (
+                ditar_config,
+                1 + self.history_patch_size + self.patch_size,
+                2 * max_batch_size,
+            ),
+        ):
+            # Note(yzxiao): Checkpoint kwargs cannot override Ming's fixed RoPE
+            # backend or capacities. Other shared-component callers keep native.
+            component_config["execution_config"] = TalkerExecutionConfig(
+                attn_backend=tail_attn_backend,
+                rope_backend="sglang",
+                rope_seq_len=seq_len,
+                rope_max_batch_size=capacity,
+            )
+        if "spk_dim" in ditar_config:
+            raise ValueError("Ming TTS DiT does not provide a speaker-token input")
+
         self.linear_proj_audio = Aggregator(
             in_channels=self.latent_dim,
             llm_input_dim=self.hidden_size,
             **aggregator_config,
         )
-        ditar_config = dict(self.config.ditar_config)
-        ditar_config["attn_backend"] = tail_attn_backend
         self.flowloss = FlowLoss(
             z_channels=self.latent_dim,
             llm_cond_dim=self.hidden_size,
@@ -828,6 +849,15 @@ class MingTTSSGLangModel(nn.Module):
 
     def get_input_embeddings(self) -> nn.Module:
         return self.model.get_input_embeddings()
+
+    @torch.no_grad()
+    def project_reference_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        weight = self.linear_proj_audio.x_embedder.weight
+        with torch.autocast(device_type=weight.device.type, enabled=False):
+            patches = latents.to(device=weight.device, dtype=weight.dtype).reshape(
+                -1, self.patch_size, self.latent_dim
+            )
+            return self.linear_proj_audio(patches).reshape(-1, self.hidden_size)
 
     @torch.no_grad()
     def stage_decode_feedback(
@@ -879,21 +909,29 @@ class MingTTSSGLangModel(nn.Module):
         timesteps: torch.Tensor,
         sde_random: torch.Tensor,
     ) -> MingTTSTailOutputs:
-        sampled = self.flowloss.sample(
-            z=inputs.hidden_states,
-            latent_history=inputs.latent_history,
-            noise=noise,
-            cfg=inputs.cfg,
-            sigma=inputs.sigma,
-            temperature=inputs.temperature,
-            timesteps=timesteps,
-            sde_random=sde_random,
-        )
-        feedback = self.linear_proj_audio(sampled).reshape(
-            int(inputs.hidden_states.shape[0]),
-            -1,
-        )
-        stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
+        weight = self._decode_input_embedding.weight
+        # Note(yzxiao): Eager and captured tails share one precision policy.
+        # FP32 explicitly disables any autocast inherited from the caller.
+        with torch.autocast(
+            device_type=weight.device.type,
+            dtype=weight.dtype,
+            enabled=weight.dtype in (torch.float16, torch.bfloat16),
+        ):
+            sampled = self.flowloss.sample(
+                z=inputs.hidden_states,
+                latent_history=inputs.latent_history,
+                noise=noise,
+                cfg=inputs.cfg,
+                sigma=inputs.sigma,
+                temperature=inputs.temperature,
+                timesteps=timesteps,
+                sde_random=sde_random,
+            )
+            feedback = self.linear_proj_audio(sampled).reshape(
+                int(inputs.hidden_states.shape[0]),
+                -1,
+            )
+            stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
         return MingTTSTailOutputs(
             sampled=sampled,
             feedback_embeddings=feedback,
