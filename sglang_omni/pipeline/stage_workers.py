@@ -26,6 +26,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.utils.gc_control import install_gc_stats_if_enabled
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -410,6 +411,7 @@ def stage_process_main(
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
+    install_gc_stats_if_enabled(f"stage process {spec.process_name}")
 
     try:
         for stage_spec in spec.stage_specs:

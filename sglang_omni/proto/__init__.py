@@ -2,6 +2,7 @@
 from .admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
+    ADMIN_FREEZE_GC,
     ADMIN_INIT_WEIGHTS_UPDATE_GROUP,
     ADMIN_MODEL_INFO,
     ADMIN_PAUSE_GENERATION,
@@ -47,6 +48,7 @@ __all__ = [
     "AdminResult",
     "AdminMessage",
     "AdminResultMessage",
+    "ADMIN_FREEZE_GC",
     "ADMIN_MODEL_INFO",
     "ADMIN_PAUSE_GENERATION",
     "ADMIN_CONTINUE_GENERATION",

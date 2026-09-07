@@ -1074,3 +1074,33 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
         assert control_plane.submitted[0][2].replica_bindings is None
 
     asyncio.run(_run())
+
+
+def test_coordinator_counts_completed_requests() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        assert coordinator.completed_requests == 0
+
+        await coordinator._submit_request("ok", "hello")
+        await coordinator._handle_completion(
+            CompleteMessage("ok", "decode", True, result={"text": "hi"})
+        )
+        assert coordinator.completed_requests == 1
+
+        await coordinator._submit_request("err", "hello")
+        failed = coordinator._completion_futures["err"]
+        await coordinator._handle_completion(
+            CompleteMessage("err", "decode", False, error="boom")
+        )
+        assert coordinator.completed_requests == 2
+        with pytest.raises(Exception):
+            await failed
+
+    asyncio.run(_run())

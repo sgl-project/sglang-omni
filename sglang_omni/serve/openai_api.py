@@ -127,6 +127,7 @@ from sglang_omni.serve.streaming import (
 )
 from sglang_omni.serve.transcriptions import register_transcriptions
 from sglang_omni.serve.translations import register_translations
+from sglang_omni.utils.gc_control import freeze_gc
 
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
@@ -582,6 +583,23 @@ def _register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
                 timeout_s=_timeout_or_default(req.timeout_s, 120.0),
             )
         )
+
+    @app.post("/freeze_gc", dependencies=[Depends(_auth)])
+    async def freeze_gc_post(req: AdminRequestBase | None = None) -> JSONResponse:
+        """Freeze the Python GC in the API process and every targeted stage.
+
+        Mirrors SGLang's ``/freeze_gc``: call it after your own warmup traffic
+        so the objects created lazily on first use join the frozen set too.
+        """
+        client: Client = app.state.client
+        req = req or AdminRequestBase()
+        result = await client.freeze_gc(
+            stages=req.stages,
+            timeout_s=_timeout_or_default(req.timeout_s, 30.0),
+        )
+        result = dict(result)
+        result["api_server"] = freeze_gc("api server")
+        return _admin_response(result)
 
 
 def _timeout_or_default(timeout_s: float | None, default: float) -> float:

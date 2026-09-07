@@ -565,3 +565,34 @@ def test_stage_admin_dispatches_to_scheduler() -> None:
         assert result_msg.result.data["action"] == "pause_generation"
 
     asyncio.run(_run())
+
+
+def test_stage_admin_freeze_gc_runs_without_scheduler_support() -> None:
+    async def _run() -> None:
+        scheduler = FakeScheduler()  # no ``admin`` method on purpose
+        control_plane = RecordingStageControlPlane()
+        stage = Stage(
+            name="decode",
+            role="single",
+            get_next=lambda request_id, output: None,
+            gpu_id=None,
+            endpoints={},
+            control_plane=control_plane,
+            relay=FakeRelay(),
+            scheduler=scheduler,
+        )
+
+        await stage._on_admin(
+            AdminMessage(AdminOperation(op_id="op-gc", action="freeze_gc"))
+        )
+
+        assert len(control_plane.completions) == 1
+        result_msg = control_plane.completions[0]
+        assert isinstance(result_msg, AdminResultMessage)
+        result = result_msg.result
+        assert result.success is True
+        assert result.action == "freeze_gc"
+        assert result.data["frozen"] > 0
+        assert result.data["after"]["gen2"] <= result.data["before"]["gen2"]
+
+    asyncio.run(_run())
