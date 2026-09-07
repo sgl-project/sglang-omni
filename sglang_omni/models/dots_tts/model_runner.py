@@ -10,6 +10,10 @@ import torch
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.dots_tts.flow_head import DotsFlowStep
 from sglang_omni.models.dots_tts.request_builders import DotsFlowResume
 
@@ -98,7 +102,10 @@ class DotsTTSModelRunner(ModelRunner):
                         ).to(device=device, dtype=embeddings.dtype)
                     )
                 rows.append(torch.cat(request_rows, dim=0))
-            forward_batch.input_embeds = torch.cat(rows, dim=0)
+            attach_omni_prefill_inputs(
+                forward_batch,
+                OmniPrefillInputs(input_embeds=torch.cat(rows, dim=0)),
+            )
         except BaseException:
             for request_id, data in materialized:
                 self._request_data.pop(request_id, None)

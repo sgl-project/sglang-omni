@@ -6,7 +6,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from sglang_omni.models.dots_tts import CAPABILITIES
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    get_prefill_cuda_graph_backend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +19,9 @@ logger = logging.getLogger(__name__)
 class DotsTTSEngineBuilder(TtsEngineBuilder):
     model_name = "dots.tts"
     context_length = 2048
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -53,6 +61,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
             "disable_cuda_graph": True,
+            "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -83,6 +92,18 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             # its can_run gate requires an exact hidden-mode match with the
             # acoustic tail's per-step request.
             overrides["enable_return_hidden_states"] = True
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        if get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.BREAKABLE:
+            # dots requires whole-request prefills, so the disabled chunker
+            # cannot supply a graph cap. Let the shared policy derive its buckets
+            # from the operator's explicit cap instead.
+            prefill = server_args.cuda_graph_config.prefill
+            if not prefill.max_bs or prefill.max_bs <= 0 or not prefill.bs:
+                raise ValueError(
+                    "dots.tts breakable prefill requires an explicit positive "
+                    "cuda_graph_max_bs_prefill (chunked prefill remains disabled)"
+                )
 
     def setup_model(
         self,

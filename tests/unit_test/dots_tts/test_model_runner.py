@@ -9,6 +9,7 @@ import pytest
 import torch
 from torch import nn
 
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
 
@@ -120,15 +121,23 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
     requests = [_request("a", 11.0), _request("b", 22.0)]
     runner._request_data = {"a": requests[0].data}
     forward_batch = SimpleNamespace(
-        input_ids=torch.tensor([1, 2, 3, 1, 2, 3]), input_embeds=None
+        input_ids=torch.tensor([1, 2, 3, 3, 1, 2, 3]),
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=None,
     )
 
     runner.before_prefill(forward_batch, object(), requests)
 
-    assert forward_batch.input_embeds.shape == (7, 4)
-    torch.testing.assert_close(forward_batch.input_embeds[1], torch.full((4,), 11.0))
-    torch.testing.assert_close(forward_batch.input_embeds[3], torch.full((4,), 33.0))
-    torch.testing.assert_close(forward_batch.input_embeds[5], torch.full((4,), 22.0))
+    assert forward_batch.input_embeds is None
+    assert forward_batch.mm_inputs is None
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None
+    embeds = prefill_inputs.input_embeds
+    assert embeds.shape == (7, 4)
+    torch.testing.assert_close(embeds[1], torch.full((4,), 11.0))
+    torch.testing.assert_close(embeds[3], torch.full((4,), 33.0))
+    torch.testing.assert_close(embeds[5], torch.full((4,), 22.0))
     assert suspended == [old_flow_state]
     torch.testing.assert_close(restored_rng[0], torch.tensor([7], dtype=torch.uint8))
     assert restored_rng[1] == 42
