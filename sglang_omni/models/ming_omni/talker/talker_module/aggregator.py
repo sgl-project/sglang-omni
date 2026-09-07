@@ -11,9 +11,10 @@
 
 import torch
 import torch.nn as nn
-from x_transformers.x_transformers import RotaryEmbedding
 
+from .execution import TalkerExecutionConfig
 from .modules import DiTBlock, FinalLayer
+from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
 
 
 class Aggregator(nn.Module):
@@ -29,9 +30,21 @@ class Aggregator(nn.Module):
         num_heads=16,
         mlp_ratio=4.0,
         llm_input_dim=896,
+        *,
+        execution_config: TalkerExecutionConfig | None = None,
         **kwargs,
     ):
         super().__init__()
+        execution_config = execution_config or TalkerExecutionConfig()
+        validate_rotary_config(
+            execution_config.rope_backend,
+            num_heads=num_heads,
+            qk_norm=kwargs.get("qk_norm"),
+            pe_attn_head=kwargs.get("pe_attn_head"),
+        )
+        if execution_config.attn_backend is not None:
+            kwargs["attn_backend"] = execution_config.attn_backend
+
         self.in_channels = in_channels
         self.out_channels = in_channels
         self.num_heads = num_heads
@@ -40,7 +53,12 @@ class Aggregator(nn.Module):
         self.x_embedder = nn.Linear(in_channels, hidden_size)
         self.hidden_size = hidden_size
 
-        self.rotary_embed = RotaryEmbedding(hidden_size // num_heads)
+        self.rotary_embed = build_rotary_embedding(
+            hidden_size // num_heads,
+            backend=execution_config.rope_backend,
+            seq_len=execution_config.rope_seq_len,
+            max_batch_size=execution_config.rope_max_batch_size,
+        )
 
         self.blocks = nn.ModuleList(
             [
@@ -86,7 +104,7 @@ class Aggregator(nn.Module):
         )  # cls token for bidirectional attention
         x = torch.cat([cls_embed, x], dim=1)
 
-        rope = self.rotary_embed.forward_from_seq_len(x.shape[1])
+        rope = get_rotary_inputs(self.rotary_embed, x.shape[0], x.shape[1])
         if mask is not None:
             mask_pad = mask.clone().detach()[:, :1]
             mask = torch.cat([mask_pad, mask], dim=-1)

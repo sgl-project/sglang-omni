@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -132,16 +131,8 @@ class MingTTSModelRunner(ModelRunner):
                 if prompt_latent is not None:
                     start = state.prompt_latent_start_position
                     token_count = int(state.prompt_latent_token_count)
-                    projected_prompt = self.model.linear_proj_audio(
-                        prompt_latent.to(dtype=dtype).reshape(
-                            -1,
-                            int(self.model.patch_size),
-                            int(self.model.latent_dim),
-                        )
-                    )
-                    projected_prompt = projected_prompt.reshape(
-                        -1,
-                        int(projected_prompt.shape[-1]),
+                    projected_prompt = self.model.project_reference_latents(
+                        prompt_latent
                     )
                     prefill_input_embeds[int(start) : int(start) + token_count] = (
                         projected_prompt.to(dtype=prefill_input_embeds.dtype)
@@ -353,112 +344,102 @@ class MingTTSModelRunner(ModelRunner):
         requests: list[Any],
         step_update: MingTTSTPStepUpdate,
     ) -> None:
-        weight = self.model._decode_input_embedding.weight
         device = hidden_states.device
         next_ids = []
 
-        if device.type == "cuda":
-            dtype = weight.dtype
-            if dtype not in (torch.float16, torch.bfloat16):
-                dtype = torch.bfloat16
-            context = torch.autocast(device_type="cuda", dtype=dtype)
-        else:
-            context = nullcontext()
+        request_states = [self._request_states[req.request_id] for req in requests]
+        steps = [int(req.data.generation_steps) for req in requests]
+        max_steps = [int(req.data.max_new_tokens) for req in requests]
+        histories = [state.latent_history for state in request_states]
+        history_batch = torch.cat(histories, dim=0)
+        steps_tensor = torch.tensor(steps, dtype=torch.long, device=device)
+        max_steps_tensor = torch.tensor(
+            max_steps,
+            dtype=torch.long,
+            device=device,
+        )
+        cfg_tensor = torch.tensor(
+            [float(req.data.state.cfg) for req in requests],
+            dtype=torch.float32,
+            device=device,
+        )
+        sigma_tensor = torch.tensor(
+            [float(req.data.state.sigma) for req in requests],
+            dtype=torch.float32,
+            device=device,
+        )
+        temperature_tensor = torch.tensor(
+            [float(req.data.state.temperature) for req in requests],
+            dtype=torch.float32,
+            device=device,
+        )
 
-        with context:
-            request_states = [self._request_states[req.request_id] for req in requests]
-            steps = [int(req.data.generation_steps) for req in requests]
-            max_steps = [int(req.data.max_new_tokens) for req in requests]
-            histories = [state.latent_history for state in request_states]
-            history_batch = torch.cat(histories, dim=0)
-            steps_tensor = torch.tensor(steps, dtype=torch.long, device=device)
-            max_steps_tensor = torch.tensor(
-                max_steps,
-                dtype=torch.long,
-                device=device,
+        tail_outputs = self.model.run_tail_step(
+            MingTTSTailInputs(
+                hidden_states=hidden_states,
+                latent_history=history_batch,
+                cfg=cfg_tensor,
+                sigma=sigma_tensor,
+                temperature=temperature_tensor,
             )
-            cfg_tensor = torch.tensor(
-                [float(req.data.state.cfg) for req in requests],
-                dtype=torch.float32,
-                device=device,
-            )
-            sigma_tensor = torch.tensor(
-                [float(req.data.state.sigma) for req in requests],
-                dtype=torch.float32,
-                device=device,
-            )
-            temperature_tensor = torch.tensor(
-                [float(req.data.state.temperature) for req in requests],
-                dtype=torch.float32,
-                device=device,
-            )
+        )
+        sampled = tail_outputs.sampled
+        stop_prob = tail_outputs.stop_prob
+        feedback_embeddings = tail_outputs.feedback_embeddings
+        stop_flags = (stop_prob > 0.5) & (steps_tensor > 3)
+        length_flags = steps_tensor + 1 >= max_steps_tensor
+        feedback_mask = ~(stop_flags | length_flags)
+        step_update.feedback_mask.copy_(feedback_mask)
+        decision_rows = torch.stack((stop_flags, length_flags)).cpu().tolist()
+        stop_list, length_list = decision_rows
+        for row_idx, request_state in enumerate(request_states):
+            data = requests[row_idx].data
+            step = steps[row_idx]
+            sampled_row = sampled[row_idx : row_idx + 1]
+            sampled_chunk = sampled_row.squeeze(0).detach()
 
-            tail_outputs = self.model.run_tail_step(
-                MingTTSTailInputs(
-                    hidden_states=hidden_states,
-                    latent_history=history_batch,
-                    cfg=cfg_tensor,
-                    sigma=sigma_tensor,
-                    temperature=temperature_tensor,
+            stop = stop_list[row_idx]
+            length = length_list[row_idx]
+            is_last = stop or length
+            if data.is_streaming:
+                data.pending_stream_patch = MingTTSLatentPatch(
+                    latent=sampled_chunk,
+                    is_last=is_last,
                 )
+            else:
+                request_state.generated_latents.append(sampled_chunk)
+            if stop:
+                request_state.stop_step = step
+                next_ids.append(int(data.audio_eos_token_id))
+                continue
+
+            self._advance_latent_history(
+                request_state.latent_history,
+                sampled_row,
             )
-            sampled = tail_outputs.sampled
-            stop_prob = tail_outputs.stop_prob
-            feedback_embeddings = tail_outputs.feedback_embeddings
-            stop_flags = (stop_prob > 0.5) & (steps_tensor > 3)
-            length_flags = steps_tensor + 1 >= max_steps_tensor
-            feedback_mask = ~(stop_flags | length_flags)
-            step_update.feedback_mask.copy_(feedback_mask)
-            decision_rows = torch.stack((stop_flags, length_flags)).cpu().tolist()
-            stop_list, length_list = decision_rows
-            for row_idx, request_state in enumerate(request_states):
-                data = requests[row_idx].data
-                step = steps[row_idx]
-                sampled_row = sampled[row_idx : row_idx + 1]
-                sampled_chunk = sampled_row.squeeze(0).detach()
-
-                stop = stop_list[row_idx]
-                length = length_list[row_idx]
-                is_last = stop or length
-                if data.is_streaming:
-                    data.pending_stream_patch = MingTTSLatentPatch(
-                        latent=sampled_chunk,
-                        is_last=is_last,
+            next_ids.append(int(data.audio_patch_token_id))
+            if not length:
+                feedback = feedback_embeddings[row_idx].detach()
+                request_state.feedback_embeddings.append(feedback)
+                step_update.feedback_embeddings[row_idx].copy_(
+                    feedback.to(
+                        device=step_update.feedback_embeddings.device,
+                        dtype=step_update.feedback_embeddings.dtype,
                     )
-                else:
-                    request_state.generated_latents.append(sampled_chunk)
-                if stop:
-                    request_state.stop_step = step
-                    next_ids.append(int(data.audio_eos_token_id))
-                    continue
-
-                self._advance_latent_history(
-                    request_state.latent_history,
-                    sampled_row,
                 )
-                next_ids.append(int(data.audio_patch_token_id))
-                if not length:
-                    feedback = feedback_embeddings[row_idx].detach()
-                    request_state.feedback_embeddings.append(feedback)
-                    step_update.feedback_embeddings[row_idx].copy_(
-                        feedback.to(
-                            device=step_update.feedback_embeddings.device,
-                            dtype=step_update.feedback_embeddings.dtype,
-                        )
-                    )
 
-            for row_idx, (stop, length) in enumerate(zip(stop_list, length_list)):
-                if not (stop or length):
-                    continue
-                request_state = request_states[row_idx]
-                data = requests[row_idx].data
-                data.stop_step = request_state.stop_step
-                if data.is_streaming:
-                    continue
-                data.generated_latents = torch.stack(
-                    request_state.generated_latents,
-                    dim=0,
-                ).to(device="cpu", dtype=torch.float32)
+        for row_idx, (stop, length) in enumerate(zip(stop_list, length_list)):
+            if not (stop or length):
+                continue
+            request_state = request_states[row_idx]
+            data = requests[row_idx].data
+            data.stop_step = request_state.stop_step
+            if data.is_streaming:
+                continue
+            data.generated_latents = torch.stack(
+                request_state.generated_latents,
+                dim=0,
+            ).to(device="cpu", dtype=torch.float32)
 
         step_update.next_token_ids.copy_(
             torch.tensor(next_ids, dtype=torch.long, device=device)
