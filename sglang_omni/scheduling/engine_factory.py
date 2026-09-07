@@ -487,10 +487,8 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
         request_builder: Any,
         result_adapter: Any,
     ) -> Any:
-        from sglang_omni.scheduling import omni_scheduler
-
-        return omni_scheduler.OmniScheduler(
-            tp_worker=model_worker,
+        return self._make_scheduler(
+            model_worker=model_worker,
             tree_cache=tree_cache,
             req_to_token_pool=req_to_token_pool,
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
@@ -499,9 +497,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
             model_runner=model_runner,
             request_builder=request_builder,
             result_adapter=result_adapter,
-            abort_callback=self.make_abort_callback(),
-            request_finished_callback=self.make_request_finished_callback(),
-            **self.extra_scheduler_kwargs(),
+            extra_scheduler_kwargs=self.extra_scheduler_kwargs(),
         )
 
     def _build_runtime(

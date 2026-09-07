@@ -722,6 +722,9 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
     def abort_callback(request_id: str) -> None:
         del request_id
 
+    def shutdown_callback() -> None:
+        pass
+
     class SchedulerKwargsBuilder(TtsEngineBuilder):
         model_name = "Test TTS"
         context_length = 123
@@ -759,6 +762,9 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
         def make_abort_callback(self) -> Any | None:
             return abort_callback
 
+        def extra_scheduler_callbacks(self) -> dict[str, Any]:
+            return {"shutdown_callback": shutdown_callback}
+
         def extra_scheduler_kwargs(self) -> dict[str, Any]:
             return {
                 "enable_async_decode": True,
@@ -779,6 +785,7 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
 
     assert isinstance(scheduler, FakeScheduler)
     assert captured_kwargs["abort_callback"] is abort_callback
+    assert captured_kwargs["shutdown_callback"] is shutdown_callback
     assert captured_kwargs["enable_async_decode"] is True
     assert captured_kwargs["async_decode_min_batch_size"] == 3
     assert captured_kwargs["tp_worker"] == "worker"
