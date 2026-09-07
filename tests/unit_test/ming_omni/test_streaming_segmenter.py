@@ -147,7 +147,10 @@ def test_segmenter_handles_stream_arriving_before_payload():
         thread.join(timeout=1.0)
 
     streams = [m for m in messages if m.type == "stream"]
-    assert any(uint8_tensor_to_text(m.data).strip() == "Hi there." for m in streams)
+    results = [m for m in messages if m.type == "result"]
+    assert [uint8_tensor_to_text(m.data).strip() for m in streams] == ["Hi there."]
+    assert all(m.data.numel() > 0 for m in streams)
+    assert results[0].data.data["segment_count"] == 1
 
 
 def test_segmenter_first_segment_timeout_emits_before_punctuation():

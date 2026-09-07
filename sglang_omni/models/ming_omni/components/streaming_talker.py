@@ -426,6 +426,8 @@ class MingStreamingTalkerScheduler:
             self._device,
         )
         config = MingOmniTalkerConfig.from_pretrained_dir(talker_dir)
+        if self._device == "npu":
+            config.use_torch_attention()
         talker = MingOmniTalker(config)
         talker.eval()
         weights = load_weights_by_prefix(talker_dir, prefix="")
@@ -473,6 +475,7 @@ class MingStreamingTalkerScheduler:
         else:
             logger.warning("[TALKER_STREAM] AudioVAE missing at %s", vae_dir)
 
+        logger.info("[TALKER_STREAM] initializing device graphs")
         talker.initial_graph()
         self._talker = talker
         self._audio_detokenizer = vae

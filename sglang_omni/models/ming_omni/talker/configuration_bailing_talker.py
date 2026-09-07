@@ -42,6 +42,11 @@ class MingOmniTalkerConfig:
         self.spk_dim = spk_dim
         self.max_conc = max_conc
 
+    def use_torch_attention(self) -> None:
+        """Force portable PyTorch attention for Talker accelerator backends."""
+        self.flowmodel["attn_backend"] = "torch"
+        self.aggregator["attn_backend"] = "torch"
+
     @classmethod
     def from_pretrained_dir(cls, model_dir: str) -> MingOmniTalkerConfig:
         """Load config from a talker checkpoint directory.

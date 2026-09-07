@@ -886,6 +886,40 @@ def test_ming_preprocessor_injects_top_level_videos_as_inline_content() -> None:
     assert messages[1]["content"] == "What is happening?"
 
 
+def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
+    import numpy as np
+    import torch
+
+    from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
+
+    class FakeVideoProcessor:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def preprocess(self, videos, *, return_tensors):
+            self.calls.append((videos, return_tensors))
+            return {
+                "pixel_values_videos": torch.zeros((8, 16)),
+                "video_grid_thw": torch.tensor([[2, 4, 4]]),
+            }
+
+    preprocessor = MingPreprocessor.__new__(MingPreprocessor)
+    preprocessor._video_processor = FakeVideoProcessor()
+    preprocessor._vision_config = SimpleNamespace(spatial_merge_size=2)
+
+    frames = torch.zeros((4, 3, 8, 8), dtype=torch.float32)
+    pixel_values, grid, token_counts = preprocessor._process_videos([frames])
+
+    assert tuple(pixel_values.shape) == (8, 16)
+    assert grid.tolist() == [[2, 4, 4]]
+    assert token_counts == [8]
+    videos, return_tensors = preprocessor._video_processor.calls[0]
+    assert return_tensors == "pt"
+    assert len(videos) == 1
+    assert videos[0].shape == (4, 8, 8, 3)
+    assert videos[0].dtype == np.uint8
+
+
 def test_ming_image_encoder_forward_accepts_video_inputs() -> None:
     """MingImageEncoder.forward should accept optional video kwargs.
 

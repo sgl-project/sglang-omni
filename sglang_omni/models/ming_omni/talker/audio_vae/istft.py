@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 class ISTFT(nn.Module):
@@ -56,6 +56,7 @@ class ISTFT(nn.Module):
         self,
         spec: torch.Tensor,
         valid_frame_mask: torch.Tensor | None = None,
+        window: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return the unnormalized audio numerator and window denominator."""
         assert spec.dim() == 3, "Expected a 3D tensor as input"
@@ -65,7 +66,7 @@ class ISTFT(nn.Module):
             spec = spec * valid_frame_mask.unsqueeze(1)
 
         inverse = torch.fft.irfft(spec, self.n_fft, dim=1, norm="backward")
-        window = self.window
+        window = self.window if window is None else window
         inverse = inverse * window[None, :, None]
 
         output_size = (frame_count - 1) * self.hop_length + self.win_length
@@ -110,6 +111,17 @@ class ISTFT(nn.Module):
         Returns:
             Tensor: Reconstructed time-domain signal of shape (B, L), where L is the length of the output signal.
         """
+        if spec.device.type == "npu":
+            # The large overlap-add used by Ming (n_fft=3528) can trigger an
+            # Ascend vector-core fault in torch.nn.functional.fold. Keep the
+            # neural decoder and spectrogram on NPU, but run only ISTFT on CPU.
+            spec = spec.cpu()
+            audio_buffer = audio_buffer.cpu() if audio_buffer is not None else None
+            window_buffer = window_buffer.cpu() if window_buffer is not None else None
+            window = self.window.float().cpu()
+        else:
+            window = self.window
+
         if self.padding == "center":
             # Fallback to pytorch native implementation
             return torch.istft(
@@ -117,7 +129,7 @@ class ISTFT(nn.Module):
                 self.n_fft,
                 self.hop_length,
                 self.win_length,
-                self.window,
+                window,
                 center=True,
             )
         elif self.padding == "same":
@@ -125,7 +137,7 @@ class ISTFT(nn.Module):
         else:
             raise ValueError("Padding must be 'center' or 'same'.")
 
-        y, window_envelope = self.overlap_add_components(spec)
+        y, window_envelope = self.overlap_add_components(spec, window=window)
 
         y, audio_buffer = self.__buffer_process(
             y, audio_buffer, pad, last_chunk=last_chunk, streaming=streaming

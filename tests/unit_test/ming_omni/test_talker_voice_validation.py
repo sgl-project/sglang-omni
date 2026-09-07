@@ -543,6 +543,134 @@ def test_tts_job_stream_applies_silence_holder(monkeypatch):
     assert silence_holder_last_chunks == [False, True]
     assert len(outputs) == 1
     assert _torch.equal(outputs[0]["tts_speech"], _torch.full((1, 10), 2.0))
+    assert talker.tts_speech_token_dict == {}
+    assert talker.llm_end_dict == {}
+    assert talker.vae_cache == {}
+    assert talker.sil_holder_cache == {}
+
+
+def test_silence_holder_does_not_recache_emitted_audio():
+    import torch as _torch
+
+    sample_rate = 100
+    cache = None
+
+    first_input = _torch.cat([_torch.ones(10), _torch.zeros(20)]).unsqueeze(0)
+    first_output, cache = MingOmniTalker.silence_holder(
+        first_input, sample_rate, cache, last_chunk=False
+    )
+    assert _torch.equal(first_output, _torch.ones(1, 10))
+    assert len(cache["holder"]) == 1
+    assert _torch.equal(cache["holder"][0], _torch.zeros(1, 20))
+
+    second_input = _torch.full((1, 30), 2.0)
+    second_output, cache = MingOmniTalker.silence_holder(
+        second_input, sample_rate, cache, last_chunk=False
+    )
+    assert _torch.equal(
+        second_output,
+        _torch.cat([_torch.zeros(1, 20), second_input], dim=-1),
+    )
+    assert cache["holder"] == []
+
+    final_input = _torch.full((1, 10), 3.0)
+    final_output, cache = MingOmniTalker.silence_holder(
+        final_input, sample_rate, cache, last_chunk=True
+    )
+    assert _torch.equal(final_output, final_input)
+    assert cache["holder"] == []
+    assert cache["buffer"] == []
+
+    combined = _torch.cat([first_output, second_output, final_output], dim=-1)
+    expected = _torch.cat([first_input, second_input, final_input], dim=-1)
+    assert _torch.equal(combined, expected)
+
+
+def test_silence_holder_flushes_partial_final_frame():
+    import torch as _torch
+
+    final_input = _torch.arange(1, 16, dtype=_torch.float32).unsqueeze(0)
+    output, cache = MingOmniTalker.silence_holder(
+        final_input,
+        sample_rate=100,
+        sil_cache=None,
+        last_chunk=True,
+    )
+
+    assert _torch.equal(output, final_input)
+    assert cache["holder"] == []
+    assert cache["buffer"] == []
+
+
+def test_tts_job_abort_waits_for_worker_and_cleans_caches(monkeypatch):
+    import asyncio as _asyncio
+    import threading as _threading
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+
+    talker = object.__new__(MingOmniTalker)
+    monkeypatch.setattr(
+        MingOmniTalker,
+        "device",
+        property(lambda self: "cpu"),
+        raising=False,
+    )
+    talker.executor = _ThreadPoolExecutor(max_workers=1)
+    talker.lock = _threading.Lock()
+    talker.tts_speech_token_dict = {}
+    talker.llm_end_dict = {}
+    talker.vae_cache = {}
+    talker.sil_holder_cache = {}
+
+    started = _threading.Event()
+    finished = _threading.Event()
+    abort_event = _threading.Event()
+    errors = []
+
+    def fake_llm_job(*args, **kwargs):
+        worker_abort = kwargs["abort_event"]
+        started.set()
+        while not worker_abort.is_set():
+            _time.sleep(0.005)
+        finished.set()
+
+    talker.llm_job = fake_llm_job
+
+    def consume():
+        try:
+            list(
+                MingOmniTalker.tts_job(
+                    talker,
+                    prompt=None,
+                    text="abort me",
+                    spk_emb=None,
+                    instruction=None,
+                    audio_detokenizer=_fake_detokenizer(sample_rate=100),
+                    prompt_text=None,
+                    prompt_wav_lat=None,
+                    prompt_wav_emb=None,
+                    stream=True,
+                    abort_event=abort_event,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    consumer = _threading.Thread(target=consume)
+    consumer.start()
+    assert started.wait(timeout=1.0)
+    abort_event.set()
+    consumer.join(timeout=2.0)
+    talker.executor.shutdown(wait=True)
+
+    assert not consumer.is_alive()
+    assert finished.is_set()
+    assert len(errors) == 1
+    assert isinstance(errors[0], _asyncio.CancelledError)
+    assert talker.tts_speech_token_dict == {}
+    assert talker.llm_end_dict == {}
+    assert talker.vae_cache == {}
+    assert talker.sil_holder_cache == {}
 
 
 def test_process_segment_uses_distinct_cache_keys_for_cut_fragments(monkeypatch):
@@ -686,8 +814,19 @@ def _stub_for_generate(talker: MingOmniTalker, num_steps_before_stop: int):
         def get_seq_length(self):
             return 1
 
+    graph = SimpleNamespace(replay=lambda: None)
     pool_state = {
-        "tuple": (_NoopCache(), None, None, None, None, None, None),
+        "tuple": (
+            _NoopCache(),
+            _torch.zeros(1, 1, 1, dtype=_torch.bfloat16),
+            _torch.zeros(1, dtype=_torch.long),
+            None,
+            None,
+            SimpleNamespace(
+                hidden_states=(_torch.zeros(1, 1, 1, dtype=_torch.bfloat16),)
+            ),
+            graph,
+        ),
     }
     talker.model_graph_pool = SimpleNamespace(
         get=lambda: pool_state["tuple"],
@@ -729,7 +868,7 @@ def test_generate_emits_final_true_when_stop_token_fires(monkeypatch):
     _stub_for_generate(talker, num_steps_before_stop=4)
 
     monkeypatch.setattr(
-        "sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker." "StaticCache",
+        "sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker.StaticCache",
         lambda **kw: object(),
     )
 
@@ -762,7 +901,7 @@ def test_generate_emits_final_true_when_duration_cap_hits(monkeypatch):
     _stub_for_generate(talker, num_steps_before_stop=None)
 
     monkeypatch.setattr(
-        "sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker." "StaticCache",
+        "sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker.StaticCache",
         lambda **kw: object(),
     )
 

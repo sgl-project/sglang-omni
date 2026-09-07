@@ -1,70 +1,102 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Ming talker CUDA graph source-level regression tests."""
+"""Behavior tests for Ming talker graph capture."""
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
+from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_TALKER_SOURCE = (
-    _REPO_ROOT
-    / "sglang_omni"
-    / "models"
-    / "ming_omni"
-    / "talker"
-    / "modeling_ming_omni_talker.py"
+import torch
+
+from sglang_omni.models.ming_omni.talker import (
+    modeling_ming_omni_talker as talker_model,
 )
+from sglang_omni.models.ming_omni.talker.configuration_bailing_talker import (
+    MingOmniTalkerConfig,
+)
+from sglang_omni.models.ming_omni.talker.device_runtime import TalkerDeviceRuntime
 
 
-def _method_node(
-    tree: ast.Module, class_name: str, method_name: str
-) -> ast.FunctionDef:
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == class_name:
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef) and item.name == method_name:
-                    return item
-    raise AssertionError(f"{class_name}.{method_name} not found")
+def test_cfm_graph_capture_uses_device_runtime(monkeypatch) -> None:
+    events: list[object] = []
+    graph = object()
 
+    class _Runtime:
+        def __init__(self, device):
+            events.append(("runtime", device))
 
-def _torch_cuda_graph_calls(node: ast.AST) -> list[ast.Call]:
-    return [
-        item
-        for item in ast.walk(node)
-        if isinstance(item, ast.Call)
-        and isinstance(item.func, ast.Attribute)
-        and item.func.attr == "graph"
-        and isinstance(item.func.value, ast.Attribute)
-        and item.func.value.attr == "cuda"
-        and isinstance(item.func.value.value, ast.Name)
-        and item.func.value.value.id == "torch"
-    ]
+        def new_graph(self):
+            events.append("new_graph")
+            return graph
 
+        @contextmanager
+        def graph_context(self, captured_graph):
+            events.append(("capture", captured_graph))
+            yield
 
-def _has_thread_local_capture_error_mode(call: ast.Call) -> bool:
-    return any(
-        keyword.arg == "capture_error_mode"
-        and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value == "thread_local"
-        for keyword in call.keywords
+    class _CFM:
+        def sample(self, _hidden, _history, noise, *_args, **_kwargs):
+            return noise + 1
+
+    monkeypatch.setattr(talker_model, "TalkerDeviceRuntime", _Runtime)
+    executor = talker_model.CFMGraphExecutor(
+        SimpleNamespace(steps=2, patch_size=2),
+        _CFM(),
+        lambda latents: latents + 2,
+        lambda hidden: torch.stack((hidden[:, 0], hidden[:, 0] + 1), dim=-1),
     )
+    input_tensor = torch.randn(1, 1, 4)
+    history = torch.randn(1, 2, 4)
+    noise = torch.randn(1, 2, 4)
+    sde_noise = torch.randn(2, 1, 2, 4)
 
+    executor._initialize_graph(input_tensor, history, noise, sde_noise)
 
-def test_ming_lazy_cuda_graph_captures_use_thread_local_error_mode() -> None:
-    tree = ast.parse(_TALKER_SOURCE.read_text())
-    methods = [
-        ("CFMGraphExecutor", "_initialize_graph"),
-        ("MingOmniTalker", "generate"),
+    assert executor.initialized is True
+    assert executor.graph is graph
+    assert events == [
+        ("runtime", input_tensor.device),
+        "new_graph",
+        ("capture", graph),
     ]
 
-    for class_name, method_name in methods:
-        method = _method_node(tree, class_name, method_name)
-        graph_calls = _torch_cuda_graph_calls(method)
-        assert graph_calls, f"{class_name}.{method_name} CUDA graph capture not found"
-        assert all(
-            _has_thread_local_capture_error_mode(call) for call in graph_calls
-        ), (
-            f"{class_name}.{method_name} CUDA graph capture must use "
-            "thread-local error mode"
-        )
+
+def test_use_torch_attention_overrides_both_talker_backends() -> None:
+    config = object.__new__(MingOmniTalkerConfig)
+    config.flowmodel = {"attn_backend": "flash_attn"}
+    config.aggregator = {"attn_backend": "flash_attn"}
+
+    config.use_torch_attention()
+
+    assert config.flowmodel["attn_backend"] == "torch"
+    assert config.aggregator["attn_backend"] == "torch"
+
+
+def test_accelerator_device_runtime_delegates_stream_and_graph(monkeypatch) -> None:
+    stream = object()
+    graph = object()
+    synchronize = Mock()
+    module = SimpleNamespace(
+        Stream=Mock(return_value=stream),
+        stream=Mock(return_value=nullcontext()),
+        current_stream=Mock(return_value=SimpleNamespace(synchronize=synchronize)),
+        NPUGraph=Mock(return_value=graph),
+        graph=Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(torch, "get_device_module", lambda _device: module)
+
+    runtime = TalkerDeviceRuntime("npu:2")
+    with runtime.stream_context(runtime.new_stream()):
+        pass
+    runtime.synchronize()
+    with runtime.graph_context(runtime.new_graph()):
+        pass
+
+    device = torch.device("npu:2")
+    module.Stream.assert_called_once_with(device=device)
+    module.stream.assert_called_once_with(stream)
+    module.current_stream.assert_called_once_with(device)
+    synchronize.assert_called_once_with()
+    module.NPUGraph.assert_called_once_with()
+    module.graph.assert_called_once_with(graph, capture_error_mode="thread_local")
