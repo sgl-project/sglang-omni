@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sglang_omni.models.dots_tts import stages
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.stages import preprocess_dots_tts_payload
@@ -29,6 +30,9 @@ class _RecordingTokenizer:
             AUDIO_GEN_SPAN_TOKEN: 102,
             AUDIO_COMP_SPAN_TOKEN: 103,
         }
+        self.audio_span_tokens = [AUDIO_GEN_SPAN_TOKEN, AUDIO_COMP_SPAN_TOKEN]
+        self.len_calls = 0
+        self.converted_tokens: list[str] = []
 
     def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
         assert add_special_tokens is False
@@ -39,9 +43,11 @@ class _RecordingTokenizer:
         return " ".join(str(token_id) for token_id in token_ids)
 
     def convert_tokens_to_ids(self, token: str) -> int:
+        self.converted_tokens.append(token)
         return self._tokens[token]
 
     def __len__(self) -> int:
+        self.len_calls += 1
         return 256
 
 
@@ -113,3 +119,55 @@ def test_preprocessing_rejects_unconsumed_extra_references() -> None:
 
     with pytest.raises(ValueError, match="at most one reference"):
         _preprocess(payload, _RecordingTokenizer())
+
+
+def test_dots_executor_resolves_tokenizer_invariants_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokenizer = _RecordingTokenizer()
+    monkeypatch.setattr(
+        stages,
+        "_load_model_metadata",
+        lambda _path: (
+            "model",
+            SimpleNamespace(
+                patch_size=4,
+                vocoder=SimpleNamespace(sample_rate=48000),
+            ),
+            tokenizer,
+            128,
+        ),
+    )
+    monkeypatch.setattr(
+        "dots_tts.data.pipelines.tokenizing.build_generation_schedule",
+        lambda **_kwargs: {"schedule_ids": [10, 102, 103]},
+    )
+
+    preprocess = stages.create_preprocessing_executor("model")._fn
+
+    assert tokenizer.len_calls == 1
+    assert tokenizer.converted_tokens == tokenizer.audio_span_tokens
+    first = DotsTTSState.from_dict(preprocess(_payload()).data)
+    second = DotsTTSState.from_dict(preprocess(_payload()).data)
+    assert tokenizer.len_calls == 1
+    assert tokenizer.converted_tokens == tokenizer.audio_span_tokens
+    assert first.audio_span_token_ids == second.audio_span_token_ids == [102, 103]
+    assert first.audio_span_token_ids is not second.audio_span_token_ids
+    assert first.vocab_size == second.vocab_size == 256
+
+
+def test_dots_direct_preprocessor_resolves_tokenizer_invariants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "dots_tts.data.pipelines.tokenizing.build_generation_schedule",
+        lambda **_kwargs: {"schedule_ids": [10, 102, 103]},
+    )
+    tokenizer = _RecordingTokenizer()
+
+    state = _preprocess(_payload(), tokenizer)
+
+    assert tokenizer.len_calls == 1
+    assert tokenizer.converted_tokens == tokenizer.audio_span_tokens
+    assert state.audio_span_token_ids == [102, 103]
+    assert state.vocab_size == 256

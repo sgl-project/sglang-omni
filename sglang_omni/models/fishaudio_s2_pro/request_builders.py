@@ -72,13 +72,15 @@ def _ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
 
 
 def build_sglang_tts_request(
-    state: S2ProState, tokenizer: Any, request_id: str = ""
+    state: S2ProState,
+    tokenizer: Any,
+    request_id: str = "",
+    *,
+    im_end_token_id: int | None = None,
+    vocab_size: int | None = None,
 ) -> S2ProSGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
-    from sglang.srt.utils.hf_transformers_utils import attach_additional_stop_token_ids
-
-    from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
     input_ids_list = list(state.input_ids)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
@@ -97,16 +99,32 @@ def build_sglang_tts_request(
             for p in vq_parts
         ]
 
-    if not hasattr(tokenizer, "additional_stop_token_ids"):
-        attach_additional_stop_token_ids(tokenizer)
+    # Imports stay in the fallback branch: the cached-invariant path is the
+    # per-request hot path and must not pay for them.
+    if im_end_token_id is None or vocab_size is None:
+        from sglang.srt.utils.hf_transformers_utils import (
+            attach_additional_stop_token_ids,
+        )
 
-    adapter = S2ProTokenizerAdapter(tokenizer)
-    im_end_token_id = int(adapter.eos_token_ids[0])
-    # note (Gaokai): the semantic tokens live in the added vocab
-    # (151678..155773 > tokenizer.vocab_size); Req must carry the full width or
-    # upstream update_finish_state's vocab-boundary guard kills every request on its
-    # first sampled code.
-    vocab_size = len(tokenizer)
+        if not hasattr(tokenizer, "additional_stop_token_ids"):
+            attach_additional_stop_token_ids(tokenizer)
+        if im_end_token_id is None:
+            from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
+                S2ProTokenizerAdapter,
+            )
+
+            im_end_token_id = int(S2ProTokenizerAdapter(tokenizer).eos_token_ids[0])
+        if vocab_size is None:
+            # note (Gaokai): the semantic tokens live in the added vocab
+            # (151678..155773 > tokenizer.vocab_size); Req must carry the full
+            # width or upstream update_finish_state's vocab-boundary guard kills
+            # every request on its first sampled code.
+            vocab_size = len(tokenizer)
+
+    # Explicit values come from a tokenizer-prepared adapter lifecycle. Keep
+    # Req/SamplingParams metadata on native Python scalars for direct callers.
+    im_end_token_id = int(im_end_token_id)
+    vocab_size = int(vocab_size)
 
     sampling_params = SamplingParams(
         max_new_tokens=state.max_new_tokens,
@@ -167,8 +185,24 @@ def make_tts_scheduler_adapters(
     tokenizer: Any,
     max_new_tokens_cap: int | None = None,
     context_length: int | None = None,
+    im_end_token_id: int | None = None,
 ):
-    """Build model-specific StagePayload <-> scheduler adapters for Fish TTS."""
+    """Build model-specific StagePayload <-> scheduler adapters for Fish TTS.
+
+    Pass ``im_end_token_id`` when the caller already holds an
+    ``S2ProTokenizerAdapter`` so we do not build a second one here.
+    """
+
+    from sglang.srt.utils.hf_transformers_utils import attach_additional_stop_token_ids
+
+    if not hasattr(tokenizer, "additional_stop_token_ids"):
+        attach_additional_stop_token_ids(tokenizer)
+    if im_end_token_id is None:
+        from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
+
+        im_end_token_id = S2ProTokenizerAdapter(tokenizer).eos_token_ids[0]
+    im_end_token_id = int(im_end_token_id)
+    vocab_size = len(tokenizer)
 
     def request_builder(payload: StagePayload) -> S2ProSGLangRequestData:
         state = S2ProState.from_dict(payload.data)
@@ -188,6 +222,8 @@ def make_tts_scheduler_adapters(
             state,
             tokenizer=tokenizer,
             request_id=payload.request_id,
+            im_end_token_id=im_end_token_id,
+            vocab_size=vocab_size,
         )
         req_data.engine_start_s = time.perf_counter()
         req_data.stage_payload = payload

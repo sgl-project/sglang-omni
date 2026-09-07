@@ -453,6 +453,117 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
     assert result_payload.data["output_codes"] == [[100], [1], [2]]
 
 
+class _RecordingFishTokenizer(FakeFishTokenizer):
+    vocab_size = 512
+
+    def __init__(self) -> None:
+        super().__init__()
+        del self.additional_stop_token_ids
+        self.metadata_calls: list[str] = []
+        self.added_vocab = {"<|semantic:4095|>": 639}
+        self.im_end_lookups = 0
+
+    def convert_tokens_to_ids(self, token):
+        if token == IM_END_TOKEN:
+            self.im_end_lookups += 1
+        return super().convert_tokens_to_ids(token)
+
+    def get_added_vocab(self) -> dict[str, int]:
+        self.metadata_calls.append("get_added_vocab")
+        return dict(self.added_vocab)
+
+    def __len__(self) -> int:
+        self.metadata_calls.append("len")
+        return 640
+
+
+def _attach_recording_stop_token_ids(tokenizer: _RecordingFishTokenizer) -> None:
+    tokenizer.additional_stop_token_ids = list(tokenizer.get_added_vocab().values())
+
+
+def test_fish_scheduler_resolves_tokenizer_invariants_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    request_builder, _, _ = make_tts_scheduler_adapters(tokenizer=tokenizer)
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.im_end_lookups == 1
+    first = request_builder(make_s2pro_payload(request_id="req-1"))
+    second = request_builder(make_s2pro_payload(request_id="req-2"))
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.im_end_lookups == 1
+    assert tokenizer.added_vocab == original_added_vocab
+    assert first.req.vocab_size == second.req.vocab_size == 640
+    assert first.req.eos_token_ids == second.req.eos_token_ids == {99}
+    assert first.req.sampling_params.stop_token_ids == {99}
+    assert second.req.sampling_params.stop_token_ids == {99}
+
+
+def test_fish_direct_builder_resolves_tokenizer_invariants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(), tokenizer, request_id="direct"
+    )
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.added_vocab == original_added_vocab
+    assert req_data.req.vocab_size == 640
+    assert req_data.req.eos_token_ids == {99}
+
+
+def test_fish_scheduler_reuses_caller_supplied_im_end_token_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+
+    request_builder, _, _ = make_tts_scheduler_adapters(
+        tokenizer=tokenizer, im_end_token_id=np.int64(99)
+    )
+
+    # The engine builder already owns an S2ProTokenizerAdapter, so no second
+    # adapter (and no extra <|im_end|> lookup) is built here.
+    assert tokenizer.im_end_lookups == 0
+    req_data = request_builder(make_s2pro_payload(request_id="req-1"))
+    assert tokenizer.im_end_lookups == 0
+    assert req_data.req.eos_token_ids == {99}
+    assert all(type(token_id) is int for token_id in req_data.req.eos_token_ids)
+    assert req_data.req.sampling_params.stop_token_ids == {99}
+
+
+def test_fish_direct_builder_normalizes_explicit_tokenizer_invariants() -> None:
+    tokenizer = FakeFishTokenizer()
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(),
+        tokenizer,
+        request_id="explicit",
+        im_end_token_id=np.int64(99),
+        vocab_size=np.int64(640),
+    )
+
+    assert type(req_data.req.vocab_size) is int
+    assert all(type(token_id) is int for token_id in req_data.req.eos_token_ids)
+
+
 @pytest.mark.parametrize("top_k", [0, 31])
 def test_fish_tts_rejects_top_k_outside_graph_width(top_k: int) -> None:
     tokenizer = FakeFishTokenizer()
