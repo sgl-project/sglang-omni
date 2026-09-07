@@ -643,6 +643,17 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
   注入(`attach_omni_prefill_inputs`)只接了 breakable 路径。做 B 要把 input_embeds 注入接进
   SGLang 的 full prefill 图捕获(固定 token 桶、注意力在图内),属第十三轮 model runner 工作。
 
+- **外审前账目的一处更正(事件树 r1 时间线,66 请求 p50)**:admission 0 → prefill start 5.1 →
+  prefill end 17.7 → 首块 codes 到 vocoder 18.1 → vocoder 首块发出 **33.9** → coordinator 34.3;
+  客户端 first playable 35.9。所以模型之外的 hop/HTTP 总共只有 ~2ms,不是我送审时估的 ~7ms;
+  vocoder 段 15.8ms 才是大头:等第二帧 ~7.2(bootstrap 静音抑制要两帧)+ initial 批等待 2 +
+  解码 4.6 + 胶水 ~2。
+- **full 后端 prefill 图(临时放开 `_validate_prefill_graph_policy`,r1 探针)**:能捕获、能跑,
+  47/47、0 underrun;prefill forward **6.2 → 0.79ms**,`execute()` 12.0 → 8.2ms,首帧 p50
+  **35.6 → 32.1ms**。attestation 只验证图被捕获、不验证数值,合入前还差:固定采样种子下 full 对
+  breakable 的输出码/音频一致性;以能力开关(而非放开全局策略)只对 Qwen3-TTS CustomVoice 打开;
+  r20 三 seed。这一项适合作为独立的小 PR 跟进。
+
 ### 第十二轮:单帧 bootstrap(2026-09-06 14:50 PT)
 
 `suppress_bootstrap_silence: false`(首块只等 1 帧)r1:47/47、0 underrun、**first playable p50
