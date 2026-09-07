@@ -367,6 +367,34 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
     assert len(requests[0].data.output_codes) == 1
 
 
+def test_before_prefill_attaches_embeddings_to_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+    from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
+
+    runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
+    expected = torch.randn(3, 4)
+    monkeypatch.setattr(
+        runner,
+        "_build_prefill_input_embeds",
+        lambda forward_batch, requests: expected,
+    )
+
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(3, dtype=torch.long),
+        input_embeds=None,
+        replace_embeds=None,
+    )
+
+    runner.before_prefill(forward_batch, None, [])
+
+    sidecar = get_omni_prefill_inputs(forward_batch)
+    assert sidecar is not None
+    assert sidecar.input_embeds is expected
+    assert forward_batch.input_embeds is None
+
+
 def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
     from sglang_omni.models.voxtral_tts.model_runner import VoxtralTTSModelRunner
 
@@ -533,6 +561,42 @@ def test_voxtral_forward_returns_graph_compatible_logits() -> None:
     assert output.next_token_logits.shape == (2, 1)
     assert output.next_token_logits.dtype == output.hidden_states.dtype
     assert output.next_token_logits.device == output.hidden_states.device
+
+
+def test_forward_selects_logical_endpoints_from_padded_extend() -> None:
+    from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+
+    hidden_size = 4
+    model = VoxtralSGLangTTSModel.__new__(VoxtralSGLangTTSModel)
+    captured_hidden = torch.arange(8 * hidden_size, dtype=torch.float32).reshape(
+        8, hidden_size
+    )
+    model.language_model = lambda **kwargs: captured_hidden
+    forward_batch = SimpleNamespace(
+        input_ids=torch.arange(8, dtype=torch.long),
+        extend_seq_lens=torch.tensor([2, 3], dtype=torch.long),
+        forward_mode=SimpleNamespace(
+            is_decode=lambda: False,
+            is_extend=lambda: True,
+        ),
+    )
+
+    output = model.forward(
+        forward_batch.input_ids,
+        torch.arange(8, dtype=torch.long),
+        forward_batch,
+        input_embeds=torch.zeros((5, hidden_size)),
+    )
+
+    torch.testing.assert_close(output.hidden_states, captured_hidden[[1, 4]])
+
+
+def test_voxtral_builder_supports_breakable_prefill() -> None:
+    from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (
+        VoxtralTtsEngineBuilder,
+    )
+
+    assert VoxtralTtsEngineBuilder.supports_breakable_prefill_cuda_graph is True
 
 
 def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(

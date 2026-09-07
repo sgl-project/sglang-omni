@@ -6,7 +6,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-from sglang_omni.models.voxtral_tts import request_builders
+from sglang_omni.models.voxtral_tts import CAPABILITIES, request_builders
 from sglang_omni.models.voxtral_tts.pipeline import stages as voxtral_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
@@ -14,6 +14,9 @@ from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 class VoxtralTtsEngineBuilder(TtsEngineBuilder):
     model_name = "Voxtral TTS"
     context_length = 8192
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(self) -> None:
         self.decrypted_config_file: str | None = None
