@@ -33,13 +33,12 @@ introduced for [Qwen3-ASR](qwen3_asr.md#apple-silicon-mlx). Install with
 the environment manually as described in the Qwen3-ASR Apple guide — the same
 `.venv-apple` environment and SGLang `all_mps` extra serve both models.
 
-Two Apple backends are supported, each with a tested checkpoint layout:
+Two checkpoint layouts are supported, one per backend:
 
-| Backend | Env var | Tested checkpoint layout |
+| Backend | Env var | Checkpoint layout |
 |---|---|---|
 | Torch MPS (default) | `SGLANG_USE_MLX` unset | Dense, officially supported split Hugging Face checkpoint (thinker/talker/code2wav weights plus the official processor/tokenizer assets). |
-| Torch MPS weight-only quantization | `SGLANG_USE_MLX` unset; `SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4` or `int8` | Dense Hugging Face weights or root-namespaced MLX affine packed weights, converted at load time for native Torch MPS operators. |
-| MLX | `SGLANG_USE_MLX=1` | Direct launch of the downloaded pinned `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` directory described below. No extra artifact generation or copy step is required. |
+| MLX | `SGLANG_USE_MLX=1` | Component-aware affine 4-bit export, or the prepared `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` checkpoint described below. Thinker/talker stay in MLX INT4; Torch-owned code2wav must be dense. |
 
 Launch commands and the full Apple runtime profile (one Metal device, greedy
 generation, eager execution, SHM transport, no CUDA-only features) are in the
@@ -62,29 +61,14 @@ checkpoint can be used for Apple MLX serving. Pin revision
 `93b3cbddd65ed4babff8f22fba491cdba7a21778` so the commands and tensor layout
 remain reproducible.
 
-Other MLX-compatible 4-bit layouts may also load when they satisfy the Apple
-checkpoint validator, but the pinned mlx-community checkpoint above is the
-tested and recommended deployment. Validator-accepted examples include
-component-local thinker/talker shards and the root-namespaced MLX-VLM layout.
-
-Current ownership for the Apple MLX path is:
-
-| Runtime | Components |
-|---|---|
-| Native MLX | vision, audio, thinker, talker, code predictor, code2wav |
-| CPU | preprocessing, token decoding |
-
-Native MLX means those model components stay in MLX for the Apple launch, but
-it does **not** imply radix cache, multi-request batching, or CUDA-oriented
-optimizations.
-
-The native implementation requires `mlx>=0.32.2` and `mlx-lm>=0.31.2`,
-without an `mlx-vlm` dependency. It reuses MLX's fused SDPA (including vision
-head dimension 72), normalization and standard RoPE kernels, plus MLX-LM's
-KV caches and routed expert layers. Three-axis M-RoPE uses `mx.compile` to
-reuse its graph and fuse elementwise operations while retaining external
-multimodal positions. Vision attention still bounds query chunks to guard
-against quadratic score buffers when a shape takes the unfused path.
+Its thinker and talker are already MLX affine INT4 (`group_size=64`), while
+the vision/audio towers and code predictor are dense. Code2wav is also
+MLX-quantized, but the current code2wav stage runs in Torch MPS. Before speech
+serving, run the preparation command once to create dense BF16 code2wav
+weights under the local checkpoint's `code2wav/` directory. Text-only serving
+does not need this preparation. The loader automatically restores the
+checkpoint's channel-last vision/audio convolution kernels to the shapes
+expected by Torch.
 
 Set the repository and environment paths:
 
@@ -112,22 +96,36 @@ print(path)
 PY
 ```
 
-The canonical production-size Apple MLX launch points `sgl-omni serve`
-directly at that downloaded directory with `SGLANG_USE_MLX=1`. Keep the CLI in
-the foreground for normal operation so logs and Ctrl-C remain attached to the
-supervising terminal:
+Prepare the dense code2wav sidecar once before speech serving and inspect its
+provenance:
 
 ```bash
-SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve \
+"$PY" -m sglang_omni.models.qwen3_omni.mlx.prepare_checkpoint \
+  --model-path "$MODEL_DIR"
+cat "$MODEL_DIR/code2wav/conversion.json"
+du -sh "$MODEL_DIR/code2wav"
+```
+
+The canonical production-size Apple launch is the hybrid MLX profile: thinker
+and talker run with the pinned MLX INT4 checkpoint while the Torch-owned
+vision/audio towers and dense code2wav sidecar run on Torch MPS. This is the
+verified production-size path. Keep the launcher in the foreground for normal
+operation so logs and Ctrl-C remain attached to the supervising terminal:
+
+```bash
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mlx \
   --model-path "$MODEL_DIR" \
   --host 127.0.0.1 \
   --port 8008
 ```
 
-For MLX text-only serving, use the same CLI with `--text-only`:
+For MLX text-only serving, use the same preset with `--text-only`; this mode
+does not require the code2wav sidecar:
 
 ```bash
-SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve \
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mlx \
   --model-path "$MODEL_DIR" \
   --text-only \
   --host 127.0.0.1 \
@@ -154,7 +152,8 @@ including when readiness or a smoke request fails:
 ```bash
 set -e
 
-SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve \
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mlx \
   --model-path "$MODEL_DIR" \
   --host 127.0.0.1 \
   --port 8008 >qwen3-omni-apple.log 2>&1 &
@@ -188,25 +187,14 @@ wait "$SERVER_PID" || true
 trap - EXIT INT TERM
 ```
 
-Apple scheduler restrictions remain explicit on the native MLX path:
-
-- `tp_size=1`
-- one resident request (`max_running_requests=1`)
-- greedy generation only
-- radix disabled
-- overlap disabled
-- mixed/chunked prefill disabled
-- CUDA graphs disabled
-- logprobs unsupported
-- no partial talker start
-
-Dense Torch MPS is a separate Apple mode selected with `SGLANG_USE_MLX` unset. It
-uses the official split Hugging Face checkpoint, requires substantially more
-unified memory, and is not production-qualified. For dense MPS text-only
-testing:
+Dense Torch MPS uses the official split Hugging Face checkpoint and avoids the
+MLX sidecar, but it requires substantially more unified memory. The dense MPS
+backend, including generated speech, is not production-qualified. For dense MPS
+text-only testing:
 
 ```bash
-env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mps \
   --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
   --text-only \
   --host 127.0.0.1 \
@@ -216,7 +204,8 @@ env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
 For dense MPS speech-mode testing, omit `--text-only` explicitly:
 
 ```bash
-env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mps \
   --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
   --host 127.0.0.1 \
   --port 8008
@@ -224,26 +213,6 @@ env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
 
 Expect higher memory use and treat the generated WAV as structurally valid
 only, not semantically production-qualified.
-
-For native Torch MPS INT4, reuse the downloaded community checkpoint:
-
-```bash
-env -u SGLANG_USE_MLX SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4 \
-  "$PY" -m sglang_omni.cli serve \
-  --model-path "$MODEL_DIR" \
-  --host 127.0.0.1 \
-  --port 8008
-```
-
-Replace `int4` with `int8` for per-output-channel INT8. Leave the variable
-unset for the original dense path. Quantized linears and routed experts
-execute through PyTorch's native MPS kernels; no MLX inference or TorchAO is
-used in this mode. Floating-point embeddings, convolutions, router weights,
-prompt projections, activations, and KV caches still consume memory.
-An INT8 conversion of a 4-bit source uses more storage without recovering
-the source's lost precision. AWQ, compressed-tensors, and GPTQ formats are
-not supported. This option does not change the conservative serving profile
-or establish semantic production qualification.
 
 Send a text request:
 
@@ -261,7 +230,7 @@ curl -fsS http://127.0.0.1:8008/v1/chat/completions \
   }' | tee text-response.json
 ```
 
-Keep the foreground native MLX speech server running for the following text and
+Keep the foreground hybrid MLX speech server running for the following text and
 audio examples.
 
 Send a non-streamed text-and-audio request:
@@ -359,7 +328,7 @@ approximately 967 MB on first use:
 | `model.safetensors` SHA-256 | `6014ac49b506df900f66f4aca6b0801eed7245594ace97bcaf73e0ae5b863066` |
 
 Run the complete Apple serving file, including the opt-in semantic matrix,
-against the pinned downloaded checkpoint, using the `REPO`, `PY`, `MODEL_DIR`,
+against the pinned prepared checkpoint, using the `REPO`, `PY`, `MODEL_DIR`,
 and `MODEL_REVISION` variables set above:
 
 ```bash
@@ -395,8 +364,7 @@ assertions or thresholds.
 Current real semantic qualification is 6/13: text, audio, and video controlled
 facts pass; image OCR still misses `42`; requested speech produces a structurally
 valid WAV, but the generated speech is not semantically qualified. Treat the
-pinned community-checkpoint native MLX path as the tested and recommended
-production-size serving route, while keeping
+hybrid MLX path as the verified production-size serving route, while keeping
 dense MPS and generated speech out of production qualification until these
 failures are resolved.
 
@@ -488,4 +456,4 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 - **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
 - **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
 - **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit.
-- **Apple Silicon (MLX and Torch MPS) keeps a restricted scheduler profile.** `tp_size=1`, `max_running_requests=1`, greedy generation only, radix disabled, overlap disabled, mixed/chunked prefill disabled, CUDA graphs disabled, logprobs unsupported, and no partial talker start. Native MLX does not imply radix cache, multi-request batching, or CUDA-oriented optimizations, and backend selection never falls back between MLX and Torch MPS. See [Apple Silicon (MLX and Torch MPS)](#apple-silicon-mlx-and-torch-mps) above.
+- **Apple Silicon (MLX and Torch MPS) is single-device, single-request, and greedy-only.** `tp_size=1`, `max_running_requests=1`, and no CUDA graphs, radix cache, chunked prefill, `torch.compile`, partial-talker execution, or async decode lookahead. Backend selection never falls back between MLX and Torch MPS. See [Apple Silicon (MLX and Torch MPS)](#apple-silicon-mlx-and-torch-mps) above.

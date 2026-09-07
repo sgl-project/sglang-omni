@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Apple Silicon hybrid MLX deployment profile.
+# Canonical checkpoint:
+#   mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit
+# Pinned revision:
+#   93b3cbddd65ed4babff8f22fba491cdba7a21778
+#
+# Full speech serving requires a local checkpoint whose dense code2wav
+# sidecar was created with:
+#   python -m sglang_omni.models.qwen3_omni.mlx.prepare_checkpoint \
+#     --model-path /absolute/path/to/checkpoint
+# Launch through qwen3-apple-server, which replaces the sentinel model path.
+
+config_cls: Qwen3OmniSpeechPipelineConfig
+name: qwen3-omni-apple-mlx
+model_path: qwen3-omni-apple-model-path-required
+stages:
+  code2wav:
+    gpu_memory_fraction: null

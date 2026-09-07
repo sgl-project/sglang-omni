@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -12,13 +11,6 @@ from typing import Any
 from sglang_omni.platforms import current_platform
 
 _ARCHITECTURE = "Qwen3OmniMoeForConditionalGeneration"
-MPS_QUANTIZATION_ENV = "SGLANG_QWEN3_OMNI_MPS_QUANTIZATION"
-_TORCH_MPS_CHECKPOINT_ERROR = (
-    "Qwen3-Omni Torch MPS requires a dense Hugging Face checkpoint, such as "
-    "Qwen/Qwen3-Omni-30B-A3B-Instruct, unless native MPS quantization is enabled. "
-    f"For MLX affine weights, set {MPS_QUANTIZATION_ENV}=int4 or int8, "
-    "or select the native MLX backend with SGLANG_USE_MLX=1."
-)
 
 
 def qwen3_omni_uses_mlx_backend() -> bool:
@@ -29,23 +21,6 @@ def qwen3_omni_uses_mlx_backend() -> bool:
 
 def qwen3_omni_uses_apple_backend() -> bool:
     return bool(current_platform.is_mps())
-
-
-def get_qwen3_omni_mps_quantization(*, use_mlx: bool | None = None) -> int | None:
-    value = os.environ.get(MPS_QUANTIZATION_ENV)
-    if value is None:
-        return None
-    if value not in ("int4", "int8"):
-        raise ValueError(f"{MPS_QUANTIZATION_ENV} must be int4 or int8; got {value!r}")
-    if not qwen3_omni_uses_apple_backend():
-        raise ValueError(f"{MPS_QUANTIZATION_ENV} requires the Apple MPS backend")
-    if use_mlx is None:
-        use_mlx = qwen3_omni_uses_mlx_backend()
-    if use_mlx:
-        raise ValueError(
-            f"{MPS_QUANTIZATION_ENV} selects Torch MPS; unset SGLANG_USE_MLX"
-        )
-    return 4 if value == "int4" else 8
 
 
 def _reject_explicit_override(
@@ -217,12 +192,7 @@ def _components_for_key(
     *,
     component_dir: str | None,
     use_mlx: bool,
-    allow_packed: bool = False,
 ) -> set[str]:
-    if not (use_mlx or allow_packed) and key.endswith((".scales", ".biases")):
-        raise ValueError(
-            f"{_TORCH_MPS_CHECKPOINT_ERROR} Found quantized tensor metadata {key!r}."
-        )
     root_prefixes = {
         "thinker": (
             "thinker.model.",
@@ -239,13 +209,13 @@ def _components_for_key(
         "predictor": ("talker.code_predictor.",),
         "code2wav": ("code2wav.",),
     }
-    root_components = {
+    components = {
         component
         for component, prefixes in root_prefixes.items()
         if key.startswith(prefixes)
     }
-    if component_dir is None:
-        return root_components
+    if components or not use_mlx or component_dir is None:
+        return components
 
     local_prefixes = {
         "thinker": ("model.", "lm_head."),
@@ -263,19 +233,15 @@ def _components_for_key(
             "decoder.",
         ),
     }
-    if component_dir == "code2wav":
-        if key.startswith(local_prefixes["code2wav"]):
-            return {"code2wav"}
-        return set()
-    if not use_mlx:
-        return set()
     if component_dir == "talker":
         return {
             component
             for component in ("talker", "predictor")
             if key.startswith(local_prefixes[component])
         }
-    if component_dir == "thinker" and key.startswith(local_prefixes["thinker"]):
+    if component_dir in ("thinker", "code2wav") and key.startswith(
+        local_prefixes[component_dir]
+    ):
         return {component_dir}
     return set()
 
@@ -285,7 +251,6 @@ def _components_from_indexes(
     index_paths: list[Path],
     *,
     use_mlx: bool,
-    allow_packed: bool = False,
 ) -> set[str]:
     components: set[str] = set()
     for index_path in index_paths:
@@ -304,7 +269,6 @@ def _components_from_indexes(
                     str(key),
                     component_dir=component_dir,
                     use_mlx=use_mlx,
-                    allow_packed=allow_packed,
                 )
             )
     return components
@@ -315,7 +279,6 @@ def _components_from_single_files(
     *,
     use_mlx: bool,
     index_paths: Sequence[Path] = (),
-    allow_packed: bool = False,
 ) -> set[str]:
     from safetensors import safe_open
 
@@ -335,10 +298,87 @@ def _components_from_single_files(
                         key,
                         component_dir=component_dir,
                         use_mlx=use_mlx,
-                        allow_packed=allow_packed,
                     )
                 )
     return components
+
+
+def _component_directory(index_path: Path, root: Path) -> str | None:
+    try:
+        relative_parts = index_path.relative_to(root).parts
+    except ValueError:
+        return None
+    return relative_parts[0] if len(relative_parts) > 1 else None
+
+
+def _root_code2wav_is_quantized(root: Path, index_paths: list[Path]) -> bool:
+    for index_path in index_paths:
+        if _component_directory(index_path, root) is not None:
+            continue
+        weight_map = _read_json(index_path).get("weight_map")
+        if not isinstance(weight_map, dict):
+            raise ValueError(f"Missing weight_map in checkpoint index {index_path}")
+        if any(
+            str(key).startswith("code2wav.")
+            and str(key).endswith((".scales", ".biases"))
+            for key in weight_map
+        ):
+            return True
+    single = root / "model.safetensors"
+    if single.is_file():
+        from safetensors import safe_open
+
+        with safe_open(str(single), framework="pt", device="cpu") as handle:
+            if any(
+                key.startswith("code2wav.") and key.endswith((".scales", ".biases"))
+                for key in handle.keys()
+            ):
+                return True
+    return False
+
+
+def _has_dense_code2wav_sidecar(root: Path, index_paths: list[Path]) -> bool:
+    has_dense_sidecar = False
+    for index_path in index_paths:
+        if _component_directory(index_path, root) != "code2wav":
+            continue
+        weight_map = _read_json(index_path).get("weight_map")
+        if not isinstance(weight_map, dict):
+            raise ValueError(f"Missing weight_map in checkpoint index {index_path}")
+        keys = [str(key) for key in weight_map]
+        has_weights = any(
+            key.startswith(
+                ("pre_transformer.", "code_embedding.", "upsample.", "decoder.")
+            )
+            for key in keys
+        )
+        has_quantization = any(key.endswith((".scales", ".biases")) for key in keys)
+        if has_weights and not has_quantization:
+            has_dense_sidecar = True
+            break
+    single = root / "code2wav" / "model.safetensors"
+    if not has_dense_sidecar and single.is_file():
+        from safetensors import safe_open
+
+        with safe_open(str(single), framework="pt", device="cpu") as handle:
+            keys = list(handle.keys())
+        has_weights = any(
+            key.startswith(
+                ("pre_transformer.", "code_embedding.", "upsample.", "decoder.")
+            )
+            for key in keys
+        )
+        has_quantization = any(key.endswith((".scales", ".biases")) for key in keys)
+        has_dense_sidecar = has_weights and not has_quantization
+    if not has_dense_sidecar:
+        return False
+
+    from sglang_omni.models.qwen3_omni.mlx.checkpoint_compat import (
+        validate_code2wav_sidecar_provenance,
+    )
+
+    validate_code2wav_sidecar_provenance(root)
+    return True
 
 
 def validate_qwen3_omni_apple_checkpoint(
@@ -347,7 +387,6 @@ def validate_qwen3_omni_apple_checkpoint(
     speech_enabled: bool,
     use_mlx: bool,
 ) -> None:
-    bits = get_qwen3_omni_mps_quantization(use_mlx=use_mlx)
     if not qwen3_omni_uses_apple_backend():
         return
 
@@ -359,40 +398,15 @@ def validate_qwen3_omni_apple_checkpoint(
             f"Qwen3-Omni checkpoint architecture must include {_ARCHITECTURE!r}; "
             f"got {architectures!r}"
         )
-    quantizations = [
-        config[key]
-        for key in ("quantization", "quantization_config")
-        if config.get(key) is not None
-    ]
-    quantization = quantizations[0] if quantizations else None
-    if not use_mlx and bits is None and quantization:
-        raise ValueError(f"{_TORCH_MPS_CHECKPOINT_ERROR} Checkpoint: {model_path!r}.")
-    if bits is not None and quantizations:
-        if (
-            not isinstance(quantization, dict)
-            or any(item != quantization for item in quantizations)
-            or set(quantization) - {"bits", "group_size", "mode"}
-            or quantization.get("bits") not in (4, 8)
-            or quantization.get("mode", "affine") != "affine"
-            or quantization.get("group_size") not in (32, 64, 128, 256)
-            or quantization.get("quant_method") is not None
-        ):
-            raise ValueError(
-                "Torch MPS quantization supports dense HF or MLX affine 4/8-bit "
-                "checkpoints; AWQ/compressed-tensors and GPTQ formats are not supported"
-            )
 
     root = config_path.parent
-    components = _components_from_indexes(
-        root, index_paths, use_mlx=use_mlx, allow_packed=bits is not None
-    )
+    components = _components_from_indexes(root, index_paths, use_mlx=use_mlx)
     if Path(model_path).exists():
         components.update(
             _components_from_single_files(
                 root,
                 use_mlx=use_mlx,
                 index_paths=index_paths,
-                allow_packed=bits is not None,
             )
         )
 
@@ -404,4 +418,16 @@ def validate_qwen3_omni_apple_checkpoint(
         raise ValueError(
             f"Qwen3-Omni checkpoint {model_path!r} is missing required "
             f"{', '.join(missing)} weights"
+        )
+    if (
+        use_mlx
+        and speech_enabled
+        and _root_code2wav_is_quantized(root, index_paths)
+        and not _has_dense_code2wav_sidecar(root, index_paths)
+    ):
+        raise ValueError(
+            "MLX speech serving requires dense Torch code2wav weights. Prepare "
+            "this checkpoint first with: python -m "
+            "sglang_omni.models.qwen3_omni.mlx.prepare_checkpoint "
+            f"--model-path {model_path}"
         )

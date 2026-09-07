@@ -292,19 +292,18 @@ def create_talker_scheduler(
         model=None if (uses_mlx or uses_torch_mps) else model_worker.model_runner.model,
     )
 
-    from sglang_omni.models.qwen3_omni.components.talker_prefill import (
-        TalkerPrefillBuilder,
-    )
-
+    # ``TalkerPrefillBuilder`` calls Torch APIs on this model (the resize
+    # projections, the codec embedding, the activation dtype). Under either Apple
+    # backend that must be a CPU float32 shim built from the loaded weights,
+    # never the zero-weight ``_DummyModel`` the bookkeeping stub carries.
     prefill_model = model_worker.model_runner.model
-    prefill_builder = None
     torch_mps_talker = None
     if uses_mlx:
-        prefill_builder = getattr(model_worker, "mlx_talker_prefill_builder", None)
-        if prefill_builder is None:
+        prefill_model = getattr(model_worker, "talker_prefill_shim", None)
+        if prefill_model is None:
             raise RuntimeError(
                 "Apple Qwen3-Omni MLX talker worker exposed no "
-                "Qwen3OmniMlxTalkerPrefillBuilder; the talker weights did not load"
+                "TorchTalkerPrefillShim; the talker weights did not load"
             )
     elif uses_torch_mps:
         import torch
@@ -333,28 +332,6 @@ def create_talker_scheduler(
     thinker_config = root_config.thinker_config
     talker_config = root_config.talker_config
     codec_vocab_size = talker_config.text_config.vocab_size
-    if prefill_builder is None:
-        prefill_builder = TalkerPrefillBuilder(
-            model=prefill_model,
-            model_path=model_config.model_path,
-            audio_token_id=thinker_config.audio_token_id,
-            image_token_id=thinker_config.image_token_id,
-            video_token_id=thinker_config.video_token_id,
-            tts_bos_token_id=root_config.tts_bos_token_id,
-            tts_eos_token_id=root_config.tts_eos_token_id,
-            tts_pad_token_id=root_config.tts_pad_token_id,
-            im_start_token_id=root_config.im_start_token_id,
-            im_end_token_id=root_config.im_end_token_id,
-            system_token_id=root_config.system_token_id,
-            user_token_id=root_config.user_token_id,
-            assistant_token_id=root_config.assistant_token_id,
-            codec_bos_id=talker_config.codec_bos_id,
-            codec_nothink_id=talker_config.codec_nothink_id,
-            codec_think_bos_id=talker_config.codec_think_bos_id,
-            codec_think_eos_id=talker_config.codec_think_eos_id,
-            codec_pad_id=talker_config.codec_pad_id,
-            speaker_map=talker_config.speaker_id,
-        )
     (
         request_builder,
         result_adapter,
@@ -363,7 +340,8 @@ def create_talker_scheduler(
     ) = make_talker_scheduler_adapters(
         tokenizer=tokenizer,
         codec_vocab_size=codec_vocab_size,
-        prefill_builder=prefill_builder,
+        model=prefill_model,
+        model_path=model_config.model_path,
         thinker_config=thinker_config,
         required_aux_hidden_key=talker_config.accept_hidden_layer,
         codec_bos_id=talker_config.codec_bos_id,
