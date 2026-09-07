@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue as queue_mod
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -83,26 +84,41 @@ class TPLeaderFanout:
             return []
 
         loop = asyncio.get_running_loop()
+        deadline = time.monotonic() + timeout_s
+
+        def get_matching_result(q: Any) -> AdminResultMessage:
+            while True:
+                remaining_s = deadline - time.monotonic()
+                if remaining_s <= 0:
+                    raise queue_mod.Empty
+                msg = q.get(timeout=remaining_s)
+                if not isinstance(msg, AdminResultMessage):
+                    raise ValueError(
+                        f"Unexpected TP follower admin result: {type(msg).__name__}"
+                    )
+                if msg.result.op_id == op_id:
+                    return msg
+                logger.warning(
+                    "Discarding stale TP follower admin result for op %s "
+                    "while waiting for op %s",
+                    msg.result.op_id,
+                    op_id,
+                )
+
         tasks = [
             loop.run_in_executor(
                 None,
-                lambda q=q: q.get(timeout=timeout_s),
+                get_matching_result,
+                q,
             )
             for q in self._follower_admin_result_queues
         ]
-        raw_results = await asyncio.gather(*tasks)
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
         results: list[AdminResultMessage] = []
-        for msg in raw_results:
-            if not isinstance(msg, AdminResultMessage):
-                raise ValueError(
-                    f"Unexpected TP follower admin result: {type(msg).__name__}"
-                )
-            if msg.result.op_id != op_id:
-                raise ValueError(
-                    "Unexpected TP follower admin op id: "
-                    f"{msg.result.op_id} != {op_id}"
-                )
-            results.append(msg)
+        for result in raw_results:
+            if isinstance(result, BaseException):
+                raise result
+            results.append(result)
         return results
 
     def close(self) -> None:
