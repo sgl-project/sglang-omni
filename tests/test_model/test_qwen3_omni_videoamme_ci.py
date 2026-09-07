@@ -5,7 +5,7 @@ Usage:
     pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -s -x
 
 Author:
-    Ratish P https://github.com/Ratish21
+    Ratish P https://github.com/Ratish1
 """
 
 from __future__ import annotations

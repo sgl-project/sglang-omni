@@ -201,7 +201,16 @@ REFERENCE_FAILURES = (
         "resolve/main/en/prompt-wavs/does-not-exist.wav",
     ),
     ("html_url", "https://example.com/"),
-    ("wrong_content_type", "https://www.iana.org/_img/2013.1/iana-logo-header.svg"),
+    (
+        # Pinned to the commit that added the asset, not a branch: this case has
+        # to fetch 200 with a non-audio Content-Type, and an asset that moves or
+        # disappears quietly degrades it into a fetch failure already covered by
+        # not_found_url. Do not repoint this at a mutable ref.
+        "wrong_content_type",
+        "https://raw.githubusercontent.com/sgl-project/sglang-omni/"
+        "3153edb19750767d2388cc8bb00fd30c809271d6/"
+        "docs/_static/image/sgl-omni-logo.svg",
+    ),
     ("unreachable_url", "http://192.0.2.1/seedtts/unreachable.wav"),
     ("disallowed_file", "file:///etc/passwd"),
 )
