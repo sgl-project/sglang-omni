@@ -83,12 +83,21 @@ class SourceKind(str, Enum):
     CLI_FLAG = "cli_flag"
     CLI_DOTTED = "cli_dotted"
 
+    RUNTIME = "runtime"
+    """A value the launch itself settled (e.g. SGLang resolving an "auto"
+    field from GPU memory inside ``ServerArgs``). Observation only: it is
+    deliberately absent from ``_DEFAULT_LAYER`` below, so building a
+    :class:`ConfigPatch` from it raises — runtime resolutions never enter
+    patch precedence. They travel through
+    :mod:`sglang_omni.config.runtime_resolution` instead."""
+
 
 _DEFAULT_LAYER: dict[SourceKind, Layer] = {
     SourceKind.MODEL_DEFAULT: Layer.MODEL_DEFAULT,
     SourceKind.YAML_FILE: Layer.USER_FILE,
     SourceKind.CLI_FLAG: Layer.CLI,
     SourceKind.CLI_DOTTED: Layer.CLI,
+    # SourceKind.RUNTIME intentionally has no layer; see its docstring.
 }
 
 

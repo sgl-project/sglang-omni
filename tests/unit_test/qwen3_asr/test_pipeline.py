@@ -657,9 +657,12 @@ def test_qwen3_asr_auto_chunked_prefill_uses_the_sglang_ladder(
     )
     assert attested.cuda_graph_config.prefill.max_bs == resolved_chunked_prefill_size
     assert (
-        "Qwen3-ASR: chunked_prefill_size was unset, SGLang resolved "
-        f"{resolved_chunked_prefill_size}, prefill CUDA graph cap "
+        "Qwen3-ASR: runtime-resolved chunked_prefill_size: auto -> "
         f"{resolved_chunked_prefill_size}"
+    ) in caplog.text
+    assert (
+        "Qwen3-ASR: prefill CUDA graph cap follows the resolved "
+        f"chunked_prefill_size: {resolved_chunked_prefill_size}"
     ) in caplog.text
     assert "cannot be scheduled" not in caplog.text
 

@@ -9,6 +9,11 @@ from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, ClassVar
 
+from sglang_omni.config.runtime_resolution import (
+    RUNTIME_RESOLUTION_RECORD,
+    RuntimeResolution,
+    capture_runtime_resolutions,
+)
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
@@ -160,17 +165,29 @@ class SGLangGenerationEngineBuilder(ABC):
             context_length=self.context_length,
             **overrides,
         )
+        # ServerArgs construction is where "auto" fields become concrete
+        # (SGLang resolves them from GPU memory in __post_init__). Read the
+        # settled values back immediately — before customize_server_args,
+        # whose builder writes (zonos2 forces chunked_prefill_size=0) would
+        # otherwise be recorded as the hardware's resolution.
+        self.runtime_resolutions = capture_runtime_resolutions(overrides, server_args)
         self.customize_server_args(server_args)
+        self.validate_before_infrastructure(server_args)
+        RUNTIME_RESOLUTION_RECORD.record(self.model_name, self.runtime_resolutions)
+        for resolution in self.runtime_resolutions:
+            logger.info(f"{self.model_name}: runtime-resolved {resolution.describe()}")
         if (
             overrides.get("chunked_prefill_size") is None
             and get_prefill_cuda_graph_backend(server_args) != CudaGraphBackend.DISABLED
         ):
+            # The consumer of the resolved chunk: SGLang capped its prefill
+            # graph ladder by it. Logged next to the resolution lines above so
+            # the value and its consequence read together.
             logger.info(
-                f"{self.model_name}: chunked_prefill_size was unset, SGLang resolved "
-                f"{server_args.chunked_prefill_size}, prefill CUDA graph cap "
-                f"{server_args.cuda_graph_config.prefill.max_bs}"
+                f"{self.model_name}: prefill CUDA graph cap follows the resolved "
+                f"chunked_prefill_size: {server_args.cuda_graph_config.prefill.max_bs}"
             )
-        self.validate_before_infrastructure(server_args)
+        self.finalize_runtime_derived(server_args, self.runtime_resolutions)
 
         infra_kwargs = dict(self.infra_kwargs())
         if self.model_arch_override is not None:
@@ -292,10 +309,35 @@ class SGLangGenerationEngineBuilder(ABC):
         del model, server_args
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        """Adjust the overrides dict before ServerArgs construction.
+
+        Runs while "auto" fields (``chunked_prefill_size`` and friends) are
+        still ``None`` — SGLang only resolves them from GPU memory inside
+        ``ServerArgs``. Do not derive dependent values from them here; that
+        belongs in :meth:`finalize_runtime_derived`, and derivation code can
+        call :func:`~sglang_omni.config.runtime_resolution.require_resolved`
+        to enforce it.
+        """
         del overrides
 
     def customize_server_args(self, server_args: Any) -> None:
         del server_args
+
+    def finalize_runtime_derived(
+        self,
+        server_args: Any,
+        resolutions: list[RuntimeResolution],
+    ) -> None:
+        """Derive framework values that depend on hardware-resolved fields.
+
+        Runs after ``ServerArgs`` construction and
+        :meth:`customize_server_args`, before any CUDA graph decisions are
+        read off ``server_args`` — the only place in the build where fields
+        like ``chunked_prefill_size`` are guaranteed concrete. ``resolutions``
+        lists what the runtime filled in or rewrote, configured value
+        included, so a builder can tell operator intent from auto resolution.
+        """
+        del server_args, resolutions
 
     def infra_kwargs(self) -> dict[str, Any]:
         return {}

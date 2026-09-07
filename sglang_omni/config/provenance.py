@@ -26,6 +26,7 @@ from sglang_omni.config.patch import (
     ConfigSource,
     SourceKind,
 )
+from sglang_omni.config.runtime_resolution import RuntimeResolution
 
 __all__ = ["ProvenanceEntry", "ProvenanceMap", "BASELINE_SOURCE"]
 
@@ -78,6 +79,12 @@ class ProvenanceMap:
     resolved: dict[str, Any] = field(default_factory=dict)
     """Post-validation value per touched path, read back off the built config."""
 
+    runtime: dict[str, RuntimeResolution] = field(default_factory=dict)
+    """Values the launch itself settled, per path — a separate channel from
+    the patch history above. A runtime entry may sit on a path no patch
+    touched (an "auto" field nobody wrote); such paths are still listed and
+    explainable."""
+
     # ------------------------------------------------------------------
     # building
     # ------------------------------------------------------------------
@@ -93,6 +100,9 @@ class ProvenanceMap:
     def record_resolved(self, path: str, value: Any) -> None:
         self.resolved[path] = value
 
+    def record_runtime(self, path: str, resolution: RuntimeResolution) -> None:
+        self.runtime[path] = resolution
+
     @classmethod
     def from_patchset(cls, patchset: ConfigPatchSet) -> "ProvenanceMap":
         out = cls()
@@ -106,7 +116,7 @@ class ProvenanceMap:
     # ------------------------------------------------------------------
 
     def paths(self) -> list[str]:
-        return sorted(self.entries)
+        return sorted(self.entries.keys() | self.runtime.keys())
 
     def winner(self, path: str) -> ProvenanceEntry | None:
         for entry in reversed(self.entries.get(path, [])):
@@ -116,6 +126,9 @@ class ProvenanceMap:
 
     def touched(self, path: str) -> bool:
         return path in self.entries
+
+    def runtime_resolved(self, path: str) -> bool:
+        return path in self.runtime
 
     def resolved_value(self, path: str, default: Any = None) -> Any:
         """The value the built config holds at a touched path."""
@@ -128,12 +141,30 @@ class ProvenanceMap:
         validation may have rewritten what the winning source supplied. The
         winner's own line keeps the source's value, with the rewrite noted.
 
-        Callers ask :meth:`touched` first; an untouched path raises ``KeyError``.
+        A runtime resolution (a value the launch itself settled — see
+        :mod:`sglang_omni.config.runtime_resolution`) is rendered as one
+        extra line after the patch history; on a path no patch touched it
+        is the whole story.
+
+        Callers ask :meth:`touched` or :meth:`runtime_resolved` first; a
+        path known to neither raises ``KeyError``.
         """
-        history = self.entries[path]
+        runtime = self.runtime.get(path)
+        history = self.entries.get(path)
+        if history is None:
+            if runtime is None:
+                raise KeyError(path)
+            # No source wrote this path; the launch alone settled it.
+            return (
+                f"{path} = {runtime.resolved!r}\n"
+                f"  {runtime.resolved!r}  <- runtime ({runtime.origin})"
+            )
         winner = self.winner(path)
         resolved = self.resolved.get(path, _UNSET)
-        if winner is None:
+        if runtime is not None:
+            # The launch has the last word over what validation produced.
+            headline = f"{path} = {runtime.resolved!r}"
+        elif winner is None:
             headline = path
         elif resolved is _UNSET:
             headline = f"{path} = {winner.value!r}"
@@ -143,4 +174,6 @@ class ProvenanceMap:
         if path in self.baseline:
             lines.append(f"  {self.baseline[path]!r}  <- {BASELINE_SOURCE.describe()}")
         lines.extend(f"  {entry.render(resolved)}" for entry in history)
+        if runtime is not None:
+            lines.append(f"  {runtime.resolved!r}  <- runtime ({runtime.origin})")
         return "\n".join(lines)

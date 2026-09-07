@@ -18,6 +18,11 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
 from sglang_omni.config.resolver import ConfigResolver, ResolvedConfig, diff_configs
+from sglang_omni.config.runtime_resolution import (
+    PENDING,
+    RUNTIME_RESOLVED_FIELDS,
+    RuntimeResolution,
+)
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import (
     dump_user_config,
@@ -132,6 +137,7 @@ def _resolve_sources(
     # derivation; importing them here keeps the two commands building
     # identical configurations.
     from sglang_omni.cli.serve import (
+        _engine_stage_names,
         apply_tensor_parallel_engine_overrides,
         patches_from_broadcast_flags,
         tensor_parallel_engine_writes,
@@ -192,6 +198,36 @@ def _resolve_sources(
             resolved.provenance.record_resolved(
                 path_text, derivation_patch.path.read(derived)
             )
+        # Hardware-resolved engine fields left at "auto" only get a value at
+        # launch: the stage's builder may fill them from its own generation
+        # defaults, and whatever is still unset then is resolved by SGLang
+        # from the GPU the stage lands on. This preview runs without either
+        # (builder defaults need a constructed builder, the GPU is not
+        # here), so the honest answer is a pending runtime entry naming both
+        # possible settlers instead of a value this command cannot know.
+        engine_stage_names = set(_engine_stage_names(derived))
+        for stage in derived.stages:
+            if stage.name not in engine_stage_names:
+                continue
+            engine = getattr(stage, "engine", None)
+            engine_values = engine.overrides() if engine is not None else {}
+            stage_name = stage.name
+            for field_name in RUNTIME_RESOLVED_FIELDS:
+                if engine_values.get(field_name) is not None:
+                    continue
+                path_text = f"stages.{stage_name}.engine.{field_name}"
+                resolved.provenance.record_runtime(
+                    path_text,
+                    RuntimeResolution(
+                        path=path_text,
+                        configured=None,
+                        resolved=PENDING,
+                        origin=(
+                            "settled at launch: the stage builder's defaults, "
+                            "else sglang's hardware resolution"
+                        ),
+                    ),
+                )
         return Resolution(baseline, replace(resolved, config=derived))
     except (ConfigPathError, ValueError) as exc:
         # An unknown path, a path the schema will not let a user write, two
@@ -315,11 +351,19 @@ def explain(
         if not provenance.paths():
             print("No configuration source touched the pipeline's defaults.")
             return
-        for touched in provenance.paths():
-            winner = provenance.winner(touched)
-            assert winner is not None  # a touched path always has a winner
-            value = provenance.resolved_value(touched, winner.value)
-            print(f"{touched} = {value!r}  <- {winner.source.describe()}")
+        for listed in provenance.paths():
+            runtime = provenance.runtime.get(listed)
+            if runtime is not None:
+                # The launch has the last word, exactly as `explain <path>`
+                # reports it — even when a source also wrote the path (a
+                # yaml `mem_fraction_static: null` is a source write whose
+                # value the launch settles).
+                print(f"{listed} = {runtime.resolved!r}  <- runtime ({runtime.origin})")
+                continue
+            winner = provenance.winner(listed)
+            assert winner is not None  # a non-runtime path has entries
+            value = provenance.resolved_value(listed, winner.value)
+            print(f"{listed} = {value!r}  <- {winner.source.describe()}")
         return
 
     try:
@@ -329,7 +373,7 @@ def explain(
         # Carries `did you mean:` suggestions, which a traceback would bury.
         raise typer.BadParameter(str(exc)) from exc
 
-    if provenance.touched(compiled.raw):
+    if provenance.touched(compiled.raw) or provenance.runtime_resolved(compiled.raw):
         print(provenance.explain(compiled.raw))
         return
     try:
