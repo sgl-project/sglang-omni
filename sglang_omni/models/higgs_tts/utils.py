@@ -96,6 +96,13 @@ def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
     return codec
 
 
+def to_cpu_code_rows(
+    codes: torch.Tensor, *, dtype: torch.dtype = torch.long
+) -> torch.Tensor:
+    """Materialize ``[T, N]`` codes as an owned, contiguous CPU tensor."""
+    return codes.detach().to(device="cpu", dtype=dtype, copy=True).contiguous()
+
+
 def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
     """Coerce client-supplied ``reference_codes`` to a ``[T, N]`` int64 tensor."""
     if raw is None:
@@ -153,5 +160,6 @@ __all__ = [
     "load_audio_to_24k",
     "resolve_checkpoint",
     "to_codes_TN",
+    "to_cpu_code_rows",
     "truncate_rope_to_bf16",
 ]

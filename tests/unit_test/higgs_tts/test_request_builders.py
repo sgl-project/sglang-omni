@@ -16,14 +16,14 @@ def test_higgs_reference_audio_namespaces_radix_cache() -> None:
     first = request_builders.build_sglang_higgs_request(
         HiggsTtsState(
             prompt_token_ids=prompt,
-            reference_codes_delayed=[[1, 2], [3, 4]],
+            reference_codes_delayed=torch.tensor([[1, 2], [3, 4]]),
         ),
         request_id="first",
     ).req
     second = request_builders.build_sglang_higgs_request(
         HiggsTtsState(
             prompt_token_ids=prompt,
-            reference_codes_delayed=[[5, 6], [7, 8]],
+            reference_codes_delayed=torch.tensor([[5, 6], [7, 8]]),
         ),
         request_id="second",
     ).req
@@ -64,6 +64,10 @@ def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
 
     assert data.max_new_tokens == 2048
     assert data.req.sampling_params.max_new_tokens == 2048
+    assert torch.equal(
+        result.data["output_codes_delayed"],
+        torch.tensor([[1, 2, 3]], dtype=torch.long),
+    )
     assert result.data["completion_tokens"] == 1
     assert result.data["engine_time_s"] == 2.5
 
@@ -85,12 +89,22 @@ def test_higgs_result_adapter_reads_output_code_buffer() -> None:
     )
     data.stage_payload = payload
     data.output_codes.append(torch.tensor([9, 9, 9], dtype=torch.long))
-    data.output_code_buffer = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.long)
+    output_code_buffer = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.long)
+    data.output_code_buffer = output_code_buffer
     data.output_code_count = 2
 
     result = result_adapter(data)
 
-    assert result.data["output_codes_delayed"] == [[1, 2, 3], [4, 5, 6]]
+    output_codes = result.data["output_codes_delayed"]
+    assert torch.equal(
+        output_codes,
+        torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.long),
+    )
+    assert output_codes.device.type == "cpu"
+    assert output_codes.is_contiguous()
+    assert output_codes.data_ptr() != output_code_buffer.data_ptr()
+    output_code_buffer.zero_()
+    assert output_codes.tolist() == [[1, 2, 3], [4, 5, 6]]
     assert result.data["completion_tokens"] == 2
 
 
@@ -120,3 +134,12 @@ def test_higgs_result_adapter_propagates_conversion_failure(
 
     with pytest.raises(RuntimeError, match="result conversion failed"):
         result_adapter(data)
+
+
+def test_higgs_request_builder_rejects_non_tensor_reference_codes() -> None:
+    """Delayed rows are tensor-only on the wire; a nested list means an upstream
+    stage regressed to the list handoff and must fail at the boundary."""
+    with pytest.raises(TypeError, match="must be a torch.Tensor"):
+        request_builders.build_sglang_higgs_request(
+            HiggsTtsState(reference_codes_delayed=[[1, 2], [3, 4]])
+        )
