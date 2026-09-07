@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exact-shape CUDA graphs for the Qwen3-Omni Code2Wav component."""
+"""Exact-shape device graphs for the Qwen3-Omni Code2Wav component."""
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import math
 import os
+import threading
 from collections import Counter
 from contextlib import AbstractContextManager
 from copy import deepcopy
@@ -15,7 +17,13 @@ from typing import Any
 
 import torch
 
+from sglang_omni.platforms import current_platform
+
 logger = logging.getLogger(__name__)
+
+# A non-blocking acquire is both the check and the claim, so two threads cannot
+# pass it and race the restore of the transformers mask global.
+_MASK_SWAP_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,16 +38,18 @@ class GraphKey:
 class Code2WavRunResult:
     """Result metadata for either an exact graph replay or eager fallback.
 
-    A ``cuda_graph`` output is a borrowed static buffer. Before the next replay,
-    the caller must either finish every read or enqueue every dependent read and
-    copy on the same CUDA stream so replay cannot overtake them. The tensor
-    itself must not be retained or consumed concurrently; asynchronous host
-    transfer must retain its destination and completion event until
-    materialization finishes. This runner deliberately does not clone the
-    output.
+    A replayed output is a borrowed static buffer. Before the next replay, the
+    caller must either finish every read or enqueue every dependent read and copy
+    on the same device stream so replay cannot overtake them. The tensor itself
+    must not be retained or consumed concurrently; asynchronous host transfer must
+    retain its destination and completion event until materialization finishes.
+    This runner deliberately does not clone the output.
     """
 
     output: torch.Tensor
+    # "cuda_graph" for a replay on any accelerator, "eager" otherwise. The value
+    # is spelled for CUDA because it reaches the profiler events, so renaming it
+    # would change emitted telemetry on every platform, not just this one.
     execution_mode: str
     key: GraphKey | None
     fallback_reason: str | None
@@ -56,32 +66,92 @@ class _BuildFailure(RuntimeError):
     pass
 
 
-class _TorchCudaApi:
-    """Small injectable boundary around CUDA-only operations."""
+@contextlib.contextmanager
+def _unpacked_sequence_mask() -> Any:
+    """Pin transformers' not-packed mask branch, which it picks by a host read.
+
+    The read aborts a capture, and None is its answer for the single contiguous
+    sequence the static input is, so pinning it loses nothing.
+
+    Swapping a module global is only safe while capture stays single-threaded:
+    run() replays or falls back to eager and never captures. The lock enforces
+    that rather than trusting it.
+    """
+    from transformers import masking_utils
+
+    if not _MASK_SWAP_LOCK.acquire(blocking=False):
+        raise RuntimeError(
+            "Code2Wav mask pin is already held; capture must stay single-threaded "
+            "because it swaps a transformers global"
+        )
+    # Reading or replacing the global can raise if transformers renames it, and
+    # a leaked lock would refuse every later capture in this process.
+    try:
+        original = masking_utils.find_packed_sequence_indices
+        # Accept any signature: the answer is None regardless, and a mismatch
+        # would raise mid-capture and defeat the pin.
+        masking_utils.find_packed_sequence_indices = lambda *args, **kwargs: None
+        try:
+            yield
+        finally:
+            masking_utils.find_packed_sequence_indices = original
+    finally:
+        _MASK_SWAP_LOCK.release()
+
+
+@contextlib.contextmanager
+def _xpu_capture_pins() -> Any:
+    """Hold the pins XPU's capture needs, and nothing at all elsewhere.
+
+    XPU ends a capture on two host reads: SDPA's backend choice and transformers'
+    packed-sequence probe. Both pins are XPU-only on purpose -- CUDA, ROCm, MUSA and
+    NPU captured fine without them, so they keep the interpreter untouched and the
+    numerics they already had. Guarding here rather than relying on the pins being
+    no-ops off XPU keeps that a property of the code, not of two hooks agreeing.
+    """
+    if not current_platform.is_xpu():
+        yield
+        return
+    with current_platform.graph_capture_attention(), _unpacked_sequence_mask():
+        yield
+
+
+class _TorchDeviceApi:
+    """Injectable boundary that resolves each call's device module from its
+    device, so one boundary serves CUDA, MUSA and XPU."""
+
+    @staticmethod
+    def _module(device: torch.device) -> Any:
+        return torch.get_device_module(device)
+
+    def graph_backend(self, device: torch.device) -> Any | None:
+        """The platform's recorder for this device, or None if it names none."""
+        return current_platform.get_device_graph_backend(device)
 
     def device_context(self, device: torch.device) -> AbstractContextManager[Any]:
-        return torch.cuda.device(device)
+        return self._module(device).device(device)
 
     def memory_stats(self, device: torch.device) -> dict[str, int]:
-        free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+        module = self._module(device)
+        free_bytes, total_bytes = module.mem_get_info(device)
         return {
-            "allocated_bytes": int(torch.cuda.memory_allocated(device)),
-            "reserved_bytes": int(torch.cuda.memory_reserved(device)),
-            "max_reserved_bytes": int(torch.cuda.max_memory_reserved(device)),
+            "allocated_bytes": int(module.memory_allocated(device)),
+            "reserved_bytes": int(module.memory_reserved(device)),
+            "max_reserved_bytes": int(module.max_memory_reserved(device)),
             "free_bytes": int(free_bytes),
             "total_bytes": int(total_bytes),
         }
 
-    def empty_cache(self) -> None:
-        torch.cuda.empty_cache()
+    def empty_cache(self, device: torch.device) -> None:
+        self._module(device).empty_cache()
 
     def new_static_input(
         self, shape: tuple[int, int, int], *, device: torch.device
     ) -> torch.Tensor:
         return torch.zeros(shape, dtype=torch.long, device=device)
 
-    def new_stream(self, device: torch.device) -> torch.cuda.Stream:
-        return torch.cuda.Stream(device=device)
+    def new_stream(self, device: torch.device) -> Any:
+        return self._module(device).Stream(device=device)
 
     def warmup(
         self,
@@ -90,17 +160,23 @@ class _TorchCudaApi:
         *,
         iterations: int,
         device: torch.device,
-        stream: torch.cuda.Stream,
+        stream: Any,
     ) -> None:
-        current_stream = torch.cuda.current_stream(device)
+        module = self._module(device)
+        current_stream = module.current_stream(device)
         stream.wait_stream(current_stream)
-        with torch.cuda.stream(stream), torch.inference_mode():
+        # Warmup shares the pins, or it warms a kernel the capture will not use.
+        with (
+            module.stream(stream),
+            torch.inference_mode(),
+            _xpu_capture_pins(),
+        ):
             for _ in range(iterations):
                 model(static_input)
         current_stream.wait_stream(stream)
 
-    def graph_pool_handle(self) -> Any:
-        return torch.cuda.graph_pool_handle()
+    def graph_pool_handle(self, device: torch.device) -> Any:
+        return self._module(device).graph_pool_handle()
 
     def capture(
         self,
@@ -108,42 +184,42 @@ class _TorchCudaApi:
         static_input: torch.Tensor,
         *,
         pool: Any,
-        stream: torch.cuda.Stream,
-    ) -> tuple[torch.cuda.CUDAGraph, torch.Tensor]:
-        current_stream = torch.cuda.current_stream(static_input.device)
+        stream: Any,
+    ) -> tuple[Any, torch.Tensor]:
+        device = static_input.device
+        module = self._module(device)
+        current_stream = module.current_stream(device)
         stream.wait_stream(current_stream)
-        graph = torch.cuda.CUDAGraph()
+        # Non-None because the runner refused construction otherwise.
+        backend = self.graph_backend(device)
         try:
-            with torch.inference_mode():
-                with torch.cuda.graph(
-                    graph,
-                    pool=pool,
-                    stream=stream,
-                    capture_error_mode="thread_local",
-                ):
+            with torch.inference_mode(), _xpu_capture_pins():
+                with backend.capture(
+                    pool=pool, stream=stream, thread_local_errors=True
+                ) as graph:
                     static_output = model(static_input)
         finally:
-            # torch.cuda.graph.__exit__ calls capture_end before restoring its
-            # stream context. If capture_end raises, restore explicitly using
-            # the original stream's device-aware identity.
-            torch.cuda.set_stream(current_stream)
+            # graph.__exit__ calls capture_end before restoring its stream
+            # context. If capture_end raises, restore explicitly using the
+            # original stream's device-aware identity.
+            module.set_stream(current_stream)
         current_stream.wait_stream(stream)
         return graph, static_output
 
     def synchronize(self, device: torch.device) -> None:
-        torch.cuda.synchronize(device)
+        self._module(device).synchronize(device)
 
-    def is_cuda_tensor(self, tensor: torch.Tensor) -> bool:
-        return tensor.is_cuda
+    def is_accelerator_tensor(self, tensor: torch.Tensor, device: torch.device) -> bool:
+        return tensor.device.type == device.type
 
     def tensor_device_matches(self, tensor: torch.Tensor, device: torch.device) -> bool:
         return tensor.device == device
 
 
 class Code2WavCudaGraphRunner:
-    """Exact-shape CUDA graph runner for ``[B, Q, T]`` long codes.
+    """Exact-shape device graph runner for ``[B, Q, T]`` long codes.
 
-    One instance is permanently bound to one model, CUDA device, quantizer
+    One instance is permanently bound to one model, device, quantizer
     count, ``torch.long`` input dtype, and owner process. ``batch_size == 1``
     keys form an atomic tier with the original semantics: any failure there
     disables the complete runner and leaves no partial matrix published.
@@ -166,20 +242,31 @@ class Code2WavCudaGraphRunner:
         device: str | torch.device,
         num_quantizers: int,
         graph_keys: tuple[GraphKey, ...],
-        cuda_api: Any,
+        device_api: Any,
     ) -> None:
         self._model = model
         self._device = torch.device(device)
-        if self._device.type not in ("cuda", "musa") or self._device.index is None:
-            raise ValueError("Code2Wav CUDA graphs require a concrete CUDA/MUSA device")
+        self._device_api = device_api
+        if self._device.index is None:
+            raise ValueError(
+                f"Code2Wav graphs require a concrete device, got {self._device}"
+            )
+        # The platform owns which devices can record a graph, so ask it rather
+        # than keeping a second list here that has to agree. Failing at
+        # construction also keeps an unusable device out of the capture attempt,
+        # where the exception would be absorbed as one more eager fallback.
+        if self._device_api.graph_backend(self._device) is None:
+            raise ValueError(
+                f"{current_platform.device_type} names no device graph backend, "
+                f"so Code2Wav cannot capture on {self._device}"
+            )
         self._num_quantizers = int(num_quantizers)
         if self._num_quantizers <= 0:
-            raise ValueError("Code2Wav CUDA graphs require a positive quantizer count")
+            raise ValueError("Code2Wav graphs require a positive quantizer count")
         self._graph_keys = graph_keys
         self._tier0_keys = tuple(k for k in graph_keys if k.batch_size == 1)
         self._tier1_keys = tuple(k for k in graph_keys if k.batch_size > 1)
         self._owner_pid = os.getpid()
-        self._cuda = cuda_api
         self._graphs: dict[GraphKey, _CapturedGraph] = {}
         # Note (ruoyu): the scheduler reads the published sizes several times
         # per step, so they are cached and refreshed where the key set changes
@@ -207,7 +294,7 @@ class Code2WavCudaGraphRunner:
         num_quantizers: int,
         total_gpu_memory_fraction: float | None,
         graph_keys: tuple[GraphKey, ...],
-        cuda_api: Any | None = None,
+        device_api: Any | None = None,
     ) -> Code2WavCudaGraphRunner:
         """Build the configured serving-reachable serial graphs."""
 
@@ -216,7 +303,7 @@ class Code2WavCudaGraphRunner:
             device=device,
             num_quantizers=num_quantizers,
             graph_keys=graph_keys,
-            cuda_api=_TorchCudaApi() if cuda_api is None else cuda_api,
+            device_api=_TorchDeviceApi() if device_api is None else device_api,
         )
         runner._build(total_gpu_memory_fraction)
         return runner
@@ -240,8 +327,8 @@ class Code2WavCudaGraphRunner:
             self._memory_stats["tier1"] = tier1_info
 
         try:
-            with self._cuda.device_context(self._device):
-                before = self._cuda.memory_stats(self._device)
+            with self._device_api.device_context(self._device):
+                before = self._device_api.memory_stats(self._device)
         except Exception as exc:
             self._rollback_build(
                 temporary={},
@@ -314,7 +401,7 @@ class Code2WavCudaGraphRunner:
                 )
         self._enabled = True
         logger.info(
-            "Code2Wav CUDA graph runner published %d exact graphs on %s",
+            "Code2Wav device graph runner published %d exact graphs on %s",
             len(self._graphs),
             self._device,
         )
@@ -351,24 +438,29 @@ class Code2WavCudaGraphRunner:
         tier1_abandoned = False
         error_reason: str | None = None
         tier0_started = False
+        # (key, phase) together: two variables drifted apart once already, with a
+        # tier reporting "capturing" for a failure in the measurement after it.
+        capturing: tuple[GraphKey, str] | None = None
         try:
-            with self._cuda.device_context(self._device):
-                pool = self._cuda.graph_pool_handle()
-                capture_stream = self._cuda.new_stream(self._device)
+            with self._device_api.device_context(self._device):
+                pool = self._device_api.graph_pool_handle(self._device)
+                capture_stream = self._device_api.new_stream(self._device)
                 if tier1_keys:
                     previous_footprint = self._footprint_since(before)
                 for index, key in enumerate(tier1_keys):
                     self._build_stats["attempted_graph_count"] += 1
+                    capturing = (key, "capturing")
                     temporary[key] = self._capture_graph(
                         key,
                         pool=pool,
                         stream=capture_stream,
                     )
-                    self._cuda.synchronize(self._device)
+                    capturing = (key, "measuring after")
+                    self._device_api.synchronize(self._device)
                     # Warmup's eager activations linger in the allocator cache
                     # and would count as reserved footprint, dwarfing the pool
                     # itself; release them so the check measures what is kept.
-                    self._cuda.empty_cache()
+                    self._device_api.empty_cache(self._device)
                     footprint = self._footprint_since(before)
                     tier1_info["per_key_footprint_bytes"][self._key_name(key)] = (
                         footprint - previous_footprint
@@ -381,18 +473,20 @@ class Code2WavCudaGraphRunner:
                     tier0_started = True
                     for key in self._priority_order(self._tier0_keys):
                         self._build_stats["attempted_graph_count"] += 1
+                        capturing = (key, "capturing")
                         temporary[key] = self._capture_graph(
                             key,
                             pool=pool,
                             stream=capture_stream,
                         )
-                    # Capture, replay and equivalence checks enqueue CUDA
+                        capturing = (key, "measuring after")
+                    # Capture, replay and equivalence checks enqueue device
                     # work. Do not make the graph matrix visible until every
                     # key has completed on the bound device.
-                    self._cuda.synchronize(self._device)
+                    self._device_api.synchronize(self._device)
                     gc.collect()
-                    self._cuda.empty_cache()
-                    after = self._cuda.memory_stats(self._device)
+                    self._device_api.empty_cache(self._device)
+                    after = self._device_api.memory_stats(self._device)
                     self._memory_stats["after"] = after
                     graph_footprint = max(
                         0,
@@ -422,6 +516,19 @@ class Code2WavCudaGraphRunner:
                 if isinstance(exc, _BuildFailure)
                 else f"capture_failed: {type(exc).__name__}: {exc}"
             )
+            if not isinstance(exc, _BuildFailure):
+                # A key owns its capture and the measurement after it, so name
+                # the key either way and let the phase say which half failed.
+                logger.warning(
+                    "Code2Wav graph build failed on %s while %s",
+                    self._device,
+                    (
+                        f"{capturing[1]} key={self._key_name(capturing[0])}"
+                        if capturing
+                        else "setting up the capture pool"
+                    ),
+                    exc_info=True,
+                )
             if tier1_keys and not tier0_started:
                 tier1_info["disable_reason"] = reason
                 tier1_abandoned = True
@@ -440,8 +547,8 @@ class Code2WavCudaGraphRunner:
         capture_stream = None
         gc.collect()
         try:
-            with self._cuda.device_context(self._device):
-                self._cuda.empty_cache()
+            with self._device_api.device_context(self._device):
+                self._device_api.empty_cache(self._device)
         except Exception as cleanup_exc:
             logger.warning(
                 "Code2Wav graph attempt rollback cleanup failed: %s",
@@ -458,7 +565,7 @@ class Code2WavCudaGraphRunner:
         return "shrink", remaining
 
     def _footprint_since(self, before: dict[str, int]) -> int:
-        snapshot = self._cuda.memory_stats(self._device)
+        snapshot = self._device_api.memory_stats(self._device)
         return max(
             0,
             snapshot["allocated_bytes"] - before["allocated_bytes"],
@@ -487,18 +594,18 @@ class Code2WavCudaGraphRunner:
         pool: Any,
         stream: Any,
     ) -> _CapturedGraph:
-        static_input = self._cuda.new_static_input(
+        static_input = self._device_api.new_static_input(
             (key.batch_size, self._num_quantizers, key.frames),
             device=self._device,
         )
-        self._cuda.warmup(
+        self._device_api.warmup(
             self._model,
             static_input,
             iterations=self._WARMUP_ITERATIONS,
             device=self._device,
             stream=stream,
         )
-        graph, static_output = self._cuda.capture(
+        graph, static_output = self._device_api.capture(
             self._model,
             static_input,
             pool=pool,
@@ -551,17 +658,19 @@ class Code2WavCudaGraphRunner:
     ) -> None:
         if "after" not in self._memory_stats:
             try:
-                self._cuda.synchronize(self._device)
+                self._device_api.synchronize(self._device)
             except Exception as synchronize_exc:
                 logger.warning(
-                    "Code2Wav CUDA graph rollback synchronize failed: %s",
+                    "Code2Wav device graph rollback synchronize failed: %s",
                     synchronize_exc,
                 )
             try:
-                self._memory_stats["after"] = self._cuda.memory_stats(self._device)
+                self._memory_stats["after"] = self._device_api.memory_stats(
+                    self._device
+                )
             except Exception as snapshot_exc:
                 logger.warning(
-                    "Code2Wav CUDA graph rollback snapshot failed: %s",
+                    "Code2Wav device graph rollback snapshot failed: %s",
                     snapshot_exc,
                 )
         self._graphs.clear()
@@ -573,17 +682,17 @@ class Code2WavCudaGraphRunner:
         self._disable_reason = reason
         gc.collect()
         try:
-            with self._cuda.device_context(self._device):
-                self._cuda.empty_cache()
-                self._memory_stats["after_rollback"] = self._cuda.memory_stats(
+            with self._device_api.device_context(self._device):
+                self._device_api.empty_cache(self._device)
+                self._memory_stats["after_rollback"] = self._device_api.memory_stats(
                     self._device
                 )
         except Exception as cleanup_exc:
             logger.warning(
-                "Code2Wav CUDA graph rollback cleanup failed: %s",
+                "Code2Wav device graph rollback cleanup failed: %s",
                 cleanup_exc,
             )
-        logger.warning("Code2Wav CUDA graph runner disabled: %s", reason)
+        logger.warning("Code2Wav device graph runner disabled: %s", reason)
 
     def run(
         self,
@@ -600,7 +709,7 @@ class Code2WavCudaGraphRunner:
         current_pid = os.getpid()
         if current_pid != self._owner_pid:
             raise RuntimeError(
-                "Code2Wav CUDA graph runner/model belongs to PID "
+                "Code2Wav device graph runner/model belongs to PID "
                 f"{self._owner_pid}, but was used in PID {current_pid}; it must "
                 "be rebuilt in a spawned process before inference"
             )
@@ -637,11 +746,14 @@ class Code2WavCudaGraphRunner:
         )
 
     def _validate_codes(self, codes: torch.Tensor) -> None:
-        if not self._cuda.is_cuda_tensor(codes):
-            raise TypeError("Code2Wav graph input must be a CUDA tensor")
+        if not self._device_api.is_accelerator_tensor(codes, self._device):
+            raise TypeError(
+                f"Code2Wav graph input must be on device type "
+                f"{self._device.type!r}, got {codes.device.type!r}"
+            )
         if codes.dtype != torch.long:
             raise TypeError("Code2Wav graph input must use torch.long")
-        if not self._cuda.tensor_device_matches(codes, self._device):
+        if not self._device_api.tensor_device_matches(codes, self._device):
             raise ValueError(f"Code2Wav graph input must be on {self._device}")
         if codes.ndim != 3:
             raise ValueError("Code2Wav graph input must have shape [B, Q, T]")
@@ -676,14 +788,14 @@ class Code2WavCudaGraphRunner:
         self._disable_reason = reason
         gc.collect()
         try:
-            with self._cuda.device_context(self._device):
-                self._cuda.empty_cache()
+            with self._device_api.device_context(self._device):
+                self._device_api.empty_cache(self._device)
         except Exception as cleanup_exc:
             logger.warning(
-                "Code2Wav CUDA graph runtime cleanup failed: %s",
+                "Code2Wav device graph runtime cleanup failed: %s",
                 cleanup_exc,
             )
-        logger.exception("Code2Wav CUDA graph replay disabled the runner")
+        logger.exception("Code2Wav device graph replay disabled the runner")
 
     def stats(self) -> dict[str, Any]:
         """Return a strict JSON-safe snapshot of build and runtime state."""

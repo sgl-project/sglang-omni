@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Qwen3-Omni speech on 8x Intel Arc Pro B60 (24 GB each).
+#
+#   sgl-omni serve --config examples/configs/qwen3_omni_speech_xpu_b60.yaml
+#
+# TP=8 because the 30B-A3B thinker does not fit one 24 GB card, and at TP=4 its
+# per-rank weights leave the KV pool no room. Keep every card visible to every
+# rank: XCCL discovery needs the peers.
+
+config_cls: Qwen3OmniSpeechPipelineConfig
+name: qwen3-omni-speech-xpu-b60
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+
+stages:
+  # Both encoders sit with thinker rank 0, so card 0 carries three stages where
+  # the rest carry one or two. This is the layout the numbers in the PR were
+  # measured on, and it left card 0 with headroom; spreading them is untested, so
+  # it is not done here. They carry no gpu_memory_fraction because the
+  # disaggregated topology does not require one.
+  image_encoder:
+    gpu: 0
+  audio_encoder:
+    gpu: 0
+
+  thinker:
+    gpu: [0, 1, 2, 3, 4, 5, 6, 7]
+    tp_size: 8
+    engine:
+      mem_fraction_static: 0.55
+
+  # Shares a thinker rank; Qwen3OmniPlacementPolicy allows that while TP>1.
+  # 0.55 + 0.35 reserves 0.90 of card 6, the tightest card here. That is what the
+  # measured runs used; raising either value OOMs mid-serving rather than at
+  # startup, so lower the talker first if a card runs out.
+  talker_ar:
+    gpu: 6
+    engine:
+      mem_fraction_static: 0.35
+
+  code2wav:
+    gpu: 7
+    # 0.02 of a 24 GB card leaves less graph budget than the capture keys need.
+    gpu_memory_fraction: 0.05

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import logging
 from collections.abc import Iterator
@@ -429,6 +430,10 @@ class SGLModelRunner(ModelRunner):
         deferred graph-capture call sites, so finalize here at the common
         capture boundary instead of relying on every stage to mirror the
         scheduler's post-capture hook.
+
+        On XPU the capture is wrapped to pin SDPA: the engines reach it through
+        model code SGLang's capture does not wrap. Every other platform is called
+        exactly as before, with nothing entered around it.
         """
         record = self._weight_share_record
         if record is not None:
@@ -440,7 +445,17 @@ class SGLModelRunner(ModelRunner):
         from sglang.srt.runtime_context import get_exec, get_flags
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
-        result = super().init_cuda_graphs(capture_decode_cuda_graph)
+        from sglang_omni.platforms import current_platform
+
+        # The pin is XPU-only, matching the Code2Wav capture gate: CUDA, ROCm, MUSA
+        # and NPU captured fine before this hook existed, so nothing is entered for
+        # them and they keep the graph and the numerics they already had. Asking
+        # is_xpu() rather than re-checking the backend tuple keeps the empty-tuple
+        # handling in graph_capture_attention() as the single place that knows it.
+        with contextlib.ExitStack() as pins:
+            if current_platform.is_xpu():
+                pins.enter_context(current_platform.graph_capture_attention())
+            result = super().init_cuda_graphs(capture_decode_cuda_graph)
         if self.token_to_kv_pool.post_capture_active:
             self.post_capture_resize_kv_pool()
         return result

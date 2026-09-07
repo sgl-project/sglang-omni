@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
+    from torch.nn.attention import SDPBackend
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -33,7 +34,8 @@ class XPUOmniPlatform(OmniPlatform):
         torch.xpu.set_device(0 if index is None else index)
 
     def enable_code2wav_graph(self):
-        return False
+        # Capturable once its two host reads are pinned; see the Code2Wav runner.
+        return True
 
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:
@@ -47,8 +49,7 @@ class XPUOmniPlatform(OmniPlatform):
         return fused_inplace_qknorm_rope
 
     def enable_talker_graph(self) -> bool:
-        # The predictor's default SDPA dispatch is not capturable here.
-        return False
+        return True
 
     def enable_thinker_decode_graph(self) -> bool:
         # Capture leaves the scheduler thread's stream recording; host reads fail.
@@ -64,6 +65,17 @@ class XPUOmniPlatform(OmniPlatform):
         from sglang.srt.model_executor.cuda_graph_config import Backend
 
         return Backend.FULL
+
+    def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
+        # The default selection is not capturable: it records an event the graph
+        # did not create. Naming any backend avoids that, so name them in order.
+        from torch.nn.attention import SDPBackend
+
+        return (
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.MATH,
+        )
 
     def apply_model_worker_backend_policy(
         self,
