@@ -9,10 +9,10 @@ from mlx.utils import tree_flatten
 
 from sglang_omni.models.moss_tts_local.mlx.config import ModelConfig
 from sglang_omni.models.moss_tts_local.mlx.model import MossTTSLocalModel
-from sglang_omni.models.moss_tts_local.mlx.runner import _sample
+from sglang_omni.models.moss_tts_local.mlx.runner import sample
 
 
-def _tiny_config() -> ModelConfig:
+def tiny_config() -> ModelConfig:
     return ModelConfig.from_dict(
         {
             "model_type": "moss_tts_local",
@@ -48,7 +48,7 @@ def _tiny_config() -> ModelConfig:
 
 
 def test_mlx_model_generates_one_complete_codec_row() -> None:
-    model = MossTTSLocalModel(_tiny_config())
+    model = MossTTSLocalModel(tiny_config())
     prompt = mx.array([[[1, 16, 16], [2, 3, 4]]], dtype=mx.int32)
     hidden = model.backbone(prompt, model.make_cache())
     row = model.decode_frame(
@@ -66,7 +66,7 @@ def test_mlx_model_generates_one_complete_codec_row() -> None:
 
 def test_mlx_module_names_match_the_official_checkpoint_layout() -> None:
     keys = {
-        name for name, _ in tree_flatten(MossTTSLocalModel(_tiny_config()).parameters())
+        name for name, _ in tree_flatten(MossTTSLocalModel(tiny_config()).parameters())
     }
 
     assert "transformer.layers.0.self_attn.q_proj.weight" in keys
@@ -74,6 +74,12 @@ def test_mlx_module_names_match_the_official_checkpoint_layout() -> None:
     assert "audio_embeddings.1.weight" in keys
     assert "audio_lm_heads.1.weight" in keys
     assert "local_text_lm_head.weight" in keys
+
+
+def test_mlx_config_exposes_scheduler_vocabulary_layout() -> None:
+    config = tiny_config()
+
+    assert config.vocab_size_list == [64, 17, 17]
 
 
 def test_seeded_sampling_is_position_stable() -> None:
@@ -86,15 +92,15 @@ def test_seeded_sampling_is_position_stable() -> None:
         "position": 7,
     }
 
-    first = _sample(logits, **kwargs)
-    second = _sample(logits, **kwargs)
+    first = sample(logits, **kwargs)
+    second = sample(logits, **kwargs)
     mx.eval(first, second)
 
     assert first.item() == second.item()
 
 
 def test_model_rejects_non_local_checkpoint() -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config.model_type = "moss_tts_delay"
     with pytest.raises(ValueError, match="moss_tts_local"):
         MossTTSLocalModel(config)

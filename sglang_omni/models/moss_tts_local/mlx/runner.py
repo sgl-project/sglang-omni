@@ -12,16 +12,20 @@ import mlx.core as mx
 logger = logging.getLogger(__name__)
 
 
-def _top_k(logits: mx.array, value: int) -> mx.array:
+def apply_top_k(logits: mx.array, value: int) -> mx.array:
     if value <= 0 or value >= logits.shape[-1]:
         return logits
+    else:
+        pass
     threshold = mx.topk(logits, k=value, axis=-1)[..., :1]
     return mx.where(logits < threshold, -mx.inf, logits)
 
 
-def _top_p(logits: mx.array, value: float) -> mx.array:
+def apply_top_p(logits: mx.array, value: float) -> mx.array:
     if value >= 1.0:
         return logits
+    else:
+        pass
     order = mx.argsort(-logits, axis=-1)
     sorted_logits = mx.take_along_axis(logits, order, axis=-1)
     cumulative = mx.cumsum(mx.softmax(sorted_logits, axis=-1), axis=-1)
@@ -33,7 +37,7 @@ def _top_p(logits: mx.array, value: float) -> mx.array:
     return mx.take_along_axis(filtered, inverse, axis=-1)
 
 
-def _sample(
+def sample(
     logits: mx.array,
     *,
     temperature: float,
@@ -44,9 +48,11 @@ def _sample(
 ) -> mx.array:
     if temperature <= 0:
         return mx.argmax(logits, axis=-1).astype(mx.int32)
+    else:
+        pass
     logits = logits.astype(mx.float32) / temperature
-    logits = _top_k(logits, top_k)
-    logits = _top_p(logits, top_p)
+    logits = apply_top_k(logits, top_k)
+    logits = apply_top_p(logits, top_p)
     key = mx.random.key((int(seed) + int(position)) & 0xFFFFFFFF)
     return mx.random.categorical(logits, axis=-1, key=key).astype(mx.int32)
 
@@ -58,7 +64,7 @@ class MossTTSLocalMlxModelRunner:
     def config(self):
         return self.model.config
 
-    def _load_model(self) -> None:
+    def load_model(self) -> None:
         from mlx_lm.utils import load_model
         from sglang.srt.hardware_backend.mlx.remote_code_gate import (
             ensure_remote_code_allowed,
@@ -70,38 +76,44 @@ class MossTTSLocalMlxModelRunner:
 
         model_path = resolve_model_directory(self.model_path, revision=self.revision)
         ensure_remote_code_allowed(model_path, self.trust_remote_code)
-        logger.info("Loading native MLX MOSS-TTS Local model: %s", model_path)
+        logger.info(f"Loading native MLX MOSS-TTS Local model: {model_path}")
         started = time.perf_counter()
         self.model, _ = load_model(
             model_path,
             get_model_classes=lambda config: (MossTTSLocalModel, ModelConfig),
         )
-        logger.info(
-            "Loaded native MLX MOSS-TTS Local model in %.2fs",
-            time.perf_counter() - started,
-        )
-        self._request_rows: dict[str, mx.array] = {}
-        self._request_steps: dict[str, int] = {}
-        self._request_params: dict[str, dict[str, Any]] = {}
-        self._completed_rows: dict[str, list[list[int]]] = {}
+        elapsed_seconds = time.perf_counter() - started
+        logger.info(f"Loaded native MLX MOSS-TTS Local model in {elapsed_seconds:.2f}s")
+        self.request_rows: dict[str, mx.array] = {}
+        self.request_steps: dict[str, int] = {}
+        self.request_params: dict[str, dict[str, Any]] = {}
+        self.completed_rows: dict[str, list[list[int]]] = {}
 
     @staticmethod
-    def _request_data(req: Any) -> Any:
-        data = getattr(req, "_omni_data", None)
+    def request_data(req: Any) -> Any:
+        data = getattr(
+            req,
+            "_omni_data",  # noqa: leading-underscore  # SGLang request API
+            None,
+        )
         if data is None:
             raise RuntimeError("MOSS-TTS Local MLX request is missing Omni state")
+        else:
+            pass
         return data
 
     @staticmethod
-    def _to_mx_rows(rows: Any) -> mx.array:
+    def to_mx_rows(rows: Any) -> mx.array:
         return mx.array(rows.detach().to("cpu").numpy(), dtype=mx.int32)
 
-    def _remember_request(self, req_id: str, data: Any) -> None:
+    def remember_request(self, req_id: str, data: Any) -> None:
         if float(data.audio_repetition_penalty) != 1.0:
             raise NotImplementedError(
                 "MOSS-TTS Local MLX currently requires audio_repetition_penalty=1"
             )
-        self._request_params[req_id] = {
+        else:
+            pass
+        self.request_params[req_id] = {
             "text_temperature": float(data.text_temperature),
             "text_top_p": float(data.text_top_p),
             "text_top_k": int(data.text_top_k),
@@ -111,12 +123,12 @@ class MossTTSLocalMlxModelRunner:
             "seed": int(data.sampling_seed),
         }
 
-    def _decode_frame(self, req_id: str, hidden: mx.array, step: int) -> mx.array:
-        params = self._request_params[req_id]
+    def decode_frame(self, req_id: str, hidden: mx.array, step: int) -> mx.array:
+        params = self.request_params[req_id]
         channels = self.model.config.channels
 
         def sample_text(logits: mx.array) -> mx.array:
-            return _sample(
+            return sample(
                 logits,
                 temperature=params["text_temperature"],
                 top_p=params["text_top_p"],
@@ -126,7 +138,7 @@ class MossTTSLocalMlxModelRunner:
             )
 
         def sample_audio(logits: mx.array, channel: int) -> mx.array:
-            return _sample(
+            return sample(
                 logits,
                 temperature=params["audio_temperature"],
                 top_p=params["audio_top_p"],
@@ -157,25 +169,33 @@ class MossTTSLocalMlxModelRunner:
         del new_token_ids, new_slot_ids, needs_logits
         if req is None:
             raise ValueError("MOSS-TTS Local MLX prefill requires its request")
+        else:
+            pass
         if prefix_slot_ids or not self.disable_radix_cache:
             raise RuntimeError("MOSS-TTS Local MLX requires disable_radix_cache=True")
+        else:
+            pass
         if logit_edit_row is not None or logprob_spec is not None:
             raise NotImplementedError(
                 "MOSS-TTS Local MLX does not expose text logprobs"
             )
+        else:
+            pass
 
-        data = self._request_data(req)
-        self._remember_request(req_id, data)
+        data = self.request_data(req)
+        self.remember_request(req_id, data)
         rows = data.prompt_rows
         if data.output_rows:
             import torch
 
             rows = torch.cat([rows, torch.stack(data.output_rows)], dim=0)
-        rows_mx = self._to_mx_rows(rows)[None, ...]
-        cache = self._acquire_cache()
+        else:
+            pass
+        rows_mx = self.to_mx_rows(rows)[None, ...]
+        cache = self._acquire_cache()  # noqa: leading-underscore  # SGLang MLX API
         hidden = self.model.backbone(rows_mx, cache)[:, -1, :]
         step = len(data.output_rows)
-        next_row = self._decode_frame(req_id, hidden, step)
+        next_row = self.decode_frame(req_id, hidden, step)
         pending = MlxPendingPrefill(
             lazy_token=next_row[:, 0],
             cache=cache,
@@ -192,12 +212,12 @@ class MossTTSLocalMlxModelRunner:
     def prefill_finalize(self, pending) -> int:
         token = super().prefill_finalize(pending)
         row = [int(value) for value in pending.moss_row[0].tolist()]
-        self._request_rows[pending.req_id] = pending.moss_row[:, None, :]
-        self._request_steps[pending.req_id] = pending.moss_step + 1
-        self._completed_rows.setdefault(pending.req_id, []).append(row)
+        self.request_rows[pending.req_id] = pending.moss_row[:, None, :]
+        self.request_steps[pending.req_id] = pending.moss_step + 1
+        self.completed_rows.setdefault(pending.req_id, []).append(row)
         return token
 
-    def _decode_pending(self, req_ids: list[str], rows: mx.array, caches, step: int):
+    def decode_pending(self, req_ids: list[str], rows: mx.array, caches, step: int):
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
         hidden = mx.concatenate(
@@ -209,7 +229,7 @@ class MossTTSLocalMlxModelRunner:
         )
         next_rows = mx.concatenate(
             [
-                self._decode_frame(req_id, hidden[index : index + 1], step)
+                self.decode_frame(req_id, hidden[index : index + 1], step)
                 for index, req_id in enumerate(req_ids)
             ],
             axis=0,
@@ -237,20 +257,24 @@ class MossTTSLocalMlxModelRunner:
             raise NotImplementedError(
                 "MOSS-TTS Local MLX currently supports one request"
             )
+        else:
+            pass
         if edit_rows is not None or logprob_spec is not None or logits_hook is not None:
             raise NotImplementedError(
                 "MOSS-TTS Local MLX does not expose text logprobs"
             )
+        else:
+            pass
         rid = req_ids[0]
-        return self._decode_pending(
+        return self.decode_pending(
             req_ids,
-            self._request_rows[rid],
-            [self._req_caches[rid]],
-            self._request_steps[rid],
+            self.request_rows[rid],
+            [self._req_caches[rid]],  # noqa: leading-underscore  # SGLang MLX API
+            self.request_steps[rid],
         )
 
     def decode_batch_start_chained(self, previous):
-        return self._decode_pending(
+        return self.decode_pending(
             previous.req_ids,
             previous.moss_rows[:, None, :],
             previous.caches,
@@ -261,22 +285,22 @@ class MossTTSLocalMlxModelRunner:
         tokens = super().decode_batch_finalize(pending)
         rows = pending.moss_rows.tolist()
         for rid, row_array, row in zip(pending.req_ids, pending.moss_rows, rows):
-            self._request_rows[rid] = row_array[None, None, :]
-            self._request_steps[rid] = pending.moss_step + 1
-            self._completed_rows.setdefault(rid, []).append(
+            self.request_rows[rid] = row_array[None, None, :]
+            self.request_steps[rid] = pending.moss_step + 1
+            self.completed_rows.setdefault(rid, []).append(
                 [int(value) for value in row]
             )
         return tokens
 
     def pop_completed_rows(self, req_id: str) -> list[list[int]]:
-        return self._completed_rows.pop(req_id, [])
+        return self.completed_rows.pop(req_id, [])
 
     def remove_request(self, req_id: str) -> None:
         super().remove_request(req_id)
-        self._request_rows.pop(req_id, None)
-        self._request_steps.pop(req_id, None)
-        self._request_params.pop(req_id, None)
-        self._completed_rows.pop(req_id, None)
+        self.request_rows.pop(req_id, None)
+        self.request_steps.pop(req_id, None)
+        self.request_params.pop(req_id, None)
+        self.completed_rows.pop(req_id, None)
 
     def reset_request(self, req_id: str) -> None:
         self.remove_request(req_id)
