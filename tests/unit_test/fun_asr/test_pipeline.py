@@ -67,6 +67,7 @@ def test_fun_asr_stage_defaults_enable_pending_build_aware_coalescing() -> None:
         signature.parameters["prefill_coalesce_after_builds_during_decode"].default
         is True
     )
+    assert signature.parameters["prefill_coalesce_min_expected_arrivals"].default == 1.0
     assert signature.parameters["enable_async_decode"].default is True
     assert signature.parameters["async_decode_min_batch_size"].default == 2
 
@@ -288,6 +289,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.prefill_coalesce_after_builds_during_decode is True
+    assert scheduler.prefill_coalesce_min_expected_arrivals == 1.0
     scheduler.shutdown_callback()
     assert encoder_services[0].close_calls == 1
 

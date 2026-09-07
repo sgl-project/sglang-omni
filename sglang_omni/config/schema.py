@@ -205,6 +205,7 @@ class FactoryArgs(BaseModel):
     prefill_coalesce_when_idle: bool | None = None
     prefill_coalesce_requires_pending_builds: bool | None = None
     prefill_coalesce_after_builds_during_decode: bool | None = None
+    prefill_coalesce_min_expected_arrivals: float | None = Field(default=None, ge=0)
     request_build_max_workers: int | None = Field(default=None, ge=1)
     request_build_max_pending: int | None = Field(default=None, ge=1)
     encoder_mem_reserve: float | None = Field(default=None, ge=0, lt=1)
