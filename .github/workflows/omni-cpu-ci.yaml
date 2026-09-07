@@ -1,0 +1,300 @@
+name: CPU CI
+
+# Per-PR Intel CPU CI for sglang-omni.
+#
+# DAG:
+#   check-changes -> preflight -> cpu-ci -> finish
+#                                             ^
+#                        (finish always runs, aggregates the result)
+#
+# Design notes / why this differs from omni-xpu-ci.yaml:
+#
+# * Path filtering is done INSIDE a `check-changes` job with
+#   dorny/paths-filter, NOT with a workflow-level `on.paths`. A workflow-level
+#   paths filter means the workflow never starts for an unrelated PR, so its
+#   status check stays "expected"/pending forever -- which deadlocks merges if
+#   this is ever made a required check. With a job-level filter the workflow
+#   always starts, the heavy job is `if:`-skipped when nothing relevant
+#   changed, and a skipped job counts as success. The `finish` job exposes a
+#   single stable, required-check-safe status. This mirrors upstream sglang's
+#   pr-test-xeon.yml / pr-test-xpu.yml.
+#
+# * The filter excludes `*.md` so docs-only edits under sglang_omni/** do not
+#   pay for a full CPU image build.
+#
+# * cpu-ci builds docker/cpu.Dockerfile from the PR checkout, runs the CPU unit
+#   tests inside the resulting image, and removes the container + image and
+#   prunes dangling images on completion so a long-lived self-hosted box does
+#   not accumulate multi-GB images across PRs. BuildKit cache is retained to
+#   accelerate later builds.
+#
+# * pytest is installed into the image's venv at runtime rather than assumed to
+#   be baked in: pyproject_cpu.toml keeps pytest in the `eval` extra, and the
+#   Dockerfile installs only the base project, so the image ships without it.
+#
+# Runtime prerequisites (fleet-side, not enforced by this workflow):
+#   * self-hosted runner labeled [self-hosted, intel-omni-spr] with a reachable
+#     docker daemon and enough disk for the CPU image build;
+#   * docker/cpu.Dockerfile, pyproject_cpu.toml, scripts/cpu/** and
+#     tests/unit_test/cpu/** present on the tested ref (added by the Intel CPU
+#     enablement PR).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: cpu-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  check-changes:
+    name: cpu-ci-changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      # 'true' when the PR touches CPU-relevant paths, or on manual dispatch.
+      run: ${{ steps.filter.outputs.cpu == 'true' || steps.run-mode.outputs.run_all == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine run mode
+        id: run-mode
+        shell: bash
+        run: |
+          # workflow_dispatch has no base to diff against, so bypass the filter
+          # and run everything.
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "run_all=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "run_all=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Detect file changes
+        id: filter
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            cpu:
+              - "sglang_omni/**/!(*.md)"
+              - "tests/unit_test/cpu/**"
+              - "pyproject_cpu.toml"
+              - "scripts/cpu/**"
+              - "docker/cpu.Dockerfile"
+              - ".github/workflows/omni-cpu-ci.yaml"
+
+  preflight:
+    name: cpu-ci-gate
+    needs: check-changes
+    if: ${{ needs.check-changes.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      labels: ${{ steps.pr.outputs.labels || '[]' }}
+      head_sha: ${{ steps.meta.outputs.head_sha }}
+      test_sha: ${{ steps.meta.outputs.test_sha }}
+    steps:
+      - name: Fetch latest PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            // Reruns reuse the original pull_request event payload, so fetch
+            // live labels/draft state after /tag-and-rerun-ci adds run-ci.
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            core.setOutput("draft", pr.data.draft ? "true" : "false");
+
+      - name: Log PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          echo "PR labels: ${{ steps.pr.outputs.labels }}"
+          echo "PR draft: ${{ steps.pr.outputs.draft }}"
+
+      - name: Block draft PR
+        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        run: |
+          echo "PR is draft. Blocking CPU CI."
+          exit 1
+
+      - name: Require run-ci label
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
+            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into CPU CI."
+            exit 1
+          fi
+
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+
+      - name: Resolve tested commit
+        id: meta
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_SHA: ${{ github.sha }}
+        run: |
+          echo "head_sha=${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "test_sha=${TEST_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "PR head SHA: ${HEAD_SHA}"
+          echo "Tested merge SHA: ${TEST_SHA}"
+
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+      - name: Manual dispatch preflight
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
+
+  cpu-ci:
+    name: cpu-ci (unit_test/cpu)
+    needs: [check-changes, preflight]
+    if: ${{ needs.check-changes.outputs.run == 'true' && needs.preflight.result == 'success' }}
+    strategy:
+      fail-fast: true
+    runs-on: [self-hosted, intel-omni-spr]
+    timeout-minutes: 90
+    env:
+      # Fixed per-PR tag (no SHA): a new push overwrites the previous image so a
+      # long-lived self-hosted box does not accumulate one multi-GB image per
+      # push. Concurrency cancels in-progress runs, so no intra-PR collision.
+      IMAGE_TAG: sglang-omni-cpu-ci:pr-${{ github.event.pull_request.number || github.run_id }}
+      CONTAINER_NAME: ci_omni_cpu_${{ github.event.pull_request.number || github.run_id }}_${{ github.run_attempt }}
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          # Test the pinned PR merge commit so the checkout includes both the
+          # PR changes and the base branch version used to start this run.
+          ref: ${{ needs.preflight.outputs.test_sha }}
+          fetch-depth: 0
+
+      - name: Build CPU docker image
+        # Builds Omni on the pinned official SGLang Xeon image and runs the
+        # Dockerfile end-to-end, so this workflow also validates the CPU image.
+        timeout-minutes: 60
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker build -f docker/cpu.Dockerfile -t "${IMAGE_TAG}" .
+
+      - name: Start CI container
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Idempotent: leftover container from a killed prior attempt would
+          # block `docker run --name` here.
+          docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+          docker run -dt \
+            --name "${CONTAINER_NAME}" \
+            --ipc host \
+            --shm-size 32g \
+            -v /dev/shm:/dev/shm \
+            "${IMAGE_TAG}" \
+            sleep infinity
+
+      - name: Verify CPU / torch state
+        shell: bash
+        run: |
+          docker exec "${CONTAINER_NAME}" bash -lc '
+            source /opt/.venv/bin/activate
+            python -c "import os, torch; \
+                       from sglang_omni.platforms import current_platform; \
+                       is_cpu=current_platform.is_cpu(); \
+                       print(\"torch\", torch.__version__, \"cpu platform:\", is_cpu); \
+                       assert os.environ.get(\"SGLANG_USE_CPU_ENGINE\") == \"1\", \"SGLANG_USE_CPU_ENGINE must be 1\"; \
+                       assert is_cpu, \"SGLang-Omni did not resolve the CPU platform\"; \
+                       assert torch.version.cuda is None, \"expected a CPU-only PyTorch build\"; \
+                       assert not torch.cuda.is_available(), \"CUDA must not be available in CPU CI\""
+          '
+          # AMX availability is diagnostic only; CPU platform correctness does
+          # not depend on every runner exposing this optional capability.
+          docker exec "${CONTAINER_NAME}" bash -lc '
+            source /opt/.venv/bin/activate
+            python -c "import torch; \
+                       amx=getattr(getattr(torch, \"cpu\", None), \"_is_amx_tile_supported\", None); \
+                       print(\"amx_tile:\", amx() if amx else \"n/a\")"
+          ' || true
+
+      - name: Run CPU unit tests
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # pytest lives in pyproject_cpu.toml's `eval` extra, which the image
+          # does not install; add it into the image venv before running.
+          docker exec -w /sgl-workspace/sglang-omni "${CONTAINER_NAME}" bash -lc '
+            source /opt/.venv/bin/activate
+            uv pip install --index https://pypi.org/simple --no-cache-dir \
+              "pytest>=7.0.0" "pytest-asyncio>=0.21.0"
+            python -m pytest tests/unit_test/cpu/ -v
+          '
+
+      - name: Cleanup container and image
+        if: always()
+        shell: bash
+        run: |
+          set -eux
+          # SIGTERM sglang before docker rm -f to drain any engine cleanly.
+          # Character classes keep pkill/pgrep from matching their own argv.
+          if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
+            docker exec "${CONTAINER_NAME}" bash -c '
+              pkill -TERM -f "[s]glang|[r]un_suite|[p]ython3.*[t]est_" 2>/dev/null || true
+              for _ in $(seq 1 30); do
+                pgrep -f "[s]glang::|[s]glang.launch_server" >/dev/null || break
+                sleep 1
+              done
+              pkill -KILL -f "[s]glang|[r]un_suite" 2>/dev/null || true
+            ' || true
+          fi
+          docker rm -f "${CONTAINER_NAME}" || true
+          docker rmi -f "${IMAGE_TAG}" || true
+          # Reap dangling images left behind by interrupted runs. Keep the
+          # BuildKit cache so later CPU image builds can reuse expensive layers.
+          docker image prune -f || true
+
+  finish:
+    name: CPU CI Status
+    needs: [check-changes, preflight, cpu-ci]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate result
+        shell: bash
+        run: |
+          echo "check-changes: ${{ needs.check-changes.result }}"
+          echo "preflight:     ${{ needs.preflight.result }}"
+          echo "cpu-ci:        ${{ needs.cpu-ci.result }}"
+          # A skipped job means this PR did not touch CPU paths (or was gated
+          # out), which is a valid "nothing to do" -> success. Only a real
+          # failure or cancellation of a needed job fails the aggregate, so this
+          # job is safe to mark as a required status check.
+          if ${{ contains(needs.*.result, 'failure') }}; then
+            echo "A required CPU CI job failed."
+            exit 1
+          fi
+          if ${{ contains(needs.*.result, 'cancelled') }}; then
+            echo "A required CPU CI job was cancelled."
+            exit 1
+          fi
+          echo "CPU CI passed (ran, or skipped as not applicable)."
