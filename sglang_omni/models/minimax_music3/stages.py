@@ -43,6 +43,7 @@ def create_ar_executor(
     device: str | None = None,
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
+    enable_serial_offload: bool = False,
 ):
     if device is None:
         if gpu_id is None or not (
@@ -93,6 +94,7 @@ def create_dit_dav_executor(
     cache_dit_max_warmup_steps: int = 4,
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
+    enable_serial_offload: bool = False,
 ) -> MiniMaxMusic3AcousticScheduler:
     if device is None:
         if gpu_id is None or not (

@@ -719,6 +719,11 @@ class PipelineConfig(BaseModel):
         return {}
         return {}
 
+    @classmethod
+    def stage_offload_role_to_stage(cls) -> dict[str, str]:
+        """Map serial-offload component roles to stage names."""
+        return {}
+
     def resolved_env_defaults(self) -> dict[str, str]:
         """Process-environment defaults, evaluated at launch.
 
