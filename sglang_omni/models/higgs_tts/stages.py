@@ -68,7 +68,6 @@ from sglang_omni.scheduling.speaker_cache import (
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
-from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +378,7 @@ def create_preprocessing_executor(
 def create_audio_encoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     num_codebooks: int = 8,
@@ -390,6 +389,9 @@ def create_audio_encoder_executor(
     client-supplied pre-encoded fast path). Codec weights are extracted from
     the TTS checkpoint itself (bundled at ``tied.embedding.modality_embeddings``).
     """
+    from sglang_omni.platforms import current_platform
+    from sglang_omni.utils.device import resolve_device_spec
+
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
@@ -397,9 +399,12 @@ def create_audio_encoder_executor(
     adapter = HiggsTokenizerAdapter(tokenizer)
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
-    codec.model.acoustic_encoder = torch.compile(
-        codec.model.acoustic_encoder, mode="default", dynamic=True
-    )
+    if not current_platform.is_npu():
+        # NPU's torch.compile backend cannot compile this codec model
+        # (crashes on dynamic shapes, verified on Atlas 910B).
+        codec.model.acoustic_encoder = torch.compile(
+            codec.model.acoustic_encoder, mode="default", dynamic=True
+        )
     codec.encode_reference(
         torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
     )
@@ -463,7 +468,8 @@ def create_audio_encoder_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
     cuda_graph_max_bs: int = 64,
@@ -495,6 +501,7 @@ def create_sglang_tts_engine_executor(
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         server_args_overrides=server_args_overrides,
     )
 
@@ -502,7 +509,8 @@ def create_sglang_tts_engine_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     vocoder_decode_batch_size: int = 16,
     max_batch_wait_ms: int = 2,
@@ -518,6 +526,10 @@ def create_vocoder_executor(
 
     Codec weights are extracted from the TTS checkpoint itself.
     """
+    from sglang_omni.platforms import current_platform
+    from sglang_omni.utils.device import resolve_device_spec
+
+    device = resolve_device_spec(device, gpu_id)
     if compile_decode and decode_cuda_graph_frame_counts:
         raise ValueError(
             "compile_decode and decode_cuda_graph_frame_counts are mutually exclusive"
@@ -535,6 +547,15 @@ def create_vocoder_executor(
     # margin; when overriding strides, re-derive the domain empirically.
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
+    if compile_decode:
+        if current_platform.is_npu():
+            logger.warning(
+                "compile_decode=True was requested but torch.compile on %s "
+                "cannot compile this codec's dynamic-shape graph; falling "
+                "back to the eager vocoder decode",
+                current_platform.device_type,
+            )
+            compile_decode = False
     if compile_decode:
         eager_decode = codec.model.decode
         try:
@@ -564,9 +585,17 @@ def create_vocoder_executor(
         # This is an explicitly selected performance contract. Failing startup
         # is preferable to silently serving through the eager path and
         # discovering the regression only in a latency/throughput CI job.
-        codec.capture_decode_cuda_graphs(
-            tuple(int(value) for value in decode_cuda_graph_frame_counts)
-        )
+        if not current_platform.enable_code2wav_graph():
+            logger.warning(
+                "decode_cuda_graph_frame_counts was requested but the current "
+                "platform (%s) does not support Higgs codec CUDA graphs; "
+                "falling back to eager vocoder decode",
+                current_platform.device_type,
+            )
+        else:
+            codec.capture_decode_cuda_graphs(
+                tuple(int(value) for value in decode_cuda_graph_frame_counts)
+            )
 
     return HiggsStreamingVocoderScheduler(
         codec,
