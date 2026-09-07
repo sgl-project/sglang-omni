@@ -14,7 +14,7 @@ from mlx import nn
 from .config import GPT2Config
 
 
-def _rotate_half(x: mx.array) -> mx.array:
+def rotate_half(x: mx.array) -> mx.array:
     even = x[..., ::2]
     odd = x[..., 1::2]
     return mx.stack([-odd, even], axis=-1).reshape(x.shape)
@@ -34,7 +34,7 @@ class RotaryEmbedding(nn.Module):
         freqs = positions[:, None] * inv_freq[None, :]
         cos = mx.repeat(mx.cos(freqs), 2, axis=-1)[None, :, None, :].astype(x.dtype)
         sin = mx.repeat(mx.sin(freqs), 2, axis=-1)[None, :, None, :].astype(x.dtype)
-        return x * cos + _rotate_half(x) * sin
+        return x * cos + rotate_half(x) * sin
 
 
 class Attention(nn.Module):
@@ -45,6 +45,8 @@ class Attention(nn.Module):
         self.scale = self.head_dim**-0.5
         if config.scale_attn_by_inverse_layer_idx:
             self.scale /= layer_index + 1
+        else:
+            pass
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=True)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=True)
         self.rope = RotaryEmbedding(self.head_dim, config.rope_base)

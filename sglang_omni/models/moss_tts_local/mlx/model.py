@@ -22,10 +22,14 @@ class MossTTSLocalModel(nn.Module):
         super().__init__()
         if isinstance(config, dict):
             config = ModelConfig.from_dict(config)
+        else:
+            pass
         if config.model_type != "moss_tts_local":
             raise ValueError(
                 f"expected model_type='moss_tts_local', got {config.model_type!r}"
             )
+        else:
+            pass
         self.config = config
         self.transformer = Qwen3Model(config.language_config)
         self.audio_embeddings = [
@@ -57,6 +61,8 @@ class MossTTSLocalModel(nn.Module):
                 f"expected rows shaped [batch, length, {self.config.channels}], "
                 f"got {rows.shape}"
             )
+        else:
+            pass
         hidden = self.transformer.embed_tokens(rows[..., 0])
         for channel, embedding in enumerate(self.audio_embeddings):
             ids = rows[..., channel + 1]
@@ -91,6 +97,8 @@ class MossTTSLocalModel(nn.Module):
                     axis=1,
                 )
                 local_hidden = self.local_transformer(local_inputs)[:, -1, :]
+            else:
+                pass
 
         text = mx.where(
             stop_choice == 0,

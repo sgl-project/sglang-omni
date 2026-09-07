@@ -52,6 +52,12 @@ class ModelConfig:
     def channels(self) -> int:
         return self.n_vq + 1
 
+    @property
+    def vocab_size_list(self) -> list[int]:
+        return [int(self.language_config.vocab_size)] + [
+            self.audio_vocab_size + 1
+        ] * self.n_vq
+
     def local_config(self) -> GPT2Config:
         return replace(
             self.gpt2_config,
