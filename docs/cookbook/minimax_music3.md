@@ -31,7 +31,9 @@ source .venv/bin/activate
 uv pip install -v -e .   # drop -e for a non-editable install
 ```
 
-### Apple Silicon (MLX)
+### Apple Silicon
+
+#### Native MLX
 
 On Apple Silicon, set `SGLANG_USE_MLX=1` and serve a converted MLX artifact.
 The artifact contains the Qwen3/RVQ, Flow/DiT, DAV weights, and tokenizer, so
@@ -64,6 +66,24 @@ two-stage hidden-chunk contract and 32 kHz stereo response as CUDA, but does
 not use CUDA graphs, `torch.compile`, Cache-DiT, or breakable CUDA graphs.
 The implementation is native to SGLang-Omni at runtime; `mlx-audio` is an
 implementation and artifact-format reference, not a dependency.
+
+#### Torch/MPS
+
+The default Apple backend is a Torch/MPS compatibility path using the official
+checkpoint. Make sure `SGLANG_USE_MLX` is unset, then serve it directly:
+
+```bash
+unset SGLANG_USE_MLX
+sgl-omni serve \
+  --model-path MiniMaxAI/MiniMax-Music3 \
+  --port 8000
+```
+
+Torch/MPS loads the official modular Qwen3 and RVQ weights plus the official
+Flow/DiT and DAV checkpoints. It runs one song at a time in bfloat16 with
+Torch SDPA; CUDA graphs, `torch.compile`, Cache-DiT, and breakable CUDA graphs
+remain disabled. Native MLX is the preferred Apple performance path, while
+Torch/MPS provides an independent PyTorch compatibility path.
 
 **Single GPU** (colocate both stages):
 

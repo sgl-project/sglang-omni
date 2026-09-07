@@ -131,19 +131,24 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_residual_diff_threshold: float = 0.08,
         cache_dit_max_continuous_cached_steps: int = 1,
     ) -> None:
-        if not (current_platform.is_cuda() or current_platform.is_musa()):
+        if not (
+            current_platform.is_cuda()
+            or current_platform.is_musa()
+            or current_platform.is_mps()
+        ):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
+                "MiniMax Music 3 acoustic inference requires CUDA/MUSA/MPS backend"
             )
-        torch.backends.cudnn.enabled = False
-        torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
-        if self.device.type not in ("cuda", "musa"):
+        if self.device.type not in ("cuda", "musa", "mps"):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA device"
+                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA/MPS device"
             )
+        if self.device.type != "mps":
+            torch.backends.cudnn.enabled = False
+            torch.backends.cuda.enable_cudnn_sdp(False)
         self.dtype = _resolve_acoustic_dtype(dtype)
-        if self.dtype is torch.float32:
+        if self.dtype is torch.float32 and self.device.type != "mps":
             # note (chenyang): TF32 keeps float32's range with a 10-bit mantissa
             # and measures 0.22% from the true float32 DIT solve while running
             # 4.4x faster, which is what makes float32 affordable enough to be
@@ -160,6 +165,20 @@ class MiniMaxMusic3AcousticDecoder:
         self.breakable_cuda_graph_requested = _boolean(
             "breakable_cuda_graph", breakable_cuda_graph
         )
+        if self.device.type == "mps":
+            if self.attention_backend != "torch_sdpa":
+                raise ValueError(
+                    "MiniMax Music 3 Torch MPS requires attention_backend=torch_sdpa"
+                )
+            if self.cache_dit or self.compile_acoustic:
+                raise ValueError(
+                    "MiniMax Music 3 cache_dit and compile_acoustic are unavailable "
+                    "with Torch MPS"
+                )
+            if self.breakable_cuda_graph_requested:
+                raise ValueError(
+                    "MiniMax Music 3 breakable_cuda_graph is unavailable with Torch MPS"
+                )
         self.breakable_cuda_graph = False
         if self.cache_dit and self.breakable_cuda_graph_requested:
             raise ValueError(

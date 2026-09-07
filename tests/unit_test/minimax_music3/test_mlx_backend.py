@@ -22,6 +22,7 @@ def test_tiny_ar_and_acoustic_pipeline_is_finite() -> None:
         MiniMaxMusic3MlxARModel,
     )
 
+    mx.random.seed(0)
     config = ModelConfig.tiny()
     ar_model = MiniMaxMusic3MlxARModel(config)
     acoustic_model = MiniMaxMusic3MlxAcousticModel(config)

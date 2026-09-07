@@ -11,6 +11,14 @@ SGLANG_USE_MLX=1 sgl-omni serve \
   --port 8000
 ```
 
+Or leave `SGLANG_USE_MLX` unset to run the official checkpoint through the
+Torch/MPS compatibility path:
+
+```bash
+unset SGLANG_USE_MLX
+sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000
+```
+
 ```bash
 # Single GPU
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000

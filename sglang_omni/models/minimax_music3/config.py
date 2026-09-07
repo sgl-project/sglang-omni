@@ -33,9 +33,10 @@ def _visible_gpu_count() -> int:
 
 
 class MiniMaxMusic3ARFactoryArgs(FactoryArgs):
-    """AR constructor knobs shared by CUDA and native MLX."""
+    """AR constructor knobs shared by accelerator backends."""
 
     mlx_model_revision: str | None = None
+    torch_model_revision: str | None = None
 
 
 class MiniMaxMusic3ARStageConfig(EngineStageConfig):
@@ -54,6 +55,7 @@ class DitDavFactoryArgs(FactoryArgs):
     compile_acoustic: bool | None = None
     breakable_cuda_graph: bool | None = None
     mlx_model_revision: str | None = None
+    torch_model_revision: str | None = None
 
 
 class DitDavStageConfig(StageConfig):
