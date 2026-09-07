@@ -80,6 +80,15 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.audio_encoder_service: BatchedAudioEncoderService | None = None
         self.max_new_tokens = 0
         self.context_length = 0
+        self._tp_rank = 0
+        self._nccl_port = None
+
+    def infra_kwargs(self) -> dict[str, Any]:
+        kwargs = super().infra_kwargs()
+        kwargs["tp_rank"] = self._tp_rank
+        if self._nccl_port is not None:
+            kwargs["nccl_port"] = self._nccl_port
+        return kwargs
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoProcessor
