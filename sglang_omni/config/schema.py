@@ -6,11 +6,26 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+if TYPE_CHECKING:
+    from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
+
 REPLICA_SEPARATOR = "@r"
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeTranscriptionConfig:
+    """Pipeline-owned declaration for live ASR over ``/v1/realtime``."""
+
+    strategy_cls: type[StreamingASRStrategy]
+    decode_interval_ms: int = 2000
+
+    def __post_init__(self) -> None:
+        if self.decode_interval_ms <= 0:
+            raise ValueError("realtime transcription decode interval must be positive")
 
 
 def replica_instance_name(logical_name: str, replica_id: int) -> str:
@@ -558,6 +573,7 @@ class PipelineConfig(BaseModel):
     speech_reference_text_required: ClassVar[bool] = False
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
+    realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
 
     # Note (Jeffro): the model-owned parameters of the long-audio transcription
     # contract. Chunking stays off by default: some models can't correctly

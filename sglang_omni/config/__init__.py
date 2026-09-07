@@ -20,6 +20,7 @@ from sglang_omni.config.schema import (
     PipelineConfig,
     PlacementConfig,
     ProcessConfig,
+    RealtimeTranscriptionConfig,
     ResolvedAudioChunking,
     StageConfig,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "compile_logical_processes",
     "PipelineConfig",
     "ProcessConfig",
+    "RealtimeTranscriptionConfig",
     "StageConfig",
     "EngineStageConfig",
     "EngineArgs",

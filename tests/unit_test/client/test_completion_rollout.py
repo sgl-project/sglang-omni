@@ -99,6 +99,20 @@ def test_completion_surfaces_omni_rollout() -> None:
     assert out.omni_rollout == rollout
 
 
+def test_completion_surfaces_language() -> None:
+    client = Client(
+        _SubmitStubCoordinator(
+            {"text": "hello", "language": "English", "finish_reason": "stop"}
+        )
+    )
+
+    out = asyncio.run(
+        client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
+    )
+
+    assert out.language == "English"
+
+
 def test_completion_without_logprobs_leaves_fields_none() -> None:
     result = {"text": "hello", "finish_reason": "stop"}
     client = Client(_SubmitStubCoordinator(result))
