@@ -156,6 +156,10 @@ class DotsTTSFlowHead(nn.Module):
     def is_batched(self) -> bool:
         return self._tail is not None
 
+    @property
+    def batched_tail(self) -> Any | None:
+        return self._tail
+
     def init_batched_tail(
         self,
         *,

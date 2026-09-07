@@ -122,7 +122,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
             )
-            self._acoustic_tail = model.flow._tail
+            self._acoustic_tail = model.flow.batched_tail
         if max_running_requests == 1:
             tail_backend = (
                 "compiled single-request DiT/semantic encoder"
@@ -130,7 +130,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 else "eager single-request DiT/semantic encoder"
             )
         else:
-            tail_backend = model.flow._tail.backend
+            tail_backend = model.flow.batched_tail.backend
         logger.info(
             "dots.tts latent engine backend: %s (optimize=%s, "
             "max_running_requests=%d, num_steps=%d)",

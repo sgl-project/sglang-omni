@@ -608,8 +608,21 @@ class DotsTtsAcousticTail:
         self._window[slot].zero_()
         return slot
 
+    @property
+    def has_captured_graphs(self) -> bool:
+        return bool(self._meanflow_graphs or self._encoder_graphs)
+
     def log_graph_counters(self) -> None:
-        logger.info(
+        self._log_graph_counters(logging.INFO)
+
+    def _log_graph_counters(self, level: int) -> None:
+        # note (Dayuxiaoshui): the counters answer whether serving shapes hit
+        # the captured buckets. Without captured graphs every step is a miss
+        # by construction, so the line would only restate the eager backend.
+        if not self.has_captured_graphs:
+            return
+        logger.log(
+            level,
             "dots.tts tail graph counters: steps=%d meanflow_replays=%d "
             "meanflow_misses=%d semantic_encoder_replays=%d "
             "semantic_encoder_misses=%d",
@@ -625,7 +638,9 @@ class DotsTtsAcousticTail:
         # both graph counters are current when the periodic line fires.
         self._tail_steps += 1
         if self._tail_steps % _TAIL_STEP_LOG_INTERVAL == 0:
-            self.log_graph_counters()
+            # note (Dayuxiaoshui): at concurrency 16 this fires every ~5 s;
+            # the shutdown line carries the totals at INFO.
+            self._log_graph_counters(logging.DEBUG)
 
     def release_slot(self, slot: int) -> None:
         slot = int(slot)
