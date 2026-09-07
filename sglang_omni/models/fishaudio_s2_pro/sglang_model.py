@@ -444,12 +444,9 @@ class S2ProSGLangTextModel(nn.Module):
         )
         # Seeded rows draw reproducibly from (seed, step); unseeded rows keep the
         # legacy torch.multinomial draw, so unseeded decode is unchanged.
-        seeds = self._sampling_seeds[:bs]
-        unseeded_choice = torch.multinomial(probs, num_samples=1)
-        seeded_choice = multinomial_with_seed(
-            torch.log(probs), seeds.clamp_min(0), self._step_count[:bs]
+        choice = self._sample_semantic_choice(
+            probs, self._sampling_seeds[:bs], self._step_count[:bs]
         )
-        choice = torch.where((seeds >= 0).unsqueeze(-1), seeded_choice, unseeded_choice)
         semantic_token = top_k_indices.gather(-1, choice).squeeze(-1)
 
         # Batched codebook loop
@@ -479,6 +476,13 @@ class S2ProSGLangTextModel(nn.Module):
             self._output_codes[:bs, cb_idx + 1] = cb_token
 
         self._output_semantic_ids[:bs] = semantic_token
+
+    def _sample_semantic_choice(self, probs, seeds, positions):
+        unseeded_choice = torch.multinomial(probs, num_samples=1)
+        seeded_choice = multinomial_with_seed(
+            torch.log(probs), seeds.clamp_min(0), positions
+        )
+        return torch.where((seeds >= 0).unsqueeze(-1), seeded_choice, unseeded_choice)
 
     def get_embed_tokens(self):
         return self.embed_tokens

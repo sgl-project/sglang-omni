@@ -103,6 +103,53 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 The CUDA rows are official reference results and are directional comparisons;
 the accelerator and software stacks differ from the NPU run.
 
+## Apple Silicon Support (Experimental)
+
+S2-Pro also runs on Apple Metal through a Torch/MPS compatibility path. There is
+no native MLX implementation: `SGLANG_USE_MLX=1` fails at startup rather than
+falling back silently.
+
+- The Slow AR runs as a native eager Torch module (`S2ProTorchMpsTextModel`)
+  that keeps Fish's interleaved BF16 RoPE, VQ embedding injection, and codebook
+  sampler, and replaces only the CUDA attention/KV-cache contract. One scheduler
+  request owns the native cache at a time, so the profile pins
+  `max_running_requests=1` and additional requests queue.
+- Fast-AR attention appends one position per step into the dense NHD cache and
+  attends over its initialized prefix with `scaled_dot_product_attention`, with
+  GQA expanded explicitly because MPS has no grouped kernel.
+- The seeded semantic sampler reproduces SGLang's MurmurHash3/Gumbel draw on CPU
+  in int64: MPS supports neither uint64 nor float64, and the Triton kernel is
+  unavailable. Only the small top-k distribution crosses to CPU, so seeded
+  draws are deterministic for a fixed probability distribution.
+- CUDA graphs, `torch.compile`, radix caching, and chunked prefill are disabled;
+  `attention_backend="torch_native"` with `sampling_backend="pytorch"`. Quantized
+  weights are rejected, and unqualified overrides fail fast rather than degrade.
+
+### Apple Validation
+
+Validation uses the official `fishaudio/s2-pro` checkpoint at revision
+`1de9996b6be38b745688de084d87a5633f714e4e` on an Apple M5 Pro with 48 GB RAM.
+The unit suite covers cached versus full prefill on CPU and MPS, Fast-AR cache
+masking, strict weight loading, deterministic sampler vectors, and request-cache
+cleanup. All six live HTTP checks passed. Three additional English plain-TTS,
+English reference-conditioned, and Chinese smoke clips produced finite mono
+44.1 kHz audio and stopped at EOS. Local Fun-ASR recovered the intended text
+(ignoring punctuation). These short samples took about 3.4–3.6 seconds of wall
+time per second of generated audio, excluding ASR scoring; this is a smoke
+measurement, not a controlled throughput benchmark.
+
+Run the live checks against a server started with the Apple cookbook command:
+
+```bash
+FISH_APPLE_URL=http://127.0.0.1:8000 python -m pytest \
+  tests/test_model/test_fish_apple.py -q
+```
+
+These exercise seeded repetition, reference-audio transport, streaming,
+queued requests, and disconnect recovery. They do not measure speaker similarity,
+corpus-level transcription accuracy, or cross-device numerical parity. Native
+MLX and production performance qualification remain future work.
+
 ## Optimizations with SGLang Omni
 
 By integrating S2's Dual-AR backbone into SGLang's paged-attention engine, we inherit LLM-native optimizations:
