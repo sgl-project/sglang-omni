@@ -254,8 +254,11 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         return next_token_ids
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
-        self._flush_code_chunks(request_id, req_data, force=True)
-        self._cosyvoice3_recent_tokens.pop(str(request_id), None)
+        if req_data is not None:
+            self._flush_code_chunks(request_id, req_data, force=True)
+        recent_tokens = getattr(self, "_cosyvoice3_recent_tokens", None)
+        if recent_tokens is not None:
+            recent_tokens.pop(str(request_id), None)
 
     def _collect_tokens(
         self,
@@ -406,6 +409,15 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
     MLX execution and runs after the worker has materialized the sampled ids.
     """
 
+    def set_stream_outbox(self, outbox: Any) -> None:
+        self._outbox = outbox
+        self._vocoder_target = "vocoder"
+        self._token_hop_len = TOKEN_HOP_LEN
+
+    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+        if req_data is not None:
+            self._flush_code_chunks(request_id, req_data, force=True)
+
     def lookahead_eligible(self, batch: Any) -> bool:
         if len(batch.reqs) != 1 or batch.has_grammar:
             return False
@@ -445,6 +457,54 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
                 continue
             token_id = int(token_id)
             if 0 <= token_id < VOCAB_SIZE:
-                sched_req.data.output_codes.append(
-                    torch.tensor([token_id], dtype=torch.long)
-                )
+                token = torch.tensor([token_id], dtype=torch.long)
+                sched_req.data.output_codes.append(token)
+                self._queue_or_emit_code_chunk(sched_req, token)
+
+    def _queue_or_emit_code_chunk(self, sched_req: Any, token: torch.Tensor) -> None:
+        data = sched_req.data
+        if getattr(self, "_outbox", None) is None or data.stream_metadata is None:
+            return
+        data.stream_code_buffer.append(token)
+        data.stream_code_seen += 1
+        if int(data.stream_code_next_flush) <= 0:
+            data.stream_code_next_flush = first_ar_flush_tokens(
+                prompt_token_len(data.flow_prompt_speech_token),
+                hop_len=getattr(self, "_token_hop_len", TOKEN_HOP_LEN),
+            )
+        if data.stream_code_seen >= data.stream_code_next_flush:
+            self._flush_code_chunks(sched_req.request_id, data, force=False)
+
+    def _flush_code_chunks(self, request_id: str, data: Any, *, force: bool) -> None:
+        pending = data.stream_code_buffer
+        if not pending:
+            return
+        payload = pending[0] if len(pending) == 1 else torch.cat(pending, dim=0)
+        pending.clear()
+        if not force:
+            data.stream_code_next_flush = int(data.stream_code_seen) + getattr(
+                self, "_token_hop_len", TOKEN_HOP_LEN
+            )
+        self._emit_code_chunk(request_id, data, payload)
+
+    def _emit_code_chunk(
+        self, request_id: str, data: Any, codes: torch.Tensor
+    ) -> None:
+        outbox = getattr(self, "_outbox", None)
+        if outbox is None or data.stream_metadata is None:
+            return
+        metadata = dict(data.stream_metadata)
+        if not data.stream_prompt_sent:
+            metadata["flow_prompt_speech_token"] = data.flow_prompt_speech_token
+            metadata["flow_prompt_speech_feat"] = data.flow_prompt_speech_feat
+            metadata["flow_embedding"] = data.flow_embedding
+            data.stream_prompt_sent = True
+        outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                target=getattr(self, "_vocoder_target", "vocoder"),
+                data=codes,
+                metadata=metadata,
+            )
+        )

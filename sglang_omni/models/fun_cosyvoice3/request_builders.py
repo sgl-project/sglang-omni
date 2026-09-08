@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
