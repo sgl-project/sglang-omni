@@ -40,7 +40,6 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import mlx.core as mx
@@ -48,11 +47,14 @@ import numpy as np
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.qwen3_omni.mlx.common import quantize_converted_module
+from sglang_omni.models.qwen3_omni.mlx.common import load_qwen3_omni_mlx_component
 from sglang_omni.models.qwen3_omni.mlx.config import Qwen3OmniMlxConfig
 from sglang_omni.models.qwen3_omni.mlx.talker import (
     Qwen3OmniMlxTalker,
     build_suppress_mask,
+)
+from sglang_omni.models.qwen3_omni.mlx.talker_prefill import (
+    Qwen3OmniMlxTalkerPrefillBuilder,
 )
 from sglang_omni.models.qwen3_omni.mlx.thinker import (
     Qwen3OmniMlxThinker,
@@ -70,7 +72,6 @@ __all__ = [
     "Qwen3OmniMlxSchedulerModelRunner",
     "Qwen3OmniMlxTalkerModelRunner",
     "Qwen3OmniThinkerMlxRunner",
-    "TorchTalkerPrefillShim",
     "build_qwen3_omni_thinker_mlx_runner",
     "create_qwen3_omni_mlx_worker",
     "load_qwen3_omni_mlx_talker",
@@ -104,7 +105,7 @@ _TALKER_LOCAL_PREFIXES = (
 _TALKER_WEIGHT_PREFIXES = ("talker.",)
 # Directory names a converted multi-component MLX export uses, matching
 # ``apple_runtime._components_for_key``.
-_COMPONENT_DIRECTORIES = ("thinker", "talker", "code2wav")
+_COMPONENT_DIRECTORIES = ("thinker", "talker", "vision", "audio", "code2wav")
 # Official (HF) component namespaces. A key carrying one of these is owned by
 # that component and by no other, wherever the shard happens to live.
 _OFFICIAL_COMPONENT_PREFIXES = ("thinker.", "talker.", "code2wav.")
@@ -188,7 +189,8 @@ def read_qwen3_omni_component_weights(
         for found in (_shard_component_directory(shard, root) for shard in shards)
         if found is not None
     }
-    prefix = f"{component}."
+    official_prefixes = tuple(official_prefixes)
+    local_prefixes = tuple(local_prefixes)
 
     weights: dict[str, mx.array] = {}
     for shard in shards:
@@ -200,10 +202,10 @@ def read_qwen3_omni_component_weights(
         loaded = mx.load(str(shard))
         for key, value in loaded.items():
             if key.startswith(_OFFICIAL_COMPONENT_PREFIXES):
-                if key.startswith(prefix) and key.startswith(tuple(official_prefixes)):
+                if key.startswith(official_prefixes):
                     weights[key] = value
                 continue
-            if not key.startswith(tuple(local_prefixes)):
+            if not key.startswith(local_prefixes):
                 continue
             if shard_component == component:
                 weights[key] = value
@@ -375,16 +377,13 @@ class Qwen3OmniThinkerMlxRunner:
 
         model = Qwen3OmniMlxThinker(text_config)
         weights = self._read_thinker_weights(directory)
-        sanitized = model.sanitize(weights)
-        if config.quantization is not None:
-            # Pre-load module conversion: the packed weight/scales/biases on
-            # disk only fit quantized modules, so the swap must happen first.
-            quantize_converted_module(
-                model, sanitized, quantization=config.quantization
-            )
-        model.load_weights(list(sanitized.items()))
+        load_qwen3_omni_mlx_component(
+            model,
+            weights,
+            sanitizer=model.sanitize,
+            quantization=config.quantization,
+        )
         model.eval()
-        mx.eval(model.parameters())
 
         logger.info(
             "Loaded native MLX Qwen3-Omni thinker in %.2fs (%d layers)",
@@ -876,7 +875,7 @@ def build_qwen3_omni_thinker_mlx_runner(
 
 
 # ---------------------------------------------------------------------------
-# Native MLX talker: checkpoint loading, Torch prefill shim, scheduler runner
+# Native MLX talker: checkpoint loading, native prefill, scheduler runner
 # ---------------------------------------------------------------------------
 
 
@@ -934,12 +933,13 @@ def load_qwen3_omni_mlx_talker(
         official_prefixes=_TALKER_WEIGHT_PREFIXES,
         local_prefixes=_TALKER_LOCAL_PREFIXES,
     )
-    sanitized = model.sanitize(weights)
-    if config.quantization is not None:
-        quantize_converted_module(model, sanitized, quantization=config.quantization)
-    model.load_weights(list(sanitized.items()))
+    load_qwen3_omni_mlx_component(
+        model,
+        weights,
+        sanitizer=model.sanitize,
+        quantization=config.quantization,
+    )
     model.eval()
-    mx.eval(model.parameters())
 
     logger.info(
         "Loaded native MLX Qwen3-Omni talker in %.2fs (%d layers)",
@@ -950,154 +950,10 @@ def load_qwen3_omni_mlx_talker(
         "model": model,
         "config": config,
         "quantization": config.quantization,
+        "raw": raw,
         "talker_raw": talker_raw,
         "directory": directory,
     }
-
-
-def _dense_mlx_weight(module: Any) -> mx.array:
-    """The module's weight as dense values, dequantizing a packed one.
-
-    A converted 4-bit checkpoint leaves the shim's source modules as
-    ``QuantizedLinear``/``QuantizedEmbedding``, whose ``weight`` is packed
-    ``uint32``. Copying that into Torch verbatim would produce nonsense, so the
-    packed matrix is dequantized with the module's *own* scales/biases here.
-    """
-
-    weight = module.weight
-    scales = getattr(module, "scales", None)
-    if scales is None:
-        return weight
-    return mx.dequantize(
-        weight,
-        scales,
-        getattr(module, "biases", None),
-        group_size=int(module.group_size),
-        bits=int(module.bits),
-        mode=str(getattr(module, "mode", "affine")),
-    )
-
-
-class _TorchResizeMLP(torch.nn.Module):
-    """CPU float32 Torch twin of ``TalkerResizeMLP`` (``fc2(silu(fc1(x)))``)."""
-
-    def __init__(self, mlx_mlp: Any) -> None:
-        super().__init__()
-        fc1_weight = _mlx_to_torch(_dense_mlx_weight(mlx_mlp.linear_fc1))
-        fc2_weight = _mlx_to_torch(_dense_mlx_weight(mlx_mlp.linear_fc2))
-        self.linear_fc1 = torch.nn.Linear(
-            fc1_weight.shape[1], fc1_weight.shape[0], bias=True
-        )
-        self.linear_fc2 = torch.nn.Linear(
-            fc2_weight.shape[1], fc2_weight.shape[0], bias=True
-        )
-        with torch.no_grad():
-            self.linear_fc1.weight.copy_(fc1_weight)
-            self.linear_fc1.bias.copy_(_mlx_to_torch(mlx_mlp.linear_fc1.bias))
-            self.linear_fc2.weight.copy_(fc2_weight)
-            self.linear_fc2.bias.copy_(_mlx_to_torch(mlx_mlp.linear_fc2.bias))
-        self.eval()
-        self.requires_grad_(False)
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.linear_fc2(torch.nn.functional.silu(self.linear_fc1(hidden_states)))
-
-
-class _TorchTalkerTextModel(torch.nn.Module):
-    """Holds the codec embedding table under its production attribute name."""
-
-    def __init__(self, codec_embedding: torch.nn.Embedding) -> None:
-        super().__init__()
-        self.codec_embedding = codec_embedding
-
-
-class TorchTalkerPrefillShim(torch.nn.Module):
-    """CPU float32 Torch view of the MLX talker's prompt-building surface.
-
-    ``TalkerPrefillBuilder`` is a Torch component: it slices Torch tensors,
-    calls ``text_projection``/``hidden_projection`` on them, embeds codec
-    special tokens, and reads ``model.codec_embedding.weight.device`` and
-    ``activation_dtype``. The MLX talker exposes none of that, and the previous
-    wiring handed the builder SGLang's zero-weight ``_DummyModel`` stub, which
-    would have produced silently wrong prompts.
-
-    This shim is built **once, after the MLX weights are loaded**, from the
-    live parameters -- including a quantized checkpoint's dequantized values --
-    so its projections and codec embedding are numerically the model's own. It
-    covers exactly the public surface the builder and
-    ``make_talker_scheduler_adapters`` consume:
-
-    * ``model.codec_embedding.weight`` (device probe and codec rows);
-    * ``get_input_embeddings()`` -- the codec embed function used for the
-      speaker id and the codec special tokens;
-    * ``text_projection`` / ``hidden_projection`` -- also the source of the TTS
-      bos/eos/pad rows, which are projections of thinker embedding rows;
-    * ``activation_dtype``;
-    * ``config.codec_eos_token_id``.
-    """
-
-    def __init__(
-        self,
-        *,
-        codec_embedding_weight: torch.Tensor,
-        text_projection: torch.nn.Module,
-        hidden_projection: torch.nn.Module,
-        codec_eos_token_id: int,
-        thinker_hidden_size: int,
-        talker_hidden_size: int,
-        num_code_groups: int,
-    ) -> None:
-        super().__init__()
-        weight = codec_embedding_weight.detach().to(device=_CPU, dtype=torch.float32)
-        embedding = torch.nn.Embedding(weight.shape[0], weight.shape[1])
-        with torch.no_grad():
-            embedding.weight.copy_(weight)
-        embedding.eval()
-        embedding.requires_grad_(False)
-        self.model = _TorchTalkerTextModel(embedding)
-        self.text_projection = text_projection
-        self.hidden_projection = hidden_projection
-        self.activation_dtype = torch.float32
-        self.config = SimpleNamespace(
-            codec_eos_token_id=int(codec_eos_token_id),
-            thinker_hidden_size=int(thinker_hidden_size),
-            hidden_size=int(talker_hidden_size),
-            num_code_groups=int(num_code_groups),
-        )
-        self.eval()
-        self.requires_grad_(False)
-
-    @classmethod
-    def from_mlx_talker(
-        cls, model: Qwen3OmniMlxTalker, *, codec_eos_token_id: int
-    ) -> "TorchTalkerPrefillShim":
-        """Snapshot a *loaded* MLX talker's prompt surface into CPU Torch.
-
-        ``mx.eval`` is forced first so the snapshot can never capture a lazily
-        unmaterialised (or, worse, pre-load random) parameter graph.
-        """
-
-        mx.eval(model.parameters())
-        return cls(
-            codec_embedding_weight=_mlx_to_torch(
-                _dense_mlx_weight(model.model.codec_embedding)
-            ),
-            text_projection=_TorchResizeMLP(model.text_projection),
-            hidden_projection=_TorchResizeMLP(model.hidden_projection),
-            codec_eos_token_id=codec_eos_token_id,
-            thinker_hidden_size=model.thinker_hidden_size,
-            talker_hidden_size=model.config.text_config.hidden_size,
-            num_code_groups=model.num_code_groups,
-        )
-
-    def get_input_embeddings(self) -> torch.nn.Embedding:
-        return self.model.codec_embedding
-
-    def forward(self, *args: Any, **kwargs: Any):  # pragma: no cover - never run
-        raise RuntimeError(
-            "TorchTalkerPrefillShim only mirrors the talker's prompt-building "
-            "surface; the forward pass belongs to the MLX talker"
-        )
 
 
 @dataclass(slots=True)
@@ -1660,8 +1516,8 @@ def _create_qwen3_omni_talker_mlx_worker(
     SGLang's token-id-driven MLX worker API cannot express it. The worker is
     therefore an external-forward worker (bookkeeping pools only) and
     :class:`Qwen3OmniMlxTalkerModelRunner` owns the forward. The MLX weights
-    and the Torch prefill shim are built here, once, so the request builder
-    never sees the zero-weight stub model.
+    and the native MLX prefill builder are built here, once, so the request
+    builder never sees the zero-weight stub model.
     """
 
     from sglang_omni.model_runner.external_model_worker import (
@@ -1696,9 +1552,32 @@ def _create_qwen3_omni_talker_mlx_worker(
             )
             self.mlx_talker = loaded["model"]
             self.mlx_talker_quantization = loaded["quantization"]
-            self.talker_prefill_shim = TorchTalkerPrefillShim.from_mlx_talker(
-                loaded["model"],
-                codec_eos_token_id=int(loaded["talker_raw"]["codec_eos_token_id"]),
+            raw = loaded["raw"]
+            talker_raw = loaded["talker_raw"]
+            self.mlx_talker_prefill_builder = (
+                Qwen3OmniMlxTalkerPrefillBuilder.from_talker(
+                    loaded["model"],
+                    model_path=str(loaded["directory"]),
+                    special_token_ids={
+                        "audio_token_id": raw["thinker_config"]["audio_token_id"],
+                        "image_token_id": raw["thinker_config"]["image_token_id"],
+                        "video_token_id": raw["thinker_config"]["video_token_id"],
+                        "tts_bos_token_id": raw["tts_bos_token_id"],
+                        "tts_eos_token_id": raw["tts_eos_token_id"],
+                        "tts_pad_token_id": raw["tts_pad_token_id"],
+                        "im_start_token_id": raw["im_start_token_id"],
+                        "im_end_token_id": raw["im_end_token_id"],
+                        "system_token_id": raw["system_token_id"],
+                        "user_token_id": raw["user_token_id"],
+                        "assistant_token_id": raw["assistant_token_id"],
+                        "codec_bos_id": talker_raw["codec_bos_id"],
+                        "codec_nothink_id": talker_raw["codec_nothink_id"],
+                        "codec_think_bos_id": talker_raw["codec_think_bos_id"],
+                        "codec_think_eos_id": talker_raw["codec_think_eos_id"],
+                        "codec_pad_id": talker_raw["codec_pad_id"],
+                    },
+                    speaker_map=talker_raw.get("speaker_id") or {},
+                )
             )
 
     ps = _build_parallel_state(server_args, gpu_id=gpu_id, tp_rank=tp_rank)

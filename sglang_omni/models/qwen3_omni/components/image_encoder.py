@@ -13,10 +13,6 @@ from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
     Qwen3OmniMoeVisionEncoderCompat,
 )
-from sglang_omni.models.qwen3_omni.mlx.checkpoint_compat import (
-    checkpoint_uses_mlx_vlm_layout,
-    restore_torch_mlx_vlm_layout,
-)
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.utils import instantiate_module
 
@@ -113,11 +109,6 @@ def _build_visual(
 ) -> nn.Module:
     vision_cfg = thinker_cfg.vision_config
     visual = instantiate_module(VISUAL_CLASS, vision_cfg)
-    state_dict_transform = (
-        restore_torch_mlx_vlm_layout
-        if checkpoint_uses_mlx_vlm_layout(model_path)
-        else None
-    )
     visual = load_module(
         visual,
         model_path,
@@ -125,7 +116,6 @@ def _build_visual(
         dtype=torch_dtype,
         device=device,
         strict=True,
-        state_dict_transform=state_dict_transform,
     )
     _optimize_patch_embed(visual)
     return visual

@@ -209,13 +209,13 @@ def _components_for_key(
         "predictor": ("talker.code_predictor.",),
         "code2wav": ("code2wav.",),
     }
-    components = {
+    root_components = {
         component
         for component, prefixes in root_prefixes.items()
         if key.startswith(prefixes)
     }
-    if components or not use_mlx or component_dir is None:
-        return components
+    if component_dir is None:
+        return root_components
 
     local_prefixes = {
         "thinker": ("model.", "lm_head."),
@@ -233,15 +233,19 @@ def _components_for_key(
             "decoder.",
         ),
     }
+    if component_dir == "code2wav":
+        if key.startswith(local_prefixes["code2wav"]):
+            return {"code2wav"}
+        return set()
+    if not use_mlx:
+        return set()
     if component_dir == "talker":
         return {
             component
             for component in ("talker", "predictor")
             if key.startswith(local_prefixes[component])
         }
-    if component_dir in ("thinker", "code2wav") and key.startswith(
-        local_prefixes[component_dir]
-    ):
+    if component_dir == "thinker" and key.startswith(local_prefixes["thinker"]):
         return {component_dir}
     return set()
 
@@ -303,84 +307,6 @@ def _components_from_single_files(
     return components
 
 
-def _component_directory(index_path: Path, root: Path) -> str | None:
-    try:
-        relative_parts = index_path.relative_to(root).parts
-    except ValueError:
-        return None
-    return relative_parts[0] if len(relative_parts) > 1 else None
-
-
-def _root_code2wav_is_quantized(root: Path, index_paths: list[Path]) -> bool:
-    for index_path in index_paths:
-        if _component_directory(index_path, root) is not None:
-            continue
-        weight_map = _read_json(index_path).get("weight_map")
-        if not isinstance(weight_map, dict):
-            raise ValueError(f"Missing weight_map in checkpoint index {index_path}")
-        if any(
-            str(key).startswith("code2wav.")
-            and str(key).endswith((".scales", ".biases"))
-            for key in weight_map
-        ):
-            return True
-    single = root / "model.safetensors"
-    if single.is_file():
-        from safetensors import safe_open
-
-        with safe_open(str(single), framework="pt", device="cpu") as handle:
-            if any(
-                key.startswith("code2wav.") and key.endswith((".scales", ".biases"))
-                for key in handle.keys()
-            ):
-                return True
-    return False
-
-
-def _has_dense_code2wav_sidecar(root: Path, index_paths: list[Path]) -> bool:
-    has_dense_sidecar = False
-    for index_path in index_paths:
-        if _component_directory(index_path, root) != "code2wav":
-            continue
-        weight_map = _read_json(index_path).get("weight_map")
-        if not isinstance(weight_map, dict):
-            raise ValueError(f"Missing weight_map in checkpoint index {index_path}")
-        keys = [str(key) for key in weight_map]
-        has_weights = any(
-            key.startswith(
-                ("pre_transformer.", "code_embedding.", "upsample.", "decoder.")
-            )
-            for key in keys
-        )
-        has_quantization = any(key.endswith((".scales", ".biases")) for key in keys)
-        if has_weights and not has_quantization:
-            has_dense_sidecar = True
-            break
-    single = root / "code2wav" / "model.safetensors"
-    if not has_dense_sidecar and single.is_file():
-        from safetensors import safe_open
-
-        with safe_open(str(single), framework="pt", device="cpu") as handle:
-            keys = list(handle.keys())
-        has_weights = any(
-            key.startswith(
-                ("pre_transformer.", "code_embedding.", "upsample.", "decoder.")
-            )
-            for key in keys
-        )
-        has_quantization = any(key.endswith((".scales", ".biases")) for key in keys)
-        has_dense_sidecar = has_weights and not has_quantization
-    if not has_dense_sidecar:
-        return False
-
-    from sglang_omni.models.qwen3_omni.mlx.checkpoint_compat import (
-        validate_code2wav_sidecar_provenance,
-    )
-
-    validate_code2wav_sidecar_provenance(root)
-    return True
-
-
 def validate_qwen3_omni_apple_checkpoint(
     model_path: str,
     *,
@@ -418,16 +344,4 @@ def validate_qwen3_omni_apple_checkpoint(
         raise ValueError(
             f"Qwen3-Omni checkpoint {model_path!r} is missing required "
             f"{', '.join(missing)} weights"
-        )
-    if (
-        use_mlx
-        and speech_enabled
-        and _root_code2wav_is_quantized(root, index_paths)
-        and not _has_dense_code2wav_sidecar(root, index_paths)
-    ):
-        raise ValueError(
-            "MLX speech serving requires dense Torch code2wav weights. Prepare "
-            "this checkpoint first with: python -m "
-            "sglang_omni.models.qwen3_omni.mlx.prepare_checkpoint "
-            f"--model-path {model_path}"
         )

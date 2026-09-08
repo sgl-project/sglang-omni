@@ -98,6 +98,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+    "psutil>=5.9.0",          # Test/qualification-only process and host memory telemetry
+]
 audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",

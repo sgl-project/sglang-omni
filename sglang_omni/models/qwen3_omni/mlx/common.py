@@ -15,13 +15,15 @@ thinker and talker models:
 * :func:`tie_lm_head_weights` -- genuine module-level embedding tying.
 * :func:`quantize_converted_module` -- quantizes only the linear layers that the
   converted checkpoint actually represents, rejecting incomplete groups.
+* :func:`load_qwen3_omni_mlx_component` -- shared strict load path that applies
+  component-specific sanitation, optional quantization, and MLX materialization.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Literal
+from typing import Callable, Literal
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -40,7 +42,7 @@ _LEGACY_EXPERT_KEY = re.compile(
     r"^(?P<prefix>.*\.experts)\.(?P<index>\d+)"
     r"\.(?P<projection>gate_proj|up_proj|down_proj)\.weight$"
 )
-_MLX_VLM_EXPERT_KEY = re.compile(
+_SPLIT_EXPERT_KEY = re.compile(
     r"^(?P<prefix>.*)\.switch_mlp\."
     r"(?P<projection>gate_proj|up_proj|down_proj)\."
     r"(?P<suffix>weight|scales|biases)$"
@@ -341,7 +343,7 @@ def stack_legacy_expert_weights(
     return stacked
 
 
-def fuse_mlx_vlm_expert_weights(
+def fuse_split_expert_weights(
     weights: Mapping[str, mx.array],
 ) -> dict[str, mx.array]:
     """Map MLX-VLM split expert stacks onto the fused SwitchLinear layout."""
@@ -349,7 +351,7 @@ def fuse_mlx_vlm_expert_weights(
     grouped: dict[str, dict[str, dict[str, mx.array]]] = {}
     fused: dict[str, mx.array] = {}
     for key, value in weights.items():
-        match = _MLX_VLM_EXPERT_KEY.match(key)
+        match = _SPLIT_EXPERT_KEY.match(key)
         if match is None:
             fused[key] = value
             continue
@@ -423,7 +425,7 @@ def sanitize_qwen3_omni_weights(
                     value = value.transpose(0, 2, 1)
         sanitized[normalize_expert_stack_key(key)] = value
 
-    return fuse_mlx_vlm_expert_weights(stack_legacy_expert_weights(sanitized))
+    return fuse_split_expert_weights(stack_legacy_expert_weights(sanitized))
 
 
 def tie_lm_head_weights(lm_head: nn.Module, embedding: nn.Module) -> None:
@@ -492,3 +494,20 @@ def quantize_converted_module(
         mode=mode,
         class_predicate=class_predicate,
     )
+
+
+def load_qwen3_omni_mlx_component(
+    model: nn.Module,
+    weights: Mapping[str, mx.array],
+    *,
+    sanitizer: Callable[[Mapping[str, mx.array]], dict[str, mx.array]],
+    quantization: QuantizationConfig | None,
+) -> nn.Module:
+    """Apply a component sanitizer, optional quantization, and strict load."""
+
+    sanitized = sanitizer(weights)
+    if quantization is not None:
+        quantize_converted_module(model, sanitized, quantization=quantization)
+    model.load_weights(list(sanitized.items()), strict=True)
+    mx.eval(model.parameters())
+    return model

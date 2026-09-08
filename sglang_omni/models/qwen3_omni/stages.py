@@ -65,6 +65,14 @@ class _ArMemoryContract:
     applied_encoder_mem_reserve: float
 
 
+def qwen3_omni_uses_mlx_backend() -> bool:
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        qwen3_omni_uses_mlx_backend as uses_mlx_backend,
+    )
+
+    return uses_mlx_backend()
+
+
 def _apply_qwen_thinker_encoder_reserve(
     server_args: Any,
     *,
@@ -851,10 +859,22 @@ def create_image_encoder_executor(
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_device_spec
 
-    device = resolve_device_spec(device)
-    model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    if qwen3_omni_uses_mlx_backend():
+        from sglang_omni.models.qwen3_omni.mlx.vision import Qwen3OmniMlxImageEncoder
+
+        model = Qwen3OmniMlxImageEncoder(model_path)
+        logger.info("Qwen3-Omni image encoder backend=native_mlx")
+    else:
+        from sglang_omni.utils.device import resolve_device_spec
+
+        device = resolve_device_spec(device)
+        model = Qwen3OmniImageEncoder(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+        )
+        logger.info("Qwen3-Omni image encoder backend=torch")
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
@@ -925,22 +945,32 @@ def create_audio_encoder_executor(
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
 ):
-    from sglang_omni.platforms import current_platform
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_device_spec
 
-    device = resolve_device_spec(device)
-    if current_platform.is_mps():
-        # Belt-and-suspenders alongside Qwen3OmniAudioEncoder's own
-        # device.type == "cuda" guard: the layer-stack CUDA graph runner is
-        # CUDA-only and must never be requested on Apple's Metal device.
-        enable_layer_cuda_graph = False
-    model = Qwen3OmniAudioEncoder(
-        model_path=model_path,
-        device=device,
-        dtype=dtype,
-        enable_layer_cuda_graph=enable_layer_cuda_graph,
-    )
+    if qwen3_omni_uses_mlx_backend():
+        from sglang_omni.models.qwen3_omni.mlx.audio import (
+            Qwen3OmniMlxAudioStageEncoder,
+        )
+
+        model = Qwen3OmniMlxAudioStageEncoder(model_path)
+        logger.info("Qwen3-Omni audio encoder backend=native_mlx")
+    else:
+        from sglang_omni.platforms import current_platform
+        from sglang_omni.utils.device import resolve_device_spec
+
+        device = resolve_device_spec(device)
+        if current_platform.is_mps():
+            # Belt-and-suspenders alongside Qwen3OmniAudioEncoder's own
+            # device.type == "cuda" guard: the layer-stack CUDA graph runner is
+            # CUDA-only and must never be requested on Apple's Metal device.
+            enable_layer_cuda_graph = False
+        model = Qwen3OmniAudioEncoder(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+            enable_layer_cuda_graph=enable_layer_cuda_graph,
+        )
+        logger.info("Qwen3-Omni audio encoder backend=torch")
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,

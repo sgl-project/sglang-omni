@@ -639,57 +639,62 @@ with open("output.wav", "wb") as f:
 ## Apple Silicon (MLX and Torch MPS)
 
 Qwen3-Omni also runs on Apple Silicon (`arm64`) through the same backend
-switch used by Qwen3-ASR: `SGLANG_USE_MLX=1` selects the native MLX thinker
-and talker, and an unset (or falsy) `SGLANG_USE_MLX` selects the eager Torch
-MPS thinker and talker. Image/audio encoders and code2wav always run eagerly
-on Torch MPS in both modes. See the
+switch used by Qwen3-ASR: `SGLANG_USE_MLX=1` selects the all-native MLX
+Apple path, and an unset (or falsy) `SGLANG_USE_MLX` selects the eager Torch
+MPS Apple path. Both use the standard `sgl-omni serve` CLI (equivalently,
+`python -m sglang_omni.cli serve`). See the
 [Qwen3-Omni cookbook](../cookbook/qwen3_omni.md#apple-silicon-mlx-and-torch-mps)
 for installation prerequisites and supported checkpoint layouts.
 
-Text-only mode:
+Set the pinned community checkpoint once:
 
 ```bash
-export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
-export SGLANG_USE_MLX=1
-sgl-omni serve \
-  --model-path "$QWEN3_OMNI_MODEL" \
+export REPO="/path/to/sglang-omni"
+export PY="$REPO/.venv-apple/bin/python"
+export MODEL_DIR="$HOME/models/Qwen3-Omni-30B-A3B-Instruct-4bit-93b3cbdd"
+export MODEL_REVISION="93b3cbddd65ed4babff8f22fba491cdba7a21778"
+cd "$REPO"
+```
+
+```bash
+"$PY" - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+print(
+    snapshot_download(
+        repo_id="mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit",
+        revision=os.environ["MODEL_REVISION"],
+        local_dir=os.path.expanduser(os.environ["MODEL_DIR"]),
+    )
+)
+PY
+```
+
+Canonical native MLX launch (speech mode):
+
+```bash
+SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve \
+  --model-path "$MODEL_DIR" \
+  --port 8008
+```
+
+Text-only native MLX launch:
+
+```bash
+SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve \
+  --model-path "$MODEL_DIR" \
   --text-only \
   --port 8008
 ```
 
-```bash
-export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
-unset SGLANG_USE_MLX
-sgl-omni serve \
-  --model-path "$QWEN3_OMNI_MODEL" \
-  --text-only \
-  --port 8008
-```
+Ownership for the Apple MLX path:
 
-Speech mode (text + audio output) uses the same env var and checkpoints,
-without `--text-only`:
+- native MLX: vision, audio, thinker, talker, code predictor, code2wav
+- CPU: preprocessing, token decoding
 
-```bash
-export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
-export SGLANG_USE_MLX=1
-sgl-omni serve \
-  --model-path "$QWEN3_OMNI_MODEL" \
-  --port 8008
-```
-
-```bash
-export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
-unset SGLANG_USE_MLX
-sgl-omni serve \
-  --model-path "$QWEN3_OMNI_MODEL" \
-  --port 8008
-```
-
-`$HOME/.cache/sglang-omni/tiny-qwen3-omni` above is the deterministic
-test-sized checkpoint built by the real-backend qualification harness
-(`tests/test_ci/test_qwen3_omni_apple.py`). It validates functionality on both
-backends but is **not** a production model — point `--model-path` at a real
-Qwen3-Omni checkpoint in the layout your backend expects once you have one.
+Talker prefill also runs natively in MLX. In Torch MPS mode the model
+components, including image/audio encoders and code2wav, remain on Torch MPS.
 
 The Apple runtime profile is intentionally conservative and identical for
 both backends:
@@ -698,23 +703,37 @@ both backends:
   at a time.
 - Greedy generation only; other sampling, penalty, and logprob combinations
   are rejected at request time.
-- Eager execution — no CUDA graph capture, radix cache, chunked prefill,
-  `torch.compile`, partial-talker execution, or async decode lookahead.
+- Eager execution — no radix cache, overlap, mixed prefill, chunked prefill,
+  CUDA graphs, `torch.compile`, async decode lookahead, logprobs, or partial
+  talker start.
 - SHM inter-stage transport, the same as CUDA single-node deployments.
 - Backend selection is strict: MLX never falls back to Torch MPS and vice
   versa, so a load failure on one backend is a real failure, not a silent
   fallback.
+- Native MLX does not imply radix cache, multi-request batching, or
+  CUDA-oriented optimizations.
 
 Checkpoint layouts:
 
 - **Torch MPS** expects the dense, officially supported split Hugging Face
   checkpoint layout (thinker/talker/code2wav weights alongside the official
-  processor and tokenizer assets).
-- **MLX** accepts affine 4-bit exports using checkpoint-declared group sizes
-  (currently 32 or 64). It supports both component-local thinker/talker
-  shards and the root-namespaced MLX-VLM layout used by
-  `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit`. Quantized root code2wav
-  weights require the dense prepared sidecar described in the cookbook.
+  processor and tokenizer assets), launched with `SGLANG_USE_MLX` unset.
+- **MLX** launches the downloaded pinned
+  `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` checkpoint directory
+  directly.
+- Other MLX-compatible 4-bit layouts may also load when they satisfy the
+  Apple checkpoint validator, but the pinned mlx-community checkpoint above is
+  the tested and recommended deployment.
+- Validator-accepted MLX examples include component-local thinker/talker
+  shards and the root-namespaced MLX-VLM layout.
+
+Torch MPS example:
+
+```bash
+env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
+  --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008
+```
 
 ## Request Parameters
 

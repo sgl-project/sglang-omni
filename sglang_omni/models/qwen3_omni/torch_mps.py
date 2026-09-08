@@ -1084,10 +1084,10 @@ class TorchMpsTalkerPrefillShim(nn.Module):
     and ``model.activation_dtype`` and then builds every prompt and pending-text
     row on that device in that dtype. Handing it the live MPS talker would put
     the request-owned queues on Metal; handing it SGLang's zero-weight stub would
-    produce silently wrong prompts. This shim is the third option the MLX path
-    already uses: the model's *own* projections and codec embedding, copied once
-    to CPU float32, so the pending text/feedback rows stay host tensors and only
-    the single row a step consumes crosses to the device.
+    produce silently wrong prompts. The Torch MPS path instead uses the model's
+    own projections and codec embedding, copied once to CPU float32, so the
+    pending text/feedback rows stay host tensors and only the single row a step
+    consumes crosses to the device.
     """
 
     def __init__(

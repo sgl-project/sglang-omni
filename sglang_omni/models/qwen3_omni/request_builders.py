@@ -6,12 +6,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 import xxhash
 
-from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.payload_types import (
     Qwen3OmniPipelineState,
     ThinkerOutput,
@@ -37,6 +36,23 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
+
+
+class TalkerPrefillBuilderProtocol(Protocol):
+    def build_prompt_prefill(
+        self,
+        payload: StagePayload,
+        thinker_chunks: list[Any],
+        *,
+        thinker_done: bool,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def append_text_chunk(self, req_data: Any, chunk: Any) -> None:
+        raise NotImplementedError
+
+    def mark_thinker_done(self, req_data: Any) -> None:
+        raise NotImplementedError
 
 
 def _resolve_seed(params: dict[str, Any]) -> int | None:
@@ -1114,8 +1130,7 @@ def make_talker_scheduler_adapters(
     *,
     tokenizer: Any,
     codec_vocab_size: int,
-    model: Any,
-    model_path: str,
+    prefill_builder: TalkerPrefillBuilderProtocol,
     thinker_config: Any,
     required_aux_hidden_key: int,
     codec_bos_id: int = 2149,
@@ -1138,35 +1153,14 @@ def make_talker_scheduler_adapters(
     speaker_map: dict[str, int] | None = None,
 ):
     """Build model-specific StagePayload <-> scheduler adapters for talker."""
-    prefill_builder = TalkerPrefillBuilder(
-        model=model,
-        model_path=model_path,
-        audio_token_id=audio_token_id,
-        image_token_id=image_token_id,
-        video_token_id=video_token_id,
-        tts_bos_token_id=tts_bos_token_id,
-        tts_eos_token_id=tts_eos_token_id,
-        tts_pad_token_id=tts_pad_token_id,
-        im_start_token_id=im_start_token_id,
-        im_end_token_id=im_end_token_id,
-        system_token_id=system_token_id,
-        user_token_id=user_token_id,
-        assistant_token_id=assistant_token_id,
-        codec_bos_id=codec_bos_id,
-        codec_nothink_id=codec_nothink_id,
-        codec_think_bos_id=codec_think_bos_id,
-        codec_think_eos_id=codec_think_eos_id,
-        codec_pad_id=codec_pad_id,
-        speaker_map=speaker_map,
-    )
 
     def _resolve_talker_sampling_config(params: dict[str, Any]) -> dict[str, Any]:
         apple_backend = _qwen3_omni_uses_apple_backend()
-        codec_eos_id = int(getattr(model.config, "codec_eos_token_id", -1))
+        resolved_codec_eos_id = int(codec_eos_id) if codec_eos_id is not None else -1
         suppress_tokens = [
             token_id
             for token_id in range(max(codec_vocab_size - 1024, 0), codec_vocab_size)
-            if token_id != codec_eos_id
+            if token_id != resolved_codec_eos_id
         ]
         return {
             "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
@@ -1181,7 +1175,9 @@ def make_talker_scheduler_adapters(
                     1.0 if apple_backend else 1.05,
                 )
             ),
-            "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
+            "codec_eos_id": (
+                resolved_codec_eos_id if resolved_codec_eos_id >= 0 else None
+            ),
             "suppress_tokens": suppress_tokens,
             "seed": _resolve_seed(params),
         }
@@ -1219,7 +1215,7 @@ def make_talker_scheduler_adapters(
 def _build_talker_request_data(
     payload: StagePayload,
     *,
-    prefill_builder: TalkerPrefillBuilder,
+    prefill_builder: TalkerPrefillBuilderProtocol,
     tokenizer: Any,
     codec_vocab_size: int,
     codec_bos_id: int,

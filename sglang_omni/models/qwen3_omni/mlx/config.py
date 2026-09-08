@@ -4,8 +4,9 @@
 The parser mirrors the nested Transformers 5.12.1 ``Qwen3OmniMoeConfig`` layout
 (``thinker_config``/``talker_config`` each holding a ``text_config`` and, for the
 talker, a ``code_predictor_config``). Missing required fields raise ``KeyError``
-with the full dotted path so misconfigured checkpoints fail loudly rather than
-silently defaulting.
+with the full dotted path so misconfigured checkpoints fail loudly. The public
+MLX checkpoint omits the standard 48-by-48 vision position-table size, so that
+single Transformers default is restored explicitly.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+_DEFAULT_VISION_POSITION_EMBEDDINGS = 48 * 48
 
 
 def _require(raw: Mapping[str, Any], key: str, path: str) -> Any:
@@ -83,6 +86,15 @@ def _require_mrope_section(raw: Mapping[str, Any], path: str) -> tuple[int, ...]
             f"missing required Qwen3-Omni config field: {path}.mrope_section"
         )
     return tuple(int(v) for v in mrope)
+
+
+def _require_int_tuple(raw: Mapping[str, Any], key: str, path: str) -> tuple[int, ...]:
+    values = _require(raw, key, path)
+    return tuple(int(v) for v in values)
+
+
+def _vision_deepstack_indexes(raw: Mapping[str, Any], path: str) -> tuple[int, ...]:
+    return _require_int_tuple(raw, "deepstack_visual_indexes", path)
 
 
 @dataclass(frozen=True)
@@ -206,6 +218,177 @@ class CodePredictorConfig:
 
 
 @dataclass(frozen=True)
+class VisionConfig:
+    depth: int
+    hidden_size: int
+    intermediate_size: int
+    num_heads: int
+    in_channels: int
+    patch_size: int
+    temporal_patch_size: int
+    spatial_merge_size: int
+    out_hidden_size: int
+    hidden_act: str
+    num_position_embeddings: int
+    deepstack_visual_indexes: tuple[int, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any], *, path: str) -> "VisionConfig":
+        return cls(
+            depth=int(_require(raw, "depth", f"{path}.depth")),
+            hidden_size=int(_require(raw, "hidden_size", f"{path}.hidden_size")),
+            intermediate_size=int(
+                _require(raw, "intermediate_size", f"{path}.intermediate_size")
+            ),
+            num_heads=int(_require(raw, "num_heads", f"{path}.num_heads")),
+            in_channels=int(_require(raw, "in_channels", f"{path}.in_channels")),
+            patch_size=int(_require(raw, "patch_size", f"{path}.patch_size")),
+            temporal_patch_size=int(
+                _require(raw, "temporal_patch_size", f"{path}.temporal_patch_size")
+            ),
+            spatial_merge_size=int(
+                _require(raw, "spatial_merge_size", f"{path}.spatial_merge_size")
+            ),
+            out_hidden_size=int(
+                _require(raw, "out_hidden_size", f"{path}.out_hidden_size")
+            ),
+            hidden_act=str(_require(raw, "hidden_act", f"{path}.hidden_act")),
+            num_position_embeddings=int(
+                raw.get(
+                    "num_position_embeddings",
+                    _DEFAULT_VISION_POSITION_EMBEDDINGS,
+                )
+            ),
+            deepstack_visual_indexes=_vision_deepstack_indexes(
+                raw, f"{path}.deepstack_visual_indexes"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class AudioConfig:
+    d_model: int
+    encoder_attention_heads: int
+    encoder_layers: int
+    encoder_ffn_dim: int
+    num_mel_bins: int
+    downsample_hidden_size: int
+    max_source_positions: int
+    output_dim: int
+    activation_function: str
+    scale_embedding: bool
+    n_window: int
+    n_window_infer: int
+    conv_chunksize: int
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any], *, path: str) -> "AudioConfig":
+        return cls(
+            d_model=int(_require(raw, "d_model", f"{path}.d_model")),
+            encoder_attention_heads=int(
+                _require(
+                    raw, "encoder_attention_heads", f"{path}.encoder_attention_heads"
+                )
+            ),
+            encoder_layers=int(
+                _require(raw, "encoder_layers", f"{path}.encoder_layers")
+            ),
+            encoder_ffn_dim=int(
+                _require(raw, "encoder_ffn_dim", f"{path}.encoder_ffn_dim")
+            ),
+            num_mel_bins=int(_require(raw, "num_mel_bins", f"{path}.num_mel_bins")),
+            downsample_hidden_size=int(
+                _require(
+                    raw, "downsample_hidden_size", f"{path}.downsample_hidden_size"
+                )
+            ),
+            max_source_positions=int(
+                _require(raw, "max_source_positions", f"{path}.max_source_positions")
+            ),
+            output_dim=int(_require(raw, "output_dim", f"{path}.output_dim")),
+            activation_function=str(
+                _require(raw, "activation_function", f"{path}.activation_function")
+            ),
+            scale_embedding=bool(
+                _require(raw, "scale_embedding", f"{path}.scale_embedding")
+            ),
+            n_window=int(_require(raw, "n_window", f"{path}.n_window")),
+            n_window_infer=int(
+                _require(raw, "n_window_infer", f"{path}.n_window_infer")
+            ),
+            conv_chunksize=int(
+                _require(raw, "conv_chunksize", f"{path}.conv_chunksize")
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class Code2WavConfig:
+    hidden_size: int
+    intermediate_size: int
+    num_hidden_layers: int
+    num_attention_heads: int
+    num_key_value_heads: int
+    rms_norm_eps: float
+    rope_theta: float
+    attention_bias: bool
+    attention_dropout: float
+    hidden_act: str
+    max_position_embeddings: int
+    sliding_window: int | None
+    codebook_size: int
+    num_quantizers: int
+    upsampling_ratios: tuple[int, ...]
+    decoder_dim: int
+    upsample_rates: tuple[int, ...]
+    layer_scale_initial_scale: float
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any], *, path: str) -> "Code2WavConfig":
+        sliding_window = _require(raw, "sliding_window", f"{path}.sliding_window")
+        return cls(
+            hidden_size=int(_require(raw, "hidden_size", f"{path}.hidden_size")),
+            intermediate_size=int(
+                _require(raw, "intermediate_size", f"{path}.intermediate_size")
+            ),
+            num_hidden_layers=int(
+                _require(raw, "num_hidden_layers", f"{path}.num_hidden_layers")
+            ),
+            num_attention_heads=int(
+                _require(raw, "num_attention_heads", f"{path}.num_attention_heads")
+            ),
+            num_key_value_heads=int(
+                _require(raw, "num_key_value_heads", f"{path}.num_key_value_heads")
+            ),
+            rms_norm_eps=float(raw.get("rms_norm_eps", 1e-5)),
+            rope_theta=_require_rope_theta(raw, path),
+            attention_bias=bool(raw.get("attention_bias", False)),
+            attention_dropout=float(raw.get("attention_dropout", 0.0)),
+            hidden_act=str(raw.get("hidden_act", "silu")),
+            max_position_embeddings=int(
+                _require(
+                    raw, "max_position_embeddings", f"{path}.max_position_embeddings"
+                )
+            ),
+            sliding_window=(
+                int(sliding_window) if sliding_window is not None else None
+            ),
+            codebook_size=int(_require(raw, "codebook_size", f"{path}.codebook_size")),
+            num_quantizers=int(
+                _require(raw, "num_quantizers", f"{path}.num_quantizers")
+            ),
+            upsampling_ratios=_require_int_tuple(
+                raw, "upsampling_ratios", f"{path}.upsampling_ratios"
+            ),
+            decoder_dim=int(_require(raw, "decoder_dim", f"{path}.decoder_dim")),
+            upsample_rates=_require_int_tuple(
+                raw, "upsample_rates", f"{path}.upsample_rates"
+            ),
+            layer_scale_initial_scale=float(raw.get("layer_scale_initial_scale", 0.01)),
+        )
+
+
+@dataclass(frozen=True)
 class ThinkerConfig:
     """Thinker section of the Omni config."""
 
@@ -297,16 +480,38 @@ class Qwen3OmniMlxConfig:
 
     thinker: ThinkerConfig
     talker: TalkerConfig
+    vision: VisionConfig
+    audio: AudioConfig
+    code2wav: Code2WavConfig
     quantization: QuantizationConfig | None = None
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "Qwen3OmniMlxConfig":
         thinker_raw = _require(raw, "thinker_config", "thinker_config")
         talker_raw = _require(raw, "talker_config", "talker_config")
+        code2wav_raw = _require(raw, "code2wav_config", "code2wav_config")
         quant_raw = raw.get("quantization")
+        thinker = ThinkerConfig.from_dict(thinker_raw, path="thinker")
+        talker = TalkerConfig.from_dict(talker_raw, path="talker")
+        vision_raw = _require(
+            thinker_raw, "vision_config", "thinker_config.vision_config"
+        )
+        audio_raw = _require(thinker_raw, "audio_config", "thinker_config.audio_config")
+        vision = VisionConfig.from_dict(vision_raw, path="thinker.vision_config")
+        audio = AudioConfig.from_dict(audio_raw, path="thinker.audio_config")
+        code2wav = Code2WavConfig.from_dict(code2wav_raw, path="code2wav_config")
+        if code2wav.num_quantizers != talker.num_code_groups:
+            raise ValueError(
+                "code2wav_config.num_quantizers="
+                f"{code2wav.num_quantizers} disagrees with "
+                f"talker_config.num_code_groups={talker.num_code_groups}"
+            )
         return cls(
-            thinker=ThinkerConfig.from_dict(thinker_raw, path="thinker"),
-            talker=TalkerConfig.from_dict(talker_raw, path="talker"),
+            thinker=thinker,
+            talker=talker,
+            vision=vision,
+            audio=audio,
+            code2wav=code2wav,
             quantization=(
                 QuantizationConfig.from_dict(quant_raw)
                 if quant_raw is not None
