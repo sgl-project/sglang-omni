@@ -17,8 +17,8 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     first_ar_flush_tokens,
     prompt_token_len,
 )
-from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
+from sglang_omni.scheduling.messages import OutgoingMessage
 
 from .sglang_model import VOCAB_SIZE
 
@@ -47,7 +47,6 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def set_stream_outbox(self, outbox: Any) -> None:
         self._outbox = outbox
-
 
     def custom_prefill_forward(
         self,
@@ -487,9 +486,7 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
             )
         self._emit_code_chunk(request_id, data, payload)
 
-    def _emit_code_chunk(
-        self, request_id: str, data: Any, codes: torch.Tensor
-    ) -> None:
+    def _emit_code_chunk(self, request_id: str, data: Any, codes: torch.Tensor) -> None:
         outbox = getattr(self, "_outbox", None)
         if outbox is None or data.stream_metadata is None:
             return
