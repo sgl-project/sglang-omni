@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.models.fun_cosyvoice3.model_runner as model_runner_module
 from sglang_omni.models.fun_cosyvoice3.model_runner import (
     FunCosyVoice3MlxSchedulerModelRunner,
     FunCosyVoice3ModelRunner,
@@ -153,6 +154,11 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
     compiler_stances = []
     forked_devices = []
     monkeypatch.setattr(torch, "manual_seed", manual_seeds.append)
+    monkeypatch.setattr(
+        model_runner_module.current_platform,
+        "is_float64_supported",
+        lambda: False,
+    )
     monkeypatch.setattr(
         torch.compiler,
         "set_stance",
