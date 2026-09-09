@@ -31,6 +31,24 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Separate TTS and vocoder replicas on one H100
+
+An opt-in configuration runs two TTS engine replicas and two vocoder replicas
+in separate processes on one 80 GB H100:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts_replica2_split_h100.yaml \
+  --port 8000
+```
+
+The TTS engines share model weights and each keep 32,000 KV tokens, for 64,000
+tokens in total. Vocoders load independently, and native MPS coordinates the
+GPU processes. This adds two worker processes compared with the colocated
+replica configuration and uses shared-memory handoff for non-streaming output.
+The normal server defaults are unchanged.
+
 ## Synthesize Speech
 
 Plain TTS:
