@@ -28,6 +28,11 @@ class AppleOmniPlatform(OmniPlatform):
     device_name: str = "mps"
     device_type: str = "mps"
 
+    @classmethod
+    def is_float64_supported(cls) -> bool:
+        # Apple Metal does not implement float64 tensors in PyTorch MPS.
+        return False
+
     @staticmethod
     def _validate_device_id(device_id: int) -> None:
         if int(device_id) != 0:

@@ -17,6 +17,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     first_ar_flush_tokens,
     prompt_token_len,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 from sglang_omni.scheduling.messages import OutgoingMessage
 
@@ -112,7 +113,10 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        if logits_output.next_token_logits.device.type != "mps":
+        if (
+            logits_output.next_token_logits.device.type != "mps"
+            or current_platform.is_float64_supported()
+        ):
             return super()._sample_next_token_ids(
                 logits_output,
                 forward_batch,
