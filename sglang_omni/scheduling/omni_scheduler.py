@@ -1871,7 +1871,6 @@ class OmniScheduler:
             _remove_from_batch(self.running_batch, request_id)
             _remove_from_batch(self.cur_batch, request_id)
             _remove_from_batch(self.last_batch, request_id)
-            _remove_from_batch(self._async_pending_batch(), request_id)
         self._drain_inbox_for_request(request_id)
 
     def admin(
@@ -2409,10 +2408,12 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        # A request retracted at step S is still in step S+1's lagged batch;
-        # drop it like a prior-step finish so its KV is not re-freed.
-        pre_finished = [r.finished() or r.is_retracted for r in batch.reqs]
-        # rids finished/retracted in a prior step (overrun): suppress their emit
+        # Note (Akazaakane): Keep in-flight snapshot rows intact until resolve
+        # so aborted requests and their token rows are dropped together.
+        pre_finished = [
+            r.finished() or r.is_retracted or r.rid in self._aborted_request_ids
+            for r in batch.reqs
+        ]
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids
@@ -2716,7 +2717,7 @@ class OmniScheduler:
         self._stream_done_handler(req_data)
 
 
-def _remove_from_batch(batch: Any, request_id: str) -> None:
+def _remove_from_batch(batch: ScheduleBatch | None, request_id: str) -> None:
     if batch is None:
         return
     remove_indices = [
@@ -2734,105 +2735,14 @@ def _remove_from_batch(batch: Any, request_id: str) -> None:
 
     # Note (Akazaakane): ScheduleBatch.filter_batch preserves alignment across
     # per-request state; mutating reqs alone corrupts downstream relay indices.
-    filter_batch = getattr(batch, "filter_batch", None)
-    if not callable(filter_batch):
-        # Note (Akazaakane): Request-only test doubles lack filter_batch;
-        # production batches with row state must not silently use this fallback.
-        aligned_fields = (
-            "req_pool_indices",
-            "req_pool_indices_cpu",
-            "seq_lens",
-            "orig_seq_lens",
-            "seq_lens_cpu",
-            "sampling_info",
-        )
-        populated = [
-            field for field in aligned_fields if getattr(batch, field, None) is not None
-        ]
-        if populated:
-            raise TypeError(
-                "Row-bearing scheduler batch has no filter_batch method: "
-                f"fields={populated}"
-            )
-        batch.reqs = [batch.reqs[index] for index in keep_indices]
-        if not batch.reqs:
-            batch.batch_is_full = False
-        return
-
-    filter_batch(keep_indices=keep_indices)
-    if not keep_indices:
-        # Note (Akazaakane): Upstream leaves empty-batch tensors stale because
-        # callers discard the batch, but Omni retains aliases that require alignment.
-        _clear_empty_schedule_batch_rows(batch)
+    batch.filter_batch(keep_indices=keep_indices)
+    if not batch.reqs:
         batch.batch_is_full = False
+        return
     _validate_schedule_batch_row_alignment(batch)
 
 
-def _clear_empty_schedule_batch_rows(batch: Any) -> None:
-    tensor_fields = (
-        "req_pool_indices",
-        "req_pool_indices_cpu",
-        "seq_lens",
-        "orig_seq_lens",
-        "seq_lens_cpu",
-        "input_ids",
-        "prefill_input_ids_cpu",
-        "input_embeds",
-        "replace_embeds",
-        "replace_positions",
-        "ne_skip_token_table_update",
-        "encoder_lens",
-        "encoder_out_cache_loc",
-        "extend_input_logprob_token_ids",
-    )
-    for field in tensor_fields:
-        value = getattr(batch, field, None)
-        if isinstance(value, torch.Tensor):
-            setattr(batch, field, value[:0])
-
-    list_fields = (
-        "multimodal_inputs",
-        "top_logprobs_nums",
-        "token_ids_logprobs",
-        "encoder_cached",
-        "encoder_lens_cpu",
-        "prefix_lens",
-        "extend_lens",
-        "extend_logprob_start_lens",
-    )
-    for field in list_fields:
-        if isinstance(getattr(batch, field, None), list):
-            setattr(batch, field, [])
-
-    sampling_info = getattr(batch, "sampling_info", None)
-    if sampling_info is not None:
-        device = batch.req_pool_indices.device
-        empty_device_indices = torch.empty(0, dtype=torch.long, device=device)
-        sampling_info.filter_batch([], empty_device_indices)
-
-    spec_info = getattr(batch, "spec_info", None)
-    if spec_info is not None:
-        device = batch.req_pool_indices.device
-        empty_device_indices = torch.empty(0, dtype=torch.long, device=device)
-        spec_info.filter_batch(
-            new_indices=empty_device_indices,
-            has_been_filtered=False,
-            new_indices_cpu=[],
-        )
-
-    batch.out_cache_loc = None
-    batch.mamba_track_indices = None
-    batch.mamba_track_mask = None
-    batch.mamba_track_seqlens = None
-    batch.mamba_cow_src_indices = None
-    batch.mamba_cow_dst_indices = None
-    batch.mamba_clear_indices = None
-    batch.seq_lens_sum = 0
-    if batch.extend_num_tokens is not None:
-        batch.extend_num_tokens = 0
-
-
-def _validate_schedule_batch_row_alignment(batch: Any) -> None:
+def _validate_schedule_batch_row_alignment(batch: ScheduleBatch) -> None:
     expected = len(batch.reqs)
     row_fields = (
         "req_pool_indices",
@@ -2849,15 +2759,15 @@ def _validate_schedule_batch_row_alignment(batch: Any) -> None:
     )
     mismatches = {}
     for field in row_fields:
-        value = getattr(batch, field, None)
+        value = getattr(batch, field)
         if value is not None and len(value) != expected:
             mismatches[field] = len(value)
 
-    forward_mode = getattr(batch, "forward_mode", None)
+    forward_mode = batch.forward_mode
     is_decode = forward_mode is not None and forward_mode.is_decode()
     if is_decode:
         for field in ("input_ids", "input_embeds"):
-            value = getattr(batch, field, None)
+            value = getattr(batch, field)
             if value is not None and len(value) != expected:
                 mismatches[field] = len(value)
 
