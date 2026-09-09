@@ -16,6 +16,7 @@ _REPLICA_EXAMPLES = [
     "examples/configs/qwen3_omni_speech_replica2.yaml",
     "examples/configs/qwen3_omni_speech_code2wav_replica2_ci.yaml",
     "examples/configs/s2pro_tts_replica2_h100.yaml",
+    "examples/configs/s2pro_tts_replica2_split_h100.yaml",
 ]
 
 
