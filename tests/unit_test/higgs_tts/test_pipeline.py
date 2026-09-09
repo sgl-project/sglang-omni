@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
 
 import sglang_omni.platforms as platforms
 from sglang_omni.cli.serve import patches_from_broadcast_flags
@@ -323,8 +324,8 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda model_runner, server_args: records["attest_calls"].append(
-            (model_runner, server_args)
+        lambda model_runner, *, operator_selected: records["attest_calls"].append(
+            (model_runner, operator_selected)
         ),
     )
 
@@ -377,12 +378,11 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
         "cuda_graph_bs_prefill"
     ] == build_default_prefill_cuda_graph_bs(512)
     assert captured["server_args"].cuda_graph_config.prefill.backend == "breakable"
-    assert ("prefill", "backend") not in captured[
-        "server_args"
-    ]._cuda_graph_config_locked
     assert captured["infra_kwargs"]["enable_prefill_input_embeds"] is True
-    assert len(records["attest_calls"]) == 1
-    assert captured["server_args"].disable_overlap_schedule is True
+    assert records["attest_calls"][-1][1] is False
+    assert (
+        resolution_result(captured["server_args"], "disable_overlap_schedule") is True
+    )
     assert captured["server_args"].enable_torch_compile is False
     assert captured["server_args"].torch_compile_max_bs == 32
     assert records["infrastructure_saw_deferred_capture"] == [True]
@@ -492,7 +492,7 @@ def test_higgs_tts_engine_prefill_backend_policy() -> None:
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
     )
     builder.customize_server_args(server_args)
-    assert server_args.disable_overlap_schedule is True
+    assert resolution_result(server_args, "disable_overlap_schedule") is True
 
 
 @pytest.mark.parametrize("fraction", [0.0, 1.0, 1.2, -0.1])

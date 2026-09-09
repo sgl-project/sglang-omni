@@ -15,7 +15,7 @@ def test_ming_sparse_moe_tp_collective_uses_forward_flags(monkeypatch) -> None:
 
     helper_calls: list[tuple[bool, bool, bool]] = []
 
-    def strict_0516_helper(*, is_tp_path: bool) -> bool:
+    def strict_helper(*, is_tp_path: bool) -> bool:
         forward = get_forward()
         helper_calls.append(
             (
@@ -35,7 +35,7 @@ def test_ming_sparse_moe_tp_collective_uses_forward_flags(monkeypatch) -> None:
     monkeypatch.setattr(
         sglang_model,
         "should_skip_post_experts_all_reduce",
-        strict_0516_helper,
+        strict_helper,
     )
     monkeypatch.setattr(
         sglang_model,

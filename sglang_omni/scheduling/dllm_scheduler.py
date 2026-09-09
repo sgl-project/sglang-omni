@@ -18,6 +18,7 @@ from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.runtime_context import get_schedule
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
@@ -60,7 +61,7 @@ class DllmScheduler:
         self.model_config = model_config
         self.dllm_config = dllm_config
         self._chunked_prefill_size = (
-            getattr(dllm_config, "block_size", None) or server_args.chunked_prefill_size
+            dllm_config.block_size or get_schedule().chunked_prefill_size
         )
 
         self._running = False
@@ -152,12 +153,12 @@ class DllmScheduler:
             return None
 
         adder = PrefillAdder(
-            self.server_args.page_size,
+            get_schedule().page_size,
             self.tree_cache,
             self.token_to_kv_pool_allocator,
             None,  # running_batch
             0.5,  # new_token_ratio
-            self.server_args.max_prefill_tokens,
+            get_schedule().max_prefill_tokens,
             self._chunked_prefill_size,
             prefill_max_requests=1,
             dllm_config=self.dllm_config,
@@ -353,9 +354,9 @@ class DllmScheduler:
                 new_staging.append(req)
                 continue
             self.tree_cache.cache_unfinished_req(req, chunked=True)
-            if req.req_pool_idx is not None:
-                # Note:(Chenchen Hong) post1 ReqToTokenPool.free takes the Req
-                # (reads req.req_pool_idx then resets it to None), not the int.
+            if req.kv.holds_kv:
+                # ReqToTokenPool.free takes the Req, not the int: it reads
+                # req.kv.req_pool_idx and resets it to None.
                 self.req_to_token_pool.free(req)
             new_staging.append(req)
         self._staging_queue = new_staging

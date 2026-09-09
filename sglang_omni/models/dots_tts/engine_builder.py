@@ -42,11 +42,14 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         register_dots_tts_hf_config()
 
     def customize_server_args(self, server_args: Any) -> None:
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+
+        cfg = resolved_view(server_args)
         # The compiled DiT path only serves max_running_requests=1; the batched
         # tail is eager, so skip the process-global compile policy otherwise.
         # The policy must exist before SGLang builds the model; applying it in
         # setup_model nests Dynamo under FX.
-        if self.optimize and int(server_args.max_running_requests) == 1:
+        if self.optimize and int(cfg.max_running_requests) == 1:
             from sglang_omni.models.dots_tts.stages import _configure_optimized_kernels
 
             _configure_optimized_kernels()
@@ -95,9 +98,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del checkpoint_dir, device, gpu_id
+        from sglang.srt.runtime_context import get_exec, get_schedule
+
         model = model_worker.model_runner.model
-        max_running_requests = int(server_args.max_running_requests)
-        if not bool(server_args.disable_cuda_graph):
+        max_running_requests = int(get_schedule().max_running_requests)
+        if not bool(get_exec().graph.disable_cuda_graph):
             from sglang_omni.scheduling.generation_batch_policy import (
                 get_decode_cuda_graph_max_bs,
             )
@@ -143,7 +148,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             "dots.tts backbone decode: %s",
             (
                 "SGLang CUDA graph with model-owned feedback buffer"
-                if not bool(server_args.disable_cuda_graph)
+                if not bool(get_exec().graph.disable_cuda_graph)
                 else "eager"
             ),
         )

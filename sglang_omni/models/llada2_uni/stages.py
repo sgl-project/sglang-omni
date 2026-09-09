@@ -106,11 +106,14 @@ def create_sglang_dllm_thinker_executor_from_config(
         dllm_algorithm_config=dllm_algorithm_config,
         **overrides,
     )
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+
+    cfg = resolved_view(server_args)
     logger.info(
         "create_sglang_dllm_thinker_executor_from_config: "
         "dllm_algorithm=%s, mem_fraction_static=%s",
-        server_args.dllm_algorithm,
-        server_args.mem_fraction_static,
+        cfg.dllm_algorithm,
+        cfg.mem_fraction_static,
     )
     return create_dllm_thinker_scheduler(server_args, gpu_id)
 

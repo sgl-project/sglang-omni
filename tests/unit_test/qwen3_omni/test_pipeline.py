@@ -12,6 +12,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 import torch
 import typer
+from sglang.srt.arg_groups.overrides import resolution_result
 
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.cli.serve import (
@@ -902,10 +903,10 @@ def test_qwen_encoder_mem_reserve_applies_only_to_valid_auto_values() -> None:
 
     apply_encoder_mem_reserve(server_args, 0.05)
 
-    assert server_args.mem_fraction_static == 0.879
+    assert resolution_result(server_args, "mem_fraction_static") == 0.879
 
     apply_encoder_mem_reserve(server_args, 0.0)
-    assert server_args.mem_fraction_static == 0.879
+    assert resolution_result(server_args, "mem_fraction_static") == 0.879
 
     with pytest.raises(ValueError, match="below the safe floor"):
         apply_encoder_mem_reserve(SimpleNamespace(mem_fraction_static=0.15), 0.10)
@@ -1250,7 +1251,9 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda runner, args: attest_calls.append((runner, args)),
+        lambda runner, *, operator_selected: attest_calls.append(
+            (runner, operator_selected)
+        ),
     )
     monkeypatch.setattr(
         hf_transformers_utils, "get_tokenizer", lambda *a, **k: object()
@@ -1288,7 +1291,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     assert captured["capture_hidden_layers"] == ([0, 24] if speech_enabled else None)
     assert captured["defer_cuda_graph_capture"] is speech_enabled
     assert graph_init_workers == ([model_worker] if speech_enabled else [])
-    assert attest_calls == [(model_worker.model_runner, server_args)]
+    assert attest_calls == [(model_worker.model_runner, False)]
     assert len(output_proc_kwargs) == 1
     output_args = output_proc_kwargs[0]
     assert output_args["capture_hidden"] is speech_enabled
@@ -1454,7 +1457,7 @@ def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:
     )
 
     assert applied is True
-    assert server_args.mem_fraction_static == 0.879
+    assert resolution_result(server_args, "mem_fraction_static") == 0.879
 
 
 def test_qwen_thinker_explicit_pin_bypasses_encoder_reserve() -> None:

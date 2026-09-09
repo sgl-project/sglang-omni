@@ -30,9 +30,9 @@ from sglang_omni.scheduling.types import (
 
 def _current_sglang_sampling_backend() -> str | None:
     try:
-        from sglang.srt.server_args import get_global_server_args
+        from sglang.srt.runtime_context import get_exec
 
-        return get_global_server_args().sampling_backend
+        return get_exec().kernel.sampling_backend
     except ValueError:
         return None
 

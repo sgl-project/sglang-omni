@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
 from sglang.srt.platforms.interface import SRTPlatform
 from sglang.srt.platforms.rocm import RocmSRTPlatform
@@ -138,7 +139,7 @@ def test_rocm_talker_keeps_auto_moe_backend() -> None:
         "Qwen3OmniTalker",
     )
 
-    assert server_args.moe_runner_backend == "auto"
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
 
 
 @pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])

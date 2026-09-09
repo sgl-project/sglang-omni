@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.runtime_context import get_parallel
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
@@ -80,7 +81,7 @@ class MingTTSModelRunner(ModelRunner):
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
         self._tp_rank = int(tp_worker.tp_rank)
-        self._tp_size = int(tp_worker.server_args.tp_size)
+        self._tp_size = int(get_parallel().tp_size)
         self._request_states: dict[str, _MingTTSRequestState] = {}
 
     def reset_request(self, request_id: str) -> None:

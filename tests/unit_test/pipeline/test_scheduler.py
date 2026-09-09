@@ -13,7 +13,9 @@ from queue import Queue
 from types import SimpleNamespace
 
 import pytest
+import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
+from sglang.srt.managers.schedule_batch import ReqKvInfo
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -30,11 +32,9 @@ from tests.unit_test.pipeline.helpers import run_scheduler
 
 @pytest.fixture(autouse=True)
 def _serving_bag(monkeypatch):
-    monkeypatch.setattr(
-        omni_scheduler_module,
-        "get_serving",
-        lambda: SimpleNamespace(weight_version=None),
-    )
+    serving = SimpleNamespace(weight_version=None)
+    monkeypatch.setattr(omni_scheduler_module, "get_serving", lambda: serving)
+    monkeypatch.setattr(sglang_scheduler_module, "get_serving", lambda: serving)
 
 
 def _ingress(
@@ -44,6 +44,10 @@ def _ingress(
     entry.chunks.extend(chunks)
     entry.done = done
     return entry
+
+
+def _req_to_token_pool() -> SimpleNamespace:
+    return SimpleNamespace(req_to_token=torch.zeros((2, 4), dtype=torch.int32))
 
 
 def _init_sync_request_build_state(scheduler: OmniScheduler) -> None:
@@ -327,15 +331,13 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
             SimpleNamespace(
                 rid="req-1",
                 _omni_data=SimpleNamespace(),
-                req_pool_idx=1,
-                mamba_pool_idx=None,
+                kv=ReqKvInfo(req_pool_idx=1),
                 inflight_middle_chunks=0,
             ),
             SimpleNamespace(
                 rid="req-2",
                 _omni_data=SimpleNamespace(),
-                req_pool_idx=2,
-                mamba_pool_idx=None,
+                kv=ReqKvInfo(req_pool_idx=2),
                 inflight_middle_chunks=0,
             ),
         ],
@@ -396,6 +398,8 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     req = SimpleNamespace(
         rid="req-over-limit",
         priority=None,
+        weight_version_events=[],
+        output_ids=[],
         time_stats=SimpleNamespace(
             trace_ctx=SimpleNamespace(
                 abort=lambda *, abort_info: trace_aborts.append(abort_info)
@@ -563,6 +567,8 @@ def test_enqueue_built_request_honors_max_queued_requests(monkeypatch) -> None:
         return SimpleNamespace(
             rid=rid,
             priority=None,
+            weight_version_events=[],
+            output_ids=[],
             origin_input_ids=array("q", [1]),
             origin_input_ids_unpadded=array("q", [1]),
             time_stats=SimpleNamespace(
@@ -733,6 +739,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
         num_retracted_reqs=0,
         enable_metrics=False,
     )
+    scheduler.beam_coordinator = SimpleNamespace(retire_group=lambda req: None)
     aborts: list[tuple[str, bool]] = []
     scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
         (rid, defer_running_cleanup)
@@ -743,6 +750,9 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     req = SimpleNamespace(
         rid="req-kv-exhausted",
         to_finish=omni_scheduler_module.FINISH_ABORT("decode KV exhausted"),
+        weight_version_events=[],
+        output_ids=[],
+        beam_group=None,
     )
 
     class ExhaustedBatch:
@@ -762,7 +772,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
         def check_decode_mem(self) -> bool:
             return False
 
-        def retract_decode(self, _server_args):
+        def retract_decode(self):
             self.reqs = []
             return [], 0.5, [req]
 
@@ -954,8 +964,7 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     req = SimpleNamespace(
         rid="req-fail",
         _omni_data=SimpleNamespace(),
-        req_pool_idx=1,
-        mamba_pool_idx=None,
+        kv=ReqKvInfo(req_pool_idx=1),
     )
     batch = SimpleNamespace(reqs=[req], batch_is_full=True)
     scheduler.running_batch = batch
@@ -1003,7 +1012,7 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
         rid="req-run",
         to_finish=None,
         finished_reason=None,
-        req_pool_idx=1,
+        kv=ReqKvInfo(req_pool_idx=1),
         is_retracted=False,
         finished=lambda: False,
         _omni_terminal_claimed=False,
@@ -1095,8 +1104,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
         finished=lambda: False,
         to_finish=None,
         finished_reason=None,
-        req_pool_idx=None,
-        mamba_pool_idx=None,
+        kv=ReqKvInfo(),
         _omni_terminal_claimed=False,
     )
     request_data = SimpleNamespace(req=req)
@@ -1255,7 +1263,7 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
         to_finish=None,
         finished=lambda: False,
         finished_reason=None,
-        req_pool_idx=1,
+        kv=ReqKvInfo(req_pool_idx=1),
         is_retracted=False,
         _omni_data=data,
         _omni_terminal_claimed=False,
@@ -1441,8 +1449,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
             self.finished_reason = None
             self.is_retracted = False
             self.to_finish = None
-            self.req_pool_idx = None
-            self.mamba_pool_idx = None
+            self.kv = ReqKvInfo()
             self._omni_terminal_claimed = False
 
         @property
@@ -1545,8 +1552,7 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
         rid="req-abort-after-close",
         _omni_data=data,
         _omni_terminal_claimed=True,
-        req_pool_idx=None,
-        mamba_pool_idx=None,
+        kv=ReqKvInfo(),
     )
     data.req = req
     batch = SimpleNamespace(reqs=[req], batch_is_full=True)
@@ -1613,8 +1619,7 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
         finished_reason=None,
         is_retracted=False,
         to_finish=None,
-        req_pool_idx=None,
-        mamba_pool_idx=None,
+        kv=ReqKvInfo(),
         _omni_data=data,
         _omni_terminal_claimed=False,
     )
@@ -1997,45 +2002,6 @@ def _construct_omni_scheduler(
         raising=False,
     )
 
-    class StrictParallelContext:
-        def __init__(self) -> None:
-            object.__setattr__(self, "pp_max_micro_batch_size", None)
-            object.__setattr__(self, "attn_dcp_size", 1)
-
-        def __setattr__(self, name, value) -> None:
-            raise AttributeError(f"bare mutation of {name}")
-
-    class StrictRuntimeContext:
-        def __init__(self, parallel) -> None:
-            self.parallel = parallel
-            self.override_calls = []
-
-        def override(self, source, **fields) -> None:
-            self.override_calls.append((source, dict(fields)))
-            for name, value in fields.items():
-                object.__setattr__(self.parallel, name, value)
-
-    parallel_context = StrictParallelContext()
-    runtime_context = StrictRuntimeContext(parallel_context)
-    monkeypatch.setattr(
-        "sglang.srt.runtime_context.get_parallel",
-        lambda: parallel_context,
-    )
-    monkeypatch.setattr(
-        "sglang.srt.runtime_context.get_context",
-        lambda: runtime_context,
-    )
-    tp_worker = SimpleNamespace(
-        gpu_id=0,
-        tp_rank=0,
-        model_runner=SimpleNamespace(
-            max_total_num_tokens=128,
-            effective_max_total_num_tokens=64,
-            max_running_requests=1,
-        ),
-        random_seed=0,
-        device=torch.device("cpu"),
-    )
     server_args = SimpleNamespace(
         tp_size=1,
         pp_size=1,
@@ -2061,6 +2027,65 @@ def _construct_omni_scheduler(
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+        prefill_decode_interval=0,
+    )
+
+    class StrictParallelContext:
+        def __init__(self) -> None:
+            object.__setattr__(self, "pp_max_micro_batch_size", None)
+            object.__setattr__(self, "attn_dcp_size", 1)
+            for name in (
+                "tp_size",
+                "pp_size",
+                "dp_size",
+                "moe_dp_size",
+                "attn_cp_size",
+            ):
+                object.__setattr__(self, name, getattr(server_args, name))
+
+        def __setattr__(self, name, value) -> None:
+            raise AttributeError(f"bare mutation of {name}")
+
+    class StrictRuntimeContext:
+        def __init__(self, parallel) -> None:
+            self.parallel = parallel
+            self.override_calls = []
+
+        def override(self, source, **fields) -> None:
+            self.override_calls.append((source, dict(fields)))
+            for name, value in fields.items():
+                object.__setattr__(self.parallel, name, value)
+
+    parallel_context = StrictParallelContext()
+    runtime_context = StrictRuntimeContext(parallel_context)
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: parallel_context,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_context",
+        lambda: runtime_context,
+    )
+    monkeypatch.setattr("sglang.srt.runtime_context.get_schedule", lambda: server_args)
+    monkeypatch.setattr("sglang.srt.runtime_context.get_memory", lambda: server_args)
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler.get_observability",
+        lambda: SimpleNamespace(
+            kv_events_config=None,
+            load_publish_endpoint=None,
+            load_snapshot_publish_interval=1,
+        ),
+    )
+    tp_worker = SimpleNamespace(
+        gpu_id=0,
+        tp_rank=0,
+        model_runner=SimpleNamespace(
+            max_total_num_tokens=128,
+            effective_max_total_num_tokens=64,
+            max_running_requests=1,
+        ),
+        random_seed=0,
+        device=torch.device("cpu"),
     )
     monkeypatch.setattr(
         "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
@@ -2072,7 +2097,7 @@ def _construct_omni_scheduler(
     scheduler = OmniScheduler(
         tp_worker=tp_worker,
         tree_cache=None,
-        req_to_token_pool=None,
+        req_to_token_pool=_req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
         model_config=SimpleNamespace(),
@@ -2107,6 +2132,46 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         )
     ]
     assert scheduler._abort_on_queued_limit(object()) is False
+
+
+def test_refresh_upstream_parallel_state_reads_dcp_from_the_parallel_bag(
+    monkeypatch,
+) -> None:
+    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: SimpleNamespace(dcp_size=2),
+    )
+    scheduler = object.__new__(omni_scheduler_module.OmniScheduler)
+    ranks = {
+        "tp_rank": 3,
+        "tp_size": 4,
+        "pp_rank": 0,
+        "pp_size": 1,
+        "dp_rank": None,
+        "dp_size": 1,
+        "attn_tp_rank": 3,
+        "attn_tp_size": 4,
+        "attn_cp_rank": 0,
+        "attn_cp_size": 1,
+        "attn_dp_rank": 0,
+        "attn_dp_size": 1,
+        "moe_ep_rank": 0,
+        "moe_ep_size": 1,
+        "moe_dp_rank": None,
+        "moe_dp_size": 1,
+        "gpu_id": 3,
+    }
+    for name, value in ranks.items():
+        setattr(scheduler, name, value)
+
+    scheduler._refresh_upstream_parallel_state()
+
+    assert isinstance(scheduler.ps, ParallelState)
+    assert scheduler.ps.tp_rank == 3
+    assert scheduler.ps.attn_dcp_rank == 1
+    assert scheduler.ps.attn_dcp_size == 2
 
 
 def test_request_build_pending_limit_does_not_cap_unconfigured_backlog(
@@ -2191,7 +2256,15 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         ),
         raising=False,
     )
-    bridge_parallel = SimpleNamespace(pp_max_micro_batch_size=None, attn_dcp_size=1)
+    bridge_parallel = SimpleNamespace(
+        pp_max_micro_batch_size=None,
+        attn_dcp_size=1,
+        tp_size=1,
+        pp_size=1,
+        dp_size=1,
+        moe_dp_size=1,
+        attn_cp_size=1,
+    )
 
     def _override(_source, **fields) -> None:
         for name, value in fields.items():
@@ -2210,8 +2283,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
 
     class _ExecutionBridge:
         def __init__(self, **kwargs):
-            del kwargs
-            self.future_map = object()
+            self.future_map = kwargs["future_map"]
 
     monkeypatch.setattr(
         "sglang_omni.model_runner.sglang_execution.SGLangExecutionBridge",
@@ -2256,6 +2328,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+        prefill_decode_interval=0,
     )
     monkeypatch.setattr(
         "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
@@ -2264,10 +2337,21 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         ),
     )
 
+    monkeypatch.setattr("sglang.srt.runtime_context.get_schedule", lambda: server_args)
+    monkeypatch.setattr("sglang.srt.runtime_context.get_memory", lambda: server_args)
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler.get_observability",
+        lambda: SimpleNamespace(
+            kv_events_config=None,
+            load_publish_endpoint=None,
+            load_snapshot_publish_interval=1,
+        ),
+    )
+
     scheduler = OmniScheduler(
         tp_worker=tp_worker,
         tree_cache=None,
-        req_to_token_pool=None,
+        req_to_token_pool=_req_to_token_pool(),
         token_to_kv_pool_allocator=None,
         server_args=server_args,
         model_config=SimpleNamespace(),
@@ -2275,10 +2359,14 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         enable_overlap=enable_overlap,
         enable_async_decode=enable_async_decode,
     )
+    future_map = scheduler.future_map
     if bind_late:
         scheduler.bind_model_runner(model_runner)
 
     assert observed == [scheduler._execution_bridge]
+    assert scheduler.future_map is future_map
+    assert scheduler._execution_bridge.future_map is future_map
+    assert scheduler.beam_coordinator.future_map is future_map
     assert model_runner._async_enabled is enable_async_decode
 
 
@@ -2326,13 +2414,36 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+        prefill_decode_interval=0,
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: SimpleNamespace(
+            pp_max_micro_batch_size=None,
+            attn_dcp_size=1,
+            tp_size=1,
+            pp_size=1,
+            dp_size=1,
+            moe_dp_size=1,
+            attn_cp_size=1,
+        ),
+    )
+    monkeypatch.setattr("sglang.srt.runtime_context.get_schedule", lambda: server_args)
+    monkeypatch.setattr("sglang.srt.runtime_context.get_memory", lambda: server_args)
+    monkeypatch.setattr(
+        "sglang.srt.managers.scheduler.get_observability",
+        lambda: SimpleNamespace(
+            kv_events_config=None,
+            load_publish_endpoint=None,
+            load_snapshot_publish_interval=1,
+        ),
     )
 
     with pytest.raises(ValueError, match="mutually exclusive"):
         OmniScheduler(
             tp_worker=tp_worker,
             tree_cache=None,
-            req_to_token_pool=None,
+            req_to_token_pool=_req_to_token_pool(),
             token_to_kv_pool_allocator=None,
             server_args=server_args,
             model_config=SimpleNamespace(),
@@ -2677,8 +2788,12 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     assert request_data.req is req
 
 
-def test_omni_scheduler_follower_rejections_do_not_emit_errors() -> None:
+def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> None:
     """Request-limit and KV-capacity rejections are entry-rank emissions only."""
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(mem_fraction_static=0.85),
+    )
     scheduler = object.__new__(OmniScheduler)
     scheduler.outbox = Queue()
     scheduler.waiting_queue = []

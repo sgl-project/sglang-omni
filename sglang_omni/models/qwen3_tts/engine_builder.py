@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 import torch
+from sglang.srt.runtime_context import get_model, get_schedule
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
@@ -182,9 +183,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del model_runner
-        server_args = scheduler.server_args
-        running = int(server_args.max_running_requests)
-        context = int(server_args.context_length)
+        schedule = get_schedule()
+        running = int(schedule.max_running_requests)
+        context = int(get_model().context_length)
         pool = scheduler.tp_worker.model_runner.token_to_kv_pool
         k_bytes, v_bytes = pool.get_kv_size_bytes()
         logger.info(
@@ -195,7 +196,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             running * context,
             running,
             context,
-            float(server_args.mem_fraction_static),
+            float(schedule.mem_fraction_static),
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:

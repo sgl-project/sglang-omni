@@ -23,6 +23,10 @@ runs:
         echo "HOME=/github/home" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
+        # SGLang builds DeepGEMM, Triton and its own JIT kernels under this
+        # directory at first use. Share it across PRs like the wheel cache, so
+        # a new pin is built once per host and every later job starts warm.
+        echo "SGLANG_CACHE_DIR=/data/omni-ci/sglang-cache" >> "${GITHUB_ENV}"
         # The CI venv inherits the image's Python/Torch/FlashInfer environment,
         # so it can safely reuse the architecture-specific prewarmed cache.
         echo "FLASHINFER_WORKSPACE_BASE=/root" >> "${GITHUB_ENV}"

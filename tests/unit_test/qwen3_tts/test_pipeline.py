@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt.runtime_context import get_context
 
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -6303,17 +6304,19 @@ def test_qwen3_tts_engine_reports_the_pool_against_the_admission_bound(
 
     scheduler = SimpleNamespace(
         max_total_num_tokens=pool_tokens,
-        server_args=SimpleNamespace(
-            max_running_requests=max_running_requests,
-            context_length=context_length,
-            mem_fraction_static=0.875,
-        ),
         tp_worker=SimpleNamespace(
             model_runner=SimpleNamespace(token_to_kv_pool=FakePool())
         ),
     )
 
-    with caplog.at_level("INFO", logger="sglang_omni.models.qwen3_tts.engine_builder"):
+    with (
+        get_context().override_server_args(
+            max_running_requests=max_running_requests,
+            context_length=context_length,
+            mem_fraction_static=0.875,
+        ),
+        caplog.at_level("INFO", logger="sglang_omni.models.qwen3_tts.engine_builder"),
+    ):
         Qwen3TtsEngineBuilder().post_scheduler_setup(scheduler, model_runner=None)
 
     assert caplog.messages == [
@@ -6506,11 +6509,20 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
             torch_compile_max_bs=kwargs["torch_compile_max_bs"],
         )
 
+    published: list = []
+
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
         del gpu_id
         infrastructure_saw_deferred_capture.append(
             bool(kwargs.get("defer_cuda_graph_capture"))
         )
+        slot = get_context().override_server_args(
+            max_running_requests=server_args.max_running_requests,
+            context_length=server_args.context_length,
+            mem_fraction_static=server_args.mem_fraction_static,
+        )
+        slot.install()
+        published.append(slot)
         worker = FakeWorker(server_args)
         kwargs["before_memory_pool"](worker)
         events.append("memory_pool")
@@ -6548,16 +6560,20 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         lambda **kwargs: SimpleNamespace(max_total_num_tokens=579894, **kwargs),
     )
 
-    scheduler = stages.create_sglang_tts_engine_executor(
-        "model",
-        device=None,
-        server_args_overrides={
-            "cuda_graph_max_bs": 64,
-            "torch_compile_max_bs": 64,
-            "mem_fraction_static": 0.7,
-            "max_running_requests": 64,
-        },
-    )
+    try:
+        scheduler = stages.create_sglang_tts_engine_executor(
+            "model",
+            device=None,
+            server_args_overrides={
+                "cuda_graph_max_bs": 64,
+                "torch_compile_max_bs": 64,
+                "mem_fraction_static": 0.7,
+                "max_running_requests": 64,
+            },
+        )
+    finally:
+        while published:
+            published.pop().restore()
 
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs

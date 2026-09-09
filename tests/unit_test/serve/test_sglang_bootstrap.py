@@ -3,13 +3,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
+from sglang.srt.runtime_context import get_context
 
 from sglang_omni.model_runner import _hidden_capture as hidden_capture_module
 from sglang_omni.model_runner import model_worker as model_worker_module
 from sglang_omni.scheduling import bootstrap, sglang_backend
+
+
+@pytest.fixture
+def published() -> Iterator[list]:
+    overrides: list = []
+    yield overrides
+    while overrides:
+        overrides.pop().restore()
 
 
 def test_runtime_configuration_reports_global_backend_for_each_phase(
@@ -26,7 +37,6 @@ def test_runtime_configuration_reports_global_backend_for_each_phase(
         decode_attention_backend=None,
         prefill_attention_backend=None,
         sampling_backend="pytorch",
-        get_attention_backends=lambda: ("flashinfer", "flashinfer"),
     )
 
     description = bootstrap._describe_sglang_runtime_configuration(
@@ -55,7 +65,6 @@ def test_runtime_configuration_reports_explicit_phase_backends(
         decode_attention_backend="triton",
         prefill_attention_backend="fa3",
         sampling_backend="pytorch",
-        get_attention_backends=lambda: ("fa3", "triton"),
     )
 
     description = bootstrap._describe_sglang_runtime_configuration(
@@ -70,8 +79,8 @@ def test_runtime_configuration_reports_explicit_phase_backends(
     )
 
 
-def test_create_sglang_infrastructure_runs_0515_initialization_phases(
-    monkeypatch,
+def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
+    monkeypatch, published
 ) -> None:
     events: list[str] = []
     monkeypatch.setattr(
@@ -100,6 +109,8 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         def __init__(self, **kwargs) -> None:
             del kwargs
             events.append("model_worker")
+            published.append(get_context().override_server_args(page_size=1))
+            published[-1].install()
             self.model_runner = FakeRunner()
 
         def get_memory_pool(self):
@@ -118,10 +129,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         decode_attention_backend=None,
         prefill_attention_backend=None,
         sampling_backend=None,
-        page_size=1,
         disable_overlap_schedule=False,
-        chunked_prefill_size=8,
-        max_prefill_tokens=16,
     )
     infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
 
@@ -137,7 +145,7 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
 
 
 def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
-    monkeypatch,
+    monkeypatch, published
 ) -> None:
     events: list[object] = []
     monkeypatch.setattr(
@@ -165,6 +173,8 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
         def __init__(self, **kwargs) -> None:
             del kwargs
             events.append("model_worker")
+            published.append(get_context().override_server_args(page_size=1))
+            published[-1].install()
             self.model_runner = FakeRunner()
 
         def get_memory_pool(self):
@@ -181,10 +191,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
         decode_attention_backend=None,
         prefill_attention_backend=None,
         sampling_backend=None,
-        page_size=1,
         disable_overlap_schedule=False,
-        chunked_prefill_size=8,
-        max_prefill_tokens=16,
     )
 
     bootstrap.create_sglang_infrastructure(
@@ -207,7 +214,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
 def test_an_engine_is_refused_in_a_process_with_a_published_context(
     monkeypatch,
 ) -> None:
-    """ModelRunner publishes the process-wide runtime context, so a process
+    """ModelWorker publishes the process-wide runtime context, so a process
     that already holds one cannot host a second engine.
     """
     from sglang.srt.runtime_context import get_context
@@ -284,43 +291,43 @@ def test_cuda_graph_init_scopes_prefill_embedding_capture_flag() -> None:
 
 
 @pytest.mark.parametrize(
-    ("server_args", "expected"),
+    ("fields", "expected"),
     [
         (
-            SimpleNamespace(
+            dict(
                 chunked_prefill_size=8192,
                 max_prefill_tokens=16384,
                 context_length=32768,
                 max_running_requests=64,
-                cuda_graph_config=SimpleNamespace(
-                    decode=SimpleNamespace(max_bs=128, bs=[1, 128]),
-                    prefill=SimpleNamespace(max_bs=256, bs=[4, 256]),
+                cuda_graph_config=CudaGraphConfig(
+                    decode=PhaseConfig(max_bs=128, bs=[1, 128]),
+                    prefill=PhaseConfig(max_bs=256, bs=[4, 256]),
                 ),
             ),
             8192,
         ),
         (
-            SimpleNamespace(
+            dict(
                 chunked_prefill_size=-1,
                 max_prefill_tokens=16384,
                 context_length=8192,
                 max_running_requests=64,
-                cuda_graph_config=SimpleNamespace(
-                    decode=SimpleNamespace(max_bs=None),
-                    prefill=SimpleNamespace(max_bs=None),
+                cuda_graph_config=CudaGraphConfig(
+                    decode=PhaseConfig(max_bs=None),
+                    prefill=PhaseConfig(max_bs=None),
                 ),
             ),
             16384,
         ),
         (
-            SimpleNamespace(
+            dict(
                 chunked_prefill_size=512,
                 max_prefill_tokens=16384,
                 context_length=8192,
                 max_running_requests=64,
-                cuda_graph_config=SimpleNamespace(
-                    decode=SimpleNamespace(max_bs=128, bs=[1, 128]),
-                    prefill=SimpleNamespace(max_bs=1024, bs=[4, 1024]),
+                cuda_graph_config=CudaGraphConfig(
+                    decode=PhaseConfig(max_bs=128, bs=[1, 128]),
+                    prefill=PhaseConfig(max_bs=1024, bs=[4, 1024]),
                 ),
             ),
             1024,
@@ -328,44 +335,45 @@ def test_cuda_graph_init_scopes_prefill_embedding_capture_flag() -> None:
     ],
 )
 def test_hidden_capture_max_tokens_covers_eager_and_graph_forwards(
-    server_args: SimpleNamespace,
+    fields: dict,
     expected: int,
 ) -> None:
-    assert bootstrap._hidden_capture_max_tokens(server_args) == expected
+    with get_context().override_server_args(**fields):
+        assert bootstrap._hidden_capture_max_tokens() == expected
 
 
 def test_hidden_capture_max_tokens_covers_non_chunked_context_length() -> None:
-    server_args = SimpleNamespace(
+    with get_context().override_server_args(
         chunked_prefill_size=-1,
         max_prefill_tokens=8192,
         context_length=32768,
         max_running_requests=64,
-        cuda_graph_config=SimpleNamespace(
-            decode=SimpleNamespace(max_bs=None),
-            prefill=SimpleNamespace(max_bs=None),
+        cuda_graph_config=CudaGraphConfig(
+            decode=PhaseConfig(max_bs=None),
+            prefill=PhaseConfig(max_bs=None),
         ),
-    )
-
-    assert bootstrap._hidden_capture_max_tokens(server_args) == 32768
+    ):
+        assert bootstrap._hidden_capture_max_tokens() == 32768
 
 
 def test_hidden_capture_max_tokens_rejects_missing_capacity_sources() -> None:
-    server_args = SimpleNamespace(
+    with get_context().override_server_args(
         chunked_prefill_size=-1,
         max_prefill_tokens=None,
         context_length=None,
         max_running_requests=0,
-        cuda_graph_config=SimpleNamespace(
-            decode=SimpleNamespace(max_bs=None),
-            prefill=SimpleNamespace(max_bs=None),
+        cuda_graph_config=CudaGraphConfig(
+            decode=PhaseConfig(max_bs=None),
+            prefill=PhaseConfig(max_bs=None),
         ),
-    )
+    ):
+        with pytest.raises(ValueError, match="hidden capture capacity"):
+            bootstrap._hidden_capture_max_tokens()
 
-    with pytest.raises(ValueError, match="hidden capture capacity"):
-        bootstrap._hidden_capture_max_tokens(server_args)
 
-
-def test_hidden_capture_is_installed_before_graph_initialization(monkeypatch) -> None:
+def test_hidden_capture_is_installed_before_graph_initialization(
+    monkeypatch, published
+) -> None:
     events: list[object] = []
 
     class FakeRunner:
@@ -388,6 +396,20 @@ def test_hidden_capture_is_installed_before_graph_initialization(monkeypatch) ->
             del kwargs
             self.model_runner = FakeRunner()
             events.append("model_worker")
+            published.append(
+                get_context().override_server_args(
+                    page_size=1,
+                    chunked_prefill_size=8192,
+                    max_prefill_tokens=16384,
+                    context_length=32768,
+                    max_running_requests=64,
+                    cuda_graph_config=CudaGraphConfig(
+                        decode=PhaseConfig(max_bs=128, bs=[1, 128]),
+                        prefill=PhaseConfig(max_bs=256, bs=[4, 256]),
+                    ),
+                )
+            )
+            published[-1].install()
 
         def get_memory_pool(self):
             events.append("get_memory_pool")
@@ -417,16 +439,7 @@ def test_hidden_capture_is_installed_before_graph_initialization(monkeypatch) ->
         decode_attention_backend=None,
         prefill_attention_backend=None,
         sampling_backend=None,
-        page_size=1,
         disable_overlap_schedule=False,
-        chunked_prefill_size=8192,
-        max_prefill_tokens=16384,
-        context_length=32768,
-        max_running_requests=64,
-        cuda_graph_config=SimpleNamespace(
-            decode=SimpleNamespace(max_bs=128, bs=[1, 128]),
-            prefill=SimpleNamespace(max_bs=256, bs=[4, 256]),
-        ),
     )
 
     bootstrap.create_sglang_infrastructure(
@@ -510,7 +523,7 @@ def test_defer_cuda_graph_leaves_disabled_graph_capture_disabled(monkeypatch) ->
 
 
 def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, published
 ) -> None:
     from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 
@@ -541,6 +554,8 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
         def __init__(self, *, config, **kwargs) -> None:
             del kwargs
             captured["kv_cache_bytes"] = config.kv_cache_bytes
+            published.append(get_context().override_server_args(page_size=1))
+            published[-1].install()
             self.model_runner = FakeRunner()
 
         def get_memory_pool(self):
@@ -558,15 +573,13 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
         decode_attention_backend=None,
         prefill_attention_backend=None,
         sampling_backend=None,
-        page_size=1,
         disable_overlap_schedule=False,
-        chunked_prefill_size=8,
-        max_prefill_tokens=16,
     )
 
     with stage_kv_cache_budget("thinker", 2 * 1024**3):
         bootstrap.create_sglang_infrastructure(server_args, 0)
     assert captured["kv_cache_bytes"] == 2 * 1024**3
+    published.pop().restore()
 
     captured.clear()
     bootstrap.create_sglang_infrastructure(server_args, 0)

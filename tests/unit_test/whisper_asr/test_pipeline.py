@@ -67,7 +67,9 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
 
 
-def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -> None:
+def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs(
+    monkeypatch,
+) -> None:
     calls: list[tuple[list[int], int]] = []
     builder = _encoder_graph_builder(max_running_requests=4)
     assert builder.encoder_graph_batch_buckets == (1, 2, 4, 8, 12, 16)
@@ -76,23 +78,29 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
             (list(buckets), feature_len)
         )
     )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+    )
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
     assert calls == [([1, 2, 4], 3000)]
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=False,
     )
     assert calls == [([1, 2, 4], 3000)]
 
 
-def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -> None:
+def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm(
+    monkeypatch,
+) -> None:
     calls: list[list[int]] = []
     builder = _encoder_graph_builder(
         enable_pre_lm_encoder=False,
@@ -101,13 +109,14 @@ def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
     )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=6144, max_running_requests=32),
+    )
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(
-            max_prefill_tokens=6144,
-            max_running_requests=32,
-        ),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
 
@@ -123,6 +132,7 @@ def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -
     ids=["pre_lm", "prefill_without_pre_lm"],
 )
 def test_whisper_encoder_cuda_graph_buckets_are_filtered(
+    monkeypatch,
     builder_kwargs: dict[str, object],
     max_prefill_tokens: int,
     expected: list[int],
@@ -135,13 +145,17 @@ def test_whisper_encoder_cuda_graph_buckets_are_filtered(
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
     )
-
-    builder.setup_model_resources(
-        model,
-        server_args=SimpleNamespace(
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(
             max_prefill_tokens=max_prefill_tokens,
             max_running_requests=16,
         ),
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
 
@@ -425,8 +439,8 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda model_runner, server_args: attest_calls.append(
-            (model_runner, server_args)
+        lambda model_runner, *, operator_selected: attest_calls.append(
+            (model_runner, operator_selected)
         ),
     )
 

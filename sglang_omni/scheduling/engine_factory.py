@@ -9,26 +9,18 @@ from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, ClassVar
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
+
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
     get_prefill_cuda_graph_backend,
-    nested_prefill_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
-
-
-def _operator_selected_prefill_graph_backend(
-    server_args_overrides: Mapping[str, Any] | None,
-) -> bool:
-    if not server_args_overrides:
-        return False
-    if "cuda_graph_backend_prefill" in server_args_overrides:
-        return True
-    return "backend" in nested_prefill_overrides(server_args_overrides)
 
 
 def _normalize_context_length(value: Any, *, model_name: str) -> int:
@@ -117,9 +109,7 @@ class SGLangGenerationEngineBuilder(ABC):
             model_name=self.model_name,
         )
 
-        operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
-            server_args_overrides
-        )
+        operator_selected = operator_selected_prefill_backend(server_args_overrides)
         overrides = build_generation_batch_overrides(
             server_args_overrides=server_args_overrides,
             **self.generation_defaults(dtype=dtype),
@@ -161,14 +151,15 @@ class SGLangGenerationEngineBuilder(ABC):
             **overrides,
         )
         self.customize_server_args(server_args)
+        cfg = resolved_view(server_args)
         if (
             overrides.get("chunked_prefill_size") is None
-            and get_prefill_cuda_graph_backend(server_args) != CudaGraphBackend.DISABLED
+            and cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
         ):
             logger.info(
                 f"{self.model_name}: chunked_prefill_size was unset, SGLang resolved "
-                f"{server_args.chunked_prefill_size}, prefill CUDA graph cap "
-                f"{server_args.cuda_graph_config.prefill.max_bs}"
+                f"{cfg.chunked_prefill_size}, prefill CUDA graph cap "
+                f"{cfg.cuda_graph_config.prefill.max_bs}"
             )
         self.validate_before_infrastructure(server_args)
 
@@ -187,15 +178,6 @@ class SGLangGenerationEngineBuilder(ABC):
 
         infra_kwargs["before_memory_pool"] = before_memory_pool
         prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
-        if (
-            prefill_graph_backend != CudaGraphBackend.DISABLED
-            and not operator_selected_prefill_backend
-        ):
-            # SGLang treats every non-default source as operator-locked, and a
-            # locked prefill backend skips upstream's model compatibility
-            # resolution; a model-qualified stage default must stay eligible
-            # for it.
-            server_args._cuda_graph_config_locked.discard(("prefill", "backend"))
         if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
             if not self.supports_breakable_prefill_cuda_graph:
                 raise RuntimeError(
@@ -237,7 +219,8 @@ class SGLangGenerationEngineBuilder(ABC):
                 from sglang_omni.utils import cuda_graph_batch_validator
 
                 cuda_graph_batch_validator.attest_prefill_cuda_graphs(
-                    model_worker.model_runner, server_args
+                    model_worker.model_runner,
+                    operator_selected=operator_selected,
                 )
 
         try:

@@ -38,6 +38,7 @@ tests/
     │   └── test_weight_preprocess.py
     ├── fixtures/
     │   ├── fish_fakes.py
+    │   ├── mini_checkpoint.py
     │   ├── pipeline_fakes.py
     │   └── qwen_fakes.py
     ├── utils/
@@ -209,6 +210,7 @@ tests/
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
+    │   ├── test_openai_errors.py
     │   ├── test_speech_to_text.py
     │   ├── test_subtitles.py
     │   ├── test_transcription_chunking.py
@@ -220,6 +222,7 @@ tests/
     │   ├── test_evict_heap_radix_cache.py
     │   ├── test_pipeline_state.py
     │   ├── test_reference_encoder.py
+    │   ├── test_server_args_builder_resolution.py
     │   ├── test_stage_cache.py
     │   └── test_streaming_vocoder.py
     ├── fishaudio_s2_pro/
@@ -511,6 +514,10 @@ that happened to contain an older version of the test.
     newer replacements,
     the `remove_if` eviction predicate evaluated outside the lock (re-entrant
     and deadlock-free), and concurrent remove_if/put state integrity.
+  - `build_sglang_server_args` on a real mini checkpoint: the record leaves the
+    builder resolved once, the CUDA Graph config it declared reads back through
+    `resolution_result` and the generation batch policy accessors, and the
+    encoder memory reserve is applied to the declared fraction.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory `max_running_requests=64` default,
     async-decode default,
@@ -742,6 +749,9 @@ that happened to contain an older version of the test.
   - shared speech-to-text form, request, response-format, and serialization mechanics,
     including headerless G.711 uploads getting a WAV container at read time
   - streaming response framing and failure semantics.
+  - the stop-list bounds that SGLang's `SamplingParams.normalize` enforces
+    (stop string count, stop regex count and length) mapped to a bad request,
+    the bounds themselves accepted, and an unrelated failure staying internal.
   - realtime barge-in cancellation, partial session updates, terminal races,
     VAD stop-to-start segmentation, and assistant-history truncation.
   - Browser-side realtime playback state is covered separately by
@@ -837,5 +847,7 @@ that happened to contain an older version of the test.
 
 - `unit_test/fixtures/`: Shared fakes, plus the runtime accelerator probe
   (`accelerator.py`, `require_cuda(min_devices)`) that `accelerator`-marked
-  tests call in the test body. Single-test helpers should stay local until a
-  second test needs them.
+  tests call in the test body. `mini_checkpoint.py` writes a two-layer Llama
+  `config.json` for tests that need a record the SGLang resolution pipeline can
+  resolve end to end. Single-test helpers should stay local until a second
+  test needs them.

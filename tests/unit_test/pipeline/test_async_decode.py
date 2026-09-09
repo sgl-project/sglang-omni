@@ -505,16 +505,16 @@ def _real_radix_pools(size=64):
 
 
 def _decoding_req(allocator, req_to_token_pool, rid, prompt, outputs):
-    from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     req = Req(rid, "", list(prompt), SamplingParams(max_new_tokens=8))
     req_to_token_pool.alloc([req])
     n = len(prompt)
     slots = allocator.alloc(n)
-    req_to_token_pool.write((req.req_pool_idx, slice(0, n)), slots.to(torch.int32))
-    req.kv = ReqKvInfo(kv_allocated_len=n, swa_evicted_seqlen=0)
-    req.kv_committed_len = n
+    req_to_token_pool.write((req.kv.req_pool_idx, slice(0, n)), slots.to(torch.int32))
+    req.kv.kv_allocated_len = n
+    req.kv.kv_committed_len = n
     req.output_ids = [outputs[0]]
     for tok in outputs[1:]:
         _commit_step_slot(allocator, req_to_token_pool, req)
@@ -526,10 +526,10 @@ def _commit_step_slot(allocator, req_to_token_pool, req):
     slot = allocator.alloc(1)
     pos = req.kv.kv_allocated_len
     req_to_token_pool.write(
-        (req.req_pool_idx, slice(pos, pos + 1)), slot.to(torch.int32)
+        (req.kv.req_pool_idx, slice(pos, pos + 1)), slot.to(torch.int32)
     )
     req.kv.kv_allocated_len += 1
-    req.kv_committed_len += 1
+    req.kv.kv_committed_len += 1
     return int(slot[0])
 
 

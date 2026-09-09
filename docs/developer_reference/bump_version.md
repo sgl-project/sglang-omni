@@ -35,19 +35,29 @@ The other places a version lives:
 |---|---|
 | `docker/Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's cu13 manifest), the FlashInfer reinstall version, the JIT cache path `/root/.cache/flashinfer/<version>`, `FLASHINFER_CACHE_IMAGE` |
 | `.github/workflows/*.yaml` | Every `image:` line, pinned by digest |
-| `docs/get_started/installation.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
+| `docker/cpu.Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's `-xeon` manifest) |
+| `docker/xpu.Dockerfile` | `SGLANG_XPU_BRANCH` (the tag) and `SGL_KERNEL_XPU_REF` (the last `sgl-kernel-xpu` commit before the tag) |
+| `pyproject_cpu.toml`, `pyproject_xpu.toml`, `scripts/cpu/install_cpu.sh`, `scripts/xpu/install_xpu.sh` | The verified SGLang tag; the provider pyprojects cannot pin `sglang` because every wheel pulls CUDA torch |
+| `docs/get_started/installation.md`, `docs/get_started/installation_cpu.md`, `docs/get_started/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
 | Comments in `sglang_omni/` | Never name a version; state the invariant the code relies on so the text survives the next bump |
 
 Search the tree for the old versions and the old image digest; the table is
 what past bumps touched.
 
-The ROCm, XPU, NPU and MUSA stacks (`docker/rocm.Dockerfile`,
-`docker/xpu.Dockerfile`, `pyproject_rocm.toml`, `pyproject_xpu.toml`,
-`docs/get_started/installation_xpu.md`) pin their own SGLang tag and base
-images. No project CI builds them, so a bump PR leaves them alone, says so in
-its description, and hands the provider owners the new tag, the matching
-provider image digest if one exists, and any platform dispatch change made in
-`sglang_omni/platforms/`.
+The Intel CPU and XPU stacks pin their own SGLang tag and base images, and
+their CI workflows build `docker/cpu.Dockerfile` and `docker/xpu.Dockerfile`
+on every PR that touches `sglang_omni/`. `sglang_omni/platforms/` imports the
+pinned release's modules at import time, so those workflows fail on a bump
+until the two stacks move with it: the `-xeon` image digest, the XPU tag and
+its `sgl-kernel-xpu` revision, and the verified tag in the provider
+pyprojects, install scripts and install docs. Upstream's `docker/xpu.Dockerfile`
+at the tag names any new build prerequisite.
+
+The ROCm, NPU and MUSA stacks (`docker/rocm.Dockerfile`, `pyproject_rocm.toml`)
+pin their own SGLang tag and base images. No project CI builds them, so a bump
+PR leaves them alone, says so in its description, and hands the provider owners
+the new tag, the matching provider image digest if one exists, and any platform
+dispatch change made in `sglang_omni/platforms/`.
 
 ## Where Omni depends on SGLang
 
@@ -85,12 +95,15 @@ removing it. Check that the wrapped upstream body still has the shape the
 patch assumes (a dispatch rewrite upstream can route around a patched method
 without an error) and that `tests/unit_test/vendor/` still pins it.
 
-**`ServerArgs` mutation.** Omni changes engine configuration after
-`build_sglang_server_args` through one seam,
+**`ServerArgs` mutation.** `build_sglang_server_args` constructs the record
+and resolves it once, so every reader between the builder and publish sees
+what resolution decided rather than the raw input. Omni changes engine
+configuration after the builder through one seam,
 `sglang_omni/vendor/sglang/server_args.py::override_server_args`. Upstream
-decides what a mutation means at each lifecycle phase; today a record that
-is not yet published resolves in place, and a published record is read-only
-with its values living on the runtime-context bags. Every call site has a
+decides what a mutation means at each lifecycle phase; today a resolved record
+that is not yet published takes the change as a late declaration, and a
+published record is read-only with its values living on the runtime-context
+bags. Every call site has a
 phase, and every later reader has to read from where the current release
 stores the value. The bump that introduced the read-only record turned
 several write-then-read-back sites into hard errors.
@@ -172,17 +185,36 @@ that have cost time:
   pretrained model the arithmetic that interprets its weights is part of
   the contract; the overlay preserves the old sequence and is verified on
   intermediates, not only on the final score.
-- Caches. New Inductor, Triton and FlashInfer versions invalidate every
-  compiled artifact once, so the first pass in a fresh image measures
-  compilation, not serving.
+- Caches. New Inductor, Triton, FlashInfer and DeepGEMM versions invalidate
+  every compiled artifact once, so the first pass in a fresh image measures
+  compilation, not serving. SGLang builds DeepGEMM, Triton and its own JIT
+  kernels under `SGLANG_CACHE_DIR`; the CI setup action points it at a
+  directory shared across PRs on the persistent CI mount, so only the first
+  job after a bump pays the build.
 
 ## The CI image
 
 GPU CI runs inside `hongccc/sglang-omni`, pinned by digest in every
-workflow. The CI virtualenv is built on the image's Python with system site
-packages, so torch, FlashInfer and SGLang come from the image and only what
+workflow. The CI virtualenv uses Python 3.12 with system site-packages and
+loads `/opt/sglang/lib/python3.12/site-packages` with `site.addsitedir`, including
+the upstream SGLang editable-install `.pth` file. Torch, FlashInfer and SGLang
+come from the image and only what
 the image lacks is installed on top; `verify_omni_installed_pins.py` then
 checks every exact pin in `pyproject.toml` against what is installed.
+
+The image also installs Qwen-TTS without its conflicting dependencies, system
+SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
+project's dependency overrides when resolving these packages. The CI import
+gate checks Qwen-TTS after the compatibility patch, DAC and NeuCodec imports,
+and the SoX executable. It imports llama.cpp before Torch to catch system NCCL
+conflicts; the image prioritizes Torch's NCCL library. A package listing alone
+does not prove a usable runtime.
+
+Reinstalling even the same FlashInfer wheel refreshes bundled header mtimes.
+The Dockerfile preserves the cache donor's mtimes only for byte-identical
+FlashInfer sources; changed sources remain newer and invalidate their objects.
+After rebuilding, run Ninja with `-n -d explain` in the copied `cached_ops`
+directories before GPU validation to catch unintended object recompilation.
 
 A bump therefore ships a new image: build `docker/Dockerfile` on the
 `lmsysorg/sglang` digest for the new tag, populate the FlashInfer JIT cache

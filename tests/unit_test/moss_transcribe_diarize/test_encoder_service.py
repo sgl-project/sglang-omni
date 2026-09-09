@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 
 from sglang_omni.models.moss_transcribe_diarize import encoder_service
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
@@ -69,10 +70,10 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
     )
     features = [torch.ones(1), torch.ones(1)]
     items = [
-        SimpleNamespace(
+        MultimodalDataItem(
+            modality=Modality.AUDIO,
             feature=feature,
-            audio_feature_lengths=torch.tensor([1]),
-            hash=None,
+            model_specific_data={"audio_feature_lengths": torch.tensor([1])},
         )
         for feature in features
     ]
@@ -82,7 +83,7 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
 
     for item, feature in zip(items, features):
         assert item.feature is feature
-        assert not hasattr(item, "precomputed_embeddings")
+        assert item.precomputed_embeddings is None
 
 
 def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
@@ -102,8 +103,8 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     calls: list[list[object]] = []
     retained_intermediates: list[weakref.ReferenceType[_EncoderIntermediate]] = []
     poisoned = False
-    failed_item = SimpleNamespace(hash=None, feature=object())
-    healthy_item = SimpleNamespace(hash=None, feature=object())
+    failed_item = MultimodalDataItem(modality=Modality.AUDIO, feature=object())
+    healthy_item = MultimodalDataItem(modality=Modality.AUDIO, feature=object())
     stop_item = object()
 
     def _execute_batch(items: list[object]) -> list[object]:
@@ -273,12 +274,14 @@ def test_encode_item_rechecks_cache_after_preprocessing() -> None:
     service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     cached = torch.arange(6, dtype=torch.float32).reshape(2, 3)
     service._cache.put("fingerprint", cached)
-    item = SimpleNamespace(
+    item = MultimodalDataItem(
+        modality=Modality.AUDIO,
         hash=7,
-        audio_fingerprint="fingerprint",
-        audio_feature_lengths=torch.tensor([2]),
         feature=object(),
-        precomputed_embeddings=None,
+        model_specific_data={
+            "audio_fingerprint": "fingerprint",
+            "audio_feature_lengths": torch.tensor([2]),
+        },
     )
     service._submit = lambda item: pytest.fail("cached item must not be submitted")
 
@@ -332,19 +335,17 @@ def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
     synchronized: list[None] = []
     service._stream = SimpleNamespace(synchronize=lambda: synchronized.append(None))
 
-    good = SimpleNamespace(
+    good = MultimodalDataItem(
+        modality=Modality.AUDIO,
         hash=1,
-        audio_feature_lengths=torch.tensor([2]),
         feature=object(),
-        precomputed_embeddings=None,
-        fail=False,
+        model_specific_data={"audio_feature_lengths": torch.tensor([2]), "fail": False},
     )
-    bad = SimpleNamespace(
+    bad = MultimodalDataItem(
+        modality=Modality.AUDIO,
         hash=2,
-        audio_feature_lengths=torch.tensor([1]),
         feature=object(),
-        precomputed_embeddings=None,
-        fail=True,
+        model_specific_data={"audio_feature_lengths": torch.tensor([1]), "fail": True},
     )
 
     def encode(items, _unused):  # noqa: ANN001, ANN202

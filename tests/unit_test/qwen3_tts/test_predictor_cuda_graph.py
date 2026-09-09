@@ -1046,17 +1046,21 @@ def test_capture_state_body_failure_restores_state():
 
 def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     talker = object.__new__(Qwen3TTSTalker)
-    args = SimpleNamespace(disable_cuda_graph=False, tp_size=1)
-    monkeypatch.setattr(sglang_model_module, "get_global_server_args", lambda: args)
+    graph = SimpleNamespace(disable_cuda_graph=False)
+    parallel = SimpleNamespace(tp_size=1)
+    monkeypatch.setattr(
+        sglang_model_module, "get_exec", lambda: SimpleNamespace(graph=graph)
+    )
+    monkeypatch.setattr(sglang_model_module, "get_parallel", lambda: parallel)
     monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
 
     assert talker._resolve_predictor_graph_enabled() is True
-    args.disable_cuda_graph = True
+    graph.disable_cuda_graph = True
     assert talker._resolve_predictor_graph_enabled() is False
-    args.disable_cuda_graph = False
-    args.tp_size = 2
+    graph.disable_cuda_graph = False
+    parallel.tp_size = 2
     assert talker._resolve_predictor_graph_enabled() is False
-    args.tp_size = 1
+    parallel.tp_size = 1
     monkeypatch.setenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, "0")
     assert talker._resolve_predictor_graph_enabled() is False
 
@@ -1070,8 +1074,11 @@ def test_server_disable_cuda_graph_gates_predictor(monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
     monkeypatch.setattr(
         sglang_model_module,
-        "get_global_server_args",
-        lambda: SimpleNamespace(disable_cuda_graph=True, tp_size=1),
+        "get_exec",
+        lambda: SimpleNamespace(graph=SimpleNamespace(disable_cuda_graph=True)),
+    )
+    monkeypatch.setattr(
+        sglang_model_module, "get_parallel", lambda: SimpleNamespace(tp_size=1)
     )
     talker.prepare_decode_buffers(_uniform_requests(2))
     layer0, hidden, positions = _step_inputs(2, device)

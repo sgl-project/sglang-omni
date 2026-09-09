@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import ReqKvInfo
 from torch import nn
 
 import sglang_omni.models.qwen3_omni.components.talker as talker_module
@@ -86,7 +87,10 @@ def test_configure_talker_server_args_writes_through_the_mutation_guard() -> Non
     configuration must go through the audited override path.
     """
     server_args_mod = pytest.importorskip("sglang.srt.server_args")
+    from sglang.srt.arg_groups.overrides import resolution_result
+
     server_args = server_args_mod.ServerArgs(model_path="dummy")
+    server_args.resolve_once()
 
     want_cuda_graph = configure_talker_server_args(
         server_args,
@@ -94,10 +98,11 @@ def test_configure_talker_server_args_writes_through_the_mutation_guard() -> Non
     )
 
     assert want_cuda_graph is True
-    assert server_args.disable_overlap_schedule is True
-    assert server_args.disable_cuda_graph is False
-    assert server_args.disable_radix_cache is True
-    assert server_args.chunked_prefill_size == 0
+    assert resolution_result(server_args, "disable_overlap_schedule") is True
+    assert resolution_result(server_args, "disable_cuda_graph") is False
+    assert resolution_result(server_args, "disable_radix_cache") is True
+    assert resolution_result(server_args, "chunked_prefill_size") == 0
+    assert server_args.disable_radix_cache is False
     audited_overrides = {}
     for source, fields in server_args._runtime_mutations:
         assert source == "qwen3_omni.talker"
@@ -1485,13 +1490,11 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     reqs = [
         SimpleNamespace(
             decode_batch_idx=5,
-            kv_committed_len=12,
-            kv=SimpleNamespace(kv_allocated_len=13),
+            kv=ReqKvInfo(kv_committed_len=12, kv_allocated_len=13),
         ),
         SimpleNamespace(
             decode_batch_idx=7,
-            kv_committed_len=12,
-            kv=SimpleNamespace(kv_allocated_len=13),
+            kv=ReqKvInfo(kv_committed_len=12, kv_allocated_len=13),
         ),
     ]
     req_pool_indices = torch.tensor([3, 4])
@@ -1520,7 +1523,7 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     assert batch.out_cache_loc is None
     for req in reqs:
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
-        assert req.kv_committed_len == 11
+        assert req.kv.kv_committed_len == 11
         assert req.kv.kv_allocated_len == 12
     assert torch.equal(batch.seq_lens, pre_seq_lens)
     assert torch.equal(batch.seq_lens_cpu, pre_seq_lens_cpu)
@@ -1539,7 +1542,7 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     batch.out_cache_loc = object()
     for req in reqs:
         req.decode_batch_idx += 1
-        req.kv_committed_len += 1
+        req.kv.kv_committed_len += 1
         req.kv.kv_allocated_len += 1
     batch.seq_lens.add_(1)
     batch.seq_lens_cpu.add_(1)
@@ -1552,7 +1555,7 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     assert batch.out_cache_loc is None
     for req in reqs:
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
-        assert req.kv_committed_len == 11
+        assert req.kv.kv_committed_len == 11
         assert req.kv.kv_allocated_len == 12
     assert batch.seq_lens_sum is None
     assert len(freed) == 2
@@ -1590,10 +1593,10 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     reqs = [
         SimpleNamespace(
             decode_batch_idx=0,
-            kv_committed_len=10,
-            kv=SimpleNamespace(kv_allocated_len=11),
+            kv=ReqKvInfo(kv_committed_len=10, kv_allocated_len=11),
             output_ids=[6],
             origin_input_ids=[5],
+            beam_group=None,
         )
     ]
     batch.reqs = reqs
@@ -1621,6 +1624,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
         b.req_to_token_pool.req_to_token[b.req_pool_indices, locs] = out.to(torch.int32)
         for req in b.reqs:
             req.kv.kv_allocated_len += token_per_req
+            req.kv.kv_committed_len += token_per_req
         return out
 
     monkeypatch.setattr(
@@ -1633,6 +1637,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     ScheduleBatch.prepare_for_decode(batch)
     assert batch.seq_lens_sum is None
     assert reqs[0].kv.kv_allocated_len == 12
+    assert reqs[0].kv.kv_committed_len == 11
     assert int(req_to_token[2, 10]) == 123
 
     allocated = batch.out_cache_loc
@@ -1644,7 +1649,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     assert batch.seq_lens_sum is None
     assert torch.equal(batch.seq_lens, torch.tensor([10], dtype=torch.long))
     assert reqs[0].decode_batch_idx == 0
-    assert reqs[0].kv_committed_len == 10
+    assert reqs[0].kv.kv_committed_len == 10
     assert reqs[0].kv.kv_allocated_len == 11
     assert batch.out_cache_loc is None
     assert len(freed) == 1

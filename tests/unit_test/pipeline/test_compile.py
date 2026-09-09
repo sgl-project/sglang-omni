@@ -450,8 +450,13 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
     )
 
 
-def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> None:
+def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
+    tmp_path, monkeypatch
+) -> None:
     """Preserves TP process specs and one-visible-device env mapping."""
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.runtime_config._visible_device_count", lambda: 4
+    )
     config = PipelineConfig(
         model_path="model",
         name="mp",

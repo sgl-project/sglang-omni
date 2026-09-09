@@ -49,7 +49,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -117,7 +117,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -174,7 +174,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
-      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -229,7 +229,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 75
     container:
-      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -290,7 +290,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         --cap-add SYS_NICE

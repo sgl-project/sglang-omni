@@ -489,7 +489,8 @@ def qwen3_omni_vision_sglang_env():
     from sglang.srt.models.qwen3_omni_moe import (  # noqa: F401 -- lazy-import order
         Qwen3OmniMoeVisionEncoder,
     )
-    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
+    from sglang.srt.runtime_context import publish
+    from sglang.srt.server_args import ServerArgs
 
     if not torch_dist.is_initialized():
         init_distributed_environment(
@@ -510,7 +511,7 @@ def qwen3_omni_vision_sglang_env():
         disable_cuda_graph=True,
         random_seed=123,
     )
-    set_global_server_args_for_scheduler(sa)
+    publish(sa, role="scheduler")
     initialize_dp_attention(sa, ModelConfig.from_server_args(sa))
 
 

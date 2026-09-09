@@ -211,10 +211,6 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
                 max_bs=overrides.get("cuda_graph_max_bs_prefill"),
             )
         )
-        server_args._cuda_graph_config_locked = {
-            ("prefill", "backend"),
-            ("prefill", "bs"),
-        }
         return server_args
 
     model_worker = SimpleNamespace(
@@ -269,7 +265,6 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
     assert build_kwargs["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
         256
     )
-    assert scheduler.server_args._cuda_graph_config_locked == {("prefill", "bs")}
     assert infra_kwargs[-1]["enable_prefill_input_embeds"] is True
     assert validations == [
         {"model_name": "Fun-ASR", "server_args": scheduler.server_args}

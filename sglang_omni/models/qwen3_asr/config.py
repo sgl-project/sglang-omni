@@ -102,7 +102,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
 
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         from sglang_omni.platforms import current_platform
 

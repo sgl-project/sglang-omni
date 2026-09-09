@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from sglang.srt.arg_groups.overrides import resolution_result
 
 from sglang_omni.model_runner import model_worker
 from sglang_omni.platforms import cuda
@@ -138,7 +139,7 @@ def _model_config(
             expected_fp8_gemm_backend="triton",
         ),
         BackendPolicyCase(
-            name="fp8_thinker_auto_uses_cutlass_moe_and_preserves_dense_gemm_auto",
+            name="fp8_thinker_auto_uses_cutlass_moe_and_triton_dense_gemm",
             model_quantization="fp8",
             server_quantization=None,
             native_fp8_block_quant=True,
@@ -150,7 +151,22 @@ def _model_config(
             cutlass_supported=True,
             expected_quantization="fp8",
             expected_moe_backend="cutlass",
-            expected_fp8_gemm_backend="auto",
+            expected_fp8_gemm_backend="triton",
+        ),
+        BackendPolicyCase(
+            name="fp8_thinker_explicit_dense_deep_gemm_is_preserved",
+            model_quantization="fp8",
+            server_quantization=None,
+            native_fp8_block_quant=True,
+            model_arch_override="Qwen3OmniThinkerForCausalLM",
+            has_moe=True,
+            initial_moe_backend="auto",
+            initial_fp8_gemm_backend="deep_gemm",
+            ep_size=1,
+            cutlass_supported=True,
+            expected_quantization="fp8",
+            expected_moe_backend="cutlass",
+            expected_fp8_gemm_backend="deep_gemm",
         ),
         BackendPolicyCase(
             name="server_fp8_override_without_native_block_quant_stays_auto",
@@ -401,8 +417,14 @@ def test_model_worker_backend_policy_precedence(
 
     assert effective_quantization == case.expected_quantization
     assert server_args.quantization == case.server_quantization
-    assert server_args.moe_runner_backend == case.expected_moe_backend
-    assert server_args.fp8_gemm_runner_backend == case.expected_fp8_gemm_backend
+    assert (
+        resolution_result(server_args, "moe_runner_backend")
+        == case.expected_moe_backend
+    )
+    assert (
+        resolution_result(server_args, "fp8_gemm_runner_backend")
+        == case.expected_fp8_gemm_backend
+    )
 
 
 def test_model_worker_backend_policy_uses_strict_server_args_override(
@@ -437,8 +459,8 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
     )
 
     assert effective_quantization == "fp8"
-    assert server_args.moe_runner_backend == "cutlass"
-    assert server_args.fp8_gemm_runner_backend == "triton"
+    assert resolution_result(server_args, "moe_runner_backend") == "cutlass"
+    assert resolution_result(server_args, "fp8_gemm_runner_backend") == "triton"
     assert server_args._runtime_mutations == [
         (
             "sglang-omni-qwen3-backend-policy",
@@ -480,7 +502,7 @@ def test_bf16_talker_moe_downgrade_keys_on_device_not_fp8(
     )
 
     assert effective_quantization is None
-    assert server_args.moe_runner_backend == expected_moe_backend
+    assert resolution_result(server_args, "moe_runner_backend") == expected_moe_backend
 
 
 @pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])
@@ -508,7 +530,7 @@ def test_auto_moe_runner_is_left_to_sglang_on_xpu() -> None:
     )
 
     assert effective_quantization is None
-    assert server_args.moe_runner_backend == "auto"
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
 
 
 def test_model_config_has_moe_prefers_effective_text_config() -> None:
@@ -544,7 +566,7 @@ def test_fp8_cutlass_moe_support_matches_sglang_0_5_16_contract(
     sm120_supported: bool,
     expected_supported: bool,
 ) -> None:
-    """Mirrors the CUTLASS FP8 MoE assertions in SGLang 0.5.16."""
+    """Mirrors upstream's CUTLASS FP8 MoE assertions."""
     _install_fake_cutlass_support_modules(
         monkeypatch,
         cutlass_supported=cutlass_supported,
@@ -562,7 +584,6 @@ def test_backend_global_initialization_for_fp8_moe_model(monkeypatch) -> None:
     _install_fake_backend_modules(monkeypatch, calls)
 
     model_worker._initialize_model_worker_backend_globals(
-        _server_args(),
         _model_config(quantization="fp8", native_fp8_block_quant=True),
         "fp8",
     )
@@ -576,7 +597,6 @@ def test_backend_global_initialization_for_bf16_moe_omits_fp8(monkeypatch) -> No
     _install_fake_backend_modules(monkeypatch, calls)
 
     model_worker._initialize_model_worker_backend_globals(
-        _server_args(),
         _model_config(quantization=None),
         None,
     )
@@ -603,11 +623,11 @@ class FullConfigureBackendPolicyCase:
 
 
 # Test cases covering the ordering issue: the Omni quantization adapters
-# run BEFORE apply_model_worker_backend_policy(), so only Talker FP8
-# with native block quant should get triton GEMM; Thinker and non-Qwen
-# should preserve auto. The adapters are a no-op for FP8 (they only
-# normalize stage-local names for methods like AutoRound), so all FP8
-# backend policy stays owned by apply_model_worker_backend_policy().
+# run BEFORE apply_model_worker_backend_policy(), so only Qwen3-Omni FP8
+# engines with native block quant should get triton GEMM; non-Qwen should
+# preserve auto. The adapters are a no-op for FP8 (they only normalize
+# stage-local names for methods like AutoRound), so all FP8 backend policy
+# stays owned by apply_model_worker_backend_policy().
 CONFIGURE_BACKEND_POLICY_CASES = [
     FullConfigureBackendPolicyCase(
         name="talker_fp8_auto_gemm_becomes_triton",
@@ -624,7 +644,7 @@ CONFIGURE_BACKEND_POLICY_CASES = [
         expected_fp8_gemm_backend="triton",
     ),
     FullConfigureBackendPolicyCase(
-        name="thinker_fp8_auto_gemm_preserved_as_auto",
+        name="thinker_fp8_auto_gemm_becomes_triton",
         model_quantization="fp8",
         server_quantization=None,
         native_fp8_block_quant=True,
@@ -635,7 +655,21 @@ CONFIGURE_BACKEND_POLICY_CASES = [
         ep_size=1,
         cutlass_supported=True,
         expected_moe_backend="cutlass",
-        expected_fp8_gemm_backend="auto",
+        expected_fp8_gemm_backend="triton",
+    ),
+    FullConfigureBackendPolicyCase(
+        name="thinker_fp8_explicit_deep_gemm_preserved",
+        model_quantization="fp8",
+        server_quantization=None,
+        native_fp8_block_quant=True,
+        model_arch_override="Qwen3OmniThinkerForCausalLM",
+        has_moe=True,
+        initial_moe_backend="auto",
+        initial_fp8_gemm_backend="deep_gemm",
+        ep_size=1,
+        cutlass_supported=True,
+        expected_moe_backend="cutlass",
+        expected_fp8_gemm_backend="deep_gemm",
     ),
     FullConfigureBackendPolicyCase(
         name="talker_bf16_fp8_gemm_explicit_preserved",
@@ -707,12 +741,12 @@ def _install_fake_backend_modules(
     _install_fake_module(
         monkeypatch,
         "sglang.srt.layers.moe",
-        initialize_moe_config=lambda server_args: calls.append("moe"),
+        initialize_moe_config=lambda: calls.append("moe"),
     )
     _install_fake_module(
         monkeypatch,
         "sglang.srt.layers.quantization.fp8_utils",
-        initialize_fp8_gemm_config=lambda server_args: calls.append("fp8"),
+        initialize_fp8_gemm_config=lambda: calls.append("fp8"),
     )
 
 
@@ -770,7 +804,7 @@ def test_configure_backend_policy_fp8_gemm_ordering(
         2. apply_model_worker_backend_policy()
 
     Only step 2 (arch-aware) should set fp8_gemm_runner_backend="triton"
-    for Talker FP8. Step 1 must NOT touch FP8 backend selection.
+    for Qwen3-Omni FP8. Step 1 must NOT touch FP8 backend selection.
     """
     # Install fake modules so we don't need real GPU hardware.
     _install_fake_module(monkeypatch, "sglang")
@@ -848,11 +882,11 @@ def test_configure_backend_policy_fp8_gemm_ordering(
         case.model_arch_override,
     )
 
-    assert server_args.moe_runner_backend == case.expected_moe_backend, (
-        f"moe_runner_backend: expected {case.expected_moe_backend!r}, "
-        f"got {server_args.moe_runner_backend!r}"
+    assert (
+        resolution_result(server_args, "moe_runner_backend")
+        == case.expected_moe_backend
     )
-    assert server_args.fp8_gemm_runner_backend == case.expected_fp8_gemm_backend, (
-        f"fp8_gemm_runner_backend: expected {case.expected_fp8_gemm_backend!r}, "
-        f"got {server_args.fp8_gemm_runner_backend!r}"
+    assert (
+        resolution_result(server_args, "fp8_gemm_runner_backend")
+        == case.expected_fp8_gemm_backend
     )

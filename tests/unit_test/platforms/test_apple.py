@@ -36,10 +36,10 @@ def test_apple_device_binding_is_single_device() -> None:
 
 
 def test_apple_device_total_memory_uses_torch_without_mlx(monkeypatch) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     expected = 12_713_115_648
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
     monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: expected)
 
     assert AppleOmniPlatform().get_device_total_memory(0) == expected

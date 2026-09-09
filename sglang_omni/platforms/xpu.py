@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
@@ -82,13 +83,15 @@ class XPUOmniPlatform(OmniPlatform):
             server_args, model_config, model_arch_override
         )
 
+        cfg = resolved_view(server_args)
+        moe_runner_backend = cfg.moe_runner_backend
         if model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
-        ) and server_args.moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
+        ) and moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
             raise ValueError(
                 f"Qwen3-Omni on Intel XPU cannot use "
-                f"moe_runner_backend={server_args.moe_runner_backend!r}; the CUTLASS "
+                f"moe_runner_backend={moe_runner_backend!r}; the CUTLASS "
                 "MoE runners are CUDA-only. Leave the backend as 'auto' or pass "
                 "'triton'."
             )

@@ -135,6 +135,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del gpu_id
+        from sglang.srt.runtime_context import get_schedule
+
         from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
         from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
@@ -154,7 +156,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             semantic_begin_id=self.adapter.semantic_begin_id,
             semantic_end_id=self.adapter.semantic_end_id,
             im_end_token_id=self.adapter.eos_token_ids[0],
-            max_batch_size=server_args.max_running_requests,
+            max_batch_size=get_schedule().max_running_requests,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             ras_window=self.ras_window,
@@ -164,10 +166,12 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         return fish_stages._resolve_s2pro_model_buffer_bs(model)
 
     def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(server_args.enable_torch_compile):
+        from sglang.srt.runtime_context import get_exec
+
+        if bool(get_exec().graph.enable_torch_compile):
             fish_stages._compile_s2pro_codebook_decoder(
                 model,
-                max_batch_size=server_args.torch_compile_max_bs,
+                max_batch_size=get_exec().graph.torch_compile_max_bs,
             )
             override_server_args(
                 server_args,

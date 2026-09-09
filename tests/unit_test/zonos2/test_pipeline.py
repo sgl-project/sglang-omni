@@ -193,9 +193,13 @@ def test_speech_seed_is_rejected_until_request_rng_is_supported() -> None:
 def test_zonos2_engine_builder_disables_chunked_prefill() -> None:
     """The per-frame feedback/EOS state machine has no rollback, so the builder
     must disable chunked prefill regardless of the ServerArgs default."""
-    server_args = SimpleNamespace(chunked_prefill_size=8192)
+    from sglang.srt.arg_groups.overrides import resolution_result
+    from sglang.srt.server_args import ServerArgs
+
+    server_args = ServerArgs(model_path="dummy", chunked_prefill_size=8192)
+    server_args.resolve_once()
     Zonos2EngineBuilder().customize_server_args(server_args)
-    assert server_args.chunked_prefill_size == 0
+    assert resolution_result(server_args, "chunked_prefill_size") == 0
 
 
 def test_zonos2_engine_builder_declares_model_arch_override() -> None:

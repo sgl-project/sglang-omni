@@ -324,10 +324,13 @@ def create_sglang_thinker_executor_from_config(
     server_args = build_sglang_server_args(
         local_path, context_length=thinker_max_seq_len, **overrides
     )
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+
+    cfg = resolved_view(server_args)
     _log.getLogger(__name__).info(
         "ServerArgs: cpu_offload_gb=%s, mem_fraction_static=%s",
-        server_args.cpu_offload_gb,
-        server_args.mem_fraction_static,
+        cfg.cpu_offload_gb,
+        cfg.mem_fraction_static,
     )
     return create_sglang_thinker_executor(
         server_args=server_args,

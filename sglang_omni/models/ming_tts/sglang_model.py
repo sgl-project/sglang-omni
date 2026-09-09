@@ -13,7 +13,7 @@ from typing import Any, Iterable, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.runtime_context import get_forward, get_parallel
+from sglang.srt.runtime_context import get_exec, get_forward, get_parallel, get_schedule
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
@@ -62,7 +62,6 @@ from sglang_omni.vendor.sglang.models import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
 )
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import add_prefix
 
 logger = logging.getLogger(__name__)
@@ -763,19 +762,15 @@ class MingTTSSGLangModel(nn.Module):
 
         max_batch_size = 1
         try:
-            server_args = get_global_server_args()
+            graph = get_exec().graph
         except ValueError:
-            server_args = None
-        if server_args is not None:
-            from sglang_omni.scheduling.generation_batch_policy import (
-                get_decode_cuda_graph_max_bs,
-            )
-
-            max_batch_size = int(server_args.max_running_requests)
-            if not bool(server_args.disable_cuda_graph):
+            graph = None
+        if graph is not None:
+            max_batch_size = int(get_schedule().max_running_requests)
+            if not bool(graph.disable_cuda_graph):
                 max_batch_size = max(
                     max_batch_size,
-                    int(get_decode_cuda_graph_max_bs(server_args) or 1),
+                    int(graph.cuda_graph_config.decode.max_bs or 1),
                 )
         tail_attn_backend = MING_TTS_TAIL_ATTN_BACKEND
 

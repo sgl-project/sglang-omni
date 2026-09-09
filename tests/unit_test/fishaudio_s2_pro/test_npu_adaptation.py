@@ -185,6 +185,8 @@ def test_fish_engine_builder_compiles_when_npu_opt_in_is_enabled(monkeypatch) ->
         "current_platform",
         SimpleNamespace(is_npu=lambda: True, device_type="npu"),
     )
+    from sglang.srt.runtime_context import get_context, get_exec
+
     compiled: list[tuple[object, int]] = []
     monkeypatch.setattr(
         fish_engine.fish_stages,
@@ -192,20 +194,15 @@ def test_fish_engine_builder_compiles_when_npu_opt_in_is_enabled(monkeypatch) ->
         lambda model, *, max_batch_size: compiled.append((model, max_batch_size)),
     )
 
-    def apply_override(server_args, _source, **fields):
-        for key, value in fields.items():
-            setattr(server_args, key, value)
-
-    monkeypatch.setattr(fish_engine, "override_server_args", apply_override)
-
     builder = fish_engine.FishS2ProEngineBuilder(max_new_tokens=256, ras_window=16)
     model = object()
-    server_args = SimpleNamespace(enable_torch_compile=True, torch_compile_max_bs=16)
+    with get_context().override_server_args(
+        enable_torch_compile=True, torch_compile_max_bs=16
+    ) as server_args:
+        builder.compile_model(model, server_args)
 
-    builder.compile_model(model, server_args)
-
-    assert compiled == [(model, 16)]
-    assert server_args.enable_torch_compile is False
+        assert compiled == [(model, 16)]
+        assert get_exec().graph.enable_torch_compile is False
 
 
 def test_fish_engine_builder_cuda_defaults_unchanged(monkeypatch) -> None:
