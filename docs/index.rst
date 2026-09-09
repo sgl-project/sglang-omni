@@ -113,6 +113,7 @@ Supported Models
    cookbook/qwen3_omni.md
    cookbook/ming_omni.md
    cookbook/llada2_uni.md
+   cookbook/fun_cosyvoice3.md
 
 .. toctree::
    :maxdepth: 1

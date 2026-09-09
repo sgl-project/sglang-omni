@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tab B: follow every server log launched by the active pytest for one GPU group.
+# Tab B: follow the combined log from the active pytest for one GPU group.
 set -euo pipefail
 
 if [[ "$#" -lt 2 ]]; then
@@ -30,7 +30,7 @@ clear_active_logs() {
 }
 
 echo "[Tab B][$GPU_GROUP] dynamic server logs"
-echo "[Tab B][$GPU_GROUP] prefers server.log under basetemp; falls back to pytest runN.log (local non-CI)"
+echo "[Tab B][$GPU_GROUP] prefers pytest runN.log; falls back to server.log under basetemp"
 echo "[Tab B][$GPU_GROUP] tee -> $TEE_LOG (full durable stream)"
 if [[ "$VERBOSE" != "1" ]]; then
   echo "[Tab B][$GPU_GROUP] filtering Decode/Prefill batch spam (VERBOSE=1 to disable)"
@@ -67,30 +67,26 @@ active_basetemps() {
   done
 }
 
-# Discover attachable logs for one basetemp.
-# On GitHub Actions / force_log fixtures: server.log under basetemp.
-# Locally: server_log_file() returns None, so router/worker stdout is
-# multiplexed into the sibling pytest runN.log next to basetemp_runN.
+# Discover the combined pytest log for one basetemp. It contains worker output
+# and any router output tee'd by the fixture. Fall back to fixture server logs
+# when the pytest log is unavailable.
 discover_logs() {
   local basetemp="$1"
-  local found=0
   local log base parent runlog
+
+  base="$(basename "$basetemp")"
+  if [[ "$base" =~ ^basetemp_run([0-9]+)$ ]]; then
+    parent="$(dirname "$basetemp")"
+    runlog="$parent/run${BASH_REMATCH[1]}.log"
+    if [[ -f "$runlog" ]]; then
+      printf '%s\n' "$runlog"
+      return
+    fi
+  fi
 
   while IFS= read -r log; do
     printf '%s\n' "$log"
-    found=1
   done < <(find "$basetemp" -type f -name 'server.log' -print 2>/dev/null | sort)
-
-  if [[ "$found" -eq 0 ]]; then
-    base="$(basename "$basetemp")"
-    if [[ "$base" =~ ^basetemp_run([0-9]+)$ ]]; then
-      parent="$(dirname "$basetemp")"
-      runlog="$parent/run${BASH_REMATCH[1]}.log"
-      if [[ -f "$runlog" ]]; then
-        printf '%s\n' "$runlog"
-      fi
-    fi
-  fi
 }
 
 log_label() {
@@ -114,7 +110,7 @@ attach_log() {
     filter_cmd="cat"
   else
     # Drop the lines that blow the IDE terminal budget in seconds.
-    filter_cmd="grep -E -v 'scheduler_metrics_mixin: (Decode|Prefill) batch'"
+    filter_cmd="grep -E -v '(scheduler_metrics_mixin|scheduler_components[.]metrics_reporter): (Decode|Prefill) batch'"
   fi
   # New session so stop_tail can kill the whole group.
   # Line-buffer everything; tee durable full/filtered stream for operators.
