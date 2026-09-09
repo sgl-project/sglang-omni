@@ -33,6 +33,10 @@ _CONFIG_MODEL_TYPE_TO_ARCH = {
 
 _COSYVOICE3_LAYOUT_MARKER = "cosyvoice3.yaml"
 _COSYVOICE3_ARCHITECTURE = "FunCosyVoice3SGLangModel"
+_AUK_ARCHITECTURE = "AuKForConditionalGeneration"
+_AUK_CONFIG_NAMES = ("config.yaml", "config.yml")
+_AUK_MODEL_NAMES = frozenset({"auk", "auk-flash"})
+_AUK_WEIGHT_MARKERS = ("auk_base.safetensors", "auk_flash.safetensors")
 
 
 def architecture_from_hf_config(hf_config: Any) -> str | None:
@@ -148,6 +152,54 @@ def try_resolve_arch_from_cosyvoice3_layout(
     except Exception:
         return None
     return _COSYVOICE3_ARCHITECTURE
+
+
+def _auk_architecture_from_config(path: str) -> str | None:
+    """Return the AuK architecture if the file names AuK or AuK-Flash."""
+    import yaml
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    model = raw.get("model") if isinstance(raw.get("model"), dict) else raw
+    if not isinstance(model, dict):
+        return None
+    name = model.get("name") or raw.get("name")
+    if not isinstance(name, str):
+        return None
+    if name.lower() in _AUK_MODEL_NAMES:
+        return _AUK_ARCHITECTURE
+    return None
+
+
+def try_resolve_arch_from_auk_layout(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """Resolve AuK from the released OmegaConf layout."""
+    for filename in _AUK_CONFIG_NAMES:
+        local = os.path.join(model_path, filename)
+        if os.path.isfile(local):
+            return _auk_architecture_from_config(local)
+    if os.path.isdir(model_path):
+        for marker in _AUK_WEIGHT_MARKERS:
+            if os.path.isfile(os.path.join(model_path, marker)):
+                return _AUK_ARCHITECTURE
+        return None
+    for filename in _AUK_CONFIG_NAMES:
+        try:
+            cached = hf_hub_download(
+                repo_id=model_path, filename=filename, revision=revision
+            )
+        except Exception:
+            continue
+        architecture = _auk_architecture_from_config(cached)
+        if architecture is not None:
+            return architecture
+    return None
 
 
 @lru_cache(maxsize=8)

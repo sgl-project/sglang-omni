@@ -53,6 +53,7 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
             "wer_per_sample_p95": 0.0,
             "wer_per_sample_max": 0.0,
             "wer_below_50_corpus": 0.0,
+            "wer_below_50_per_sample_mean": 0.0,
             "n_above_50_pct_wer": 0,
             "pct_above_50_pct_wer": 0.0,
             "latency_mean_s": 0.0,
@@ -99,6 +100,9 @@ def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
         "wer_per_sample_p95": float(np.percentile(wer_arr, 95)),
         "wer_per_sample_max": float(np.max(wer_arr)),
         "wer_below_50_corpus": float(wer_below_50_micro),
+        "wer_below_50_per_sample_mean": (
+            float(np.mean([o.wer for o in ok_samples])) if ok_samples else 0.0
+        ),
         "n_above_50_pct_wer": n_above_50,
         "pct_above_50_pct_wer": (n_above_50 / len(successes) * 100 if successes else 0),
         "latency_mean_s": float(np.mean(latency_arr)),
@@ -182,6 +186,11 @@ def _print_wer_summary_table(
         f"  {'WER corpus (excl >50%):':<{lw}} "
         f"{_metric_value(metrics, 'wer_below_50_corpus'):.4f} "
         f"({_metric_value(metrics, 'wer_below_50_corpus') * 100:.2f}%)"
+    )
+    print(
+        f"  {'WER mean (excl >50%):':<{lw}} "
+        f"{_metric_value(metrics, 'wer_below_50_per_sample_mean'):.4f} "
+        f"({_metric_value(metrics, 'wer_below_50_per_sample_mean') * 100:.2f}%)"
     )
     print(
         f"  {'>50% WER samples:':<{lw}} "
