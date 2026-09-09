@@ -314,7 +314,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
 
@@ -352,6 +352,8 @@ mod tests {
                 stream_modes: vec![StreamMode::NonStreaming],
             }],
             active_requests: AtomicUsize::new(0),
+            dispatches: std::array::from_fn(|_| AtomicU64::new(0)),
+            voice_control_dispatches: AtomicU64::new(0),
             session_capacity: [None, None],
             health: AtomicHealth::unknown(),
             probe: ProbeState::pending(),

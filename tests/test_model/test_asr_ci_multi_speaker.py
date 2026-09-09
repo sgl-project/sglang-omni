@@ -34,6 +34,7 @@ from benchmarks.tasks.transcribe_diarize import (
     load_movies800_samples,
 )
 from tests.test_model.omni_router_utils import (
+    CiRouterTopology,
     ManagedRouterHandle,
     launch_managed_router,
     router_worker_traffic_guard,
@@ -406,6 +407,7 @@ def moss_td_router_server(
         model_path=MOSS_TD_CI_MODEL_PATH,
         model_name=MOSS_TD_CI_MODEL_PATH,
         worker_extra_args=worker_extra_args,
+        router_topology=CiRouterTopology.ASR,
         wait_timeout=MOSS_TD_STARTUP_TIMEOUT,
         log_prefix="moss_td_router_logs",
     ) as router:

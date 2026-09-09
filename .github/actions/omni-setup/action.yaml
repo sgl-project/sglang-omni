@@ -9,7 +9,6 @@ inputs:
     description: Prepare or refresh the requested virtualenv before running tests.
     required: false
     default: "false"
-
 runs:
   using: composite
   steps:
@@ -77,6 +76,12 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"
+
+    - name: Export Rust router paths
+      shell: bash
+      run: |
+        binary="$(bash .github/scripts/prepare_rust_router.sh path)"
+        echo "SGLANG_OMNI_ROUTER_BIN=${binary}" >> "${GITHUB_ENV}"
 
     - name: Kill GPU processes
       shell: bash

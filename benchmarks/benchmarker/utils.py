@@ -30,6 +30,7 @@ GPU_IDLE_POLL_SECONDS = 5
 WAV_HEADER_SIZE = 44
 SSE_DATA_PREFIX = "data: "
 SSE_DONE_MARKER = "data: [DONE]"
+STREAM_SERVER_LOGS_ENV = "OMNI_CI_STREAM_SERVER_LOGS"
 
 
 @contextmanager
@@ -67,7 +68,7 @@ def no_proxy_env() -> dict[str, str]:
 def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
     """Capture server logs to a file on CI; stream to the terminal locally."""
     is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
-    if not is_ci:
+    if not is_ci or os.environ.get(STREAM_SERVER_LOGS_ENV) == "1":
         return None
     return tmp_path_factory.mktemp(prefix) / "server.log"
 
@@ -145,6 +146,9 @@ def wait_healthy(
     port: int,
     log_file: Path | None,
     timeout: int = STARTUP_TIMEOUT,
+    *,
+    health_path: str = "/health",
+    health_body_contains: str | None = "healthy",
 ) -> None:
     """Wait for a server to report healthy, stopping it and raising on failure."""
     try:
@@ -154,7 +158,8 @@ def wait_healthy(
                 timeout=timeout,
                 server_process=proc,
                 server_log_file=log_file,
-                health_body_contains="healthy",
+                health_path=health_path,
+                health_body_contains=health_body_contains,
             )
     except Exception as exc:
         stop_server(proc)
@@ -179,6 +184,8 @@ def start_server_from_cmd(
     env: dict[str, str] | None = None,
     tee: bool = False,
     strip_proxy: bool = False,
+    health_path: str = "/health",
+    health_body_contains: str | None = "healthy",
 ) -> subprocess.Popen:
     """Start a server from an arbitrary command and wait until healthy."""
     process_env = os.environ.copy()
@@ -238,7 +245,14 @@ def start_server_from_cmd(
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-    wait_healthy(proc, port, log_file, timeout=timeout)
+    wait_healthy(
+        proc,
+        port,
+        log_file,
+        timeout=timeout,
+        health_path=health_path,
+        health_body_contains=health_body_contains,
+    )
     return proc
 
 
@@ -383,6 +397,7 @@ def wait_for_service(
     *,
     server_process: subprocess.Popen | None = None,
     server_log_file: str | os.PathLike[str] | None = None,
+    health_path: str = "/health",
     health_body_contains: str | None = None,
 ) -> None:
     """Wait for SGLang Omni Server to be ready."""
@@ -400,7 +415,7 @@ def wait_for_service(
                             log_text = f.read()
                 raise RuntimeError(f"Server exited with code {exit_code}.\n{log_text}")
         try:
-            resp = requests_lib.get(f"{base_url}/health", timeout=1)
+            resp = requests_lib.get(f"{base_url}{health_path}", timeout=1)
             if resp.status_code == 200 and (
                 health_body_contains is None or health_body_contains in resp.text
             ):

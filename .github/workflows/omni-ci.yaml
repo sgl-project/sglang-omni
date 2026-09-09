@@ -165,6 +165,12 @@ jobs:
           venv-name: omni
           install-deps: "true"
 
+      - name: Build Rust router
+        shell: bash
+        run: |
+          binary="$(bash .github/scripts/prepare_rust_router.sh build)"
+          echo "SGLANG_OMNI_ROUTER_BIN=${binary}" >> "${GITHUB_ENV}"
+
       - uses: ./.github/actions/omni-save-cache
         with:
           venv-name: omni

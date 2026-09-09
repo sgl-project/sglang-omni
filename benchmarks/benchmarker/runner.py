@@ -111,6 +111,11 @@ class BenchmarkRunner:
         for i, result in enumerate(results):
             status = "ok" if result.is_success else result.error
             logger.info("  warmup %d/%d: %s", i + 1, count, status)
+            if not result.is_success:
+                raise ValueError(
+                    "Warmup failed - Please make sure benchmark arguments are "
+                    f"correctly specified. Error: {result.error}"
+                )
 
     async def _dispatch(
         self,

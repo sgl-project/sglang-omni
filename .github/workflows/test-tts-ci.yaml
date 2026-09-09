@@ -320,6 +320,12 @@ jobs:
         with:
           venv-name: omni
 
+      - name: Prepare exact-sha Rust router
+        shell: bash
+        run: |
+          binary="$(bash .github/scripts/prepare_rust_router.sh build)"
+          echo "SGLANG_OMNI_ROUTER_BIN=${binary}" >> "${GITHUB_ENV}"
+
       - name: Prepare speaker similarity assets
         shell: bash
         run: |
