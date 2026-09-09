@@ -11,6 +11,7 @@ from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_con
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.utils import (
     architecture_from_hf_config,
+    try_resolve_arch_from_cosyvoice3_layout,
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_raw_config,
 )
@@ -37,6 +38,8 @@ def resolve_config_cls_for_model_path(model_path: str):
         arch = try_resolve_arch_from_raw_config(repo_id, revision=revision)
     if arch is None:
         arch = try_resolve_arch_from_mistral_config(repo_id, revision=revision)
+    if arch is None:
+        arch = try_resolve_arch_from_cosyvoice3_layout(repo_id, revision=revision)
     if arch is None:
         hint = f", check that revision {revision} exists" if revision else ""
         raise ValueError(
@@ -94,11 +97,11 @@ class ConfigManager:
         """Merge the configuration and the extra arguments.
 
         The dotted keys are translated into canonical patches and applied by
-        :class:`~sglang_omni.config.resolver.ConfigResolver`, which is the only
+        :class:sglang_omni.config.resolver.ConfigResolver, which is the only
         code that writes into a configuration.
 
-        ``extra_patches`` carries patches a caller has already translated --
-        the ``--model-path`` flag in ``sgl-omni serve``, for instance.
+        extra_patches carries patches a caller has already translated --
+        the --model-path flag in sgl-omni serve, for instance.
         Everything is resolved together, in one patch set, so that writing the
         same path two ways is refused (or settled by declared specificity)
         rather than by the order the translations happen to run in.
@@ -137,11 +140,11 @@ class ConfigManager:
         """
         Load the configuration from the file path.
 
-        The file's ``stages:`` mapping entries are folded into the
-        configuration that comes back, so callers holding a ``ConfigManager``
+        The file's stages: mapping entries are folded into the
+        configuration that comes back, so callers holding a ConfigManager
         see one settled config rather than a config plus a pile of pending
-        overrides. ``sgl-omni config explain`` wants the opposite and calls
-        ``sources_from_config_file`` directly.
+        overrides. sgl-omni config explain wants the opposite and calls
+        sources_from_config_file directly.
         """
         config, patches = sources_from_config_file(file_path)
         if not patches:

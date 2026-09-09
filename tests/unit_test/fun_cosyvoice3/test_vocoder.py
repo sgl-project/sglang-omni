@@ -638,9 +638,9 @@ def _executor_compiles(monkeypatch, **kwargs) -> bool:
     return bool(compiled)
 
 
-def test_create_vocoder_executor_compiles_dit_by_default(monkeypatch) -> None:
-    assert _executor_compiles(monkeypatch)
-    assert not _executor_compiles(monkeypatch, enable_dit_torch_compile=False)
+def test_create_vocoder_executor_skips_dit_compile_by_default(monkeypatch) -> None:
+    assert not _executor_compiles(monkeypatch)
+    assert _executor_compiles(monkeypatch, enable_dit_torch_compile=True)
 
 
 def test_create_vocoder_executor_trt_alone_skips_the_default_compile(
