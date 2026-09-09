@@ -89,10 +89,13 @@ def plan_weight_share(
     gpu_ids_by_process = {
         spec.process_name: process_gpu_ids(spec) for spec in process_specs
     }
-    candidates = collect_candidate_groups(logical_process_plan, gpu_ids_by_process)
+    candidates = collect_candidate_groups(
+        config, logical_process_plan, gpu_ids_by_process
+    )
     if not candidates:
         raise WeightShareError(
-            "weight_share=on but no logical Process places two or more replicas "
+            "weight_share=on but no logical Process with an SGLang engine "
+            "places two or more replicas "
             "on one GPU; declare processes.<name>.num_replicas with repeated "
             "replica_devices entries, or use weight_share=off"
         )
@@ -169,7 +172,21 @@ def reject_external_env(process_specs) -> None:
                 )
 
 
+def engine_stage_names(
+    config: PipelineConfig,
+    process: LogicalProcess,
+) -> list[str]:
+    """Return the SGLang engine stages owned by a process."""
+    config_cls = type(config)
+    return [
+        stage_name
+        for stage_name in process.stage_names
+        if config_cls.stage_config_cls(stage_name).engine_stage
+    ]
+
+
 def collect_candidate_groups(
+    config: PipelineConfig,
     logical_process_plan: LogicalProcessPlan,
     gpu_ids_by_process: dict[str, set[int]],
 ) -> list[tuple[LogicalProcess, int, tuple[int, ...]]]:
@@ -188,6 +205,12 @@ def collect_candidate_groups(
                 "Weight sharing skips tensor-parallel process %r: CUDA IPC "
                 "handles are not rank qualified",
                 process.name,
+            )
+            continue
+        if not engine_stage_names(config, process):
+            logger.info(
+                f"Weight sharing skips process {process.name!r}: "
+                "no SGLang engine stage"
             )
             continue
         by_gpu: dict[int, list[int]] = {}
@@ -214,12 +237,7 @@ def validate_sharing_process(
     config: PipelineConfig,
     process: LogicalProcess,
 ) -> None:
-    config_cls = type(config)
-    engine_stages = [
-        stage_name
-        for stage_name in process.stage_names
-        if config_cls.stage_config_cls(stage_name).engine_stage
-    ]
+    engine_stages = engine_stage_names(config, process)
     if len(engine_stages) != 1:
         raise WeightShareError(
             f"weight sharing needs exactly one SGLang engine stage in process "
