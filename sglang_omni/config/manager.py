@@ -11,6 +11,7 @@ from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_con
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.utils import (
     architecture_from_hf_config,
+    try_resolve_arch_from_auk_layout,
     try_resolve_arch_from_cosyvoice3_layout,
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_raw_config,
@@ -40,6 +41,8 @@ def resolve_config_cls_for_model_path(model_path: str):
         arch = try_resolve_arch_from_mistral_config(repo_id, revision=revision)
     if arch is None:
         arch = try_resolve_arch_from_cosyvoice3_layout(repo_id, revision=revision)
+    if arch is None:
+        arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
     if arch is None:
         hint = f", check that revision {revision} exists" if revision else ""
         raise ValueError(
