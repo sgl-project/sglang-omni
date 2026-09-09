@@ -7,9 +7,11 @@ import sys
 from types import SimpleNamespace
 from typing import ClassVar
 
+import numpy as np
 import pytest
 import torch
 
+from sglang_omni.client.client import Client
 from sglang_omni.models.fun_cosyvoice3 import stages
 from sglang_omni.models.fun_cosyvoice3.config import (
     FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
@@ -296,6 +298,31 @@ def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
 
     with pytest.raises(RuntimeError, match="requires audio_codes"):
         vocoder.prepare_item(payload)
+
+
+def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
+    state = FunCosyVoice3State(
+        text="hello",
+        audio_codes=torch.tensor([[1], [2]]),
+        audio_samples=[9.0],
+        prompt_tokens=3,
+        completion_tokens=2,
+    )
+    waveform = np.array([[0.1, -0.2]], dtype=np.float32)
+
+    # ``store_result`` is the native MLX adapter's production entry point;
+    # constructing it without __init__ keeps this serialization regression
+    # independent of an installed MLX model artifact.
+    mlx_vocoder = object.__new__(stages._CosyVoice3MlxVocoderAdapter)
+    stored = mlx_vocoder.store_result(_payload(state), state, waveform, 24000)
+    result = Client._default_result_builder(stored.request_id, stored.data)
+
+    np.testing.assert_array_equal(result.audio_data, waveform.reshape(-1))
+    assert result.sample_rate == 24000
+    assert result.modality == "audio"
+    assert result.usage.total_tokens == 5
+    assert "audio_codes" not in stored.data
+    assert "audio_samples" not in stored.data
 
 
 def test_cosyvoice3_vocoder_rejects_missing_audio_output() -> None:

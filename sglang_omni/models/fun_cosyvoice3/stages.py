@@ -1221,11 +1221,12 @@ def _store_vocoder_result(
 ) -> StagePayload:
     if wav is None:
         raise RuntimeError("Fun-CosyVoice3 vocoder did not return audio")
-    payload.data.update(audio_waveform_payload(wav, source_hint="Fun-CosyVoice3"))
+    audio_payload = audio_waveform_payload(wav, source_hint="Fun-CosyVoice3")
     state.audio_samples = None
     state.sample_rate = int(sample_rate)
     state.audio_codes = None
     payload = store_state(payload, state)
+    payload.data.update(audio_payload)
     payload.data["sample_rate"] = state.sample_rate
     payload.data["modality"] = "audio"
     usage = build_usage(state)
