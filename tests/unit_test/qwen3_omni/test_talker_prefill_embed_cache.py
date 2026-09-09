@@ -21,13 +21,11 @@ def model_dir(tmp_path):
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
     talker_prefill._EMBED_SOURCE_CACHE.clear()
     talker_prefill._EMBED_HANDLE_CACHE.clear()
-    talker_prefill._EMBED_PACKED_CACHE.clear()
     try:
         yield tmp_path
     finally:
         talker_prefill._EMBED_SOURCE_CACHE.clear()
         talker_prefill._EMBED_HANDLE_CACHE.clear()
-        talker_prefill._EMBED_PACKED_CACHE.clear()
 
 
 def test_rows_correct(model_dir):
@@ -116,13 +114,11 @@ def test_fallback_scan_ignores_directories_named_safetensors(
 def clear_embed_caches():
     talker_prefill._EMBED_SOURCE_CACHE.clear()
     talker_prefill._EMBED_HANDLE_CACHE.clear()
-    talker_prefill._EMBED_PACKED_CACHE.clear()
     try:
         yield
     finally:
         talker_prefill._EMBED_SOURCE_CACHE.clear()
         talker_prefill._EMBED_HANDLE_CACHE.clear()
-        talker_prefill._EMBED_PACKED_CACHE.clear()
 
 
 def _dense_table(offset: float = 0.0) -> torch.Tensor:
@@ -203,7 +199,7 @@ def test_converted_4bit_thinker_embedding_is_dequantized(tmp_path, clear_embed_c
 
 
 def test_native_mlx_prefill_dequantizes_only_requested_thinker_rows(
-    tmp_path, clear_embed_caches
+    tmp_path, clear_embed_caches, monkeypatch
 ):
     mx = pytest.importorskip("mlx.core")
     from sglang_omni.models.qwen3_omni.mlx.talker_prefill import (
@@ -230,6 +226,13 @@ def test_native_mlx_prefill_dequantizes_only_requested_thinker_rows(
     (tmp_path / "config.json").write_text(
         json.dumps({"quantization": {"bits": 4, "group_size": group_size}})
     )
+    monkeypatch.setattr(
+        mx,
+        "load",
+        lambda *args, **kwargs: pytest.fail(
+            "row-selective embedding loading must not materialize a full shard"
+        ),
+    )
 
     rows = _load_mlx_embedding_rows(str(tmp_path), [3, 0, 7])
 
@@ -239,6 +242,73 @@ def test_native_mlx_prefill_dequantizes_only_requested_thinker_rows(
         dense[[3, 0, 7]],
         atol=0.02,
         rtol=0.02,
+    )
+
+
+def test_bfloat16_packed_metadata_rows_work_for_torch_and_mlx_consumers(
+    tmp_path, clear_embed_caches, monkeypatch
+):
+    mx = pytest.importorskip("mlx.core")
+    from sglang_omni.models.qwen3_omni.mlx.talker_prefill import (
+        _load_mlx_embedding_rows,
+    )
+
+    group_size = 32
+    row_ids = [3, 0, 7]
+    dense = torch.arange(VOCAB * group_size, dtype=torch.float32).reshape(
+        VOCAB, group_size
+    ) / (VOCAB * group_size)
+    packed, scales, biases = mx.quantize(
+        mx.array(dense.numpy()), group_size=group_size, bits=4
+    )
+    bf16_scales = scales.astype(mx.bfloat16)
+    bf16_biases = biases.astype(mx.bfloat16)
+    component = tmp_path / "thinker"
+    component.mkdir()
+    save_file(
+        {
+            "model.embed_tokens.weight": torch.from_numpy(np.asarray(packed)),
+            "model.embed_tokens.scales": torch.from_numpy(np.asarray(scales)).to(
+                torch.bfloat16
+            ),
+            "model.embed_tokens.biases": torch.from_numpy(np.asarray(biases)).to(
+                torch.bfloat16
+            ),
+        },
+        str(component / "model.safetensors"),
+    )
+    (tmp_path / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 4, "group_size": group_size}})
+    )
+    monkeypatch.setattr(
+        mx,
+        "load",
+        lambda *args, **kwargs: pytest.fail(
+            "packed embedding rows must remain selectively sliced"
+        ),
+    )
+
+    source = talker_prefill._resolve_embed_source(str(tmp_path))
+    torch_rows = talker_prefill._packed_embedding_rows(str(tmp_path), source, row_ids)
+    mlx_rows = _load_mlx_embedding_rows(str(tmp_path), row_ids)
+    reference = mx.dequantize(
+        packed[mx.array(row_ids)],
+        bf16_scales[mx.array(row_ids)],
+        bf16_biases[mx.array(row_ids)],
+        group_size=group_size,
+        bits=4,
+        mode="affine",
+    )
+
+    assert torch_rows.dtype is torch.float32
+    assert mlx_rows.dtype == reference.dtype == mx.bfloat16
+    reference_torch = torch.from_numpy(np.asarray(reference.astype(mx.float32)))
+    torch.testing.assert_close(torch_rows, reference_torch, rtol=0, atol=0)
+    torch.testing.assert_close(
+        torch.from_numpy(np.asarray(mlx_rows.astype(mx.float32))),
+        reference_torch,
+        rtol=0,
+        atol=0,
     )
 
 
@@ -263,7 +333,7 @@ def test_native_mlx_prefill_reads_bfloat16_thinker_rows(tmp_path, clear_embed_ca
     )
 
 
-def test_native_mlx_prefill_dispatches_bfloat16_from_header_metadata(
+def test_native_mlx_prefill_uses_supported_torch_safetensors_slicing(
     tmp_path, clear_embed_caches, monkeypatch
 ):
     mx = pytest.importorskip("mlx.core")
@@ -275,13 +345,21 @@ def test_native_mlx_prefill_dispatches_bfloat16_from_header_metadata(
         str(tmp_path / "model.safetensors"),
     )
 
-    def forbidden_safe_open(*args, **kwargs):
-        raise AssertionError("BF16 dispatch must happen before NumPy safe_open")
+    calls = []
+    real_safe_open = talker_prefill.safe_open
 
-    monkeypatch.setattr(mlx_prefill, "safe_open", forbidden_safe_open)
+    def recording_safe_open(*args, **kwargs):
+        calls.append(kwargs)
+        return real_safe_open(*args, **kwargs)
+
+    monkeypatch.setattr(talker_prefill, "safe_open", recording_safe_open)
 
     rows = mlx_prefill._load_mlx_embedding_rows(str(tmp_path), [3, 0, 7])
 
+    assert calls == [
+        {"framework": "pt", "device": "cpu"},
+        {"framework": "pt", "device": "cpu"},
+    ]
     assert rows.dtype == mx.bfloat16
     torch.testing.assert_close(
         torch.from_numpy(np.asarray(rows.astype(mx.float32))),
@@ -289,7 +367,7 @@ def test_native_mlx_prefill_dispatches_bfloat16_from_header_metadata(
     )
 
 
-def test_native_mlx_prefill_reuses_bfloat16_header_and_shard_for_unseen_rows(
+def test_native_mlx_prefill_reuses_supported_safetensors_handle_for_unseen_rows(
     tmp_path, clear_embed_caches, monkeypatch
 ):
     pytest.importorskip("mlx.core")
@@ -300,28 +378,14 @@ def test_native_mlx_prefill_reuses_bfloat16_header_and_shard_for_unseen_rows(
     save_file({"thinker.model.embed_tokens.weight": weight}, str(shard))
     talker_prefill._resolve_embed_source(str(tmp_path))
 
-    calls = {"raw_open": 0, "header_parse": 0, "numpy_safe_open": 0}
-    real_path_open = mlx_prefill.Path.open
-    real_json_loads = mlx_prefill.json.loads
-    real_safe_open = mlx_prefill.safe_open
-
-    def counting_path_open(path, *args, **kwargs):
-        mode = args[0] if args else kwargs.get("mode", "r")
-        if path == shard and mode == "rb":
-            calls["raw_open"] += 1
-        return real_path_open(path, *args, **kwargs)
-
-    def counting_json_loads(*args, **kwargs):
-        calls["header_parse"] += 1
-        return real_json_loads(*args, **kwargs)
+    calls = {"safe_open": 0}
+    real_safe_open = talker_prefill.safe_open
 
     def counting_safe_open(*args, **kwargs):
-        calls["numpy_safe_open"] += 1
+        calls["safe_open"] += 1
         return real_safe_open(*args, **kwargs)
 
-    monkeypatch.setattr(mlx_prefill.Path, "open", counting_path_open)
-    monkeypatch.setattr(mlx_prefill.json, "loads", counting_json_loads)
-    monkeypatch.setattr(mlx_prefill, "safe_open", counting_safe_open)
+    monkeypatch.setattr(talker_prefill, "safe_open", counting_safe_open)
     builder = mlx_prefill.Qwen3OmniMlxTalkerPrefillBuilder.from_talker(
         SimpleNamespace(text_projection=lambda rows: rows),
         model_path=str(tmp_path),
@@ -338,7 +402,7 @@ def test_native_mlx_prefill_reuses_bfloat16_header_and_shard_for_unseen_rows(
 
     torch.testing.assert_close(first, weight[3].float())
     torch.testing.assert_close(second, weight[7].float())
-    assert calls == {"raw_open": 1, "header_parse": 1, "numpy_safe_open": 0}
+    assert calls == {"safe_open": 1}
 
 
 def test_mlx_community_indexed_thinker_embedding_is_dequantized(

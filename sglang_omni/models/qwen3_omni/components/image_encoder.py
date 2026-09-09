@@ -9,12 +9,14 @@ import types
 import torch
 import torch.nn as nn
 
-from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+from sglang_omni.models.qwen3_omni.components.common import (
+    load_thinker_config,
+    load_torch_component,
+)
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
     Qwen3OmniMoeVisionEncoderCompat,
 )
-from sglang_omni.models.weight_loader import load_module, resolve_dtype
-from sglang_omni.utils import instantiate_module
+from sglang_omni.models.weight_loader import resolve_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +110,9 @@ def _build_visual(
     device: str,
 ) -> nn.Module:
     vision_cfg = thinker_cfg.vision_config
-    visual = instantiate_module(VISUAL_CLASS, vision_cfg)
-    visual = load_module(
-        visual,
+    visual = load_torch_component(
+        VISUAL_CLASS,
+        vision_cfg,
         model_path,
         prefix=VISUAL_PREFIX,
         dtype=torch_dtype,

@@ -47,6 +47,13 @@ import numpy as np
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.qwen3_omni.components.apple_adapter import (
+    emit_talker_step,
+    projected_prefill_rows,
+    release_talker_host_queues,
+    require_single_request,
+    validate_capture_layers,
+)
 from sglang_omni.models.qwen3_omni.mlx.common import load_qwen3_omni_mlx_component
 from sglang_omni.models.qwen3_omni.mlx.config import Qwen3OmniMlxConfig
 from sglang_omni.models.qwen3_omni.mlx.talker import (
@@ -56,15 +63,19 @@ from sglang_omni.models.qwen3_omni.mlx.talker import (
 from sglang_omni.models.qwen3_omni.mlx.talker_prefill import (
     Qwen3OmniMlxTalkerPrefillBuilder,
 )
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    mlx_to_torch as _mlx_to_torch,
+)
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    torch_to_mlx as _torch_to_mlx,
+)
 from sglang_omni.models.qwen3_omni.mlx.thinker import (
     Qwen3OmniMlxThinker,
     merge_thinker_input_embeddings,
     visual_placeholder_mask,
 )
 from sglang_omni.models.qwen3_omni.mrope_positions import linear_mrope_positions
-from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
-from sglang_omni.scheduling.messages import OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
@@ -111,26 +122,6 @@ _COMPONENT_DIRECTORIES = ("thinker", "talker", "vision", "audio", "code2wav")
 _OFFICIAL_COMPONENT_PREFIXES = ("thinker.", "talker.", "code2wav.")
 
 _CPU = torch.device("cpu")
-
-
-def _torch_to_mlx(tensor: torch.Tensor) -> mx.array:
-    """Move a Torch tensor into MLX, crossing bf16 through float32 NumPy.
-
-    NumPy has no bfloat16 dtype, so ``tensor.numpy()`` on a bf16 tensor raises;
-    the upcast has to happen on the Torch side first. Mirrors the Qwen3-ASR MLX
-    runner's conversion.
-    """
-
-    tensor = tensor.detach().cpu()
-    if tensor.dtype in (torch.bfloat16, torch.float8_e4m3fn, torch.float8_e5m2):
-        tensor = tensor.float()
-    return mx.array(tensor.numpy())
-
-
-def _mlx_to_torch(array: mx.array) -> torch.Tensor:
-    """Materialise an MLX array as a contiguous CPU Torch tensor."""
-
-    return torch.from_numpy(np.ascontiguousarray(np.asarray(array.astype(mx.float32))))
 
 
 def _shard_component_directory(shard: Path, root: Path) -> str | None:
@@ -314,22 +305,10 @@ class Qwen3OmniThinkerMlxRunner:
         *,
         accept_hidden_layer: int | None,
     ) -> None:
-        layers = tuple(int(layer) for layer in (capture_hidden_layers or ()))
-        if len(set(layers)) != len(layers):
-            raise ValueError(f"capture_hidden_layers contains duplicates: {layers}")
-        nonzero = [layer for layer in layers if layer != 0]
-        if len(nonzero) > 1:
-            raise ValueError(
-                "the Qwen3-Omni speech contract captures exactly one nonzero "
-                f"thinker layer beside the embedding row, got {layers}"
-            )
-        if nonzero and accept_hidden_layer is not None:
-            if nonzero[0] != int(accept_hidden_layer):
-                raise ValueError(
-                    f"requested thinker capture layer {nonzero[0]} does not match "
-                    f"talker_config.accept_hidden_layer={int(accept_hidden_layer)}"
-                )
-        self.capture_layers = layers
+        self.capture_layers = validate_capture_layers(
+            capture_hidden_layers,
+            accept_hidden_layer=accept_hidden_layer,
+        )
         self.accept_hidden_layer = (
             None if accept_hidden_layer is None else int(accept_hidden_layer)
         )
@@ -960,11 +939,8 @@ def load_qwen3_omni_mlx_talker(
 class _MlxTalkerStepState:
     """One completed talker step, materialised for the CPU Torch queues."""
 
-    layer0_token: int
     codes: torch.Tensor
     feedback: torch.Tensor
-    hidden: torch.Tensor
-    positions: torch.Tensor
 
 
 class Qwen3OmniMlxTalkerModelRunner(ModelRunner):
@@ -1062,18 +1038,7 @@ class Qwen3OmniMlxTalkerModelRunner(ModelRunner):
         self._inflight_prefills.discard(request_id)
         if req_data is None:
             return
-        # The CPU Torch queues are request-owned; clearing them here is what
-        # stops a finished request's unconsumed feedback/text rows (and the
-        # replay history) from outliving it.
-        feedback_queue = getattr(req_data, "pending_feedback_queue", None)
-        if feedback_queue is not None and hasattr(feedback_queue, "clear"):
-            feedback_queue.clear()
-        text_queue = getattr(req_data, "pending_text_queue", None)
-        if isinstance(text_queue, PendingTextTensorQueue):
-            req_data.pending_text_queue = PendingTextTensorQueue()
-        elif text_queue is not None and hasattr(text_queue, "clear"):
-            text_queue.clear()
-        req_data.decode_input_embeds = []
+        release_talker_host_queues(req_data)
 
     def clear(self) -> None:
         self._caches.clear()
@@ -1242,7 +1207,7 @@ class Qwen3OmniMlxTalkerModelRunner(ModelRunner):
     ) -> torch.Tensor:
         """Materialise one MLX step into CPU Torch and stage it for emission."""
 
-        mx.eval(step.codes, step.feedback, step.hidden, step.layer0_token)
+        mx.eval(step.codes, step.feedback)
         codes = torch.from_numpy(
             np.ascontiguousarray(np.asarray(step.codes).astype(np.int64))
         ).reshape(-1)
@@ -1252,17 +1217,12 @@ class Qwen3OmniMlxTalkerModelRunner(ModelRunner):
                 f"declares {self.num_code_groups} code groups"
             )
         feedback = _mlx_to_torch(step.feedback).reshape(-1).contiguous()
-        hidden = _mlx_to_torch(step.hidden).reshape(-1).contiguous()
-        layer0_token = int(codes[0])
         self._pending_steps[request_id] = _MlxTalkerStepState(
-            layer0_token=layer0_token,
             codes=codes,
             feedback=feedback,
-            hidden=hidden,
-            positions=positions,
         )
         self.last_positions = positions
-        return torch.tensor([layer0_token], dtype=torch.long)
+        return codes[:1].clone()
 
     def _emit_codes_and_queue_feedback(
         self, *, schedule_batch: Any, requests: list
@@ -1287,77 +1247,26 @@ class Qwen3OmniMlxTalkerModelRunner(ModelRunner):
                 raise RuntimeError(
                     f"MLX talker has no computed step to emit for {request_id!r}"
                 )
-            req = schedule_batch.reqs[index]
-            stage_payload = sched_req.data.stage_payload
-            is_streaming = bool(
-                stage_payload is not None
-                and (stage_payload.request.params or {}).get("stream", False)
+            emit_talker_step(
+                outbox=self._outbox,
+                target=self._code2wav_target,
+                request_id=schedule_batch.reqs[index].rid,
+                data=sched_req.data,
+                codes=state.codes,
+                feedback=state.feedback,
             )
-            self._outbox.put(
-                OutgoingMessage(
-                    request_id=req.rid,
-                    type="stream",
-                    data=state.codes,
-                    target=self._code2wav_target,
-                    metadata={"stream": is_streaming},
-                )
-            )
-            sched_req.data.pending_feedback_queue.append(state.feedback)
 
     # -- inputs ------------------------------------------------------------
 
     @staticmethod
     def _single_request(requests: list) -> Any:
-        if len(requests) != 1:
-            raise RuntimeError(
-                "Apple Qwen3-Omni MLX talker serves one request at a time, got "
-                f"{len(requests)}"
-            )
-        return requests[0]
+        return require_single_request(requests, backend_name="MLX talker")
 
     @staticmethod
     def _prefill_rows(sched_req: Any) -> torch.Tensor:
         """The already-projected CPU float32 prompt rows for this prefill."""
 
-        data = sched_req.data
-        if not data.input_embeds_are_projected:
-            raise RuntimeError(
-                "Apple Qwen3-Omni MLX talker prefill requires talker-space rows "
-                "from TalkerPrefillBuilder"
-            )
-        req = data.req
-        prefix_len = len(req.prefix_indices)
-        if prefix_len:
-            raise NotImplementedError(
-                "Apple Qwen3-Omni MLX talker prefill does not support a radix " "prefix"
-            )
-        extend_len = int(req.extend_range.length)
-        rows = QwenTalkerModelRunner._projected_prefill_slice(
-            sched_req=sched_req,
-            prefix_len=prefix_len,
-            extend_len=extend_len,
-            device=_CPU,
-        )
-        if rows is None:
-            raise RuntimeError(
-                "Apple Qwen3-Omni MLX talker prefill found no prompt rows"
-            )
-        if int(rows.shape[0]) != extend_len:
-            raise NotImplementedError(
-                "Apple Qwen3-Omni MLX talker runs with chunked prefill disabled; "
-                f"got {int(rows.shape[0])} rows for an extend window of "
-                f"{extend_len}"
-            )
-        return Qwen3OmniMlxTalkerModelRunner._as_cpu_float32(rows, name="prefill rows")
-
-    @staticmethod
-    def _as_cpu_float32(tensor: torch.Tensor, *, name: str) -> torch.Tensor:
-        if tensor.device != _CPU or tensor.dtype != torch.float32:
-            raise RuntimeError(
-                f"Apple Qwen3-Omni MLX talker {name} must be CPU float32, got "
-                f"{tensor.device}/{tensor.dtype}"
-            )
-        return tensor.detach().contiguous()
+        return projected_prefill_rows(sched_req, backend_name="MLX talker")
 
     @staticmethod
     def _take_next_decode_rows(

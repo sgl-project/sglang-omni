@@ -373,31 +373,73 @@ class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
         thinker_config = load_thinker_config(model_path)
         text_config = thinker_config.text_config
 
+        from sglang_omni.models.qwen3_omni.apple_runtime import (
+            get_qwen3_omni_mps_quantization,
+        )
+
+        bits = get_qwen3_omni_mps_quantization()
         started = time.perf_counter()
-        state = read_thinker_text_state_dict(model_path, dtype=torch_dtype)
+        if bits is not None:
+            from accelerate import init_empty_weights
 
-        text_model = instantiate_module(TEXT_MODEL_CLASS, text_config)
-        _assign_state_dict(text_model, state["model"], component="thinker text model")
+            from sglang_omni.models.qwen3_omni.torch_mps_checkpoint import (
+                load_quantized_mps_module,
+            )
 
-        lm_head = nn.Linear(text_config.hidden_size, text_config.vocab_size, bias=False)
-        if text_config.tie_word_embeddings:
-            if state["lm_head"]:
-                raise ValueError(
-                    "Qwen3-Omni Torch MPS thinker ties its LM head to the token "
-                    "embeddings, but the checkpoint also carries "
-                    f"{OFFICIAL_LM_HEAD_PREFIX!r} weights"
-                )
-            lm_head.weight = text_model.embed_tokens.weight
+            with init_empty_weights():
+                component = nn.Module()
+                component.model = instantiate_module(TEXT_MODEL_CLASS, text_config)
+                if not text_config.tie_word_embeddings:
+                    component.lm_head = nn.Linear(
+                        text_config.hidden_size, text_config.vocab_size, bias=False
+                    )
+            component = load_quantized_mps_module(
+                component,
+                model_path,
+                prefix="thinker.",
+                bits=bits,
+                dtype=torch_dtype,
+                device=self._device,
+            )
+            text_model = component.model
+            if text_config.tie_word_embeddings:
+                with init_empty_weights():
+                    lm_head = nn.Linear(
+                        text_config.hidden_size, text_config.vocab_size, bias=False
+                    )
+                lm_head.weight = text_model.embed_tokens.weight
+            else:
+                lm_head = component.lm_head
         else:
-            _assign_state_dict(lm_head, state["lm_head"], component="thinker lm_head")
-        state.clear()
+            state = read_thinker_text_state_dict(model_path, dtype=torch_dtype)
+            text_model = instantiate_module(TEXT_MODEL_CLASS, text_config)
+            _assign_state_dict(
+                text_model, state["model"], component="thinker text model"
+            )
+            lm_head = nn.Linear(
+                text_config.hidden_size, text_config.vocab_size, bias=False
+            )
+            if text_config.tie_word_embeddings:
+                if state["lm_head"]:
+                    raise ValueError(
+                        "Qwen3-Omni Torch MPS thinker ties its LM head to the token "
+                        "embeddings, but the checkpoint also carries "
+                        f"{OFFICIAL_LM_HEAD_PREFIX!r} weights"
+                    )
+                lm_head.weight = text_model.embed_tokens.weight
+            else:
+                _assign_state_dict(
+                    lm_head, state["lm_head"], component="thinker lm_head"
+                )
+            state.clear()
 
         self.thinker = _build_thinker_shell(thinker_config)
         # Only the text stack becomes resident; the towers stay on meta.
-        self.thinker.model = text_model.to(
-            device=self._device, dtype=torch_dtype
-        ).eval()
-        self.thinker.lm_head = lm_head.to(device=self._device, dtype=torch_dtype).eval()
+        if bits is None:
+            text_model = text_model.to(device=self._device, dtype=torch_dtype)
+            lm_head = lm_head.to(device=self._device, dtype=torch_dtype)
+        self.thinker.model = text_model.eval()
+        self.thinker.lm_head = lm_head.eval()
         self.eval()
 
         logger.info(
@@ -867,13 +909,34 @@ class Qwen3OmniTorchMpsTalker(nn.Module):
         torch_dtype = resolve_dtype(dtype) or torch.float32
         talker_config = load_talker_config(model_path)
 
-        started = time.perf_counter()
-        state = read_talker_state_dict(model_path, dtype=torch_dtype)
-        talker = _build_talker_shell(talker_config)
-        _assign_state_dict(talker, state, component="talker")
-        state.clear()
+        from sglang_omni.models.qwen3_omni.apple_runtime import (
+            get_qwen3_omni_mps_quantization,
+        )
 
-        self.talker = talker.to(device=self._device, dtype=torch_dtype).eval()
+        bits = get_qwen3_omni_mps_quantization()
+        started = time.perf_counter()
+        talker = _build_talker_shell(talker_config)
+        if bits is not None:
+            from sglang_omni.models.qwen3_omni.torch_mps_checkpoint import (
+                load_quantized_mps_module,
+            )
+
+            talker = load_quantized_mps_module(
+                talker,
+                model_path,
+                prefix="talker.",
+                bits=bits,
+                dtype=torch_dtype,
+                device=self._device,
+            )
+        else:
+            state = read_talker_state_dict(model_path, dtype=torch_dtype)
+            _assign_state_dict(talker, state, component="talker")
+            state.clear()
+
+        if bits is None:
+            talker = talker.to(device=self._device, dtype=torch_dtype)
+        self.talker = talker.eval()
         self.config = talker_config
         self._num_code_groups = int(talker_config.num_code_groups)
         self._codec_vocab_size = int(talker_config.text_config.vocab_size)

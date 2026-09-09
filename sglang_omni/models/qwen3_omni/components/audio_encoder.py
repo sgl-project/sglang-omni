@@ -13,9 +13,11 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
     AudioLayerGraphRunner,
 )
-from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
-from sglang_omni.models.weight_loader import load_module, resolve_dtype
-from sglang_omni.utils import instantiate_module
+from sglang_omni.models.qwen3_omni.components.common import (
+    load_thinker_config,
+    load_torch_component,
+)
+from sglang_omni.models.weight_loader import resolve_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +33,9 @@ def _build_audio_tower(
     device: str,
 ) -> nn.Module:
     audio_cfg = thinker_cfg.audio_config
-    audio_tower = instantiate_module(AUDIO_TOWER_CLASS, audio_cfg)
-    return load_module(
-        audio_tower,
+    return load_torch_component(
+        AUDIO_TOWER_CLASS,
+        audio_cfg,
         model_path,
         prefix=AUDIO_TOWER_PREFIX,
         dtype=torch_dtype,

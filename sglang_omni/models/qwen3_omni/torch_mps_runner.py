@@ -35,7 +35,13 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
+from sglang_omni.models.qwen3_omni.components.apple_adapter import (
+    emit_talker_step,
+    projected_prefill_rows,
+    release_talker_host_queues,
+    require_single_request,
+    validate_capture_layers,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.torch_mps import (
     build_deepstack_visual_inputs,
@@ -96,22 +102,10 @@ class Qwen3OmniTorchMpsThinkerRunner(ModelRunner):
         *,
         accept_hidden_layer: int | None,
     ) -> tuple[int, ...]:
-        layers = tuple(int(layer) for layer in (capture_hidden_layers or ()))
-        if len(set(layers)) != len(layers):
-            raise ValueError(f"capture_hidden_layers contains duplicates: {layers}")
-        nonzero = [layer for layer in layers if layer != 0]
-        if len(nonzero) > 1:
-            raise ValueError(
-                "the Qwen3-Omni speech contract captures exactly one nonzero "
-                f"thinker layer beside the embedding row, got {layers}"
-            )
-        if nonzero and accept_hidden_layer is not None:
-            if nonzero[0] != int(accept_hidden_layer):
-                raise ValueError(
-                    f"requested thinker capture layer {nonzero[0]} does not match "
-                    f"talker_config.accept_hidden_layer={int(accept_hidden_layer)}"
-                )
-        return layers
+        return validate_capture_layers(
+            capture_hidden_layers,
+            accept_hidden_layer=accept_hidden_layer,
+        )
 
     # -- scheduler contract ------------------------------------------------
 
@@ -550,20 +544,7 @@ class Qwen3OmniTorchMpsTalkerRunner(ModelRunner):
         self._states.pop(request_id, None)
         if req_data is None:
             return
-        # The CPU Torch queues are request-owned; clearing them here is what stops
-        # a finished request's unconsumed feedback/text rows (and the replay
-        # history) from outliving it.
-        feedback_queue = getattr(req_data, "pending_feedback_queue", None)
-        if feedback_queue is not None and hasattr(feedback_queue, "clear"):
-            feedback_queue.clear()
-        text_queue = getattr(req_data, "pending_text_queue", None)
-        if isinstance(text_queue, PendingTextTensorQueue):
-            # The tensor-backed queue has no ``clear``; a fresh empty queue is
-            # what releases the request's rows.
-            req_data.pending_text_queue = PendingTextTensorQueue()
-        elif text_queue is not None and hasattr(text_queue, "clear"):
-            text_queue.clear()
-        req_data.decode_input_embeds = []
+        release_talker_host_queues(req_data)
 
     def clear(self) -> None:
         self._states.clear()
@@ -751,8 +732,6 @@ class Qwen3OmniTorchMpsTalkerRunner(ModelRunner):
         neither duplicates nor silently swallows a frame.
         """
 
-        from sglang_omni.scheduling.messages import OutgoingMessage
-
         if not self._feedback_enabled:
             for sched_req in requests:
                 state = self._states.get(sched_req.request_id)
@@ -768,74 +747,26 @@ class Qwen3OmniTorchMpsTalkerRunner(ModelRunner):
                 )
             codes, feedback = state.codes, state.feedback
             state.codes = state.feedback = None
-            req = schedule_batch.reqs[index]
-            stage_payload = sched_req.data.stage_payload
-            is_streaming = bool(
-                stage_payload is not None
-                and (stage_payload.request.params or {}).get("stream", False)
+            emit_talker_step(
+                outbox=self._outbox,
+                target=self._code2wav_target,
+                request_id=schedule_batch.reqs[index].rid,
+                data=sched_req.data,
+                codes=codes,
+                feedback=feedback,
             )
-            self._outbox.put(
-                OutgoingMessage(
-                    request_id=req.rid,
-                    type="stream",
-                    data=codes,
-                    target=self._code2wav_target,
-                    metadata={"stream": is_streaming},
-                )
-            )
-            sched_req.data.pending_feedback_queue.append(feedback)
 
     # -- inputs ------------------------------------------------------------
 
     @staticmethod
     def _single_request(requests: list) -> Any:
-        if len(requests) != 1:
-            raise RuntimeError(
-                "Apple Qwen3-Omni Torch MPS talker serves one request at a time, "
-                f"got {len(requests)}"
-            )
-        return requests[0]
+        return require_single_request(requests, backend_name="Torch MPS talker")
 
     @staticmethod
     def _prefill_rows(sched_req: Any) -> torch.Tensor:
         """The already-projected CPU float32 prompt rows for this prefill."""
 
-        data = sched_req.data
-        if not data.input_embeds_are_projected:
-            raise RuntimeError(
-                "Apple Qwen3-Omni Torch MPS talker prefill requires talker-space "
-                "rows from TalkerPrefillBuilder"
-            )
-        req = data.req
-        prefix_len = len(req.prefix_indices)
-        if prefix_len:
-            raise NotImplementedError(
-                "Apple Qwen3-Omni Torch MPS talker prefill does not support a "
-                "radix prefix"
-            )
-        extend_len = int(req.extend_range.length)
-        rows = QwenTalkerModelRunner._projected_prefill_slice(
-            sched_req=sched_req,
-            prefix_len=prefix_len,
-            extend_len=extend_len,
-            device=_CPU,
-        )
-        if rows is None:
-            raise RuntimeError(
-                "Apple Qwen3-Omni Torch MPS talker prefill found no prompt rows"
-            )
-        if int(rows.shape[0]) != extend_len:
-            raise NotImplementedError(
-                "Apple Qwen3-Omni Torch MPS talker runs with chunked prefill "
-                f"disabled; got {int(rows.shape[0])} rows for an extend window of "
-                f"{extend_len}"
-            )
-        if rows.device != _CPU or rows.dtype != torch.float32:
-            raise RuntimeError(
-                "Apple Qwen3-Omni Torch MPS talker prefill rows must be CPU "
-                f"float32, got {rows.device}/{rows.dtype}"
-            )
-        return rows.detach().contiguous()
+        return projected_prefill_rows(sched_req, backend_name="Torch MPS talker")
 
     @staticmethod
     def _take_next_decode_row(sched_req: Any) -> torch.Tensor | None:

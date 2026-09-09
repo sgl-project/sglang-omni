@@ -49,8 +49,7 @@ class _EmbedSource:
 
 
 _EMBED_SOURCE_CACHE: dict[str, _EmbedSource] = {}
-_EMBED_HANDLE_CACHE: dict[str, Any] = {}
-_EMBED_PACKED_CACHE: dict[str, tuple[Any, Any, Any]] = {}
+_EMBED_HANDLE_CACHE: dict[Path, Any] = {}
 
 
 def _component_directory(shard: Path, root: Path) -> str | None:
@@ -68,7 +67,7 @@ def _checkpoint_quantization(model_dir: Path) -> dict[str, Any] | None:
     if not config_path.is_file():
         return None
     raw = json.loads(config_path.read_text())
-    quantization = raw.get("quantization")
+    quantization = raw.get("quantization") or raw.get("quantization_config")
     return quantization if isinstance(quantization, dict) else None
 
 
@@ -217,37 +216,22 @@ def _resolve_embed_source(model_path: str) -> _EmbedSource:
     raise KeyError(f"Unable to locate thinker embedding weights in {model_path}")
 
 
-def _packed_embedding_arrays(model_path: str, source: _EmbedSource):
-    cached = _EMBED_PACKED_CACHE.get(model_path)
-    if cached is not None:
-        return cached
-
-    import mlx.core as mx
-
-    prefix = source.tensor_name[: -len(".weight")]
-    if source.scales_shard is None or source.biases_shard is None:
-        raise KeyError(f"packed thinker embedding {source.tensor_name!r} is incomplete")
-    loaded_shards: dict[Path, dict[str, Any]] = {}
-
-    def _load_tensor(shard_path: Path, tensor_name: str):
-        shard = loaded_shards.get(shard_path)
-        if shard is None:
-            shard = mx.load(str(shard_path))
-            loaded_shards[shard_path] = shard
-        return shard[tensor_name]
-
+def _safetensor_rows(
+    shard: Path,
+    tensor_name: str,
+    row_ids: list[int],
+) -> torch.Tensor:
+    handle = _EMBED_HANDLE_CACHE.get(shard)
+    if handle is None:
+        handle = safe_open(str(shard), framework="pt", device="cpu")
+        _EMBED_HANDLE_CACHE[shard] = handle
+    tensor_slice = handle.get_slice(tensor_name)
     try:
-        packed = (
-            _load_tensor(source.shard, source.tensor_name),
-            _load_tensor(source.scales_shard, f"{prefix}.scales"),
-            _load_tensor(source.biases_shard, f"{prefix}.biases"),
-        )
-    except KeyError as exc:
-        raise KeyError(
-            f"packed thinker embedding {source.tensor_name!r} is missing {exc}"
-        ) from exc
-    _EMBED_PACKED_CACHE[model_path] = packed
-    return packed
+        rows = [tensor_slice[row_id] for row_id in row_ids]
+    except (IndexError, RuntimeError, TypeError, ValueError):
+        tensor = handle.get_tensor(tensor_name)
+        rows = [tensor[row_id].clone() for row_id in row_ids]
+    return torch.stack(rows, dim=0)
 
 
 def _packed_embedding_rows(
@@ -261,22 +245,73 @@ def _packed_embedding_rows(
     exact and keeps a production-size table from being materialised in full.
     """
 
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        get_qwen3_omni_mps_quantization,
+    )
+
+    if get_qwen3_omni_mps_quantization() is not None:
+        from sglang_omni.models.qwen3_omni.torch_mps_quantization import (
+            dequantize_affine_rows,
+        )
+
+        quantization = source.quantization or {}
+        if quantization.get("mode", "affine") != "affine":
+            raise ValueError("Torch MPS embedding loading requires affine quantization")
+        return dequantize_affine_rows(
+            *_packed_embedding_tensors(source, row_ids),
+            bits=int(quantization["bits"]),
+            group_size=int(quantization["group_size"]),
+        ).float()
+
     import mlx.core as mx
     import numpy as np
 
-    weight, scales, biases = _packed_embedding_arrays(model_path, source)
+    dequantized = _packed_embedding_rows_mlx(model_path, source, row_ids)
+    return torch.from_numpy(
+        np.ascontiguousarray(np.asarray(dequantized.astype(mx.float32)))
+    )
+
+
+def _packed_embedding_tensors(
+    source: _EmbedSource, row_ids: list[int]
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if source.scales_shard is None or source.biases_shard is None:
+        raise KeyError(f"packed thinker embedding {source.tensor_name!r} is incomplete")
+    prefix = source.tensor_name[: -len(".weight")]
+    return (
+        _safetensor_rows(source.shard, source.tensor_name, row_ids),
+        _safetensor_rows(source.scales_shard, f"{prefix}.scales", row_ids),
+        _safetensor_rows(source.biases_shard, f"{prefix}.biases", row_ids),
+    )
+
+
+def _packed_embedding_rows_mlx(
+    model_path: str,
+    source: _EmbedSource,
+    row_ids: list[int],
+):
+    """Return selectively loaded packed rows with checkpoint dtypes preserved."""
+
+    del model_path
+    import mlx.core as mx
+
+    from sglang_omni.models.qwen3_omni.mlx.tensor_utils import torch_to_mlx
+
+    def to_mlx(tensor: torch.Tensor):
+        array = torch_to_mlx(tensor)
+        if tensor.dtype == torch.bfloat16:
+            return array.astype(mx.bfloat16)
+        return array
+
+    weight, scales, biases = _packed_embedding_tensors(source, row_ids)
     quantization = source.quantization or {}
-    indices = mx.array(row_ids)
-    dequantized = mx.dequantize(
-        weight[indices],
-        scales[indices],
-        biases[indices],
+    return mx.dequantize(
+        to_mlx(weight),
+        to_mlx(scales),
+        to_mlx(biases),
         group_size=int(quantization["group_size"]),
         bits=int(quantization["bits"]),
         mode=str(quantization.get("mode", "affine")),
-    )
-    return torch.from_numpy(
-        np.ascontiguousarray(np.asarray(dequantized.astype(mx.float32)))
     )
 
 
@@ -284,17 +319,7 @@ def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Te
     source = _resolve_embed_source(model_path)
     if source.quantization is not None:
         return _packed_embedding_rows(model_path, source, row_ids)
-    handle = _EMBED_HANDLE_CACHE.get(model_path)
-    if handle is None:
-        handle = safe_open(str(source.shard), framework="pt", device="cpu")
-        _EMBED_HANDLE_CACHE[model_path] = handle
-    tensor_slice = handle.get_slice(source.tensor_name)
-    try:
-        rows = [tensor_slice[row_id] for row_id in row_ids]
-    except (IndexError, RuntimeError, TypeError, ValueError):
-        tensor = handle.get_tensor(source.tensor_name)
-        rows = [tensor[row_id].clone() for row_id in row_ids]
-    return torch.stack(rows, dim=0)
+    return _safetensor_rows(source.shard, source.tensor_name, row_ids)
 
 
 def coerce_feature_tensor(value: Any) -> torch.Tensor | None:

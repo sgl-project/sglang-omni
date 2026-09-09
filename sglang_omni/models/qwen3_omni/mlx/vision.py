@@ -18,6 +18,12 @@ from mlx.utils import tree_flatten
 from sglang_omni.models.qwen3_omni.mlx.common import load_qwen3_omni_mlx_component
 from sglang_omni.models.qwen3_omni.mlx.config import Qwen3OmniMlxConfig, VisionConfig
 from sglang_omni.models.qwen3_omni.mlx.runner import read_qwen3_omni_component_weights
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    mlx_to_torch as _mlx_to_torch,
+)
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    torch_to_mlx as _torch_to_mlx,
+)
 
 _VISION_PREFIXES = ("thinker.visual.", "thinker.vision_tower.")
 _VISION_LOCAL_PREFIXES = (
@@ -31,17 +37,6 @@ _VISION_LOCAL_PREFIXES = (
 # MLX SDPA can materialize its score matrix, so cap each Metal temporary at 1 GiB.
 _VISION_ATTENTION_SCORE_BUDGET_BYTES = 1 << 30
 _VISION_ATTENTION_SCORE_BYTES_PER_ELEMENT = 4
-
-
-def _torch_to_mlx(tensor: torch.Tensor) -> mx.array:
-    tensor = tensor.detach().cpu()
-    if tensor.dtype in (torch.bfloat16, torch.float8_e4m3fn, torch.float8_e5m2):
-        tensor = tensor.float()
-    return mx.array(tensor.numpy())
-
-
-def _mlx_to_torch(array: mx.array) -> torch.Tensor:
-    return torch.from_numpy(np.ascontiguousarray(np.asarray(array.astype(mx.float32))))
 
 
 def sanitize_vision_weights(

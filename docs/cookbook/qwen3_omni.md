@@ -38,6 +38,7 @@ Two Apple backends are supported, each with a tested checkpoint layout:
 | Backend | Env var | Tested checkpoint layout |
 |---|---|---|
 | Torch MPS (default) | `SGLANG_USE_MLX` unset | Dense, officially supported split Hugging Face checkpoint (thinker/talker/code2wav weights plus the official processor/tokenizer assets). |
+| Torch MPS weight-only quantization | `SGLANG_USE_MLX` unset; `SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4` or `int8` | Dense Hugging Face weights or root-namespaced MLX affine packed weights, converted at load time for native Torch MPS operators. |
 | MLX | `SGLANG_USE_MLX=1` | Direct launch of the downloaded pinned `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` directory described below. No extra artifact generation or copy step is required. |
 
 Launch commands and the full Apple runtime profile (one Metal device, greedy
@@ -76,6 +77,14 @@ Current ownership for the Apple MLX path is:
 Native MLX means those model components stay in MLX for the Apple launch, but
 it does **not** imply radix cache, multi-request batching, or CUDA-oriented
 optimizations.
+
+The native implementation requires `mlx>=0.32.2` and `mlx-lm>=0.31.2`,
+without an `mlx-vlm` dependency. It reuses MLX's fused SDPA (including vision
+head dimension 72), normalization and standard RoPE kernels, plus MLX-LM's
+KV caches and routed expert layers. Three-axis M-RoPE uses `mx.compile` to
+reuse its graph and fuse elementwise operations while retaining external
+multimodal positions. Vision attention still bounds query chunks to guard
+against quadratic score buffers when a shape takes the unfused path.
 
 Set the repository and environment paths:
 
@@ -215,6 +224,26 @@ env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
 
 Expect higher memory use and treat the generated WAV as structurally valid
 only, not semantically production-qualified.
+
+For native Torch MPS INT4, reuse the downloaded community checkpoint:
+
+```bash
+env -u SGLANG_USE_MLX SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4 \
+  "$PY" -m sglang_omni.cli serve \
+  --model-path "$MODEL_DIR" \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+Replace `int4` with `int8` for per-output-channel INT8. Leave the variable
+unset for the original dense path. Quantized linears and routed experts
+execute through PyTorch's native MPS kernels; no MLX inference or TorchAO is
+used in this mode. Floating-point embeddings, convolutions, router weights,
+prompt projections, activations, and KV caches still consume memory.
+An INT8 conversion of a 4-bit source uses more storage without recovering
+the source's lost precision. AWQ, compressed-tensors, and GPTQ formats are
+not supported. This option does not change the conservative serving profile
+or establish semantic production qualification.
 
 Send a text request:
 

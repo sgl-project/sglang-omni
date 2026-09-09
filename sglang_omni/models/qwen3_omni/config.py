@@ -313,11 +313,13 @@ class _Qwen3OmniBasePipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
+        from sglang_omni.models.qwen3_omni import apple_runtime
+
+        apple_runtime.get_qwen3_omni_mps_quantization()
         if not current_platform.is_mps():
             return
         if not (Path(self.model_path).exists() or "/" in self.model_path):
             return
-        from sglang_omni.models.qwen3_omni import apple_runtime
 
         apple_runtime.validate_qwen3_omni_apple_checkpoint(
             self.model_path,

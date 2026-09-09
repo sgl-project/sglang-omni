@@ -21,6 +21,12 @@ from sglang_omni.models.qwen3_asr.mlx.model import (
 from sglang_omni.models.qwen3_omni.mlx.common import load_qwen3_omni_mlx_component
 from sglang_omni.models.qwen3_omni.mlx.config import AudioConfig, Qwen3OmniMlxConfig
 from sglang_omni.models.qwen3_omni.mlx.runner import read_qwen3_omni_component_weights
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    mlx_to_torch as _mlx_to_torch,
+)
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    torch_to_mlx as _torch_to_mlx,
+)
 
 _AUDIO_PREFIXES = ("thinker.audio_tower.", "audio_tower.")
 _AUDIO_LOCAL_PREFIXES = (
@@ -39,17 +45,6 @@ _CONVOLUTION_WEIGHTS = {
     "conv2d2.weight",
     "conv2d3.weight",
 }
-
-
-def _torch_to_mlx(tensor: torch.Tensor) -> mx.array:
-    tensor = tensor.detach().cpu()
-    if tensor.dtype in (torch.bfloat16, torch.float8_e4m3fn, torch.float8_e5m2):
-        tensor = tensor.float()
-    return mx.array(tensor.numpy())
-
-
-def _mlx_to_torch(array: mx.array) -> torch.Tensor:
-    return torch.from_numpy(np.ascontiguousarray(np.asarray(array.astype(mx.float32))))
 
 
 def qwen3_omni_audio_output_lengths(input_lengths: mx.array) -> mx.array:

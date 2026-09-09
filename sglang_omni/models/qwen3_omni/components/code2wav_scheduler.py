@@ -83,8 +83,8 @@ def load_code2wav_model(
     """Load Code2Wav model from HF checkpoint."""
     from transformers import AutoConfig
 
+    from sglang_omni.models.qwen3_omni.components.common import load_torch_component
     from sglang_omni.models.weight_loader import (
-        load_module,
         resolve_dtype,
         resolve_model_path,
     )
@@ -112,9 +112,9 @@ def load_code2wav_model(
         Qwen3OmniMoeCode2Wav,
     )
 
-    model = Qwen3OmniMoeCode2Wav._from_config(code2wav_config)
-    model = load_module(
-        model,
+    model = load_torch_component(
+        Qwen3OmniMoeCode2Wav,
+        code2wav_config,
         weight_path,
         prefix=weight_prefix,
         dtype=torch_dtype,

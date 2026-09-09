@@ -638,6 +638,11 @@ with open("output.wav", "wb") as f:
 <a id="apple-silicon-mlx-and-torch-mps"></a>
 ## Apple Silicon (MLX and Torch MPS)
 
+Use `mlx>=0.32.2` and `mlx-lm>=0.31.2` for the native MLX path; `mlx-vlm`
+is not required. MLX 0.32.2 adds fused attention for the vision encoder's
+72-dimensional heads. Existing environments can upgrade MLX with
+`python -m pip install --upgrade 'mlx>=0.32.2'`.
+
 Qwen3-Omni also runs on Apple Silicon (`arm64`) through the same backend
 switch used by Qwen3-ASR: `SGLANG_USE_MLX=1` selects the all-native MLX
 Apple path, and an unset (or falsy) `SGLANG_USE_MLX` selects the eager Torch
@@ -715,9 +720,12 @@ both backends:
 
 Checkpoint layouts:
 
-- **Torch MPS** expects the dense, officially supported split Hugging Face
+- **Dense Torch MPS** expects the dense, officially supported split Hugging Face
   checkpoint layout (thinker/talker/code2wav weights alongside the official
   processor and tokenizer assets), launched with `SGLANG_USE_MLX` unset.
+- **Quantized Torch MPS** additionally accepts the root-namespaced MLX affine
+  checkpoint above when `SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4` or `int8`
+  is explicitly selected. Loading and inference use Torch, not MLX.
 - **MLX** launches the downloaded pinned
   `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` checkpoint directory
   directly.
@@ -727,13 +735,56 @@ Checkpoint layouts:
 - Validator-accepted MLX examples include component-local thinker/talker
   shards and the root-namespaced MLX-VLM layout.
 
-Torch MPS example:
+With both backend variables unset, Torch MPS rejects quantized checkpoints
+during pipeline construction. The opt-in quantized loader converts supported
+MLX affine packed weights and convolution layouts for Torch; the ordinary dense
+loader does not.
+
+Dense Torch MPS example:
 
 ```bash
-env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
+env -u SGLANG_USE_MLX -u SGLANG_QWEN3_OMNI_MPS_QUANTIZATION \
+  "$PY" -m sglang_omni.cli serve \
   --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
   --port 8008
 ```
+
+Native Torch MPS weight-only INT4, using the same downloaded checkpoint:
+
+```bash
+env -u SGLANG_USE_MLX SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4 \
+  "$PY" -m sglang_omni.cli serve \
+  --model-path "$MODEL_DIR" \
+  --port 8008
+```
+
+Use `int8` instead for per-output-channel INT8 weights. Both modes retain
+floating-point activations, caches, embeddings, norms, convolutions, routers,
+and CPU prompt projections; memory use is not simply parameter count times
+the selected bit width. Routed experts are quantized independently and only
+selected experts execute. Loading converts expert slices and bounded row chunks
+for large vocabulary matrices, not a dense copy of the entire model. Dense
+Hugging Face weights can also be quantized at load time.
+
+These modes require PyTorch's native MPS INT4/INT8 operators; they do not use
+TorchAO, custom Metal kernels, or CUDA fallback. MLX affine checkpoints with
+4/8-bit weights and supported group sizes are accepted, but **AWQ,
+compressed-tensors, and GPTQ checkpoints are not supported**. Converting a
+4-bit source to INT8 cannot restore precision already lost in that source.
+Do not combine the MPS quantization option with `SGLANG_USE_MLX=1`.
+
+The tiny server matrices cover text, image, audio, and video inputs with text
+and speech outputs in each quantized mode:
+
+```bash
+"$PY" -m pytest -q \
+  'tests/test_ci/test_qwen3_omni_apple.py::test_qwen3_omni_apple_text_and_speech_matrix[torch_mps_int4]' \
+  'tests/test_ci/test_qwen3_omni_apple.py::test_qwen3_omni_apple_text_and_speech_matrix[torch_mps_int8]'
+```
+
+These fixtures have random weights and establish serving behavior, not semantic
+quality. Prefer INT4 on memory-constrained Macs; production-size INT8 plus
+multimodal activations can require substantially more unified memory.
 
 ## Request Parameters
 

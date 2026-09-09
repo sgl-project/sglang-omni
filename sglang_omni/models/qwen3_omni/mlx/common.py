@@ -83,6 +83,7 @@ def _interleave_mrope(freqs: mx.array, sections: tuple[int, ...]) -> mx.array:
     return mx.take_along_axis(per_axis, selector, axis=2)[:, :, 0]
 
 
+@mx.compile
 def apply_multimodal_rope(
     q: mx.array,
     k: mx.array,
@@ -103,6 +104,10 @@ def apply_multimodal_rope(
 
     Returns:
         The rotated ``(q, k)`` tensors with the same shapes as the inputs.
+
+    Compilation folds the fixed frequencies/axis selector and fuses the
+    elementwise rotation. Ordinary ``mx.fast.rope`` offsets cannot represent
+    the independently supplied temporal/height/width positions.
     """
 
     head_dim = q.shape[-1]

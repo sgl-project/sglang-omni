@@ -3,24 +3,26 @@
 
 from __future__ import annotations
 
-import json
-import math
-import struct
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
-import numpy as np
 import torch
-from safetensors import safe_open
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import (
+    _packed_embedding_rows_mlx,
     _resolve_embed_source,
+    load_thinker_embedding_rows,
     resolve_speaker_id,
 )
 from sglang_omni.models.qwen3_omni.mlx.talker import Qwen3OmniMlxTalker
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    mlx_to_torch as _mlx_to_torch,
+)
+from sglang_omni.models.qwen3_omni.mlx.tensor_utils import (
+    torch_to_mlx as _torch_to_mlx,
+)
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
@@ -32,172 +34,16 @@ from sglang_omni.proto import StagePayload
 __all__ = ["Qwen3OmniMlxTalkerPrefillBuilder", "build_mlx_prefill_input"]
 
 
-def _torch_to_mlx(tensor: torch.Tensor) -> mx.array:
-    tensor = tensor.detach().cpu()
-    if tensor.dtype in (torch.bfloat16, torch.float8_e4m3fn, torch.float8_e5m2):
-        tensor = tensor.float()
-    return mx.array(tensor.numpy())
-
-
-def _mlx_to_torch(array: mx.array) -> torch.Tensor:
-    return torch.from_numpy(np.ascontiguousarray(np.asarray(array.astype(mx.float32))))
-
-
-@dataclass(frozen=True)
-class _SafetensorTensorMetadata:
-    dtype: str
-    shape: tuple[int, ...]
-    data_start: int
-    data_end: int
-
-
-class _SafetensorRowReader:
-    def __init__(self) -> None:
-        self._metadata: dict[tuple[Path, str], _SafetensorTensorMetadata] = {}
-        self._binary_handles: dict[Path, Any] = {}
-        self._numpy_handles: dict[Path, Any] = {}
-
-    def read_rows(
-        self,
-        shard: Path,
-        tensor_name: str,
-        row_ids: list[int],
-    ) -> mx.array:
-        metadata = self._tensor_metadata(shard, tensor_name)
-        self._validate_row_ids(metadata, row_ids)
-        if metadata.dtype == "BF16":
-            return self._read_bfloat16_rows(shard, tensor_name, metadata, row_ids)
-
-        handle = self._numpy_handles.get(shard)
-        if handle is None:
-            handle = safe_open(str(shard), framework="numpy")
-            handle.__enter__()
-            self._numpy_handles[shard] = handle
-        tensor_slice = handle.get_slice(tensor_name)
-        rows = np.stack([np.asarray(tensor_slice[row_id]) for row_id in row_ids])
-        return mx.array(rows)
-
-    def _tensor_metadata(
-        self,
-        shard: Path,
-        tensor_name: str,
-    ) -> _SafetensorTensorMetadata:
-        key = (shard, tensor_name)
-        cached = self._metadata.get(key)
-        if cached is not None:
-            return cached
-
-        handle = self._binary_handles.get(shard)
-        if handle is None:
-            handle = shard.open("rb")
-            self._binary_handles[shard] = handle
-        handle.seek(0)
-        header_size_bytes = handle.read(8)
-        if len(header_size_bytes) != 8:
-            raise ValueError(f"truncated safetensors header in {shard}")
-        header_size = struct.unpack("<Q", header_size_bytes)[0]
-        raw_header = handle.read(header_size)
-        if len(raw_header) != header_size:
-            raise ValueError(f"truncated safetensors header in {shard}")
-        header = json.loads(raw_header)
-        data_base = 8 + header_size
-        for name, tensor in header.items():
-            if name == "__metadata__":
-                continue
-            offsets = tensor["data_offsets"]
-            self._metadata[(shard, name)] = _SafetensorTensorMetadata(
-                dtype=str(tensor["dtype"]),
-                shape=tuple(int(size) for size in tensor["shape"]),
-                data_start=data_base + int(offsets[0]),
-                data_end=data_base + int(offsets[1]),
-            )
-        try:
-            return self._metadata[key]
-        except KeyError as exc:
-            raise KeyError(f"tensor {tensor_name!r} is missing from {shard}") from exc
-
-    @staticmethod
-    def _validate_row_ids(
-        metadata: _SafetensorTensorMetadata,
-        row_ids: list[int],
-    ) -> None:
-        if not metadata.shape:
-            raise ValueError("cannot select rows from a scalar safetensor")
-        for row_id in row_ids:
-            if not 0 <= row_id < metadata.shape[0]:
-                raise IndexError(row_id)
-
-    def _read_bfloat16_rows(
-        self,
-        shard: Path,
-        tensor_name: str,
-        metadata: _SafetensorTensorMetadata,
-        row_ids: list[int],
-    ) -> mx.array:
-        handle = self._binary_handles[shard]
-        shape = metadata.shape
-        row_elements = math.prod(shape[1:])
-        row_bytes = row_elements * 2
-        if metadata.data_end - metadata.data_start != math.prod(shape) * 2:
-            raise ValueError(f"invalid BF16 tensor size for {tensor_name!r} in {shard}")
-        rows = []
-        for row_id in row_ids:
-            handle.seek(metadata.data_start + row_id * row_bytes)
-            raw = handle.read(row_bytes)
-            if len(raw) != row_bytes:
-                raise ValueError(f"truncated BF16 tensor {tensor_name!r} in {shard}")
-            words = np.frombuffer(raw, dtype="<u2").astype(np.uint32)
-            rows.append((words << 16).view("<f4").reshape(shape[1:]))
-        return mx.array(np.stack(rows), dtype=mx.bfloat16)
-
-    def close(self) -> None:
-        for handle in self._numpy_handles.values():
-            handle.__exit__(None, None, None)
-        self._numpy_handles.clear()
-        for handle in self._binary_handles.values():
-            handle.close()
-        self._binary_handles.clear()
-
-    def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
-
-
 def _load_mlx_embedding_rows(
     model_path: str,
     row_ids: list[int],
-    *,
-    row_reader: _SafetensorRowReader | None = None,
 ) -> mx.array:
-    owns_reader = row_reader is None
-    row_reader = row_reader or _SafetensorRowReader()
-    try:
-        source = _resolve_embed_source(model_path)
-        if source.quantization is None:
-            return row_reader.read_rows(source.shard, source.tensor_name, row_ids)
-
-        if source.scales_shard is None or source.biases_shard is None:
-            raise KeyError(
-                f"packed thinker embedding {source.tensor_name!r} is incomplete"
-            )
-        prefix = source.tensor_name[: -len(".weight")]
-        weight = row_reader.read_rows(source.shard, source.tensor_name, row_ids)
-        scales = row_reader.read_rows(source.scales_shard, f"{prefix}.scales", row_ids)
-        biases = row_reader.read_rows(source.biases_shard, f"{prefix}.biases", row_ids)
-        quantization = source.quantization
-        return mx.dequantize(
-            weight,
-            scales,
-            biases,
-            group_size=int(quantization["group_size"]),
-            bits=int(quantization["bits"]),
-            mode=str(quantization.get("mode", "affine")),
-        )
-    finally:
-        if owns_reader:
-            row_reader.close()
+    source = _resolve_embed_source(model_path)
+    if source.quantization is not None:
+        return _packed_embedding_rows_mlx(model_path, source, row_ids)
+    rows = load_thinker_embedding_rows(model_path, row_ids)
+    converted = _torch_to_mlx(rows)
+    return converted.astype(mx.bfloat16) if rows.dtype == torch.bfloat16 else converted
 
 
 def _coerce_feature_array(value: Any) -> mx.array | None:
@@ -436,7 +282,6 @@ class Qwen3OmniMlxTalkerPrefillBuilder:
             str(name).lower(): int(speaker_id)
             for name, speaker_id in speaker_map.items()
         }
-        self._embedding_row_reader = _SafetensorRowReader()
         self._thinker_embed_cache: dict[int, mx.array] = {}
         self._tts_special_cache: tuple[mx.array, mx.array, mx.array] | None = None
 
@@ -633,7 +478,6 @@ class Qwen3OmniMlxTalkerPrefillBuilder:
             rows = _load_mlx_embedding_rows(
                 self._model_path,
                 missing,
-                row_reader=self._embedding_row_reader,
             )
             mx.eval(rows)
             for token_id, row in zip(missing, rows):
