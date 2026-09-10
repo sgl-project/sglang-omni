@@ -287,7 +287,7 @@ def test_a_bucket_is_captured_when_the_card_has_headroom(monkeypatch) -> None:
     assert runner._enough_free_gb() == (True, 5.0)
 
 
-def test_the_memory_query_does_not_empty_the_allocator_cache(monkeypatch) -> None:
+def test_the_memory_query_is_local_and_leaves_the_allocator_cache(monkeypatch) -> None:
     calls: list[dict] = []
     module = _FakeDeviceModule([])
     monkeypatch.setattr(
@@ -307,9 +307,10 @@ def test_the_memory_query_does_not_empty_the_allocator_cache(monkeypatch) -> Non
 
     runner._enough_free_gb()
 
-    # Emptying the cache mid-serving would stall and would drop the blocks the
-    # graph pool reuses.
-    assert calls == [{"empty_cache": False}]
+    # A capture is triggered lazily by one worker, so a min-reduction across
+    # ranks would deadlock; emptying the cache would stall and drop the blocks
+    # the graph pool reuses.
+    assert calls == [{"distributed": False, "empty_cache": False}]
 
 
 def test_capture_warms_up_and_records_under_the_platform_sdpa_context(

@@ -113,11 +113,14 @@ class FunASREncoderCudaGraphRunner:
         return self._projector(enc_out, mask)
 
     def _enough_free_gb(self) -> tuple[bool, float]:
-        # empty_cache=False: this runs mid-serving, and dropping the allocator's
-        # cached blocks would both stall and take away what the pool reuses.
+        # Both flags are pinned rather than defaulted: a capture is triggered
+        # lazily by whichever worker sees a new bucket first, so this must never
+        # become a collective, and dropping the allocator's cached blocks here
+        # would both stall and take away what the graph pool reuses.
         free_gb = get_available_gpu_memory(
             self._device.type,
             self._device.index or 0,
+            distributed=False,
             empty_cache=False,
         )
         return free_gb >= self._min_free_gb, free_gb
