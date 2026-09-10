@@ -8,8 +8,8 @@ multi_speaker_diarization:
     - MOSS_TD_CI_SAMPLES
     - MOSS_TD_LONG_MAX_NEW_TOKENS
     - MOSS_TD_LONG90_MAX_NEW_TOKENS
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 800
   sample_counts:
     total:
@@ -128,8 +128,8 @@ multi_speaker_speed:
     - MOSS_TD_CI_SAMPLES
     - MOSS_TD_LONG_MAX_NEW_TOKENS
     - MOSS_TD_LONG90_MAX_NEW_TOKENS
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 800
   sample_counts:
     total:
@@ -196,8 +196,8 @@ aishell4_long_diarization:
   extra_env: {}
   context_vars:
     - MOSS_TD_AISHELL4_LONG_CI_SAMPLES
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 20
   sample_counts:
     total:
@@ -264,8 +264,8 @@ aishell4_long_speed:
   extra_env: {}
   context_vars:
     - MOSS_TD_AISHELL4_LONG_CI_SAMPLES
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 20
   sample_counts:
     total:
@@ -332,8 +332,8 @@ googletime_diarization:
   extra_env: {}
   context_vars:
     - MOSS_TD_GOOGLETIME_CI_SAMPLES
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 25
   sample_counts:
     total:
@@ -420,8 +420,8 @@ googletime_speed:
   extra_env: {}
   context_vars:
     - MOSS_TD_GOOGLETIME_CI_SAMPLES
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 25
   sample_counts:
     total:
@@ -489,8 +489,8 @@ multi_speaker_stream_diarization:
   context_vars:
     - MOSS_TD_CI_SAMPLES
   variant: "stream"
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 800
   sample_counts:
     total:
@@ -598,8 +598,8 @@ multi_speaker_stream_speed:
   context_vars:
     - MOSS_TD_CI_SAMPLES
   variant: "stream"
-  test_file_sha256: 6e3fb4e1db9c497b644df8e1ae9a3f135f8ff799b1320601f6c1db0d419294af
-  last_discovered_at: 2026-09-09T20:26:21Z
+  test_file_sha256: a740553989db6c1e3f4de323a9e7f9da0cc5fec9d5cc1c2868cf9bf4e36d913c
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 800
   sample_counts:
     total:
@@ -693,10 +693,10 @@ seedtts_fun_en_wer:
   hf_model_ids:
     - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 1088
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_en_results.json"
@@ -739,10 +739,10 @@ seedtts_fun_en_speed:
   hf_model_ids:
     - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 1088
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_en_results.json"
@@ -815,10 +815,10 @@ seedtts_qwen3_en_wer:
   hf_model_ids:
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 1088
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_en_results.json"
@@ -861,10 +861,10 @@ seedtts_qwen3_en_speed:
   hf_model_ids:
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 1088
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_en_results.json"
@@ -937,10 +937,10 @@ seedtts_whisper_en_wer:
   hf_model_ids:
     - "openai/whisper-large-v3"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 1088
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_en_results.json"
@@ -983,10 +983,10 @@ seedtts_whisper_en_speed:
   hf_model_ids:
     - "openai/whisper-large-v3"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 1088
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_en_results.json"
@@ -1059,10 +1059,10 @@ seedtts_fun_zh_wer:
   hf_model_ids:
     - "FunAudioLLM/Fun-ASR-Nano-2512-hf"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 2020
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_zh_results.json"
@@ -1105,10 +1105,10 @@ seedtts_qwen3_zh_wer:
   hf_model_ids:
     - "Qwen/Qwen3-ASR-1.7B"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 2020
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_zh_results.json"
@@ -1151,10 +1151,10 @@ seedtts_whisper_zh_wer:
   hf_model_ids:
     - "openai/whisper-large-v3"
   test_file_sha256: 0f2f89d209bbf19fc3ca012051c9884a418dc1c605541abb6ef9a9099ab5f2ed
-  last_discovered_at: 2026-09-09T20:26:21Z
+  last_discovered_at: 2026-09-10T15:31:15Z
   expected_samples: 2020
   threshold_file: "tests/test_model/asr_ci_config.py"
-  threshold_file_sha256: 53a6c6c57d3242bd744d934ead76e1b9cde12a43a0835a0062b4a5c86041a269
+  threshold_file_sha256: bb572c80f9970027da5ef738fa8a71aa1532146f6417ffdec666d3bbebc49b95
   sample_counts:
     total:
       json_file: "asr_seedtts_zh_results.json"

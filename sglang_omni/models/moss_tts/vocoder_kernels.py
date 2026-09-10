@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - depends on runtime image
 
 _EXACT_ROPE_BLOCK_SIZE = 256
 _EXACT_ROPE_NUM_WARPS = 4
+_STREAMING_KV_BLOCK_SIZE = 512
 
 
 if triton is not None and hasattr(tl, "inline_asm_elementwise"):
@@ -152,4 +153,312 @@ def apply_exact_interleaved_rope_inplace(
     return True
 
 
-__all__ = ["apply_exact_interleaved_rope_inplace"]
+if triton is not None:
+
+    @triton.jit
+    def _streaming_kv_gather_kernel(
+        cached_k,
+        cached_v,
+        cached_positions,
+        current_k,
+        current_v,
+        query_positions,
+        slots,
+        all_k,
+        all_v,
+        key_positions,
+        cached_k_strides: tl.constexpr,
+        cached_v_strides: tl.constexpr,
+        current_k_strides: tl.constexpr,
+        current_v_strides: tl.constexpr,
+        num_heads: tl.constexpr,
+        context: tl.constexpr,
+        chunk_length: tl.constexpr,
+        head_dim: tl.constexpr,
+        block_size: tl.constexpr,
+    ):
+        row = tl.program_id(0)
+        index = tl.program_id(1) * block_size + tl.arange(0, block_size)
+        length: tl.constexpr = context + chunk_length
+        mask = index < num_heads * length * head_dim
+        head = index // (length * head_dim)
+        position = (index // head_dim) % length
+        dim = index % head_dim
+        old = position < context
+        slot = tl.load(slots + row)
+        old_k = tl.load(
+            cached_k
+            + slot * cached_k_strides[0]
+            + head * cached_k_strides[1]
+            + position * cached_k_strides[2]
+            + dim * cached_k_strides[3],
+            mask & old,
+            other=0,
+        )
+        old_v = tl.load(
+            cached_v
+            + slot * cached_v_strides[0]
+            + head * cached_v_strides[1]
+            + position * cached_v_strides[2]
+            + dim * cached_v_strides[3],
+            mask & old,
+            other=0,
+        )
+        new_k = tl.load(
+            current_k
+            + row * current_k_strides[0]
+            + head * current_k_strides[1]
+            + (position - context) * current_k_strides[2]
+            + dim * current_k_strides[3],
+            mask & ~old,
+            other=0,
+        )
+        new_v = tl.load(
+            current_v
+            + row * current_v_strides[0]
+            + head * current_v_strides[1]
+            + (position - context) * current_v_strides[2]
+            + dim * current_v_strides[3],
+            mask & ~old,
+            other=0,
+        )
+        output_index = row * num_heads * length * head_dim + index
+        tl.store(all_k + output_index, tl.where(old, old_k, new_k), mask)
+        tl.store(all_v + output_index, tl.where(old, old_v, new_v), mask)
+
+        position_mask = mask & (head == 0) & (dim == 0)
+        old_position = tl.load(
+            cached_positions + slot * context + position,
+            position_mask & old,
+            other=-1,
+        )
+        new_position = tl.load(
+            query_positions + row * chunk_length + position - context,
+            position_mask & ~old,
+            other=0,
+        )
+        tl.store(
+            key_positions + row * length + position,
+            tl.where(old, old_position, new_position),
+            position_mask,
+        )
+
+    @triton.jit
+    def _streaming_kv_commit_kernel(
+        cached_k,
+        cached_v,
+        cached_positions,
+        offsets,
+        all_k,
+        all_v,
+        key_positions,
+        slots,
+        valid_rows,
+        cached_k_strides: tl.constexpr,
+        cached_v_strides: tl.constexpr,
+        num_heads: tl.constexpr,
+        context: tl.constexpr,
+        chunk_length: tl.constexpr,
+        head_dim: tl.constexpr,
+        block_size: tl.constexpr,
+    ):
+        row = tl.program_id(0)
+        index = tl.program_id(1) * block_size + tl.arange(0, block_size)
+        valid = tl.load(valid_rows + row)
+        slot = tl.load(slots + row)
+        mask = (index < num_heads * context * head_dim) & valid
+        head = index // (context * head_dim)
+        position = (index // head_dim) % context
+        dim = index % head_dim
+        # note (Zhang Yiyang): Read the separate gather output to avoid races
+        # from shifting persistent rows in place. The suffix starts at T,
+        # including T >= C.
+        source = (
+            (row * num_heads + head) * (context + chunk_length)
+            + position
+            + chunk_length
+        ) * head_dim + dim
+        k = tl.load(all_k + source, mask, other=0)
+        v = tl.load(all_v + source, mask, other=0)
+        tl.store(
+            cached_k
+            + slot * cached_k_strides[0]
+            + head * cached_k_strides[1]
+            + position * cached_k_strides[2]
+            + dim * cached_k_strides[3],
+            k,
+            mask,
+        )
+        tl.store(
+            cached_v
+            + slot * cached_v_strides[0]
+            + head * cached_v_strides[1]
+            + position * cached_v_strides[2]
+            + dim * cached_v_strides[3],
+            v,
+            mask,
+        )
+        position_mask = mask & (head == 0) & (dim == 0)
+        next_position = tl.load(
+            key_positions + row * (context + chunk_length) + position + chunk_length,
+            position_mask,
+            other=-1,
+        )
+        tl.store(
+            cached_positions + slot * context + position, next_position, position_mask
+        )
+        if tl.program_id(1) == 0:
+            offset = tl.load(offsets + slot, valid, other=0)
+            tl.store(offsets + slot, offset + chunk_length, valid)
+
+else:
+    _streaming_kv_gather_kernel = None
+    _streaming_kv_commit_kernel = None
+
+
+def can_fuse_streaming_kv(
+    cached_k: torch.Tensor,
+    cached_v: torch.Tensor,
+    cached_positions: torch.Tensor,
+    offsets: torch.Tensor,
+    slots: torch.Tensor,
+    valid_rows: torch.Tensor,
+) -> bool:
+    """Check the inference/layout boundary, independently of execution B and T."""
+    if (
+        _streaming_kv_gather_kernel is None
+        or torch.version.hip is not None
+        or torch.is_grad_enabled()
+        or cached_k.device.type != "cuda"
+        or cached_k.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+        or cached_v.dtype != cached_k.dtype
+        or cached_k.ndim != 4
+        or cached_v.shape != cached_k.shape
+        or any(size <= 0 for size in cached_k.shape)
+        or any(stride <= 0 for stride in (*cached_k.stride(), *cached_v.stride()))
+        or slots.ndim != 1
+        or slots.numel() == 0
+    ):
+        return False
+    capacity, _, context, _ = cached_k.shape
+    return (
+        all(
+            t.device == cached_k.device
+            for t in (cached_v, cached_positions, offsets, slots, valid_rows)
+        )
+        and cached_positions.dtype == offsets.dtype == slots.dtype == torch.long
+        and valid_rows.dtype == torch.bool
+        and cached_positions.shape == (capacity, context)
+        and offsets.shape == (capacity,)
+        and valid_rows.shape == slots.shape
+        and cached_positions.is_contiguous()
+        and offsets.stride() == slots.stride() == valid_rows.stride() == (1,)
+    )
+
+
+def gather_streaming_kv(
+    cached_k: torch.Tensor,
+    cached_v: torch.Tensor,
+    cached_positions: torch.Tensor,
+    current_k: torch.Tensor,
+    current_v: torch.Tensor,
+    query_positions: torch.Tensor,
+    slots: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Gather and append chronological K/V for eligible indexed inference.
+
+    The caller checks ``can_fuse_streaming_kv`` first. Current K/V must match
+    the cache dtype/head shape; query_positions is contiguous [B, T]. K/V may
+    be strided. The returned tensors own separate contiguous storage.
+    """
+    batch_size, num_heads, chunk_length, head_dim = current_k.shape
+    context = cached_k.shape[2]
+    shape = (batch_size, num_heads, context + chunk_length, head_dim)
+    all_k = current_k.new_empty(shape)
+    all_v = torch.empty_like(all_k)
+    key_positions = query_positions.new_empty((batch_size, context + chunk_length))
+    block_size = _STREAMING_KV_BLOCK_SIZE
+    with torch.cuda.device(current_k.device):
+        _streaming_kv_gather_kernel[
+            (
+                batch_size,
+                triton.cdiv(
+                    num_heads * (context + chunk_length) * head_dim, block_size
+                ),
+            )
+        ](
+            cached_k,
+            cached_v,
+            cached_positions,
+            current_k,
+            current_v,
+            query_positions,
+            slots,
+            all_k,
+            all_v,
+            key_positions,
+            cached_k.stride(),
+            cached_v.stride(),
+            current_k.stride(),
+            current_v.stride(),
+            num_heads,
+            context,
+            chunk_length,
+            head_dim,
+            block_size,
+            num_warps=4,
+        )
+    return all_k, all_v, key_positions
+
+
+def commit_streaming_kv_(
+    cached_k: torch.Tensor,
+    cached_v: torch.Tensor,
+    cached_positions: torch.Tensor,
+    offsets: torch.Tensor,
+    all_k: torch.Tensor,
+    all_v: torch.Tensor,
+    key_positions: torch.Tensor,
+    slots: torch.Tensor,
+    valid_rows: torch.Tensor,
+) -> None:
+    """Commit a gather result to unique valid slots, preserving inactive rows.
+
+    Inputs follow ``can_fuse_streaming_kv`` and ``gather_streaming_kv``. Run
+    gather and commit in order on the same stream; the gather outputs must not
+    alias the persistent cache. Invalid rows never access persistent offsets.
+    """
+    batch_size, num_heads, length, head_dim = all_k.shape
+    context = cached_k.shape[2]
+    chunk_length = length - context
+    block_size = _STREAMING_KV_BLOCK_SIZE
+    with torch.cuda.device(all_k.device):
+        _streaming_kv_commit_kernel[
+            (batch_size, triton.cdiv(num_heads * context * head_dim, block_size))
+        ](
+            cached_k,
+            cached_v,
+            cached_positions,
+            offsets,
+            all_k,
+            all_v,
+            key_positions,
+            slots,
+            valid_rows,
+            cached_k.stride(),
+            cached_v.stride(),
+            num_heads,
+            context,
+            chunk_length,
+            head_dim,
+            block_size,
+            num_warps=4,
+        )
+
+
+__all__ = [
+    "apply_exact_interleaved_rope_inplace",
+    "can_fuse_streaming_kv",
+    "commit_streaming_kv_",
+    "gather_streaming_kv",
+]

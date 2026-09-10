@@ -1,6 +1,6 @@
 # 🚀 Installation
 
-Current stable release: **v0.1.4** on [PyPI](https://pypi.org/project/sglang-omni/).
+Current stable release: **v0.1.5** on [PyPI](https://pypi.org/project/sglang-omni/).
 
 Choose the path for your platform. Docker is recommended for NVIDIA CUDA —
 UCX, flash-attn, SGLang, and CUDA are prebuilt. Apple Silicon has a dedicated
@@ -48,7 +48,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.4"
+uv pip install --prerelease=allow "sglang-omni==0.1.5"
 ```
 
 <a id="macos-apple-silicon"></a>
@@ -137,7 +137,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.4"
+uv pip install --prerelease=allow "sglang-omni==0.1.5"
 ```
 
 Latest on the index without a pin: `uv pip install --prerelease=allow sglang-omni`.

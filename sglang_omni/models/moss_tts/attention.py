@@ -18,6 +18,9 @@ from torch import nn
 
 from sglang_omni.models.moss_tts.vocoder_kernels import (
     apply_exact_interleaved_rope_inplace,
+    can_fuse_streaming_kv,
+    commit_streaming_kv_,
+    gather_streaming_kv,
 )
 
 # note (Zhang Yiyang): Bound SDPA fallback memory with query chunks.
@@ -1074,6 +1077,47 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             self.get_backend_dtype(x),
         )
         old_offsets = state.offset.index_select(0, slots)
+        if (
+            self.context is not None
+            and cached_keys.shape[2] == self.context
+            and can_fuse_streaming_kv(
+                cached_keys,
+                cached_values,
+                cached_positions,
+                state.offset,
+                slots,
+                valid_rows,
+            )
+        ):
+            q, current_k, current_v, query_positions = self._project_streaming_qkv(
+                x, old_offsets
+            )
+            all_k, all_v, key_positions = gather_streaming_kv(
+                cached_keys,
+                cached_values,
+                cached_positions,
+                current_k,
+                current_v,
+                query_positions,
+                slots,
+            )
+            output = self._streaming_attention(
+                q, all_k, all_v, query_positions, key_positions
+            )
+            output = self.out_proj(output)
+            commit_streaming_kv_(
+                cached_keys,
+                cached_values,
+                cached_positions,
+                state.offset,
+                all_k,
+                all_v,
+                key_positions,
+                slots,
+                valid_rows,
+            )
+            return output.masked_fill(~valid_rows.view(-1, 1, 1), 0)
+
         old_row_keys = cached_keys.index_select(0, slots)
         old_row_values = cached_values.index_select(0, slots)
         old_row_positions = cached_positions.index_select(0, slots)
@@ -1090,7 +1134,12 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             row_state.exec_mask.fill_(True)
         output = self._forward_streaming_sdpa(x, row_state)
 
-        next_offsets = torch.where(valid_rows, row_state.offset, old_offsets)
+        # note (Zhang Yiyang): Finite-context SDPA preserves inactive rows and
+        # offsets. Unbounded attention advances every execution row while its
+        # cache grows, so only that path needs the outer validity guards.
+        next_offsets = row_state.offset
+        if self.context is None:
+            next_offsets = torch.where(valid_rows, next_offsets, old_offsets)
         state.offset.index_copy_(0, slots, next_offsets)
         if self.context is None:
             old_length = int(cached_keys.shape[2])
@@ -1120,39 +1169,26 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             state.cached_keys = expanded_keys
             state.cached_values = expanded_values
             state.cached_positions = expanded_positions
-        else:
-            old_row_keys_expanded = old_row_keys
-            old_row_values_expanded = old_row_values
-            old_row_positions_expanded = old_row_positions
-
-        valid_cache_rows = valid_rows.view(-1, 1, 1, 1)
-        state.cached_keys.index_copy_(
-            0,
-            slots,
-            torch.where(
-                valid_cache_rows,
-                row_state.cached_keys,
-                old_row_keys_expanded,
-            ),
-        )
-        state.cached_values.index_copy_(
-            0,
-            slots,
-            torch.where(
-                valid_cache_rows,
-                row_state.cached_values,
-                old_row_values_expanded,
-            ),
-        )
-        state.cached_positions.index_copy_(
-            0,
-            slots,
-            torch.where(
+            valid_cache_rows = valid_rows.view(-1, 1, 1, 1)
+            next_row_keys = torch.where(
+                valid_cache_rows, row_state.cached_keys, old_row_keys_expanded
+            )
+            next_row_values = torch.where(
+                valid_cache_rows, row_state.cached_values, old_row_values_expanded
+            )
+            next_row_positions = torch.where(
                 valid_rows.view(-1, 1),
                 row_state.cached_positions,
                 old_row_positions_expanded,
-            ),
-        )
+            )
+        else:
+            next_row_keys = row_state.cached_keys
+            next_row_values = row_state.cached_values
+            next_row_positions = row_state.cached_positions
+
+        state.cached_keys.index_copy_(0, slots, next_row_keys)
+        state.cached_values.index_copy_(0, slots, next_row_values)
+        state.cached_positions.index_copy_(0, slots, next_row_positions)
         return output.masked_fill(~valid_rows.view(-1, 1, 1), 0)
 
     def _ensure_streaming_cache(
@@ -1242,6 +1278,21 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             cached_pos,
         )
 
+    def _project_streaming_qkv(
+        self,
+        x: torch.Tensor,
+        offsets: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        q, current_k, current_v = self._project_qkv(x)
+        if self.rope is not None:
+            q, current_k = _apply_cached_streaming_rope(
+                q, current_k, offsets, cache=self._packed_rope_cache
+            )
+        query_positions = offsets.view(-1, 1) + torch.arange(
+            x.shape[1], device=x.device, dtype=torch.long
+        ).view(1, -1)
+        return q, current_k, current_v, query_positions
+
     def _streaming_qkv(
         self,
         x: torch.Tensor,
@@ -1256,23 +1307,12 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         torch.Tensor,
         torch.Tensor,
     ]:
-        batch_size, chunk_length, _ = x.shape
-        q, current_k, current_v = self._project_qkv(x)
-        if self.rope is not None:
-            q, current_k = _apply_cached_streaming_rope(
-                q,
-                current_k,
-                state.offset,
-                cache=self._packed_rope_cache,
-            )
-        query_positions = state.offset.view(-1, 1) + torch.arange(
-            chunk_length,
-            device=x.device,
-            dtype=torch.long,
-        ).view(1, -1)
+        q, current_k, current_v, query_positions = self._project_streaming_qkv(
+            x, state.offset
+        )
         cached_k, cached_v, cached_pos = self._ensure_streaming_cache(
             state,
-            batch_size,
+            x.shape[0],
             current_k.device,
             current_k.dtype,
         )
@@ -1331,7 +1371,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         x: torch.Tensor,
         state: _AttentionStreamingState,
     ) -> torch.Tensor:
-        batch_size, chunk_length, _ = x.shape
+        chunk_length = x.shape[1]
         if chunk_length == 0:
             return self.out_proj(x)
         (
@@ -1344,21 +1384,8 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             cached_v,
             cached_pos,
         ) = self._streaming_qkv(x, state)
-        delta = query_positions[:, :, None] - key_positions[:, None, :]
-        attention_mask = (key_positions[:, None, :] >= 0) & (delta >= 0)
-        if self.context is not None:
-            attention_mask &= delta < self.context
-        output = F.scaled_dot_product_attention(
-            q,
-            all_k,
-            all_v,
-            attn_mask=attention_mask[:, None, :, :],
-            dropout_p=0.0,
-        )
-        output = output.transpose(1, 2).reshape(
-            batch_size,
-            chunk_length,
-            self.embed_dim,
+        output = self._streaming_attention(
+            q, all_k, all_v, query_positions, key_positions
         )
         return self._finish_streaming_attention(
             output,
@@ -1370,6 +1397,25 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             all_k=all_k,
             all_v=all_v,
             key_positions=key_positions,
+        )
+
+    def _streaming_attention(
+        self,
+        q: torch.Tensor,
+        all_k: torch.Tensor,
+        all_v: torch.Tensor,
+        query_positions: torch.Tensor,
+        key_positions: torch.Tensor,
+    ) -> torch.Tensor:
+        delta = query_positions[:, :, None] - key_positions[:, None, :]
+        attention_mask = (key_positions[:, None, :] >= 0) & (delta >= 0)
+        if self.context is not None:
+            attention_mask &= delta < self.context
+        output = F.scaled_dot_product_attention(
+            q, all_k, all_v, attn_mask=attention_mask[:, None, :, :], dropout_p=0.0
+        )
+        return output.transpose(1, 2).reshape(
+            query_positions.shape[0], query_positions.shape[1], self.embed_dim
         )
 
     def _project_qkv(
