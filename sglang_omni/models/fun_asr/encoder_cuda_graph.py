@@ -148,10 +148,16 @@ class FunASREncoderCudaGraphRunner:
             self._device_module.current_stream().wait_stream(stream)
             self._device_module.synchronize()
 
-            # Each bucket keeps its own pool: sharing one is safe only for graphs
-            # replayed in capture order, and a request picks its bucket from the
-            # clip length, so any order -- and a replay during a capture -- is
-            # possible. Same rule as the Qwen3-ASR encoder runner.
+            # Each bucket keeps its own pool: memory in a shared pool is reused
+            # by the next graph recorded into it, which is safe only while
+            # replays follow capture order. A request picks its bucket from the
+            # clip length, and captures deliberately run outside the replay lock,
+            # so a replay of one bucket can overlap the capture of another. Same
+            # rule as the Qwen3-ASR encoder runner. The cost is a private pool
+            # per bucket -- measured on a B60 at 24 to 336 MiB, largest bucket
+            # dominating -- bounded by the headroom check above, which stops
+            # capturing and leaves later buckets eager rather than exhausting the
+            # card.
             with self._graph_backend.capture(thread_local_errors=True) as graph:
                 static_out = _masked_forward()
         logger.info(
