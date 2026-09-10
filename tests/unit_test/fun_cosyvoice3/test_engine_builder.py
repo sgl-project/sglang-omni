@@ -5,14 +5,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.utils import tensor_bridge
+from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
 
 from sglang_omni.models.fun_cosyvoice3 import engine_builder as engine_builder_module
 from sglang_omni.models.fun_cosyvoice3.engine_builder import FunCosyVoice3EngineBuilder
 
 
 def _enable_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: True)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
     monkeypatch.setattr(
         engine_builder_module.current_platform,
         "is_mps",
@@ -93,7 +93,7 @@ def test_mlx_engine_passes_distinct_native_checkpoint(
 def test_torch_mps_uses_single_request_native_attention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
     builder = FunCosyVoice3EngineBuilder()
     builder.device = "mps:0"
 

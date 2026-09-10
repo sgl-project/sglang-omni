@@ -64,7 +64,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         return self._blanken_dir()
 
     def _uses_torch_mps(self) -> bool:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         return (
             not use_mlx()
@@ -77,7 +77,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             if not current_platform.is_mps():
@@ -135,7 +135,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         del checkpoint_dir, gpu_id
         root = self._checkpoint_root
@@ -180,7 +180,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             from sglang_omni.models.fun_cosyvoice3.model_runner import (
@@ -200,7 +200,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         )
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
             if self._uses_torch_mps() and server_args.max_running_requests != 1:
@@ -230,7 +230,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         return request_builders.make_cosyvoice3_scheduler_adapters(model=model)
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
             return {}
@@ -240,7 +240,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         }
 
     def infra_kwargs(self) -> dict[str, Any]:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
             return {}
