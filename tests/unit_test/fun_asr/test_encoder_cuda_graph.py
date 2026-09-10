@@ -259,6 +259,22 @@ def test_runner_declines_every_bucket_on_a_device_without_graphs() -> None:
     assert runner.run(torch.zeros(1, 17, 560), [17]) is None
 
 
+def test_a_device_without_graphs_is_never_asked_for_an_event() -> None:
+    """torch.mps.Event() raises without the MPS backend, so a runner that will
+    never replay must not build one at construction."""
+
+    class _NoEventModule:
+        def device(self, device):
+            return contextlib.nullcontext()
+
+    runner = FunASREncoderCudaGraphRunner(
+        _EagerTower(), _EagerProjector(), device_module=_NoEventModule()
+    )
+
+    assert runner._done_event is None
+    assert runner.run(torch.zeros(1, 17, 560), [17]) is None
+
+
 def test_a_bucket_is_declined_when_the_card_is_below_the_headroom(monkeypatch) -> None:
     runner = _runner_on(_FakeDeviceModule([]), monkeypatch, free_gb=1.0)
 
@@ -321,10 +337,9 @@ def test_capture_asks_the_platform_backend_for_a_thread_local_capture(
     runner.run(torch.zeros(1, 17, 560), [17])
 
     # The scheduler thread keeps launching kernels while this captures, so a
-    # capture failure must stay on this thread; the pool is the runner's own.
-    assert module.capture_kwargs == [
-        {"pool": "pool-token", "thread_local_errors": True}
-    ]
+    # capture failure must stay on this thread. No pool is named: a capture runs
+    # while other buckets replay, and a shared pool is safe only in capture order.
+    assert module.capture_kwargs == [{"thread_local_errors": True}]
 
 
 def test_replay_pads_the_bucket_and_captures_once(monkeypatch) -> None:

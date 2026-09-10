@@ -92,7 +92,6 @@ class FunASREncoderCudaGraphRunner:
         # (batch_bucket, t_bucket) -> (graph, static_xs, static_ilens, static_out)
         self._graphs: dict[Tuple[int, int], tuple] = {}
         self._failed: set[Tuple[int, int]] = set()
-        self._pool = None
         # note (wilsonzheng0327): serializes capture and replay -- replay
         # mutates the bucket's static buffers, and both the pre-LM worker and
         # the scheduler's inline prefill path can reach get_audio_feature.
@@ -101,7 +100,12 @@ class FunASREncoderCudaGraphRunner:
         # may: captures take seconds, so they wait on their own lock instead of
         # the one that serializes replays.
         self._capture_lock = threading.Lock()
-        self._done_event = self._device_module.Event()
+        # Only the graph path uses this, and a device module that records no graph
+        # may not offer an event either: torch.mps.Event() raises without the MPS
+        # backend, which would fail stage setup instead of falling back to eager.
+        self._done_event = (
+            self._device_module.Event() if self._graph_backend is not None else None
+        )
         self._event_recorded = False
 
     def _forward(self, xs: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
@@ -141,11 +145,11 @@ class FunASREncoderCudaGraphRunner:
             self._device_module.current_stream().wait_stream(stream)
             self._device_module.synchronize()
 
-            if self._pool is None:
-                self._pool = self._device_module.graph_pool_handle()
-            with self._graph_backend.capture(
-                pool=self._pool, thread_local_errors=True
-            ) as graph:
+            # Each bucket keeps its own pool: sharing one is safe only for graphs
+            # replayed in capture order, and a request picks its bucket from the
+            # clip length, so any order -- and a replay during a capture -- is
+            # possible. Same rule as the Qwen3-ASR encoder runner.
+            with self._graph_backend.capture(thread_local_errors=True) as graph:
                 static_out = _masked_forward()
         logger.info(
             "Captured Fun-ASR encoder CUDA graph batch=%d t=%d -> out %s "
