@@ -35,6 +35,14 @@ from .sglang_model import _sanm_mask_from_lengths
 
 logger = logging.getLogger(__name__)
 
+# Device types whose platform graph backend records work issued through the same
+# module this runner drives for streams, events and memory. MUSA is left out on
+# purpose: its platform supplies the CUDA backend, which captures through
+# torch.cuda, while a musa tensor resolves to torch.musa, so warmup and capture
+# would straddle two device surfaces. ROCm belongs here because it genuinely
+# presents as torch.cuda.
+_SAME_SURFACE_DEVICE_TYPES = frozenset({"cuda", "xpu"})
+
 _BATCH_BUCKETS = (1, 2, 4, 8)
 _T_BUCKET_STEP = 64
 _T_BUCKET_MAX = 512  # 30 s * (1000 ms / 60 ms per LFR frame) ~= 500 frames
@@ -72,6 +80,7 @@ class FunASREncoderCudaGraphRunner:
         min_free_gb: float = 3.0,
         warmup_iters: int = 3,
         device_module: Any | None = None,
+        graph_device_types: frozenset[str] | None = None,
     ) -> None:
         self._audio_tower = audio_tower
         self._projector = multi_modal_projector
@@ -80,6 +89,18 @@ class FunASREncoderCudaGraphRunner:
         self._dtype = reference.dtype
         self._device_module = device_module or torch.get_device_module(self._device)
         self._graph_backend = current_platform.get_device_graph_backend(self._device)
+        same_surface = (
+            _SAME_SURFACE_DEVICE_TYPES
+            if graph_device_types is None
+            else graph_device_types
+        )
+        if self._graph_backend is not None and self._device.type not in same_surface:
+            logger.info(
+                "Fun-ASR encoder graphs stay off on %s: its capture backend and "
+                "its device module are different surfaces",
+                self._device.type,
+            )
+            self._graph_backend = None
         if self._graph_backend is None:
             logger.info(
                 "Fun-ASR encoder graphs are unavailable on %s; the encoder runs "

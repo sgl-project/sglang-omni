@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -142,6 +143,18 @@ class _FakeGraph:
         self.replays += 1
 
 
+class _ParamOn:
+    """A parameter stand-in reporting a device type the host may not register.
+
+    torch.device("musa") raises without torch_musa, and the constructor only
+    reads the type and index, so a stand-in covers the device-surface policy.
+    """
+
+    def __init__(self, device_type: str) -> None:
+        self.device = SimpleNamespace(type=device_type, index=0)
+        self.dtype = torch.float32
+
+
 class _InertStream:
     """Streams and events: the runner calls them, no test reads them back."""
 
@@ -223,7 +236,12 @@ def _runner_on(
         lambda device_type, gpu_id, **kwargs: free_gb,
     )
     return FunASREncoderCudaGraphRunner(
-        _EagerTower(), _EagerProjector(), max_batch_size=4, device_module=module
+        _EagerTower(),
+        _EagerProjector(),
+        max_batch_size=4,
+        device_module=module,
+        # These fakes allocate on the host, so the device they claim is cpu.
+        graph_device_types=frozenset({"cpu"}),
     )
 
 
@@ -302,7 +320,10 @@ def test_the_memory_query_is_local_and_leaves_the_allocator_cache(monkeypatch) -
         lambda device_type, gpu_id, **kwargs: calls.append(kwargs) or 40.0,
     )
     runner = FunASREncoderCudaGraphRunner(
-        _EagerTower(), _EagerProjector(), device_module=module
+        _EagerTower(),
+        _EagerProjector(),
+        device_module=module,
+        graph_device_types=frozenset({"cpu"}),
     )
 
     runner._enough_free_gb()
@@ -382,3 +403,32 @@ def test_capture_does_not_hold_the_replay_lock(monkeypatch) -> None:
     # A capture costs seconds on XPU; holding the replay lock through it would
     # stall every encode for buckets that are already recorded.
     assert observed["replay_lock_free"] is True
+
+
+@pytest.mark.parametrize(
+    ("device_type", "captures"),
+    [("cuda", True), ("xpu", True), ("musa", False)],
+)
+def test_a_backend_on_another_device_surface_stays_eager(
+    monkeypatch, device_type: str, captures: bool
+) -> None:
+    module = _FakeDeviceModule([])
+    backend = _FakeGraphBackend(module.log, module.capture_kwargs)
+    monkeypatch.setattr(
+        encoder_cuda_graph.current_platform,
+        "get_device_graph_backend",
+        lambda device: backend,
+        raising=False,
+    )
+    tower = _EagerTower()
+    monkeypatch.setattr(tower, "parameters", lambda: iter([_ParamOn(device_type)]))
+
+    runner = FunASREncoderCudaGraphRunner(
+        tower, _EagerProjector(), device_module=module
+    )
+
+    # MUSA's platform hands out the CUDA backend, which captures through
+    # torch.cuda, while a musa tensor resolves to torch.musa: recording a warmup
+    # on one surface and the capture on the other is untested, so it stays eager.
+    assert (runner._graph_backend is not None) is captures
+    assert (runner._done_event is not None) is captures
