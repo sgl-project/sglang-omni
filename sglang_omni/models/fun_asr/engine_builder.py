@@ -112,7 +112,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         )
 
     def _uses_torch_mps(self) -> bool:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         return (
             not use_mlx()
@@ -183,7 +183,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             raise ValueError(

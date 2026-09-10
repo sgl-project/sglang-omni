@@ -21,12 +21,12 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 
 @pytest.fixture(autouse=True)
 def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     # Backend-specific tests (e.g. _apple_builder) opt into MLX explicitly.
     # Keep CUDA/ROCm/Torch MPS profile tests independent of the caller's
     # SGLANG_USE_MLX environment.
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
 
 def test_fun_asr_config_uses_batched_stage_with_64_running_requests() -> None:
@@ -331,9 +331,9 @@ def test_fun_asr_declares_breakable_prefill_cuda_graph_support() -> None:
 
 
 def _apple_builder(monkeypatch, *, mlx):
-    from sglang.srt.utils import tensor_bridge
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
 
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: mlx)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: mlx)
     monkeypatch.setattr(fun_asr_builder.current_platform, "is_mps", lambda: True)
     captured = []
     monkeypatch.setattr(
