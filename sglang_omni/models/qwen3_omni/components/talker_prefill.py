@@ -31,8 +31,6 @@ _THINKER_EMBED_CANDIDATE_KEYS = (
     _THINKER_EMBED_MLX_VLM_KEY,
     _THINKER_EMBED_LOCAL_KEY,
 )
-# Subdirectory names a converted MLX export uses, matching the ownership rules
-# in ``sglang_omni.models.qwen3_omni.mlx.runner``.
 _COMPONENT_DIRECTORIES = ("thinker", "talker", "code2wav")
 
 
@@ -44,7 +42,6 @@ class _EmbedSource:
     tensor_name: str
     scales_shard: Path | None = None
     biases_shard: Path | None = None
-    #: ``{"bits", "group_size", "mode"}`` when the table is packed 4/8-bit.
     quantization: dict[str, Any] | None = None
 
 
@@ -250,18 +247,10 @@ def _packed_embedding_rows(
     )
 
     if get_qwen3_omni_mps_quantization() is not None:
-        from sglang_omni.models.qwen3_omni.torch_mps_quantization import (
-            dequantize_affine_rows,
+        raise ValueError(
+            "Torch MPS HF INT4 requires dense thinker embeddings; "
+            "MLX affine embedding conversion is not supported"
         )
-
-        quantization = source.quantization or {}
-        if quantization.get("mode", "affine") != "affine":
-            raise ValueError("Torch MPS embedding loading requires affine quantization")
-        return dequantize_affine_rows(
-            *_packed_embedding_tensors(source, row_ids),
-            bits=int(quantization["bits"]),
-            group_size=int(quantization["group_size"]),
-        ).float()
 
     import mlx.core as mx
     import numpy as np

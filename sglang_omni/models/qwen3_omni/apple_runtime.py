@@ -14,10 +14,9 @@ from sglang_omni.platforms import current_platform
 _ARCHITECTURE = "Qwen3OmniMoeForConditionalGeneration"
 MPS_QUANTIZATION_ENV = "SGLANG_QWEN3_OMNI_MPS_QUANTIZATION"
 _TORCH_MPS_CHECKPOINT_ERROR = (
-    "Qwen3-Omni Torch MPS requires a dense Hugging Face checkpoint, such as "
-    "Qwen/Qwen3-Omni-30B-A3B-Instruct, unless native MPS quantization is enabled. "
-    f"For MLX affine weights, set {MPS_QUANTIZATION_ENV}=int4 or int8, "
-    "or select the native MLX backend with SGLANG_USE_MLX=1."
+    "Qwen3-Omni Torch MPS requires a dense Hugging Face checkpoint or a "
+    "supported HF INT4 checkpoint with quantization_config metadata. "
+    "MLX checkpoints require the separate MLX backend with SGLANG_USE_MLX=1."
 )
 
 
@@ -31,21 +30,39 @@ def qwen3_omni_uses_apple_backend() -> bool:
     return bool(current_platform.is_mps())
 
 
-def get_qwen3_omni_mps_quantization(*, use_mlx: bool | None = None) -> int | None:
+def get_qwen3_omni_mps_quantization(
+    model_path: str | None = None, *, use_mlx: bool | None = None
+) -> int | None:
+    """Select packed MPS loading from metadata; accept the legacy INT4 flag."""
     value = os.environ.get(MPS_QUANTIZATION_ENV)
-    if value is None:
+    if value is None and model_path is None:
         return None
-    if value not in ("int4", "int8"):
-        raise ValueError(f"{MPS_QUANTIZATION_ENV} must be int4 or int8; got {value!r}")
+    if value not in (None, "int4"):
+        raise ValueError(f"{MPS_QUANTIZATION_ENV} must be int4; got {value!r}")
     if not qwen3_omni_uses_apple_backend():
-        raise ValueError(f"{MPS_QUANTIZATION_ENV} requires the Apple MPS backend")
+        if value is not None:
+            raise ValueError(f"{MPS_QUANTIZATION_ENV} requires the Apple MPS backend")
+        return None
     if use_mlx is None:
         use_mlx = qwen3_omni_uses_mlx_backend()
     if use_mlx:
-        raise ValueError(
-            f"{MPS_QUANTIZATION_ENV} selects Torch MPS; unset SGLANG_USE_MLX"
-        )
-    return 4 if value == "int4" else 8
+        if value is not None:
+            raise ValueError(
+                f"{MPS_QUANTIZATION_ENV} selects Torch MPS; unset SGLANG_USE_MLX"
+            )
+        return None
+    if model_path is not None:
+        from transformers.utils.hub import cached_file
+
+        from .torch_mps_checkpoint import read_mps_quantization_config
+
+        config = _read_json(Path(cached_file(model_path, "config.json")))
+        if value is None and all(
+            config.get(key) is None for key in ("quantization", "quantization_config")
+        ):
+            return None
+        read_mps_quantization_config(config)
+    return 4
 
 
 def _reject_explicit_override(
@@ -219,10 +236,29 @@ def _components_for_key(
     use_mlx: bool,
     allow_packed: bool = False,
 ) -> set[str]:
-    if not (use_mlx or allow_packed) and key.endswith((".scales", ".biases")):
-        raise ValueError(
-            f"{_TORCH_MPS_CHECKPOINT_ERROR} Found quantized tensor metadata {key!r}."
+    if not use_mlx and key.endswith(
+        (
+            ".qweight",
+            ".qzeros",
+            ".weight_packed",
+            ".weight_scale",
+            ".weight_shape",
+            ".weight_zero_point",
+            ".weight_g_idx",
+            ".g_idx",
+            ".scales",
+            ".biases",
         )
+    ):
+        if not allow_packed:
+            raise ValueError(
+                f"{_TORCH_MPS_CHECKPOINT_ERROR} Found quantized tensor metadata {key!r}."
+            )
+        if not key.startswith(("thinker.model.", "thinker.lm_head.")):
+            raise ValueError(
+                "Torch MPS HF INT4 supports quantized Thinker text weights only; "
+                f"encoders, Talker and code2wav must remain dense. Found {key!r}."
+            )
     root_prefixes = {
         "thinker": (
             "thinker.model.",
@@ -347,7 +383,7 @@ def validate_qwen3_omni_apple_checkpoint(
     speech_enabled: bool,
     use_mlx: bool,
 ) -> None:
-    bits = get_qwen3_omni_mps_quantization(use_mlx=use_mlx)
+    bits = get_qwen3_omni_mps_quantization(model_path, use_mlx=use_mlx)
     if not qwen3_omni_uses_apple_backend():
         return
 
@@ -359,29 +395,6 @@ def validate_qwen3_omni_apple_checkpoint(
             f"Qwen3-Omni checkpoint architecture must include {_ARCHITECTURE!r}; "
             f"got {architectures!r}"
         )
-    quantizations = [
-        config[key]
-        for key in ("quantization", "quantization_config")
-        if config.get(key) is not None
-    ]
-    quantization = quantizations[0] if quantizations else None
-    if not use_mlx and bits is None and quantization:
-        raise ValueError(f"{_TORCH_MPS_CHECKPOINT_ERROR} Checkpoint: {model_path!r}.")
-    if bits is not None and quantizations:
-        if (
-            not isinstance(quantization, dict)
-            or any(item != quantization for item in quantizations)
-            or set(quantization) - {"bits", "group_size", "mode"}
-            or quantization.get("bits") not in (4, 8)
-            or quantization.get("mode", "affine") != "affine"
-            or quantization.get("group_size") not in (32, 64, 128, 256)
-            or quantization.get("quant_method") is not None
-        ):
-            raise ValueError(
-                "Torch MPS quantization supports dense HF or MLX affine 4/8-bit "
-                "checkpoints; AWQ/compressed-tensors and GPTQ formats are not supported"
-            )
-
     root = config_path.parent
     components = _components_from_indexes(
         root, index_paths, use_mlx=use_mlx, allow_packed=bits is not None

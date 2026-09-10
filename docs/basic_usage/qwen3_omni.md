@@ -723,9 +723,10 @@ Checkpoint layouts:
 - **Dense Torch MPS** expects the dense, officially supported split Hugging Face
   checkpoint layout (thinker/talker/code2wav weights alongside the official
   processor and tokenizer assets), launched with `SGLANG_USE_MLX` unset.
-- **Quantized Torch MPS** additionally accepts the root-namespaced MLX affine
-  checkpoint above when `SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4` or `int8`
-  is explicitly selected. Loading and inference use Torch, not MLX.
+- **Quantized Torch MPS** accepts symmetric HF INT4 checkpoints in
+  `compressed-tensors/pack-quantized` or AutoRound `auto_round:auto_gptq`
+  format, detected automatically from `config.json`.
+  Loading and eager inference use Torch, not MLX or a CUDA quantization backend.
 - **MLX** launches the downloaded pinned
   `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` checkpoint directory
   directly.
@@ -735,10 +736,13 @@ Checkpoint layouts:
 - Validator-accepted MLX examples include component-local thinker/talker
   shards and the root-namespaced MLX-VLM layout.
 
-With both backend variables unset, Torch MPS rejects quantized checkpoints
-during pipeline construction. The opt-in quantized loader converts supported
-MLX affine packed weights and convolution layouts for Torch; the ordinary dense
-loader does not.
+With both backend variables unset, the normal Torch MPS path selects dense
+or supported INT4 loading from checkpoint metadata. The legacy
+`SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4` flag remains accepted but is unnecessary;
+it does not quantize dense checkpoints. Unsupported formats fail during preflight.
+The packed adapter repacks existing calibrated INT4 codes for Metal.
+MLX-specific tensor names, convolution-layout conversion, and INT8
+requantization are no longer part of the MPS loader.
 
 Dense Torch MPS example:
 
@@ -749,42 +753,71 @@ env -u SGLANG_USE_MLX -u SGLANG_QWEN3_OMNI_MPS_QUANTIZATION \
   --port 8008
 ```
 
-Native Torch MPS weight-only INT4, using the same downloaded checkpoint:
+Native Torch MPS weight-only INT4 uses a **different checkpoint** from MLX.
+The supported public exports have these pinned layouts:
+
+| Export | Revision | Packing |
+|---|---|---|
+| `Intel/Qwen3-Omni-30B-A3B-Instruct-int4-AutoRound` | `c3ef7bbf0b9d866866136c1d08b6314d27f7e151` | Symmetric GPTQ-style INT4, group size 128 |
+| `cyankiwi/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit` | `d6e1eff8d3414580a276744361d5b6d7d4798a56` | Symmetric compressed-tensors INT4, group size 32 |
+
+Download a pinned export, then launch its local directory:
 
 ```bash
-env -u SGLANG_USE_MLX SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4 \
+hf download Intel/Qwen3-Omni-30B-A3B-Instruct-int4-AutoRound \
+  --revision c3ef7bbf0b9d866866136c1d08b6314d27f7e151 \
+  --local-dir "$HOME/models/Qwen3-Omni-AutoRound"
+
+env -u SGLANG_USE_MLX -u SGLANG_QWEN3_OMNI_MPS_QUANTIZATION \
+  PYTORCH_ENABLE_MPS_FALLBACK=0 \
   "$PY" -m sglang_omni.cli serve \
-  --model-path "$MODEL_DIR" \
-  --port 8008
+  --model-path "$HOME/models/Qwen3-Omni-AutoRound" \
+  --model-name qwen3-omni --host 127.0.0.1 --port 8008
 ```
 
-Use `int8` instead for per-output-channel INT8 weights. Both modes retain
-floating-point activations, caches, embeddings, norms, convolutions, routers,
-and CPU prompt projections; memory use is not simply parameter count times
-the selected bit width. Routed experts are quantized independently and only
-selected experts execute. Loading converts expert slices and bounded row chunks
-for large vocabulary matrices, not a dense copy of the entire model. Dense
-Hugging Face weights can also be quantized at load time.
+These exports quantize the Thinker transformer, not the entire speech pipeline.
+The Talker, code predictor, encoders and vocoder use the existing dense loaders,
+not the quantized loader. Embeddings and routers also stay in their configured
+floating dtype. Activations
+and KV caches also remain floating point. Checkpoint file size and CUDA/XPU
+memory figures are not guarantees of peak memory on a 48-GB Mac.
 
-These modes require PyTorch's native MPS INT4/INT8 operators; they do not use
-TorchAO, custom Metal kernels, or CUDA fallback. MLX affine checkpoints with
-4/8-bit weights and supported group sizes are accepted, but **AWQ,
-compressed-tensors, and GPTQ checkpoints are not supported**. Converting a
-4-bit source to INT8 cannot restore precision already lost in that source.
-Do not combine the MPS quantization option with `SGLANG_USE_MLX=1`.
+The loader reads one projection at a time, including each routed expert,
+and preserves the existing scales and integer codes. Forward calls PyTorch's
+native `aten._weight_int4pack_mm` MPS operator, with no dense weight cache.
+It does not require AutoRound, AutoAWQ, GPTQModel, TorchAO, or custom Metal
+kernels at runtime. The eager stage runners and serving profile are unchanged.
 
-The tiny server matrices cover text, image, audio, and video inputs with text
-and speech outputs in each quantized mode:
+This is not a delegation to Transformers' AutoRound loader:
+[AutoRound v0.13 registers MLX as its MPS backend](https://github.com/intel/auto-round/blob/v0.13.0/auto_round/inference/backend.py),
+not native Torch packed INT4 execution. The narrow Thinker adapter remains
+necessary for this pure-Torch path.
+
+Only the specified symmetric W4A16 layouts are accepted: the label "AWQ" or
+"GPTQ" alone does not imply compatibility. Asymmetric weights, activation-order
+permutations, mixed quantization schemes, MLX affine checkpoints, and quantized
+encoders/Talker/code2wav are rejected. The latter components must remain dense.
+Do not combine the legacy INT4 flag with `SGLANG_USE_MLX=1`; run servers sequentially.
+
+Run the focused native-MPS packing and loader regression tests:
 
 ```bash
 "$PY" -m pytest -q \
-  'tests/test_ci/test_qwen3_omni_apple.py::test_qwen3_omni_apple_text_and_speech_matrix[torch_mps_int4]' \
-  'tests/test_ci/test_qwen3_omni_apple.py::test_qwen3_omni_apple_text_and_speech_matrix[torch_mps_int8]'
+  tests/unit_test/qwen3_omni/test_torch_mps_hf_quantization.py
 ```
 
-These fixtures have random weights and establish serving behavior, not semantic
-quality. Prefer INT4 on memory-constrained Macs; production-size INT8 plus
-multimodal activations can require substantially more unified memory.
+These tests establish packing, native dispatch, routing, and loader behavior.
+They do not establish full-model memory safety or multimodal semantic quality.
+
+Both pinned exports above also completed eight real serving requests on a
+48-GiB Apple Silicon Mac with PyTorch 2.13.0: text, full-resolution image,
+audio, and video+audio inputs, each with text-only and text+speech outputs.
+The runs left `SGLANG_QWEN3_OMNI_MPS_QUANTIZATION` unset, used
+`PYTORCH_ENABLE_MPS_FALLBACK=0`, loaded 18,624 quantized Thinker linears per export,
+and used the ordinary dense loaders for other components, one server at a time.
+This establishes serving
+behavior for that matrix, not comprehensive semantic quality or a peak-memory
+guarantee for other inputs.
 
 ## Request Parameters
 

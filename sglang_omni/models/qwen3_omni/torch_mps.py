@@ -83,14 +83,10 @@ __all__ = [
     "restore_placeholder_token_ids",
 ]
 
-# Official (published) namespaces owned by the thinker text stack.
 OFFICIAL_TEXT_PREFIX = "thinker.model."
 OFFICIAL_LM_HEAD_PREFIX = "thinker.lm_head."
-# The same namespaces once a converter has stripped the component prefix.
 LOCAL_TEXT_PREFIX = "model."
 LOCAL_LM_HEAD_PREFIX = "lm_head."
-# Component subdirectories a converted multi-component export uses; matching
-# ``apple_runtime._components_for_key``.
 COMPONENT_DIRECTORIES = ("thinker", "talker", "code2wav")
 _OTHER_COMPONENT_PREFIXES = ("talker.", "code2wav.")
 
@@ -106,7 +102,6 @@ class UnsupportedCheckpointLayout(ValueError):
     """The checkpoint layout cannot be loaded by the eager Torch MPS stages."""
 
 
-# Historical name kept for the thinker's own call sites and error handling.
 UnsupportedThinkerCheckpointLayout = UnsupportedCheckpointLayout
 
 
@@ -311,8 +306,6 @@ def fuse_moe_expert_weights(
                 f"Qwen3-Omni thinker experts for {prefix} carry "
                 f"{'up_proj' if gate is None else 'gate_proj'} without its pair"
             )
-        # Concatenate and drop the sources immediately: for the published 30B
-        # checkpoint the expert stacks dominate the load's peak memory.
         fused[f"{prefix}.gate_up_proj"] = torch.cat([gate, up], dim=1)
         del gate, up
     return fused
@@ -377,7 +370,7 @@ class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
             get_qwen3_omni_mps_quantization,
         )
 
-        bits = get_qwen3_omni_mps_quantization()
+        bits = get_qwen3_omni_mps_quantization(model_path)
         started = time.perf_counter()
         if bits is not None:
             from accelerate import init_empty_weights
@@ -434,7 +427,6 @@ class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
             state.clear()
 
         self.thinker = _build_thinker_shell(thinker_config)
-        # Only the text stack becomes resident; the towers stay on meta.
         if bits is None:
             text_model = text_model.to(device=self._device, dtype=torch_dtype)
             lm_head = lm_head.to(device=self._device, dtype=torch_dtype)
@@ -449,8 +441,6 @@ class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
             self._device,
             torch_dtype,
         )
-
-    # -- forward -----------------------------------------------------------
 
     @property
     def device(self) -> torch.device:
@@ -704,13 +694,6 @@ def _as_positions(positions: torch.Tensor | None) -> torch.Tensor:
     return torch.as_tensor(positions, dtype=torch.long).reshape(-1)
 
 
-# ---------------------------------------------------------------------------
-# Talker: strict split loading
-# ---------------------------------------------------------------------------
-
-# The official (published) namespace owned by the talker. Everything under it --
-# backbone, speaker/codec embedding, resize projections, MoE and shared experts,
-# codec head, and every code-predictor group -- belongs to this stage.
 OFFICIAL_TALKER_PREFIX = "talker."
 TALKER_MODEL_CLASS = (
     "transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe."
@@ -909,33 +892,13 @@ class Qwen3OmniTorchMpsTalker(nn.Module):
         torch_dtype = resolve_dtype(dtype) or torch.float32
         talker_config = load_talker_config(model_path)
 
-        from sglang_omni.models.qwen3_omni.apple_runtime import (
-            get_qwen3_omni_mps_quantization,
-        )
-
-        bits = get_qwen3_omni_mps_quantization()
         started = time.perf_counter()
         talker = _build_talker_shell(talker_config)
-        if bits is not None:
-            from sglang_omni.models.qwen3_omni.torch_mps_checkpoint import (
-                load_quantized_mps_module,
-            )
+        state = read_talker_state_dict(model_path, dtype=torch_dtype)
+        _assign_state_dict(talker, state, component="talker")
+        state.clear()
 
-            talker = load_quantized_mps_module(
-                talker,
-                model_path,
-                prefix="talker.",
-                bits=bits,
-                dtype=torch_dtype,
-                device=self._device,
-            )
-        else:
-            state = read_talker_state_dict(model_path, dtype=torch_dtype)
-            _assign_state_dict(talker, state, component="talker")
-            state.clear()
-
-        if bits is None:
-            talker = talker.to(device=self._device, dtype=torch_dtype)
+        talker = talker.to(device=self._device, dtype=torch_dtype)
         self.talker = talker.eval()
         self.config = talker_config
         self._num_code_groups = int(talker_config.num_code_groups)
@@ -953,8 +916,6 @@ class Qwen3OmniTorchMpsTalker(nn.Module):
             self._device,
             torch_dtype,
         )
-
-    # -- accessors ---------------------------------------------------------
 
     @property
     def device(self) -> torch.device:
@@ -1126,10 +1087,6 @@ def load_torch_mps_talker(
 
     return Qwen3OmniTorchMpsTalker(model_path, dtype=dtype, device=device)
 
-
-# ---------------------------------------------------------------------------
-# Talker: CPU float32 prompt-building surface
-# ---------------------------------------------------------------------------
 
 
 class _TalkerPrefillTextModel(nn.Module):

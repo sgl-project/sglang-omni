@@ -23,45 +23,21 @@ def load_torch_component(
     device: str | torch.device,
     strict: bool = True,
 ) -> nn.Module:
-    from sglang_omni.models.qwen3_omni.apple_runtime import (
-        get_qwen3_omni_mps_quantization,
-    )
     from sglang_omni.models.weight_loader import load_module
     from sglang_omni.utils import instantiate_module
 
-    bits = get_qwen3_omni_mps_quantization()
-    if bits is None:
-        return load_module(
-            instantiate_module(model_cls, config),
-            model_path,
-            prefix=prefix,
-            dtype=dtype,
-            device=device,
-            strict=strict,
-        )
-
-    from accelerate import init_empty_weights
-
-    from sglang_omni.models.qwen3_omni.torch_mps_checkpoint import (
-        load_quantized_mps_module,
-    )
-
-    with init_empty_weights():
-        model = instantiate_module(model_cls, config)
-    return load_quantized_mps_module(
-        model,
+    return load_module(
+        instantiate_module(model_cls, config),
         model_path,
         prefix=prefix,
-        bits=bits,
-        dtype=dtype or torch.float32,
+        dtype=dtype,
         device=device,
+        strict=strict,
     )
 
 
 def load_thinker_config(model_path: str) -> Any:
     cfg = load_hf_config(model_path, trust_remote_code=True, local_files_only=True)
-    # HF propagates attention/expert implementation choices into subconfigs.
-    # A text shell must not mutate the cached config used by encoder stages.
     return deepcopy(cfg.thinker_config)
 
 
