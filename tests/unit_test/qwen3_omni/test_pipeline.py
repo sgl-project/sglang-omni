@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
-import logging
-import sys
-from types import ModuleType, SimpleNamespace
+import threading
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -52,6 +51,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages_speech,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
@@ -77,200 +77,6 @@ def _server_args_overrides(config: PipelineConfig, name: str) -> dict[str, objec
 def _engine_mem_fraction_static(config, name: str) -> float | None:
     engine = _stage(config, name).engine
     return None if engine is None else engine.mem_fraction_static
-
-
-def test_image_encoder_factory_selects_mlx_constructor(monkeypatch, caplog) -> None:
-    from sglang_omni.scheduling import simple_scheduler
-    from sglang_omni.utils import device as device_utils
-
-    constructed = {}
-
-    class FakeMlxImageEncoder:
-        spatial_merge_size = 2
-        out_hidden_size = 32
-        deepstack_layers = 2
-        visual_dtype_bytes = 4
-
-        def __init__(self, model_path):
-            constructed["model_path"] = model_path
-
-    class FakeScheduler:
-        def __init__(self, compute_fn, **kwargs):
-            self.compute_fn = compute_fn
-            self.kwargs = kwargs
-
-    vision_module = ModuleType("sglang_omni.models.qwen3_omni.mlx.vision")
-    vision_module.Qwen3OmniMlxImageEncoder = FakeMlxImageEncoder
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.qwen3_omni.mlx.vision",
-        vision_module,
-    )
-    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: True)
-    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
-    monkeypatch.setattr(
-        device_utils,
-        "resolve_device_spec",
-        lambda _device: pytest.fail("MLX image setup must not resolve a Torch device"),
-    )
-    monkeypatch.setattr(
-        qwen_stages,
-        "Qwen3OmniImageEncoder",
-        lambda *args, **kwargs: pytest.fail("MLX selection must not construct Torch"),
-    )
-
-    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
-        scheduler = qwen_stages.create_image_encoder_executor(
-            "checkpoint", device="mps", dtype="float16"
-        )
-    assert constructed == {"model_path": "checkpoint"}
-    assert scheduler.kwargs["max_batch_size"] == 32
-    assert "Qwen3-Omni image encoder backend=native_mlx" in caplog.messages
-
-
-def test_audio_encoder_factory_selects_mlx_constructor(monkeypatch, caplog) -> None:
-    from sglang_omni.scheduling import simple_scheduler
-    from sglang_omni.utils import device as device_utils
-
-    constructed = {}
-
-    class FakeMlxAudioEncoder:
-        def __init__(self, model_path):
-            constructed["model_path"] = model_path
-
-    class FakeScheduler:
-        def __init__(self, compute_fn, **kwargs):
-            self.compute_fn = compute_fn
-            self.kwargs = kwargs
-
-    audio_module = ModuleType("sglang_omni.models.qwen3_omni.mlx.audio")
-    audio_module.Qwen3OmniMlxAudioStageEncoder = FakeMlxAudioEncoder
-    monkeypatch.setitem(
-        sys.modules,
-        "sglang_omni.models.qwen3_omni.mlx.audio",
-        audio_module,
-    )
-    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: True)
-    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
-    monkeypatch.setattr(
-        device_utils,
-        "resolve_device_spec",
-        lambda _device: pytest.fail("MLX audio setup must not resolve a Torch device"),
-    )
-    monkeypatch.setattr(
-        qwen_stages,
-        "Qwen3OmniAudioEncoder",
-        lambda *args, **kwargs: pytest.fail("MLX selection must not construct Torch"),
-    )
-
-    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
-        scheduler = qwen_stages.create_audio_encoder_executor(
-            "checkpoint",
-            device="mps",
-            dtype="float16",
-            enable_layer_cuda_graph=True,
-        )
-
-    assert constructed == {"model_path": "checkpoint"}
-    assert scheduler.kwargs["max_batch_size"] == 32
-    assert "Qwen3-Omni audio encoder backend=native_mlx" in caplog.messages
-
-
-def test_image_encoder_factory_logs_constructed_torch_backend(
-    monkeypatch,
-    caplog,
-) -> None:
-    from sglang_omni.scheduling import simple_scheduler
-    from sglang_omni.utils import device as device_utils
-
-    constructed = {}
-
-    class FakeTorchImageEncoder:
-        spatial_merge_size = 2
-        out_hidden_size = 32
-        deepstack_layers = 2
-        visual_dtype_bytes = 4
-
-        def __init__(self, *, model_path, device, dtype):
-            constructed.update(model_path=model_path, device=device, dtype=dtype)
-
-    class FakeScheduler:
-        def __init__(self, compute_fn, **kwargs):
-            self.compute_fn = compute_fn
-            self.kwargs = kwargs
-
-    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: False)
-    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
-    monkeypatch.setattr(device_utils, "resolve_device_spec", lambda device: device)
-    monkeypatch.setattr(qwen_stages, "Qwen3OmniImageEncoder", FakeTorchImageEncoder)
-
-    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
-        qwen_stages.create_image_encoder_executor(
-            "checkpoint",
-            device="mps",
-            dtype="float16",
-        )
-
-    assert constructed == {
-        "model_path": "checkpoint",
-        "device": "mps",
-        "dtype": "float16",
-    }
-    assert "Qwen3-Omni image encoder backend=torch" in caplog.messages
-
-
-def test_audio_encoder_factory_logs_constructed_torch_backend(
-    monkeypatch,
-    caplog,
-) -> None:
-    from sglang_omni.platforms import current_platform
-    from sglang_omni.scheduling import simple_scheduler
-    from sglang_omni.utils import device as device_utils
-
-    constructed = {}
-
-    class FakeTorchAudioEncoder:
-        def __init__(
-            self,
-            *,
-            model_path,
-            device,
-            dtype,
-            enable_layer_cuda_graph,
-        ):
-            constructed.update(
-                model_path=model_path,
-                device=device,
-                dtype=dtype,
-                enable_layer_cuda_graph=enable_layer_cuda_graph,
-            )
-
-    class FakeScheduler:
-        def __init__(self, compute_fn, **kwargs):
-            self.compute_fn = compute_fn
-            self.kwargs = kwargs
-
-    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: False)
-    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
-    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
-    monkeypatch.setattr(device_utils, "resolve_device_spec", lambda device: device)
-    monkeypatch.setattr(qwen_stages, "Qwen3OmniAudioEncoder", FakeTorchAudioEncoder)
-
-    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
-        qwen_stages.create_audio_encoder_executor(
-            "checkpoint",
-            device="cpu",
-            dtype="float32",
-            enable_layer_cuda_graph=True,
-        )
-
-    assert constructed == {
-        "model_path": "checkpoint",
-        "device": "cpu",
-        "dtype": "float32",
-        "enable_layer_cuda_graph": True,
-    }
-    assert "Qwen3-Omni audio encoder backend=torch" in caplog.messages
 
 
 def test_qwen_pipeline_config_and_state_contracts() -> None:
@@ -1825,3 +1631,312 @@ def test_qwen_rejects_metadata_only_processed_bundle() -> None:
 def test_qwen_rejects_unknown_processed_tensor_names() -> None:
     with pytest.raises(ValueError, match="unknown multimodal_train_inputs"):
         _processed_bundle_state({"pixel_values_video": torch.ones((2, 2))})
+
+
+@pytest.fixture
+def decoded_audio_preprocessor(monkeypatch):
+    import numpy as np
+
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+
+    class Processor:
+        def __init__(self):
+            self.audio_calls = []
+
+        def apply_chat_template(self, *args, **kwargs):
+            return "audio prompt"
+
+        def __call__(self, *, audio, **kwargs):
+            self.audio_calls.append(audio)
+            return {
+                "input_ids": torch.tensor([[1, 2]]),
+                "input_features": torch.ones(1, 2, 4),
+                "feature_attention_mask": torch.ones(1, 4, dtype=torch.long),
+            }
+
+    pre = object.__new__(mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.processor = Processor()
+    for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
+        setattr(pre, "default_video_" + name, None)
+    loaded = {"audio": [np.zeros(10000, dtype=np.float32)], "video": [], "loads": 0}
+
+    async def audio_loader(raw, **kwargs):
+        loaded["loads"] += 1
+        return loaded["audio"] if raw else []
+
+    async def video_loader(raw, **kwargs):
+        return ([], None, loaded["video"])
+
+    monkeypatch.setattr(mod, "ensure_audio_list_async", audio_loader)
+    monkeypatch.setattr(mod, "ensure_video_list_async", video_loader)
+
+    def run(
+        *, audio=True, video=False, sr=16000, path="https://audio.invalid/same.wav"
+    ):
+        inputs = {
+            "messages": [{"role": "user", "content": "hello"}],
+            "audio_target_sr": sr,
+        }
+        if audio:
+            inputs["audio"] = [path]
+        if video:
+            inputs.update(
+                videos=["https://video.invalid/same.mp4"], use_audio_in_video=True
+            )
+        payload = StagePayload(
+            request_id="cache-key", request=OmniRequest(inputs=inputs), data={}
+        )
+        state = Qwen3OmniPipelineState.from_dict(
+            asyncio.run(pre._call_impl(payload)).data
+        )
+        return state.encoder_inputs["audio_encoder"].get("cache_key")
+
+    return pre, loaded, run
+
+
+@pytest.mark.parametrize("audio,video", [(True, False), (False, True), (True, True)])
+def test_qwen_audio_cache_key_tracks_decoded_content(
+    decoded_audio_preprocessor, audio, video
+):
+    import numpy as np
+
+    pre, loaded, run = decoded_audio_preprocessor
+    if video:
+        loaded["video"] = [np.zeros(10000, dtype=np.float32)]
+    before = run(audio=audio, video=video)
+    assert run(audio=audio, video=video) == before
+    track = loaded["video" if video else "audio"][0]
+    track[5000] = 0.5
+    after = run(audio=audio, video=video)
+    assert after != before
+    assert run(audio=audio, video=video, sr=8000) != after
+    assert loaded["loads"] == 4
+    assert pre.processor.audio_calls[-1][-1] is track
+
+
+def test_qwen_audio_cache_key_distinguishes_unsampled_file_content(
+    decoded_audio_preprocessor, tmp_path
+):
+    import wave
+
+    import numpy as np
+
+    from sglang_omni.preprocessing.cache_key import hash_file_sampled
+
+    _, loaded, run = decoded_audio_preprocessor
+    paths = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    keys = []
+    for index, path in enumerate(paths):
+        samples = np.zeros(10000, dtype=np.int16)
+        samples[5000] = index * 1000
+        with wave.open(str(path), "wb") as wav:
+            wav.setparams((1, 2, 16000, len(samples), "NONE", "not compressed"))
+            wav.writeframes(samples.tobytes())
+        loaded["audio"] = [samples.astype(np.float32) / 32768]
+        keys.append(run(path=str(path)))
+    assert hash_file_sampled(paths[0]) == hash_file_sampled(paths[1])
+    assert keys[0] != keys[1]
+
+
+def test_qwen_audio_cache_key_requires_complete_content(decoded_audio_preprocessor):
+    import numpy as np
+
+    _, loaded, run = decoded_audio_preprocessor
+    a, b = np.zeros(5, dtype=np.float32), np.ones(5, dtype=np.float32)
+    loaded["audio"] = [a, b]
+    forward = run()
+    loaded["audio"] = [b, a]
+    assert run() != forward
+    loaded["video"] = [object()]
+    assert run(video=True) is None
+
+
+def test_preprocessing_executor_defaults_to_serial_dispatch(monkeypatch):
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: object())
+    default = qwen_stages.create_preprocessing_executor("model")
+    assert type(default) is SimpleScheduler
+    one = qwen_stages.create_preprocessing_executor("model", max_concurrency=1)
+    assert type(one) is SimpleScheduler
+    threaded = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    assert type(threaded) is ThreadedSimpleScheduler
+
+
+def test_preprocessing_dispatch_preserves_results_errors_and_running_abort(monkeypatch):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    class Preprocessor:
+        async def __call__(self, payload):
+            if payload == "slow":
+                entered.set()
+                assert release.wait(timeout=3)
+                finished.set()
+            if payload == "error":
+                raise ValueError("invalid preprocessing input")
+            return {"input": payload}
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+
+    def submit(request_id):
+        scheduler.inbox.put(
+            IncomingMessage(request_id=request_id, type="new_request", data=request_id)
+        )
+
+    try:
+        submit("slow")
+        assert entered.wait(timeout=3)
+        submit("fast")
+        result = scheduler.outbox.get(timeout=3)
+        assert (result.request_id, result.type, result.data) == (
+            "fast",
+            "result",
+            {"input": "fast"},
+        )
+        scheduler.abort("slow")
+        release.set()
+        assert finished.wait(timeout=3)
+        submit("error")
+        error = scheduler.outbox.get(timeout=3)
+        assert error.request_id == "error" and error.type == "error"
+        assert isinstance(error.data, ValueError)
+        submit("after")
+        result = scheduler.outbox.get(timeout=3)
+        assert (result.request_id, result.data) == ("after", {"input": "after"})
+    finally:
+        release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_preprocessing_stops_media_loaders_before_closing_connection(
+    decoded_audio_preprocessor, monkeypatch, cancel
+):
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+
+    pre, _, _ = decoded_audio_preprocessor
+    stopped = closed = False
+
+    async def run():
+        entered = asyncio.Event()
+
+        async def load_image(*args, **kwargs):
+            nonlocal stopped
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped = True
+
+        async def load_audio(*args, **kwargs):
+            await entered.wait()
+            if cancel:
+                await asyncio.Event().wait()
+            raise ValueError("invalid audio")
+
+        async def close(connection):
+            nonlocal closed
+            assert stopped
+            closed = True
+
+        monkeypatch.setattr(mod, "ensure_image_list_async", load_image)
+        monkeypatch.setattr(mod, "ensure_audio_list_async", load_audio)
+        monkeypatch.setattr(mod.ResourceHTTPConnection, "close", close)
+        task = asyncio.create_task(pre(make_qwen_payload(inputs={"messages": []})))
+        if cancel:
+            await entered.wait()
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else ValueError):
+            await task
+        assert closed
+
+    asyncio.run(run())
+
+
+def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from io import BytesIO
+
+    from PIL import Image
+
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+    from sglang_omni.preprocessing import resource_connector as resources
+
+    image_bytes = BytesIO()
+    Image.new("RGB", (2, 2), color=(12, 34, 56)).save(image_bytes, format="PNG")
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            body = image_bytes.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class Processor:
+        def apply_chat_template(self, *args, **kwargs):
+            return "image prompt"
+
+        def __call__(self, *, images, **kwargs):
+            assert images[0].getpixel((0, 0)) == (12, 34, 56)
+            return {"input_ids": torch.tensor([[1, 2]])}
+
+    pre = object.__new__(mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.processor = Processor()
+    for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
+        setattr(pre, "default_video_" + name, None)
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: pre)
+    # Isolate the old global client so this catches cross-request loop reuse.
+    monkeypatch.setattr(
+        resources,
+        "_global_connector",
+        resources.MultiModalResourceConnector(
+            connection=resources.ResourceHTTPConnection()
+        ),
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    http_worker = threading.Thread(target=server.serve_forever, daemon=True)
+    http_worker.start()
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        for index in range(3):
+            request_id = f"remote-{index}"
+            payload = make_qwen_payload(
+                request_id=request_id,
+                inputs={
+                    "messages": [{"role": "user", "content": "describe"}],
+                    "images": [f"http://127.0.0.1:{server.server_port}/image.png"],
+                },
+            )
+            scheduler.inbox.put(
+                IncomingMessage(request_id=request_id, type="new_request", data=payload)
+            )
+            result = scheduler.outbox.get(timeout=10)
+            assert result.type == "result", repr(result.data)
+            assert result.request_id == request_id
+            state = Qwen3OmniPipelineState.from_dict(result.data.data)
+            assert state.prompt["input_ids"].tolist() == [1, 2]
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+        server.shutdown()
+        server.server_close()
+        http_worker.join(timeout=3)
+    assert not worker.is_alive()

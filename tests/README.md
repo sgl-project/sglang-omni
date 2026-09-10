@@ -86,6 +86,7 @@ tests/
     ├── audar_tts/
     │   └── test_pipeline.py
     ├── qwen3_omni/
+    │   ├── test_audio_encoder_batch_dedup.py
     │   ├── test_cli.py
     │   ├── test_code2wav.py
     │   ├── test_code2wav_batching.py
@@ -425,6 +426,11 @@ Expected command:
 ```bash
 pytest tests/unit_test -q
 ```
+
+Select CPU cases with `-m "not accelerator"`. Run hardware cases with
+`-m accelerator` on a compatible accelerator; check the reported skips
+to confirm the intended hardware paths actually ran.
+
 Choose the location by the behavior contract being protected, not by the file
 that happened to contain an older version of the test.
 
@@ -463,6 +469,9 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
+  isolation, failure reporting, disabled warmup, and CLI configuration using
+  the real benchmark runner with a fake speech generator.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
@@ -595,6 +604,16 @@ that happened to contain an older version of the test.
   - SGLang argument builders
   - backend policy and quantization compatibility contracts
   - tokenizer and preprocessing fallback behavior
+  - audio cache identity from complete decoded content, mixed-batch cache
+    hits, and cached output ownership across reused encoder buffers
+    (`test_pipeline.py`, `test_audio_encoder_batch_dedup.py`). The output
+    ownership case is marked `accelerator`; the cache-key cases use CPU.
+  - preprocessing dispatch defaults to serial `SimpleScheduler`;
+    `max_concurrency > 1` opts into `ThreadedSimpleScheduler`
+    (`test_pipeline.py`).
+  - threaded preprocessing request isolation, error propagation, and running
+    request cancellation, plus repeated remote-image loading against a local
+    HTTP server and media-loader cleanup on failure (`test_pipeline.py`).
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - full-model fixture overrides target the preprocessing and thinker context

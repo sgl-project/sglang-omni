@@ -118,6 +118,13 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
     --output-dir results/qwen3_omni_en \
     --model qwen3-omni --lang en --port 8000
 
+# 3d. Qwen3-Omni — warm the full speech path with separate references before timing
+python -m benchmarks.eval.benchmark_omni_seedtts \
+    --generate-only --voice-clone --stream \
+    --meta measured/meta.lst --warmup-meta warmup/meta.lst \
+    --warmup 16 --max-concurrency 16 \
+    --output-dir results/qwen3_omni_en --model qwen3-omni --port 8000
+
 # 4. Qwen3-Omni — MMSU (audio comprehension)
 python -m benchmarks.eval.benchmark_omni_mmsu \
     --model qwen3-omni --port 8000 \
@@ -207,6 +214,23 @@ and MOSS-TTS. MOSS-TTS additionally supports duration control through
 
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
+
+Omni warmup runs in the benchmark client after the server is available. By
+default it repeats one sample concurrently; `--warmup 0` disables it. Use
+`--warmup-meta` with a separate SeedTTS metadata file or dataset to exercise
+different reference audio and prompts. Supply at least `--warmup` samples
+(the request count defaults to `--max-concurrency`), and choose references and
+text outside the measured set to avoid warming its per-sample caches. Use
+`--voice-clone --stream` to exercise reference encoding and streaming audio.
+Warmup uses normal generation limits and EOS handling; it does not guarantee
+that every stage reaches the requested concurrency as one batch.
+
+Separate warmup saves audio and per-request outcomes under `<output-dir>/warmup/`.
+All requests must succeed before the measured cohort starts. These outputs
+and their wall time are excluded from the main speed results and generated
+audio metadata. Apply the same warmup policy to both benchmark revisions;
+measure startup-to-ready and the first unconditioned request wave separately
+when evaluating production cold starts.
 
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
 transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR
