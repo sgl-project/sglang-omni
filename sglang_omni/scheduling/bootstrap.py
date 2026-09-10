@@ -154,8 +154,6 @@ def create_sglang_infrastructure(
         enable_prefill_input_embeds=enable_prefill_input_embeds,
         mlx_model_path=mlx_model_path,
         mlx_model_revision=mlx_model_revision,
-        mlx_model_path=mlx_model_path,
-        mlx_model_revision=mlx_model_revision,
     )
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
