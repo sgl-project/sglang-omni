@@ -37,6 +37,7 @@ class AuKPipelineConfig(PipelineConfig):
                 text_encoder_path=C.DEFAULT_TEXT_ENCODER,
                 max_batch_size=8,
                 max_batch_wait_ms=10,
+                batch_wait_when_idle=False,
             ),
             gpu=0,
             next=ENGINE_STAGE,

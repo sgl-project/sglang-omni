@@ -114,6 +114,20 @@ and AuK-Flash use the native path. The first request may include Triton JIT
 compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
 weights under BF16 autocast and with native BF16 weights.
 
+For c8-oriented throughput workloads, opt in to conditioning's configured
+10 ms idle batch window:
+
+```bash
+python -m sglang_omni.cli serve --model-path tencent/AuK \
+  --conditioning.factory.batch_wait_when_idle true
+```
+
+This can form fuller conditioning and downstream batches when the pipeline was
+idle. H100 screening improved c8 throughput but regressed c16, so this remains
+an explicit workload-specific option. DiT continues to dispatch the first
+request after an idle period immediately while coalescing an existing backlog
+within its configured window.
+
 ## SeedTTS Evaluation
 
 The standard benchmark detects `tencent/AuK` and `tencent/AuK-Flash` and starts the server from `--model-path`. It defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:

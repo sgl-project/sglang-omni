@@ -183,7 +183,13 @@ def warmup_flow(
     logger.info(f"AuK DiT: warmed the sampler in {time.perf_counter() - started:.1f}s")
 
 
-def scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
+def scheduler(
+    compute_batch,
+    device,
+    max_batch_size,
+    max_batch_wait_ms,
+    batch_wait_when_idle=False,
+):
     stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
 
     @torch.inference_mode()
@@ -196,7 +202,7 @@ def scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
         batch_compute_fn=run,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
-        batch_wait_when_idle=False,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
@@ -267,6 +273,7 @@ def create_conditioning_executor(
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
+    batch_wait_when_idle: bool = False,
 ) -> SimpleScheduler:
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     device = resolve_concrete_device(device, gpu_id)
@@ -283,6 +290,7 @@ def create_conditioning_executor(
         device,
         max_batch_size,
         max_batch_wait_ms,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
