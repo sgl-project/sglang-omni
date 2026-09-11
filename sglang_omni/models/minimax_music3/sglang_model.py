@@ -156,11 +156,11 @@ def depth_decode(
         replay = c0.new_zeros((), dtype=torch.bool)
     else:
         replay = c0.new_ones((), dtype=torch.bool)
-    graph = getattr(model, "rvq_depth_graph", None)
-    if graph is not None:
-        replayed = graph(hidden, c0, seeds, frame_positions, forced_codes, replay)
-        if replayed is not None:
-            return replayed
+    replayed = model.rvq_depth_graph(
+        hidden, c0, seeds, frame_positions, forced_codes, replay
+    )
+    if replayed is not None:
+        return replayed
     return _depth_decode_eager(
         model, hidden, c0, seeds, frame_positions, forced_codes, replay
     )
@@ -247,9 +247,7 @@ def _forward_prepare_unfused_qk_norm(self, positions, hidden_states):
 def _use_unfused_qk_norm(model: Any) -> None:
     """Keep QK norm, but off flashinfer's fused in-place kernel."""
     for layer in model.model.layers:
-        attention = getattr(layer, "self_attn", None)
-        if attention is None:
-            continue
+        attention = layer.self_attn
         if attention.q_norm is None or attention.k_norm is None:
             raise RuntimeError(
                 "MiniMax Music 3 expects Qwen3 QK norm layers to be present and loaded"
@@ -276,8 +274,7 @@ def _route_forward_batch_input_embeds(model: Any) -> None:
     backbone_forward = model.forward
 
     def forward(input_ids, positions, forward_batch, input_embeds=None, **kwargs):
-        # todo (chenyang): remove getattr here
-        buffer = getattr(model, "graph_feedback_buffer", None)
+        buffer = model.graph_feedback_buffer
         if buffer is not None and forward_batch.forward_mode.is_decode():
             input_embeds = buffer[: input_ids.shape[0]]
         elif input_embeds is None:

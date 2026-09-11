@@ -17,6 +17,7 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_source
 @dataclass(frozen=True)
 class TTMCheckpointPaths:
     root: Path
+    language_model_dir: Path
     qwen_dir: Path
     tokenizer_dir: Path
     config_path: Path
@@ -48,6 +49,7 @@ def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
     tokenizer_dir = root / "qwen_7B" / "qwen3-8B-tokenizer-music"
     paths = TTMCheckpointPaths(
         root=root,
+        language_model_dir=root / "language_model",
         qwen_dir=qwen_dir,
         tokenizer_dir=tokenizer_dir,
         config_path=qwen_dir / "config.json",

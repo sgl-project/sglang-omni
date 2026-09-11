@@ -223,7 +223,11 @@ class MiniMaxMusic3AcousticDecoder:
             )
         self.dit.load_state_dict(state, strict=True, assign=True)
         del state
+        rotary = self.dit.diffusion_transformer.transformer.rotary_pos_emb
+        assert rotary.inv_freq.dtype == torch.float32
+        rotary_inv_freq = rotary.inv_freq
         self.dit = self.dit.to(dtype=self.dtype).eval()
+        rotary.inv_freq = rotary_inv_freq
         window = self.dit.aligned_mel_length(AR_CHUNK_FRAMES)
         if self.compile_acoustic and not (
             self.cache_dit or self.breakable_cuda_graph_requested
