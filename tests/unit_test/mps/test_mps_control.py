@@ -17,22 +17,13 @@ from sglang_omni.mps.manager import (
 )
 
 
-def _test_pipe_dir(tmp_path: Path) -> Path:
-    pipe_dir = tmp_path / "GPU-test" / "pipe"
-    pipe_dir.mkdir(parents=True)
-    return pipe_dir
-
-
-def _stable_identity(monkeypatch, client, pid: int = 123) -> None:
-    monkeypatch.setattr(client, "read_daemon_identity", lambda _pipe: pid)
-
-
 def test_snapshot_parses_driver_output_and_retains_server_client_pairs(
     monkeypatch, tmp_path
 ):
-    pipe_dir = _test_pipe_dir(tmp_path)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
-    _stable_identity(monkeypatch, client)
+    monkeypatch.setattr(client, "read_daemon_identity", lambda _pipe: 123)
     monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
     responses = {
         "get_server_list\n": "7000  8000\n",
@@ -62,9 +53,10 @@ def test_snapshot_parses_driver_output_and_retains_server_client_pairs(
 
 
 def test_snapshot_holds_one_control_lock_across_all_queries(monkeypatch, tmp_path):
-    pipe_dir = _test_pipe_dir(tmp_path)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
-    _stable_identity(monkeypatch, client)
+    monkeypatch.setattr(client, "read_daemon_identity", lambda _pipe: 123)
     events: list[str] = []
     responses = {
         "get_server_list\n": "7000 8000\n",
@@ -104,9 +96,10 @@ def test_snapshot_holds_one_control_lock_across_all_queries(monkeypatch, tmp_pat
 def test_snapshot_retries_transient_query_failure_while_identity_is_stable(
     monkeypatch, tmp_path
 ):
-    pipe_dir = _test_pipe_dir(tmp_path)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
-    _stable_identity(monkeypatch, client)
+    monkeypatch.setattr(client, "read_daemon_identity", lambda _pipe: 123)
     monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
     calls: list[str] = []
     first_server_query = True
@@ -141,11 +134,11 @@ def test_snapshot_retries_transient_query_failure_while_identity_is_stable(
 
 
 def test_snapshot_aborts_retry_when_daemon_identity_changes(monkeypatch, tmp_path):
-    pipe_dir = _test_pipe_dir(tmp_path)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
     identities = iter([123, 124])
     monkeypatch.setattr(client, "read_daemon_identity", lambda _pipe: next(identities))
-    monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
     calls = 0
 
     def run(args, **kwargs):
@@ -166,10 +159,11 @@ def test_snapshot_aborts_retry_when_daemon_identity_changes(monkeypatch, tmp_pat
     assert calls == 1
 
 
-def test_control_query_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
-    pipe_dir = _test_pipe_dir(tmp_path)
+def test_snapshot_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
-    _stable_identity(monkeypatch, client)
+    monkeypatch.setattr(client, "read_daemon_identity", lambda _pipe: 123)
     monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
 
     def nonzero(args, **kwargs):
@@ -182,7 +176,10 @@ def test_control_query_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(control.subprocess, "run", nonzero)
-    with pytest.raises(MpsControlError, match="snapshot failed after 3 attempts"):
+    with pytest.raises(
+        MpsControlError,
+        match="snapshot failed after 3 attempts: .*control failed",
+    ):
         client.snapshot(pipe_dir)
 
     def timeout(args, **kwargs):
@@ -190,12 +187,16 @@ def test_control_query_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
         raise subprocess.TimeoutExpired(args, 10)
 
     monkeypatch.setattr(control.subprocess, "run", timeout)
-    with pytest.raises(MpsControlError, match="snapshot failed after 3 attempts"):
+    with pytest.raises(
+        MpsControlError,
+        match="snapshot failed after 3 attempts: .*timed out",
+    ):
         client.snapshot(pipe_dir)
 
 
 def test_mutating_control_query_is_serialized_without_retry(monkeypatch, tmp_path):
-    pipe_dir = _test_pipe_dir(tmp_path)
+    pipe_dir = tmp_path / "pipe"
+    pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
     events: list[str] = []
 

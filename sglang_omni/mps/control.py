@@ -49,8 +49,6 @@ class SubprocessMpsControlClient:
 
     @contextmanager
     def _control_transaction(self, pipe_dir: Path):
-        """Serialize native control transactions for one shared MPS daemon."""
-
         lock_path = pipe_dir.parent / _CONTROL_LOCK_NAME
         try:
             lock_file = lock_path.open("a+")
@@ -178,7 +176,7 @@ class SubprocessMpsControlClient:
         return clients
 
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
-        """Return one serialized server/client snapshot."""
+        """Return one identity-stable, serialized server/client snapshot."""
 
         expected_daemon_pid = self.read_daemon_identity(pipe_dir)
         last_error: MpsControlError | None = None
@@ -191,20 +189,19 @@ class SubprocessMpsControlClient:
             except MpsControlError as exc:
                 last_error = exc
             else:
-                current_daemon_pid = self.read_daemon_identity(pipe_dir)
-                if current_daemon_pid != expected_daemon_pid:
-                    raise MpsControlError(
-                        "MPS daemon identity changed during control snapshot "
-                        f"from {expected_daemon_pid} to {current_daemon_pid}"
-                    )
-                return clients
+                last_error = None
 
             current_daemon_pid = self.read_daemon_identity(pipe_dir)
             if current_daemon_pid != expected_daemon_pid:
-                raise MpsControlError(
+                identity_error = MpsControlError(
                     "MPS daemon identity changed during control snapshot "
                     f"from {expected_daemon_pid} to {current_daemon_pid}"
-                ) from last_error
+                )
+                if last_error is not None:
+                    raise identity_error from last_error
+                raise identity_error
+            if last_error is None:
+                return clients
             if attempt < len(_SNAPSHOT_RETRY_DELAYS_SECONDS):
                 time.sleep(_SNAPSHOT_RETRY_DELAYS_SECONDS[attempt])
 

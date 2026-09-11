@@ -390,7 +390,7 @@ def test_probe_allows_a_verified_client_to_exit(short_root):
     assert manager.probe(lease) is None
 
 
-def test_probe_checks_identity_without_client_snapshot(short_root, monkeypatch):
+def test_probe_checks_identity_without_client_snapshot(short_root):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
 
@@ -411,10 +411,7 @@ def test_probe_checks_identity_without_client_snapshot(short_root, monkeypatch):
     client.daemons[str(manager.paths.pipe_dir)] = lease.daemon_pid
     daemon_pid_file(manager.paths).write_text(str(lease.daemon_pid))
 
-    def snapshot_must_not_run(_pipe_dir):
-        raise AssertionError("steady-state probe must not enumerate MPS clients")
-
-    monkeypatch.setattr(client, "snapshot", snapshot_must_not_run)
+    client.snapshot_error = "unexpected snapshot"
     assert manager.probe(lease) is None
 
 

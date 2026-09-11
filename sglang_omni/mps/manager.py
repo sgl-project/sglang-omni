@@ -509,11 +509,7 @@ class MpsManager:
         except MpsControlError as exc:
             return f"daemon identity query failed: {exc}"
         if daemon_pid != lease.daemon_pid:
-            return (
-                f"daemon identity changed from {lease.daemon_pid} " f"to {daemon_pid}"
-            )
-        else:
-            pass
+            return f"daemon identity changed from {lease.daemon_pid} to {daemon_pid}"
         return None
 
     def release(
