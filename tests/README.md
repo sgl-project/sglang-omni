@@ -902,6 +902,20 @@ queued abort, refill after running abort, completed-lookahead close/append, repe
 close resource return, and actual retained slot/KV exhaustion. It does not
 validate mixed chunked prefill, model-specific audio consumption, or performance.
 
-AR session unit tests are grouped by history/admission, scheduler dispatch,
-and cancellation/cleanup. Shared native request builders live in
-`unit_test/fixtures/ar_session.py`.
+AR session unit tests use one `bridge_env` fixture in
+`unit_test/fixtures/ar_session.py`. It owns scheduler construction, native slots,
+and async step fault injection; the test modules express these contracts:
+
+| Contract | Tests |
+| --- | --- |
+| History and rollback | `test_materialization_preserves_sidecars_and_drains_previous_lookahead`, `test_append_rejection_rolls_back_native_history[native\|length\|input_length\|priority\|queue]`, `test_rejection_of_one_inflight_owner_leaves_others_intact`, `test_session_embeddings_explicitly_rejected` |
+| Native admission | `test_admission_accounts_for_native_slots[retained_kv_available\|retained_kv_exhausted\|reserve_row_exhausted\|reserve_row_available]` |
+| Native lifetime | `test_queued_cancel_detaches_request_without_releasing_session_kv`, `test_cancel_does_not_abort_active_core_request`, `test_cancel_at_boundary_preserves_native_session`, `test_idle_close_drains_completed_lookahead_before_slot_release`, `test_adapter_state_follows_core_session_lifetime`, `test_request_abort_fences_output_before_async_drain`, `test_cancelled_close_retains_cleanup_intent` |
+| Async cleanup | `test_failed_device_wait_retains_ownership_and_retries[gpu_wait\|regular_async\|regular_async_shutdown\|launch_first_previous\|launch_first_current\|post_wait_collect]`, `test_shutdown_callback_runs_even_if_native_cleanup_fails` |
+| Dispatch | `test_lifecycle_bypasses_builder_and_queue_capacity`, `test_output_budget_includes_flush_and_terminal_only`, `test_ordinary_embeddings_and_sidecars_unchanged_with_bridge`, `test_stream_conversion_without_ordinary_builder`, `test_retained_sessions_block_direct_cache_flush_and_weight_reset`, `test_empty_eof_is_relayed_or_bypassed[relayed\|unhandled\|nonempty]` |
+| Native integration | `test_hidden_state_requests_have_an_empty_native_reporting_object`, `test_factory_wraps_streaming_sessions` |
+
+`post_wait_collect` checks a successful wait followed by a failed collection:
+the consumed step must not be collected again. Output fencing, cancelled close
+message handling, and shutdown callback finalization remain separate invariants.
+`test_real_streaming_session_gpu` remains the opt-in physical gate above.

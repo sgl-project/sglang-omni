@@ -1,209 +1,126 @@
 # SPDX-License-Identifier: Apache-2.0
-from array import array
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.runtime_context import get_context
 
-from sglang_omni.proto.session import SessionRef
-from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
-from tests.unit_test.fixtures.ar_session import TestAdapter, bridge, data, payload
+from tests.unit_test.fixtures import ar_session
+from tests.unit_test.fixtures.ar_session import data, payload
+
+bridge_env = ar_session.bridge_env
 
 
-def test_materializes_native_history_preserving_sidecars():
-    b = bridge()
+def test_materialization_preserves_sidecars_and_drains_previous_lookahead(bridge_env):
+    h = bridge_env
+    b = h.bridge
     b.command(payload("open"))
     p = payload("append")
     b.accept(p)
     d = data()
     sidecar = object()
     d.model_inputs = {"marker": sidecar}
+    h.trace_drain()
     b.materialize(p, d)
-    assert d.req.session is b.scheduler.session_controller.get(
-        b.native_id(SessionRef("s"))
-    )
+    assert h.events == ["drain"]
+    assert d.req.session is h.native()
     assert d.model_inputs["marker"] is sidecar
-    assert b.scheduler.session_controller.get(b.native_id(SessionRef("s")))._inflight
+    assert h.inflight()
     b.rollback("r")
-    assert not d.req.session._inflight
+    assert not h.inflight()
 
 
-def test_one_inflight_rejection_does_not_clear_first_owner():
-    b = bridge()
+@pytest.mark.parametrize(
+    "rejection", ["native", "length", "input_length", "priority", "queue"]
+)
+def test_append_rejection_rolls_back_native_history(bridge_env, rejection):
+    h = bridge_env
+    b, s = h.bridge, h.scheduler
     b.command(payload("open"))
-    b.accept(payload("append"))
-    d = data()
-    b.materialize(payload("append"), d)
+    h.finish(h.append("first"))
+    retained_slot = object()
+    s.tree_cache.slots["s"] = retained_slot
+    if rejection == "native":
+        failed = h.append("bad", [9])
+        assert list(failed.req.origin_input_ids) == [1, 2, 3, 4, 9]
+        b.rollback("bad")
+    else:
+        h.reject_append(rejection)
+        with get_context().override_server_args(weight_version="test"):
+            s.process_input_requests([payload("append")])
+        assert s.outbox.get_nowait().type == "error"
+    assert not h.inflight()
+    assert s.tree_cache.slots["s"] is retained_slot
+    following = h.append("next", [8])
+    assert list(following.req.origin_input_ids) == [1, 2, 3, 4, 8]
+    b.rollback("next")
+    s.tree_cache.slots.clear()
+    assert b.command(payload("close", "close")).data == {"closed": True}
+
+
+def test_rejection_of_one_inflight_owner_leaves_others_intact(bridge_env, monkeypatch):
+    import sglang.srt.managers.schedule_batch as native_batch
+
+    h = bridge_env
+    b = h.bridge
+    b.command(payload("open"))
+    h.append()
     with pytest.raises(ValueError, match="active"):
         b.accept(payload("append", "other"))
-    assert d.req.session._inflight
+    assert h.inflight()
+    b.rollback("r")
+    b.accept(payload("append"))
+    h.occupy_native()
+    monkeypatch.setattr(
+        native_batch, "get_parallel", lambda: SimpleNamespace(tp_rank=0)
+    )
+    with pytest.raises(ValueError, match="native session rejected"):
+        b.materialize(payload("append"), data())
+    b.rollback("r")
+    assert h.inflight()
 
 
-def test_session_embeddings_explicitly_rejected():
-    b = bridge()
+def test_session_embeddings_explicitly_rejected(bridge_env):
+    h = bridge_env
+    b = h.bridge
     b.command(payload("open"))
     b.accept(payload("append"))
     d = data()
     d.prefill_input_embeds = object()
     with pytest.raises(ValueError, match="embedding"):
         b.materialize(payload("append"), d)
-    assert not b.scheduler.session_controller.get(
-        b.native_id(SessionRef("s"))
-    )._inflight
+    assert not h.inflight()
 
 
-def test_native_history_rolls_back_failed_append():
-    from sglang.srt.managers.schedule_batch import FINISH_LENGTH
-
-    b = bridge()
-    b.command(payload("open"))
-    b.accept(payload("append"))
-    d = data()
-    b.materialize(payload("append"), d)
-    native = d.req.session
-    d.req.output_ids = array("q", [3, 4])
-    d.req.finished_reason = FINISH_LENGTH(2)
-    native.finish_req(d.req)
-    b.complete("r")
-    b.accept(payload("append", "bad"))
-    failed = data("bad", [9])
-    b.materialize(payload("append", "bad"), failed)
-    assert list(failed.req.origin_input_ids) == [1, 2, 3, 4, 9]
-    b.rollback("bad")
-    b.accept(payload("append", "next"))
-    good = data("next", [8])
-    b.materialize(payload("append", "next"), good)
-    assert list(good.req.origin_input_ids) == [1, 2, 3, 4, 8]
-
-
-def test_materialization_drains_previous_unit_lookahead():
-    b = bridge()
-    b.command(payload("open"))
-    b.accept(payload("append"))
-    events = []
-    b.scheduler._resolve_pending_async = lambda: events.append("drain")
-    b.materialize(payload("append"), data())
-    assert events == ["drain"]
-
-
-def test_native_rejection_does_not_rollback_another_inflight_owner(monkeypatch):
-    import sglang.srt.managers.schedule_batch as native_batch
-
-    monkeypatch.setattr(
-        native_batch, "get_parallel", lambda: SimpleNamespace(tp_rank=0)
-    )
-    b = bridge()
-    b.command(payload("open"))
-    b.accept(payload("append"))
-    native = b.scheduler.session_controller.get(b.native_id(SessionRef("s")))
-    native._inflight = True
-    with pytest.raises(ValueError, match="native session rejected"):
-        b.materialize(payload("append"), data())
-    b.rollback("r")
-    assert native._inflight
-
-
-@pytest.mark.parametrize("rejection", ["length", "input_length", "priority", "queue"])
-def test_production_admission_rejection_rolls_back_native_history(
-    monkeypatch, rejection
-):
-    from sglang.srt.managers.schedule_batch import FINISH_LENGTH
-    from sglang.srt.runtime_context import get_context
-
-    from tests.unit_test.pipeline.test_scheduler import _construct_omni_scheduler
-
-    s = _construct_omni_scheduler(monkeypatch)
-    s.model_config.vocab_size = 32
-    s.server_args.mem_fraction_static = None
-    s.session_controller = bridge().scheduler.session_controller
-    s.tree_cache = s.session_controller.tree_cache
-    built = []
-
-    def build(ref, chunk, p):
-        d = data(p.request_id)
-        d.enforce_request_limits = rejection == "input_length"
-        if rejection == "priority":
-            d.req.priority = 1
-        built.append(d)
-        return d
-
-    b = ARSessionBridge(s, TestAdapter(build=build))
-    s._session_bridge = b
-    # Note (Junnan Li): Exercise post-build rejection after native history materialization.
-    b.capacity_error = lambda rid: None
-    b.command(payload("open"))
-    b.accept(payload("append", "first"))
-    previous = data("first")
-    b.materialize(payload("append", "first"), previous)
-    native = previous.req.session
-    previous.req.output_ids = array("q", [3, 4])
-    previous.req.finished_reason = FINISH_LENGTH(2)
-    native.finish_req(previous.req)
-    b.complete("first")
-    sid = b.native_id(SessionRef("s"))
-    retained_slot = object()
-    s.tree_cache.slots[sid] = retained_slot
-    s._release_request_kv_cache = lambda req: pytest.fail("unadmitted KV released")
-    s.max_req_len = 3 if rejection == "length" else 63
-    s.max_req_input_len = 3 if rejection == "input_length" else 63
-    s.abort_on_priority_when_disabled = rejection == "priority"
-    if rejection == "queue":
-        s.max_queued_requests = 0
-        # Note (Junnan Li): The queue fills after the initial admission check.
-        s._waiting_queue_is_full = lambda: False
-    with get_context().override_server_args(weight_version="test"):
-        s.process_input_requests([payload("append")])
-    msg = s.outbox.get_nowait()
-    assert msg.type == "error"
-    assert s.tree_cache.slots[sid] is retained_slot
-    b.accept(payload("append", "next"))
-    following = data("next", [9])
-    b.materialize(payload("append", "next"), following)
-    assert list(following.req.origin_input_ids) == [1, 2, 3, 4, 9]
-    b.rollback("next")
-    s.tree_cache.slots.clear()
-    assert b.command(payload("close", "close")).data == {"closed": True}
-
-
-@pytest.mark.parametrize("available, exhausted", [(2, False), (1, True)])
-def test_admission_counts_retained_kv_from_native_session_slot(available, exhausted):
-    from sglang.srt.session.streaming_session import SessionSlot
-
-    b = bridge()
-    b.command(payload("open"))
-    p = payload("append")
-    b.accept(p)
-    d = data()
-    b.materialize(p, d)
-    slot = SessionSlot()
-    slot.kv.kv_allocated_len = 2
-    slot.restore_to_req(d.req)
-    b.scheduler.tree_cache.slots["s"] = slot
-    b.scheduler.tree_cache.evictable_size = lambda: 0
-    b.scheduler.req_to_token_pool = SimpleNamespace(free_slots=[0, 1])
-    b.scheduler.token_to_kv_pool_allocator = SimpleNamespace(
-        available_size=lambda: available
-    )
-    error = b.capacity_error(p.request_id)
-    assert error == ("session KV capacity exhausted" if exhausted else None)
-
-
-@pytest.mark.parametrize("free_slots, exhausted", [(2, True), (3, False)])
-def test_admission_reserves_rows_for_other_unallocated_sessions(free_slots, exhausted):
-    b = bridge()
-    for sid, rid in [("s", "r"), ("other", "other-r")]:
-        opened = payload("open", "open-" + rid)
-        opened.request.metadata["omni_session"]["ref"]["session_id"] = sid
-        b.command(opened)
-        p = payload("append", rid)
-        p.request.metadata["omni_session"]["ref"]["session_id"] = sid
-        b.accept(p)
-        b.materialize(p, data(rid))
-    b.scheduler.tree_cache.evictable_size = lambda: 0
-    b.scheduler.req_to_token_pool = SimpleNamespace(free_slots=list(range(free_slots)))
-    b.scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 8)
-    error = b.capacity_error("r")
-    assert error == (
-        "session request slot capacity exhausted (one admission slot reserved)"
-        if exhausted
-        else None
-    )
+@pytest.mark.parametrize(
+    "case, rows, tokens, error",
+    [
+        ("retained_kv_available", 2, 2, None),
+        ("retained_kv_exhausted", 2, 1, "session KV capacity exhausted"),
+        (
+            "reserve_row_exhausted",
+            2,
+            8,
+            "session request slot capacity exhausted (one admission slot reserved)",
+        ),
+        ("reserve_row_available", 3, 8, None),
+    ],
+    ids=[
+        "retained_kv_available",
+        "retained_kv_exhausted",
+        "reserve_row_exhausted",
+        "reserve_row_available",
+    ],
+)
+def test_admission_accounts_for_native_slots(bridge_env, case, rows, tokens, error):
+    h = bridge_env
+    h.bridge.command(payload("open"))
+    d = h.append()
+    if case.startswith("retained_kv"):
+        h.retain_slot(d)
+    else:
+        opened = payload("open", "open-other")
+        opened.request.metadata["omni_session"]["ref"]["session_id"] = "other"
+        h.bridge.command(opened)
+        h.append("other-r", sid="other")
+    h.capacity(rows, tokens)
+    assert h.bridge.capacity_error("r") == error
