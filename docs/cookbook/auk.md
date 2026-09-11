@@ -92,6 +92,20 @@ The DiT stores its weights in BF16 and runs without autocast by default (`--auk_
 
 Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
+## Optional DiT Q/K fusion
+
+On CUDA with BF16 compute, the DiT's per-head RMSNorm and interleaved rotary
+embedding can use an opt-in Triton kernel:
+
+```bash
+python -m sglang_omni.cli serve --model-path tencent/AuK \
+  --auk_engine.factory.enable_dit_fused_qk_norm_rope true
+```
+
+This requires head dimension 64 and leaves the conditioner, VAE, and sampling
+recipe unchanged. It is disabled by default, is not supported for AuK-Flash,
+and has been validated with the 32-step AuK checkpoint on H100.
+
 ## SeedTTS Evaluation
 
 The standard benchmark detects `tencent/AuK` and `tencent/AuK-Flash` and starts the server from `--model-path`. It defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:
