@@ -542,6 +542,9 @@ class AuKDit(nn.Module):
         prompt_len = ref_emb.shape[1]
         audio = torch.cat([ref_emb, x_emb], dim=1)
 
+        if mask is None and ref_mask is None:
+            return audio, None, prompt_len
+
         batch, n = x_emb.shape[:2]
         if mask is None:
             mask = torch.ones(batch, n, dtype=torch.bool, device=x_emb.device)
@@ -566,13 +569,14 @@ class AuKDit(nn.Module):
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
         joint_positions: torch.Tensor | None = None,
+        all_valid_masks: bool = False,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
             time = time.repeat(batch)
         t = self.time_embed(time)
 
-        if c_mask is None:
+        if c_mask is None and not all_valid_masks:
             c_mask = text.abs().sum(-1) > 0
 
         if cfg_infer:
@@ -604,7 +608,8 @@ class AuKDit(nn.Module):
                 if a_mask_cond is not None and a_mask_uncond is not None
                 else None
             )
-            c_mask = torch.cat((c_mask, c_mask), dim=0)
+            if c_mask is not None:
+                c_mask = torch.cat((c_mask, c_mask), dim=0)
             if audio_positions is not None:
                 audio_positions = audio_positions.repeat(2, 1)
                 joint_positions = joint_positions.repeat(2, 1)

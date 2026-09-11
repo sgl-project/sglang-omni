@@ -213,17 +213,27 @@ def create_conditioning_executor(
 def _sample_batch(payloads, flow, device, dtype, max_frames, sampling):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
-    items = [
-        AuKSampleItem(
-            state.conditioning.to(device),
-            state.text_mask.to(device),
-            min(max(state.gen_frames, 1), max_frames),
-            state.ref_latent.to(device) if state.ref_latent is not None else None,
-            state.seed,
-            state.ref_length,
+    elide_masks = sampling.get("elide_singleton_masks", False) and len(states) == 1
+    items = []
+    for state in states:
+        conditioning = (
+            state.conditioning[: state.prompt_tokens]
+            if elide_masks
+            else state.conditioning
         )
-        for state in states
-    ]
+        reference = state.ref_latent
+        if elide_masks and reference is not None:
+            reference = reference[: state.ref_length]
+        items.append(
+            AuKSampleItem(
+                conditioning=conditioning.to(device),
+                text_mask=None if elide_masks else state.text_mask.to(device),
+                target_frames=min(max(state.gen_frames, 1), max_frames),
+                ref_latent=reference.to(device) if reference is not None else None,
+                seed=state.seed,
+                ref_length=state.ref_length,
+            )
+        )
     logger.info("AuK DiT: sampling batch of %d requests", len(items))
     with _autocast(device, dtype):
         latents = flow.sample_batch(items, **sampling)
@@ -244,6 +254,7 @@ def create_auk_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     nfe: int = C.DEFAULT_NFE,
+    enable_dit_singleton_mask_elision: bool = False,
     cfg_strength: float = C.DEFAULT_CFG_STRENGTH,
     sway_sampling_coef: float | None = C.DEFAULT_SWAY_SAMPLING_COEF,
     max_seconds: float = C.MAX_SECONDS,
@@ -273,6 +284,8 @@ def create_auk_engine_executor(
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
     )
+    if enable_dit_singleton_mask_elision:
+        sampling["elide_singleton_masks"] = True
     return _scheduler(
         lambda payloads: _sample_batch(
             payloads,

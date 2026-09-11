@@ -52,7 +52,7 @@ def build_time_grid(
 @dataclass
 class AuKSampleItem:
     conditioning: torch.Tensor
-    text_mask: torch.Tensor
+    text_mask: torch.Tensor | None
     target_frames: int
     ref_latent: torch.Tensor | None = None
     seed: int | None = None
@@ -97,6 +97,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        elide_singleton_masks: bool = False,
     ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -118,13 +119,18 @@ class AuKFlowMatching(nn.Module):
             )
             for item in items
         ]
+        all_valid_masks = elide_singleton_masks and len(items) == 1
         ref = pack(references).to(weight_dtype)
         ref_mask = (
-            torch.arange(ref.shape[1], device=device)[None, :]
+            None
+            if all_valid_masks
+            else torch.arange(ref.shape[1], device=device)[None, :]
             < torch.tensor([item.ref_length for item in items], device=device)[:, None]
         )
         text = pack([item.conditioning for item in items]).to(weight_dtype)
-        text_mask = pack([item.text_mask for item in items])
+        text_mask = (
+            None if all_valid_masks else pack([item.text_mask for item in items])
+        )
         noise = []
         for item in items:
             generator = request_generator(item.seed, device)
@@ -184,6 +190,7 @@ class AuKFlowMatching(nn.Module):
                 cache=True,
                 audio_positions=audio_positions,
                 joint_positions=joint_positions,
+                all_valid_masks=all_valid_masks,
             )
             if cfg_strength < 1e-5:
                 return self.transformer(
