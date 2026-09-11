@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import torch
+
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 
@@ -22,7 +24,9 @@ class HiggsTtsState(DeclarativeStateBase):
 
     # preprocessing / audio_encoder
     prompt_token_ids: list[int] = wire(default_factory=list, codec="list")
-    reference_codes_delayed: list[list[int]] | None = None
+    # Delayed code rows stay CPU tensors end to end: the relay lifts them out of
+    # the payload as raw bytes, while nested lists would ride the header pickle.
+    reference_codes_delayed: torch.Tensor | None = None
     target_text: str | None = None
     reference_text: str | None = None
     reference_waveform: Any | None = None  # mono 24 kHz [1, 1, L] torch.Tensor
@@ -45,7 +49,7 @@ class HiggsTtsState(DeclarativeStateBase):
     return_omni_rollout: bool = wire(False, emit="truthy", codec="bool")
 
     # tts_engine
-    output_codes_delayed: list[list[int]] | None = None
+    output_codes_delayed: torch.Tensor | None = None
     omni_rollout: dict[str, Any] | None = None
 
     # vocoder
