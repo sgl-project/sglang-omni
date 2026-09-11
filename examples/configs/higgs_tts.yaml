@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example launcher config for Higgs Audio v3 TTS (Boson AI, ~4B).
+# Serves the OpenAI-compatible /v1/audio/speech endpoint.
+#
+# The pipeline auto-detects its topology from the model; this file only pins
+# the config class and the model path. Runs on a single GPU by default
+# (tested on a single A100-40G / H100).
+#
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0 python -m sglang_omni.cli serve \
+#       --config examples/configs/higgs_tts.yaml --port 30000
+
+config_cls: HiggsTtsPipelineConfig
+name: higgs-audio-v3-tts-4b
+model_path: bosonai/higgs-audio-v3-tts-4b

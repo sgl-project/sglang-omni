@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example launcher config for ZONOS2 (Zyphra MoE TTS).
+# Serves the OpenAI-compatible /v1/audio/speech endpoint.
+#
+# ZONOS2's default pipeline is a single-process colocated (DP1) server, so a
+# single GPU is sufficient (tested on a single A100-40G / H100).
+#
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0 python -m sglang_omni.cli serve \
+#       --config examples/configs/zonos2.yaml --port 30000
+
+config_cls: Zonos2PipelineConfig
+name: zonos2
+model_path: Zyphra/zonos2

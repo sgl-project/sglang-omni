@@ -594,3 +594,20 @@ Throughput on Seed-TTS EN (full set, **N=1088** per run). Client `--max-concurre
 - **audio_s/s** — Total seconds of audio produced divided by total benchmark wall-clock time.
 
 To reproduce the results, follow the instructions in [this script](https://github.com/sgl-project/sglang-omni/blob/main/benchmarks/eval/benchmark_tts_seedtts.py).
+
+## Serve with Example Config
+
+For a copy-paste single-GPU launch, use the bundled
+[`examples/configs/higgs_tts.yaml`](../../examples/configs/higgs_tts.yaml). It
+pins `config_cls: HiggsTtsPipelineConfig` and the official `model_path`, so the
+server auto-detects its pipeline topology:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --config examples/configs/higgs_tts.yaml \
+  --port 8000
+```
+
+The config targets a single GPU (validated on a single A100-40G / H100). After
+the server is up, synthesize speech with the examples in
+[Synthesizing Speech](#synthesizing-speech).
