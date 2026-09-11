@@ -8,8 +8,8 @@ import logging
 import os
 import time
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import numpy as np
@@ -39,6 +39,7 @@ from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
@@ -1423,6 +1424,34 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
         results = await self.decode_payloads([payload])
         return results[0]
 
+    def decode_tokens(
+        self,
+        *,
+        token: torch.Tensor,
+        prompt_token: torch.Tensor,
+        prompt_feat: torch.Tensor,
+        embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        """Decode accumulated stream tokens through the native MLX graph."""
+        mx = self._mx
+        with mx.stream(self._stream):
+            wav = self._vocoder.decode_mx(
+                token=mx.array(token.detach().cpu().numpy(), dtype=mx.int32),
+                prompt_token=mx.array(
+                    prompt_token.detach().cpu().numpy(), dtype=mx.int32
+                ),
+                prompt_feat=mx.array(
+                    prompt_feat.detach().to(dtype=torch.float32).cpu().numpy(),
+                    dtype=mx.float32,
+                ),
+                embedding=mx.array(
+                    embedding.detach().to(dtype=torch.float32).cpu().numpy(),
+                    dtype=mx.float32,
+                ),
+            )
+            mx.eval(wav)
+        return torch.from_numpy(np.ascontiguousarray(np.asarray(wav, dtype=np.float32)))
+
     def store_result(
         self,
         payload: StagePayload,
@@ -1431,6 +1460,168 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
         sample_rate: int,
     ) -> StagePayload:
         return _store_vocoder_result(payload, state, wav, sample_rate)
+
+
+@dataclass
+class _FunCosyVoice3MlxStreamState:
+    tokens: list[int] = field(default_factory=list)
+    prompt_token: torch.Tensor | None = None
+    prompt_feat: torch.Tensor | None = None
+    embedding: torch.Tensor | None = None
+
+
+class _FunCosyVoice3MlxStreamingVocoderScheduler(
+    StreamingVocoderBase[_FunCosyVoice3MlxStreamState, None]
+):
+    """Stream-aware MLX scheduler with whole-utterance final decode.
+
+    The converted MLX Flow/HiFT artifact is currently a non-causal decoder.
+    This scheduler preserves Omni's stream_chunk/stream_done contract and
+    emits one final waveform instead of silently dropping chunks in
+    ``SimpleScheduler``. Incremental MLX Flow/HiFT decoding can replace the
+    accumulated-token decode later without changing the stage contract.
+    """
+
+    def __init__(
+        self, vocoder: _CosyVoice3MlxVocoderAdapter, *, max_batch_wait_ms: int
+    ) -> None:
+        self._vocoder = vocoder
+        super().__init__(
+            vocoder.decode_payload,
+            batch_compute_fn=vocoder.decode_payloads,
+            sample_rate=vocoder.sample_rate,
+            stream_source_hint="Fun-CosyVoice3",
+            max_batch_size=1,
+            max_batch_wait_ms=max_batch_wait_ms,
+        )
+
+    def create_stream_state(self, request_id: str) -> _FunCosyVoice3MlxStreamState:
+        del request_id
+        return _FunCosyVoice3MlxStreamState()
+
+    def latch_stream_contract(
+        self,
+        request_id: str,
+        state: _FunCosyVoice3MlxStreamState,
+        source: StagePayload | Mapping[str, Any],
+        *,
+        origin: str,
+    ) -> None:
+        del request_id
+        if origin == "payload":
+            pipeline_state = FunCosyVoice3State.from_dict(source.data)
+            prompt = (
+                pipeline_state.flow_prompt_speech_token,
+                pipeline_state.flow_prompt_speech_feat,
+                pipeline_state.flow_embedding,
+            )
+        else:
+            prompt = (
+                source.get("flow_prompt_speech_token"),
+                source.get("flow_prompt_speech_feat"),
+                source.get("flow_embedding"),
+            )
+        if all(value is not None for value in prompt):
+            prompt_tensors = tuple(
+                torch.as_tensor(value).detach().cpu() for value in prompt
+            )
+            if state.prompt_token is not None and (
+                not torch.equal(state.prompt_token, prompt_tensors[0])
+                or not torch.equal(state.prompt_feat, prompt_tensors[1])
+                or not torch.equal(state.embedding, prompt_tensors[2])
+            ):
+                raise ValueError(
+                    "Fun-CosyVoice3 MLX stream prompt tensors changed mid-request"
+                )
+            state.prompt_token, state.prompt_feat, state.embedding = prompt_tensors
+
+    def validate_chunk(
+        self,
+        request_id: str,
+        state: _FunCosyVoice3MlxStreamState,
+        codes: torch.Tensor,
+    ) -> torch.Tensor:
+        del request_id, state
+        codes = codes.to(dtype=torch.long)
+        if codes.ndim == 2 and codes.shape[-1] == 1:
+            codes = codes.reshape(-1)
+        if codes.ndim != 1:
+            raise ValueError(
+                f"Fun-CosyVoice3 MLX stream chunk must be 1-D, got {codes.shape}"
+            )
+        return codes.contiguous()
+
+    def ingest(
+        self,
+        request_id: str,
+        state: _FunCosyVoice3MlxStreamState,
+        codes: torch.Tensor,
+    ) -> None:
+        del request_id
+        state.tokens.extend(int(token) for token in codes.tolist())
+
+    def should_decode(
+        self, state: _FunCosyVoice3MlxStreamState, *, is_final: bool
+    ) -> bool:
+        del state
+        return is_final
+
+    def decode_delta(
+        self,
+        request_id: str,
+        state: _FunCosyVoice3MlxStreamState,
+        *,
+        is_final: bool,
+    ) -> torch.Tensor | None:
+        del request_id
+        if not is_final or not state.tokens:
+            return None
+        if (
+            state.prompt_token is None
+            or state.prompt_feat is None
+            or state.embedding is None
+        ):
+            raise RuntimeError(
+                "Fun-CosyVoice3 MLX stream is missing prompt conditioning"
+            )
+        return self._vocoder.decode_tokens(
+            token=torch.tensor(state.tokens, dtype=torch.int32).reshape(1, -1),
+            prompt_token=state.prompt_token,
+            prompt_feat=state.prompt_feat,
+            embedding=state.embedding,
+        )
+
+    def final_result_data(
+        self,
+        request_id: str,
+        payload: StagePayload,
+        state: _FunCosyVoice3MlxStreamState,
+    ) -> dict[str, Any]:
+        del request_id, state
+        pipeline_state = FunCosyVoice3State.from_dict(payload.data)
+        result = {"modality": "audio", "sample_rate": self._sample_rate}
+        usage = build_usage(pipeline_state)
+        if usage is not None:
+            result["usage"] = usage
+        return result
+
+    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+        del request_id
+        return audio_waveform_payload(
+            waveform,
+            sample_rate=self._sample_rate,
+            modality="audio",
+            source_hint="Fun-CosyVoice3",
+        )
+
+    def release_stream_resources(
+        self, request_id: str, state: _FunCosyVoice3MlxStreamState
+    ) -> None:
+        del request_id
+        state.tokens.clear()
+        state.prompt_token = None
+        state.prompt_feat = None
+        state.embedding = None
 
 
 def create_vocoder_executor(
@@ -1487,10 +1678,8 @@ def create_vocoder_executor(
                 mlx_model_path, revision=mlx_model_revision, expected_dtype=dtype
             )
         )
-        return SimpleScheduler(
-            vocoder.decode_payload,
-            batch_compute_fn=vocoder.decode_payloads,
-            max_batch_size=1,
+        return _FunCosyVoice3MlxStreamingVocoderScheduler(
+            vocoder,
             max_batch_wait_ms=max_batch_wait_ms,
         )
 

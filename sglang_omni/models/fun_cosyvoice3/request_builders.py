@@ -7,9 +7,7 @@ import hashlib
 import json
 import threading
 import time
-from dataclasses import dataclass
-from dataclasses import field
-from dataclasses import field as dataclass_field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -175,6 +173,7 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     stream_code_seen: int = 0
     stream_code_next_flush: int = 0
     stream_prompt_sent: bool = False
+    stream_silent_run: int = 0
     flow_prompt_speech_token: torch.Tensor | None = None
     flow_prompt_speech_feat: torch.Tensor | None = None
     flow_embedding: torch.Tensor | None = None
@@ -205,8 +204,8 @@ class CosyVoice3PreparedRequest:
     # MLX builds the prompt embeddings inside its native runner. Keeping the
     # token ids here avoids loading a duplicate Torch Qwen2 model merely for
     # preprocessing.
-    text_token_ids: list[int] = dataclass_field(default_factory=list)
-    llm_prompt_speech_token_ids: list[int] = dataclass_field(default_factory=list)
+    text_token_ids: list[int] = field(default_factory=list)
+    llm_prompt_speech_token_ids: list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -901,6 +900,18 @@ def _filter_cosyvoice3_silent_runs(codes: torch.Tensor) -> torch.Tensor:
             consecutive_silent_tokens = 0
             keep.append(True)
     return codes[torch.tensor(keep, dtype=torch.bool, device=codes.device)]
+
+
+def accept_cosyvoice3_stream_token(
+    data: CosyVoice3SGLangRequestData, token: torch.Tensor
+) -> bool:
+    """Apply the buffered silent-run policy before emitting a stream chunk."""
+    token_id = int(token.reshape(-1)[0].item())
+    if token_id in _COSYVOICE3_SILENT_TOKEN_IDS:
+        data.stream_silent_run += 1
+        return data.stream_silent_run <= _COSYVOICE3_MAX_CONSECUTIVE_SILENT_TOKENS
+    data.stream_silent_run = 0
+    return True
 
 
 def make_cosyvoice3_scheduler_adapters(*, model: Any):

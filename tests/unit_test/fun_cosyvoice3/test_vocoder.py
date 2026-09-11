@@ -18,6 +18,7 @@ from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
     FunCosyVoice3StreamingVocoderScheduler,
 )
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
 
@@ -43,6 +44,48 @@ class _FakeEstimator(torch.nn.Module):
     def forward(self, *args, **kwargs):
         del args, kwargs
         raise AssertionError("batch adapter should be mocked in vocoder unit tests")
+
+
+def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
+    class _FakeMlxVocoder:
+        sample_rate = 24000
+
+        async def decode_payload(self, payload):
+            return payload
+
+        async def decode_payloads(self, payloads):
+            return payloads
+
+        def decode_tokens(self, *, token, prompt_token, prompt_feat, embedding):
+            del prompt_token, prompt_feat, embedding
+            assert token.tolist() == [[11, 12]]
+            return torch.ones(1, 16)
+
+    scheduler = stages._FunCosyVoice3MlxStreamingVocoderScheduler(
+        _FakeMlxVocoder(), max_batch_wait_ms=0
+    )
+    state = FunCosyVoice3State(
+        stream=True,
+        flow_prompt_speech_token=torch.tensor([[1, 2]], dtype=torch.int32),
+        flow_prompt_speech_feat=torch.ones(1, 2, 80),
+        flow_embedding=torch.ones(1, 192),
+    )
+    payload = _payload(state)
+    scheduler._stream_payloads["req"] = payload
+    scheduler.on_streaming_new_request("req", payload)
+    scheduler.on_stream_chunk(
+        "req",
+        StreamItem(
+            chunk_id=0,
+            data=torch.tensor([11, 12]),
+            from_stage="tts_engine",
+            metadata={"stream": True, "modality": "audio_codes"},
+        ),
+    )
+
+    messages = scheduler.on_stream_done("req")
+
+    assert [message.type for message in messages] == ["stream", "result"]
 
 
 def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:

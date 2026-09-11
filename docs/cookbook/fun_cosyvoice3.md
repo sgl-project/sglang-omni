@@ -82,12 +82,14 @@ Set `SGLANG_USE_MLX=1` to run the speech-token Qwen2 model, Flow/DiT, and HiFT
 with native MLX. Reference encoding continues to use the official checkpoint's
 ONNX assets. Keep that checkpoint as `--model-path`, and provide the converted
 MLX artifact separately; the converted artifact contains the Qwen2, Flow, and
-HiFT weights but not the preprocessing assets. `mlx-audio` is not a runtime
-dependency.
+HiFT weights, while the official checkpoint supplies preprocessing assets.
+`mlx-audio` is not a runtime dependency.
 
 ```bash
 SGLANG_USE_MLX=1 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --tts-engine.factory.mlx_model_path \
+    mlx-community/Fun-CosyVoice3-0.5B-2512-4bit \
   --tts-engine.engine.quantization mlx_q4 \
   --port 8000
 ```

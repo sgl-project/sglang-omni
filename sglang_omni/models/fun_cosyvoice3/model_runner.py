@@ -21,6 +21,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
 from sglang_omni.scheduling.messages import OutgoingMessage
 
+from .request_builders import accept_cosyvoice3_stream_token
 from .sglang_model import VOCAB_SIZE
 
 _COSYVOICE3_RAS_WINDOW_SIZE = 10
@@ -233,13 +234,22 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 fallback_probs = probs[0].to(dtype=torch.float32).clone()
                 fallback_probs[token_id] = 0.0
                 fallback_probs.clamp_(min=0.0)
-                fallback = torch.multinomial(
-                    fallback_probs.unsqueeze(0), num_samples=1
-                ).reshape(-1)
-                next_token_ids = next_token_ids.clone()
-                next_token_ids[0] = fallback.to(dtype=next_token_ids.dtype)
-                token_id = int(fallback[0].item())
-                if logits_output.next_token_logprobs is not None:
+                if float(fallback_probs.sum().item()) <= 0.0:
+                    # Note (yexiaodong): A collapsed top-k/top-p row has no
+                    # valid redraw distribution, so keep the sampled token.
+                    fallback = None
+                else:
+                    fallback = torch.multinomial(
+                        fallback_probs.unsqueeze(0), num_samples=1
+                    ).reshape(-1)
+                if fallback is not None:
+                    next_token_ids = next_token_ids.clone()
+                    next_token_ids[0] = fallback.to(dtype=next_token_ids.dtype)
+                    token_id = int(fallback[0].item())
+                if (
+                    fallback is not None
+                    and logits_output.next_token_logprobs is not None
+                ):
                     # The pinned PyTorch sampler exposes temperature-scaled
                     # full probabilities through ``next_token_logits`` after
                     # sampling. Keep rollout logprobs aligned with the redraw
@@ -292,6 +302,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     ) -> None:
         data = sched_req.data
         if self._outbox is None or data.stream_metadata is None:
+            return
+        if not accept_cosyvoice3_stream_token(data, token):
             return
         data.stream_code_buffer.append(token)
         data.stream_code_seen += 1
@@ -412,10 +424,22 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
     MLX execution and runs after the worker has materialized the sampled ids.
     """
 
+    def __init__(
+        self,
+        tp_worker: Any,
+        output_processor: Any,
+        *,
+        token_hop_len: int = TOKEN_HOP_LEN,
+    ) -> None:
+        super().__init__(tp_worker, output_processor)
+        hop = int(token_hop_len)
+        if hop <= 0:
+            raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
+        self._token_hop_len = hop
+
     def set_stream_outbox(self, outbox: Any) -> None:
         self._outbox = outbox
         self._vocoder_target = "vocoder"
-        self._token_hop_len = TOKEN_HOP_LEN
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         if req_data is not None:
@@ -467,6 +491,8 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
     def _queue_or_emit_code_chunk(self, sched_req: Any, token: torch.Tensor) -> None:
         data = sched_req.data
         if getattr(self, "_outbox", None) is None or data.stream_metadata is None:
+            return
+        if not accept_cosyvoice3_stream_token(data, token):
             return
         data.stream_code_buffer.append(token)
         data.stream_code_seen += 1
