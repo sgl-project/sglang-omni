@@ -27,14 +27,13 @@ def test_modulation_preserves_eager_rounding(shape, x_dtype, param_dtype):
     shift, scale, gate, *_ = torch.randn(
         b, 6 * d, device="cuda", dtype=param_dtype
     ).chunk(6, dim=-1)
+    expected_scale_shift = x * (1 + scale[:, None]) + shift[:, None]
+    expected_residual = x + gate[:, None] * update
     for actual, expected in [
-        (
-            _fused(x, scale, shift, modulate=True),
-            x * (1 + scale[:, None]) + shift[:, None],
-        ),
-        (scale_shift(x, scale, shift), x * (1 + scale[:, None]) + shift[:, None]),
-        (_fused(x, gate, update, modulate=False), x + gate[:, None] * update),
-        (gated_residual(x, gate, update), x + gate[:, None] * update),
+        (_fused(x, scale, shift, modulate=True), expected_scale_shift),
+        (scale_shift(x, scale, shift), expected_scale_shift),
+        (_fused(x, gate, update, modulate=False), expected_residual),
+        (gated_residual(x, gate, update), expected_residual),
     ]:
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         assert actual.dtype == expected.dtype
@@ -64,12 +63,14 @@ def test_modulation_handles_sliced_activations():
     shift, scale, gate = torch.randn(3, 96, device="cuda", dtype=torch.bfloat16).chunk(
         3, -1
     )
+    expected_scale_shift = x * (1 + scale[:, None]) + shift[:, None]
+    expected_residual = x + gate[:, None] * update
     torch.testing.assert_close(
         scale_shift(x, scale, shift),
-        x * (1 + scale[:, None]) + shift[:, None],
+        expected_scale_shift,
         rtol=0,
         atol=0,
     )
     torch.testing.assert_close(
-        gated_residual(x, gate, update), x + gate[:, None] * update, rtol=0, atol=0
+        gated_residual(x, gate, update), expected_residual, rtol=0, atol=0
     )
