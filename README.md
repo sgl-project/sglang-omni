@@ -18,7 +18,7 @@
 <a href="https://lmsys.org/blog/"><b>Blog</b></a> |
 <a href="https://sgl-project.github.io/sglang-omni/"><b>Documentation</b></a> |
 <a href="#quick-start"><b>Quick Start</b></a> |
-<a href="./docs/cookbook/"><b>Cookbook</b></a> |
+<a href="https://sgl-project.github.io/sglang-omni/index.html/"><b>Cookbook</b></a> |
 <a href="https://github.com/sgl-project/sglang"><b>SGLang</b></a> |
 <a href="https://slack.sglang.io"><b>Join Slack</b></a>
 </p>
