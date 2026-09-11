@@ -126,6 +126,7 @@ def test_engine_uses_checkpoint_sampling_recipe(monkeypatch, flash):
         cfg_strength=0 if flash else 3,
         sway_sampling_coef=None if flash else -1,
         t_grid=C.FLASH_T_GRID if flash else None,
+        cache_reference_audio_embedding=False,
     )
 
 

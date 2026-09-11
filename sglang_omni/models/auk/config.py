@@ -55,6 +55,7 @@ class AuKPipelineConfig(PipelineConfig):
                 max_batch_size=16,
                 max_batch_wait_ms=10,
                 weight_dtype="bfloat16",
+                cache_reference_audio_embedding=False,
             ),
             gpu=0,
             next=DECODE_STAGE,
