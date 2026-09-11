@@ -303,6 +303,10 @@ class RealtimeTranscriptionSession:
         # Note (Jeffro): A new segment starts prefix_padding_ms before the frame that woke the VAD,
         # and the previous segment ended silence_duration_ms before that frame.
         # Padding must fit inside the silence window (minus the one frame the VAD reports late) or segments would overlap.
+        if config.prefix_padding_ms < 0:
+            return "prefix_padding_ms must not be negative."
+        if config.silence_duration_ms <= 0:
+            return "silence_duration_ms must be positive."
         if config.prefix_padding_ms + _VAD_FRAME_MS > config.silence_duration_ms:
             return (
                 "prefix_padding_ms must be at most silence_duration_ms minus "

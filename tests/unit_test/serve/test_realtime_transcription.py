@@ -451,6 +451,28 @@ async def test_prefix_padding_must_fit_inside_silence_window(
     await session.teardown()
 
 
+@pytest.mark.asyncio
+async def test_vad_settings_reject_negative_padding_and_zero_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await _session(monkeypatch)
+    session.transcription_config = RealtimeTranscriptionConfig(
+        strategy_cls=FakeStrategy, server_vad=True
+    )
+
+    for turn_detection in (
+        {"type": "server_vad", "prefix_padding_ms": -300, "silence_duration_ms": 500},
+        {"type": "server_vad", "prefix_padding_ms": 0, "silence_duration_ms": 0},
+    ):
+        await session.dispatch(
+            {"type": "session.update", "session": {"turn_detection": turn_detection}}
+        )
+        assert websocket.events[-1]["type"] == "error", turn_detection
+        assert websocket.events[-1]["error"]["code"] == "invalid_turn_detection"
+        assert session.vad is None
+    await session.teardown()
+
+
 def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
     websocket = RecordingWebSocket()
     session = RealtimeTranscriptionSession(
