@@ -18,9 +18,16 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     MiniCPM-o marks multimodal spans with ``<unk>`` runs plus bound intervals
     instead of dedicated placeholder tokens, so the id-based injection path is
     unused; the ids are set to -1 (matching no token).
+
+    Hidden capture follows the deployment, not individual request modalities.
+    Speech and explicit hidden-return configurations use FULL, matching their
+    captured graphs; text-only deployments default to NULL. FULL is also needed
+    for optional prefill graphs, which require an exact hidden-mode match.
     """
 
     def __init__(self, tp_worker: Any, output_processor: Any):
+        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
         # Skip ThinkerModelRunner.__init__ (it requires hf_config.thinker_config)
         # but keep its grandparent initialization.
         super(ThinkerModelRunner, self).__init__(tp_worker, output_processor)
@@ -36,37 +43,32 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self._video_token_id = -1
         self._audio_token_id = -1
 
+        self._capture_hidden_mode = (
+            CaptureHiddenMode.FULL
+            if output_processor._capture_hidden
+            or getattr(
+                tp_worker.model_runner.server_args,
+                "enable_return_hidden_states",
+                False,
+            )
+            else CaptureHiddenMode.NULL
+        )
+
         # Per-request GPU-side hidden-state accumulators; flushed to CPU once
         # per request in on_request_finished.
         self._pending_hidden: dict[str, list[Any]] = {}
 
-    # The base ThinkerModelRunner pins both hooks to NULL (qwen3_omni captures
-    # hidden states via forward hooks instead). MiniCPM-o's talker consumes the
-    # per-step last-layer hidden state through the output processor, so request
-    # capture here. FULL rather than LAST for both phases: with
-    # enable_return_hidden_states the prefill and decode CUDA graphs are
-    # captured with FULL, and their can_run gates require an exact hidden-mode
-    # match — requesting LAST would demote every prefill to eager. For decode
-    # both modes return the same rows, and post_process_outputs keeps only the
-    # last row per request anyway; the prefill-side waste is the FULL
-    # materialization of all prompt positions when only the last is used.
-    # TODO: request LAST for prefill once sglang lets a LAST request replay a
-    # FULL-captured graph (or captures prefill graphs per requested mode).
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: Any, requests: list
     ) -> Any:
         del schedule_batch, requests
-        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
-
-        return CaptureHiddenMode.FULL
+        return self._capture_hidden_mode
 
     def requested_capture_hidden_mode_decode(
         self, schedule_batch: Any, requests: list
     ) -> Any:
         del schedule_batch, requests
-        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
-
-        return CaptureHiddenMode.FULL
+        return self._capture_hidden_mode
 
     def post_process_outputs(
         self,

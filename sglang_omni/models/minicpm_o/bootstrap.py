@@ -127,8 +127,9 @@ def create_thinker_scheduler(
     """Create the MiniCPM-o thinker scheduler.
 
     With ``speech_enabled`` the runner captures per-step last-layer hidden
-    states (CaptureHiddenMode.LAST); the talker consumes them as the TTS
-    condition alongside the generated token ids.
+    states using CaptureHiddenMode.FULL for graph compatibility; the output
+    processor selects each request's last row. The talker consumes them as
+    the TTS condition alongside the generated token ids.
     """
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
@@ -192,10 +193,7 @@ def create_thinker_scheduler(
     ) = infrastructure
 
     if defer_cuda_graph_capture:
-        # Graphs must capture with return_hidden_states still on: the runner
-        # requests CaptureHiddenMode.FULL every decode step, and the graph's
-        # can_run gate requires an exact hidden-mode match — a graph captured
-        # without hidden capture would never replay.
+        # Graphs must capture with return_hidden_states still on.
         init_sglang_cuda_graphs(model_worker)
         override_server_args(
             server_args,
