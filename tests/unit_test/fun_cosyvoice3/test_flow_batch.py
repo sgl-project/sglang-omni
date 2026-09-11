@@ -9,6 +9,7 @@ from sglang_omni.models.fun_cosyvoice3.stages import (
     FlowBatchInput,
     FunCosyVoice3Flow,
     _pack_flow_inputs,
+    _solve_flow_euler,
 )
 
 
@@ -95,7 +96,6 @@ class _FakeDecoder:
         t: torch.Tensor,
         spks: torch.Tensor,
         cond: torch.Tensor,
-        *,
         streaming: bool,
     ) -> torch.Tensor:
         return self.estimator(x, mask, mu, t, spks, cond, streaming=streaming)
@@ -224,9 +224,8 @@ def test_flow_batch_cfg_uses_two_times_request_batch() -> None:
         assert call["x"].shape[0] == 6
         assert call["mask"].shape[0] == 6
         assert call["mu"].shape[0] == 6
-        # The ODE time is a scalar shared by the batch and by both CFG halves,
-        # so only one row is materialised; the DiT broadcasts it.
-        assert call["t"].shape[0] == 1
+        # Native materializes one timestep per CFG row.
+        assert call["t"].shape[0] == 6
         assert call["spks"].shape[0] == 6
         assert call["cond"].shape[0] == 6
         assert call["streaming"] is False
@@ -390,3 +389,23 @@ def test_flow_causal_batch_mixed_prompt_matches_serial() -> None:
     assert batched[1].shape == serial[1].shape
     for actual, expected in zip(batched, serial, strict=True):
         torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+def test_euler_matches_native_with_mixed_precision(dtype) -> None:
+    native = pytest.importorskip("cosyvoice.flow.flow_matching").ConditionalCFM
+    decoder = _FakeDecoder(80)
+    x = torch.linspace(-1, 1, 80 * 12).reshape(1, 80, 12)
+    mu = x * 0.3
+    spks = torch.full((1, 80), 0.13, dtype=dtype)
+    mask = torch.ones(1, 1, 12)
+    cond = mu * 0.7
+    times = torch.linspace(0, 1, 11)
+    times = 1 - torch.cos(times * 0.5 * torch.pi)
+    expected = native.solve_euler(
+        decoder, x.clone(), times, mu, mask, spks, cond, streaming=True
+    )
+    actual = _solve_flow_euler(
+        decoder, x.clone(), times, mu, mask, spks, cond, streaming=True
+    )
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
