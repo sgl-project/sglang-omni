@@ -860,6 +860,144 @@ class BigVGANFlowVAE(nn.Module):
         x = self.conv_post(x)
         return torch.clamp(x, min=-1.0, max=1.0)
 
+    def decode_context(self) -> tuple[int, int]:
+        """Latent halo covering every sample in one output frame.
+
+        Propagate inclusive index intervals backwards through the decoder. This
+        includes the non-causal anti-alias upsamplers, even for a causal VAE.
+        Residual and parallel branches take the union of their input supports.
+        """
+
+        def conv(interval, layer):
+            lo, hi = interval
+            stride = layer.stride[0]
+            padding = layer.left_padding if layer.causal else layer.padding[0]
+            return (
+                lo * stride - padding,
+                hi * stride - padding + layer.dilation[0] * (layer.kernel_size[0] - 1),
+            )
+
+        def transpose(interval, stride, kernel, padding=0):
+            lo, hi = interval
+            return (-(-(lo + padding - kernel + 1) // stride), (hi + padding) // stride)
+
+        def activation(interval, layer):
+            lo, hi = interval
+            down = layer.downsample.lowpass
+            padding = down.pad_left if down.padding else 0
+            interval = (
+                lo * down.stride - padding,
+                hi * down.stride - padding + down.kernel_size - 1,
+            )
+            up = layer.upsample
+            crop = 0 if up.causal else up.pad_left
+            lo, hi = transpose(
+                (interval[0] + crop, interval[1] + crop), up.stride, up.kernel_size
+            )
+            return lo - up.pad, hi - up.pad
+
+        def block(interval, layer):
+            steps = zip(
+                layer.convs1,
+                layer.convs2,
+                layer.activations[::2],
+                layer.activations[1::2],
+            )
+            for c1, c2, a1, a2 in reversed(list(steps)):
+                branch = activation(conv(activation(conv(interval, c2), a2), c1), a1)
+                interval = min(interval[0], branch[0]), max(interval[1], branch[1])
+            return interval
+
+        hop = math.prod(self.h.upsample_rates)
+        interval = activation(conv((0, hop - 1), self.conv_post), self.activation_post)
+        for i in reversed(range(self.num_upsamples)):
+            branches = [
+                block(interval, self.resblocks[i * self.num_kernels + j])
+                for j in range(self.num_kernels)
+            ]
+            interval = min(b[0] for b in branches), max(b[1] for b in branches)
+            for up in reversed(self.ups[i]):
+                interval = transpose(
+                    interval,
+                    up.stride,
+                    up.dilation[0] * (up.kernel_size[0] - 1) + 1,
+                    up.padding[0],
+                )
+        lo, hi = conv(interval, self.conv_pre)
+        return max(0, -lo), max(0, hi)
+
+    @torch.inference_mode()
+    def iter_decode_chunks(self, latents: torch.Tensor, chunk_frames: int):
+        """Yield owned CPU [B,1,samples] chunks from complete [B,T,D] latents.
+
+        Keep only one halo-extended decode on the device at a time. Overlap is
+        discarded, not crossfaded; true utterance boundaries retain the original
+        decoder padding. This bounds decoder activations, not DiT generation,
+        and does not make DiT generation incremental.
+        """
+        if (
+            isinstance(chunk_frames, bool)
+            or not isinstance(chunk_frames, int)
+            or chunk_frames <= 0
+        ):
+            raise ValueError("chunk_frames must be a positive integer")
+        if (
+            latents.ndim != 3
+            or latents.shape[1] == 0
+            or latents.shape[2] != self.h.latent_dim
+        ):
+            raise ValueError("latents must have nonempty shape [B,T,latent_dim]")
+        left, right = self.decode_context()
+        hop = math.prod(self.h.upsample_rates)
+        for stage in self.ups:
+            for up in stage:
+                extra = (
+                    up.dilation[0] * (up.kernel_size[0] - 1)
+                    + 1
+                    + up.output_padding[0]
+                    - 2 * up.padding[0]
+                    - up.stride
+                    - (up.stride if up.causal else 0)
+                )
+                if extra:
+                    raise ValueError(
+                        "Chunk decoding requires length-preserving upsampling"
+                    )
+        frames = latents.shape[1]
+        for start in range(0, frames, chunk_frames):
+            end = min(start + chunk_frames, frames)
+            lo, hi = max(0, start - left), min(frames, end + right)
+            chunk = self.denormalize(latents[:, lo:hi]).permute(0, 2, 1)
+            waveform = self.inference_from_latents(chunk)
+            if waveform.shape[-1] != (hi - lo) * hop:
+                raise RuntimeError("Unexpected AuK chunk waveform length")
+            output = waveform[..., (start - lo) * hop : (end - lo) * hop].to(
+                device="cpu", dtype=torch.float32, copy=True
+            )
+            del waveform, chunk
+            yield output
+
+    @torch.inference_mode()
+    def decode_chunked(self, latents: torch.Tensor, chunk_frames: int) -> torch.Tensor:
+        """Assemble the incremental decoder's output for non-streaming callers."""
+        chunks = self.iter_decode_chunks(latents, chunk_frames)
+        try:
+            first = next(chunks)
+            if latents.shape[1] <= chunk_frames:
+                return first
+            hop = math.prod(self.h.upsample_rates)
+            output = torch.empty(
+                (latents.shape[0], 1, latents.shape[1] * hop), dtype=torch.float32
+            )
+            end = first.shape[-1]
+            output[..., :end].copy_(first)
+            for chunk in chunks:
+                output[..., end : end + chunk.shape[-1]].copy_(chunk)
+                end += chunk.shape[-1]
+        finally:
+            chunks.close()
+        return output
+
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
         """Decode a normalized latent to a waveform."""
         latents = self.denormalize(latents).permute(0, 2, 1)

@@ -90,7 +90,29 @@ The DiT stores its weights in BF16 and runs without autocast by default (`--auk_
 
 `seed` initializes separate request-local generators for target noise and reference VAE posterior sampling, without changing the process RNG. Sampling is reproducible for fixed inputs; different batch shapes or compute backends can still produce numerical differences. Multiple structured references are rejected.
 
-Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
+Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. Non-streaming VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. By default, audio is returned after decoding completes.
+
+Optional VAE chunk decoding is enabled with `--decode.factory.chunk_frames 250`
+(250 latent frames represent 5 seconds). The default `0` retains full decoding.
+Each chunk includes decoder-derived left/right context, then discards that
+overlap without crossfading. Completed waveform chunks are copied to CPU; this
+bounds VAE activation memory but adds redundant computation in the overlap.
+It does not reduce model-weight memory or DiT activation memory, and is not
+incremental DiT generation. Smaller chunks may be slower;
+benchmark the target device and batch size before enabling this option.
+Chunk shapes can select different CUDA convolution algorithms. Strict waveform
+comparisons must disable TF32 for both full and chunked decoding; FP32 tensor
+dtype alone does not disable TF32. Do not assume bitwise parity with TF32 enabled.
+
+With a positive `--decode.factory.chunk_frames`, speech requests can set
+`"stream": true` and `"response_format": "pcm"`. The decoder emits each audio
+window as it completes, then a metadata-only completion; it does not replay the
+full waveform. This still waits for conditioning and **all DiT steps** before
+the first audio chunk, so it is not streaming diffusion. Stream requests decode
+serially in the VAE worker; batches containing only non-streaming requests keep
+the existing batched path. Cancellation stops work between windows, not in the
+middle of a CUDA kernel. PCM chunks are parts of one audio stream, not separate
+WAV files.
 
 ## SeedTTS Evaluation
 

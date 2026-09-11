@@ -21,7 +21,10 @@ from sglang_omni.pipeline.control_plane import deserialize_message, serialize_me
 from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
 
 
-def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
+@pytest.mark.parametrize("chunk_frames", [0, 16])
+def test_batched_generation_preserves_request_boundaries_and_serializes_audio(
+    chunk_frames,
+):
     device = torch.device("cpu")
 
     class PosteriorVAE(torch.nn.Module):
@@ -37,6 +40,11 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
             self.inference_from_latents = Mock(
                 side_effect=lambda latent: torch.full(
                     (latent.shape[0], 1, latent.shape[-1] * 480), 0.25
+                )
+            )
+            self.decode_chunked = Mock(
+                side_effect=lambda latent, size: self.inference_from_latents(
+                    latent.permute(0, 2, 1)
                 )
             )
 
@@ -76,7 +84,12 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
     assert states[0].ref_latent.stride() == (1, 51)
     sampled = _sample_batch(conditioned, flow, device, torch.float32, 1500, {})
     assert len(flow.sample_batch.call_args.args[0]) == 3
-    results = _decode_batch(sampled, vae, device)
+    results = _decode_batch(sampled, vae, device, chunk_frames)
+    assert vae.decode_chunked.call_count == (2 if chunk_frames else 0)
+    if chunk_frames:
+        assert all(
+            call.args[1] == chunk_frames for call in vae.decode_chunked.call_args_list
+        )
 
     assert [
         call.args[0].shape[0] for call in vae.inference_from_latents.call_args_list

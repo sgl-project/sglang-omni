@@ -288,7 +288,7 @@ def create_auk_engine_executor(
     )
 
 
-def _decode_batch(payloads, vae, device):
+def _decode_batch(payloads, vae, device, chunk_frames=0):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
     groups = defaultdict(list)
@@ -297,9 +297,12 @@ def _decode_batch(payloads, vae, device):
     results = [None] * len(states)
     for indices in groups.values():
         latents = torch.stack([states[i].latent for i in indices]).to(device)
-        waveforms = vae.inference_from_latents(
-            vae.denormalize(latents).permute(0, 2, 1)
-        )
+        if chunk_frames:
+            waveforms = vae.decode_chunked(latents, chunk_frames)
+        else:
+            waveforms = vae.inference_from_latents(
+                vae.denormalize(latents).permute(0, 2, 1)
+            )
         if not torch.isfinite(waveforms).all():
             raise RuntimeError("AuK generated audio contains NaN/Inf")
         for index, wav in zip(indices, waveforms.float().cpu()):
@@ -328,13 +331,29 @@ def create_decode_executor(
     gpu_id: int | None = None,
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 10,
+    chunk_frames: int = 0,
 ) -> SimpleScheduler:
+    from sglang_omni.models.auk.streaming_decode import AuKDecodeScheduler
+
+    if (
+        isinstance(chunk_frames, bool)
+        or not isinstance(chunk_frames, int)
+        or chunk_frames < 0
+    ):
+        raise ValueError("chunk_frames must be a nonnegative integer")
     device = resolve_concrete_device(device, gpu_id)
+    if chunk_frames and device.type == "cuda" and torch.backends.cudnn.allow_tf32:
+        logger.warning(
+            "AuK VAE chunk decoding with TF32 may differ from full decoding; "
+            "disable TF32 for strict waveform comparisons."
+        )
     checkpoint = resolve_checkpoint(model_path)
     vae = _load_vae(checkpoint, str(device))
-    return _scheduler(
-        lambda payloads: _decode_batch(payloads, vae, device),
-        device,
-        max_batch_size,
-        max_batch_wait_ms,
+    return AuKDecodeScheduler(
+        lambda payloads: _decode_batch(payloads, vae, device, chunk_frames),
+        device=device,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+        vae=vae,
+        chunk_frames=chunk_frames,
     )
