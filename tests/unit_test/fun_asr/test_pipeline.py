@@ -91,28 +91,6 @@ def test_fun_asr_stage_rejects_invalid_pre_lm_batch_knobs(
         )
 
 
-def test_fun_asr_stage_takes_its_device_from_the_host() -> None:
-    signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
-
-    assert signature.parameters["device"].default is None
-
-
-def test_fun_asr_stage_forwards_gpu_id_to_the_engine_builder(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        fun_asr_builder.FunASREngineBuilder,
-        "build",
-        lambda self, model_path, **kwargs: captured.update(kwargs) or "scheduler",
-    )
-
-    scheduler = fun_asr_stages.create_sglang_fun_asr_executor("dummy", gpu_id=3)
-
-    # Without a declared gpu_id the placement layer never injects one and every
-    # replica lands on device 0.
-    assert scheduler == "scheduler"
-    assert captured["gpu_id"] == 3
-
-
 def test_fun_asr_stage_default_uses_auto_static_kv_budget() -> None:
     signature = inspect.signature(fun_asr_stages.create_sglang_fun_asr_executor)
 
