@@ -147,7 +147,7 @@ def _prefill_scheduler_for_handoff(*, request_finished_callback=None):
 def _prefill_handoff_batch(scheduler):
     req = _prefill_req()
     scheduler.req_to_token_pool.alloc([req])
-    scheduler.req_to_token_pool.req_to_token[req.req_pool_idx, :3] = torch.tensor(
+    scheduler.req_to_token_pool.req_to_token[req.kv.req_pool_idx, :3] = torch.tensor(
         [1, 2, 3]
     )
     batch = SimpleNamespace(reqs=[req], batch_is_full=True)

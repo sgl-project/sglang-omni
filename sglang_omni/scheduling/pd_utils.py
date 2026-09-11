@@ -222,7 +222,7 @@ def req_from_continuation(
 ) -> Any:
     """Install a transferred request as SGLang's existing PREBUILT input."""
 
-    from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+    from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     sampling_values = dict(continuation.sampling_params)
@@ -290,14 +290,14 @@ def req_from_continuation(
         raise DecodeRequestPoolExhausted("decode request pool is exhausted")
     try:
         req_to_token_pool.write(
-            (req.req_pool_idx, slice(0, allocation.seq_len)), allocation.slots
+            (req.kv.req_pool_idx, slice(0, allocation.seq_len)), allocation.slots
         )
     except Exception:
         req_to_token_pool.free(req)
         raise
     req.prefix_indices = allocation.slots
-    req.kv_committed_len = allocation.seq_len
-    req.kv = ReqKvInfo(kv_allocated_len=allocation.seq_len, swa_evicted_seqlen=0)
+    req.kv.kv_committed_len = allocation.seq_len
+    req.kv.kv_allocated_len = allocation.seq_len
     req.set_extend_range(allocation.seq_len, allocation.seq_len)
     req._omni_terminal_claimed = False
     req._coalesce_enqueue_t = 0.0
@@ -382,14 +382,16 @@ def build_kv_pool(token_to_kv_pool: Any, *, pool_id: str) -> KVPool:
 
 
 def request_page_indices(req_to_token_pool: Any, req: Any) -> tuple[int, ...]:
-    if req.req_pool_idx is None:
+    if req.kv.req_pool_idx is None:
         raise RuntimeError(f"request {req.rid!r} has no KV mapping")
     seq_len = len(req.origin_input_ids)
     if seq_len <= 0:
         raise ValueError("PD cannot transfer an empty prompt")
     return tuple(
         int(slot)
-        for slot in req_to_token_pool.req_to_token[req.req_pool_idx, :seq_len].tolist()
+        for slot in req_to_token_pool.req_to_token[
+            req.kv.req_pool_idx, :seq_len
+        ].tolist()
     )
 
 

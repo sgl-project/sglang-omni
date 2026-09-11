@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import torch
 from sglang.srt.managers.schedule_batch import CaptureHiddenMode, Req
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.proto import (
@@ -44,17 +45,18 @@ class _ReqPool:
         indices = []
         for req in reqs:
             index = next(i for i in range(self.capacity) if i not in self.active)
-            req.req_pool_idx = index
+            req.kv.req_pool_idx = index
             self.active[index] = req
             indices.append(index)
-        return torch.tensor(indices, dtype=torch.int64)
+        return indices
 
     def write(self, key, value) -> None:
         self.req_to_token[key] = value
 
     def free(self, req) -> None:
-        self.active.pop(req.req_pool_idx, None)
-        req.req_pool_idx = None
+        assert req.kv.req_pool_idx is not None
+        self.active.pop(req.kv.req_pool_idx, None)
+        req.kv.req_pool_idx = None
 
 
 class _KVAllocator:
@@ -151,11 +153,19 @@ def _receiver(admissions=None):
 
 
 def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
+    """Rebuild against SGLang's real request-row ownership contract."""
+
     continuation = DecodeContinuation.decode(_continuation().encode())
+    req_to_token_pool = ReqToTokenPool(
+        size=4,
+        max_context_len=32,
+        device="cpu",
+        enable_memory_saver=False,
+    )
     req = req_from_continuation(
         continuation,
         _allocation(),
-        req_to_token_pool=_ReqPool(),
+        req_to_token_pool=req_to_token_pool,
         state_restorer=lambda req, _data, _resume: setattr(req, "tokenizer", None),
     )
 
@@ -163,7 +173,14 @@ def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     assert list(req.output_ids) == [42]
     assert req.sampling_params.stop_token_ids == {2}
     assert req.prefix_indices.tolist() == [7, 8, 9]
+    assert req.kv.req_pool_idx is not None
+    assert req_to_token_pool.req_to_token[req.kv.req_pool_idx, :3].tolist() == [7, 8, 9]
+    assert req.kv.kv_committed_len == 3
     assert req.kv.kv_allocated_len == 3
+
+    req_to_token_pool.free(req)
+    assert req.kv.req_pool_idx is None
+    assert req_to_token_pool.available_size() == req_to_token_pool.size
 
 
 def _rebuilt_req(source):
