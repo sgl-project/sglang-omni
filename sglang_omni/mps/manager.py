@@ -501,7 +501,15 @@ class MpsManager:
         return targets
 
     def probe(self, lease: MpsLease) -> str | None:
-        """Return the first failed health proof, or ``None`` when healthy."""
+        """Prove the exact native daemon identity is still alive.
+
+        Steady-state health must not enumerate every MPS client. Client snapshots
+        are ownership/lifecycle operations and may contend when several independent
+        serve processes share one native daemon. ``read_daemon_identity`` already
+        proves the PID is live, non-zombie, names the MPS control binary, and owns
+        this exact pipe directory. Keep full snapshots for attach, retirement, and
+        release decisions where client ownership is actually required.
+        """
 
         self.require_live_lease(lease)
         try:
@@ -514,10 +522,6 @@ class MpsManager:
             )
         else:
             pass
-        try:
-            self.client.snapshot(self.paths.pipe_dir)
-        except MpsControlError as exc:
-            return f"client snapshot query failed: {exc}"
         return None
 
     def release(
