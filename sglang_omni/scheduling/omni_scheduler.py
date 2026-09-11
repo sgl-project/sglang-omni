@@ -18,6 +18,7 @@ import queue as _queue_mod
 import threading
 import time
 import types
+import uuid
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -49,10 +50,12 @@ from sglang_omni.profiler.event_recorder import (
 )
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
 from sglang_omni.proto.admin import (
+    ADMIN_CLOSE_SESSION,
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
     ADMIN_INIT_WEIGHTS_UPDATE_GROUP,
     ADMIN_MODEL_INFO,
+    ADMIN_OPEN_SESSION,
     ADMIN_PAUSE_GENERATION,
     ADMIN_UPDATE_WEIGHTS_FROM_DISK,
     ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED,
@@ -571,13 +574,21 @@ class OmniScheduler:
         self.ngram_embedding_manager = NgramEmbeddingManager(
             enabled=False, table=None, n=0, k=0
         )
-        # Upstream pool_stats_observer.streaming_session_count iterates
-        # self.session_controller.sessions.values() during decode stats
-        # reporting. We don't host SGLang's interactive-session feature, so a
-        # stub with an empty sessions dict is sufficient.
         from types import SimpleNamespace
 
-        self.session_controller = SimpleNamespace(sessions={})
+        # With streaming sessions enabled the tree cache is a StreamingSession
+        # wrapper (see create_tree_cache) and the real controller manages
+        # session lifecycle; otherwise keep a stub with an empty sessions dict,
+        # which is all pool_stats_observer.streaming_session_count reads.
+        self._sessions_enabled = bool(
+            getattr(server_args, "enable_streaming_session", False)
+        )
+        if self._sessions_enabled:
+            from sglang.srt.session.session_controller import SessionController
+
+            self.session_controller = SessionController(self.tree_cache)
+        else:
+            self.session_controller = SimpleNamespace(sessions={})
         self.dllm_manager = SimpleNamespace(any_staging_reqs=lambda: False)
         self.load_snapshot_writer = None
         self.kv_events_publisher = SimpleNamespace(
@@ -1181,6 +1192,12 @@ class OmniScheduler:
         req_id = payload.request_id
         self._deferred_request_payloads.pop(req_id, None)
         req = req_data.req
+        session_error = self._maybe_attach_session(payload, req_data)
+        if session_error is not None:
+            self._emit_request_error(req_id, ValueError(session_error))
+            self.abort(req_id)
+            return
+        req = req_data.req
         self._normalize_req_token_arrays(req)
         req_id = req.rid
         if req_data.enforce_request_limits:
@@ -1233,6 +1250,77 @@ class OmniScheduler:
         else:
             with self._request_admission_lock:
                 enqueue_if_live()
+
+    # Omni-side attributes set by request builders on the Req; a session turn
+    # rebuilds the Req through Session.create_req, so carry them over.
+    _SESSION_REQ_CARRYOVER_ATTRS = (
+        "omni_model_inputs",
+        "_omni_consumed",
+        "_codec_suppress_tokens",
+        "_omni_mm_positions",
+        "_input_embeds_are_projected",
+    )
+
+    def _maybe_attach_session(self, payload: Any, req_data: Any) -> str | None:
+        """Rebuild the builder's Req through its session, if one is requested.
+
+        The turn request carries ``session_params`` in the OmniRequest params.
+        ``Session.create_req`` concatenates the previous turn's input+output
+        with this turn's input and returns a Req bound to the session, so the
+        retained SessionSlot KV is matched as a prefix at prefill. Returns an
+        error message instead of attaching when the session is unusable.
+        """
+        request = getattr(payload, "request", None)
+        params = getattr(request, "params", None) or {}
+        session_params = params.get("session_params")
+        if not session_params:
+            return None
+        if not self._sessions_enabled:
+            return "session_params given but streaming sessions are disabled"
+        session_id = session_params.get("session_id")
+        session = self.session_controller.get(session_id)
+        if session is None or session.close_on_finish:
+            return f"Invalid request: session {session_id} does not exist"
+
+        from sglang.srt.managers.io_struct import (
+            SessionParams,
+            TokenizedGenerateReqInput,
+        )
+
+        req = req_data.req
+        shim = TokenizedGenerateReqInput(
+            rid=req.rid,
+            input_text="",
+            input_ids=list(req.origin_input_ids),
+            input_embeds=None,
+            mm_inputs=None,
+            token_type_ids=None,
+            sampling_params=req.sampling_params,
+            return_logprob=req.return_logprob,
+            logprob_start_len=0,
+            top_logprobs_num=req.logprob.top_logprobs_num,
+            token_ids_logprob=req.logprob.token_ids_logprob,
+            stream=req.stream,
+            session_params=SessionParams(id=session_id),
+        )
+        new_req = session.create_req(
+            shim,
+            req.tokenizer,
+            req.vocab_size,
+            eos_token_ids=req.eos_token_ids,
+        )
+        for attr in self._SESSION_REQ_CARRYOVER_ATTRS:
+            if hasattr(req, attr):
+                setattr(new_req, attr, getattr(req, attr))
+        req_data.req = new_req
+        req_data.output_ids = new_req.output_ids
+        # create_req rejects an unusable turn via set_finish_with_abort, which
+        # records the abort in ``to_finish`` (finished_reason is only set once
+        # the scheduler picks the req up) -- reject here instead of enqueuing.
+        abort = new_req.to_finish or new_req.finished_reason
+        if abort is not None:
+            return str(abort.message)
+        return None
 
     @staticmethod
     def _normalize_req_token_arrays(req: Any) -> None:
@@ -1904,6 +1992,10 @@ class OmniScheduler:
             return self._admin_destroy_weights_update_group(payload)
         if action == ADMIN_WEIGHTS_CHECKER:
             return self._admin_weights_checker(payload)
+        if action == ADMIN_OPEN_SESSION:
+            return self._admin_open_session(payload)
+        if action == ADMIN_CLOSE_SESSION:
+            return self._admin_close_session(payload)
         return {
             "success": True,
             "message": f"unsupported admin action: {action}",
@@ -1937,9 +2029,60 @@ class OmniScheduler:
                 "model_path": self.server_args.model_path,
                 "load_format": self.server_args.load_format,
                 "weight_version": self.server_args.weight_version,
+                "kv_available_tokens": (
+                    self.token_to_kv_pool_allocator.available_size()
+                ),
+                "kv_evictable_tokens": self.tree_cache.evictable_size(),
+                "session_held_tokens": self.tree_cache.session_held_tokens(),
+                "streaming_session_count": len(self.session_controller.sessions),
             }
         )
         return {"success": True, "message": "ok", "data": info}
+
+    def _admin_open_session(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Open a streaming session on this rank's controller."""
+        if not self._sessions_enabled:
+            return {
+                "success": False,
+                "message": "streaming sessions are disabled",
+                "error": "streaming sessions are disabled",
+            }
+        from sglang.srt.managers.io_struct import OpenSessionReqInput
+
+        # SessionController requires a concrete id; upstream's tokenizer
+        # manager generates one before dispatching, so do the same here.
+        session_id = payload.get("session_id") or uuid.uuid4().hex
+        output = self.session_controller.open(
+            OpenSessionReqInput(
+                capacity_of_str_len=int(payload.get("capacity_of_str_len", 0)),
+                session_id=session_id,
+                streaming=True,
+                timeout=payload.get("timeout"),
+            )
+        )
+        return {
+            "success": output.success,
+            "message": "" if output.success else "failed to open session",
+            "data": {"session_id": output.session_id},
+        }
+
+    def _admin_close_session(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Close a streaming session, releasing its retained KV."""
+        if not self._sessions_enabled:
+            return {
+                "success": False,
+                "message": "streaming sessions are disabled",
+                "error": "streaming sessions are disabled",
+            }
+        from sglang.srt.managers.io_struct import CloseSessionReqInput
+
+        session_id = payload.get("session_id")
+        self.session_controller.close(CloseSessionReqInput(session_id=session_id))
+        return {
+            "success": True,
+            "message": "",
+            "data": {"session_id": session_id},
+        }
 
     def _admin_pause_generation(self, payload: dict[str, Any]) -> dict[str, Any]:
         mode = str(payload.get("mode") or "abort")
@@ -2330,6 +2473,8 @@ class OmniScheduler:
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
+            if self._sessions_enabled:
+                self.session_controller.maybe_reap(time.monotonic())
             if self._engine_paused:
                 self._process_admin_requests()
                 time.sleep(0.001)
@@ -2545,6 +2690,8 @@ class OmniScheduler:
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self._take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
+            if self._sessions_enabled:
+                self.session_controller.maybe_reap(time.monotonic())
             if self._engine_paused:
                 self._process_admin_requests()
                 self._resolve_pending_async()

@@ -15,6 +15,8 @@ ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED = "update_weights_from_distributed"
 ADMIN_INIT_WEIGHTS_UPDATE_GROUP = "init_weights_update_group"
 ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP = "destroy_weights_update_group"
 ADMIN_WEIGHTS_CHECKER = "weights_checker"
+ADMIN_OPEN_SESSION = "open_session"
+ADMIN_CLOSE_SESSION = "close_session"
 
 
 @dataclass

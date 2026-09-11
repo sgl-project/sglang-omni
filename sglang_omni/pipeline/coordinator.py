@@ -248,6 +248,34 @@ class Coordinator:
             timeout_s=timeout_s,
         )
 
+    async def open_session(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "open_session",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def close_session(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self.admin(
+            "close_session",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
     async def pause_generation(
         self,
         payload: dict[str, Any] | None = None,

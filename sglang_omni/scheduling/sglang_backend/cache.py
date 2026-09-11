@@ -28,6 +28,17 @@ def create_tree_cache(
     if server_args.disable_radix_cache:
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
-        return ChunkCache(params)
+        cache = ChunkCache(params)
+    else:
+        cache = RadixCache(params)
 
-    return RadixCache(params)
+    # Mirror upstream mem_cache/registry.py: streaming sessions retain a
+    # finished request's KV in a SessionSlot instead of freeing it, so the
+    # next turn resumes as a prefix match. The wrapper is transparent when
+    # the flag is off.
+    if server_args.enable_streaming_session and not cache.supports_streaming_session():
+        from sglang.srt.session.streaming_session import StreamingSession
+
+        cache = StreamingSession(cache)
+
+    return cache
