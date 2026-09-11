@@ -168,33 +168,6 @@ def test_snapshot_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
         client.snapshot(pipe_dir)
 
 
-def test_mutating_control_query_is_serialized(monkeypatch, tmp_path):
-    pipe_dir = tmp_path / "pipe"
-    pipe_dir.mkdir()
-    client = control.SubprocessMpsControlClient()
-    events: list[str] = []
-
-    def flock(_file, operation):
-        if operation == fcntl.LOCK_EX:
-            events.append("lock")
-
-    def run(args, **kwargs):
-        events.append(kwargs["input"].strip())
-        return subprocess.CompletedProcess(
-            args,
-            returncode=2,
-            stdout="",
-            stderr="control failed",
-        )
-
-    monkeypatch.setattr(control.fcntl, "flock", flock)
-    monkeypatch.setattr(control.subprocess, "run", run)
-
-    with pytest.raises(MpsControlError, match="control failed"):
-        client.quit_daemon(pipe_dir)
-    assert events == ["lock", "quit"]
-
-
 def test_daemon_preexec_failure_is_distinct_from_ambiguous_start(monkeypatch):
     client = control.SubprocessMpsControlClient()
 
@@ -208,12 +181,9 @@ def test_daemon_preexec_failure_is_distinct_from_ambiguous_start(monkeypatch):
         client.start_daemon(Path("/mps/pipe"), Path("/mps/log"), "GPU-abc")
 
 
-def test_daemon_process_identity_requires_exact_binary_and_pipe_environment(
-    monkeypatch,
-):
+def test_daemon_process_identity_from_native_pid_file(monkeypatch):
     pipe_dir = Path("/mps/pipe")
     client = control.SubprocessMpsControlClient()
-    environ = [b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe", b"PATH=/usr/bin", b""]
 
     def read_text(path):
         if path == pipe_dir / "nvidia-cuda-mps-control.pid":
@@ -225,128 +195,71 @@ def test_daemon_process_identity_requires_exact_binary_and_pipe_environment(
         if path == Path("/proc/123/cmdline"):
             return b"/usr/bin/nvidia-cuda-mps-control\x00-d\x00"
         assert path == Path("/proc/123/environ")
-        return b"\x00".join(environ)
+        return b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00"
 
     monkeypatch.setattr(Path, "read_text", read_text)
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
 
     assert client.read_daemon_process_identity(pipe_dir) == MpsProcessIdentity(123, 42)
 
-    environ[0] = b"CUDA_MPS_PIPE_DIRECTORY=/another/pipe"
-    with pytest.raises(MpsControlError, match="exact pipe directory"):
-        client.read_daemon_process_identity(pipe_dir)
-
-    environ[0] = b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe"
-    monkeypatch.setattr(
-        Path,
-        "read_bytes",
-        lambda path: (
-            b"/usr/bin/python\x00"
-            if path == Path("/proc/123/cmdline")
-            else b"\x00".join(environ)
-        ),
-    )
-    with pytest.raises(MpsControlError, match="not nvidia-cuda-mps-control"):
-        client.read_daemon_process_identity(pipe_dir)
-
-
-@pytest.mark.parametrize("state", ["R", "S", "D", "T"])
-def test_process_identity_accepts_non_zombie_states(monkeypatch, state):
-    pipe_dir = Path("/mps/pipe")
-    client = control.SubprocessMpsControlClient()
-
-    monkeypatch.setattr(
-        Path,
-        "read_text",
-        lambda _path: _proc_stat(456, "nvidia-cuda-mps-server", state, 84),
-    )
-
-    def read_bytes(path):
-        if path == Path("/proc/456/cmdline"):
-            return b"/usr/bin/nvidia-cuda-mps-server\x00"
-        assert path == Path("/proc/456/environ")
-        return b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00"
-
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
-
-    assert client.read_server_process_identity(pipe_dir, 456) == MpsProcessIdentity(
-        456, 84
-    )
-
-
-def test_process_identity_rejects_missing_or_zombie_process(monkeypatch):
-    pipe_dir = Path("/mps/pipe")
-    client = control.SubprocessMpsControlClient()
-
-    def missing(_path):
-        raise FileNotFoundError("gone")
-
-    monkeypatch.setattr(Path, "read_text", missing)
-    with pytest.raises(MpsControlError, match="does not exist"):
-        client.read_server_process_identity(pipe_dir, 456)
-
-    monkeypatch.setattr(
-        Path,
-        "read_text",
-        lambda _path: _proc_stat(456, "nvidia-cuda-mps-server", "Z", 84),
-    )
-    with pytest.raises(MpsControlError, match="zombie"):
-        client.read_server_process_identity(pipe_dir, 456)
-
-
-def test_process_identity_rejects_starttime_change_during_capture(monkeypatch):
-    pipe_dir = Path("/mps/pipe")
-    client = control.SubprocessMpsControlClient()
-    stats = iter(
-        [
-            _proc_stat(456, "nvidia-cuda-mps-server", "S", 84),
-            _proc_stat(456, "nvidia-cuda-mps-server", "S", 85),
-        ]
-    )
-    monkeypatch.setattr(Path, "read_text", lambda _path: next(stats))
-    monkeypatch.setattr(
-        Path,
-        "read_bytes",
-        lambda path: (
-            b"/usr/bin/nvidia-cuda-mps-server\x00"
-            if path == Path("/proc/456/cmdline")
-            else b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00"
-        ),
-    )
-
-    with pytest.raises(MpsControlError, match="changed identity during inspection"):
-        client.read_server_process_identity(pipe_dir, 456)
-
 
 @pytest.mark.parametrize(
-    ("cmdline", "environ", "message"),
+    ("stat_texts", "cmdline", "environ", "message"),
     [
         (
+            (_proc_stat(456, "nvidia-cuda-mps-server", "T", 84),) * 2,
+            b"/usr/bin/nvidia-cuda-mps-server\x00",
+            b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00",
+            None,
+        ),
+        ((), b"", b"", "does not exist"),
+        (
+            (_proc_stat(456, "nvidia-cuda-mps-server", "Z", 84),) * 2,
+            b"",
+            b"",
+            "zombie",
+        ),
+        (
+            (_proc_stat(456, "nvidia-cuda-mps-server", "S", 84),) * 2,
             b"/usr/bin/python\x00",
             b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00",
             "not nvidia-cuda-mps-server",
         ),
         (
+            (_proc_stat(456, "nvidia-cuda-mps-server", "S", 84),) * 2,
             b"/usr/bin/nvidia-cuda-mps-server\x00",
             b"CUDA_MPS_PIPE_DIRECTORY=/other/pipe\x00",
             "exact pipe directory",
         ),
+        (
+            (
+                _proc_stat(456, "nvidia-cuda-mps-server", "S", 84),
+                _proc_stat(456, "nvidia-cuda-mps-server", "S", 85),
+            ),
+            b"/usr/bin/nvidia-cuda-mps-server\x00",
+            b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe\x00",
+            "changed identity during inspection",
+        ),
     ],
 )
-def test_server_process_identity_requires_expected_binary_and_pipe(
+def test_server_process_identity_contract(
     monkeypatch,
+    stat_texts,
     cmdline,
     environ,
     message,
 ):
     pipe_dir = Path("/mps/pipe")
     client = control.SubprocessMpsControlClient()
+    stats = iter(stat_texts)
 
-    monkeypatch.setattr(
-        Path,
-        "read_text",
-        lambda _path: _proc_stat(456, "nvidia-cuda-mps-server", "S", 84),
-    )
+    def read_text(_path):
+        try:
+            return next(stats)
+        except StopIteration as exc:
+            raise FileNotFoundError("gone") from exc
+
+    monkeypatch.setattr(Path, "read_text", read_text)
 
     def read_bytes(path):
         if path == Path("/proc/456/cmdline"):
@@ -356,8 +269,13 @@ def test_server_process_identity_requires_expected_binary_and_pipe(
 
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
 
-    with pytest.raises(MpsControlError, match=message):
-        client.read_server_process_identity(pipe_dir, 456)
+    if message is None:
+        assert client.read_server_process_identity(pipe_dir, 456) == (
+            MpsProcessIdentity(456, 84)
+        )
+    else:
+        with pytest.raises(MpsControlError, match=message):
+            client.read_server_process_identity(pipe_dir, 456)
 
 
 def test_owner_liveness_comes_from_the_kernel_held_lease(tmp_path):

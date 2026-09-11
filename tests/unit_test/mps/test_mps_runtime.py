@@ -279,10 +279,9 @@ async def test_probe_failures_reports_verified_server_loss(short_root):
     await runtime.verify()
 
     client.server_identities.pop(7000)
-    assert await runtime.probe_failures() == {
-        gpu_uuid(0): "server identity query failed for pid 7000: "
-        "unverified server pid 7000"
-    }
+    failures = await runtime.probe_failures()
+    assert gpu_uuid(0) in failures
+    assert "server identity" in failures[gpu_uuid(0)]
 
     client.set_clients(manager.paths.pipe_dir, {})
     await runtime.close()

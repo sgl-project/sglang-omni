@@ -24,8 +24,6 @@ _CONTROL_LOCK_NAME = ".control.lock"
 
 
 def _parse_proc_stat(stat_text: str) -> tuple[str, int]:
-    """Return process state and start time from ``/proc/<pid>/stat``."""
-
     try:
         fields = stat_text.rsplit(")", 1)[1].split()
         return fields[0], int(fields[19])
@@ -128,21 +126,6 @@ class SubprocessMpsControlClient:
             raise MpsControlError(f"failed to start {_CONTROL_BINARY}: {exc}") from exc
 
     @staticmethod
-    def _read_daemon_pid(pipe_dir: Path) -> int:
-        pid_file = pipe_dir / f"{_CONTROL_BINARY}.pid"
-        try:
-            raw_pid = pid_file.read_text().strip()
-        except OSError as exc:
-            raise MpsControlError(
-                f"cannot read native PID file {pid_file}: {exc}"
-            ) from exc
-        if not raw_pid.isdigit() or int(raw_pid) <= 0:
-            raise MpsControlError(
-                f"native PID file {pid_file} is malformed: {raw_pid!r}"
-            )
-        return int(raw_pid)
-
-    @staticmethod
     def _read_proc_stat(pid: int) -> tuple[str, int]:
         try:
             return _parse_proc_stat(Path(f"/proc/{pid}/stat").read_text())
@@ -193,10 +176,20 @@ class SubprocessMpsControlClient:
         return MpsProcessIdentity(pid=pid, starttime=starttime)
 
     def read_daemon_process_identity(self, pipe_dir: Path) -> MpsProcessIdentity:
-        """Read and prove the native control-daemon identity for ``pipe_dir``."""
+        pid_file = pipe_dir / f"{_CONTROL_BINARY}.pid"
+        try:
+            raw_pid = pid_file.read_text().strip()
+        except OSError as exc:
+            raise MpsControlError(
+                f"cannot read native PID file {pid_file}: {exc}"
+            ) from exc
+        if not raw_pid.isdigit() or int(raw_pid) <= 0:
+            raise MpsControlError(
+                f"native PID file {pid_file} is malformed: {raw_pid!r}"
+            )
 
         return self._read_process_identity(
-            self._read_daemon_pid(pipe_dir),
+            int(raw_pid),
             pipe_dir,
             _CONTROL_BINARY,
         )
@@ -206,8 +199,6 @@ class SubprocessMpsControlClient:
         pipe_dir: Path,
         pid: int,
     ) -> MpsProcessIdentity:
-        """Read and prove one native MPS server identity for ``pipe_dir``."""
-
         return self._read_process_identity(pid, pipe_dir, _SERVER_BINARY)
 
     def _snapshot_unlocked(self, pipe_dir: Path) -> set[MpsClientRef]:
@@ -225,8 +216,6 @@ class SubprocessMpsControlClient:
         return clients
 
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
-        """Return one identity-stable, serialized server/client snapshot."""
-
         expected_identity = self.read_daemon_process_identity(pipe_dir)
         with self._control_transaction(pipe_dir):
             clients = self._snapshot_unlocked(pipe_dir)

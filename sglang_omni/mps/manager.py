@@ -56,10 +56,8 @@ class MpsClientRef:
     client_pid: int
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class MpsProcessIdentity:
-    """A native process PID paired with its immutable Linux start time."""
-
     pid: int
     starttime: int
 
@@ -76,8 +74,6 @@ class MpsLease:
 
     @property
     def daemon_pid(self) -> int:
-        """Keep the native daemon PID convenient for lifecycle callers."""
-
         return self.daemon_identity.pid
 
 
@@ -482,34 +478,30 @@ class MpsManager:
                     expected_by_token[token]
                     for token in expected_by_token.keys() - observed_tokens
                 }
-                last_error = None
                 if not missing:
-                    server_pids = {client.server_pid for client in attached}
-                    if not server_pids:
-                        raise MpsControlError(
-                            "MPS startup verification found no managed server identity"
+                    server_pids = {ref.server_pid for ref in attached}
+                    try:
+                        server_identities = frozenset(
+                            self.client.read_server_process_identity(
+                                self.paths.pipe_dir,
+                                server_pid,
+                            )
+                            for server_pid in sorted(server_pids)
                         )
-                    lease.server_identities = frozenset(
-                        self.client.read_server_process_identity(
-                            self.paths.pipe_dir,
-                            server_pid,
-                        )
-                        for server_pid in sorted(server_pids)
-                    )
+                    except MpsControlError as exc:
+                        raise MpsError(
+                            "MPS startup verification could not prove server identity "
+                            f"(pipe dir {self.paths.pipe_dir}): {exc}. State dir "
+                            f"preserved for inspection: {self.paths.state_dir}"
+                        ) from exc
+                    lease.server_identities = server_identities
                     lease.attachment_verified = True
                     return attached
-                else:
-                    pass
+                last_error = None
             except MpsControlError as exc:
                 last_error = exc
             if time.monotonic() >= deadline:
                 detail = f"; last control error: {last_error}" if last_error else ""
-                if not missing and last_error is not None:
-                    raise MpsError(
-                        f"MPS startup verification could not prove server identity "
-                        f"(pipe dir {self.paths.pipe_dir}): {last_error}. State dir "
-                        f"preserved for inspection: {self.paths.state_dir}"
-                    )
                 raise MpsError(
                     f"stage process(es) {sorted(missing)} never attached to the MPS "
                     f"server (pipe dir {self.paths.pipe_dir}){detail}. State dir "
@@ -556,29 +548,29 @@ class MpsManager:
                 self.paths.pipe_dir
             )
         except MpsControlError as exc:
-            return f"control identity query failed: {exc}"
+            return f"control identity unavailable: {exc}"
         if daemon_identity != lease.daemon_identity:
             expected = lease.daemon_identity
             return (
-                "control identity changed from "
-                f"pid {expected.pid} starttime {expected.starttime} to "
-                f"pid {daemon_identity.pid} starttime {daemon_identity.starttime}"
+                "control identity changed: "
+                f"expected {expected.pid}/{expected.starttime}, "
+                f"got {daemon_identity.pid}/{daemon_identity.starttime}"
             )
-        if not lease.attachment_verified or not lease.server_identities:
-            return "server identity was not captured during MPS attachment verification"
-        for expected in sorted(lease.server_identities):
+        if not lease.server_identities:
+            return "server identity unavailable"
+        for expected in lease.server_identities:
             try:
                 server_identity = self.client.read_server_process_identity(
                     self.paths.pipe_dir,
                     expected.pid,
                 )
             except MpsControlError as exc:
-                return f"server identity query failed for pid {expected.pid}: {exc}"
+                return f"server identity unavailable for pid {expected.pid}: {exc}"
             if server_identity != expected:
                 return (
-                    "server identity changed from "
-                    f"pid {expected.pid} starttime {expected.starttime} to "
-                    f"pid {server_identity.pid} starttime {server_identity.starttime}"
+                    "server identity changed: "
+                    f"expected {expected.pid}/{expected.starttime}, "
+                    f"got {server_identity.pid}/{server_identity.starttime}"
                 )
         return None
 
