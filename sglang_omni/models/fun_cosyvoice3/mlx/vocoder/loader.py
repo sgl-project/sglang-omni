@@ -134,8 +134,8 @@ class FunCosyVoice3MlxVocoder:
     ) -> "FunCosyVoice3MlxVocoder":
         """Load sanitized Flow/HiFT weights from a converted MLX artifact.
 
-        The official Fun-CosyVoice3 bundle contains PyTorch ``flow.pt`` and
-        ``hift.pt`` and is intentionally not converted here. It should remain
+        The official Fun-CosyVoice3 bundle contains PyTorch flow.pt and
+        hift.pt and is intentionally not converted here. It should remain
         Omni's main checkpoint for ONNX preprocessing assets; this loader gets
         the separately converted MLX artifact.
         """
@@ -200,9 +200,8 @@ class FunCosyVoice3MlxVocoder:
         hift.load_weights(list(hift_weights.items()), strict=True)
         del all_weights, flow_weights, hift_weights
 
-        # These runtime buffers use underscore names and are therefore not in
-        # ``parameters()``. Materialize them on the construction thread so a
-        # scheduler thread does not inherit a lazy graph tied to stream 0.
+        # Note (yexiaodong): Materialize runtime buffers on the construction
+        # thread so the scheduler thread does not inherit a stream-0 graph.
         mx.eval(
             flow.parameters(),
             hift.parameters(),

@@ -10,8 +10,8 @@ import mlx.core as mx
 from .model import SPEECH_TOKEN_SIZE
 
 _SPEECH_IDS = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
-# MLX streams are thread-local. Materialize this module-level lookup on the
-# construction thread so later scheduler-thread graphs do not retain stream 0.
+# Note (yexiaodong): MLX streams are thread-local; bind this lookup on the
+# construction thread so scheduler-thread graphs do not retain stream 0.
 mx.eval(_SPEECH_IDS)
 
 
@@ -32,8 +32,6 @@ class FunCosyVoice3MlxModelRunner:
             model_dir,
             quantization=self._quantization,
         )
-        # Non-final chunked prefills are disabled for this stage; the wrapper's
-        # decode head is intentionally the only forward entry point.
         self._trunk = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -88,9 +86,8 @@ class FunCosyVoice3MlxModelRunner:
             if penalty != 1.0:
                 seen = self._cosyvoice3_seen_masks[req_id]
                 if pending_tokens is not None:
-                    # A chained step is built before the predecessor is
-                    # finalized. Carry that predecessor's lazy token into the
-                    # graph so repetition state is still exact.
+                    # Note (yexiaodong): Chained steps share a lazy predecessor;
+                    # carry its token so repetition state remains exact.
                     seen = seen | (_SPEECH_IDS == pending_tokens[index])
                 speech_logits = row[:SPEECH_TOKEN_SIZE]
                 adjusted = mx.where(
@@ -182,15 +179,13 @@ class FunCosyVoice3MlxModelRunner:
         )
 
         sampling_params = req.sampling_params
-        # Omni's public request seed is honored even when SGLang's global
-        # deterministic-inference mode is off. The latter only supplies the
-        # default seed for an otherwise unseeded request.
+        # Note (yexiaodong): Preserve the request seed when global deterministic
+        # inference is disabled; global state is only a default.
         seed = sampling_params.sampling_seed
         if seed is None and self._deterministic_seeding:
             seed = DEFAULT_SAMPLING_SEED
-        # The shared MLX constructor warns that it ignores repetition
-        # penalties. This runner applies that penalty above, so build the same
-        # normalized parameter object directly and avoid a misleading warning.
+        # Note (yexiaodong): This runner applies repetition penalties itself,
+        # so avoid the shared constructor's misleading warning.
         return MlxSamplingParams(
             temperature=sampling_params.temperature,
             top_k=sampling_params.top_k,

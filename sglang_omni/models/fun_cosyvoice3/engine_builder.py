@@ -95,7 +95,6 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
                 "chunked_prefill_size": -1,
                 "dtype": dtype,
                 "sampling_backend": "pytorch",
-                # Keep CosyVoice's top-p/top-k sampling in the native runner.
                 "mlx_enable_sampling": True,
             }
         if self._uses_torch_mps():
@@ -187,8 +186,6 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
                 FunCosyVoice3MlxSchedulerModelRunner,
             )
 
-            # Use a CosyVoice collector on top of the shared MLX scheduler
-            # bridge; the bridge still owns lazy cache ordering.
             return FunCosyVoice3MlxSchedulerModelRunner(
                 model_worker,
                 output_proc,
@@ -248,10 +245,9 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
 
         if not use_mlx():
             return {}
-        # SGLang's bookkeeping stub reads the nested Qwen2 config, while the
-        # native runner loads the official root or an explicitly supplied MLX
-        # artifact. Keep that second path in Omni's typed worker config rather
-        # than attaching a model-specific field to upstream ServerArgs.
+        # Note (yexiaodong): The stub reads nested Qwen2 config while the
+        # native runner may load a separate artifact; keep that override in
+        # Omni's typed worker config rather than upstream ServerArgs.
         return {
             "mlx_model_path": self._mlx_model_path or self._checkpoint_root,
             "mlx_model_revision": self._mlx_model_revision,

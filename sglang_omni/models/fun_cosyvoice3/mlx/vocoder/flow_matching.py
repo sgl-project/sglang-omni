@@ -11,10 +11,10 @@ guidance and a cosine timestep schedule.
 The estimator contract is:
     estimator(x, mask, mu, t, spks, cond) -> velocity
 
-where all inputs are channels-first ``[B, mel, T]`` except ``spks``
-(``[B, spk_dim]``) and ``t`` (``[B]``). During classifier-free guidance, the
+where all inputs are channels-first [B, mel, T] except spks
+([B, spk_dim]) and t ([B]). During classifier-free guidance, the
 conditional and unconditional inputs are batched together before one estimator
-call, then combined as ``v = (1 + cfg) * v_cond - cfg * v_uncond``.
+call, then combined as v = (1 + cfg) * v_cond - cfg * v_uncond.
 """
 
 import math
@@ -39,9 +39,8 @@ class CausalConditionalCFM(nn.Module):
         self.inference_cfg_rate = inference_cfg_rate
         self.t_scheduler = t_scheduler
         self.out_channels = estimator.out_channels
-        # Keep the initial noise deterministic across model loads.
-        # Runtime-only deterministic noise; underscore keeps it out of the
-        # converted checkpoint's parameter tree.
+        # Note (yexiaodong): Keep runtime noise deterministic across model
+        # loads without adding it to the converted checkpoint's parameters.
         self._rand_noise = mx.random.normal(
             (1, self.out_channels, max_len), key=mx.random.key(0)
         )
@@ -59,7 +58,6 @@ class CausalConditionalCFM(nn.Module):
         t = mx.expand_dims(t_span[0], 0)
         dt = t_span[1] - t_span[0]
 
-        # CFG: unconditional branch zeroes mu / spks / cond.
         mask_in = mx.concatenate([mask, mask], axis=0)
         mu_in = mx.concatenate([mu, mx.zeros_like(mu)], axis=0)
         spks_in = mx.concatenate([spks, mx.zeros_like(spks)], axis=0)
@@ -74,9 +72,8 @@ class CausalConditionalCFM(nn.Module):
                 1.0 + self.inference_cfg_rate
             ) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt
             x = x + dt * dphi_dt
-            # Keep each ODE step bounded. Without this barrier MLX retains the
-            # whole 10-step DiT graph, increasing both latency variance and
-            # peak unified memory for no cross-step fusion benefit.
+            # Note (yexiaodong): Bound each ODE step to avoid retaining the
+            # full graph and increasing latency variance and unified memory.
             mx.eval(x)
             t = t + dt
             if step < len(t_span) - 1:

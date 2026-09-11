@@ -99,8 +99,6 @@ def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
     runner._cosyvoice3_seen_masks = {"req": (speech_ids == 5) | (speech_ids == 6)}
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=5)
-    # Token 5 appears twice, but repetition penalty must be applied once per
-    # distinct speech id. Token 6 verifies the negative-logit branch.
     runner._req_token_ids = {"req": [0, 0, 5, 5, 6]}
 
     raw_logits = np.zeros((1, TOTAL_VOCAB_SIZE), dtype=np.float32)

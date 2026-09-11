@@ -36,9 +36,6 @@ def _linear_interpolate_align_false(x: mx.array, new_size: int) -> mx.array:
     return low + w * (high - low)
 
 
-# --------------------------------------------------------------------------- #
-# causal conv building blocks
-# --------------------------------------------------------------------------- #
 class CausalConv1d(nn.Module):
     """1-D convolution with one-sided padding."""
 
@@ -62,7 +59,7 @@ class CausalConv1d(nn.Module):
         self.causal_padding = dilation * (kernel_size - 1)
 
     def __call__(self, x: mx.array) -> mx.array:
-        """x: (B, T, C) channel-last."""
+        """Apply the convolution to channel-last inputs."""
         if self.causal_padding:
             widths = (
                 [(0, 0), (self.causal_padding, 0), (0, 0)]
@@ -157,7 +154,7 @@ class CausalConvRNNF0Predictor(nn.Module):
     """5-layer causal Conv1d + ELU stack -> Linear classifier.
 
     condnet[0] uses right-context (kernel 4), condnet[1:] use left-context
-    (kernel 3) — matches ``cosyvoice...CausalConvRNNF0Predictor``.
+    (kernel 3) — matches the CosyVoice CausalConvRNNF0Predictor.
     """
 
     def __init__(
@@ -184,7 +181,7 @@ class CausalConvRNNF0Predictor(nn.Module):
         self.classifier = nn.Linear(cond_channels, num_class)
 
     def __call__(self, x: mx.array) -> mx.array:
-        """x: (B, C, T) -> f0 (B, T)."""
+        """Predict f0 from channel-first features."""
         x = mx.swapaxes(x, 1, 2)  # (B, T, C)
         for conv in self.condnet:
             x = nn.elu(conv(x))
@@ -193,9 +190,6 @@ class CausalConvRNNF0Predictor(nn.Module):
         return mx.abs(x)
 
 
-# --------------------------------------------------------------------------- #
-# causal NSF source
-# --------------------------------------------------------------------------- #
 class CausalSineGen(nn.Module):
     """Causal harmonic excitation generator for the vocoder."""
 
@@ -215,10 +209,9 @@ class CausalSineGen(nn.Module):
         self.sampling_rate = samp_rate
         self.voiced_threshold = voiced_threshold
         self.upsample_scale = upsample_scale
-        # Random initial phases for harmonic components.
         rand_ini = mx.random.uniform(shape=(1, harmonic_num + 1))
-        # Runtime-only deterministic phase; underscore keeps it out of the
-        # checkpoint parameter tree.
+        # Note (yexiaodong): Keep runtime phases deterministic without adding
+        # them to the converted checkpoint's parameter tree.
         self._rand_ini = mx.concatenate([mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1)
 
     def _f02uv(self, f0: mx.array) -> mx.array:
@@ -296,9 +289,6 @@ class CausalSourceModuleHnNSF(nn.Module):
         return sine_merge, noise, uv
 
 
-# --------------------------------------------------------------------------- #
-# generator
-# --------------------------------------------------------------------------- #
 class CausalHiFTGenerator(nn.Module):
     """v3 HiFT vocoder: causal NSF sine source + causal ISTFTNet decoder."""
 
