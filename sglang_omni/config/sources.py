@@ -109,6 +109,8 @@ _STAGES_LIST_GUIDANCE = (
     "key:\n\n    stages:\n      thinker:\n        tp_size: 2"
 )
 
+_MISSING = object()
+
 
 def patches_from_dotted_cli(
     extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
@@ -202,7 +204,7 @@ def patches_from_shared_block(
     being a conflict. Selectors:
 
     * ``stages`` -- explicit stage names (each must exist);
-    * ``engine`` -- ``true`` matches every SGLang engine stage;
+    * ``engine`` -- ``true`` matches engine stages, ``false`` non-engine stages;
     * ``exclude`` -- removes stages after the positive selectors matched.
 
     The expansion happens before duplicate checking and validation; resolved
@@ -279,13 +281,12 @@ def _select_stages(
             raise ValueError(
                 f"{label}.select.engine must be true or false, got {engine!r}"
             )
-        if engine:
-            matched = [
-                name
-                for name in matched
-                if config_cls.stage_config_cls(name).engine_stage
-            ]
-    excluded = select.get("exclude") or []
+        matched = [
+            name
+            for name in matched
+            if config_cls.stage_config_cls(name).engine_stage == engine
+        ]
+    excluded = select.get("exclude", [])
     if not isinstance(excluded, list) or not all(
         isinstance(name, str) for name in excluded
     ):
@@ -394,8 +395,8 @@ def sources_from_config_file(
             f"Config file {file_path!r} must name its pipeline class in " "config_cls"
         )
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(data["config_cls"])
-    stages_block = data.pop("stages", None)
-    shared_block = data.pop("shared", None)
+    stages_block = data.pop("stages", _MISSING)
+    shared_block = data.pop("shared", _MISSING)
     overrides = {key: value for key, value in data.items() if key != "config_cls"}
 
     # The baseline is built from the class's own defaults plus only the keys
@@ -430,7 +431,7 @@ def sources_from_config_file(
                 )
         else:
             patches.add(ConfigPatch.create(key, value, source, root=config_cls))
-    if stages_block is not None:
+    if stages_block is not _MISSING:
         patches = patches.merge(
             patches_from_stages_mapping(
                 stages_block,
@@ -439,7 +440,7 @@ def sources_from_config_file(
                 origin=str(file_path),
             )
         )
-    if shared_block is not None:
+    if shared_block is not _MISSING:
         # Expanded against the settled stage list, so a selector can reach a
         # stage this same file added.
         patches = patches.merge(

@@ -146,7 +146,8 @@ shared:
 
 The entry expands to one patch per matched stage before resolution. An
 explicit per-stage entry (under `stages:` or as a dotted flag) overrides the
-expansion; two `shared` entries writing one leaf conflict.
+expansion; two `shared` entries writing one leaf conflict. `engine: true`
+selects engine stages, while `engine: false` selects non-engine stages.
 
 **Broadcast flag** — `--mem-fraction-static 0.7` fans one value out to every
 SGLang engine stage's `engine.mem_fraction_static`. It is the one convenience
