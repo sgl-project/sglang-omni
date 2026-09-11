@@ -56,14 +56,29 @@ class MpsClientRef:
     client_pid: int
 
 
+@dataclass(frozen=True, order=True)
+class MpsProcessIdentity:
+    """A native process PID paired with its immutable Linux start time."""
+
+    pid: int
+    starttime: int
+
+
 @dataclass
 class MpsLease:
     """All authority and runtime-local evidence owned by one acquisition."""
 
-    daemon_pid: int
+    daemon_identity: MpsProcessIdentity
     owner_fd: int
     client_tokens: dict[str, str]
     attachment_verified: bool = False
+    server_identities: frozenset[MpsProcessIdentity] = field(default_factory=frozenset)
+
+    @property
+    def daemon_pid(self) -> int:
+        """Keep the native daemon PID convenient for lifecycle callers."""
+
+        return self.daemon_identity.pid
 
 
 class MpsControlClient(Protocol):
@@ -72,6 +87,14 @@ class MpsControlClient(Protocol):
     def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None: ...
 
     def read_daemon_identity(self, pipe_dir: Path) -> int: ...
+
+    def read_daemon_process_identity(self, pipe_dir: Path) -> MpsProcessIdentity: ...
+
+    def read_server_process_identity(
+        self,
+        pipe_dir: Path,
+        pid: int,
+    ) -> MpsProcessIdentity: ...
 
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]: ...
 
@@ -89,6 +112,7 @@ class MpsControlClient(Protocol):
 @dataclass
 class ExistingState:
     daemon_pid: int | None = None
+    daemon_identity: MpsProcessIdentity | None = None
     owners: dict[int, bool] = field(default_factory=dict)
     owner_statuses: dict[int, str] = field(default_factory=dict)
     clients: set[MpsClientRef] | None = None
@@ -158,8 +182,11 @@ class MpsManager:
             startup_error = exc
         else:
             try:
+                daemon_identity = self.client.read_daemon_process_identity(
+                    self.paths.pipe_dir
+                )
                 lease = MpsLease(
-                    daemon_pid=self.client.read_daemon_identity(self.paths.pipe_dir),
+                    daemon_identity=daemon_identity,
                     owner_fd=owner_fd,
                     client_tokens=client_tokens,
                 )
@@ -174,10 +201,11 @@ class MpsManager:
             cleanup_error: MpsError | None = None
             if lease is None:
                 try:
+                    daemon_identity = self.client.read_daemon_process_identity(
+                        self.paths.pipe_dir
+                    )
                     lease = MpsLease(
-                        daemon_pid=self.client.read_daemon_identity(
-                            self.paths.pipe_dir
-                        ),
+                        daemon_identity=daemon_identity,
                         owner_fd=owner_fd,
                         client_tokens=client_tokens,
                     )
@@ -207,6 +235,7 @@ class MpsManager:
         if (
             not state.errors
             and state.daemon_pid is not None
+            and state.daemon_identity is not None
             and state.clients is not None
             and state.owners
             and all(state.owners.values())
@@ -220,7 +249,7 @@ class MpsManager:
                 sorted(state.owners),
             )
             return MpsLease(
-                daemon_pid=state.daemon_pid,
+                daemon_identity=state.daemon_identity,
                 owner_fd=owner_fd,
                 client_tokens=client_tokens,
             )
@@ -294,7 +323,10 @@ class MpsManager:
     def inspect_existing_state(self) -> ExistingState:
         state = ExistingState()
         try:
-            state.daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            state.daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
+            state.daemon_pid = state.daemon_identity.pid
         except MpsControlError as exc:
             state.errors.append(f"daemon identity: {exc}")
         try:
@@ -436,6 +468,8 @@ class MpsManager:
         """Gate startup on one current MPS client per managed process."""
 
         self.require_live_lease(lease)
+        lease.attachment_verified = False
+        lease.server_identities = frozenset()
         expected_by_token = {
             token: process_name for process_name, token in lease.client_tokens.items()
         }
@@ -455,6 +489,18 @@ class MpsManager:
                 }
                 last_error = None
                 if not missing:
+                    server_pids = {client.server_pid for client in attached}
+                    if not server_pids:
+                        raise MpsControlError(
+                            "MPS startup verification found no managed server identity"
+                        )
+                    lease.server_identities = frozenset(
+                        self.client.read_server_process_identity(
+                            self.paths.pipe_dir,
+                            server_pid,
+                        )
+                        for server_pid in sorted(server_pids)
+                    )
                     lease.attachment_verified = True
                     return attached
                 else:
@@ -463,6 +509,12 @@ class MpsManager:
                 last_error = exc
             if time.monotonic() >= deadline:
                 detail = f"; last control error: {last_error}" if last_error else ""
+                if not missing and last_error is not None:
+                    raise MpsError(
+                        f"MPS startup verification could not prove server identity "
+                        f"(pipe dir {self.paths.pipe_dir}): {last_error}. State dir "
+                        f"preserved for inspection: {self.paths.state_dir}"
+                    )
                 raise MpsError(
                     f"stage process(es) {sorted(missing)} never attached to the MPS "
                     f"server (pipe dir {self.paths.pipe_dir}){detail}. State dir "
@@ -501,15 +553,38 @@ class MpsManager:
         return targets
 
     def probe(self, lease: MpsLease) -> str | None:
-        """Check steady state daemon identity without enumerating MPS clients."""
+        """Check verified MPS session identities without control commands."""
 
         self.require_live_lease(lease)
         try:
-            daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
         except MpsControlError as exc:
-            return f"daemon identity query failed: {exc}"
-        if daemon_pid != lease.daemon_pid:
-            return f"daemon identity changed from {lease.daemon_pid} to {daemon_pid}"
+            return f"control identity query failed: {exc}"
+        if daemon_identity != lease.daemon_identity:
+            expected = lease.daemon_identity
+            return (
+                "control identity changed from "
+                f"pid {expected.pid} starttime {expected.starttime} to "
+                f"pid {daemon_identity.pid} starttime {daemon_identity.starttime}"
+            )
+        if not lease.attachment_verified or not lease.server_identities:
+            return "server identity was not captured during MPS attachment verification"
+        for expected in sorted(lease.server_identities):
+            try:
+                server_identity = self.client.read_server_process_identity(
+                    self.paths.pipe_dir,
+                    expected.pid,
+                )
+            except MpsControlError as exc:
+                return f"server identity query failed for pid {expected.pid}: {exc}"
+            if server_identity != expected:
+                return (
+                    "server identity changed from "
+                    f"pid {expected.pid} starttime {expected.starttime} to "
+                    f"pid {server_identity.pid} starttime {server_identity.starttime}"
+                )
         return None
 
     def release(
@@ -574,13 +649,15 @@ class MpsManager:
             pass
 
         try:
-            daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
             snapshot = self.client.snapshot(self.paths.pipe_dir)
         except MpsControlError:
             raise
-        if daemon_pid != lease.daemon_pid:
+        if daemon_identity != lease.daemon_identity:
             raise MpsError(
-                f"MPS daemon identity changed from {lease.daemon_pid} to {daemon_pid}; "
+                "MPS control identity changed during release; "
                 "owner lease and shared state preserved"
             )
         else:
@@ -677,11 +754,13 @@ class MpsManager:
         except BaseException as exc:
             status_error = exc
 
-        observed_daemon_pid: int | None = None
+        observed_daemon_identity: MpsProcessIdentity | None = None
         owned_clients: set[MpsClientRef] | None = None
         query_error: MpsControlError | None = None
         try:
-            observed_daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+            observed_daemon_identity = self.client.read_daemon_process_identity(
+                self.paths.pipe_dir
+            )
             if clients is None:
                 clients = self.client.snapshot(self.paths.pipe_dir)
             else:
@@ -701,8 +780,8 @@ class MpsManager:
             else f"unconfirmed because the retained-status write failed: {status_error}"
         )
         observed = (
-            str(observed_daemon_pid)
-            if observed_daemon_pid is not None
+            str(observed_daemon_identity.pid)
+            if observed_daemon_identity is not None
             else f"unavailable ({query_error})"
         )
         snapshot = "unavailable" if clients is None else repr(sorted(clients))

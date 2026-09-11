@@ -15,12 +15,24 @@ from sglang_omni.mps.manager import (
     MpsClientRef,
     MpsControlError,
     MpsDaemonNotStartedError,
+    MpsProcessIdentity,
 )
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
+_SERVER_BINARY = "nvidia-cuda-mps-server"
 _QUERY_TIMEOUT_SECONDS = 10
 _SNAPSHOT_RETRY_DELAYS_SECONDS = (0.05, 0.15)
 _CONTROL_LOCK_NAME = ".control.lock"
+
+
+def _parse_proc_stat(stat_text: str) -> tuple[str, int]:
+    """Return process state and start time from ``/proc/<pid>/stat``."""
+
+    try:
+        fields = stat_text.rsplit(")", 1)[1].split()
+        return fields[0], int(fields[19])
+    except (IndexError, ValueError) as exc:
+        raise ValueError("malformed /proc/<pid>/stat") from exc
 
 
 def stat_says_alive(stat_text: str) -> bool:
@@ -117,9 +129,8 @@ class SubprocessMpsControlClient:
         except subprocess.SubprocessError as exc:
             raise MpsControlError(f"failed to start {_CONTROL_BINARY}: {exc}") from exc
 
-    def read_daemon_identity(self, pipe_dir: Path) -> int:
-        """Read and prove the native control-daemon identity for ``pipe_dir``."""
-
+    @staticmethod
+    def _read_daemon_pid(pipe_dir: Path) -> int:
         pid_file = pipe_dir / f"{_CONTROL_BINARY}.pid"
         try:
             raw_pid = pid_file.read_text().strip()
@@ -131,35 +142,82 @@ class SubprocessMpsControlClient:
             raise MpsControlError(
                 f"native PID file {pid_file} is malformed: {raw_pid!r}"
             )
-        else:
-            pass
-        pid = int(raw_pid)
-        if not self.daemon_process_alive(pid):
-            raise MpsControlError(f"native PID file {pid_file} names dead pid {pid}")
-        else:
-            pass
+        return int(raw_pid)
 
+    @staticmethod
+    def _read_proc_stat(pid: int) -> tuple[str, int]:
+        try:
+            return _parse_proc_stat(Path(f"/proc/{pid}/stat").read_text())
+        except FileNotFoundError as exc:
+            raise MpsControlError(f"process pid {pid} does not exist") from exc
+        except (OSError, IndexError, ValueError) as exc:
+            raise MpsControlError(f"cannot inspect process pid {pid}: {exc}") from exc
+
+    def _read_process_identity(
+        self,
+        pid: int,
+        pipe_dir: Path,
+        expected_binary: str,
+    ) -> MpsProcessIdentity:
         proc = Path(f"/proc/{pid}")
         try:
+            state, starttime = self._read_proc_stat(pid)
+            if state == "Z":
+                raise MpsControlError(f"process pid {pid} is a zombie")
             cmdline = proc.joinpath("cmdline").read_bytes().split(b"\0", 1)[0]
             environ = proc.joinpath("environ").read_bytes().split(b"\0")
+            final_state, final_starttime = self._read_proc_stat(pid)
         except OSError as exc:
-            raise MpsControlError(f"cannot inspect daemon pid {pid}: {exc}") from exc
-        if Path(os.fsdecode(cmdline)).name != _CONTROL_BINARY:
             raise MpsControlError(
-                f"native PID file {pid_file} names {os.fsdecode(cmdline)!r}, not "
-                f"{_CONTROL_BINARY}"
+                f"cannot inspect {expected_binary} pid {pid}: {exc}"
+            ) from exc
+        except MpsControlError:
+            raise
+        if final_state == "Z":
+            raise MpsControlError(
+                f"process pid {pid} became a zombie during inspection"
+            )
+        if final_starttime != starttime:
+            raise MpsControlError(
+                f"process pid {pid} changed identity during inspection"
+            )
+        executable = Path(os.fsdecode(cmdline)).name
+        if executable != expected_binary:
+            raise MpsControlError(
+                f"process pid {pid} names {os.fsdecode(cmdline)!r}, not "
+                f"{expected_binary}"
             )
         else:
             pass
         expected_pipe = f"CUDA_MPS_PIPE_DIRECTORY={pipe_dir}".encode()
         if expected_pipe not in environ:
             raise MpsControlError(
-                f"daemon pid {pid} does not own exact pipe directory {pipe_dir}"
+                f"process pid {pid} does not own exact pipe directory {pipe_dir}"
             )
-        else:
-            pass
-        return pid
+        return MpsProcessIdentity(pid=pid, starttime=starttime)
+
+    def read_daemon_process_identity(self, pipe_dir: Path) -> MpsProcessIdentity:
+        """Read and prove the native control-daemon identity for ``pipe_dir``."""
+
+        return self._read_process_identity(
+            self._read_daemon_pid(pipe_dir),
+            pipe_dir,
+            _CONTROL_BINARY,
+        )
+
+    def read_daemon_identity(self, pipe_dir: Path) -> int:
+        """Return the PID of the verified native control daemon."""
+
+        return self.read_daemon_process_identity(pipe_dir).pid
+
+    def read_server_process_identity(
+        self,
+        pipe_dir: Path,
+        pid: int,
+    ) -> MpsProcessIdentity:
+        """Read and prove one native MPS server identity for ``pipe_dir``."""
+
+        return self._read_process_identity(pid, pipe_dir, _SERVER_BINARY)
 
     def _snapshot_unlocked(self, pipe_dir: Path) -> set[MpsClientRef]:
         servers = parse_pid_list(
@@ -178,7 +236,7 @@ class SubprocessMpsControlClient:
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
         """Return one identity-stable, serialized server/client snapshot."""
 
-        expected_daemon_pid = self.read_daemon_identity(pipe_dir)
+        expected_daemon_identity = self.read_daemon_process_identity(pipe_dir)
         last_error: MpsControlError | None = None
         attempts = len(_SNAPSHOT_RETRY_DELAYS_SECONDS) + 1
 
@@ -191,11 +249,14 @@ class SubprocessMpsControlClient:
             else:
                 last_error = None
 
-            current_daemon_pid = self.read_daemon_identity(pipe_dir)
-            if current_daemon_pid != expected_daemon_pid:
+            current_daemon_identity = self.read_daemon_process_identity(pipe_dir)
+            if current_daemon_identity != expected_daemon_identity:
                 identity_error = MpsControlError(
                     "MPS daemon identity changed during control snapshot "
-                    f"from {expected_daemon_pid} to {current_daemon_pid}"
+                    f"from pid {expected_daemon_identity.pid} "
+                    f"starttime {expected_daemon_identity.starttime} to pid "
+                    f"{current_daemon_identity.pid} "
+                    f"starttime {current_daemon_identity.starttime}"
                 )
                 if last_error is not None:
                     raise identity_error from last_error
@@ -234,7 +295,7 @@ class SubprocessMpsControlClient:
             return stat_says_alive(Path(f"/proc/{pid}/stat").read_text())
         except FileNotFoundError:
             return False
-        except (OSError, IndexError) as exc:
+        except (OSError, IndexError, ValueError) as exc:
             raise MpsControlError(f"cannot inspect daemon pid {pid}: {exc}") from exc
 
     def client_token(self, pid: int) -> str | None:
