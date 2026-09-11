@@ -309,6 +309,8 @@ class FunCosyVoice3MlxModelRunner:
             mx.minimum(first, SPEECH_TOKEN_SIZE - 1)[:, None],
             axis=1,
         ).squeeze(-1)
+        greedy = mx.array([param.is_greedy for param in params], dtype=mx.bool_)
+        repeated = repeated & ~greedy
 
         fallback_params = [
             MlxSamplingParams(

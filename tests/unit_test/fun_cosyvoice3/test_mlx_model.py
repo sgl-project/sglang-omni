@@ -160,7 +160,30 @@ def test_runner_ras_redraws_a_repeated_primary_token() -> None:
     runner._enable_sampling = True
     runner._req_sampling = {
         "req": MlxSamplingParams(
-            temperature=1.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
+            temperature=1.0, top_k=20, top_p=1.0, min_p=0.0, seed=None
+        )
+    }
+    runner._rng_key = mx.random.key(0)
+    runner._cosyvoice3_recent_tokens = {"req": [5]}
+    runner._cosyvoice3_sampling_pending_tokens = None
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
+    runner._edited_logits = lambda logits, edit_rows: logits
+
+    logits = mx.full((1, TOTAL_VOCAB_SIZE), -10.0, dtype=mx.float32)
+    logits = logits.at[0, 5].add(10.0)
+    logits = logits.at[0, 6].add(9.0)
+    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
+
+    mx.eval(tokens)
+    assert int(tokens[0].item()) != 5
+
+
+def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
+    runner = object.__new__(FunCosyVoice3MlxModelRunner)
+    runner._enable_sampling = True
+    runner._req_sampling = {
+        "req": MlxSamplingParams(
+            temperature=0.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
         )
     }
     runner._rng_key = mx.random.key(0)
@@ -175,7 +198,7 @@ def test_runner_ras_redraws_a_repeated_primary_token() -> None:
     tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
 
     mx.eval(tokens)
-    assert int(tokens[0].item()) == 6
+    assert int(tokens[0].item()) == 5
 
 
 def test_runner_ras_keeps_a_non_repeated_primary_token() -> None:

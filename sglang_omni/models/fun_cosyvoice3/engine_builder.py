@@ -189,7 +189,11 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
 
             # Use a CosyVoice collector on top of the shared MLX scheduler
             # bridge; the bridge still owns lazy cache ordering.
-            return FunCosyVoice3MlxSchedulerModelRunner(model_worker, output_proc)
+            return FunCosyVoice3MlxSchedulerModelRunner(
+                model_worker,
+                output_proc,
+                token_hop_len=self._token_hop_len,
+            )
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.fun_cosyvoice3.model_runner"
         )

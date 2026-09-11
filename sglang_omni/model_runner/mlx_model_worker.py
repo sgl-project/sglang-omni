@@ -240,7 +240,7 @@ def create_mlx_model_worker(
             mlx_model_path = (
                 config.mlx_model_path
                 if model_arch == "FunCosyVoice3SGLangModel"
-                else self.server_args.model_path
+                else get_model().model_path
             )
             if mlx_model_path is None:
                 raise RuntimeError(
@@ -325,9 +325,6 @@ def create_mlx_model_worker(
     nccl_port = config.nccl_port
     if nccl_port is None:
         nccl_port = PortArgs.init_new(server_args).nccl_port
-    # note (yexiaodong): MlxTpModelWorker reads the split runtime configuration
-    # while building its model config, before the bookkeeping stub exists.
-    publish(server_args, role="scheduler")
     return OmniMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
