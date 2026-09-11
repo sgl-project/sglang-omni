@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import torch
 
 from sglang_omni.comm.data_ref import DataRef, TransportKind
-from sglang_omni.comm.engine import CommEngine
+from sglang_omni.comm.engine import (
+    CommEngine,
+    _PendingTransfer,
+    _pending_transfer_bytes,
+)
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.proto import DataAckMessage, DataReadyMessage
 from tests.unit_test.fixtures.pipeline_fakes import (
     RecordingStageControlPlane,
     make_stage_payload,
 )
+from tests.unit_test.fixtures.trace_capture import capture_comm_trace
 
 
 class _AckedOp:
@@ -42,6 +48,30 @@ class _AckedOp:
             raise self.failed
         if not self.acked:
             raise RuntimeError("waited before receiver ack")
+
+
+@pytest.mark.parametrize(
+    ("op_metadata", "expected"),
+    [
+        ([], 0),
+        ([{"transfer_info": {"size": 3}}, {"transfer_info": {"size": 5}}], 8),
+        ([{}], -1),
+        ([{"transfer_info": {}}], -1),
+        ([{"transfer_info": {"size": -1}}], -1),
+        ([{"transfer_info": {"size": True}}], -1),
+        ([{"transfer_info": {"size": 1.5}}], -1),
+    ],
+)
+def test_pending_transfer_bytes(
+    op_metadata: list[dict[str, Any]],
+    expected: int,
+) -> None:
+    pending = _PendingTransfer(
+        ops=[_AckedOp(metadata) for metadata in op_metadata],
+        ack=Mock(),
+    )
+
+    assert _pending_transfer_bytes(pending) == expected
 
 
 class _AckedRelay:
@@ -250,7 +280,9 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
     asyncio.run(_run())
 
 
-def test_stream_stale_ack_does_not_complete_reused_send() -> None:
+def test_stream_stale_ack_does_not_complete_reused_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def _run() -> None:
         relay = _AckedRelay()
         control_plane = RecordingStageControlPlane()
@@ -312,7 +344,15 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
         )
         assert op_b.acked
 
-    asyncio.run(_run())
+    with capture_comm_trace(monkeypatch) as events:
+        asyncio.run(_run())
+
+    failed = [event for event in events if event["event"] == "comm_transfer_failed"]
+    assert len(failed) == 1
+    assert failed[0]["num_ops"] == 1
+    assert failed[0]["error"] == "TimeoutError"
+    assert failed[0]["timeout_s"] == 0.05
+    assert failed[0]["elapsed_ms"] >= 0.0
 
 
 def test_comm_engine_ignores_unknown_data_ack() -> None:
