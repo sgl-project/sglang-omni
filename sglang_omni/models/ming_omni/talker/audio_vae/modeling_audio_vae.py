@@ -5,6 +5,8 @@ from diffusers.models.autoencoders.autoencoder_oobleck import (
 )
 from transformers import PreTrainedModel
 
+from sglang_omni.platforms import current_platform
+
 from .configuration_audio_vae import AudioVAEconfig
 from .vae_modules import Decoder, Encoder
 
@@ -14,8 +16,15 @@ class AudioVAE(PreTrainedModel):
 
     def __init__(self, config: AudioVAEconfig):
         super().__init__(config)
+        encoder_args = config.enc_kwargs["backbone"]
+        decoder_args = config.dec_kwargs["backbone"]
+        if current_platform.is_npu():
+            # Transformers' NPU FA2 ignores sliding windows, corrupting long
+            # reference audio. SDPA preserves the VAE's attention masks.
+            encoder_args = {**encoder_args, "_attn_implementation": "sdpa"}
+            decoder_args = {**decoder_args, "_attn_implementation": "sdpa"}
         self.encoder = Encoder(
-            encoder_args=config.enc_kwargs["backbone"],
+            encoder_args=encoder_args,
             input_dim=config.enc_kwargs["input_dim"],
             hop_size=config.enc_kwargs.get("hop_size", 320),
             latent_dim=config.enc_kwargs["latent_dim"],
@@ -23,7 +32,7 @@ class AudioVAE(PreTrainedModel):
         )
 
         self.decoder = Decoder(
-            decoder_args=config.dec_kwargs["backbone"],
+            decoder_args=decoder_args,
             output_dim=config.dec_kwargs["output_dim"],
             latent_dim=config.dec_kwargs["latent_dim"],
             patch_size=config.patch_size,

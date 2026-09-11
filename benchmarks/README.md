@@ -196,6 +196,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_asr_seedtts.py` | ASR concurrency scaling on SeedTTS EN/ZH | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_stt_benchmark.py` | ASR concurrency scaling on the Pipecat STT benchmark set (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
 | `eval/benchmark_asr_longform.py` | ASR concurrency scaling on LongLibriHeavy 30/60 s and Meanwhile (EN) | Qwen3-ASR, Fun-ASR | `/v1/audio/transcriptions` |
+| `eval/benchmark_asr_realtime.py` | Realtime ASR streaming latency, protocol invariants, and WER on SeedTTS EN | Qwen3-ASR | `/v1/realtime?intent=transcription` |
 
 See [tts_serving/README.md](tts_serving/README.md) for the TTS serving
 benchmark design, harness contract, scenario matrix, and Docker usage.
@@ -300,6 +301,35 @@ python -m benchmarks.dataset.prepare --dataset meanwhile
 python -m benchmarks.eval.benchmark_asr_longform \
   --dataset meanwhile --port 8000 \
   --concurrencies 1,8,32 --repeats 3 --warmup
+```
+
+`benchmark_asr_realtime.py` streams SeedTTS reference clips through the
+realtime WebSocket endpoint (`--enable-realtime`) at wall-clock pace and
+reports client-observed streaming latencies, protocol invariant violations, and
+WER of the completed transcript. The client (`benchmarks/realtime_asr/client.py`)
+only records timestamps; every metric definition lives in
+`benchmarks/realtime_asr/metrics.py` so numbers stay comparable across runs:
+
+- `first_partial_latency_s`: per segment, from the send time of the packet that
+  reached the server's first refresh point (`segment_start + decode_interval_ms`)
+  to the first partial `transcription.segment`.
+- `partial_interval_s`: gaps between consecutive partials of one segment.
+- `final_latency_s`: `input_audio_buffer.committed` to the segment's final event.
+- `done_to_completed_s`: `transcription.done` sent to `transcription.completed`.
+
+`--mode vad` (default) lets server VAD close turns and pads each clip with
+`--trailing-silence-ms` of silence so the last turn closes on VAD; `--mode
+manual` disables VAD and commits explicitly. `--http-baseline` transcribes the
+same clips over `/v1/audio/transcriptions`; the WER delta is computed only on
+samples that succeeded on both paths (`common_evaluated`) and is `null` when
+that set is empty.
+`--concurrencies` runs one result per level; there is no cross-level report.
+The `decode_interval_ms` in effect is read from `session.created` and recorded
+in the result `config`.
+
+```bash
+python -m benchmarks.eval.benchmark_asr_realtime \
+  --port 8000 --max-samples 50 --concurrencies 1,4,8 --http-baseline
 ```
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.

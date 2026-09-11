@@ -53,8 +53,8 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio(
     encoder.encode_batch.return_value = [
         (torch.zeros(3, 6, 16), torch.ones(6, dtype=torch.bool)) for _ in range(3)
     ]
+    fusion = (torch.zeros(2), torch.ones(1))
     flow = Mock()
-    flow.fuse.side_effect = lambda hidden: hidden[:, 0]
     flow.sample_batch.side_effect = lambda items, **kwargs: [
         torch.zeros(item.target_frames, 64) for item in items
     ]
@@ -73,14 +73,16 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio(
     ]
 
     rng = torch.random.get_rng_state()
-    conditioned = _condition_batch(payloads, encoder, vae, flow, device, "float32")
+    conditioned = _condition_batch(
+        payloads, encoder, vae, fusion, device, torch.float32
+    )
     states = [AuKState.from_dict(payload.data) for payload in conditioned]
     assert torch.equal(states[0].ref_latent, states[1].ref_latent)
     assert not torch.equal(states[0].ref_latent, states[2].ref_latent)
     assert torch.equal(torch.random.get_rng_state(), rng)
     assert states[0].ref_length == 50
     assert states[0].ref_latent.stride() == (1, 51)
-    sampled = _sample_batch(conditioned, flow, device, "float32", 1500, {})
+    sampled = _sample_batch(conditioned, flow, device, torch.float32, 1500, {})
     assert len(flow.sample_batch.call_args.args[0]) == 3
     results = _decode_batch(sampled, vae, device, chunk_frames)
     assert vae.decode_chunked.call_count == (2 if chunk_frames else 0)
@@ -138,3 +140,60 @@ def test_engine_uses_checkpoint_sampling_recipe(monkeypatch, flash):
         sway_sampling_coef=None if flash else -1,
         t_grid=C.FLASH_T_GRID if flash else None,
     )
+
+
+@pytest.fixture
+def stages(monkeypatch):
+    from sglang_omni.models.auk import stages
+
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
+    monkeypatch.setattr(
+        stages,
+        "make_runtime_config",
+        lambda path: AuKRuntimeConfig(model_path="stub", name="AuK"),
+    )
+    return stages
+
+
+@pytest.mark.parametrize("field", ["dtype", "weight_dtype"])
+def test_unknown_dtype_names_are_rejected_before_the_checkpoint_is_resolved(field):
+    with pytest.raises(
+        ValueError,
+        match=rf"AuK {field} must be one of float32, float16, bfloat16, got 'bf16'",
+    ):
+        create_auk_engine_executor("stub", device="cpu", **{field: "bf16"})
+
+
+def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
+    """A later executor must not inherit an earlier one's cast backbone."""
+    requested = []
+    autocast = []
+
+    def sample_batch(items, **kwargs):
+        autocast.append(torch.is_autocast_enabled("cpu"))
+        return [torch.zeros(item.target_frames, 64) for item in items]
+
+    def load_flow(checkpoint, device, backbone_dtype):
+        requested.append(backbone_dtype)
+        flow = Mock()
+        flow.sample_batch.side_effect = sample_batch
+        return flow
+
+    monkeypatch.setattr(stages, "_load_flow", load_flow)
+    for weight_dtype in ("bfloat16", "float32"):
+        scheduler = create_auk_engine_executor(
+            "stub", device="cpu", dtype="bfloat16", weight_dtype=weight_dtype
+        )
+        scheduler._fn(
+            StagePayload(
+                request_id="test",
+                request=OmniRequest(inputs="hello"),
+                data=AuKState(
+                    gen_frames=10,
+                    conditioning=torch.zeros(6, 16),
+                    text_mask=torch.ones(6, dtype=torch.bool),
+                ).to_dict(),
+            )
+        )
+    assert requested == [torch.bfloat16, torch.float32]
+    assert autocast == [False, True]

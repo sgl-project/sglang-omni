@@ -84,11 +84,13 @@ Override duration with `stage_params.auk_engine.gen_seconds`. Otherwise, editing
 
 ## Sampling
 
-Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Override them with `--auk_engine.factory.*` flags. Flash locks to the released four-step grid with CFG disabled, so those flags have no effect on `tencent/AuK-Flash`. Request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
+Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Override them with `--auk_engine.factory.*` flags. Flash locks to the released four-step grid with CFG disabled, so those flags have no effect on `tencent/AuK-Flash`. Request overrides of these settings and `max_seconds` are rejected. Qwen uses BF16 autocast; the VAE runs in FP32.
+
+The DiT stores its weights in BF16 and runs without autocast by default (`--auk_engine.factory.weight_dtype bfloat16`), which removes the per-step FP32-to-BF16 weight casts. Set `--auk_engine.factory.weight_dtype float32` to keep FP32 weights with BF16 autocast instead; that is the upstream-exact recipe the parity test compares against, at roughly 1.3x the sampling time. The ODE state is integrated in FP32 in both modes.
 
 `seed` initializes separate request-local generators for target noise and reference VAE posterior sampling, without changing the process RNG. Sampling is reproducible for fixed inputs; different batch shapes or compute backends can still produce numerical differences. Multiple structured references are rejected.
 
-Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. Non-streaming VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. By default, audio is returned after decoding completes.
+Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. Non-streaming VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. By default, audio is returned after decoding completes.
 
 Optional VAE chunk decoding is enabled with `--decode.factory.chunk_frames 250`
 (250 latent frames represent 5 seconds). The default `0` retains full decoding.

@@ -716,6 +716,7 @@ class _FakeBatch:
 
 def _new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
+    s._sleep_during_idle = lambda: None
     s._admin_lock = threading.Lock()
     s._admin_queue = queue.Queue()
     s._request_admission_lock = threading.RLock()
