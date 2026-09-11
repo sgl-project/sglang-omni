@@ -209,6 +209,14 @@ With all four off (the default), a typical 10-sample MMMU run produces a
 trace in the tens of MB. With all four on, the same workload can produce a
 multi-GB trace — only opt in when you need that specific information.
 
+> **Caution:** start `SGLANG_TORCH_PROFILER_WITH_STACK=1` profiling only on an
+> idle server. Torch's stack-capture machinery replays every live thread's
+> Python frames when the profiler starts, and doing that while requests are in
+> flight can deadlock the whole stage process on the GIL
+> ([#1779](https://github.com/sgl-project/sglang-omni/issues/1779)). The stage
+> logs a warning when a `with_stack` start races in-flight requests; if the
+> start hangs, drain traffic first or unset the flag.
+
 ## HTTP surface
 
 | Method | Path | Body | Notes |
