@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as the example. The same `/v1/audio/speech` endpoint also serves Higgs TTS, Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, MOSS-TTS, MOSS-TTS Local, dots.tts, and ZONOS2.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as the example. The same `/v1/audio/speech` endpoint also serves Higgs TTS, Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, MOSS-TTS, MOSS-TTS Local, dots.tts, VoxCPM2, and ZONOS2.
 
 ## Prerequisites
 
@@ -48,6 +48,7 @@ for details.
 | [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |
 | [dots.tts](../cookbook/dots_tts.md) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow (`dots.tts-mf`) uses continuous batching (`max_running_requests=16` by default) with engine-wide `num_steps=4` and Euler. SOAR (`dots.tts-soar`) and base (`dots.tts-base`) are flow matching and run the single-request solver with CFG at `max_running_requests=1`; both use the SOAR config. All require `ref_audio` + `ref_text`. TP1 only |
 | [ZONOS2](../cookbook/zonos2.md) | `--model-path Zyphra/zonos2` | MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook) |
+| VoxCPM2 | `examples/configs/voxcpm2.yaml` | `openbmb/VoxCPM2`. Tokenizer-free diffusion-autoregressive TTS, 30 languages, 48 kHz output from a 16 kHz reference. One optional reference clip: with its transcript it clones by continuation, without one it copies timbre only. Streaming; TP1 only |
 | [AuK](../cookbook/auk.md) | `--model-path` only | `tencent/AuK` and `tencent/AuK-Flash`. Instruction-driven generation and editing at 24 kHz. Reference audio is optional; speech requires `stage_params.auk_engine.gen_seconds`. Downloads the separate Qwen2.5-Omni-3B encoder. Serial, non-streaming engine |
 
 ## Launch the Server

@@ -1,0 +1,23 @@
+config_cls: VoxCPM2PipelineConfig
+model_path: openbmb/VoxCPM2
+
+stages:
+  reference_encode:
+    factory:
+      max_concurrency: 8
+  tts_engine:
+    factory:
+      inference_timesteps: 10
+      cfg_value: 2.0
+      max_running_requests: 1
+    engine:
+      mem_fraction_static: 0.60
+      max_running_requests: 1
+  vocoder:
+    factory:
+      # Chunk cadence for streaming: the first chunk waits for stream_stride
+      # patches, later chunks for stream_followup_stride more. One patch is
+      # 160 ms of audio. These two are unmeasured starting points.
+      stream_stride: 8
+      stream_followup_stride: 4
+      max_batch_size: 1

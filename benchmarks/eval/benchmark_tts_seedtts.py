@@ -145,9 +145,18 @@ _AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
     },
     forward_sglang_engine=False,
 )
+_VOXCPM2_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
+    argument_defaults={
+        "output_dir": "results/voxcpm2_seedtts",
+        "concurrency": 1,
+        "warmup": 1,
+        "seed": 1234,
+    },
+)
 _MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
     "auk": _AUK_BENCHMARK_PROFILE,
     "auk-flash": _AUK_BENCHMARK_PROFILE,
+    "voxcpm2": _VOXCPM2_BENCHMARK_PROFILE,
 }
 
 

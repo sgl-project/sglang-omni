@@ -94,6 +94,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
     from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+    from sglang_omni.models.voxcpm2.payload_types import VoxCPM2State
     from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
     from sglang_omni.models.zonos2.payload_types import Zonos2State
 
@@ -107,6 +108,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         MossTTSState,
         MossTTSLocalState,
         Qwen3TTSState,
+        VoxCPM2State,
         VoxtralTTSState,
         Zonos2State,
     )
