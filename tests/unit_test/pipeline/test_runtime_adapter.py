@@ -24,6 +24,9 @@ _FACTORY_WITHOUT_TOTAL_BUDGET = (
     "tests.unit_test.fixtures.pipeline_fakes.runtime_factory_without_total_budget"
 )
 _OPEN_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
+_FACTORY_WITHOUT_GPU_ID = (
+    "tests.unit_test.fixtures.pipeline_fakes.runtime_factory_without_gpu_id"
+)
 
 
 def _stage(**kwargs) -> EngineStageConfig:
@@ -135,8 +138,25 @@ def test_a_set_key_the_factory_does_not_accept_is_refused() -> None:
         resolve_stage_factory_args(stage, config)
 
 
+def test_gpu_placed_stage_rejects_a_factory_with_no_gpu_id_parameter() -> None:
+    stage = _stage(factory_path=_FACTORY_WITHOUT_GPU_ID)
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    with pytest.raises(ValueError, match="no gpu_id parameter"):
+        resolve_stage_factory_args(stage, config)
+
+
+def test_a_non_gpu_stage_may_use_a_factory_with_no_gpu_id_parameter() -> None:
+    stage = _stage(factory_path=_FACTORY_WITHOUT_GPU_ID, gpu=None)
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    args = resolve_stage_factory_args(stage, config)
+
+    assert "gpu_id" not in args
+
+
 def test_free_form_keys_reach_a_factory_that_takes_kwargs() -> None:
-    stage = _stage(factory_path=_OPEN_FACTORY, factory={"lookahead": 9})
+    stage = _stage(factory_path=_OPEN_FACTORY, factory={"lookahead": 9}, gpu=None)
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)

@@ -64,10 +64,6 @@ def _codec_lock(model: str, revision: str, device: str) -> threading.Lock:
     return threading.Lock()
 
 
-def _device(gpu_id: int | None) -> str:
-    return f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
-
-
 def _normalize_reference(raw_input: Any) -> _ReferenceInput:
     if not isinstance(raw_input, dict):
         raise TypeError("Audar-TTS reference input must be a dict")
@@ -171,6 +167,7 @@ def create_preprocessing_executor() -> SimpleScheduler:
 
 def create_reference_encoder_executor(
     *,
+    device: str | None = None,
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
@@ -178,7 +175,9 @@ def create_reference_encoder_executor(
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
 ) -> SimpleScheduler:
-    device = _device(gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     codec = _load_codec(codec_model, codec_revision, device)
     reference_service = ReferenceEncodeService(
         _AudarReferenceEncodeHook(
@@ -226,6 +225,7 @@ def _resolve_gguf(model_path: str, filename: str, revision: str) -> str:
 def create_tts_engine_executor(
     model_path: str,
     *,
+    device: str | None = None,
     gpu_id: int | None = None,
     gguf_filename: str = DEFAULT_GGUF_FILENAME,
     model_revision: str = "main",
@@ -239,13 +239,26 @@ def create_tts_engine_executor(
             "Audar-TTS requires the 'audar-tts' optional dependencies"
         ) from exc
 
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    if concrete_device.type not in ("cpu", "cuda"):
+        raise ValueError(
+            "Audar-TTS llama.cpp engine runs on cuda or cpu only; resolved "
+            f"device={concrete_device}"
+        )
+    main_gpu = concrete_device.index if concrete_device.type == "cuda" else 0
+    if concrete_device.type == "cpu":
+        # note (lennox): the n_gpu_layers default of -1 offloads every layer, so
+        # a cpu resolution would still run on GPU 0 without this.
+        n_gpu_layers = 0
     model_file = _resolve_gguf(model_path, gguf_filename, model_revision)
     llm = Llama(
         model_path=model_file,
         n_ctx=n_ctx,
         n_gpu_layers=n_gpu_layers,
         split_mode=LLAMA_SPLIT_MODE_NONE,
-        main_gpu=int(gpu_id or 0),
+        main_gpu=main_gpu,
         verbose=False,
     )
     stop_tokens = llm.tokenize(
@@ -305,11 +318,14 @@ def create_tts_engine_executor(
 
 def create_vocoder_executor(
     *,
+    device: str | None = None,
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
 ) -> SimpleScheduler:
-    device = _device(gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     codec = _load_codec(codec_model, codec_revision, device)
     codec_lock = _codec_lock(codec_model, codec_revision, device)
 
