@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# Opt-in FishAudio S2-Pro topology with separate TTS and vocoder processes.
+# Two TTS replicas share weights; two vocoders load independently on GPU 0.
+# Validated on an 80 GB H100 with MPS, 32,000 KV tokens per TTS, and concurrency 32.
+
+config_cls: S2ProPipelineConfig
+name: fishaudio-s2-pro-replica2-split-h100
+model_path: fishaudio/s2-pro
+
+mps: "auto"
+weight_share: "on"
+
+stages:
+  tts_engine:
+    process: tts_engine
+    gpu_memory_fraction: 0.35
+    engine:
+      mem_fraction_static: 0.35
+      max_total_tokens: 32000
+  vocoder:
+    process: vocoder
+    gpu_memory_fraction: 0.10
+
+processes:
+  tts_engine:
+    num_replicas: 2
+    replica_devices: [0, 0]
+  vocoder:
+    num_replicas: 2
+    replica_devices: [0, 0]

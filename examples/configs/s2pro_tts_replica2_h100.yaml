@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# FishAudio S2-Pro with two weight-shared pipeline replicas on one 80 GB H100.
+# Validated with MPS, 32,000 KV tokens per replica, and concurrency 32.
+
+config_cls: S2ProPipelineConfig
+name: fishaudio-s2-pro-replica2-h100
+model_path: fishaudio/s2-pro
+
+mps: "auto"
+weight_share: "on"
+
+stages:
+  tts_engine:
+    gpu_memory_fraction: 0.35
+    engine:
+      mem_fraction_static: 0.35
+      max_total_tokens: 32000
+  vocoder:
+    gpu_memory_fraction: 0.10
+
+processes:
+  pipeline:
+    num_replicas: 2
+    replica_devices: [0, 0]
