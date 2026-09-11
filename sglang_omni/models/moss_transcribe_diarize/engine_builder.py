@@ -120,6 +120,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
             "chunked_prefill_size": 4096,
+            "decode_attention_backend": "flashinfer",
+            "kv_cache_dtype": "bfloat16",
             "sampling_backend": "pytorch",
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
             "cuda_graph_bs_prefill": prefill_cuda_graph_bs,
