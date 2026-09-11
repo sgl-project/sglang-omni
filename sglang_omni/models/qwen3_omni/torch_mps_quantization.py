@@ -52,6 +52,7 @@ class MpsQuantizedLinear(nn.Module):
         self.out_features, self.in_features = codes.shape
         self.group_size = group_size
         expected = (self.out_features, self.in_features // group_size)
+        # AutoRound may use signed scales; preserve the export's calibrated values.
         if (
             tuple(scales.shape) != expected
             or tuple(zeros.shape) != expected
@@ -111,6 +112,7 @@ class MpsQuantizedLinear(nn.Module):
         shape = (*hidden_states.shape[:-1], self.out_features)
         if hidden_states.numel() == 0:
             return hidden_states.new_empty(shape)
+        # ATen interprets qparams in the activation dtype. Use FP32 for both.
         x = F.pad(
             hidden_states.reshape(-1, self.in_features).float(),
             (0, self.padded_in_features - self.in_features),
