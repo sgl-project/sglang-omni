@@ -35,6 +35,7 @@ from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.profiler.event_recorder import set_active_stage as _set_active_stage
 from sglang_omni.proto import (
+    ADMIN_FREEZE_GC,
     AdminMessage,
     AdminResult,
     AdminResultMessage,
@@ -51,6 +52,7 @@ from sglang_omni.proto import (
 )
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.utils.gc_control import freeze_gc
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -1014,6 +1016,15 @@ class Stage:
 
     async def _run_admin_operation(self, operation: Any) -> AdminResult:
         try:
+            if operation.action == ADMIN_FREEZE_GC:
+                # Process-wide, independent of the scheduler: every stage
+                # process and every TP rank freezes its own interpreter.
+                return self._admin_result(
+                    operation,
+                    success=True,
+                    message="gc frozen",
+                    data=freeze_gc(f"stage {self.name}"),
+                )
             handler = getattr(self.scheduler, "admin", None)
             if handler is None:
                 return self._admin_result(

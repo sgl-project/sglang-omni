@@ -31,7 +31,7 @@ from sglang_omni.client.types import (
     UsageInfo,
 )
 from sglang_omni.pipeline.coordinator import Coordinator
-from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto import ADMIN_FREEZE_GC, OmniRequest, RequestState, StreamMessage
 
 
 class Client:
@@ -307,6 +307,19 @@ class Client:
         return await self._coordinator.admin(
             action,
             payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
+    async def freeze_gc(
+        self,
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 30.0,
+    ) -> dict[str, Any]:
+        """Freeze the Python cyclic GC in every targeted stage process."""
+        return await self._coordinator.admin(
+            ADMIN_FREEZE_GC,
             stages=stages,
             timeout_s=timeout_s,
         )

@@ -116,6 +116,10 @@ class Coordinator:
 
         # Request tracking
         self._requests: dict[str, RequestInfo] = {}
+        # Monotonic count of requests that reached a terminal completion
+        # (success or error). Read by the launcher to time the post-warmup
+        # GC freeze; never reset.
+        self.completed_requests = 0
         self._completion_futures: dict[str, asyncio.Future] = {}
         self._stream_queues: dict[
             str, asyncio.Queue[CompleteMessage | StreamMessage]
@@ -670,6 +674,7 @@ class Coordinator:
             if stream_queue is not None:
                 await stream_queue.put(msg)
             self._requests.pop(request_id, None)
+            self.completed_requests += 1
             return
 
         expected_terminal_stages = self._expected_terminal_stages(request_id)
@@ -694,6 +699,7 @@ class Coordinator:
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
             self._requests.pop(request_id, None)
+            self.completed_requests += 1
             return
 
         # Multi-terminal: collect partial results
@@ -718,6 +724,7 @@ class Coordinator:
             if not future.done():
                 future.set_result(merged)
         self._requests.pop(request_id, None)
+        self.completed_requests += 1
 
     async def _handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
