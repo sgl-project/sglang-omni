@@ -7201,6 +7201,61 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process() -> None:
     }
 
 
+def test_qwen3_tts_split_preprocessing_loads_the_frontend_on_the_placed_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The split recipe's `load_frontend=True` path is the only caller of the
+    standalone frontend loader; the default topology never reaches it."""
+    import transformers
+
+    from sglang_omni.models.qwen3_tts import prompt_frontend
+    from sglang_omni.platforms import current_platform
+
+    seen: dict[str, object] = {}
+
+    class FakeFrontend:
+        def load_speech_tokenizer(self, tokenizer) -> None:
+            seen["tokenizer"] = tokenizer
+
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
+    monkeypatch.setattr(qwen3_stages, "_register_qwen3_tts_hf_config", lambda: None)
+    monkeypatch.setattr(qwen3_stages, "_resolve_checkpoint", lambda model_path: "ckpt")
+    monkeypatch.setattr(
+        prompt_frontend,
+        "load_qwen3_tts_prompt_frontend",
+        lambda checkpoint_dir, *, device, dtype: seen.update(device=device, dtype=dtype)
+        or FakeFrontend(),
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "_load_qwen3_tts_tokenizer",
+        lambda checkpoint_dir, *, device, dtype, attn_implementation: ("tok", device),
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "_load_qwen3_tts_generate_defaults", lambda ckpt: {}
+    )
+    monkeypatch.setattr(
+        transformers.AutoProcessor, "from_pretrained", lambda *a, **k: "processor"
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "qwen_tts",
+        types.SimpleNamespace(Qwen3TTSModel=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "set_qwen3_tts_preprocessing_context",
+        lambda **kwargs: seen.update(context=kwargs),
+    )
+
+    qwen3_stages.create_preprocessing_executor("model", gpu_id=1, load_frontend=True)
+
+    assert seen["device"] == "cuda:1"
+    assert seen["dtype"] is torch.bfloat16
+    assert seen["tokenizer"] == ("tok", "cuda:1")
+    assert seen["context"]["standalone"] is True
+
+
 def test_qwen3_tts_shared_gpu_layout_demands_no_preprocessing_fraction() -> None:
     """Sharing the engine's process, preprocessing has no GPU budget to declare.
 

@@ -72,6 +72,7 @@ _ABORTED_REQUEST_ID_RETAINED = 5000
 _COMPLETED_REQUEST_ID_LIMIT = 10000
 _PENDING_STREAM_REQUEST_LIMIT = 10000
 _PENDING_STREAM_REQUEST_RETAINED = 5000
+_IDLE_WAIT_S = 0.02
 
 
 class _PendingStreamIngress:
@@ -461,6 +462,7 @@ class OmniScheduler:
         self.soft_watchdog = None
         self.recv_skipper = None
         self.idle_sleeper = None
+        self._idle_wait_message: IncomingMessage | None = None
         self._init_upstream_compat_flags(server_args)
         self.grammar_manager = _NoOpGrammarManager()
         self.grammar_queue = []
@@ -850,6 +852,9 @@ class OmniScheduler:
 
     def _drain_local_inbox(self) -> list[IncomingMessage]:
         recv_msgs: list[IncomingMessage] = []
+        if self._idle_wait_message is not None:
+            recv_msgs.append(self._idle_wait_message)
+            self._idle_wait_message = None
         while True:
             try:
                 recv_msgs.append(self.inbox.get_nowait())
@@ -966,7 +971,18 @@ class OmniScheduler:
             request_admission_pending = bool(
                 self._pending_request_builds or self._pending_request_admissions
             )
-        time.sleep(0.0001 if request_admission_pending else 0.001)
+        if request_admission_pending:
+            time.sleep(0.0001)
+            return
+        if self.tp_size > 1 and not self.is_entry_rank:
+            # Note (jzheng17): TP followers receive through broadcast_pyobj, not their inbox.
+            # Keep polling so they can join the entry rank's broadcast promptly.
+            time.sleep(0.001)
+            return
+        try:
+            self._idle_wait_message = self.inbox.get(timeout=_IDLE_WAIT_S)
+        except _queue_mod.Empty:
+            self._idle_wait_message = None
 
     def _queued_admission_count(self) -> int:
         return (

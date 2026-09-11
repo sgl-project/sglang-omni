@@ -147,6 +147,11 @@ tests/
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
+    ├── nemotron_voicechat/
+    │   ├── test_checkpoint_shim.py
+    │   ├── test_paged_rollback.py
+    │   ├── test_request_builders.py
+    │   └── test_streaming_codec.py
     ├── qwen3_asr/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_pipeline.py
@@ -472,6 +477,13 @@ that happened to contain an older version of the test.
   `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
   isolation, failure reporting, disabled warmup, and CLI configuration using
   the real benchmark runner with a fake speech generator.
+  - `test_realtime_asr_benchmark.py`: the realtime ASR benchmark client
+    (`benchmarks/realtime_asr/client.py`) against an in-process fake
+    `/v1/realtime` WebSocket server (packet splitting, wall-clock pacing,
+    manual commit, trailing silence, timeout reporting), and the metric
+    definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
+    traces (first-partial refresh-point lookup, partial gaps, committed→final,
+    protocol invariant violations, percentile summaries). No GPU or server.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
@@ -833,6 +845,14 @@ that happened to contain an older version of the test.
   lowering, reference encoding, model-runner lifecycle, flow matching, bounded
   acoustic state, vocoder batching, and streaming cleanup. CUDA Graph parity in
   `test_tail.py` is marked `accelerator`; the remaining tests run on CPU.
+
+- `unit_test/nemotron_voicechat/`: NemotronLabs VoiceChat request frame-count
+  contract (thinker tokens vs talker steps), streaming code2wav equivalence
+  with whole-utterance decoding, and checkpoint-shim isolation across
+  checkpoint switches. Talker rollback tests cover paged KV ownership across
+  stream waits and decode resumption using simulated decode preparation.
+  Tests run on CPU without model weights; request and rollback tests require
+  SGLang, but do not start an engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

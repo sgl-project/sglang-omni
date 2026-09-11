@@ -245,6 +245,39 @@ factory does not accept raises at construction. Standard kwargs
 the factory signature declares them; `gpu_id` is owned by placement and is
 rejected from the author channel.
 
+### Device and GPU placement contract
+
+A stage's card is placement's decision, made in the parent process from
+`stage.gpu` (or `processes.<name>.replica_devices` for a replicated process)
+and handed to the factory as `gpu_id`. The factory's `device` argument is
+only ever a device type: `cpu` to keep a stage on the host, or a platform
+type such as `cuda`/`npu` that must match the host. It never carries an
+index. `cuda:1` in a config is refused, and so are `factory.gpu_id` and the
+two memory-fraction kwargs listed in `PLACEMENT_OWNED_FACTORY_KWARGS`
+(`sglang_omni/config/schema.py`), because those are injected by placement.
+
+Inside a factory the two values meet in one helper:
+
+1. Declare both parameters, `device: str | None = None` and
+   `gpu_id: int | None = None`. A GPU-placed stage whose factory has no
+   `gpu_id` parameter is refused by name before any weight is loaded.
+2. Call `sglang_omni.utils.device.resolve_concrete_device(device, gpu_id)`.
+   It checks the requested type against the host platform, takes the index
+   from `gpu_id`, and only when neither side supplied one asks the host
+   which card the process already sits on. Do not call `resolve_device_spec`
+   from a factory and do not combine the two values by hand.
+3. A factory that builds SGLang `ServerArgs` itself writes the resolved
+   type into `server_args_overrides["device"]` through
+   `sglang_omni.scheduling.sglang_backend.pin_resolved_device_type`, which
+   also rejects an operator override that names a different device. The
+   shared `SGLangGenerationEngineBuilder` already does this.
+
+`tests/unit_test/test_stage_device_contract.py` sweeps every model, topology
+and stage in the repository against these rules; a new model is covered
+without registering anything. Because every GPU factory follows them, any
+GPU process can be given `num_replicas`/`replica_devices`
+(`basic_usage/process_topology.md`).
+
 ## Runtime Prep and Runner
 
 Runtime prep builds the resolved state used by the runner:

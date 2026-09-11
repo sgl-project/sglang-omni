@@ -20,6 +20,16 @@ AUDIO_TOWER_PREFIXES = ("audio.",)
 AUDIO_PROJ_PREFIXES = ("linear_proj_audio.",)
 
 
+def _autocast_context(tensor: torch.Tensor):
+    """Use BF16 autocast on supported accelerator tensors."""
+    device_type = tensor.device.type
+    return torch.autocast(
+        device_type=device_type,
+        dtype=torch.bfloat16,
+        enabled=device_type in {"cuda", "npu"},
+    )
+
+
 class Transpose(nn.Module):
     """Helper module to transpose tensor dimensions."""
 
@@ -158,9 +168,7 @@ class MingAudioEncoder(nn.Module):
 
         with (
             torch.no_grad(),
-            torch.autocast(
-                device_type="cuda", dtype=torch.bfloat16, enabled=segments.is_cuda
-            ),
+            _autocast_context(segments),
         ):
             # Cast input to float32 for Whisper conv layers, autocast handles the rest
             segments = segments.float()
