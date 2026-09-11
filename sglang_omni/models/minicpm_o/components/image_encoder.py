@@ -58,14 +58,12 @@ def _init_sglang_tp() -> None:
     import sglang.srt.layers.dp_attention as dp
     from sglang.srt.distributed import parallel_state
 
-    if (
-        getattr(dp, "_ATTN_TP_SIZE", None)
-        and parallel_state.model_parallel_is_initialized()
-    ):
-        if dp._ATTN_TP_SIZE != 1:
+    if parallel_state.model_parallel_is_initialized():
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        if tp_size != 1:
             raise RuntimeError(
                 "MiniCPM-o image encoder requires tp_size=1 but the process "
-                f"already initialized tp_size={dp._ATTN_TP_SIZE}"
+                f"already initialized tp_size={tp_size}"
             )
         return
 

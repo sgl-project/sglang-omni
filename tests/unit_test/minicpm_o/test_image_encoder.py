@@ -13,16 +13,96 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
 from transformers import PretrainedConfig
 
 from sglang_omni.models.minicpm_o.components.image_encoder import (
+    _init_sglang_tp,
     _vision_config_object,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.fixture
+def tp_context(monkeypatch):
+    import sglang.srt.layers.dp_attention as dp
+    from sglang.srt import server_args
+    from sglang.srt.distributed import parallel_state
+
+    monkeypatch.setenv("MASTER_ADDR", "127.0.0.1")
+    monkeypatch.setenv("MASTER_PORT", "29500")
+    monkeypatch.setattr(
+        parallel_state, "model_parallel_is_initialized", Mock(return_value=True)
+    )
+    monkeypatch.setattr(
+        parallel_state, "get_tensor_model_parallel_world_size", Mock(return_value=1)
+    )
+    monkeypatch.setattr(parallel_state, "init_distributed_environment", Mock())
+    monkeypatch.setattr(parallel_state, "initialize_model_parallel", Mock())
+    monkeypatch.setattr(server_args, "ServerArgs", Mock())
+    monkeypatch.setattr(server_args, "set_global_server_args_for_scheduler", Mock())
+    monkeypatch.setattr(dp, "_ATTN_TP_SIZE", None, raising=False)
+    monkeypatch.setattr(dp, "_ATTN_TP_RANK", None, raising=False)
+    return dp, parallel_state, server_args
+
+
+@pytest.mark.parametrize("legacy_tp_size", [None, 1, 8])
+def test_init_sglang_tp_reuses_initialized_context(
+    tp_context, monkeypatch, legacy_tp_size
+):
+    dp, parallel_state, server_args = tp_context
+    if legacy_tp_size is not None:
+        monkeypatch.setattr(dp, "_ATTN_TP_SIZE", legacy_tp_size, raising=False)
+    else:
+        monkeypatch.delattr(dp, "_ATTN_TP_SIZE")
+
+    _init_sglang_tp()
+
+    parallel_state.get_tensor_model_parallel_world_size.assert_called_once_with()
+    parallel_state.init_distributed_environment.assert_not_called()
+    parallel_state.initialize_model_parallel.assert_not_called()
+    server_args.ServerArgs.assert_not_called()
+    server_args.set_global_server_args_for_scheduler.assert_not_called()
+    assert getattr(dp, "_ATTN_TP_SIZE", None) == legacy_tp_size
+    assert dp._ATTN_TP_RANK is None
+
+
+def test_init_sglang_tp_rejects_actual_multi_rank_context(tp_context, monkeypatch):
+    dp, parallel_state, server_args = tp_context
+    parallel_state.get_tensor_model_parallel_world_size.return_value = 2
+    monkeypatch.setattr(dp, "_ATTN_TP_SIZE", 1, raising=False)
+
+    with pytest.raises(RuntimeError, match="already initialized tp_size=2"):
+        _init_sglang_tp()
+
+    server_args.ServerArgs.assert_not_called()
+    server_args.set_global_server_args_for_scheduler.assert_not_called()
+    parallel_state.init_distributed_environment.assert_not_called()
+    parallel_state.initialize_model_parallel.assert_not_called()
+
+
+def test_init_sglang_tp_initializes_standalone_context(tp_context):
+    dp, parallel_state, server_args = tp_context
+    parallel_state.model_parallel_is_initialized.return_value = False
+
+    _init_sglang_tp()
+
+    server_args.ServerArgs.assert_called_once_with(model_path="dummy")
+    server_args.set_global_server_args_for_scheduler.assert_called_once_with(
+        server_args.ServerArgs.return_value
+    )
+    parallel_state.init_distributed_environment.assert_called_once_with(
+        backend="nccl", world_size=1, rank=0, local_rank=0
+    )
+    parallel_state.initialize_model_parallel.assert_called_once_with(
+        tensor_model_parallel_size=1
+    )
+    assert dp._ATTN_TP_SIZE == 1
+    assert dp._ATTN_TP_RANK == 0
 
 
 def _checkpoint_dir() -> Path | None:
@@ -43,9 +123,7 @@ def test_patch_attn_mask_vectorization_matches_loop() -> None:
     ref = torch.zeros(3, 1, max_patches, dtype=torch.bool)
     for i in range(3):
         ref[i, 0, : patch_counts[i]] = True
-    got = (
-        torch.arange(max_patches)[None, :] < patch_counts[:, None]
-    ).unsqueeze(1)
+    got = (torch.arange(max_patches)[None, :] < patch_counts[:, None]).unsqueeze(1)
     assert torch.equal(got, ref)
 
 
@@ -105,8 +183,7 @@ def _remote_forward(vpm, resampler, pixel_values, tgt_sizes, device, dtype):
 
     tgt_sizes = tgt_sizes.to(device, dtype=torch.int32)
     all_pixel_values = [
-        v.to(device, dtype=dtype).flatten(end_dim=1).permute(1, 0)
-        for v in pixel_values
+        v.to(device, dtype=dtype).flatten(end_dim=1).permute(1, 0) for v in pixel_values
     ]
     all_pixel_values = pad_sequence(
         all_pixel_values, batch_first=True, padding_value=0.0
