@@ -41,6 +41,15 @@ class DitDavFactoryArgs(FactoryArgs):
     cache_dit: bool | None = None
     compile_acoustic: bool | None = None
     breakable_cuda_graph: bool | None = None
+    enable_serial_offload: bool | None = None
+
+
+class ArFactoryArgs(FactoryArgs):
+    enable_serial_offload: bool | None = None
+
+
+class ArStageConfig(EngineStageConfig):
+    factory: ArFactoryArgs = Field(default_factory=ArFactoryArgs)
 
 
 class DitDavStageConfig(StageConfig):
@@ -55,11 +64,11 @@ def _stages(*, acoustic_gpu: int) -> list[StageConfig]:
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             next="minimax_music3_ar",
         ),
-        EngineStageConfig(
+        ArStageConfig(
             name="minimax_music3_ar",
             process="minimax_music3_ar",
             factory_path=f"{_PKG}.stages.create_ar_executor",
-            factory=FactoryArgs(max_concurrency=16),
+            factory=ArFactoryArgs(max_concurrency=16),
             gpu=0,
             next="dit_dav",
             stream_to=["dit_dav"],
@@ -103,7 +112,7 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     requires_model_capabilities: ClassVar[bool] = True
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "minimax_music3_ar": EngineStageConfig,
+        "minimax_music3_ar": ArStageConfig,
         "dit_dav": DitDavStageConfig,
     }
 
@@ -121,6 +130,10 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     @classmethod
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         return frozenset({("preprocessing", "minimax_music3_ar")})
+
+    @classmethod
+    def stage_offload_role_to_stage(cls) -> dict[str, str]:
+        return {"ar": "minimax_music3_ar", "dit": "dit_dav"}
 
 
 class MiniMaxMusic3SingleGPUPipelineConfig(MiniMaxMusic3PipelineConfig):
