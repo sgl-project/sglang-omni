@@ -1,5 +1,5 @@
-import asyncio
 import base64
+import threading
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,15 +16,17 @@ from sglang_omni.models.minicpm_o.request_builders import (
     project_thinker_to_talker,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage
+from tests.unit_test.pipeline.helpers import run_scheduler
 
 
 def _data_uri(audio):
     return "data:audio/wav;base64," + base64.b64encode(audio).decode("ascii")
 
 
-def _payload(*, params=None, metadata=None):
+def _payload(*, request_id="test", params=None, metadata=None):
     return StagePayload(
-        request_id="test",
+        request_id=request_id,
         request=OmniRequest(inputs=None, params=params or {}, metadata=metadata or {}),
         data=MiniCPMOPipelineState(
             engine_outputs={"talker": {"codec_tokens": torch.tensor([1, 2])}}
@@ -199,7 +201,7 @@ def test_missing_default_reference_has_explicit_error():
         model._get_prompt(None)
 
 
-def test_vocoder_batch_passes_each_requests_reference(monkeypatch):
+def test_vocoder_passes_each_requests_reference(monkeypatch):
     from sglang_omni.models.minicpm_o.components import code2wav
     from sglang_omni.models.minicpm_o.stages import create_code2wav_executor
 
@@ -212,12 +214,92 @@ def test_vocoder_batch_passes_each_requests_reference(monkeypatch):
     monkeypatch.setattr(code2wav, "MiniCPMOCode2Wav", lambda *args, **kwargs: vocode)
     scheduler = create_code2wav_executor("model", device="cpu")
     payloads = [
-        _payload(metadata={"audio_config": {"ref_audio": _data_uri(b"first")}}),
-        _payload(params={"stage_params": {"code2wav": {"prompt_wav": b"second"}}}),
-        _payload(),
+        _payload(
+            request_id="first",
+            metadata={"audio_config": {"ref_audio": _data_uri(b"first")}},
+        ),
+        _payload(
+            request_id="second",
+            params={"stage_params": {"code2wav": {"prompt_wav": b"second"}}},
+        ),
+        _payload(request_id="default"),
     ]
-    outputs = asyncio.run(scheduler._batch_fn(payloads))
+    for payload in payloads:
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+    outputs = run_scheduler(scheduler, [], output_count=len(payloads))
     assert [item["prompt_wav"] for item in received] == [b"first", b"second", None]
     assert all(item["codec_tokens"].tolist() == [1, 2] for item in received)
-    assert all(output.data["sample_rate"] == 24000 for output in outputs)
-    assert all("engine_outputs" not in output.data for output in outputs)
+    assert [output.request_id for output in outputs] == ["first", "second", "default"]
+    assert all(output.type == "result" for output in outputs)
+    assert all(output.data.data["sample_rate"] == 24000 for output in outputs)
+    assert all("engine_outputs" not in output.data.data for output in outputs)
+
+
+def test_vocoder_returns_completed_request_before_next_finishes(monkeypatch):
+    from sglang_omni.models.minicpm_o.components import code2wav
+    from sglang_omni.models.minicpm_o.stages import create_code2wav_executor
+
+    second_started = threading.Event()
+    release_second = threading.Event()
+
+    def vocode(**model_inputs):
+        if model_inputs["prompt_wav"] == b"second":
+            second_started.set()
+            assert release_second.wait(timeout=5.0)
+        return {"waveform": np.zeros(24, dtype=np.float32), "sample_rate": 24000}
+
+    monkeypatch.setattr(code2wav, "MiniCPMOCode2Wav", lambda *args, **kwargs: vocode)
+    scheduler = create_code2wav_executor("model", device="cpu")
+    for request_id in ("first", "second"):
+        payload = _payload(
+            request_id=request_id, params={"ref_audio": request_id.encode()}
+        )
+        scheduler.inbox.put(IncomingMessage(request_id, "new_request", payload))
+
+    def collect_first():
+        try:
+            assert second_started.wait(timeout=2.0)
+            output = scheduler.outbox.get_nowait()
+            assert output.request_id == "first"
+            assert output.type == "result"
+        finally:
+            release_second.set()
+
+    outputs = run_scheduler(scheduler, [], output_count=1, before_collect=collect_first)
+    assert outputs[0].request_id == "second"
+    assert outputs[0].type == "result"
+
+
+@pytest.mark.parametrize("failure", ["reference", "vocode"])
+@pytest.mark.parametrize("failed_index", [0, 1, 2])
+def test_vocoder_failure_is_request_local(monkeypatch, failure, failed_index):
+    from sglang_omni.models.minicpm_o.components import code2wav
+    from sglang_omni.models.minicpm_o.stages import create_code2wav_executor
+
+    def vocode(**model_inputs):
+        if model_inputs["prompt_wav"] == b"invalid":
+            raise RuntimeError("vocode failed")
+        return {"waveform": np.zeros(24, dtype=np.float32), "sample_rate": 24000}
+
+    monkeypatch.setattr(code2wav, "MiniCPMOCode2Wav", lambda *args, **kwargs: vocode)
+    scheduler = create_code2wav_executor("model", device="cpu")
+    for request_index in range(3):
+        params = {}
+        if request_index == failed_index:
+            params["ref_audio"] = (
+                "/tmp/ref.wav" if failure == "reference" else b"invalid"
+            )
+        payload = _payload(request_id=f"req-{request_index}", params=params)
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+
+    outputs = run_scheduler(scheduler, [], output_count=3)
+    assert [output.request_id for output in outputs] == ["req-0", "req-1", "req-2"]
+    for request_index, output in enumerate(outputs):
+        if request_index == failed_index:
+            assert output.type == "error"
+            error_type = ValueError if failure == "reference" else RuntimeError
+            assert isinstance(output.data, error_type)
+        else:
+            assert output.type == "result"
+            assert output.data.data["sample_rate"] == 24000
+    assert scheduler.outbox.empty()
