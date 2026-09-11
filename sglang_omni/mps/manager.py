@@ -501,15 +501,7 @@ class MpsManager:
         return targets
 
     def probe(self, lease: MpsLease) -> str | None:
-        """Prove the exact native daemon identity is still alive.
-
-        Steady-state health must not enumerate every MPS client. Client snapshots
-        are ownership/lifecycle operations and may contend when several independent
-        serve processes share one native daemon. ``read_daemon_identity`` already
-        proves the PID is live, non-zombie, names the MPS control binary, and owns
-        this exact pipe directory. Keep full snapshots for attach, retirement, and
-        release decisions where client ownership is actually required.
-        """
+        """Check steady state daemon identity without enumerating MPS clients."""
 
         self.require_live_lease(lease)
         try:

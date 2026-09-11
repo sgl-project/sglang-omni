@@ -49,27 +49,25 @@ class SubprocessMpsControlClient:
 
     @contextmanager
     def _control_transaction(self, pipe_dir: Path):
-        """Serialize control CLI transactions for one shared MPS daemon.
-
-        Multiple independent serve processes can share one per-GPU daemon. A
-        process-local lock cannot stop their health snapshots from interleaving
-        on the same native control socket, so use one filesystem flock in the
-        shared GPU state directory. Callers that need a multi-command atomic
-        view, such as :meth:`snapshot`, hold this lock across the whole view.
-        """
+        """Serialize native control transactions for one shared MPS daemon."""
 
         lock_path = pipe_dir.parent / _CONTROL_LOCK_NAME
         try:
-            with lock_path.open("a+") as lock_file:
-                fcntl.flock(lock_file, fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file = lock_path.open("a+")
         except OSError as exc:
             raise MpsControlError(
-                f"cannot lock MPS control transaction {lock_path}: {exc}"
+                f"cannot open MPS control lock {lock_path}: {exc}"
             ) from exc
+
+        with lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise MpsControlError(
+                    f"cannot lock MPS control transaction {lock_path}: {exc}"
+                ) from exc
+
+            yield
 
     def _query_unlocked(self, pipe_dir: Path, command: str) -> str:
         try:
@@ -180,15 +178,7 @@ class SubprocessMpsControlClient:
         return clients
 
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
-        """Return one strict, serialized server/client snapshot.
-
-        A shared daemon may serve several independent pipeline owners. Keep one
-        complete snapshot under the cross-process control lock, and tolerate a
-        small number of transient read-only control failures only while the
-        daemon's native identity remains unchanged. Persistent failures or any
-        identity loss/change still fail closed. Mutating commands are never
-        retried automatically.
-        """
+        """Return one serialized server/client snapshot."""
 
         expected_daemon_pid = self.read_daemon_identity(pipe_dir)
         last_error: MpsControlError | None = None

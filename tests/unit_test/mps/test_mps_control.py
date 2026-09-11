@@ -75,8 +75,6 @@ def test_snapshot_holds_one_control_lock_across_all_queries(monkeypatch, tmp_pat
     def flock(_file, operation):
         if operation == fcntl.LOCK_EX:
             events.append("lock")
-        elif operation == fcntl.LOCK_UN:
-            events.append("unlock")
 
     def run(args, **kwargs):
         command = kwargs["input"].strip()
@@ -100,7 +98,6 @@ def test_snapshot_holds_one_control_lock_across_all_queries(monkeypatch, tmp_pat
         "get_server_list",
         "get_client_list 7000",
         "get_client_list 8000",
-        "unlock",
     ]
 
 
@@ -205,8 +202,6 @@ def test_mutating_control_query_is_serialized_without_retry(monkeypatch, tmp_pat
     def flock(_file, operation):
         if operation == fcntl.LOCK_EX:
             events.append("lock")
-        elif operation == fcntl.LOCK_UN:
-            events.append("unlock")
 
     def run(args, **kwargs):
         events.append(kwargs["input"].strip())
@@ -222,7 +217,7 @@ def test_mutating_control_query_is_serialized_without_retry(monkeypatch, tmp_pat
 
     with pytest.raises(MpsControlError, match="control failed"):
         client.quit_daemon(pipe_dir)
-    assert events == ["lock", "quit", "unlock"]
+    assert events == ["lock", "quit"]
 
 
 def test_daemon_preexec_failure_is_distinct_from_ambiguous_start(monkeypatch):
