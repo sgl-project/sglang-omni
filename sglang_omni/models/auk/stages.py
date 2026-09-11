@@ -289,17 +289,42 @@ def create_conditioning_executor(
 def sample_batch(payloads, flow, device, dtype, max_frames, sampling):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
-    items = [
-        AuKSampleItem(
-            state.conditioning.to(device),
-            state.text_mask.to(device),
-            min(max(state.gen_frames, 1), max_frames),
-            state.ref_latent.to(device) if state.ref_latent is not None else None,
-            state.seed,
-            state.ref_length,
+    elide_masks = sampling.get("elide_singleton_masks", False) and len(states) == 1
+    step_graph = sampling.get("step_graph")
+    if elide_masks and step_graph is not None:
+        state = states[0]
+        padding = step_graph.pad_lengths(
+            frames=min(max(state.gen_frames, 1), max_frames),
+            ref=state.ref_latent.shape[0] if state.ref_latent is not None else 0,
+            text=state.conditioning.shape[0],
+            batch=1,
         )
-        for state in states
-    ]
+        if padding is not None:
+            # A captured shape may add rows that still need masks.
+            elide_masks = False
+        else:
+            # Trimming can change the shape lookup. Keep this graph miss eager.
+            sampling = {**sampling, "step_graph": None}
+    items = []
+    for state in states:
+        conditioning = (
+            state.conditioning[: state.prompt_tokens]
+            if elide_masks
+            else state.conditioning
+        )
+        reference = state.ref_latent
+        if elide_masks and reference is not None:
+            reference = reference[: state.ref_length]
+        items.append(
+            AuKSampleItem(
+                conditioning=conditioning.to(device),
+                text_mask=None if elide_masks else state.text_mask.to(device),
+                target_frames=min(max(state.gen_frames, 1), max_frames),
+                ref_latent=reference.to(device) if reference is not None else None,
+                seed=state.seed,
+                ref_length=state.ref_length,
+            )
+        )
     logger.info("AuK DiT: sampling batch of %d requests", len(items))
     with autocast(device, dtype):
         latents = flow.sample_batch(items, **sampling)
@@ -321,6 +346,7 @@ def create_auk_engine_executor(
     dtype: str = "bfloat16",
     nfe: int = C.DEFAULT_NFE,
     enable_dit_fused_qk_norm_rope: bool = True,
+    enable_dit_singleton_mask_elision: bool = False,
     cfg_strength: float = C.DEFAULT_CFG_STRENGTH,
     sway_sampling_coef: float | None = C.DEFAULT_SWAY_SAMPLING_COEF,
     max_seconds: float = C.MAX_SECONDS,
@@ -372,6 +398,8 @@ def create_auk_engine_executor(
         warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
     if step_graph is not None:
         sampling["step_graph"] = step_graph
+    if enable_dit_singleton_mask_elision:
+        sampling["elide_singleton_masks"] = True
     return scheduler(
         lambda payloads: sample_batch(
             payloads,

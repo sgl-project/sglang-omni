@@ -62,7 +62,7 @@ def build_time_grid(
 @dataclass
 class AuKSampleItem:
     conditioning: torch.Tensor
-    text_mask: torch.Tensor
+    text_mask: torch.Tensor | None
     target_frames: int
     ref_latent: torch.Tensor | None = None
     seed: int | None = None
@@ -110,6 +110,7 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
         step_graph: AuKStepCudaGraphRunner | None = None,
+        elide_singleton_masks: bool = False,
     ) -> list[torch.Tensor]:
         """Integrate the velocity field for a batch of requests.
 
@@ -151,13 +152,24 @@ class AuKFlowMatching(nn.Module):
             padding if padding is not None else (None, None, None)
         )
 
+        # An all-valid singleton may omit masks only without a step graph:
+        # graph padding can add rows that must remain masked.
+        all_valid_masks = (
+            elide_singleton_masks and len(items) == 1 and step_graph is None
+        )
         ref = pack(references, ref_rows).to(weight_dtype)
         ref_mask = (
-            torch.arange(ref.shape[1], device=device)[None, :]
+            None
+            if all_valid_masks
+            else torch.arange(ref.shape[1], device=device)[None, :]
             < torch.tensor([item.ref_length for item in items], device=device)[:, None]
         )
         text = pack([item.conditioning for item in items], text_rows).to(weight_dtype)
-        text_mask = pack([item.text_mask for item in items], text_rows)
+        text_mask = (
+            None
+            if all_valid_masks
+            else pack([item.text_mask for item in items], text_rows)
+        )
         noise = []
         for item in items:
             generator = request_generator(item.seed, device)
@@ -220,6 +232,8 @@ class AuKFlowMatching(nn.Module):
             audio_positions=audio_positions,
             joint_positions=joint_positions,
         )
+        if all_valid_masks:
+            inputs["all_valid_masks"] = True
 
         def step(inputs, t, x):
             kwargs = dict(inputs, x=x.to(weight_dtype), time=t)
