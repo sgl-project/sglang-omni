@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
@@ -1205,7 +1206,7 @@ def test_param_gather_matches_old_cache():
     )
 
 
-def test_result_adapter_releases_row_when_apply_raises():
+def test_result_adapter_releases_row_after_empty_generation():
     reset_calls = []
     model = SimpleNamespace(reset_request=lambda rid: reset_calls.append(rid))
     _, result_adapter = make_moss_tts_local_scheduler_adapters(model=model)
@@ -1220,18 +1221,11 @@ def test_result_adapter_releases_row_when_apply_raises():
         temperature=0.0,
         output_ids=[],
         prompt_rows=torch.zeros((1, 13), dtype=torch.long),
-        output_rows=[
-            torch.zeros(13, dtype=torch.long),
-            torch.zeros(12, dtype=torch.long),
-        ],
+        output_rows=[],
         stage_payload=payload,
     )
 
-    try:
+    with pytest.raises(RuntimeError, match="generated no audio frames"):
         result_adapter(data)
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("expected malformed output_rows to raise")
 
     assert reset_calls == ["rid"]

@@ -146,14 +146,6 @@ def _resolve_audio_tokenizer_model_path(
     )
 
 
-def _resolve_codec_device(device: str | None, gpu_id: int | None) -> str:
-    if device:
-        return device
-    if gpu_id is not None:
-        return f"cuda:{int(gpu_id)}"
-    return "cuda:0"
-
-
 class _BatchedReferenceEncoder:
     """Coalesce concurrent Delay reference encodes into encoder batches."""
 
@@ -450,7 +442,9 @@ def create_preprocessing_executor(
             "off",
             "",
         )
-    device = _resolve_codec_device(device, gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     processor = _load_moss_processor(model_path)
     resolved_codec_model_path = _resolve_audio_tokenizer_model_path(
         processor,
@@ -493,7 +487,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     total_gpu_memory_fraction: float | None = None,
@@ -543,10 +537,10 @@ def create_vocoder_executor(
     compute_dtype: str | torch.dtype | None = "bfloat16",
     attention_backend: str = "auto",
 ) -> MossStreamingVocoderScheduler:
-    # An explicit device is a model policy/user override; gpu_id is only the
-    # placement-derived fallback. This matches preprocessing resolution and
-    # permits a CPU-vocoder escape hatch on especially constrained hardware.
-    device = _resolve_codec_device(device, gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    # note (lennox): device is the policy override; gpu_id is the placement fallback.
+    device = str(resolve_concrete_device(device, gpu_id))
     resolved_compute_dtype = _resolve_compute_dtype(compute_dtype)
     processor = _load_moss_processor(model_path)
     decoder_dtype = resolve_moss_audio_dtype(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import DeviceMixin
@@ -18,6 +18,27 @@ if TYPE_CHECKING:
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang_omni.profiler.torch_profiler import TorchProfiler
+
+
+# Note(yzxiao): Joint RoPE rotates all supplied Q/K heads in place. Same-dtype
+# Q/K have shapes [T, Hq, D] and [T, Hk, D], a contiguous last dimension,
+# and matching head strides.
+# The contiguous FP32 [P, D] cache stores cos then sin; contiguous int32/int64
+# positions [T] index its rows. All tensors share a device. Cache and positions
+# are read-only; this operation does not apply Q/K norm or write KV caches.
+# is_neox selects half-split (True) or interleaved (False) rotation. Providers
+# use the caller's stream and support graph capture after their real warmup.
+class JointRopeInplaceKernel(Protocol):
+    def __call__(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        cos_sin_cache: torch.Tensor,
+        positions: torch.Tensor,
+        *,
+        is_neox: bool,
+    ) -> None: ...
 
 
 class OmniPlatform(DeviceMixin):
@@ -47,6 +68,11 @@ class OmniPlatform(DeviceMixin):
         Separate from get_fused_qk_norm_rope: this ABI takes q and k as their own
         tensors plus a cos/sin table, not the packed QKV and rotary parameters.
         """
+        return None
+
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel | None:
+        # Note(yzxiao): None means this platform has no implementation. The
+        # model decides whether this capability is required or optional.
         return None
 
     def apply_model_worker_backend_policy(
@@ -108,3 +134,8 @@ class OmniPlatform(DeviceMixin):
         from torch.nn.attention import sdpa_kernel
 
         return sdpa_kernel(list(backends))
+
+    def get_torch_profiler(self) -> TorchProfiler:
+        from sglang_omni.profiler.torch_profiler import TorchProfiler
+
+        return TorchProfiler

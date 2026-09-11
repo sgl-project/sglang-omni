@@ -1577,6 +1577,7 @@ def test_higgs_vocoder_fails_startup_when_cuda_graph_capture_fails(
     with pytest.raises(RuntimeError, match="capture failed"):
         stages.create_vocoder_executor(
             "fake-model",
+            gpu_id=0,
             decode_cuda_graph_frame_counts=(1, 2),
         )
 

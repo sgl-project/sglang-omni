@@ -18,6 +18,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
         "sglang_omni.utils.hf",
         "try_resolve_arch_from_mistral_config",
     ),
+    "try_resolve_arch_from_nemo_config": (
+        "sglang_omni.utils.hf",
+        "try_resolve_arch_from_nemo_config",
+    ),
     "try_resolve_arch_from_raw_config": (
         "sglang_omni.utils.hf",
         "try_resolve_arch_from_raw_config",

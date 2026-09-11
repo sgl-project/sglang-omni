@@ -9,8 +9,9 @@ import threading
 import weakref
 from array import array
 from collections import deque
-from queue import Queue
+from queue import Empty, Queue
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
@@ -85,8 +86,18 @@ def _new_stage_payload(request_id: str) -> StagePayload:
     )
 
 
-def test_scheduler_idle_sleep_yields_to_pending_request_builds(monkeypatch) -> None:
+@pytest.mark.parametrize("tp_size,is_entry_rank", [(1, True), (2, True), (2, False)])
+@pytest.mark.parametrize(
+    "pending_queue", ["_pending_request_builds", "_pending_request_admissions"]
+)
+def test_scheduler_idle_sleep_yields_to_pending_request_builds(
+    monkeypatch, tp_size, is_entry_rank, pending_queue
+) -> None:
     scheduler = object.__new__(OmniScheduler)
+    scheduler.tp_size = tp_size
+    scheduler.is_entry_rank = is_entry_rank
+    scheduler.inbox = Mock()
+    scheduler.inbox.get.side_effect = Empty
     scheduler._request_admission_lock = threading.RLock()
     scheduler._pending_request_builds = {}
     scheduler._pending_request_admissions = {}
@@ -94,10 +105,23 @@ def test_scheduler_idle_sleep_yields_to_pending_request_builds(monkeypatch) -> N
     monkeypatch.setattr(omni_scheduler_module.time, "sleep", sleep_calls.append)
 
     scheduler._sleep_during_idle()
-    scheduler._pending_request_builds["req"] = object()
+    follower = tp_size > 1 and not is_entry_rank
+    if follower:
+        scheduler.inbox.get.assert_not_called()
+        assert sleep_calls == [0.001]
+    else:
+        scheduler.inbox.get.assert_called_once_with(
+            timeout=omni_scheduler_module._IDLE_WAIT_S
+        )
+        assert scheduler._idle_wait_message is None
+        assert sleep_calls == []
+
+    scheduler.inbox.get.reset_mock()
+    getattr(scheduler, pending_queue)["req"] = object()
     scheduler._sleep_during_idle()
 
-    assert sleep_calls == [0.001, 0.0001]
+    scheduler.inbox.get.assert_not_called()
+    assert sleep_calls == ([0.001, 0.0001] if follower else [0.0001])
 
 
 def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
@@ -1776,7 +1800,10 @@ def test_stream_output_closes_late_stream_ingress() -> None:
     assert req.rid not in scheduler._pending_stream_ingress
 
 
-def test_completed_request_id_is_cleared_on_explicit_readmission() -> None:
+@pytest.mark.parametrize("received_during_idle", [False, True])
+def test_completed_request_id_is_cleared_on_explicit_readmission(
+    received_during_idle: bool,
+) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.tp_size = 1
     scheduler.is_entry_rank = True
@@ -1785,19 +1812,22 @@ def test_completed_request_id_is_cleared_on_explicit_readmission() -> None:
     scheduler._completed_request_ids = {"req-complete": None}
     scheduler._pending_stream_ingress = {}
     scheduler.inbox = Queue()
-    scheduler.inbox.put(
-        IncomingMessage(
-            request_id="req-complete",
-            type="new_request",
-            data=object(),
-        )
+    message = IncomingMessage(
+        request_id="req-complete",
+        type="new_request",
+        data=object(),
     )
+    scheduler._idle_wait_message = message if received_during_idle else None
+    if not received_during_idle:
+        scheduler.inbox.put(message)
 
     new_reqs = scheduler.recv_requests()
 
-    assert len(new_reqs) == 1
+    assert new_reqs == [message.data]
     assert "req-complete" not in scheduler._completed_request_ids
     assert scheduler.outbox.empty()
+    assert scheduler._idle_wait_message is None
+    assert scheduler.recv_requests() == []
 
 
 def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
 
+from sglang_omni.models.higgs_tts.reset_kernels import reset_sampler_row
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
 from sglang_omni.platforms import current_platform
 
@@ -111,9 +112,24 @@ class HiggsBatchedSamplerState:
         self.step_count = torch.zeros(
             self.max_batch_size, dtype=torch.long, device=self.device
         )
+        # note (Dayuxiaoshui): the fused reset is JIT-compiled on first use
+        # (~0.5 s). Row 0 is already clean, so this call only moves that
+        # compile from the first request to pool construction.
+        self.reset_row(0)
 
     def reset_row(self, row: int) -> None:
         """Wipe row ``row`` so the next owner can't read stale state."""
+        if reset_sampler_row(
+            self.delay_count,
+            self.eoc_countdown,
+            self.generation_done,
+            self.last_codes,
+            self.seeds,
+            self.step_count,
+            row,
+            NO_SEED,
+        ):
+            return
         self.delay_count[row] = 0
         self.eoc_countdown[row] = -1
         self.generation_done[row] = False

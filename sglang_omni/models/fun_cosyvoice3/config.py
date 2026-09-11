@@ -11,7 +11,6 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
-from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
 
@@ -60,7 +59,6 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(
-                device=current_platform.device_type,
                 dtype="bfloat16",
                 onnx_intra_op_threads=16,
                 # Keep in sync with vocoder token_hop_len (AR flush cadence).

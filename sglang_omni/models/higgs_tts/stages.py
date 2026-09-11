@@ -390,9 +390,9 @@ def create_audio_encoder_executor(
     the TTS checkpoint itself (bundled at ``tied.embedding.modality_embeddings``).
     """
     from sglang_omni.platforms import current_platform
-    from sglang_omni.utils.device import resolve_device_spec
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = resolve_device_spec(device, gpu_id)
+    device = str(resolve_concrete_device(device, gpu_id))
     checkpoint_dir = resolve_checkpoint(model_path)
     raw = Tokenizer.from_file(os.path.join(checkpoint_dir, "tokenizer.json"))
     tokenizer = PreTrainedTokenizerFast(tokenizer_object=raw)
@@ -527,9 +527,7 @@ def create_vocoder_executor(
     Codec weights are extracted from the TTS checkpoint itself.
     """
     from sglang_omni.platforms import current_platform
-    from sglang_omni.utils.device import resolve_device_spec
 
-    device = resolve_device_spec(device, gpu_id)
     if compile_decode and decode_cuda_graph_frame_counts:
         raise ValueError(
             "compile_decode and decode_cuda_graph_frame_counts are mutually exclusive"
@@ -545,6 +543,9 @@ def create_vocoder_executor(
     # so there is deliberately no startup validation here. The default
     # tuple(range(1, 151)) in config.py covers the default 75+75 strides with
     # margin; when overriding strides, re-derive the domain empirically.
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
     if compile_decode:
