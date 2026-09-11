@@ -49,6 +49,7 @@ class AuKPipelineConfig(PipelineConfig):
                 device=current_platform.device_type,
                 dtype="bfloat16",
                 nfe=C.DEFAULT_NFE,
+                enable_dit_fused_qk_norm_rope=False,
                 cfg_strength=C.DEFAULT_CFG_STRENGTH,
                 sway_sampling_coef=C.DEFAULT_SWAY_SAMPLING_COEF,
                 max_seconds=C.MAX_SECONDS,
