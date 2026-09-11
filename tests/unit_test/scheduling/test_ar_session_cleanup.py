@@ -41,8 +41,7 @@ def test_shutdown_callback_runs_even_if_native_cleanup_fails(monkeypatch):
     assert events == ["resources"]
 
 
-def test_cancel_fences_output_before_async_drain():
-    """Low-level request abort fences late output before draining device work."""
+def test_request_abort_fences_output_before_async_drain():
     b = bridge()
     b.command(payload("open"))
     b.accept(payload("append"))
@@ -188,7 +187,6 @@ def test_regular_async_wait_failure_preserves_native_owner_and_retries(
 def test_launch_first_previous_wait_failure_retains_both_steps(
     monkeypatch, failed_step
 ):
-    """A failed device wait must retain both lookahead steps for later cleanup."""
     from tests.unit_test.pipeline.test_scheduler import _construct_omni_scheduler
 
     s = _construct_omni_scheduler(monkeypatch)
@@ -253,7 +251,6 @@ def test_launch_first_previous_wait_failure_retains_both_steps(
 
 
 def test_post_wait_collect_error_does_not_recollect_or_release_twice(monkeypatch):
-    """A cleanup callback may reenter the drain after host result collection fails."""
     from tests.unit_test.pipeline.test_scheduler import _construct_omni_scheduler
 
     s = _construct_omni_scheduler(monkeypatch)

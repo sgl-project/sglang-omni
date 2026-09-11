@@ -873,6 +873,8 @@ that happened to contain an older version of the test.
 
 ### Native AR streaming sessions
 
+A model-stage factory enables this bridge by passing its `ARSessionAdapter` as `OmniScheduler(..., session_adapter=adapter)` with `enable_streaming_session=True` in ServerArgs. No built-in model-stage factory enables it in this change. The adapter must build synchronous `SGLangARRequestData` and preserve the native history/ownership contract.
+
 CPU contracts and existing scheduler/embedding-sidecar regression checks:
 
 ```bash

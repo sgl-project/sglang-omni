@@ -1604,8 +1604,7 @@ class OmniScheduler:
         if mr_output.host_token_ids is not None:
             next_token_ids = mr_output.host_token_ids
         return GenerationBatchResult(
-            # Note (Junnan Li): Omni already collects hidden states and customized
-            # output, but native result processing still requires this container.
+            # Note (Junnan Li): Result processing expects a logits container.
             logits_output=LogitsProcessorOutput(next_token_logits=None),
             next_token_ids=next_token_ids,
             can_run_cuda_graph=mr_output.can_run_cuda_graph,
@@ -1885,7 +1884,7 @@ class OmniScheduler:
     def stop(self) -> None:
         self._running = False
         if self._session_bridge is not None and self._scheduler_thread_id is not None:
-            # Note (Junnan Li): The scheduler thread must drain GPU work before cleanup.
+            # Note (Junnan Li): Cleanup runs on the scheduler thread after it drains GPU work.
             return
         if self._session_bridge is not None:
             self._session_bridge.shutdown()
@@ -2752,8 +2751,6 @@ class OmniScheduler:
                     self._async_pending = (batch.copy(), sched_output, pending_step)
                     if prev_pending is not None:
                         if self._session_bridge is not None:
-                            # Note (Junnan Li): Keep both handles for cleanup if
-                            # waiting on either device step fails.
                             self._async_previous = prev_pending
                             self._resolve_owned_async("_async_previous")
                         else:

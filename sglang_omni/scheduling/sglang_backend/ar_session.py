@@ -89,8 +89,6 @@ class ARSessionBridge:
     def _drain(self) -> None:
         pending = self.scheduler._async_pending
         if pending is not None:
-            # Note (Junnan Li): A failed wait must leave ownership intact because
-            # the device may still be using these buffers.
             pending[2].event.synchronize()
         self.scheduler._resolve_pending_async()
 
@@ -255,7 +253,6 @@ class ARSessionBridge:
             raise ValueError("native session rejected append")
         owner.req = req
         owner.native_owned = True
-        # Note (Junnan Li): Copying the old Req would overwrite the new KV/history.
         req.logprob_start_len = old.logprob_start_len
         req._omni_prompt_cache_key = getattr(old, "_omni_prompt_cache_key", None)
         data.req = req
@@ -288,7 +285,7 @@ class ARSessionBridge:
                 r is req for r in self.scheduler.waiting_queue
             )
             if queued:
-                # Note (Junnan Li): A failed prefill admission may have restored the prior slot.
+                # Note (Junnan Li): Failed prefill admission may have restored the prior slot.
                 req.detach_kv()
                 req.session = None
             self.scheduler.abort(rid)
@@ -359,9 +356,7 @@ class ARSessionBridge:
         stages = self.metadata(owner.payload)["stages"]
         if get_active_stage() != stages[-1]:
             return
-        hook = getattr(self.adapter, "flush" if flush else "stream", None)
-        if hook is None:
-            return
+        hook = self.adapter.flush if flush else self.adapter.stream
         chunks = hook(owner.ref, data) if flush else hook(owner.ref, data, output)
         for chunk in chunks:
             if not isinstance(chunk, TimedChunk):

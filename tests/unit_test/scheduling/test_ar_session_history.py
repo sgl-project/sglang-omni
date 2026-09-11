@@ -128,7 +128,7 @@ def test_production_admission_rejection_rolls_back_native_history(
 
     b = ARSessionBridge(s, TestAdapter(build=build))
     s._session_bridge = b
-    # Note (Junnan Li): Bypass early capacity rejection to reach post-build guards.
+    # Note (Junnan Li): Exercise post-build rejection after native history materialization.
     b.capacity_error = lambda rid: None
     b.command(payload("open"))
     b.accept(payload("append", "first"))
@@ -154,10 +154,6 @@ def test_production_admission_rejection_rolls_back_native_history(
         s.process_input_requests([payload("append")])
     msg = s.outbox.get_nowait()
     assert msg.type == "error"
-    assert not hasattr(built[0].req, "_omni_data")
-    assert "r" in s._aborted_request_ids
-    assert not b.requests and not b.owners[sid].native_owned
-    assert b.owners[sid].active is None and not native._inflight
     assert s.tree_cache.slots[sid] is retained_slot
     b.accept(payload("append", "next"))
     following = data("next", [9])

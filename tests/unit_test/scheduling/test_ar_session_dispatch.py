@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
 from tests.unit_test.fixtures.ar_session import TestAdapter, bridge, data, payload
@@ -40,7 +41,7 @@ def test_output_budget_includes_flush_and_terminal_only(monkeypatch):
     assert list(b.messages("r", data(), object())) == []
     monkeypatch.setattr(module, "get_active_stage", lambda: "ar")
     assert len(list(b.messages("r", data(), object()))) == 1
-    with pytest.raises(Exception, match="queue"):
+    with pytest.raises(QueueFullError):
         list(b.messages("r", data(), flush=True))
 
 
