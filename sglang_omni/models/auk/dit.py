@@ -391,6 +391,17 @@ class AudioPromptEmbedding(nn.Module):
         x = self.linear(x)
         return self.conv_pos_embed(x, mask=mask) + x
 
+    def embed_reference(
+        self,
+        ref: torch.Tensor,
+        *,
+        drop_audio_cond: bool,
+        mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if drop_audio_cond:
+            ref = torch.zeros_like(ref)
+        return self._embed(ref, mask=mask)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -402,9 +413,9 @@ class AudioPromptEmbedding(nn.Module):
         x_emb = self._embed(x, mask=mask)
         if ref is None:
             return x_emb
-        if drop_audio_cond:
-            ref = torch.zeros_like(ref)
-        return x_emb, self._embed(ref, mask=ref_mask)
+        return x_emb, self.embed_reference(
+            ref, drop_audio_cond=drop_audio_cond, mask=ref_mask
+        )
 
 
 @dataclass
@@ -485,6 +496,8 @@ class AuKDit(nn.Module):
 
         self.text_cond: torch.Tensor | None = None
         self.text_uncond: torch.Tensor | None = None
+        self.reference_audio_cond: torch.Tensor | None = None
+        self.reference_audio_uncond: torch.Tensor | None = None
 
         self.initialize_weights()
 
@@ -504,6 +517,7 @@ class AuKDit(nn.Module):
 
     def clear_cache(self) -> None:
         self.text_cond, self.text_uncond = None, None
+        self.reference_audio_cond, self.reference_audio_uncond = None, None
 
     @property
     def dtype(self) -> torch.dtype:
@@ -513,6 +527,29 @@ class AuKDit(nn.Module):
         c = self.txt_norm(self.txt_proj(text))
         return torch.zeros_like(c) if drop_text else c
 
+    def _embed_reference_audio(
+        self,
+        ref: torch.Tensor,
+        *,
+        drop_audio_cond: bool,
+        ref_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        cached = (
+            self.reference_audio_uncond
+            if drop_audio_cond
+            else self.reference_audio_cond
+        )
+        if cached is not None:
+            return cached
+        embedded = self.audio_embed.embed_reference(
+            ref, drop_audio_cond=drop_audio_cond, mask=ref_mask
+        )
+        if drop_audio_cond:
+            self.reference_audio_uncond = embedded
+        else:
+            self.reference_audio_cond = embedded
+        return embedded
+
     def _embed_audio(
         self,
         x: torch.Tensor,
@@ -520,6 +557,7 @@ class AuKDit(nn.Module):
         drop_audio_cond: bool,
         mask: torch.Tensor | None,
         ref_mask: torch.Tensor | None,
+        cache_reference_audio_embedding: bool = False,
     ):
         if ref is not None and ref.shape[1] == 0:
             ref = None
@@ -532,13 +570,19 @@ class AuKDit(nn.Module):
                 0,
             )
 
-        x_emb, ref_emb = self.audio_embed(
-            x,
-            ref=ref,
-            drop_audio_cond=drop_audio_cond,
-            mask=mask,
-            ref_mask=ref_mask,
-        )
+        if cache_reference_audio_embedding:
+            x_emb = self.audio_embed(x, mask=mask)
+            ref_emb = self._embed_reference_audio(
+                ref, drop_audio_cond=drop_audio_cond, ref_mask=ref_mask
+            )
+        else:
+            x_emb, ref_emb = self.audio_embed(
+                x,
+                ref=ref,
+                drop_audio_cond=drop_audio_cond,
+                mask=mask,
+                ref_mask=ref_mask,
+            )
         prompt_len = ref_emb.shape[1]
         audio = torch.cat([ref_emb, x_emb], dim=1)
 
@@ -562,6 +606,7 @@ class AuKDit(nn.Module):
         drop_text: bool = False,
         cfg_infer: bool = False,
         cache: bool = False,
+        cache_reference_audio_embedding: bool = False,
         ref: torch.Tensor | None = None,
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
@@ -583,7 +628,14 @@ class AuKDit(nn.Module):
                 if cache:
                     self.text_cond = c_cond
             x_cond, a_mask_cond, prompt_len = self._embed_audio(
-                x, ref, drop_audio_cond=False, mask=mask, ref_mask=ref_mask
+                x,
+                ref,
+                drop_audio_cond=False,
+                mask=mask,
+                ref_mask=ref_mask,
+                cache_reference_audio_embedding=(
+                    cache and cache_reference_audio_embedding
+                ),
             )
 
             if cache and self.text_uncond is not None:
@@ -593,7 +645,14 @@ class AuKDit(nn.Module):
                 if cache:
                     self.text_uncond = c_uncond
             x_uncond, a_mask_uncond, _ = self._embed_audio(
-                x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
+                x,
+                ref,
+                drop_audio_cond=True,
+                mask=mask,
+                ref_mask=ref_mask,
+                cache_reference_audio_embedding=(
+                    cache and cache_reference_audio_embedding
+                ),
             )
 
             x = torch.cat((x_cond, x_uncond), dim=0)
