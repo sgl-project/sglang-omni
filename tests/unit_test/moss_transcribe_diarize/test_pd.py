@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from array import array
+from pathlib import Path
 
 import pytest
 import torch
@@ -10,7 +11,14 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.sampling.sampling_params import SamplingParams
 
+from sglang_omni.config import resolve_stage_factory_args
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.moss_transcribe_diarize.pd import request_builders
+from sglang_omni.models.moss_transcribe_diarize.pd.config import (
+    DECODE_STAGE,
+    PREFILL_STAGE,
+    MossTranscribeDiarizePDPipelineConfig,
+)
 from sglang_omni.models.moss_transcribe_diarize.pd.engine_builder import (
     MossTranscribeDiarizePDEngineBuilder,
 )
@@ -18,9 +26,14 @@ from sglang_omni.models.moss_transcribe_diarize.pd.request_builders import (
     MOSS_TD_PD_RESUME_SCHEMA,
     make_state_adapters,
 )
+from sglang_omni.models.moss_transcribe_diarize.pd.stages import (
+    create_sglang_moss_transcribe_diarize_decode_executor,
+    create_sglang_moss_transcribe_diarize_prefill_executor,
+)
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     MossTranscribeDiarizeRequestData,
 )
+from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.pd_utils import (
     DecodeContinuation,
@@ -28,6 +41,7 @@ from sglang_omni.scheduling.pd_utils import (
     continuation_from_req,
     req_from_continuation,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
 def _builder(pd_role: str) -> MossTranscribeDiarizePDEngineBuilder:
@@ -99,9 +113,68 @@ def _prefill_req() -> Req:
     return req
 
 
+def test_moss_pd_config_wires_two_explicit_engine_stages() -> None:
+    config = MossTranscribeDiarizePDPipelineConfig(model_path="moss-td")
+
+    assert config.resolved_entry_stage == PREFILL_STAGE
+    assert config.terminal_stages == [DECODE_STAGE]
+    assert config.gpu_placement == {PREFILL_STAGE: 0, DECODE_STAGE: 1}
+    assert [stage.process for stage in config.stages] == [PREFILL_STAGE, DECODE_STAGE]
+    assert config.stage_named(PREFILL_STAGE).factory_path.endswith(
+        "create_sglang_moss_transcribe_diarize_prefill_executor"
+    )
+    assert config.stage_named(DECODE_STAGE).factory_path.endswith(
+        "create_sglang_moss_transcribe_diarize_decode_executor"
+    )
+
+    for stage in config.stages:
+        args = resolve_stage_factory_args(stage, config)
+        assert "pd_role" not in args
+        assert args["gpu_id"] == stage.gpu
+        assert args["server_args_overrides"]["disable_radix_cache"] is True
+        assert args["server_args_overrides"]["page_size"] == 1
+
+
+def test_moss_pd_example_and_variant_are_discoverable() -> None:
+    config_path = Path(__file__).parents[3] / "examples/configs/moss_td_pd_h100.yaml"
+    config = ConfigManager.from_file(str(config_path)).config
+
+    assert isinstance(config, MossTranscribeDiarizePDPipelineConfig)
+    assert (
+        PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(
+            "MossTranscribeDiarizePDPipelineConfig"
+        )
+        is MossTranscribeDiarizePDPipelineConfig
+    )
+
+
+@pytest.mark.parametrize(
+    ("factory", "role"),
+    [
+        (create_sglang_moss_transcribe_diarize_prefill_executor, "prefill"),
+        (create_sglang_moss_transcribe_diarize_decode_executor, "decode"),
+    ],
+)
+def test_moss_pd_stage_factories_keep_role_out_of_config_surface(
+    monkeypatch: pytest.MonkeyPatch,
+    factory,
+    role: str,
+) -> None:
+    built: list[tuple[str, str, int | None]] = []
+
+    def build(builder, model_path, *, gpu_id=None, **_kwargs):
+        built.append((builder.pd_role, model_path, gpu_id))
+        return object()
+
+    monkeypatch.setattr(MossTranscribeDiarizePDEngineBuilder, "build", build)
+    scheduler = factory("moss-td", gpu_id=2)
+
+    assert scheduler is not None
+    assert built == [(role, "moss-td", 2)]
+
+
 def test_moss_pd_continuation_strips_audio_and_restores_result_state() -> None:
-    tokenizer = object()
-    state_builder, state_restorer = make_state_adapters(tokenizer)
+    state_builder, state_restorer = make_state_adapters()
     continuation = continuation_from_req(_prefill_req(), "moss-transfer", state_builder)
     encoded = continuation.encode()
 
@@ -131,7 +204,7 @@ def test_moss_pd_continuation_strips_audio_and_restores_result_state() -> None:
 
     assert list(rebuilt.output_ids) == [42]
     assert rebuilt.multimodal_inputs is None
-    assert rebuilt.tokenizer is tokenizer
+    assert rebuilt.tokenizer is None
     assert rebuilt._omni_data.prompt_token_ids == [10, 11, 12]
     assert rebuilt._omni_data.audio_duration_s == 3.25
     assert rebuilt._omni_data.language == "zh"
@@ -160,10 +233,11 @@ def test_moss_pd_rejects_streaming_before_building_audio(
         request=OmniRequest(inputs=b"audio", params={"stream": True}),
         data=None,
     )
-    with pytest.raises(NotImplementedError, match="requires stream=false"):
+    with pytest.raises(ValueError, match="requires stream=false"):
         guarded_builder(payload)
 
     assert calls == 0
+    assert is_bad_request_error(RuntimeError("model requires stream=false"))
 
 
 @pytest.mark.parametrize(
@@ -198,11 +272,10 @@ def test_moss_pd_builder_selects_explicit_scheduler_role(
     monkeypatch.setattr(
         request_builders,
         "make_state_adapters",
-        lambda _tokenizer: (state_builder, state_restorer),
+        lambda: (state_builder, state_restorer),
     )
 
     builder = _builder(role)
-    builder.tokenizer = object()
     scheduler = builder._make_scheduler(
         model_worker=object(),
         tree_cache=object(),

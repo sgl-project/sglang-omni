@@ -101,9 +101,7 @@ class MossTranscribeDiarizePDEngineBuilder(MossTranscribeDiarizeEngineBuilder):
         }
         scheduler_kwargs.update(self.extra_scheduler_callbacks())
         scheduler_kwargs.update(extra_scheduler_kwargs)
-        state_builder, state_restorer = request_builders.make_state_adapters(
-            self.tokenizer
-        )
+        state_builder, state_restorer = request_builders.make_state_adapters()
         if self.pd_role == "prefill":
             return OmniPrefillScheduler(
                 **scheduler_kwargs,

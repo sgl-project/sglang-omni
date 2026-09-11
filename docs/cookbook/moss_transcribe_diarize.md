@@ -115,6 +115,18 @@ sgl-omni serve \
   --mem-fraction-static 0.80
 ```
 
+For a two-H100 Prefill/Decode profile, launch the experimental split config:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/moss_td_pd_h100.yaml \
+  --port 8000
+```
+
+This profile runs audio encoding and Prefill on GPU 0, transfers the decoder KV
+to GPU 1, and completes Decode there. It currently accepts only non-streaming
+requests (`stream=false`, the transcription endpoint default).
+
 MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
 default target is 4 requests with a 12 ms oldest-request deadline. While more
 request builds are pending, the scheduler waits for either limit; after build

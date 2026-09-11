@@ -26,6 +26,7 @@ _BAD_REQUEST_MARKERS = (
     "AuK accepts at most one",
     "AuK expected a",
     "AuK references must be",
+    "requires stream=false",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(

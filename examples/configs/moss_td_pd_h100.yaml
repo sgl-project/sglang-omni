@@ -1,0 +1,4 @@
+# Experimental two-H100 profile. The PD path currently requires stream=false.
+config_cls: MossTranscribeDiarizePDPipelineConfig
+name: moss-td-pd-h100
+model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize

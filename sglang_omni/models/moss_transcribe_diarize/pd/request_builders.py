@@ -24,7 +24,7 @@ def make_scheduler_adapters(**kwargs: Any) -> tuple[Callable, Callable]:
 
     def non_streaming_request_builder(payload: StagePayload) -> Any:
         if (payload.request.params or {}).get("stream"):
-            raise NotImplementedError(
+            raise ValueError(
                 "MOSS-Transcribe-Diarize PD currently requires stream=false"
             )
         return request_builder(payload)
@@ -32,9 +32,7 @@ def make_scheduler_adapters(**kwargs: Any) -> tuple[Callable, Callable]:
     return non_streaming_request_builder, result_adapter
 
 
-def make_state_adapters(
-    tokenizer: Any,
-) -> tuple[
+def make_state_adapters() -> tuple[
     Callable[[Any], tuple[dict[str, Any], dict[str, Any], list[int]]],
     Callable[[Any, SGLangARRequestData, dict[str, Any] | None], None],
 ]:
@@ -80,7 +78,9 @@ def make_state_adapters(
         data.enforce_request_limits = bool(resume["enforce_request_limits"])
         req.multimodal_inputs = None
         req._codec_suppress_tokens = None
-        req.tokenizer = tokenizer
+        # MOSS-TD only configures token-id stops. Leaving this unset keeps
+        # SGLang out of its tokenizer/string-stop finish path.
+        req.tokenizer = None
 
     return state_builder, state_restorer
 
