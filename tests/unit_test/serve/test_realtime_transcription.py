@@ -473,6 +473,60 @@ async def test_vad_settings_reject_negative_padding_and_zero_silence(
     await session.teardown()
 
 
+class FailOnceStrategy(FakeStrategy):
+    def __init__(self) -> None:
+        self.failures_left = 1
+
+    def create_state(self, **settings: Any) -> object:
+        if self.failures_left:
+            self.failures_left -= 1
+            raise RuntimeError("onset exploded")
+        return super().create_state(**settings)
+
+
+@pytest.mark.asyncio
+async def test_failed_onset_does_not_strand_the_vad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vad = StartOnNextAppendVAD()
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: vad)
+    websocket = RecordingWebSocket()
+    session = RealtimeTranscriptionSession(
+        websocket,  # type: ignore[arg-type]
+        client=FakeClient([]),  # type: ignore[arg-type]
+        model_name="qwen3-asr",
+        transcription_config=RealtimeTranscriptionConfig(
+            strategy_cls=FakeStrategy,
+            decode_interval_ms=2000,
+            server_vad=True,
+            max_segment_s=30.0,
+        ),
+        strategy=FailOnceStrategy(),
+        session_id="sess-onset",
+    )
+
+    # First onset: the VAD flips to speech, then segment creation fails.
+    await session.dispatch(_audio_event(_pcm(0.5)))
+    assert websocket.events[-1]["type"] == "error"
+    assert session.active_segment is None
+    assert vad.reset_calls == 1  # resynced, so the VAD can report onset again
+
+    # The VAD reports the (re-detected) onset on the next packet and the
+    # utterance is transcribed normally.
+    await session.dispatch(_audio_event(_pcm(2.0)))
+    assert session.active_segment is not None
+    await session.dispatch({"type": "input_audio_buffer.commit"})
+    await session.dispatch({"type": "transcription.done"})
+    finals = [
+        event
+        for event in websocket.events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert len(finals) == 1 and finals[0]["text"]
+    assert websocket.events[-1]["type"] == "transcription.completed"
+    assert websocket.events[-1]["text"] == finals[0]["text"]
+
+
 def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
     websocket = RecordingWebSocket()
     session = RealtimeTranscriptionSession(

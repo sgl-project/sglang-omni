@@ -232,6 +232,18 @@ class RealtimeTranscriptionSession:
                 "internal_error",
                 f"Internal error while handling {event.type}.",
             )
+            self._resync_vad_after_failure()
+
+    def _resync_vad_after_failure(self) -> None:
+        # Note (Jeffro): vad.process() flips its own is_speech before the session handles the
+        # onset, if handling failed before a segment existed, the VAD would
+        # stay in speech state and never report this utterance again. Reset it
+        # so the next speech frame re-emits speech_started. With an active
+        # segment the two are still consistent and nothing needs to change.
+        if self.vad is None or self.active_segment is not None:
+            return
+        self.vad.reset()
+        self.vad_origin_samples = self.buffer_origin_samples
 
     async def send(self, event: dict[str, Any] | TranscriptionServerEvent) -> None:
         if self.closed:
