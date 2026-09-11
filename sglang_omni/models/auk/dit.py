@@ -14,6 +14,15 @@ from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 
+def _attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+    """Additive SDPA bias ``[B, 1, 1, K]`` from a boolean key-padding mask ``[B, K]``."""
+    # -inf is safe: every request has at least one valid text token and audio
+    # frame, so no softmax row is fully masked.
+    bias = torch.zeros(key_mask.shape, dtype=dtype, device=key_mask.device)
+    bias.masked_fill_(~key_mask, float("-inf"))
+    return bias[:, None, None, :]
+
+
 class SinusPositionEmbedding(nn.Module):
     """Sinusoidal embedding used for the flow-matching timestep."""
 
@@ -73,8 +82,9 @@ class TimestepEmbedding(nn.Module):
         )
 
     def forward(self, timestep: torch.Tensor) -> torch.Tensor:
-        time_hidden = self.time_embed(timestep).to(timestep.dtype)
-        return self.time_mlp(time_hidden)
+        # Sinusoid arguments reach ~1000 rad; keep them fp32, cast only for the MLP.
+        time_hidden = self.time_embed(timestep.float())
+        return self.time_mlp(time_hidden.to(self.time_mlp[0].weight.dtype))
 
 
 class AdaLayerNorm(nn.Module):
@@ -146,7 +156,6 @@ class Attention(nn.Module):
         dim_head: int = 64,
         dropout: float = 0.0,
         context_dim: int | None = None,
-        attn_mask_enabled: bool = True,
     ):
         super().__init__()
         self.dim = dim
@@ -154,7 +163,6 @@ class Attention(nn.Module):
         self.inner_dim = dim_head * heads
         self.dropout = dropout
         self.context_dim = context_dim
-        self.attn_mask_enabled = attn_mask_enabled
 
         self.to_qkv = nn.Linear(dim, 3 * self.inner_dim)
         self.q_norm = nn.RMSNorm(dim_head, elementwise_affine=True)
@@ -188,16 +196,12 @@ class Attention(nn.Module):
             apply_rotary_pos_emb(k, freqs, k_scale),
         )
 
-    def _attend(self, q, k, v, mask: torch.Tensor | None):
-        """SDPA with an optional broadcast key mask, then merge heads."""
-        batch, heads = q.shape[0], q.shape[1]
-        if self.attn_mask_enabled and mask is not None:
-            attn_mask = mask.unsqueeze(1).unsqueeze(1)
-            attn_mask = attn_mask.expand(batch, heads, q.shape[-2], k.shape[-2])
-        else:
-            attn_mask = None
+    @staticmethod
+    def _attend(q, k, v, bias: torch.Tensor | None):
+        """SDPA with an optional additive key bias ``[B, 1, 1, K]``, then merge heads."""
+        batch = q.shape[0]
         out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
+            q, k, v, attn_mask=bias, dropout_p=0.0, is_causal=False
         )
         return out.transpose(1, 2).reshape(batch, -1, q.shape[1] * q.shape[3])
 
@@ -209,9 +213,10 @@ class Attention(nn.Module):
         rope=None,
         c_rope=None,
         c_mask: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ):
         if c is None:
-            return self._forward_self(x, mask=mask, rope=rope)
+            return self._forward_self(x, mask=mask, rope=rope, bias=bias)
 
         audio_mask = mask
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
@@ -232,20 +237,11 @@ class Attention(nn.Module):
         if c_rope is not None:
             c_query, c_key = self._apply_rope(c_query, c_key, c_rope)
 
-        if self.attn_mask_enabled and mask is not None:
-            joint_mask = (
-                torch.cat([mask, c_mask], dim=1)
-                if c_mask is not None
-                else F.pad(mask, (0, c.shape[1]), value=True)
-            )
-        else:
-            joint_mask = None
-
         out = self._attend(
             torch.cat([query, c_query], dim=2),
             torch.cat([key, c_key], dim=2),
             torch.cat([value, c_value], dim=2),
-            joint_mask,
+            bias,
         ).to(query.dtype)
 
         x_out, c_out = out[:, : x.shape[1]], out[:, x.shape[1] :]
@@ -259,7 +255,11 @@ class Attention(nn.Module):
         return x_out, c_out
 
     def _forward_self(
-        self, x: torch.Tensor, mask: torch.Tensor | None, rope=None
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None,
+        rope=None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
         head_dim = key.shape[-1] // self.heads
@@ -271,7 +271,7 @@ class Attention(nn.Module):
         if rope is not None:
             query, key = self._apply_rope(query, key, rope)
 
-        out = self._attend(query, key, value, mask).to(query.dtype)
+        out = self._attend(query, key, value, bias).to(query.dtype)
         out = self.to_out[1](self.to_out[0](out))
         if mask is not None:
             out = out.masked_fill(~mask.unsqueeze(-1), 0.0)
@@ -288,17 +288,10 @@ class DiTBlock(nn.Module):
         dim_head: int,
         ff_mult: float = 4,
         dropout: float = 0.1,
-        attn_mask_enabled: bool = True,
     ):
         super().__init__()
         self.attn_norm = AdaLayerNorm(dim)
-        self.attn = Attention(
-            dim=dim,
-            heads=heads,
-            dim_head=dim_head,
-            dropout=dropout,
-            attn_mask_enabled=attn_mask_enabled,
-        )
+        self.attn = Attention(dim=dim, heads=heads, dim_head=dim_head, dropout=dropout)
         self.ff_norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
         self.ff = SwiGLUFeedForward(dim=dim, mult=ff_mult)
 
@@ -308,9 +301,12 @@ class DiTBlock(nn.Module):
         t: torch.Tensor,
         mask: torch.Tensor | None = None,
         rope=None,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
-        x = x + gate_msa.unsqueeze(1) * self.attn(x=norm, mask=mask, rope=rope)
+        x = x + gate_msa.unsqueeze(1) * self.attn(
+            x=norm, mask=mask, rope=rope, bias=bias
+        )
 
         norm = self.ff_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
         return x + gate_mlp.unsqueeze(1) * self.ff(norm)
@@ -327,7 +323,6 @@ class MMDiTBlock(nn.Module):
         ff_mult: float = 4,
         dropout: float = 0.1,
         context_dim: int | None = None,
-        attn_mask_enabled: bool = True,
     ):
         super().__init__()
         if context_dim is None:
@@ -341,7 +336,6 @@ class MMDiTBlock(nn.Module):
             dim_head=dim_head,
             dropout=dropout,
             context_dim=context_dim,
-            attn_mask_enabled=attn_mask_enabled,
         )
         self.ff_norm_c = nn.LayerNorm(context_dim, elementwise_affine=False, eps=1e-6)
         self.ff_c = SwiGLUFeedForward(dim=context_dim, mult=ff_mult)
@@ -357,6 +351,7 @@ class MMDiTBlock(nn.Module):
         rope=None,
         c_rope=None,
         c_mask: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
     ):
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
             c, emb=t
@@ -365,7 +360,13 @@ class MMDiTBlock(nn.Module):
             x, emb=t
         )
         x_attn, c_attn = self.attn(
-            x=norm_x, c=norm_c, mask=mask, rope=rope, c_rope=c_rope, c_mask=c_mask
+            x=norm_x,
+            c=norm_c,
+            mask=mask,
+            rope=rope,
+            c_rope=c_rope,
+            c_mask=c_mask,
+            bias=bias,
         )
 
         c = c + c_gate_msa.unsqueeze(1) * c_attn
@@ -449,6 +450,7 @@ class AuKDit(nn.Module):
         super().__init__()
         self.dim = dim
         self.latent_dim = latent_dim
+        self.attn_mask_enabled = attn_mask_enabled
 
         self.time_embed = TimestepEmbedding(dim)
         self.txt_norm = nn.RMSNorm(dim, elementwise_affine=True)
@@ -464,7 +466,6 @@ class AuKDit(nn.Module):
                 dim_head=dim_head,
                 dropout=dropout,
                 ff_mult=ff_mult,
-                attn_mask_enabled=attn_mask_enabled,
             )
             for _ in range(num_layers)
         )
@@ -475,7 +476,6 @@ class AuKDit(nn.Module):
                 dim_head=dim_head,
                 ff_mult=ff_mult,
                 dropout=dropout,
-                attn_mask_enabled=attn_mask_enabled,
             )
             for _ in range(num_single_layers)
         )
@@ -504,6 +504,10 @@ class AuKDit(nn.Module):
 
     def clear_cache(self) -> None:
         self.text_cond, self.text_uncond = None, None
+
+    @property
+    def dtype(self) -> torch.dtype:
+        return self.proj_out.weight.dtype
 
     def project_text(self, text: torch.Tensor, drop_text: bool = False) -> torch.Tensor:
         c = self.txt_norm(self.txt_proj(text))
@@ -619,6 +623,15 @@ class AuKDit(nn.Module):
         )
         rope_text = self.rotary_embed.forward_from_seq_len(text_len)
 
+        joint_bias = single_bias = single_mask = None
+        if audio_mask is not None:
+            single_mask = torch.cat([c_mask, audio_mask], dim=1)
+            if self.attn_mask_enabled:
+                joint_bias = _attention_bias(
+                    torch.cat([audio_mask, c_mask], dim=1), x.dtype
+                )
+                single_bias = _attention_bias(single_mask, x.dtype)
+
         for block in self.transformer_blocks:
             c, x = block(
                 x,
@@ -628,6 +641,7 @@ class AuKDit(nn.Module):
                 rope=rope_audio,
                 c_rope=rope_text,
                 c_mask=c_mask,
+                bias=joint_bias,
             )
 
         x = torch.cat([c, x], dim=1)
@@ -636,11 +650,8 @@ class AuKDit(nn.Module):
             if joint_positions is None
             else self.rotary_embed(joint_positions)
         )
-        single_mask = (
-            torch.cat([c_mask, audio_mask], dim=1) if audio_mask is not None else None
-        )
         for block in self.single_transformer_blocks:
-            x = block(x, t, mask=single_mask, rope=rope)
+            x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
 
         x = x[:, text_len + prompt_len :]
         return self.proj_out(self.norm_out(x, t))

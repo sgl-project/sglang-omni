@@ -224,35 +224,34 @@ The recommended TP1 configuration was evaluated on **1× H200 141 GB** with conc
 
 Streaming:
 
-| Slice | Lang | Samples | Failed | Corpus WER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
+| Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.95% | 0.2323 | 1.090 | 0.4601 | 7.325 | 34.423 |
-| text-only | ZH | 2020 | 0 | 0.68% | 0.2305 | 1.154 | 0.4649 | 6.925 | 34.715 |
-| reference | EN | 1088 | 0 | 1.00% | 0.2732 | 1.224 | 0.5948 | 6.526 | 29.586 |
-| reference | ZH | 2020 | 0 | 0.75% | 0.2425 | 1.388 | 0.5502 | 5.757 | 33.006 |
+| text-only | EN | 1088 | 0 | 0.92% | 0.2023 | 0.955 | 0.4036 | 8.354 | 39.471 |
+| text-only | ZH | 2020 | 0 | 0.67% | 0.2002 | 1.001 | 0.4040 | 7.985 | 39.991 |
+| reference | EN | 1088 | 0 | 1.13% | 0.2369 | 1.053 | 0.5297 | 7.576 | 34.168 |
+| reference | ZH | 2020 | 0 | 0.65% | 0.1997 | 1.146 | 0.4823 | 6.968 | 40.089 |
 
 Non-streaming:
 
-| Slice | Lang | Samples | Failed | Corpus WER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
+| Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.93% | 0.2162 | 1.019 | 7.838 | 37.071 |
-| text-only | ZH | 2020 | 0 | 0.70% | 0.2096 | 1.048 | 7.625 | 38.224 |
-| reference | EN | 1088 | 0 | 1.15% | 0.2380 | 1.061 | 7.523 | 33.989 |
-| reference | ZH | 2020 | 0 | 0.76% | 0.2009 | 1.148 | 6.963 | 39.871 |
+| text-only | EN | 1088 | 0 | 0.90% | 0.1824 | 0.859 | 9.284 | 44.000 |
+| text-only | ZH | 2020 | 0 | 0.71% | 0.1737 | 0.864 | 9.244 | 46.169 |
+| reference | EN | 1088 | 0 | 1.21% | 0.2045 | 0.907 | 8.802 | 39.709 |
+| reference | ZH | 2020 | 0 | 0.64% | 0.1657 | 0.948 | 8.425 | 48.396 |
 
-All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.46-0.59 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.15%.
+All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.40-0.53 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.21%, and the worst corpus CER was 0.71%.
 
 Streaming playback continuity:
 
 | Slice | Lang | Scored | N/A | Underrun P95 (s) | Underrun P99 (s) | C50 | C100 | C200 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
+| text-only | EN | 1087 | 1 | 0.0000 | 0.0000 | 99.91% | 99.91% | 100.00% |
 | text-only | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
-| reference | EN | 1073 | 15 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
+| reference | EN | 1072 | 16 | 0.0000 | 0.0000 | 99.81% | 99.91% | 100.00% |
 | reference | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 
-`N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score.
-All 11,587 later seams had zero measured playback underrun.
+`N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.
 
 ## Known Limitations
 
