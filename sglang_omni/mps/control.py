@@ -6,6 +6,8 @@ from __future__ import annotations
 import fcntl
 import os
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from sglang_omni.mps.manager import (
@@ -17,6 +19,8 @@ from sglang_omni.mps.manager import (
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
 _QUERY_TIMEOUT_SECONDS = 10
+_SNAPSHOT_RETRY_DELAYS_SECONDS = (0.05, 0.15)
+_CONTROL_LOCK_NAME = ".control.lock"
 
 
 def stat_says_alive(stat_text: str) -> bool:
@@ -43,7 +47,31 @@ class SubprocessMpsControlClient:
         env["CUDA_MPS_PIPE_DIRECTORY"] = str(pipe_dir)
         return env
 
-    def query(self, pipe_dir: Path, command: str) -> str:
+    @contextmanager
+    def _control_transaction(self, pipe_dir: Path):
+        """Serialize control CLI transactions for one shared MPS daemon.
+
+        Multiple independent serve processes can share one per-GPU daemon. A
+        process-local lock cannot stop their health snapshots from interleaving
+        on the same native control socket, so use one filesystem flock in the
+        shared GPU state directory. Callers that need a multi-command atomic
+        view, such as :meth:`snapshot`, hold this lock across the whole view.
+        """
+
+        lock_path = pipe_dir.parent / _CONTROL_LOCK_NAME
+        try:
+            with lock_path.open("a+") as lock_file:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+        except OSError as exc:
+            raise MpsControlError(
+                f"cannot lock MPS control transaction {lock_path}: {exc}"
+            ) from exc
+
+    def _query_unlocked(self, pipe_dir: Path, command: str) -> str:
         try:
             result = subprocess.run(
                 [_CONTROL_BINARY],
@@ -65,6 +93,12 @@ class SubprocessMpsControlClient:
         else:
             pass
         return result.stdout
+
+    def query(self, pipe_dir: Path, command: str) -> str:
+        """Run one serialized control transaction without automatic retries."""
+
+        with self._control_transaction(pipe_dir):
+            return self._query_unlocked(pipe_dir, command)
 
     def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None:
         env = self.control_env(pipe_dir)
@@ -131,19 +165,63 @@ class SubprocessMpsControlClient:
             pass
         return pid
 
-    def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
-        """Return one strict server/client snapshot from the selected daemon."""
-
+    def _snapshot_unlocked(self, pipe_dir: Path) -> set[MpsClientRef]:
         servers = parse_pid_list(
-            self.query(pipe_dir, "get_server_list"), "get_server_list"
+            self._query_unlocked(pipe_dir, "get_server_list"), "get_server_list"
         )
         clients: set[MpsClientRef] = set()
         for server_pid in servers:
             command = f"get_client_list {server_pid}"
-            client_pids = parse_pid_list(self.query(pipe_dir, command), command)
+            client_pids = parse_pid_list(
+                self._query_unlocked(pipe_dir, command), command
+            )
             for client_pid in client_pids:
                 clients.add(MpsClientRef(server_pid, client_pid))
         return clients
+
+    def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
+        """Return one strict, serialized server/client snapshot.
+
+        A shared daemon may serve several independent pipeline owners. Keep one
+        complete snapshot under the cross-process control lock, and tolerate a
+        small number of transient read-only control failures only while the
+        daemon's native identity remains unchanged. Persistent failures or any
+        identity loss/change still fail closed. Mutating commands are never
+        retried automatically.
+        """
+
+        expected_daemon_pid = self.read_daemon_identity(pipe_dir)
+        last_error: MpsControlError | None = None
+        attempts = len(_SNAPSHOT_RETRY_DELAYS_SECONDS) + 1
+
+        for attempt in range(attempts):
+            try:
+                with self._control_transaction(pipe_dir):
+                    clients = self._snapshot_unlocked(pipe_dir)
+            except MpsControlError as exc:
+                last_error = exc
+            else:
+                current_daemon_pid = self.read_daemon_identity(pipe_dir)
+                if current_daemon_pid != expected_daemon_pid:
+                    raise MpsControlError(
+                        "MPS daemon identity changed during control snapshot "
+                        f"from {expected_daemon_pid} to {current_daemon_pid}"
+                    )
+                return clients
+
+            current_daemon_pid = self.read_daemon_identity(pipe_dir)
+            if current_daemon_pid != expected_daemon_pid:
+                raise MpsControlError(
+                    "MPS daemon identity changed during control snapshot "
+                    f"from {expected_daemon_pid} to {current_daemon_pid}"
+                ) from last_error
+            if attempt < len(_SNAPSHOT_RETRY_DELAYS_SECONDS):
+                time.sleep(_SNAPSHOT_RETRY_DELAYS_SECONDS[attempt])
+
+        assert last_error is not None
+        raise MpsControlError(
+            f"MPS control snapshot failed after {attempts} attempts: {last_error}"
+        ) from last_error
 
     def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None:
         command = f"terminate_client {client.server_pid} {client.client_pid}"
