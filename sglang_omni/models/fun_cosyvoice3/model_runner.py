@@ -101,7 +101,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
         """Leave repetition-penalty ownership to SGLang's forward snapshot.
 
-        ``SGLangExecutionBridge`` copies ``SamplingBatchInfo`` with the
+        SGLangExecutionBridge copies SamplingBatchInfo with the
         accumulated scaling penalties before this runner samples. Applying the
         host-side incremental helper as well would penalize each token twice.
         """
@@ -136,10 +136,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         installed_seeds = sampling_info.sampling_seed
         rng_context = nullcontext()
         if installed_seeds is not None:
-            # SGLang's seeded PyTorch sampler converts filtered probabilities
-            # to float64, which MPS cannot represent. Keep the same top-k,
-            # top-p, temperature, stop, and repetition processing, but drive
-            # MPS multinomial from a stable per-request/per-step RNG seed.
+            # Note (yexiaodong): MPS cannot represent the sampler's float64
+            # probabilities, so preserve filtering while sampling from a
+            # stable per-request/per-step RNG seed.
             sampling_params = requests[0].data.req.sampling_params
             row_seed = (
                 int(sampling_params.sampling_seed)
@@ -163,10 +162,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             with rng_context:
                 if installed_seeds is not None:
                     torch.manual_seed(step_seed)
-                # SGLang decorates its repetition-penalty helper with
-                # torch.compile independently of enable_torch_compile.
-                # Scope the public eager stance to sampling so an opt-in
-                # compile in another pipeline stage remains unaffected.
+                # Note (yexiaodong): Scope eager mode to sampling because
+                # SGLang compiles the repetition helper independently.
                 with torch.compiler.set_stance("force_eager"):
                     next_token_ids = self.tp_worker.model_runner.sample(
                         logits_output,
@@ -216,9 +213,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             self._cosyvoice3_recent_tokens
             and request_id not in self._cosyvoice3_recent_tokens
         ):
-            # Torch/MPS is intentionally single-request. Clearing here also
-            # handles an abort, whose scheduler path does not call the normal
-            # ``on_request_finished`` hook before the next request arrives.
+            # Note (yexiaodong): MPS sampling is single-request; clear state
+            # here because aborts can bypass the normal finish hook.
             self._cosyvoice3_recent_tokens.clear()
         recent = self._cosyvoice3_recent_tokens.setdefault(request_id, [])
         token_ids = next_token_ids.reshape(-1)
@@ -250,10 +246,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                     fallback is not None
                     and logits_output.next_token_logprobs is not None
                 ):
-                    # The pinned PyTorch sampler exposes temperature-scaled
-                    # full probabilities through ``next_token_logits`` after
-                    # sampling. Keep rollout logprobs aligned with the redraw
-                    # rather than reporting the rejected primary token.
+                    # Note (yexiaodong): Update rollout logprobs after redraw
+                    # so they describe the emitted token, not the rejected one.
                     fallback_logprobs = torch.log(
                         probs.clamp_min(torch.finfo(probs.dtype).tiny)
                     )
@@ -418,9 +412,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
     """MLX scheduler bridge that records generated speech-code tokens.
 
-    ``MlxSchedulerModelRunner`` finalizes lazy launches directly through its
-    shared ``_finalize`` path, so the Torch runner's phase hooks are not used.
-    ``post_process_outputs`` is the common point for both sync and lookahead
+    MlxSchedulerModelRunner finalizes lazy launches directly through its
+    shared _finalize path, so the Torch runner's phase hooks are not used.
+    post_process_outputs is the common point for both sync and lookahead
     MLX execution and runs after the worker has materialized the sampled ids.
     """
 

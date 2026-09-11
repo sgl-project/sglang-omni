@@ -2,8 +2,8 @@
 """Native-MLX speech-token model used by Fun-CosyVoice3.
 
 This module owns the Qwen2 speech-token LLM. Native MLX Flow/HiFT components
-live in the sibling ``vocoder`` package, keeping the stage boundary at an
-integer token list without importing an external ``mlx-audio`` package.
+live in the sibling vocoder package, keeping the stage boundary at an integer
+token list without importing an external mlx-audio package.
 """
 
 from __future__ import annotations
@@ -30,10 +30,8 @@ _MLX_QUANTIZATION_PRESETS: dict[str, tuple[int, int]] = {
 
 def _qwen2_args(config: dict[str, Any]) -> ModelArgs:
     """Build the fixed 0.5B Qwen2 shape used by Fun-CosyVoice3."""
-    # The converted MLX checkpoint carries CosyVoice's flow/HiFT config, not
-    # the nested ``CosyVoice-BlankEN`` Qwen2 config.  Keep the architecture
-    # explicit and validate any supplied values so a mismatched checkpoint
-    # fails at load time instead of producing corrupted speech tokens.
+    # Note (yexiaodong): The converted artifact has Flow/HiFT config at its
+    # root, so validate the nested Qwen2 architecture before loading weights.
     expected = {
         "hidden_size": 896,
         "intermediate_size": 4864,
@@ -67,8 +65,6 @@ def _qwen2_args(config: dict[str, Any]) -> ModelArgs:
 
 def _strip_qwen2_prefix(name: str) -> str:
     name = name.removeprefix("qwen2.")
-    # Converted checkpoints have either ``qwen2.model.layers.*`` (the
-    # mlx-lm wrapper layout) or ``qwen2.layers.*`` (the inner model layout).
     return name.removeprefix("model.")
 
 
@@ -106,7 +102,7 @@ class CosyVoice3MlxModel(nn.Module):
         text_token_ids: list[int],
         prompt_speech_token_ids: list[int],
     ) -> mx.array:
-        """Construct ``[SOS, text, TASK, prompt speech]`` embeddings."""
+        """Construct [SOS, text, TASK, prompt speech] embeddings."""
         text_ids = mx.array([text_token_ids], dtype=mx.int32)
         pieces = [
             self.speech_embedding.weight[SPEECH_TOKEN_SIZE + 0][None, None, :],
@@ -124,14 +120,11 @@ class CosyVoice3MlxModel(nn.Module):
             input_embeddings=embeddings,
             cache=cache,
         )
-        # Prefill only needs the distribution after the final prompt token.
-        # Avoid projecting every text/reference position through the 6,761-way
-        # speech head.
+        # Note (yexiaodong): Prefill only needs the final prompt distribution;
+        # projecting every position through the speech head is unnecessary.
         return self.llm_decoder(hidden[:, -1:, :])
 
     def __call__(self, input_ids: mx.array, cache=None) -> mx.array:
-        # Decode ids are speech-code ids (including the extended stop range),
-        # not Qwen text-token ids.
         embeddings = self.speech_embedding(input_ids)
         return self.forward_embeddings(embeddings, cache=cache)
 
@@ -212,7 +205,7 @@ def _quantize_loaded_backbone(
 def _to_mlx_float(tensor: Any, dtype: mx.Dtype) -> mx.array:
     import numpy as np
 
-    # ``bfloat16`` tensors cannot be converted to NumPy directly.
+    # Note (yexiaodong): NumPy has no bfloat16 representation for this export.
     import torch
 
     if isinstance(tensor, torch.Tensor):
@@ -225,7 +218,7 @@ def _load_raw_backbone(
     *,
     dtype: mx.Dtype,
 ) -> tuple[ModelArgs, Qwen2Model, mx.array, mx.array]:
-    """Convert the fine-tuned Qwen2 trunk and custom heads from ``llm.pt``."""
+    """Convert the fine-tuned Qwen2 trunk and custom heads from llm.pt."""
     import torch
 
     nested_dir = checkpoint_root / "CosyVoice-BlankEN"
@@ -283,9 +276,8 @@ def load_cosyvoice3_mlx_model(
             "llm.llm_decoder.weight",
             "llm_decoder.weight",
         )
-        # Converted artifacts can include Flow/HiFT/CAMPPlus tensors that this
-        # LLM process never uses. Drop those references before an optional
-        # on-load quantization creates its packed Qwen weights.
+        # Note (yexiaodong): The LLM process must not quantize unrelated
+        # Flow/HiFT/CAMPPlus tensors bundled in the same converted artifact.
         del all_weights
         if quantization is not None and not isinstance(
             config.get("quantization"), dict

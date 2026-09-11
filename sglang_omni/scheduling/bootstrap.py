@@ -49,7 +49,7 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
     if use_mlx():
-        # note (yexiaodong): The MLX stub has no Torch graph lifecycle because
+        # Note (yexiaodong): The MLX stub has no Torch graph lifecycle because
         # native MLX lazy evaluation owns graph execution.
         return
     if not model_worker.enable_prefill_input_embeds:

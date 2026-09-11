@@ -24,13 +24,12 @@ class MlxSchedulerModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         import mlx.core as mx
 
-        # note (yexiaodong): The scheduler still owns every pending handle;
+        # Note (yexiaodong): The scheduler still owns every pending handle;
         # this reference is only the lazy decode root used to build its successor.
         self._last_mlx_pending: _MlxSchedulerPendingStep | None = None
         self._resolve_skip_rids: set[str] = set()
-        # Stage construction and scheduler execution use different Python
-        # threads. MLX 0.32 streams are thread-local, so a normal Stream made
-        # during construction cannot drive async_eval on the scheduler thread.
+        # Note (yexiaodong): MLX 0.32 streams are thread-local, so the
+        # scheduler thread needs its own stream for async evaluation.
         self._mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
 
     def _mlx_stream_context(self):
@@ -46,7 +45,7 @@ class MlxSchedulerModelRunner(ModelRunner):
             previous_ids = [req.rid for req in previous.reqs]
             current_ids = [req.rid for req in batch.reqs]
             if previous.launch.mode != "decode" or previous_ids != current_ids:
-                # note (yexiaodong): Returning false makes Omni resolve the
+                # Note (yexiaodong): Returning false makes Omni resolve the
                 # in-flight step before it runs a changed batch synchronously.
                 return False
         return super().lookahead_eligible(batch)
@@ -55,7 +54,7 @@ class MlxSchedulerModelRunner(ModelRunner):
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
-        # note (yexiaodong): SGLang's MLX worker consumes ScheduleBatch
+        # Note (yexiaodong): SGLang's MLX worker consumes ScheduleBatch
         # directly. Its bookkeeping stub intentionally has no Torch attention
         # backend state from which ForwardBatch could be constructed.
         return None, schedule_batch, bool(schedule_batch.forward_mode.is_extend())
@@ -93,7 +92,7 @@ class MlxSchedulerModelRunner(ModelRunner):
         if not schedule_batch.forward_mode.is_decode():
             raise RuntimeError("MLX lookahead launch requires a decode batch")
 
-        # note (yexiaodong): A batch may carry deferred CPU prefill inputs or a
+        # Note (yexiaodong): A batch may carry deferred CPU prefill inputs or a
         # preceding decode token instead of input_ids, so MLX must resolve the
         # same FutureMap contract as SGLang's scheduler.
         if self._execution_bridge is not None:
@@ -112,7 +111,7 @@ class MlxSchedulerModelRunner(ModelRunner):
                 previous_ids = [req.rid for req in previous.reqs]
                 current_ids = [req.rid for req in reqs]
                 if previous.launch.mode != "decode" or previous_ids != current_ids:
-                    # note (yexiaodong): The scheduler still owns the previous
+                    # Note (yexiaodong): The scheduler still owns the previous
                     # pending step. Keep this reference until resolve so both sides
                     # retain the same lazy cache root.
                     raise RuntimeError(
@@ -146,7 +145,7 @@ class MlxSchedulerModelRunner(ModelRunner):
                     pending.reqs,
                 )
         except Exception:
-            # note (yexiaodong): A predecessor failure invalidates any chained
+            # Note (yexiaodong): A predecessor failure invalidates any chained
             # successor that shares its lazily updated cache objects.
             self._last_mlx_pending = None
             raise
@@ -158,7 +157,7 @@ class MlxSchedulerModelRunner(ModelRunner):
             self._execution_bridge is not None
             and batch_result.next_token_ids is not None
         ):
-            # note (yexiaodong): The custom MLX worker owns forward execution,
+            # Note (yexiaodong): The custom MLX worker owns forward execution,
             # so publish its sampled token for a later batch that breaks a chain.
             self._execution_bridge.publish_next_tokens(
                 pending.schedule_batch,
@@ -232,9 +231,8 @@ def create_mlx_model_worker(
         def _init_model_runner(self):
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
             if model_arch == "FunCosyVoice3SGLangModel":
-                # CosyVoice's generated vocabulary is the 6,761-codec-token
-                # space, not the nested Qwen2 text vocabulary. Set it before
-                # the bookkeeping stub allocates sampling metadata.
+                # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
+                # 6,761-codec-token vocabulary rather than Qwen2 text tokens.
                 self.model_config.vocab_size = 6561 + 200
             runner_class = make_runner_class()
             mlx_model_path = (

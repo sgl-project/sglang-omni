@@ -134,14 +134,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             return {}
         vocoder_factory = self.stage_named("vocoder").factory
         if vocoder_factory.mlx_model_path is not None:
-            # A distinct vocoder repository must not inherit the engine
-            # repository's revision. Both explicit vocoder fields travel
-            # through typed config instead.
+            # Note (yexiaodong): A separate vocoder artifact must keep its own
+            # revision; both explicit fields therefore stay in typed config.
             return {}
-        # One converted artifact contains the speech-token LLM, Flow, and
-        # HiFT weights. Reuse the engine's artifact by default so the common
-        # MLX launch only needs one model override; an explicit vocoder factory
-        # value still wins through the normal typed-config precedence.
+        # Note (yexiaodong): The converted artifact contains the speech-token
+        # LLM, Flow, and HiFT weights, so reuse it unless the vocoder overrides it.
         engine_factory = self.stage_named("tts_engine").factory
         kwargs: dict[str, Any] = {}
         if engine_factory.mlx_model_path is not None:

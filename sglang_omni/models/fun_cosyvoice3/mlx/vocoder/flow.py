@@ -43,10 +43,9 @@ class PreLookaheadLayer(nn.Module):
         self.conv2 = nn.Conv1d(channels, in_channels, kernel_size=3)
 
     def __call__(self, inputs: mx.array) -> mx.array:
-        # inputs: (B, T, C) channels-last (MLX conv convention)
         outputs = mx.pad(inputs, [(0, 0), (0, self.pre_lookahead_len), (0, 0)])
         outputs = nn.leaky_relu(self.conv1(outputs))
-        outputs = mx.pad(outputs, [(0, 0), (2, 0), (0, 0)])  # conv2 kernel=3 causal
+        outputs = mx.pad(outputs, [(0, 0), (2, 0), (0, 0)])
         outputs = self.conv2(outputs)
         return outputs + inputs
 
@@ -107,13 +106,11 @@ class CausalMaskedDiffWithDiT(nn.Module):
         if token.shape[0] != 1:
             raise ValueError("CosyVoice3 flow inference supports batch size 1 only")
 
-        # xvec projection
         embedding = embedding / (
             mx.linalg.norm(embedding, axis=1, keepdims=True) + 1e-8
         )
         embedding = self.spk_embed_affine_layer(embedding)
 
-        # concat prompt + target tokens, embed, mask
         token = mx.concatenate([prompt_token, token], axis=1)
         token_len = prompt_token_len + token_len
         mask = mx.logical_not(make_pad_mask(token_len, token.shape[1]))
@@ -121,14 +118,12 @@ class CausalMaskedDiffWithDiT(nn.Module):
         token = mx.clip(token, 0, self.input_embedding.weight.shape[0] - 1)
         token = self.input_embedding(token) * mask
 
-        # pre-lookahead + repeat-interleave upsample (x token_mel_ratio)
         h = self.pre_lookahead_layer(token)
         h = mx.repeat(h, self.token_mel_ratio, axis=1)
 
         mel_len1 = prompt_feat.shape[1]
         mel_len2 = h.shape[1] - prompt_feat.shape[1]
 
-        # conditions: prompt mel on the prompt region, zeros on the target region
         conds = mx.concatenate(
             [
                 prompt_feat,
@@ -136,11 +131,11 @@ class CausalMaskedDiffWithDiT(nn.Module):
             ],
             axis=1,
         )
-        conds = mx.transpose(conds, (0, 2, 1))  # (B, mel, T)
+        conds = mx.transpose(conds, (0, 2, 1))
 
         total_len = mel_len1 + mel_len2
         dmask = mx.logical_not(make_pad_mask(mx.array([total_len]), total_len))
-        dmask = mx.expand_dims(dmask.astype(h.dtype), 1)  # (B, 1, T)
+        dmask = mx.expand_dims(dmask.astype(h.dtype), 1)
 
         feat = self.decoder(
             mu=mx.transpose(h, (0, 2, 1)),  # (B, mel, T)

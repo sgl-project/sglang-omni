@@ -349,9 +349,6 @@ def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
     )
     waveform = np.array([[0.1, -0.2]], dtype=np.float32)
 
-    # ``store_result`` is the native MLX adapter's production entry point;
-    # constructing it without __init__ keeps this serialization regression
-    # independent of an installed MLX model artifact.
     mlx_vocoder = object.__new__(stages._CosyVoice3MlxVocoderAdapter)
     stored = mlx_vocoder.store_result(_payload(state), state, waveform, 24000)
     result = Client._default_result_builder(stored.request_id, stored.data)

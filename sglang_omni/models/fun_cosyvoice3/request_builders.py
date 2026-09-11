@@ -75,15 +75,14 @@ _COSYVOICE3_PREPARED_MARKER = "_cosyvoice3_prepared_request"
 
 
 class _CosyVoice3NullTokenizer:
-    """Tokenizer shim so SGLang's ``min_new_tokens`` stop-suppression
+    """Tokenizer shim so SGLang's min_new_tokens stop-suppression
     penalizer can run without a real HF tokenizer attached to the request.
 
     CosyVoice3 speech tokens are sampled directly from the codec vocabulary
-    (``TOTAL_VOCAB_SIZE``) and are never decoded to text for this request, so
+    (TOTAL_VOCAB_SIZE) and are never decoded to text for this request, so
     the only contract this object needs to satisfy is the attribute access
-    performed by ``SamplingParams.normalize``/``verify`` and
-    ``BatchedMinNewTokensPenalizer`` (``eos_token_id``,
-    ``additional_stop_token_ids``).
+    performed by SamplingParams.normalize/verify and
+    BatchedMinNewTokensPenalizer (eos_token_id, additional_stop_token_ids).
 
     eos_token_id is the real EOS_ID rather than None: BatchedMinNewTokensPenalizer
     unions it into the stop-id set it suppresses until min_new_tokens is
@@ -121,8 +120,8 @@ def _cosyvoice3_reference_input_key(source: Any) -> str | None:
             try:
                 data = _decode_audio_data_uri(source)
             except ValueError:
-                # Invalid data URIs must still fail in ``encode_one``. Returning
-                # no key prevents an invalid request from poisoning the cache.
+                # Note (yexiaodong): Let encode_one reject invalid data URIs;
+                # a missing key prevents an invalid request from poisoning cache.
                 return None
             if data is None:
                 return None
@@ -201,9 +200,8 @@ class CosyVoice3PreparedRequest:
     # upstream generation-length contract is defined in terms of this count,
     # not the full prompt length.
     target_text_token_count: int = 0
-    # MLX builds the prompt embeddings inside its native runner. Keeping the
-    # token ids here avoids loading a duplicate Torch Qwen2 model merely for
-    # preprocessing.
+    # Note (yexiaodong): MLX builds prompt embeddings natively, so retaining
+    # token ids avoids loading a duplicate Torch Qwen2 model.
     text_token_ids: list[int] = field(default_factory=list)
     llm_prompt_speech_token_ids: list[int] = field(default_factory=list)
 
@@ -681,10 +679,8 @@ def _prepare_cosyvoice3_request(
         int(token_id) for token_id in llm_prompt_speech_token[0].tolist()
     ]
     if use_mlx:
-        # The MLX runner consumes these metadata fields and constructs the
-        # actual [SOS, text, TASK, prompt-speech] embeddings. The scheduler
-        # only needs a length-matched placeholder sequence because radix cache
-        # is disabled for this audio stage.
+        # Note (yexiaodong): MLX constructs the actual prompt embeddings; the
+        # scheduler needs only a length-matched placeholder with radix cache off.
         prompt_length = 2 + len(text_token_ids) + len(llm_prompt_speech_token_ids)
         input_ids_list = [0] * prompt_length
         prompt_input_embeds = None
@@ -696,7 +692,6 @@ def _prepare_cosyvoice3_request(
         with torch.no_grad():
             text_embed = model.text_embed_tokens(text_token.to(device=device))
 
-        # build llm prompt embeddings: [sos, text_embed, task, prompt_speech]
         prompt_input_embeds = build_llm_prompt_embeddings(
             text_token=text_token.to(device=device),
             text_embed=text_embed,
@@ -866,8 +861,7 @@ def apply_sglang_cosyvoice3_result(
     state.prompt_tokens = (
         int(data.input_ids.numel()) if data.input_ids is not None else 0
     )
-    # Report the scheduler's actual AR work, including silent tokens removed
-    # only from the downstream vocoder input.
+    # Note (yexiaodong): Report AR work before downstream silent-token removal.
     state.completion_tokens = len(data.output_codes)
     state.engine_time_s = time.perf_counter() - data.engine_start_s
     state.sample_rate = _SAMPLE_RATE

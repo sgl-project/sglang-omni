@@ -16,12 +16,6 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 
-# ---------------------------------------------------------------------------
-# Rotary position embedding
-# ---------------------------------------------------------------------------
-# Applies interleaved rotary frequencies to the flattened q/k representation.
-# The first dim_head channels are rotated before q/k are split into heads.
-
 
 class RotaryEmbedding:
     """Interleaved rotary embedding with a cached cosine/sine table."""
@@ -38,8 +32,8 @@ class RotaryEmbedding:
             self.theta ** (mx.arange(0, self.dim, 2).astype(mx.float32) / self.dim)
         )
         t = mx.arange(seq_len).astype(mx.float32)
-        freqs = mx.outer(t, inv_freq)  # (N, dim/2)
-        freqs = mx.repeat(freqs, 2, axis=-1)  # interleave: (N, dim)
+        freqs = mx.outer(t, inv_freq)
+        freqs = mx.repeat(freqs, 2, axis=-1)
         self._cos = mx.cos(freqs)
         self._sin = mx.sin(freqs)
         mx.eval(self._cos, self._sin)
@@ -66,17 +60,10 @@ def apply_rotary_pos_emb(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
     x_rot, x_pass = x[..., :rot_dim], x[..., rot_dim:]
     cos = cos[None]
     sin = sin[None]
-    # MLX promotes the multiply/add to the table dtype while preserving the
-    # model's fp16 result. Avoiding explicit fp32 casts keeps the rotary path
-    # on the fused Metal kernels; the converted CosyVoice3 artifact produces
-    # the same mel values as the casted path.
+    # Note (yexiaodong): Preserve the table dtype to keep this path on fused
+    # Metal kernels instead of adding explicit fp32 casts.
     x_rot = (x_rot * cos + _rotate_half(x_rot) * sin).astype(x.dtype)
     return mx.concatenate([x_rot, x_pass], axis=-1)
-
-
-# ---------------------------------------------------------------------------
-# Time / conv-position / text-conv building blocks
-# ---------------------------------------------------------------------------
 
 
 class SinusPositionEmbedding(nn.Module):
@@ -111,12 +98,10 @@ class CausalConvPositionEmbedding(nn.Module):
         super().__init__()
         assert kernel_size % 2 != 0
         self.kernel_size = kernel_size
-        # nn.Conv1d in MLX expects (B, L, C_in) and weight (C_out, k, C_in/groups)
         self.conv1 = nn.Conv1d(dim, dim, kernel_size, groups=groups)
         self.conv2 = nn.Conv1d(dim, dim, kernel_size, groups=groups)
 
     def __call__(self, x: mx.array, mask: Optional[mx.array] = None) -> mx.array:
-        # x: (B, N, D)  (channels-last, matches MLX conv)
         if mask is not None:
             x = mx.where(mask[..., None], x, 0.0)
         x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
@@ -157,20 +142,14 @@ class ConvNeXtV2Block(nn.Module):
         self.pwconv2 = nn.Linear(intermediate_dim, dim)
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: (B, N, D) channels-last
         residual = x
-        x = self.dwconv(x)  # MLX conv is channels-last already
+        x = self.dwconv(x)
         x = self.norm(x)
         x = self.pwconv1(x)
         x = nn.gelu(x)
         x = self.grn(x)
         x = self.pwconv2(x)
         return residual + x
-
-
-# ---------------------------------------------------------------------------
-# AdaLayerNorm (zero) modules
-# ---------------------------------------------------------------------------
 
 
 def _layer_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
@@ -185,7 +164,7 @@ class AdaLayerNormZero(nn.Module):
         self.linear = nn.Linear(dim, dim * 6)
 
     def __call__(self, x: mx.array, emb: mx.array):
-        emb = self.linear(nn.silu(emb))  # (B, dim*6)
+        emb = self.linear(nn.silu(emb))
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mx.split(
             emb, 6, axis=-1
         )
@@ -204,11 +183,6 @@ class AdaLayerNormZeroFinal(nn.Module):
         return _layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
 
 
-# ---------------------------------------------------------------------------
-# Attention + FeedForward + DiTBlock
-# ---------------------------------------------------------------------------
-
-
 class Attention(nn.Module):
     """Self-attention with rotary position embeddings."""
 
@@ -225,11 +199,10 @@ class Attention(nn.Module):
         B, N, _ = x.shape
         head_dim = self.inner_dim // self.heads
 
-        q = self.to_q(x)  # (B, N, inner_dim), flat (heads not split yet)
+        q = self.to_q(x)
         k = self.to_k(x)
         v = self.to_v(x)
 
-        # Apply rotary frequencies before splitting into attention heads.
         if rope is not None:
             cos, sin = rope
             q = apply_rotary_pos_emb(q, cos, sin)
@@ -242,7 +215,6 @@ class Attention(nn.Module):
         scale = 1.0 / math.sqrt(head_dim)
         additive_mask = None
         if mask is not None:
-            # mask: (B, 1, N, N) or (B, N, N) boolean -> broadcast over heads
             if mask.ndim == 3:
                 mask = mask[:, None]
             additive_mask = mx.where(
@@ -291,11 +263,6 @@ class DiTBlock(nn.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
-# Input embedding (mel x + prompt cond + mu + spk) -> hidden
-# ---------------------------------------------------------------------------
-
-
 class InputEmbedding(nn.Module):
     def __init__(self, mel_dim: int, mu_dim: int, out_dim: int, spk_dim: int = 0):
         super().__init__()
@@ -306,7 +273,6 @@ class InputEmbedding(nn.Module):
     def __call__(
         self, x: mx.array, cond: mx.array, mu: mx.array, spks: Optional[mx.array]
     ) -> mx.array:
-        # all inputs channels-last: (B, N, D)
         to_cat = [x, cond, mu]
         if self.spk_dim > 0 and spks is not None:
             spks = mx.broadcast_to(
@@ -316,11 +282,6 @@ class InputEmbedding(nn.Module):
         x = self.proj(mx.concatenate(to_cat, axis=-1))
         x = self.conv_pos_embed(x) + x
         return x
-
-
-# ---------------------------------------------------------------------------
-# DiT
-# ---------------------------------------------------------------------------
 
 
 class DiT(nn.Module):
@@ -371,24 +332,23 @@ class DiT(nn.Module):
         spks: Optional[mx.array] = None,
         cond: Optional[mx.array] = None,
     ) -> mx.array:
-        # channels-first -> channels-last
-        x = mx.transpose(x, (0, 2, 1))  # (B, N, mel)
-        mu = mx.transpose(mu, (0, 2, 1))  # (B, N, mu)
-        cond = mx.transpose(cond, (0, 2, 1))  # (B, N, mel)
+        x = mx.transpose(x, (0, 2, 1))
+        mu = mx.transpose(mu, (0, 2, 1))
+        cond = mx.transpose(cond, (0, 2, 1))
 
         B, N = x.shape[0], x.shape[1]
         if t.ndim == 0:
             t = mx.broadcast_to(t, (B,))
 
-        t = self.time_embed(t)  # (B, dim)
-        x = self.input_embed(x, cond, mu, spks)  # (B, N, dim)
+        t = self.time_embed(t)
+        x = self.input_embed(x, cond, mu, spks)
 
         rope = self.rotary_embed.forward_from_seq_len(N)
 
         residual = x if self.long_skip_connection is not None else None
 
-        # Flow constructs an exact-length batch-one tensor, so every position
-        # is valid. Passing no mask selects MLX's fastest fused SDPA path.
+        # Note (yexiaodong): Exact-length batch-one inputs can use fused SDPA
+        # without a mask, avoiding unnecessary attention-mask materialization.
         attn_mask = None
 
         for block in self.transformer_blocks:
@@ -398,5 +358,5 @@ class DiT(nn.Module):
             x = self.long_skip_connection(mx.concatenate([x, residual], axis=-1))
 
         x = self.norm_out(x, t)
-        out = self.proj_out(x)  # (B, N, mel)
-        return mx.transpose(out, (0, 2, 1))  # (B, mel, N)
+        out = self.proj_out(x)
+        return mx.transpose(out, (0, 2, 1))

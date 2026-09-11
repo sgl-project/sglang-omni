@@ -488,7 +488,6 @@ def test_mlx_preprocessing_uses_token_metadata_without_torch_model(
 
     assert prepared is not None
     assert prepared.prompt_input_embeds is None
-    # [SOS] + [prompt text: 3] + [target text: 2] + [TASK] + [speech: 2].
     assert prepared.input_ids_list == [0] * 9
     assert prepared.input_ids.tolist() == [0] * 9
     assert prepared.text_token_ids == [3, 4, 5, 1, 2]

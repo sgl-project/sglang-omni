@@ -79,9 +79,8 @@ class _MpsHiFTAdapter:
         self._hift = hift
         self._device = torch.device(device)
         self._f0_predictor = hift.f0_predictor
-        # MPS rejects a device transfer that also requests float64. Move the
-        # module to CPU first, then preserve upstream's double-precision F0
-        # calculation there.
+        # Note (yexiaodong): MPS rejects float64 transfers; keep the F0 branch
+        # on CPU while the remaining vocoder runs on MPS.
         self._f0_predictor.to(device="cpu")
         self._f0_predictor.to(dtype=torch.float64)
 
@@ -1478,7 +1477,7 @@ class _FunCosyVoice3MlxStreamingVocoderScheduler(
     The converted MLX Flow/HiFT artifact is currently a non-causal decoder.
     This scheduler preserves Omni's stream_chunk/stream_done contract and
     emits one final waveform instead of silently dropping chunks in
-    ``SimpleScheduler``. Incremental MLX Flow/HiFT decoding can replace the
+    SimpleScheduler. Incremental MLX Flow/HiFT decoding can replace the
     accumulated-token decode later without changing the stage contract.
     """
 
@@ -1703,9 +1702,8 @@ def create_vocoder_executor(
         torch.device(device).type == "mps"
         and not current_platform.is_float64_supported()
     ):
-        # Keep the declarative CUDA default (bf16) unchanged while avoiding
-        # an autocast scope around the MPS Flow/HiFT path. The MPS adapter also
-        # keeps HiFT's required float64 F0 predictor on CPU.
+        # Note (yexiaodong): MPS cannot run the CUDA bf16 autocast path, and
+        # HiFT's float64 F0 predictor remains on CPU.
         compute_dtype = None
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
