@@ -110,15 +110,20 @@ class HiggsTTSModel(nn.Module):
         config: HiggsMultimodalQwen3Config,
         quant_config=None,
         prefix: str = "",
+        backbone: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.config = config
 
         text_config = config.get_text_config()
-        self.backbone = Qwen3ForCausalLM(
-            text_config,
-            quant_config=quant_config,
-            prefix=prefix + "backbone" if prefix else "backbone",
+        self.backbone = (
+            backbone
+            if backbone is not None
+            else Qwen3ForCausalLM(
+                text_config,
+                quant_config=quant_config,
+                prefix=prefix + "backbone" if prefix else "backbone",
+            )
         )
 
         enc_cfg = config.audio_encoder_config or {}
