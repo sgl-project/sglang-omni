@@ -114,6 +114,19 @@ and AuK-Flash use the native path. The first request may include Triton JIT
 compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
 weights under BF16 autocast and with native BF16 weights.
 
+For mixed-duration traffic, DiT batches can optionally sort by target duration
+and split once. Every cut in that order is scored with a linear proxy for
+padded target, reference, and text work. For example, require at least 20%
+estimated savings:
+
+```bash
+python -m sglang_omni.cli serve --model-path tencent/AuK \
+  --auk_engine.factory.min_batch_work_savings 0.2
+```
+
+The option is disabled by default. A split creates at most two DiT calls and
+preserves request result order.
+
 ## SeedTTS Evaluation
 
 The standard benchmark detects `tencent/AuK` and `tencent/AuK-Flash` and starts the server from `--model-path`. It defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:
