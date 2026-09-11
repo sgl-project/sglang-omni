@@ -60,6 +60,7 @@ def _init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler._backlogged_request_build_payloads = deque()
     scheduler._request_build_max_pending_observed = 0
     scheduler._async_pending = None
+    scheduler._immediately_cleaned_pending_rids = set()
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
     if not hasattr(scheduler, "max_queued_requests"):
@@ -163,6 +164,61 @@ def test_remove_from_batch_compacts_every_scheduler_row(
     _assert_row_aligned_batch(batch, expected_pool_indices)
 
 
+@pytest.mark.parametrize(
+    "token_storage", ["input_ids", "prefill_input_ids_cpu", "both"]
+)
+def test_remove_from_extend_batch_compacts_request_and_token_rows(
+    token_storage,
+) -> None:
+    from sglang.srt.model_executor.forward_batch_info import ForwardMode
+
+    batch = _make_row_aligned_schedule_batch(size=3)
+    batch.forward_mode = ForwardMode.EXTEND
+    batch.extend_lens = [2, 3, 1]
+    batch.extend_num_tokens = 6
+    batch.prefix_lens = [10, 20, 30]
+    batch.extend_logprob_start_lens = [1, 1, 0]
+    batch.input_ids = (
+        torch.arange(6) if token_storage in ("input_ids", "both") else None
+    )
+    batch.prefill_input_ids_cpu = (
+        torch.arange(6) if token_storage in ("prefill_input_ids_cpu", "both") else None
+    )
+    batch.out_cache_loc = torch.arange(100, 106)
+    batch.return_logprob = True
+    batch.top_logprobs_nums = [1, 2, 3]
+    batch.token_ids_logprobs = [[10], [20], [30]]
+    batch.extend_input_logprob_token_ids = torch.arange(200, 204)
+    for req in batch.reqs:
+        req.return_logprob = True
+    batch.decoding_reqs = [batch.reqs[1], batch.reqs[2]]
+    removed_req = batch.reqs[1]
+
+    omni_scheduler_module._remove_from_batch(batch, "req-1")
+
+    assert [req.rid for req in batch.reqs] == ["req-0", "req-2"]
+    assert removed_req._omni_data is None
+    assert batch.req_pool_indices.tolist() == [10, 12]
+    assert batch.req_pool_indices_cpu.tolist() == [10, 12]
+    assert batch.seq_lens.tolist() == [110, 112]
+    assert batch.sampling_info.values.tolist() == [10, 12]
+    for field in ("input_ids", "prefill_input_ids_cpu"):
+        value = getattr(batch, field)
+        if token_storage in (field, "both"):
+            assert value.tolist() == [0, 1, 5]
+        else:
+            assert value is None
+    assert batch.out_cache_loc.tolist() == [100, 101, 105]
+    assert batch.extend_lens == [2, 1]
+    assert batch.extend_num_tokens == 3
+    assert batch.prefix_lens == [10, 30]
+    assert batch.extend_logprob_start_lens == [1, 0]
+    assert batch.extend_input_logprob_token_ids.tolist() == [200, 203]
+    assert batch.top_logprobs_nums == [1, 3]
+    assert batch.token_ids_logprobs == [[10], [30]]
+    assert batch.decoding_reqs == [batch.reqs[1]]
+
+
 def test_remove_from_batch_compacts_sequential_removals() -> None:
     batch = _make_row_aligned_schedule_batch()
 
@@ -206,6 +262,7 @@ def _make_row_removal_abort_scheduler(batch):
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
     scheduler._async_pending = None
+    scheduler._immediately_cleaned_pending_rids = set()
     scheduler.inbox = Queue()
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
@@ -246,6 +303,21 @@ def test_async_abort_preserves_snapshot_until_resolve(
     sched_output, pending_step = object(), object()
     scheduler._async_pending = (snapshot, sched_output, pending_step)
     captured = {}
+    release_calls = []
+    scheduler.tree_cache = object()
+    scheduler._release_immediate_request_resources = (
+        OmniScheduler._release_immediate_request_resources.__get__(scheduler)
+    )
+    for index, req in enumerate(reqs):
+        req.kv = ReqKvInfo(req_pool_idx=index)
+
+    def release(req, cache):
+        assert cache is scheduler.tree_cache
+        assert req.kv.holds_kv
+        release_calls.append(req.rid)
+        req.kv.req_pool_idx = None
+
+    monkeypatch.setattr(omni_scheduler_module, "release_kv_cache", release)
 
     def fail_snapshot_filter(*args, **kwargs):
         pytest.fail("async snapshots must not use ScheduleBatch.filter_batch")
@@ -263,6 +335,10 @@ def test_async_abort_preserves_snapshot_until_resolve(
     def process(resolved_batch, result):
         captured["reqs"] = list(resolved_batch.reqs)
         captured["tokens"] = result.next_token_ids.tolist()
+        for req in resolved_batch.reqs:
+            if req.to_finish is not None:
+                assert req.to_finish.to_json()["type"] == "abort"
+                scheduler._release_request_kv_cache(req)
 
     scheduler._run_batch_resolve = resolve
     scheduler.process_batch_result = process
@@ -274,11 +350,21 @@ def test_async_abort_preserves_snapshot_until_resolve(
         assert len(snapshot.reqs) == size
         assert all(actual is expected for actual, expected in zip(snapshot.reqs, reqs))
 
+    aborted_rids = [reqs[i].rid for i in aborted_indices]
+    dropped = set() if defer_running_cleanup else set(aborted_rids)
+    assert release_calls == ([] if defer_running_cleanup else aborted_rids)
+    assert scheduler._immediately_cleaned_pending_rids == dropped
+    for index in aborted_indices:
+        assert reqs[index].kv.holds_kv == defer_running_cleanup
+
     scheduler._resolve_pending_async()
 
     assert scheduler._async_pending is None
-    assert captured["skip_rids"] == {reqs[i].rid for i in aborted_indices}
-    keep = [i for i in range(size) if i not in aborted_indices]
+    assert scheduler._immediately_cleaned_pending_rids == set()
+    assert captured["skip_rids"] == dropped
+    assert release_calls == aborted_rids
+    assert all(not reqs[i].kv.holds_kv for i in aborted_indices)
+    keep = [i for i in range(size) if reqs[i].rid not in dropped]
     assert snapshot.reqs == [reqs[i] for i in keep]
     if keep:
         assert captured["reqs"] == [reqs[i] for i in keep]
@@ -1109,7 +1195,7 @@ def test_omni_scheduler_resolve_drops_retracted_req() -> None:
         captured["ntids"] = result.next_token_ids.tolist()
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler._aborted_request_ids = set()
+    scheduler._immediately_cleaned_pending_rids = set()
     scheduler._run_batch_resolve = fake_resolve
     scheduler.process_batch_result = fake_process
 

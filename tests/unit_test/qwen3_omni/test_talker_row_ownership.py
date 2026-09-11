@@ -266,7 +266,7 @@ class _FakeReq:
 def _resolve_scheduler(result: SimpleNamespace) -> tuple[OmniScheduler, list]:
     scheduler = object.__new__(OmniScheduler)
     captured: list = []
-    scheduler._aborted_request_ids = set()
+    scheduler._immediately_cleaned_pending_rids = set()
     scheduler._run_batch_resolve = (
         lambda batch, sched_output, pending_step, skip_rids=(): result
     )

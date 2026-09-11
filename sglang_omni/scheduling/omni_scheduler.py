@@ -372,6 +372,7 @@ class OmniScheduler:
         # decode batch, or None. Tracked here (not just a loop local) so abort
         # can reach the in-flight step. See _event_loop_async_decode.
         self._async_pending = None
+        self._immediately_cleaned_pending_rids: set[str] = set()
         self.forward_ct = 0
         self.return_health_check_ct = 0
         self.num_retracted_reqs = 0
@@ -1868,6 +1869,11 @@ class OmniScheduler:
         self._prefill_end_done.discard(request_id)
         if not running_abort:
             self._release_immediate_request_resources(request_id)
+            pending_batch = self._async_pending_batch()
+            if pending_batch is not None and any(
+                req.rid == request_id for req in pending_batch.reqs
+            ):
+                self._immediately_cleaned_pending_rids.add(request_id)
             _remove_from_batch(self.running_batch, request_id)
             _remove_from_batch(self.cur_batch, request_id)
             _remove_from_batch(self.last_batch, request_id)
@@ -2408,12 +2414,17 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        # Note (Akazaakane): Keep in-flight snapshot rows intact until resolve
-        # so aborted requests and their token rows are dropped together.
+        # Note (Akazaakane): Deferred aborts must reach result processing to
+        # release KV; only immediately cleaned pending rows skip that cleanup.
         pre_finished = [
-            r.finished() or r.is_retracted or r.rid in self._aborted_request_ids
+            r.finished()
+            or r.is_retracted
+            or r.rid in self._immediately_cleaned_pending_rids
             for r in batch.reqs
         ]
+        self._immediately_cleaned_pending_rids.difference_update(
+            r.rid for r in batch.reqs
+        )
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids
@@ -2466,77 +2477,7 @@ class OmniScheduler:
         if not any(drop):
             return batch
         keep = [i for i, d in enumerate(drop) if not d]
-        out_cache_loc = batch.out_cache_loc
-        forward_mode = batch.forward_mode
-        if forward_mode is not None and forward_mode.is_extend():
-            if batch.mix_running_indices is not None:
-                raise RuntimeError(
-                    "Omni does not support stale-row filtering for SGLang mixed "
-                    "chunked-prefill batches"
-                )
-            # Note:(Wenyao Gao) extend/mixed batches carry per-token fields
-            # (req i owns extend_lens[i] slots) that filter_batch leaves
-            # stale; reslice them here. The asserted fields are never
-            # populated on omni extend batches; trip instead of misslicing.
-            assert (
-                batch.input_embeds is None and batch.replace_embeds is None
-            ), "unhandled per-token field on drop-stale extend batch"
-            lens = batch.extend_lens
-            starts = [0] * len(lens)
-            for i in range(1, len(lens)):
-                starts[i] = starts[i - 1] + lens[i - 1]
-            keep_tokens = [
-                t for i in keep for t in range(starts[i], starts[i] + lens[i])
-            ]
-            input_ids = batch.input_ids
-            prefill_input_ids_cpu = batch.prefill_input_ids_cpu
-            if input_ids is None and prefill_input_ids_cpu is None:
-                raise RuntimeError(
-                    "extend batch carries neither input_ids nor "
-                    "prefill_input_ids_cpu"
-                )
-            prefix_lens = batch.prefix_lens
-            extend_logprob_start_lens = batch.extend_logprob_start_lens
-            lp_token_ids = batch.extend_input_logprob_token_ids
-            batch.filter_batch(keep_indices=keep)
-            if input_ids is not None:
-                batch.input_ids = input_ids[keep_tokens]
-            else:
-                batch.prefill_input_ids_cpu = prefill_input_ids_cpu[keep_tokens]
-            if out_cache_loc is not None:
-                batch.out_cache_loc = out_cache_loc[keep_tokens]
-            batch.extend_lens = [lens[i] for i in keep]
-            batch.extend_num_tokens = sum(batch.extend_lens)
-            batch.prefix_lens = [prefix_lens[i] for i in keep]
-            batch.extend_logprob_start_lens = [
-                extend_logprob_start_lens[i] for i in keep
-            ]
-            if lp_token_ids is not None:
-                # Note:(Wenyao Gao) every req contributes a segment of
-                # lens[i] - start_lens[i] ids; not aligned with the token
-                # slices above.
-                if not batch.return_logprob:
-                    batch.extend_input_logprob_token_ids = None
-                else:
-                    lp_lens = [
-                        lens[i] - extend_logprob_start_lens[i] for i in range(len(lens))
-                    ]
-                    lp_starts = [0] * len(lp_lens)
-                    for i in range(1, len(lp_lens)):
-                        lp_starts[i] = lp_starts[i - 1] + lp_lens[i - 1]
-                    keep_lp_tokens = [
-                        t
-                        for i in keep
-                        for t in range(lp_starts[i], lp_starts[i] + lp_lens[i])
-                    ]
-                    batch.extend_input_logprob_token_ids = lp_token_ids[keep_lp_tokens]
-        else:
-            batch.filter_batch(keep_indices=keep)
-            if out_cache_loc is not None:
-                batch.out_cache_loc = out_cache_loc[keep]
-        if batch.decoding_reqs:
-            kept_ids = {id(r) for r in batch.reqs}
-            batch.decoding_reqs = [r for r in batch.decoding_reqs if id(r) in kept_ids]
+        _filter_schedule_batch_rows(batch, keep)
         return batch if batch.reqs else None
 
     def _event_loop_async_decode(self) -> None:
@@ -2717,6 +2658,79 @@ class OmniScheduler:
         self._stream_done_handler(req_data)
 
 
+def _filter_schedule_batch_rows(batch: ScheduleBatch, keep_indices: list[int]) -> None:
+    out_cache_loc = batch.out_cache_loc
+    forward_mode = batch.forward_mode
+    if forward_mode is not None and forward_mode.is_extend():
+        if batch.mix_running_indices is not None:
+            raise RuntimeError(
+                "Omni does not support stale-row filtering for SGLang mixed "
+                "chunked-prefill batches"
+            )
+        # Note:(Wenyao Gao) extend/mixed batches carry per-token fields
+        # (req i owns extend_lens[i] slots) that filter_batch leaves
+        # stale; reslice them here. The asserted fields are never
+        # populated on omni extend batches; trip instead of misslicing.
+        assert (
+            batch.input_embeds is None and batch.replace_embeds is None
+        ), "unhandled per-token field on drop-stale extend batch"
+        lens = batch.extend_lens
+        starts = [0] * len(lens)
+        for i in range(1, len(lens)):
+            starts[i] = starts[i - 1] + lens[i - 1]
+        keep_tokens = [
+            t for i in keep_indices for t in range(starts[i], starts[i] + lens[i])
+        ]
+        input_ids = batch.input_ids
+        prefill_input_ids_cpu = batch.prefill_input_ids_cpu
+        if input_ids is None and prefill_input_ids_cpu is None:
+            raise RuntimeError(
+                "extend batch carries neither input_ids nor prefill_input_ids_cpu"
+            )
+        prefix_lens = batch.prefix_lens
+        extend_logprob_start_lens = batch.extend_logprob_start_lens
+        lp_token_ids = batch.extend_input_logprob_token_ids
+        batch.filter_batch(keep_indices=keep_indices)
+        if input_ids is not None:
+            batch.input_ids = input_ids[keep_tokens]
+        if prefill_input_ids_cpu is not None:
+            batch.prefill_input_ids_cpu = prefill_input_ids_cpu[keep_tokens]
+        if out_cache_loc is not None:
+            batch.out_cache_loc = out_cache_loc[keep_tokens]
+        batch.extend_lens = [lens[i] for i in keep_indices]
+        batch.extend_num_tokens = sum(batch.extend_lens)
+        batch.prefix_lens = [prefix_lens[i] for i in keep_indices]
+        batch.extend_logprob_start_lens = [
+            extend_logprob_start_lens[i] for i in keep_indices
+        ]
+        if lp_token_ids is not None:
+            # Note:(Wenyao Gao) every req contributes a segment of
+            # lens[i] - start_lens[i] ids; not aligned with the token
+            # slices above.
+            if not batch.return_logprob:
+                batch.extend_input_logprob_token_ids = None
+            else:
+                lp_lens = [
+                    lens[i] - extend_logprob_start_lens[i] for i in range(len(lens))
+                ]
+                lp_starts = [0] * len(lp_lens)
+                for i in range(1, len(lp_lens)):
+                    lp_starts[i] = lp_starts[i - 1] + lp_lens[i - 1]
+                keep_lp_tokens = [
+                    t
+                    for i in keep_indices
+                    for t in range(lp_starts[i], lp_starts[i] + lp_lens[i])
+                ]
+                batch.extend_input_logprob_token_ids = lp_token_ids[keep_lp_tokens]
+    else:
+        batch.filter_batch(keep_indices=keep_indices)
+        if out_cache_loc is not None:
+            batch.out_cache_loc = out_cache_loc[keep_indices]
+    if batch.decoding_reqs:
+        kept_ids = {id(r) for r in batch.reqs}
+        batch.decoding_reqs = [r for r in batch.decoding_reqs if id(r) in kept_ids]
+
+
 def _remove_from_batch(batch: ScheduleBatch | None, request_id: str) -> None:
     if batch is None:
         return
@@ -2733,12 +2747,13 @@ def _remove_from_batch(batch: ScheduleBatch | None, request_id: str) -> None:
     for index in remove_indices:
         _detach_request_data(batch.reqs[index])
 
-    # Note (Akazaakane): ScheduleBatch.filter_batch preserves alignment across
-    # per-request state; mutating reqs alone corrupts downstream relay indices.
-    batch.filter_batch(keep_indices=keep_indices)
-    if not batch.reqs:
+    # Note (Akazaakane): Extend batches need token-range slicing as well as
+    # request-row filtering to preserve downstream relay and KV ownership.
+    if not keep_indices:
+        batch.filter_batch(keep_indices=keep_indices)
         batch.batch_is_full = False
         return
+    _filter_schedule_batch_rows(batch, keep_indices)
     _validate_schedule_batch_row_alignment(batch)
 
 
