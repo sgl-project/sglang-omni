@@ -6,7 +6,6 @@ from __future__ import annotations
 import fcntl
 import os
 import subprocess
-import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -21,7 +20,6 @@ from sglang_omni.mps.manager import (
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
 _SERVER_BINARY = "nvidia-cuda-mps-server"
 _QUERY_TIMEOUT_SECONDS = 10
-_SNAPSHOT_RETRY_DELAYS_SECONDS = (0.05, 0.15)
 _CONTROL_LOCK_NAME = ".control.lock"
 
 
@@ -150,7 +148,7 @@ class SubprocessMpsControlClient:
             return _parse_proc_stat(Path(f"/proc/{pid}/stat").read_text())
         except FileNotFoundError as exc:
             raise MpsControlError(f"process pid {pid} does not exist") from exc
-        except (OSError, IndexError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             raise MpsControlError(f"cannot inspect process pid {pid}: {exc}") from exc
 
     def _read_process_identity(
@@ -171,8 +169,6 @@ class SubprocessMpsControlClient:
             raise MpsControlError(
                 f"cannot inspect {expected_binary} pid {pid}: {exc}"
             ) from exc
-        except MpsControlError:
-            raise
         if final_state == "Z":
             raise MpsControlError(
                 f"process pid {pid} became a zombie during inspection"
@@ -205,11 +201,6 @@ class SubprocessMpsControlClient:
             _CONTROL_BINARY,
         )
 
-    def read_daemon_identity(self, pipe_dir: Path) -> int:
-        """Return the PID of the verified native control daemon."""
-
-        return self.read_daemon_process_identity(pipe_dir).pid
-
     def read_server_process_identity(
         self,
         pipe_dir: Path,
@@ -236,40 +227,18 @@ class SubprocessMpsControlClient:
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
         """Return one identity-stable, serialized server/client snapshot."""
 
-        expected_daemon_identity = self.read_daemon_process_identity(pipe_dir)
-        last_error: MpsControlError | None = None
-        attempts = len(_SNAPSHOT_RETRY_DELAYS_SECONDS) + 1
-
-        for attempt in range(attempts):
-            try:
-                with self._control_transaction(pipe_dir):
-                    clients = self._snapshot_unlocked(pipe_dir)
-            except MpsControlError as exc:
-                last_error = exc
-            else:
-                last_error = None
-
-            current_daemon_identity = self.read_daemon_process_identity(pipe_dir)
-            if current_daemon_identity != expected_daemon_identity:
-                identity_error = MpsControlError(
-                    "MPS daemon identity changed during control snapshot "
-                    f"from pid {expected_daemon_identity.pid} "
-                    f"starttime {expected_daemon_identity.starttime} to pid "
-                    f"{current_daemon_identity.pid} "
-                    f"starttime {current_daemon_identity.starttime}"
-                )
-                if last_error is not None:
-                    raise identity_error from last_error
-                raise identity_error
-            if last_error is None:
-                return clients
-            if attempt < len(_SNAPSHOT_RETRY_DELAYS_SECONDS):
-                time.sleep(_SNAPSHOT_RETRY_DELAYS_SECONDS[attempt])
-
-        assert last_error is not None
-        raise MpsControlError(
-            f"MPS control snapshot failed after {attempts} attempts: {last_error}"
-        ) from last_error
+        expected_identity = self.read_daemon_process_identity(pipe_dir)
+        with self._control_transaction(pipe_dir):
+            clients = self._snapshot_unlocked(pipe_dir)
+        current_identity = self.read_daemon_process_identity(pipe_dir)
+        if current_identity != expected_identity:
+            raise MpsControlError(
+                "MPS daemon identity changed during control snapshot "
+                f"from pid {expected_identity.pid} "
+                f"starttime {expected_identity.starttime} to pid "
+                f"{current_identity.pid} starttime {current_identity.starttime}"
+            )
+        return clients
 
     def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None:
         command = f"terminate_client {client.server_pid} {client.client_pid}"

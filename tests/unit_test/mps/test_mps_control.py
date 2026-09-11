@@ -34,7 +34,6 @@ def test_snapshot_parses_driver_output_and_retains_server_client_pairs(
         "read_daemon_process_identity",
         lambda _pipe: MpsProcessIdentity(123, 1),
     )
-    monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
     responses = {
         "get_server_list\n": "7000  8000\n",
         "get_client_list 7000\n": "101\n102\n",
@@ -107,51 +106,7 @@ def test_snapshot_holds_one_control_lock_across_all_queries(monkeypatch, tmp_pat
     ]
 
 
-def test_snapshot_retries_transient_query_failure_while_identity_is_stable(
-    monkeypatch, tmp_path
-):
-    pipe_dir = tmp_path / "pipe"
-    pipe_dir.mkdir()
-    client = control.SubprocessMpsControlClient()
-    monkeypatch.setattr(
-        client,
-        "read_daemon_process_identity",
-        lambda _pipe: MpsProcessIdentity(123, 1),
-    )
-    monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
-    calls: list[str] = []
-    first_server_query = True
-
-    def run(args, **kwargs):
-        nonlocal first_server_query
-        command = kwargs["input"]
-        calls.append(command.strip())
-        if command == "get_server_list\n" and first_server_query:
-            first_server_query = False
-            return subprocess.CompletedProcess(
-                args,
-                returncode=1,
-                stdout="",
-                stderr="Cannot send command to MPS control daemon process",
-            )
-        responses = {
-            "get_server_list\n": "7000\n",
-            "get_client_list 7000\n": "101\n",
-        }
-        return subprocess.CompletedProcess(
-            args,
-            returncode=0,
-            stdout=responses[command],
-            stderr="",
-        )
-
-    monkeypatch.setattr(control.subprocess, "run", run)
-
-    assert client.snapshot(pipe_dir) == {MpsClientRef(7000, 101)}
-    assert calls == ["get_server_list", "get_server_list", "get_client_list 7000"]
-
-
-def test_snapshot_aborts_retry_when_daemon_identity_changes(monkeypatch, tmp_path):
+def test_snapshot_rejects_daemon_identity_change(monkeypatch, tmp_path):
     pipe_dir = tmp_path / "pipe"
     pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
@@ -166,24 +121,19 @@ def test_snapshot_aborts_retry_when_daemon_identity_changes(monkeypatch, tmp_pat
         "read_daemon_process_identity",
         lambda _pipe: next(identities),
     )
-    calls = 0
 
     def run(args, **kwargs):
-        nonlocal calls
-        del kwargs
-        calls += 1
         return subprocess.CompletedProcess(
             args,
-            returncode=1,
-            stdout="",
-            stderr="control failed",
+            returncode=0,
+            stdout="7000\n" if kwargs["input"] == "get_server_list\n" else "101\n",
+            stderr="",
         )
 
     monkeypatch.setattr(control.subprocess, "run", run)
 
     with pytest.raises(MpsControlError, match="identity changed.*123.*124"):
         client.snapshot(pipe_dir)
-    assert calls == 1
 
 
 def test_snapshot_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
@@ -195,7 +145,6 @@ def test_snapshot_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
         "read_daemon_process_identity",
         lambda _pipe: MpsProcessIdentity(123, 1),
     )
-    monkeypatch.setattr(control.time, "sleep", lambda _seconds: None)
 
     def nonzero(args, **kwargs):
         del kwargs
@@ -207,10 +156,7 @@ def test_snapshot_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(control.subprocess, "run", nonzero)
-    with pytest.raises(
-        MpsControlError,
-        match="snapshot failed after 3 attempts: .*control failed",
-    ):
+    with pytest.raises(MpsControlError, match="control failed"):
         client.snapshot(pipe_dir)
 
     def timeout(args, **kwargs):
@@ -218,14 +164,11 @@ def test_snapshot_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
         raise subprocess.TimeoutExpired(args, 10)
 
     monkeypatch.setattr(control.subprocess, "run", timeout)
-    with pytest.raises(
-        MpsControlError,
-        match="snapshot failed after 3 attempts: .*timed out",
-    ):
+    with pytest.raises(MpsControlError, match="timed out"):
         client.snapshot(pipe_dir)
 
 
-def test_mutating_control_query_is_serialized_without_retry(monkeypatch, tmp_path):
+def test_mutating_control_query_is_serialized(monkeypatch, tmp_path):
     pipe_dir = tmp_path / "pipe"
     pipe_dir.mkdir()
     client = control.SubprocessMpsControlClient()
@@ -265,7 +208,9 @@ def test_daemon_preexec_failure_is_distinct_from_ambiguous_start(monkeypatch):
         client.start_daemon(Path("/mps/pipe"), Path("/mps/log"), "GPU-abc")
 
 
-def test_daemon_identity_requires_exact_binary_and_pipe_environment(monkeypatch):
+def test_daemon_process_identity_requires_exact_binary_and_pipe_environment(
+    monkeypatch,
+):
     pipe_dir = Path("/mps/pipe")
     client = control.SubprocessMpsControlClient()
     environ = [b"CUDA_MPS_PIPE_DIRECTORY=/mps/pipe", b"PATH=/usr/bin", b""]
@@ -286,7 +231,6 @@ def test_daemon_identity_requires_exact_binary_and_pipe_environment(monkeypatch)
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
 
     assert client.read_daemon_process_identity(pipe_dir) == MpsProcessIdentity(123, 42)
-    assert client.read_daemon_identity(pipe_dir) == 123
 
     environ[0] = b"CUDA_MPS_PIPE_DIRECTORY=/another/pipe"
     with pytest.raises(MpsControlError, match="exact pipe directory"):

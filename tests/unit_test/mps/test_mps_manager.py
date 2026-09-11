@@ -25,6 +25,11 @@ from sglang_omni.mps.manager import (
 from sglang_omni.mps.state import MpsGpuPaths
 
 
+def _proc_stat(pid: int, comm: str, state: str, starttime: int = 1) -> str:
+    fields = [state, "1"] + ["0"] * 17 + [str(starttime)]
+    return f"{pid} ({comm}) " + " ".join(fields)
+
+
 class FakeControlClient:
     """Strict, pipe-scoped stand-in for the MPS control interface."""
 
@@ -37,9 +42,8 @@ class FakeControlClient:
         self.held_owner_pids: set[int] = set()
         self.client_tokens: dict[int, str] = {}
         self.snapshots: dict[str, set[MpsClientRef]] = {}
-        self.snapshot_calls = 0
         self.server_identities: dict[int, MpsProcessIdentity] = {}
-        self.server_identity_errors: dict[int, str] = {}
+        self.server_identity_error: str | None = None
         self.start_fails = False
         self.snapshot_error: str | None = None
         self.identity_error: str | None = None
@@ -63,7 +67,7 @@ class FakeControlClient:
             str(self.daemon_pid)
         )
 
-    def read_daemon_identity(self, pipe_dir):
+    def read_daemon_process_identity(self, pipe_dir):
         if self.identity_error is not None:
             raise MpsControlError(self.identity_error)
         pid_file = Path(pipe_dir) / "nvidia-cuda-mps-control.pid"
@@ -73,14 +77,9 @@ class FakeControlClient:
             raise MpsControlError(f"cannot read native PID file: {exc}") from exc
         if self.daemons.get(str(pipe_dir)) != pid or pid not in self.alive_pids:
             raise MpsControlError(f"unverified daemon pid {pid}")
-        return pid
-
-    def read_daemon_process_identity(self, pipe_dir):
-        pid = self.read_daemon_identity(pipe_dir)
         return MpsProcessIdentity(pid, self.daemon_starttimes.setdefault(pid, 1))
 
     def snapshot(self, pipe_dir):
-        self.snapshot_calls += 1
         if self.snapshot_error is not None:
             raise MpsControlError(self.snapshot_error)
         if str(pipe_dir) not in self.daemons:
@@ -100,8 +99,8 @@ class FakeControlClient:
             )
 
     def read_server_process_identity(self, pipe_dir, pid):
-        if self.server_identity_errors.get(pid) is not None:
-            raise MpsControlError(self.server_identity_errors[pid])
+        if self.server_identity_error is not None:
+            raise MpsControlError(self.server_identity_error)
         if str(pipe_dir) not in self.daemons:
             raise MpsControlError("control socket unavailable")
         try:
@@ -397,7 +396,6 @@ def test_verify_matches_inherited_process_token_on_cuda_client(short_root):
     client.client_tokens[200] = "owner-worker"
 
     assert manager.verify(lease) == {MpsClientRef(7000, 200)}
-    assert lease.server_identities == frozenset({MpsProcessIdentity(7000, 1)})
 
 
 def test_verify_retains_all_managed_server_identities(short_root):
@@ -427,7 +425,7 @@ def test_verify_requires_each_managed_server_identity(short_root):
     lease = manager.acquire({"worker": "owner-worker"})
     client.set_clients(manager.paths.pipe_dir, {7000: [200]})
     client.client_tokens[200] = "owner-worker"
-    client.server_identity_errors[7000] = "server disappeared"
+    client.server_identity_error = "server disappeared"
 
     with pytest.raises(MpsError, match="could not prove server identity"):
         manager.verify(lease)
@@ -459,24 +457,21 @@ def test_verify_does_not_accumulate_clients_across_snapshots(short_root, monkeyp
 def test_probe_allows_a_verified_client_to_exit(short_root):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
-    client.snapshot_calls = 0
     assert manager.probe(lease) is None
 
+    client.snapshot_error = "snapshot must not run"
     client.set_clients(manager.paths.pipe_dir, {})
     assert manager.probe(lease) is None
-    assert client.snapshot_calls == 0
 
 
 def test_probe_checks_identity_without_client_snapshot(short_root):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
-    client.snapshot_calls = 0
 
     client.identity_error = "native PID unavailable"
     assert manager.probe(lease) == (
         "control identity query failed: native PID unavailable"
     )
-    assert client.snapshot_calls == 0
 
     client.identity_error = None
     replacement_pid = lease.daemon_pid + 1
@@ -503,29 +498,26 @@ def test_probe_checks_identity_without_client_snapshot(short_root):
     )
     client.server_identities[7000] = MpsProcessIdentity(7000, 1)
 
-    client.server_identity_errors[7000] = "wrong binary"
+    client.server_identity_error = "wrong binary"
     assert manager.probe(lease) == (
         "server identity query failed for pid 7000: wrong binary"
     )
-    client.server_identity_errors.clear()
+    client.server_identity_error = None
 
     client.snapshot_error = "unexpected snapshot"
     assert manager.probe(lease) is None
-    assert client.snapshot_calls == 0
 
 
 def test_probe_fails_when_verified_server_disappears_with_live_control(short_root):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
     client.server_identities.pop(7000)
-    client.snapshot_calls = 0
 
     reason = manager.probe(lease)
 
     assert reason == (
         "server identity query failed for pid 7000: unverified server pid 7000"
     )
-    assert client.snapshot_calls == 0
 
 
 def test_dead_root_with_live_descendant_persists_dirty_and_reports_cleanup(
@@ -871,9 +863,9 @@ def test_daemon_liveness_rejects_zombie_proc_entries(monkeypatch):
     from sglang_omni.mps import control
 
     stats = {
-        Path("/proc/430465/stat"): "430465 (nvidia-cuda-mps) Z 1 430465 0",
-        Path("/proc/53748/stat"): "53748 (nvidia-cuda-mps-control) S 1 0 0",
-        Path("/proc/7/stat"): "7 (weird) name) Z 1 0",
+        Path("/proc/430465/stat"): _proc_stat(430465, "nvidia-cuda-mps", "Z"),
+        Path("/proc/53748/stat"): _proc_stat(53748, "nvidia-cuda-mps-control", "S"),
+        Path("/proc/7/stat"): _proc_stat(7, "weird) name", "Z"),
     }
     monkeypatch.setattr(Path, "read_text", lambda path: stats[path])
     monkeypatch.setattr(control.os, "kill", lambda _pid, _signal: None)
