@@ -23,9 +23,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-from huggingface_hub import snapshot_download
 from safetensors import safe_open
 from transformers import HiggsAudioV2TokenizerConfig, HiggsAudioV2TokenizerModel
+
+from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 WaveformInput = torch.Tensor | np.ndarray
 logger = logging.getLogger(__name__)
@@ -86,14 +87,6 @@ def _to_mono_3d(waveform: WaveformInput) -> torch.Tensor:
             raise ValueError(f"audio must be mono, got shape {tuple(wav.shape)}")
         return wav
     raise ValueError(f"waveform must be 1-, 2- or 3-D, got {wav.ndim}-D")
-
-
-def _resolve_ckpt_dir(model_path: str | Path) -> str:
-    """Local dir or HF repo id → local snapshot dir."""
-    p = str(model_path)
-    if os.path.isdir(p):
-        return p
-    return snapshot_download(p)
 
 
 def _load_codec_state_dict(tts_ckpt_dir: str) -> dict[str, torch.Tensor]:
@@ -166,7 +159,7 @@ class HiggsAudioCodec:
         — opt in only if you've validated quality at your sample rate.
         """
         device = torch.device(device)
-        ckpt_dir = _resolve_ckpt_dir(model_path)
+        ckpt_dir = resolve_checkpoint(str(model_path))
 
         config = HiggsAudioV2TokenizerConfig.from_json_file(_BUNDLED_CODEC_CONFIG_PATH)
         model = HiggsAudioV2TokenizerModel(config).to(dtype=dtype).eval()
