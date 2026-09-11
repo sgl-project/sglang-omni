@@ -184,6 +184,40 @@ def test_level1_rejects_path_escape(tmp_path: Path, video: str) -> None:
         load_socialomni_level1_samples(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "level,filename,loader",
+    [
+        ("level_1", "dataset.json", socialomni.load_socialomni_level1_samples),
+        ("level_2", "annotations.json", socialomni.load_socialomni_level2_samples),
+    ],
+)
+@pytest.mark.parametrize("outside", [False, True])
+@pytest.mark.parametrize("direct", [False, True])
+def test_metadata_symlink_containment(
+    tmp_path, level, filename, loader, outside, direct
+):
+    root = tmp_path / level if direct else tmp_path / "dataset"
+    directory = root if direct else root / "data" / level
+    directory.mkdir(parents=True)
+    target = tmp_path / "outside.json" if outside else root / "actual.json"
+    target.write_text("[]")
+    (directory / filename).symlink_to(target)
+    if outside:
+        with pytest.raises(ValueError, match="metadata escapes dataset root"):
+            loader(root)
+        with pytest.raises(ValueError, match="metadata escapes dataset root"):
+            inspect_socialomni_dataset(root, [level.replace("_", "")])
+    else:
+        assert socialomni._level_dir(root, level, filename) == directory
+
+
+def test_direct_level_name_preserves_nested_candidates(tmp_path):
+    root = tmp_path / "level_1"
+    directory = root / "data" / "level_1"
+    _write(directory / "dataset.json", [])
+    assert socialomni._level_dir(root, "level_1", "dataset.json") == directory
+
+
 def test_level1_rejects_symlink_escape(tmp_path: Path) -> None:
     outside = tmp_path / "outside.mp4"
     outside.touch()
