@@ -283,14 +283,17 @@ def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
     }
 
 
+_TALKER_ADMISSION_ENV = {"SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "256"}
+
+
 @pytest.mark.parametrize(
     ("is_rocm", "expected_env"),
     [
-        (True, {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
-        (False, {}),
+        (True, {**_TALKER_ADMISSION_ENV, "SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
+        (False, _TALKER_ADMISSION_ENV),
     ],
 )
-def test_qwen3_omni_talker_stage_keeps_greedy_selection_off_aiter_on_rocm(
+def test_qwen3_omni_talker_stage_env_defaults(
     monkeypatch: pytest.MonkeyPatch,
     is_rocm: bool,
     expected_env: dict[str, str],
@@ -307,6 +310,26 @@ def test_qwen3_omni_talker_stage_keeps_greedy_selection_off_aiter_on_rocm(
 
         assert _stage(config, "talker_ar").env == expected_env
         assert _stage(config, "thinker").env == {}
+
+
+def test_qwen3_omni_stage_env_config_overrides_talker_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: False)
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    config = manager.merge_config(
+        {
+            "talker_ar.env.SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "512",
+            "thinker.env.SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "32",
+        }
+    )
+
+    assert _stage(config, "talker_ar").env == {
+        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "512"
+    }
+    assert _stage(config, "thinker").env == {
+        "SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": "32"
+    }
 
 
 def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:
