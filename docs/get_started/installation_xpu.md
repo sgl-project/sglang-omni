@@ -94,7 +94,14 @@ git clone https://github.com/sgl-project/sglang && cd sglang
 git checkout v0.5.19   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
+pip install --no-deps xgrammar==0.1.33
 ```
+
+That last line is not optional. `pyproject_xpu.toml` leaves `xgrammar` out because
+resolving it pulls CUDA torch and the `triton` distribution over `pytorch-triton-xpu`,
+but `sglang.srt.server_args` imports it unconditionally through the function-call
+parser, so without it nothing that reads server args imports at all -- serving
+included. SGLang's own `docker/xpu.Dockerfile` installs the same pin the same way.
 
 Use that commit: the XPU port targets this SGLang revision's APIs and does not carry
 version-compatibility shims. A VCS requirement (`pip install "sglang @ git+…"`) does **not** work:

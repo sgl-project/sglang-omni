@@ -104,6 +104,13 @@ RUN cd /workspace/sglang-omni \
 RUN pip install --no-cache-dir --no-deps sox einops \
     && pip install --no-cache-dir --no-deps qwen-tts==0.1.1
 
+# SGLang's XPU manifest leaves xgrammar out -- resolving it would pull CUDA torch
+# and the `triton` distribution over pytorch-triton-xpu -- but sglang.srt.server_args
+# imports it unconditionally through the function-call parser, so without it nothing
+# that reads server args imports at all, serving included. Same pin and same --no-deps
+# as SGLang's own docker/xpu.Dockerfile; its other requirements are already installed.
+RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
+
 WORKDIR /workspace/sglang-omni
 
 # Do NOT source /opt/intel/oneapi/setvars.sh: the `+xpu` wheels ship their own

@@ -188,8 +188,16 @@ fi
 
 # SGLang is never installed by this script (it cannot be pinned for XPU), so
 # report whether it is importable at all.
-if "${PYBIN}" -c "import sglang" >/dev/null 2>&1; then
+# server_args, not the top-level package: `import sglang` succeeds without xgrammar,
+# which pyproject_xpu.toml leaves out, while everything that reads server args --
+# serving included -- fails on it. Probing the package alone reports a healthy
+# install that cannot serve.
+if "${PYBIN}" -c "import sglang.srt.server_args" >/dev/null 2>&1; then
   echo "  [ok] sglang is importable"
+elif "${PYBIN}" -c "import sglang" >/dev/null 2>&1; then
+  echo "  [warn] sglang imports but sglang.srt.server_args does not."
+  echo "         If the error names xgrammar, install the pin SGLang's own XPU image uses:"
+  echo "           pip install --no-deps xgrammar==0.1.33"
 else
   echo "  [warn] sglang is NOT installed — it is intentionally not a dependency here."
   echo "         Build the XPU SGLang from source (${SGLANG_VERIFIED_VERSION}):"
@@ -197,6 +205,7 @@ else
   echo "           git checkout ${SGLANG_VERIFIED_VERSION}"
   echo "           cd python && cp pyproject_xpu.toml pyproject.toml"
   echo "           pip install -e . --no-build-isolation --extra-index-url ${XPU_INDEX}"
+  echo "           pip install --no-deps xgrammar==0.1.33"
 fi
 
 if [[ "${VERIFY_RC}" -ne 0 ]]; then
