@@ -21,7 +21,6 @@ from dataclasses import dataclass
 
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
-    FUN_ASR_MODEL_REVISION,
     OMNI_WHISPER_MODEL_PATH,
     QWEN3_ASR_MODEL_PATH,
 )
@@ -191,7 +190,6 @@ WHISPER_ASR_RTF_P95_THRESHOLD = round(
 ASR_CI_PRESETS: dict[str, AsrCiPreset] = {
     "fun": AsrCiPreset(
         model_path=FUN_ASR_MODEL_PATH,
-        revision=FUN_ASR_MODEL_REVISION,
         display_name="Fun-ASR",
         thresholds=AsrCiThresholdPreset(
             en_corpus_wer_max=FUN_ASR_EN_CORPUS_WER_THRESHOLD,
