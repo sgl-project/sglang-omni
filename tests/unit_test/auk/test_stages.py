@@ -184,3 +184,34 @@ def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
         )
     assert requested == [torch.bfloat16, torch.float32]
     assert autocast == [False, True]
+
+
+def test_singleton_mask_elision_trims_to_valid_lengths():
+    flow = Mock()
+    flow.sample_batch.return_value = [torch.zeros(5, 64)]
+    state = AuKState(
+        gen_frames=5,
+        prompt_tokens=4,
+        conditioning=torch.zeros(6, 16),
+        text_mask=torch.tensor([True, True, True, True, False, False]),
+        ref_latent=torch.zeros(5, 64),
+        ref_length=3,
+    )
+    payload = StagePayload(
+        request_id="test", request=OmniRequest(inputs="hello"), data=state.to_dict()
+    )
+
+    _sample_batch(
+        [payload],
+        flow,
+        torch.device("cpu"),
+        "float32",
+        1500,
+        {"elide_singleton_masks": True},
+    )
+
+    item = flow.sample_batch.call_args.args[0][0]
+    assert item.conditioning.shape == (4, 16)
+    assert item.text_mask is None
+    assert item.ref_latent.shape == (3, 64)
+    assert flow.sample_batch.call_args.kwargs["elide_singleton_masks"] is True
