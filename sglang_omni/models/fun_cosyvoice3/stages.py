@@ -799,6 +799,7 @@ def create_sglang_tts_engine_executor(
     server_args_overrides: dict[str, Any] | None = None,
     onnx_intra_op_threads: int = 16,
     token_hop_len: int = TOKEN_HOP_LEN,
+    total_gpu_memory_fraction: float | None = None,
 ) -> Any:
     from sglang_omni.models.fun_cosyvoice3.engine_builder import (
         FunCosyVoice3EngineBuilder,
@@ -807,6 +808,7 @@ def create_sglang_tts_engine_executor(
     return FunCosyVoice3EngineBuilder(
         token_hop_len=token_hop_len,
         onnx_intra_op_threads=onnx_intra_op_threads,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
     ).build(
         model_path,
         device=device,
