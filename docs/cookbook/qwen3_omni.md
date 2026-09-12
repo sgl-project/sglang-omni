@@ -33,12 +33,12 @@ introduced for [Qwen3-ASR](qwen3_asr.md#apple-silicon-mlx). Install with
 the environment manually as described in the Qwen3-ASR Apple guide — the same
 `.venv-apple` environment and SGLang `all_mps` extra serve both models.
 
-Two Apple backends are supported, each with a tested checkpoint layout:
+Two Apple backends are supported, with distinct checkpoint layouts:
 
-| Backend | Env var | Tested checkpoint layout |
+| Backend | Env var | Checkpoint layout |
 |---|---|---|
 | Torch MPS (default) | `SGLANG_USE_MLX` unset | Dense, officially supported split Hugging Face checkpoint (thinker/talker/code2wav weights plus the official processor/tokenizer assets). |
-| Torch MPS weight-only quantization | `SGLANG_USE_MLX` unset; `SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4` or `int8` | Dense Hugging Face weights or root-namespaced MLX affine packed weights, converted at load time for native Torch MPS operators. |
+| Torch MPS weight-only quantization | `SGLANG_USE_MLX` unset; no quantization flag required | Symmetric HF compressed-tensors or AutoRound INT4, detected from checkpoint metadata; calibrated codes are repacked for native Metal. |
 | MLX | `SGLANG_USE_MLX=1` | Direct launch of the downloaded pinned `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` directory described below. No extra artifact generation or copy step is required. |
 
 Launch commands and the full Apple runtime profile (one Metal device, greedy
@@ -200,50 +200,8 @@ Apple scheduler restrictions remain explicit on the native MLX path:
 - logprobs unsupported
 - no partial talker start
 
-Dense Torch MPS is a separate Apple mode selected with `SGLANG_USE_MLX` unset. It
-uses the official split Hugging Face checkpoint, requires substantially more
-unified memory, and is not production-qualified. For dense MPS text-only
-testing:
-
-```bash
-env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
-  --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
-  --text-only \
-  --host 127.0.0.1 \
-  --port 8008
-```
-
-For dense MPS speech-mode testing, omit `--text-only` explicitly:
-
-```bash
-env -u SGLANG_USE_MLX "$PY" -m sglang_omni.cli serve \
-  --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
-  --host 127.0.0.1 \
-  --port 8008
-```
-
-Expect higher memory use and treat the generated WAV as structurally valid
-only, not semantically production-qualified.
-
-For native Torch MPS INT4, reuse the downloaded community checkpoint:
-
-```bash
-env -u SGLANG_USE_MLX SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4 \
-  "$PY" -m sglang_omni.cli serve \
-  --model-path "$MODEL_DIR" \
-  --host 127.0.0.1 \
-  --port 8008
-```
-
-Replace `int4` with `int8` for per-output-channel INT8. Leave the variable
-unset for the original dense path. Quantized linears and routed experts
-execute through PyTorch's native MPS kernels; no MLX inference or TorchAO is
-used in this mode. Floating-point embeddings, convolutions, router weights,
-prompt projections, activations, and KV caches still consume memory.
-An INT8 conversion of a 4-bit source uses more storage without recovering
-the source's lost precision. AWQ, compressed-tensors, and GPTQ formats are
-not supported. This option does not change the conservative serving profile
-or establish semantic production qualification.
+For Torch MPS, unset `SGLANG_USE_MLX` and use a dense or supported HF INT4 checkpoint, not the MLX checkpoint.
+See the [usage guide](../basic_usage/qwen3_omni.md#apple-silicon-mlx-and-torch-mps) for pinned exports and launch commands; quantization is detected automatically.
 
 Send a text request:
 

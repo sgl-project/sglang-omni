@@ -1,30 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Scheduler model runners for the eager Torch MPS Qwen3-Omni thinker and talker.
-
-The Task 2 external-forward worker gives the scheduler real request/KV
-bookkeeping while holding SGLang's zero-weight stub model; these runners own
-every real forward. That has three consequences the code below makes explicit:
-
-* **No SGLang forward machinery.** ``_build_forward_batch`` returns the schedule
-  batch as-is. It does not select a device (``torch.mps.set_device`` is not the
-  CUDA-style selector the base runner assumes), does not initialise an attention
-  backend, and never builds a ``ForwardBatch``: the stub worker has no attention
-  state from which one could be constructed.
-* **No SGLang sampler or CUDA graph.** The stage runs under the Apple profile
-  (one request, greedy, no radix cache, no chunked prefill), so the next token is
-  a plain ``argmax`` and ``can_run_cuda_graph`` is always ``False``.
-* **Runner-owned KV cache and captures.** Transformers' own ``past_key_values``
-  is kept per request and released on completion and on abort. Hidden captures
-  are attached to ``logits_output.hidden_states`` as a ``{"embed": ..., N: ...}``
-  dictionary, which is the sole source for ``SGLangOutputProcessor`` (constructed
-  with ``model=None`` on this backend, exactly as on MLX).
-
-Capture convention, identical to the MLX and CUDA paths: requested layer ``0``
-becomes ``"embed"`` from ``hidden_states[0]`` (the input of layer 0) and a
-requested layer ``N > 0`` is ``hidden_states[N]`` (the input of layer ``N``), not
-``N + 1``. Only the batch dimension is removed, so a prefill keeps every prompt
-row and the existing stream normaliser selects the same first prompt row as CUDA.
-"""
+"""Eager Torch MPS runners with per-request HF caches and greedy sampling."""
 
 from __future__ import annotations
 
@@ -69,6 +44,8 @@ _CPU = torch.device("cpu")
 class Qwen3OmniTorchMpsThinkerRunner(ModelRunner):
     """Run one Qwen3-Omni thinker request eagerly through Torch on MPS."""
 
+    _validate_capture_layers = staticmethod(validate_capture_layers)
+
     def __init__(
         self,
         tp_worker: Any,
@@ -94,19 +71,6 @@ class Qwen3OmniTorchMpsThinkerRunner(ModelRunner):
         }
         self._vocab_size = int(thinker_config.text_config.vocab_size)
 
-    # -- configuration -----------------------------------------------------
-
-    @staticmethod
-    def _validate_capture_layers(
-        capture_hidden_layers: tuple[int, ...] | list[int] | None,
-        *,
-        accept_hidden_layer: int | None,
-    ) -> tuple[int, ...]:
-        return validate_capture_layers(
-            capture_hidden_layers,
-            accept_hidden_layer=accept_hidden_layer,
-        )
-
     # -- scheduler contract ------------------------------------------------
 
     def lookahead_eligible(self, batch: Any) -> bool:
@@ -125,12 +89,7 @@ class Qwen3OmniTorchMpsThinkerRunner(ModelRunner):
 
     @staticmethod
     def _one_request(requests: list[Any]) -> Any:
-        if len(requests) != 1:
-            raise RuntimeError(
-                "Apple Qwen3-Omni Torch MPS thinker serves one request at a time, "
-                f"got {len(requests)}"
-            )
-        return requests[0]
+        return require_single_request(requests, backend_name="Torch MPS thinker")
 
     # -- prefill inputs ----------------------------------------------------
 
@@ -449,14 +408,7 @@ def build_qwen3_omni_torch_mps_thinker_runner(
 
 @dataclass(slots=True)
 class TorchMpsTalkerState:
-    """Everything one talker request owns on the runner.
-
-    ``past_key_values`` is the *outer* talker cache -- the only tensor state that
-    survives a step; the code predictor allocates and drops its own cache inside
-    every expansion. ``generated_steps`` and ``mrope_delta`` are the rope
-    bookkeeping, and ``codes``/``feedback`` stage the step the forward computed
-    until ``post_prefill``/``post_decode`` emits it.
-    """
+    """Per-request talker cache, positions and pending output; no predictor cache."""
 
     past_key_values: Any = None
     generated_steps: int = 0
@@ -467,24 +419,7 @@ class TorchMpsTalkerState:
 
 
 class Qwen3OmniTorchMpsTalkerRunner(ModelRunner):
-    """Run one Qwen3-Omni talker request eagerly through Torch on MPS.
-
-    Ownership split, identical to the reviewed MLX talker runner:
-
-    * **Device side (this runner).** One outer talker KV cache per request, the
-      per-request codec suppression mask, and the M-RoPE row for each step. The
-      code equations -- greedy layer-0 selection after suppression, the residual
-      RVQ group expansion, and the summed feedback row -- live in
-      :class:`~sglang_omni.models.qwen3_omni.torch_mps.Qwen3OmniTorchMpsTalker`.
-    * **Host side (unchanged).** The pending text FIFO and the feedback deque
-      stay CPU float32 and are consumed through ``QwenTalkerModelRunner``'s own
-      helpers, so decode readiness, thinker-done padding, and row ownership are
-      the *same* code as the CUDA path. Exactly one feedback row and one
-      text/thinker row cross to Metal per decode.
-
-    Apple policy: batch-1, greedy, no chunked prefill, no radix prefix, and no
-    async decode lookahead.
-    """
+    """Run one talker request on MPS, reusing CPU text and feedback queues."""
 
     def __init__(
         self,

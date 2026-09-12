@@ -1,46 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Eager Torch MPS Qwen3-Omni thinker and talker: strict split loading and forward.
-
-This module owns the Apple non-MLX (PyTorch Metal) thinker *and* talker. It is
-deliberately narrow:
-
-* **Split loading.** Only the thinker *text* namespace
-  (``thinker.model.``/``thinker.lm_head.``) is read from the published
-  checkpoint. The vision and audio towers run in their own stages, so the
-  Transformers shell is built under :func:`accelerate.init_empty_weights` and
-  those towers are left on meta -- the full 30B model is never instantiated to
-  filter weights, and no encoder parameter is ever resident here.
-* **Strictness.** A missing, unexpected, duplicated, or shape-mismatched
-  thinker text weight is a hard failure. A converted per-component export
-  (``thinker/``, ``talker/``, ``code2wav/`` subdirectories), which Task 1's
-  checkpoint validation accepts for MLX, is refused here with an explicit
-  unsupported-layout error rather than being silently mis-loaded: its
-  prefix-stripped keys (``model.layers.*``) are shared by the thinker and the
-  talker.
-* **Expert fusion.** The published checkpoint serialises one linear per MoE
-  expert (``mlp.experts.<i>.gate_proj.weight``) while Transformers 5.x holds
-  stacked ``gate_up_proj``/``down_proj`` parameters. The fusion performed here
-  is exactly Transformers' own conversion (``MergeModulelist(dim=0)`` then
-  ``Concatenate(dim=1)``), and the unit tests pin it against
-  ``from_pretrained``.
-* **Forward.** The encoders are separate stages, so their absolute
-  image/video/audio rows are merged into the text embeddings here and the
-  DeepStack tensors/masks are handed straight to
-  ``Qwen3OmniMoeThinkerTextModel.forward``. The conditional-generation wrapper
-  is bypassed on purpose: it recomputes ``deepstack_visual_embeds`` from
-  ``pixel_values`` and would overwrite the stage-supplied tensors with ``None``.
-
-The talker section at the bottom of the file follows the same rules for the
-``talker.*`` namespace: only the talker (backbone, projections, codec head, and
-the whole code predictor) is read, it is built under
-:func:`accelerate.init_empty_weights` so the 30B Omni shell is never
-instantiated, the published per-expert MoE linears are fused with the same
-conversion, and the *inner* ``Qwen3OmniMoeTalkerModel`` is called directly so its
-``last_hidden_state`` -- which the wrapper's output contract does not expose --
-is available for both the codec head and the code predictor.
-
-Nothing on this path imports CUDA, Triton, MLX, or SGLang's CUDA-only thinker.
-"""
+"""Eager Torch MPS thinker and talker with strict, stage-local HF loading."""
 
 from __future__ import annotations
 
@@ -60,6 +19,7 @@ from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.qwen3_omni.components.thinker import (
     TEXT_MODEL_CLASS,
     Qwen3OmniSplitThinker,
+    _build_thinker_shell,
 )
 from sglang_omni.models.weight_loader import resolve_dtype
 from sglang_omni.utils import instantiate_module
@@ -83,14 +43,10 @@ __all__ = [
     "restore_placeholder_token_ids",
 ]
 
-# Official (published) namespaces owned by the thinker text stack.
 OFFICIAL_TEXT_PREFIX = "thinker.model."
 OFFICIAL_LM_HEAD_PREFIX = "thinker.lm_head."
-# The same namespaces once a converter has stripped the component prefix.
 LOCAL_TEXT_PREFIX = "model."
 LOCAL_LM_HEAD_PREFIX = "lm_head."
-# Component subdirectories a converted multi-component export uses; matching
-# ``apple_runtime._components_for_key``.
 COMPONENT_DIRECTORIES = ("thinker", "talker", "code2wav")
 _OTHER_COMPONENT_PREFIXES = ("talker.", "code2wav.")
 
@@ -112,14 +68,7 @@ UnsupportedThinkerCheckpointLayout = UnsupportedCheckpointLayout
 
 @dataclass
 class TorchMpsThinkerOutput:
-    """One eager thinker step.
-
-    ``logits`` carries only the final row (``[1, 1, vocab]``): the stage decodes
-    greedily one token at a time, and materialising ``[1, sequence, 152064]``
-    logits for a prompt would dominate the step's memory for rows nothing reads.
-    ``logits[:, -1, :]`` is therefore the same tensor a full projection would
-    have produced for the sampled position.
-    """
+    """One thinker step; logits contain only the sampled final row [1, 1, vocab]."""
 
     logits: torch.Tensor
     past_key_values: Any = None
@@ -148,13 +97,7 @@ def _thinker_text_shards(directory: Path) -> list[Path]:
 
 
 def _published_shards(directory: Path, *, stage: str) -> list[Path]:
-    """Root-level safetensors shards, or a clear unsupported-layout error.
-
-    A converted export places each component's prefix-stripped tensors in its
-    own subdirectory. Those keys collide across components (the thinker and the
-    talker both own ``model.layers.*``), and this loader has no per-shard
-    ownership rule, so such a layout is refused instead of guessed at.
-    """
+    """Read root shards; reject nested exports with ambiguous component ownership."""
 
     shards = sorted(directory.glob("*.safetensors"))
     nested = sorted(
@@ -208,13 +151,7 @@ def read_thinker_text_state_dict(
     *,
     dtype: torch.dtype | str | None = None,
 ) -> dict[str, dict[str, torch.Tensor]]:
-    """Read only the thinker text weights, fused onto the module's layout.
-
-    Returns ``{"model": {...}, "lm_head": {...}}`` with the component prefix
-    stripped and MoE experts fused. Encoder, talker, and code2wav tensors are
-    never read into memory: the shards are opened lazily and only the selected
-    keys are materialised.
-    """
+    """Read only model/lm_head weights, stripping stage prefixes and fusing experts."""
 
     directory = _resolve_checkpoint_directory(model_path)
     shards = _thinker_text_shards(directory)
@@ -265,13 +202,7 @@ def read_thinker_text_state_dict(
 def fuse_moe_expert_weights(
     state_dict: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
-    """Fuse per-expert linears onto Transformers' stacked expert parameters.
-
-    Mirrors Transformers' own ``qwen2_moe`` conversion: ``MergeModulelist(dim=0)``
-    stacks each projection over the expert axis and ``Concatenate(dim=1)`` puts
-    the gate rows above the up rows, so ``linear(x, gate_up_proj[e]).chunk(2, -1)``
-    yields ``(gate, up)``.
-    """
+    """Stack experts on axis 0 and concatenate gate/up rows on axis 1, as HF does."""
 
     grouped: dict[tuple[str, str], dict[int, torch.Tensor]] = {}
     fused: dict[str, torch.Tensor] = {}
@@ -351,14 +282,7 @@ def _assign_state_dict(
 
 
 class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
-    """The split thinker with an eager Torch MPS forward.
-
-    Construction reuses the split thinker's contract -- an
-    ``init_empty_weights()`` conditional-generation shell whose vision and audio
-    towers stay on meta, with a real text model and LM head attached -- but the
-    weights arrive through :func:`read_thinker_text_state_dict`, which knows the
-    published per-expert MoE layout and enforces strictness itself.
-    """
+    """Eager split thinker; encoder towers stay on meta and run in separate stages."""
 
     def __init__(
         self,
@@ -377,7 +301,7 @@ class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
             get_qwen3_omni_mps_quantization,
         )
 
-        bits = get_qwen3_omni_mps_quantization()
+        bits = get_qwen3_omni_mps_quantization(model_path)
         started = time.perf_counter()
         if bits is not None:
             from accelerate import init_empty_weights
@@ -475,12 +399,7 @@ class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
         deepstack_visual_embeds: Sequence[torch.Tensor] | None = None,
         visual_pos_masks: torch.Tensor | None = None,
     ) -> TorchMpsThinkerOutput:
-        """Run the thinker text stack directly, DeepStack tensors included.
-
-        The conditional-generation wrapper is bypassed deliberately: it derives
-        ``deepstack_visual_embeds`` from ``pixel_values`` and would replace the
-        encoder stages' tensors with ``None``.
-        """
+        """Bypass the HF wrapper, which would overwrite stage-supplied DeepStack rows."""
 
         text_model = self.thinker.model
         if (input_ids is None) == (inputs_embeds is None):
@@ -524,14 +443,6 @@ class Qwen3OmniTorchMpsThinker(Qwen3OmniSplitThinker):
         )
 
 
-def _build_thinker_shell(thinker_config: Any):
-    """The split thinker's own meta-device conditional-generation shell."""
-
-    from sglang_omni.models.qwen3_omni.components import thinker as split_thinker
-
-    return split_thinker._build_thinker_shell(thinker_config)
-
-
 def load_torch_mps_thinker(
     model_path: str,
     *,
@@ -556,13 +467,7 @@ def restore_placeholder_token_ids(
     placeholder_token_ids: Mapping[str, int],
     vocab_size: int,
 ) -> list[int]:
-    """Map cache-key placeholder ids back to the configured modality ids.
-
-    ``build_sglang_thinker_request`` substitutes a per-media hash above the text
-    vocabulary so SGLang's radix keys stay media-specific. Those ids are not
-    embeddable, so they are restored from the absolute positions the request
-    builder recorded, falling back to the request's ``pad_values`` map.
-    """
+    """Restore hashed media IDs using absolute positions or the pad_values map."""
 
     restored = [int(token_id) for token_id in token_ids]
     if positions:
@@ -598,12 +503,7 @@ def merge_multimodal_rows(
     *,
     modality_rows: Mapping[str, tuple[torch.Tensor, torch.Tensor]],
 ) -> torch.Tensor:
-    """Scatter encoder rows into the text embeddings by absolute position.
-
-    ``modality_rows`` maps a modality onto ``(positions, rows)`` where positions
-    are prompt-absolute indices. Placement is by position, never by re-deriving
-    a placeholder mask from the (hash-substituted) token ids.
-    """
+    """Scatter each modality's (absolute positions, encoder rows) into embeddings."""
 
     if inputs_embeds.ndim != 3 or inputs_embeds.shape[0] != 1:
         raise ValueError(
@@ -646,13 +546,7 @@ def build_deepstack_visual_inputs(
     video_layers: Sequence[torch.Tensor] | None,
     merged_layers: Sequence[torch.Tensor] | None,
 ) -> tuple[list[torch.Tensor] | None, torch.Tensor | None]:
-    """Prompt-ordered DeepStack rows plus their ``[1, sequence]`` visual mask.
-
-    Mirrors ``ThinkerModelRunner._inject_multimodal_embeds``: the visual rows are
-    the image and video placeholder positions in *prompt* order, so a request
-    carrying both modalities interleaves them by absolute position rather than
-    concatenating image rows ahead of video rows.
-    """
+    """Interleave image/video DeepStack rows in prompt order and build their mask."""
 
     image_positions = _as_positions(image_positions)
     video_positions = _as_positions(video_positions)
@@ -708,9 +602,6 @@ def _as_positions(positions: torch.Tensor | None) -> torch.Tensor:
 # Talker: strict split loading
 # ---------------------------------------------------------------------------
 
-# The official (published) namespace owned by the talker. Everything under it --
-# backbone, speaker/codec embedding, resize projections, MoE and shared experts,
-# codec head, and every code-predictor group -- belongs to this stage.
 OFFICIAL_TALKER_PREFIX = "talker."
 TALKER_MODEL_CLASS = (
     "transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe."
@@ -733,14 +624,7 @@ def read_talker_state_dict(
     *,
     dtype: torch.dtype | str | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Read only the official ``talker.*`` weights, fused onto the module layout.
-
-    The component prefix is stripped and the published per-expert MoE linears
-    are fused, so the result is exactly what
-    ``Qwen3OmniMoeTalkerForConditionalGeneration.state_dict()`` expects. Thinker,
-    encoder, and code2wav tensors are never materialised: the shards are opened
-    lazily and only the selected keys are read.
-    """
+    """Read only talker.* weights, strip the prefix and fuse per-expert linears."""
 
     directory = _resolve_checkpoint_directory(model_path)
     shards = _published_shards(directory, stage="talker")
@@ -780,13 +664,7 @@ def read_talker_state_dict(
 
 
 def _build_talker_shell(talker_config: Any) -> nn.Module:
-    """A meta-device ``Qwen3OmniMoeTalkerForConditionalGeneration``.
-
-    ``init_empty_weights`` keeps every parameter on meta so no random
-    initialisation is ever paid for -- the published weights are assigned
-    straight onto the module afterwards. Buffers (the rotary ``inv_freq``
-    tables, which the checkpoint does not carry) are deliberately left real.
-    """
+    """Build meta talker parameters, leaving non-checkpoint rotary buffers real."""
 
     from importlib import import_module
 
@@ -810,12 +688,7 @@ def build_suppress_mask(
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    """The additive ``[vocab_size]`` mask for suppressed codec tokens.
-
-    ``-inf`` on suppressed ids and ``0`` elsewhere, so adding it to the codec
-    logits removes those ids from the greedy argmax. Built once per request
-    rather than per step.
-    """
+    """Build an additive vocabulary mask: -inf for suppressed IDs, zero elsewhere."""
 
     unique = sorted({int(token_id) for token_id in suppress_tokens})
     invalid = [token_id for token_id in unique if not 0 <= token_id < vocab_size]
@@ -833,13 +706,7 @@ def mask_suppressed_logits(
     logits: torch.Tensor,
     suppress: Sequence[int] | torch.Tensor | None,
 ) -> torch.Tensor:
-    """Apply codec suppression *before* the layer-0 argmax.
-
-    ``suppress`` is either ``None``, a sequence of token ids, or an already built
-    additive mask from :func:`build_suppress_mask` (the cheap per-step path).
-    Returns ``logits`` unchanged when nothing is suppressed, matching
-    ``Qwen3OmniMoeTalkerForConditionalGeneration.generate``'s ``suppress_tokens``.
-    """
+    """Suppress codec logits using token IDs or a prebuilt additive mask."""
 
     if suppress is None:
         return logits
@@ -867,14 +734,7 @@ def mask_suppressed_logits(
 
 @dataclass
 class TorchMpsTalkerStep:
-    """One talker step: the layer-0 token, its hidden row, codes, and feedback.
-
-    ``codes`` holds ``num_code_groups`` codes in official group order (group 0 is
-    the codec-head token). ``feedback`` is the single summed code embedding row
-    that the *next* talker step adds to its text contribution.
-    ``past_key_values`` is the outer talker cache and is the only state that
-    survives the step.
-    """
+    """Ordered codec groups, summed next-step feedback, and the outer talker cache."""
 
     layer0_token: torch.Tensor
     hidden: torch.Tensor
@@ -884,18 +744,7 @@ class TorchMpsTalkerStep:
 
 
 class Qwen3OmniTorchMpsTalker(nn.Module):
-    """The split talker with an eager Torch MPS forward.
-
-    Only the ``talker.*`` namespace is resident: the thinker, the encoders, and
-    code2wav all run in their own stages and are never instantiated here. The
-    conditional-generation *wrapper* is built (it owns the projections, the codec
-    head, and the code predictor) but its ``forward`` is bypassed on purpose --
-    it derives M-RoPE positions from ``talker_input_ids``, mutates
-    ``self.rope_deltas``, and returns ``hidden_states`` as a
-    ``(hidden_states, residual_codes)`` tuple that never carries the last hidden
-    row the predictor needs. The inner ``Qwen3OmniMoeTalkerModel`` is called
-    directly instead, and ``codec_head`` is applied to its ``last_hidden_state``.
-    """
+    """Eager split talker; call the inner HF model to expose the predictor's hidden row."""
 
     def __init__(
         self,
@@ -909,33 +758,13 @@ class Qwen3OmniTorchMpsTalker(nn.Module):
         torch_dtype = resolve_dtype(dtype) or torch.float32
         talker_config = load_talker_config(model_path)
 
-        from sglang_omni.models.qwen3_omni.apple_runtime import (
-            get_qwen3_omni_mps_quantization,
-        )
-
-        bits = get_qwen3_omni_mps_quantization()
         started = time.perf_counter()
         talker = _build_talker_shell(talker_config)
-        if bits is not None:
-            from sglang_omni.models.qwen3_omni.torch_mps_checkpoint import (
-                load_quantized_mps_module,
-            )
+        state = read_talker_state_dict(model_path, dtype=torch_dtype)
+        _assign_state_dict(talker, state, component="talker")
+        state.clear()
 
-            talker = load_quantized_mps_module(
-                talker,
-                model_path,
-                prefix="talker.",
-                bits=bits,
-                dtype=torch_dtype,
-                device=self._device,
-            )
-        else:
-            state = read_talker_state_dict(model_path, dtype=torch_dtype)
-            _assign_state_dict(talker, state, component="talker")
-            state.clear()
-
-        if bits is None:
-            talker = talker.to(device=self._device, dtype=torch_dtype)
+        talker = talker.to(device=self._device, dtype=torch_dtype)
         self.talker = talker.eval()
         self.config = talker_config
         self._num_code_groups = int(talker_config.num_code_groups)
@@ -1021,11 +850,7 @@ class Qwen3OmniTorchMpsTalker(nn.Module):
         past_key_values: Any = None,
         suppress_tokens: Sequence[int] | torch.Tensor | None = None,
     ) -> TorchMpsTalkerStep:
-        """Run one talker forward and expand its code frame.
-
-        ``rows`` are already-projected talker-space rows (a whole prompt for a
-        prefill, one ``feedback + next_text_row`` for a decode).
-        """
+        """Expand a code frame from projected prompt rows or one feedback+text row."""
 
         embeds = self._as_step_rows(rows, name="talker rows")
         positions = self._as_positions(mrope_positions, length=int(embeds.shape[1]))
@@ -1053,21 +878,7 @@ class Qwen3OmniTorchMpsTalker(nn.Module):
         layer0: torch.Tensor,
         talker_hidden: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Expand one layer-0 token into ordered codes and one feedback row.
-
-        The ordering is Transformers' own: the predictor is prompted with
-        ``[talker_hidden_row, layer0_code_embedding]`` (whose two-row prefill
-        selects ``generation_steps=0``), head ``g`` emits group ``g + 1``, and
-        each emitted code is fed back through the predictor's
-        ``codec_embedding[g]``. The feedback row is the sum of the selected code
-        embeddings across every group -- upstream's
-        ``last_id_hidden + mid_residual_hiddens + last_residual_hidden``.
-
-        A fresh cache is allocated here and dropped on return, so no residual
-        group-expansion state can leak into the next outer talker token. The
-        final group is never fed back through the stack (upstream only embeds it
-        for the sum), so its forward is not run.
-        """
+        """Expand ordered codec groups with a fresh cache; sum embeddings as feedback."""
 
         from transformers.cache_utils import DynamicCache
 
@@ -1141,17 +952,7 @@ class _TalkerPrefillTextModel(nn.Module):
 
 
 class TorchMpsTalkerPrefillShim(nn.Module):
-    """A CPU float32 view of the Torch MPS talker's prompt-building surface.
-
-    ``TalkerPrefillBuilder`` reads ``model.model.codec_embedding.weight.device``
-    and ``model.activation_dtype`` and then builds every prompt and pending-text
-    row on that device in that dtype. Handing it the live MPS talker would put
-    the request-owned queues on Metal; handing it SGLang's zero-weight stub would
-    produce silently wrong prompts. The Torch MPS path instead uses the model's
-    own projections and codec embedding, copied once to CPU float32, so the
-    pending text/feedback rows stay host tensors and only the single row a step
-    consumes crosses to the device.
-    """
+    """Copy the loaded talker's prompt surface to CPU float32 for host queues."""
 
     def __init__(
         self,

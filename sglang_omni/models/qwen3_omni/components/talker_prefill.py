@@ -250,18 +250,10 @@ def _packed_embedding_rows(
     )
 
     if get_qwen3_omni_mps_quantization() is not None:
-        from sglang_omni.models.qwen3_omni.torch_mps_quantization import (
-            dequantize_affine_rows,
+        raise ValueError(
+            "Torch MPS HF INT4 requires dense thinker embeddings; "
+            "MLX affine embedding conversion is not supported"
         )
-
-        quantization = source.quantization or {}
-        if quantization.get("mode", "affine") != "affine":
-            raise ValueError("Torch MPS embedding loading requires affine quantization")
-        return dequantize_affine_rows(
-            *_packed_embedding_tensors(source, row_ids),
-            bits=int(quantization["bits"]),
-            group_size=int(quantization["group_size"]),
-        ).float()
 
     import mlx.core as mx
     import numpy as np
