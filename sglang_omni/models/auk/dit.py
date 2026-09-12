@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
+from types import MethodType
 
 import torch
 import torch.nn.functional as F
@@ -504,6 +505,18 @@ class AuKDit(nn.Module):
 
     def clear_cache(self) -> None:
         self.text_cond, self.text_uncond = None, None
+
+    def enable_compiled_blocks(self) -> None:
+        """Fold each block's elementwise chain into its matmul stream.
+
+        Compiling the unbound class forward gives all blocks of a kind one
+        graph: inline_inbuilt_nn_modules feeds the parameters in as inputs, so
+        the 30 blocks of the released checkpoint cost two compiles, not 30.
+        """
+        for blocks in (self.transformer_blocks, self.single_transformer_blocks):
+            compiled = torch.compile(type(blocks[0]).forward, dynamic=True)
+            for block in blocks:
+                block.forward = MethodType(compiled, block)
 
     @property
     def dtype(self) -> torch.dtype:
