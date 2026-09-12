@@ -373,6 +373,7 @@ class OmniScheduler:
         # can reach the in-flight step. See _event_loop_async_decode.
         self._async_pending = None
         self.forward_ct = 0
+        self.processed_tokens_counter = 0
         self.return_health_check_ct = 0
         self.num_retracted_reqs = 0
         self.num_paused_reqs = 0
@@ -431,6 +432,7 @@ class OmniScheduler:
         self.enable_trace = False
         self.enable_hierarchical_cache = False
         self.enable_hicache_storage = False
+        self.enable_unified_cache_external_linker = False
         self.enable_kv_cache_events = False
         self.is_generation = True
         self.skip_tokenizer_init = True
@@ -503,6 +505,10 @@ class OmniScheduler:
         self.ipc_channels = _OmniIpcChannels(self)
         self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
         self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        # Older reporters have no per-stage recorder; upstream treats None as disabled.
+        self.scheduler_stage_metrics = getattr(
+            self.metrics_reporter, "scheduler_stage_metrics", None
+        )
         self._init_upstream_scheduler_components()
 
         self._running = False
@@ -1244,6 +1250,7 @@ class OmniScheduler:
             req._coalesce_enqueue_t = time.perf_counter()
             req._omni_terminal_claimed = False
             req._omni_data = req_data
+            req.arrival_processed_tokens = self.processed_tokens_counter
             self.waiting_queue.append(req)
 
         if request_admission_lock_held:
@@ -1430,6 +1437,8 @@ class OmniScheduler:
     def _stamp_batch_launch(self, batch) -> None:
         """Mirror upstream per-forward bookkeeping for custom runner paths."""
         self.forward_ct += 1
+        if batch.extend_num_tokens:
+            self.processed_tokens_counter += batch.extend_num_tokens
         batch.forward_iter = self.forward_ct
         batch.launch_ts = time.monotonic()
         batch.after_idle_gap = self._sched_idled

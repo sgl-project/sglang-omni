@@ -635,6 +635,33 @@ with open("output.wav", "wb") as f:
     f.write(audio_data)
 ```
 
+<a id="apple-silicon-mlx"></a>
+## Apple Silicon (MLX)
+
+Qwen3-Omni supports an opt-in native MLX backend on macOS Apple Silicon. Install
+`mlx>=0.32.2` and `mlx-lm>=0.31.2`, then use the complete
+`mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` checkpoint directory. No
+checkpoint conversion or `mlx-vlm` dependency is required.
+
+```bash
+SGLANG_USE_MLX=1 python -m sglang_omni.cli serve \
+  --model-path /path/to/Qwen3-Omni-30B-A3B-Instruct-4bit \
+  --host 127.0.0.1 --port 8008
+```
+
+Use `--text-only` to disable speech output. For video input where the default
+decoder is unavailable, set `SGLANG_OMNI_VIDEO_READER=pyav`.
+
+The MLX path runs the vision encoder, audio encoder, thinker, talker, code
+predictor, and code2wav natively; preprocessing and token decoding remain on
+CPU. It uses one Metal device and supports one running request with greedy
+decoding only (`temperature: 0`). Unsupported sampling and logprob settings
+are rejected. There is no fallback to Torch MPS.
+
+For multimodal requests, keep `messages[].content` as text and pass media in
+the top-level `images`, `audios`, or `videos` arrays. See the examples
+above for request shapes.
+
 ## Request Parameters
 
 The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for Qwen3-Omni.

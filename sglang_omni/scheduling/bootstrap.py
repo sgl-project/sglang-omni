@@ -48,9 +48,15 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
     """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
+    from sglang_omni.model_runner.external_model_worker import uses_external_forward
+
     if use_mlx():
         # note (yexiaodong): The MLX stub has no Torch graph lifecycle because
         # native MLX lazy evaluation owns graph execution.
+        return
+    if uses_external_forward(model_worker):
+        # The stage's own runner owns every forward, so this worker holds no
+        # Torch model and no attention backend to capture a graph around.
         return
     if not model_worker.enable_prefill_input_embeds:
         # Required even when graphs are disabled: SGLang installs its eager
@@ -150,8 +156,21 @@ def create_sglang_infrastructure(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         kv_cache_bytes=kv_cache_bytes,
         enable_prefill_input_embeds=enable_prefill_input_embeds,
+        capture_hidden_layers=(
+            tuple(int(layer) for layer in capture_hidden_layers)
+            if capture_hidden_layers
+            else None
+        ),
     )
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    from sglang_omni.model_runner.external_model_worker import (
+        EXTERNAL_FORWARD_ARCHITECTURES,
+        uses_external_forward,
+    )
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        qwen3_omni_uses_apple_backend,
+    )
 
     if use_mlx():
         # Note (Jiaxin Deng): the MLX worker sizes no SGLang KV pool, so a
@@ -163,12 +182,18 @@ def create_sglang_infrastructure(
             )
         from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
 
+        # A native MLX load or architecture failure must propagate.
         model_worker = create_mlx_model_worker(
             config=worker_config,
             server_args=server_args,
             gpu_id=gpu_id,
             tp_rank=tp_rank,
         )
+    elif (
+        model_arch_override in EXTERNAL_FORWARD_ARCHITECTURES
+        and qwen3_omni_uses_apple_backend()
+    ):
+        raise ValueError("Qwen3-Omni on Apple Silicon requires SGLANG_USE_MLX=1")
     else:
         model_worker = ModelWorker(
             config=worker_config,
@@ -177,7 +202,11 @@ def create_sglang_infrastructure(
             tp_rank=tp_rank,
         )
 
-    if capture_hidden_layers:
+    if (
+        capture_hidden_layers
+        and not use_mlx()
+        and not uses_external_forward(model_worker)
+    ):
         from sglang_omni.model_runner._hidden_capture import (
             install_hidden_capture_hooks,
         )

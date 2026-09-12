@@ -170,7 +170,8 @@ class ShmRelay(Relay):
 
         try:
             shm = shm_create_from_tensor(tensor)
-            size_bytes = shm.size
+            # macOS rounds SHM allocations to pages; padding is not tensor data.
+            size_bytes = tensor.numel() * tensor.element_size()
             metadata = {
                 "engine_id": self.engine_id,
                 "transfer_info": {

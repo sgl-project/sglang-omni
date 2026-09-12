@@ -17,6 +17,7 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+from sglang_omni.models.qwen3_omni.apple_runtime import qwen3_omni_uses_mlx_backend
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
     Code2WavRunResult,
@@ -148,9 +149,17 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         enable_output_overlap: bool = True,
         enable_cuda_graph: bool = False,
         _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
+        backend: str = "torch",
     ):
+        if backend not in ("torch", "mlx"):
+            raise ValueError(f"unsupported code2wav backend {backend!r}")
         self._model = model
+        self._backend = backend
         self._device = torch.device(device)
+        if self._backend == "mlx":
+            enable_output_overlap = False
+            enable_batching = False
+            enable_cuda_graph = False
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
         self._left_context_size = max(int(left_context_size), 0)
         self._codec_eos_token_id = codec_eos_token_id
@@ -232,7 +241,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
     ) -> torch.Tensor:
         del request_id, state
-        return codes.to(device=self._device, dtype=torch.long)
+        target = torch.device("cpu") if self._backend == "mlx" else self._device
+        return codes.to(device=target, dtype=torch.long)
 
     def ingest(
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
@@ -558,6 +568,21 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         *,
         graph_eligible: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
+        if self._backend == "mlx":
+            import mlx.core as mx
+
+            mlx_codes = mx.array(codes.detach().cpu().numpy()).astype(mx.int32)
+            mlx_wav = self._model(mlx_codes)
+            mx.eval(mlx_wav)
+            output = torch.from_numpy(
+                np.ascontiguousarray(np.asarray(mlx_wav.astype(mx.float32)))
+            )
+            return output, {
+                "execution_mode": "mlx_eager",
+                "graph_key": None,
+                "fallback_reason": None,
+            }
+
         with torch.no_grad():
             if self._device.type != "cpu":
                 torch.get_device_module(self._device).set_device(self._device)
@@ -972,6 +997,11 @@ def create_code2wav_scheduler(
     """Factory: returns Code2WavScheduler."""
     from sglang_omni.utils.device import resolve_concrete_device
 
+    use_mlx = qwen3_omni_uses_mlx_backend()
+    if use_mlx:
+        enable_batching = False
+        enable_output_overlap = False
+        enable_cuda_graph = False
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(
             "Code2Wav device graph requires gpu_memory_fraction "
@@ -981,7 +1011,18 @@ def create_code2wav_scheduler(
     device = str(concrete_device)
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)
-    model = load_code2wav_model(model_path, device=device, dtype=dtype)
+    if use_mlx:
+        from sglang_omni.models.qwen3_omni.mlx.code2wav import (
+            load_qwen3_omni_mlx_code2wav,
+        )
+
+        model = load_qwen3_omni_mlx_code2wav(model_path)
+        backend = "mlx"
+        backend_marker = "Qwen3-Omni code2wav scheduler backend=native_mlx"
+    else:
+        model = load_code2wav_model(model_path, device=device, dtype=dtype)
+        backend = "torch"
+        backend_marker = "Qwen3-Omni code2wav scheduler backend=torch"
     cuda_graph_runner = None
     if enable_cuda_graph:
         if enable_batching:
@@ -1021,9 +1062,10 @@ def create_code2wav_scheduler(
                 separators=(",", ":"),
             ),
         )
-    return Code2WavScheduler(
+    scheduler = Code2WavScheduler(
         model,
         device=device,
+        backend=backend,
         stream_chunk_size=stream_chunk_size,
         left_context_size=left_context_size,
         enable_batching=enable_batching,
@@ -1035,3 +1077,5 @@ def create_code2wav_scheduler(
         enable_cuda_graph=enable_cuda_graph,
         _cuda_graph_runner=cuda_graph_runner,
     )
+    logger.info(backend_marker)
+    return scheduler

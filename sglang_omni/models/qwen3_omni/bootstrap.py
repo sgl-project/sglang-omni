@@ -26,6 +26,7 @@ def create_thinker_scheduler(
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+    from sglang_omni.models.qwen3_omni.apple_runtime import qwen3_omni_uses_mlx_backend
     from sglang_omni.models.qwen3_omni.request_builders import (
         make_thinker_scheduler_adapters,
         make_thinker_stream_output_builder,
@@ -89,14 +90,24 @@ def create_thinker_scheduler(
     def _should_generate_qwen_audio_output(request: Any) -> bool:
         return should_generate_audio_output(request.data.stage_payload)
 
+    # Native MLX supplies captures directly instead of installing Torch hooks.
+    uses_mlx = qwen3_omni_uses_mlx_backend()
+    capture_from_model = capture_hidden_layers and not uses_mlx
+
     output_proc = SGLangOutputProcessor(
         capture_hidden=capture_hidden,
         capture_hidden_layers=capture_hidden_layers,
-        model=model_worker.model_runner.model if capture_hidden_layers else None,
+        model=model_worker.model_runner.model if capture_from_model else None,
         should_emit_hidden=_should_generate_qwen_audio_output,
     )
 
-    if speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
+    if uses_mlx:
+        from sglang_omni.models.qwen3_omni.mlx.runner import (
+            Qwen3OmniMlxSchedulerModelRunner,
+        )
+
+        model_runner = Qwen3OmniMlxSchedulerModelRunner(model_worker, output_proc)
+    elif speech_enabled and prefill_graph_backend != CudaGraphBackend.BREAKABLE:
         model_runner = ThinkerModelRunner(model_worker, output_proc)
     else:
         model_runner = Qwen3OmniThinkerModelRunner(model_worker, output_proc)
@@ -111,7 +122,13 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
     )
-    stream_output_builder = make_thinker_stream_output_builder()
+    stream_output_builder = (
+        make_thinker_stream_output_builder(
+            mlx_prompt_hidden_layer=model_config.hf_config.talker_config.accept_hidden_layer
+        )
+        if uses_mlx and speech_enabled
+        else make_thinker_stream_output_builder()
+    )
 
     return OmniScheduler(
         tp_worker=model_worker,
@@ -124,6 +141,8 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=stream_output_builder,
+        # Release the native MLX thinker's per-request KV cache on abort.
+        abort_callback=getattr(model_runner, "abort_request", None),
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
@@ -149,6 +168,8 @@ def create_talker_scheduler(
     del speech_enabled
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
+    from sglang_omni.model_runner.external_model_worker import uses_external_forward
+    from sglang_omni.models.qwen3_omni.apple_runtime import qwen3_omni_uses_mlx_backend
     from sglang_omni.models.qwen3_omni.request_builders import (
         make_talker_scheduler_adapters,
     )
@@ -162,6 +183,15 @@ def create_talker_scheduler(
         init_sglang_cuda_graphs,
     )
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+
+    uses_mlx = qwen3_omni_uses_mlx_backend()
+    if uses_mlx and enable_partial_start:
+        # The Apple profile already disables partial talker start; the native
+        # MLX talker refuses it explicitly rather than speculating on future
+        # text rows it has no queue for.
+        raise ValueError(
+            "Apple Qwen3-Omni MLX talker does not support partial talker start"
+        )
 
     want_cuda_graph = configure_talker_server_args(
         server_args,
@@ -192,7 +222,10 @@ def create_talker_scheduler(
     _runner_cfg = model_worker.model_runner.model_config
     if _runner_cfg is not model_config:
         _runner_cfg.vocab_size = _codec_vocab_size
-    model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
+    if not uses_external_forward(model_worker):
+        # An external-forward worker holds SGLang's zero-weight stub model and
+        # no sampler; its own runner supplies greedy codec token ids instead.
+        model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
         # Equivalent to init_cuda_graphs() while the talker requests no prefill
         # embeds slot, but keeps both stages on one path so enabling talker
@@ -202,8 +235,25 @@ def create_talker_scheduler(
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
         capture_hidden_layers=None,
-        model=model_worker.model_runner.model,
+        # The MLX worker holds SGLang's zero-weight stub model. Nothing in
+        # this processor reads ``model`` while ``capture_hidden`` is False, so the
+        # stub is withheld rather than handed on.
+        model=None if uses_mlx else model_worker.model_runner.model,
     )
+
+    from sglang_omni.models.qwen3_omni.components.talker_prefill import (
+        TalkerPrefillBuilder,
+    )
+
+    prefill_model = model_worker.model_runner.model
+    prefill_builder = None
+    if uses_mlx:
+        prefill_builder = getattr(model_worker, "mlx_talker_prefill_builder", None)
+        if prefill_builder is None:
+            raise RuntimeError(
+                "Apple Qwen3-Omni MLX talker worker exposed no "
+                "Qwen3OmniMlxTalkerPrefillBuilder; the talker weights did not load"
+            )
 
     tokenizer = get_tokenizer(
         model_config.model_path,
@@ -213,6 +263,28 @@ def create_talker_scheduler(
     thinker_config = root_config.thinker_config
     talker_config = root_config.talker_config
     codec_vocab_size = talker_config.text_config.vocab_size
+    if prefill_builder is None:
+        prefill_builder = TalkerPrefillBuilder(
+            model=prefill_model,
+            model_path=model_config.model_path,
+            audio_token_id=thinker_config.audio_token_id,
+            image_token_id=thinker_config.image_token_id,
+            video_token_id=thinker_config.video_token_id,
+            tts_bos_token_id=root_config.tts_bos_token_id,
+            tts_eos_token_id=root_config.tts_eos_token_id,
+            tts_pad_token_id=root_config.tts_pad_token_id,
+            im_start_token_id=root_config.im_start_token_id,
+            im_end_token_id=root_config.im_end_token_id,
+            system_token_id=root_config.system_token_id,
+            user_token_id=root_config.user_token_id,
+            assistant_token_id=root_config.assistant_token_id,
+            codec_bos_id=talker_config.codec_bos_id,
+            codec_nothink_id=talker_config.codec_nothink_id,
+            codec_think_bos_id=talker_config.codec_think_bos_id,
+            codec_think_eos_id=talker_config.codec_think_eos_id,
+            codec_pad_id=talker_config.codec_pad_id,
+            speaker_map=talker_config.speaker_id,
+        )
     (
         request_builder,
         result_adapter,
@@ -221,8 +293,7 @@ def create_talker_scheduler(
     ) = make_talker_scheduler_adapters(
         tokenizer=tokenizer,
         codec_vocab_size=codec_vocab_size,
-        model=model_worker.model_runner.model,
-        model_path=model_config.model_path,
+        prefill_builder=prefill_builder,
         thinker_config=thinker_config,
         required_aux_hidden_key=talker_config.accept_hidden_layer,
         codec_bos_id=talker_config.codec_bos_id,
@@ -261,11 +332,41 @@ def create_talker_scheduler(
         im_end_token_id=root_config.im_end_token_id,
     )
 
-    model_runner = QwenTalkerModelRunner(
-        model_worker,
-        output_proc,
-        scheduler.outbox,
-        feedback_enabled=feedback_enabled,
-    )
+    if uses_mlx:
+        model_runner = _build_talker_mlx_model_runner(
+            model_worker,
+            output_proc,
+            scheduler.outbox,
+            feedback_enabled=feedback_enabled,
+        )
+    else:
+        model_runner = QwenTalkerModelRunner(
+            model_worker,
+            output_proc,
+            scheduler.outbox,
+            feedback_enabled=feedback_enabled,
+        )
     scheduler.bind_model_runner(model_runner)
     return scheduler
+
+
+def _build_talker_mlx_model_runner(
+    model_worker: Any,
+    output_processor: Any,
+    outbox: Any,
+    *,
+    feedback_enabled: bool,
+):
+    """Build the native MLX talker model runner around the loaded weights."""
+
+    from sglang_omni.models.qwen3_omni.mlx.runner import (
+        build_qwen3_omni_talker_mlx_runner,
+    )
+
+    return build_qwen3_omni_talker_mlx_runner(
+        tp_worker=model_worker,
+        output_processor=output_processor,
+        outbox=outbox,
+        mlx_talker=getattr(model_worker, "mlx_talker", None),
+        feedback_enabled=feedback_enabled,
+    )

@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Apple Silicon native MLX deployment profile.
+# Canonical checkpoint:
+#   mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit
+
+config_cls: Qwen3OmniSpeechPipelineConfig
+name: qwen3-omni-apple-mlx
+model_path: mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit
+stages:
+  code2wav:
+    gpu_memory_fraction: null

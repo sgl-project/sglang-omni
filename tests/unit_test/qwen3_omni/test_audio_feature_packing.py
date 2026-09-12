@@ -47,6 +47,17 @@ def test_ragged_batch() -> None:
     torch.testing.assert_close(out, _reference(feats, mask))
 
 
+def test_ragged_batch_preserves_sample_then_frame_order() -> None:
+    feats = torch.zeros(2, MEL, 4)
+    feats[0, :, :2] = torch.tensor([10.0, 11.0]).repeat(MEL, 1)
+    feats[1, :, :3] = torch.tensor([20.0, 21.0, 22.0]).repeat(MEL, 1)
+    mask = _prefix_mask([2, 3], 4)
+
+    out = pack_padded_audio_features(feats, mask, mask.sum(dim=1))
+
+    assert out[0].tolist() == [10.0, 11.0, 20.0, 21.0, 22.0]
+
+
 def test_non_prefix_mask_falls_back_to_gather() -> None:
     feats = torch.randn(2, MEL, 10)
     mask = torch.ones(2, 10, dtype=torch.long)

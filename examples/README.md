@@ -49,6 +49,35 @@ python examples/run_omni.py qwen3-speech-server \
   --model-name qwen3-omni
 ```
 
+Apple Silicon native MLX text and audio output (standard CLI, not a launcher
+preset). Set `MODEL_DIR` to the existing
+`mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` checkpoint directory containing
+all weight shards (a configuration-only Hub snapshot is insufficient).
+No checkpoint conversion or dense sidecar is needed:
+
+```bash
+SGLANG_USE_MLX=1 python -m sglang_omni.cli serve \
+  --model-path "$MODEL_DIR" \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+Apple Silicon dense Torch MPS text-only output:
+
+```bash
+env -u SGLANG_USE_MLX -u SGLANG_QWEN3_OMNI_MPS_QUANTIZATION \
+  python -m sglang_omni.cli serve \
+  --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+The Apple server process stays in the foreground and should be supervised
+externally for deployment. See the
+[Apple installation guide](../docs/get_started/installation.md#macos-apple-silicon)
+to reuse an existing MLX virtualenv without changing its editable installs.
+
 Qwen3-Omni FP8, one-GPU colocated H100/H20:
 
 ```bash

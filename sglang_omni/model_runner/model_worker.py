@@ -33,6 +33,10 @@ class ModelWorkerConfig:
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
+    # Decoder layers whose inputs a stage needs captured (0 == the embedding
+    # row). Torch workers install capture hooks from the same list; a native
+    # backend worker reads it here because it owns its own forward.
+    capture_hidden_layers: tuple[int, ...] | None = None
 
 
 @dataclass(slots=True)
@@ -73,6 +77,7 @@ class ModelWorker:
         self.total_gpu_memory_fraction = config.total_gpu_memory_fraction
         self.kv_cache_bytes = config.kv_cache_bytes
         self.enable_prefill_input_embeds = config.enable_prefill_input_embeds
+        self.capture_hidden_layers = config.capture_hidden_layers
 
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank

@@ -161,35 +161,29 @@ class MlxSchedulerModelRunner(ModelRunner):
         )
 
 
-def create_mlx_model_worker(
+def _create_qwen3_asr_mlx_worker(
     *,
     config: Any,
     server_args: Any,
     gpu_id: int,
     tp_rank: int = 0,
 ):
-    """Construct an MLX worker with the same scheduler-facing contract as Omni."""
-    if config.model_arch_override != "Qwen3ASRForConditionalGeneration":
-        raise NotImplementedError(
-            "Omni's MLX worker currently supports only "
-            "Qwen3ASRForConditionalGeneration"
-        )
-
-    from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+    """Construct the Qwen3-ASR MLX worker with Omni's scheduler contract."""
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-    from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
     from sglang.srt.runtime_context import (
         get_device,
         get_exec,
         get_memory,
         get_model,
-        get_parallel,
         get_schedule,
-        publish,
     )
-    from sglang.srt.server_args import PortArgs
 
+    from sglang_omni.model_runner.external_model_worker import (
+        _build_parallel_state,
+        _publish_scheduler_runtime_context,
+        _resolve_nccl_port,
+    )
     from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
 
     class OmniQwen3ASRMlxWorker(MlxTpModelWorker):
@@ -198,7 +192,7 @@ def create_mlx_model_worker(
             return self.ps.tp_rank
 
         def _init_model_runner(self):
-            MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
+            MlxModelRunnerStub.validate_startup_weight_load_mode()
             runner_class = make_qwen3_asr_mlx_runner_class()
             init_kwargs = {
                 "model_path": get_model().model_path,
@@ -241,43 +235,70 @@ def create_mlx_model_worker(
         def get_attention_tp_cpu_group(self):
             return self.model_runner.attention_tp_group.cpu_group
 
-    publish(server_args, role="scheduler")
-    attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
-        compute_dp_attention_world_info(
-            get_parallel().enable_dp_attention,
-            tp_rank,
-            get_parallel().tp_size,
-            get_parallel().dp_size,
-            get_parallel().attn_cp_size,
-        )
-    )
-    ps = ParallelState(
-        tp_rank=tp_rank,
-        tp_size=get_parallel().tp_size,
-        pp_rank=0,
-        pp_size=1,
-        dp_rank=None,
-        dp_size=get_parallel().dp_size,
-        attn_tp_rank=attn_tp_rank,
-        attn_tp_size=attn_tp_size,
-        attn_cp_rank=0,
-        attn_cp_size=get_parallel().attn_cp_size,
-        attn_dcp_rank=tp_rank % get_parallel().dcp_size,
-        attn_dcp_size=get_parallel().dcp_size,
-        attn_dp_rank=attn_dp_rank,
-        attn_dp_size=attn_dp_size,
-        moe_ep_rank=0,
-        moe_ep_size=1,
-        moe_dp_rank=None,
-        moe_dp_size=get_parallel().moe_dp_size,
-        gpu_id=gpu_id,
-    )
-    nccl_port = config.nccl_port
-    if nccl_port is None:
-        nccl_port = PortArgs.init_new(server_args).nccl_port
+    _publish_scheduler_runtime_context(server_args)
+    ps = _build_parallel_state(server_args, gpu_id=gpu_id, tp_rank=tp_rank)
+    nccl_port = _resolve_nccl_port(server_args, config.nccl_port)
     return OmniQwen3ASRMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
         ps=ps,
         nccl_port=nccl_port,
+    )
+
+
+def _create_qwen3_omni_mlx_worker(
+    *,
+    config: Any,
+    server_args: Any,
+    gpu_id: int,
+    tp_rank: int = 0,
+):
+    """Deferred entry point for the Qwen3-Omni MLX worker.
+
+    The Omni runner module subclasses this module's ``MlxSchedulerModelRunner``,
+    so the import must stay one-directional at module-import time.
+    """
+    from sglang_omni.models.qwen3_omni.mlx.runner import create_qwen3_omni_mlx_worker
+
+    return create_qwen3_omni_mlx_worker(
+        config=config,
+        server_args=server_args,
+        gpu_id=gpu_id,
+        tp_rank=tp_rank,
+    )
+
+
+# Architecture -> MLX worker factory. Each stage owns its own native runner, so
+# dispatch is a table rather than a chain of architecture conditionals.
+_MLX_WORKER_FACTORIES = {
+    "Qwen3ASRForConditionalGeneration": _create_qwen3_asr_mlx_worker,
+    "Qwen3OmniThinkerForCausalLM": _create_qwen3_omni_mlx_worker,
+    "Qwen3OmniTalker": _create_qwen3_omni_mlx_worker,
+}
+
+
+def create_mlx_model_worker(
+    *,
+    config: Any,
+    server_args: Any,
+    gpu_id: int,
+    tp_rank: int = 0,
+):
+    """Construct an MLX worker with the same scheduler-facing contract as Omni.
+
+    MLX was explicitly requested by the caller, so an unsupported architecture
+    or a failing MLX load is raised here and never silently retried on another
+    backend.
+    """
+    factory = _MLX_WORKER_FACTORIES.get(config.model_arch_override)
+    if factory is None:
+        raise NotImplementedError(
+            "Omni's MLX worker supports "
+            f"{sorted(_MLX_WORKER_FACTORIES)}; got {config.model_arch_override!r}"
+        )
+    return factory(
+        config=config,
+        server_args=server_args,
+        gpu_id=gpu_id,
+        tp_rank=tp_rank,
     )
