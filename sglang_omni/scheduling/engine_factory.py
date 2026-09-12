@@ -52,6 +52,18 @@ class SGLangGenerationEngineBuilder(ABC):
     # Set True only by builders whose model has adopted the breakable prefill
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
+    supports_full_prefill_cuda_graph: bool = False
+
+    def allowed_prefill_cuda_graph_backends(self) -> tuple[str, ...]:
+        """Prefill graph backends the policy may accept for this model.
+
+        The breakable backend stays in the set for every builder because
+        ``build`` refuses it separately with a message naming the contract;
+        the full backend is only valid where the model declares it.
+        """
+        if self.supports_full_prefill_cuda_graph:
+            return (CudaGraphBackend.BREAKABLE, CudaGraphBackend.FULL)
+        return (CudaGraphBackend.BREAKABLE,)
 
     def build(
         self,
@@ -170,6 +182,14 @@ class SGLangGenerationEngineBuilder(ABC):
                     "CUDA graph contract "
                     "(supports_breakable_prefill_cuda_graph=False); refusing "
                     "cuda_graph_backend_prefill='breakable'"
+                )
+            infra_kwargs.setdefault("enable_prefill_input_embeds", True)
+        if prefill_graph_backend == CudaGraphBackend.FULL:
+            if not self.supports_full_prefill_cuda_graph:
+                raise RuntimeError(
+                    f"{self.model_name} has not adopted the full prefill CUDA "
+                    "graph contract (supports_full_prefill_cuda_graph=False); "
+                    "refusing cuda_graph_backend_prefill='full'"
                 )
             infra_kwargs.setdefault("enable_prefill_input_embeds", True)
         want_cuda_graph, (
@@ -425,6 +445,7 @@ class AsrEngineBuilder(SGLangGenerationEngineBuilder):
         validate_generation_batch_policy(
             model_name=self.model_name,
             server_args=server_args,
+            allowed_prefill_backends=self.allowed_prefill_cuda_graph_backends(),
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
@@ -463,6 +484,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
             model_name=self.model_name,
             server_args=server_args,
             model_buffer_bs=self.get_model_buffer_bs(model),
+            allowed_prefill_backends=self.allowed_prefill_cuda_graph_backends(),
         )
 
     def make_scheduler(

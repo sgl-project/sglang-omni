@@ -109,16 +109,23 @@ HTTP **503** (`The request queue is full.`) before preprocessing, or later
 if the AR waiting queue or request-build backlog is full. Qwen3-TTS
 defaults to 4 request-build workers with pending depth 16.
 
-### Breakable prefill CUDA graphs
+### Prefill CUDA graphs
 
-Non-Base checkpoints (CustomVoice, VoiceDesign) default to the breakable
-prefill CUDA-graph backend with a token ladder up to 512:
+CustomVoice defaults to the full prefill CUDA-graph backend with a token
+ladder up to 512:
 
 | Knob | Meaning | Default |
 |---|---|---|
-| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` on CustomVoice, unset elsewhere |
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`full`, `breakable` or `disabled`) | `full` on CustomVoice, unset elsewhere |
 | `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
 | `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
+
+`full` replays the whole prefill forward as one graph; `breakable` captures
+per-layer segments and runs attention eagerly between them. Each backend is
+accepted only on models that declare it, so a stage that has not adopted
+`full` still rejects it. SGLang logs the full prefill backend as
+experimental and its own compatibility rules never auto-disable it, so the
+incompatibility list in the generation batch policy is what guards it here.
 
 The default is the shared ladder with one bucket added. A replay falls
 back to eager when its bucket exceeds twice the real token count, and the
@@ -133,10 +140,11 @@ Only CustomVoice takes this default, selected by the checkpoint's
 distribution differs, and VoiceDesign has not been measured; both keep the
 eager path.
 
-Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
-default costs extra graph capture during startup. Raising
-`cuda_graph_max_bs_prefill` on its own regrows the default ladder to the
-new cap; declaring `cuda_graph_bs_prefill` yourself keeps your list as is.
+Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`, or
+fall back to `breakable`. The default costs extra graph capture during
+startup. Raising `cuda_graph_max_bs_prefill` on its own regrows the default
+ladder to the new cap; declaring `cuda_graph_bs_prefill` yourself keeps your
+list as is.
 
 Raising `max_running_requests` does **not** automatically raise the waiting
 bound. For a ceiling-32 experiment:

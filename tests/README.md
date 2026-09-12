@@ -526,8 +526,9 @@ that happened to contain an older version of the test.
     full drain, and reset-then-reuse behavior.
   - deferred request admission completion, abort, and dependency-failure
     semantics.
-  - breakable prefill CUDA Graph policy: backend/cap/bucket validation, shared
-    cap-derived ladders, disable precedence, and capability/attestation wiring.
+  - prefill CUDA Graph policy: per-model backend eligibility, cap/bucket
+    validation, shared cap-derived ladders, disable precedence, and
+    capability/attestation wiring.
   - `ReferenceEncodeService` cache, same-key single-flight, timeout, failure,
     and revalidation semantics.
   - `StageOutputCache` thread safety: concurrent get/put byte-accounting,

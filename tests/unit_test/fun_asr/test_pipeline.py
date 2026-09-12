@@ -266,8 +266,14 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(monkeypatch) 
         256
     )
     assert infra_kwargs[-1]["enable_prefill_input_embeds"] is True
+    # note (luojiaxuan): Fun-ASR does not declare the full prefill backend, so
+    # the builder must hand the validator the breakable-only set.
     assert validations == [
-        {"model_name": "Fun-ASR", "server_args": scheduler.server_args}
+        {
+            "model_name": "Fun-ASR",
+            "server_args": scheduler.server_args,
+            "allowed_prefill_backends": ("breakable",),
+        }
     ]
     assert adapter_kwargs["audio_encoder_service"] is encoder_services[0]
     assert scheduler.request_build_max_workers == 8

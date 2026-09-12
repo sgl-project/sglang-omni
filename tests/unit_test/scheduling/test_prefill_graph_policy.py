@@ -88,14 +88,29 @@ def test_breakable_requires_cuda_graphs_enabled() -> None:
         )
 
 
-def test_non_breakable_prefill_backend_is_rejected() -> None:
-    for backend in ("full", "tc_piecewise"):
-        with pytest.raises(ValueError, match="must be 'breakable'"):
-            _validate(
-                _server_args(
-                    prefill_backend=backend,
+def test_full_prefill_backend_needs_the_model_to_declare_it() -> None:
+    # note (luojiaxuan): stages that build their own server args and call the
+    # validator directly, Qwen3-Omni thinker and talker_ar, never widen the set.
+    with pytest.raises(ValueError, match="must be one of 'breakable', 'disabled'"):
+        _validate(_server_args(prefill_backend="full", prefill_bs=(128,)))
+
+    validate_generation_batch_policy(
+        model_name="Test TTS",
+        server_args=_server_args(prefill_backend="full", prefill_bs=(128,)),
+        allowed_prefill_backends=("breakable", "full"),
+    )
+
+
+def test_piecewise_prefill_backend_is_rejected() -> None:
+    for allowed in (("breakable",), ("breakable", "full")):
+        with pytest.raises(ValueError, match="must be one of"):
+            validate_generation_batch_policy(
+                model_name="Test TTS",
+                server_args=_server_args(
+                    prefill_backend="tc_piecewise",
                     prefill_bs=(128,),
-                )
+                ),
+                allowed_prefill_backends=allowed,
             )
 
 
@@ -648,7 +663,7 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
         return _server_args(
-            prefill_backend="breakable",
+            prefill_backend=overrides.get("cuda_graph_backend_prefill", "breakable"),
             prefill_bs=overrides.get("cuda_graph_bs_prefill"),
             locked=_PREFILL_BS_LOCKED,
         )
@@ -687,6 +702,32 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
                 "cuda_graph_bs_prefill": [128, 256],
             },
         )
+
+    # note (luojiaxuan): the full backend is gated the same way.
+    with pytest.raises(RuntimeError, match="has not adopted the full prefill"):
+        NonAdoptingBuilder().build(
+            "model",
+            server_args_overrides={
+                "cuda_graph_backend_prefill": "full",
+                "cuda_graph_bs_prefill": [128, 256],
+            },
+        )
+
+
+def test_a_tts_builder_widens_the_policy_only_when_the_model_declares_full() -> None:
+    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+    class Breakable(TtsEngineBuilder):
+        model_name = "Breakable TTS"
+        context_length = 123
+        supports_breakable_prefill_cuda_graph = True
+
+    class Full(Breakable):
+        model_name = "Full TTS"
+        supports_full_prefill_cuda_graph = True
+
+    assert Breakable.allowed_prefill_cuda_graph_backends(Breakable) == ("breakable",)
+    assert Full.allowed_prefill_cuda_graph_backends(Full) == ("breakable", "full")
 
 
 def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets() -> None:
