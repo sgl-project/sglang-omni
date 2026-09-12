@@ -31,25 +31,31 @@ def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         sample_rate = audio_stream.rate
         frames = []
         for frame in container.decode(audio_stream):
-            arr = frame.to_ndarray()  # shape varies by format
-            if arr.ndim == 2:
-                # Planar formats (fltp, s16p, etc.): shape is (channels, samples)
-                # Average channels to mono
-                arr = arr.mean(axis=0)
-            frames.append(arr.flatten().astype(np.float32))
+            arr = frame.to_ndarray()
+            if np.issubdtype(arr.dtype, np.integer):
+                dtype_info = np.iinfo(arr.dtype)
+                if dtype_info.min == 0:
+                    midpoint = float(dtype_info.max + 1) / 2.0
+                    arr = (arr.astype(np.float32) - midpoint) / midpoint
+                else:
+                    scale = float(max(-int(dtype_info.min), int(dtype_info.max)))
+                    arr = arr.astype(np.float32) / scale
+            else:
+                arr = arr.astype(np.float32, copy=False)
+
+            channels = len(frame.layout.channels)
+            if frame.format.is_planar:
+                arr = arr.reshape(channels, -1).mean(axis=0)
+            else:
+                arr = arr.reshape(-1, channels).mean(axis=1)
+            frames.append(arr.astype(np.float32, copy=False))
     finally:
         container.close()
 
     if not frames:
         raise ValueError("No audio frames decoded")
 
-    audio = np.concatenate(frames)
-    # Normalize integer formats to [-1, 1] float range
-    if audio.max() > 1.0 or audio.min() < -1.0:
-        peak = max(abs(audio.max()), abs(audio.min()))
-        if peak > 0:
-            audio = audio / peak
-    return audio, int(sample_rate)
+    return np.concatenate(frames), int(sample_rate)
 
 
 def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int]:
