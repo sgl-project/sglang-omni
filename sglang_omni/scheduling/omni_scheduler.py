@@ -1728,11 +1728,15 @@ class OmniScheduler:
                 continue
 
             self._first_emit_done.discard(rid)
+            metadata = None
+            if data.result_ready_event is not None:
+                metadata = {"result_ready_event": data.result_ready_event}
             self.outbox.put(
                 OutgoingMessage(
                     request_id=rid,
                     type="result",
                     data=result,
+                    metadata=metadata,
                 )
             )
 

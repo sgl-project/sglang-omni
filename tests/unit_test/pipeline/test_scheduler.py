@@ -1158,7 +1158,7 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
     scheduler.inbox = Queue()
 
     req = SimpleNamespace(rid="req-wait")
-    request_data = SimpleNamespace(req=req)
+    request_data = SimpleNamespace(req=req, result_ready_event=None)
     req._omni_data = request_data
     scheduler.waiting_queue = [req]
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
@@ -1194,7 +1194,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
         is_retracted=True,
         kv=ReqKvInfo(),
     )
-    request_data = SimpleNamespace(req=req)
+    request_data = SimpleNamespace(req=req, result_ready_event=None)
     req._omni_data = request_data
     other_req = SimpleNamespace(rid="req-other")
     stale_batch = SimpleNamespace(
@@ -1265,6 +1265,7 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     request_data = SimpleNamespace(
         prefill_input_embeds=None,
         decode_input_embeds=None,
+        result_ready_event=None,
     )
     req = SimpleNamespace(
         rid="req-finished",
@@ -1396,6 +1397,41 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
     assert data.req is req
 
 
+@pytest.mark.parametrize("event", [object(), None])
+def test_stream_output_forwards_the_result_readiness_event(event) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    _init_terminal_output_state(scheduler)
+    scheduler.outbox = Queue()
+    scheduler._aborted_request_ids = set()
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
+    scheduler._result_adapter = lambda data: {"ok": True}
+
+    data = SimpleNamespace(
+        prefill_input_embeds=None, decode_input_embeds=None, result_ready_event=event
+    )
+    req = SimpleNamespace(
+        rid="req-ready",
+        _omni_data=data,
+        _omni_terminal_claimed=False,
+        output_ids=[1],
+        finished=lambda: True,
+        finished_reason=None,
+    )
+    data.req = req
+
+    scheduler.stream_output([req])
+
+    message = scheduler.outbox.get_nowait()
+    assert message.type == "result"
+    assert message.data == {"ok": True}
+    if event is None:
+        assert message.metadata is None
+    else:
+        assert message.metadata == {"result_ready_event": event}
+
+
 def test_stream_output_drains_runner_before_terminal_payload() -> None:
     """The runner hook must fire on a non-abort finish, and strictly before the
     terminal payload lands on the shared outbox."""
@@ -1409,7 +1445,9 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda data: {"ok": True}
 
-    data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
+    data = SimpleNamespace(
+        prefill_input_embeds=None, decode_input_embeds=None, result_ready_event=None
+    )
     scheduler._model_runner = SimpleNamespace(
         on_request_finished=lambda rid, req_data: calls.append(
             (rid, req_data, scheduler.outbox.qsize())
@@ -1450,7 +1488,9 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
         raise RuntimeError("finish hook failed")
 
     scheduler._model_runner = SimpleNamespace(on_request_finished=fail_finish_hook)
-    data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
+    data = SimpleNamespace(
+        prefill_input_embeds=None, decode_input_embeds=None, result_ready_event=None
+    )
     req = SimpleNamespace(
         rid="req-hook-error",
         finished=lambda: True,
@@ -1489,7 +1529,9 @@ def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
     scheduler._result_adapter = lambda _data: pytest.fail(
         "the result adapter must not run after a failed terminal flush"
     )
-    data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
+    data = SimpleNamespace(
+        prefill_input_embeds=None, decode_input_embeds=None, result_ready_event=None
+    )
     req = SimpleNamespace(
         rid="req-flush-error",
         finished=lambda: True,
@@ -1597,6 +1639,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     data = SimpleNamespace(
         prefill_input_embeds=None,
         decode_input_embeds=None,
+        result_ready_event=None,
     )
     req = Request(data)
     data.req = req
@@ -1709,7 +1752,9 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
     scheduler.tree_cache = None
     scheduler.waiting_queue = []
 
-    data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
+    data = SimpleNamespace(
+        prefill_input_embeds=None, decode_input_embeds=None, result_ready_event=None
+    )
     req = SimpleNamespace(
         rid="req-abort-wins",
         output_ids=[],
@@ -1797,6 +1842,7 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
         data = RequestData()
         data.prefill_input_embeds = None
         data.decode_input_embeds = None
+        data.result_ready_event = None
         req._omni_data = data
         data.req = req
         req_ref = weakref.ref(req)
@@ -1826,7 +1872,7 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
     scheduler._model_runner = SimpleNamespace(
         on_request_finished=lambda rid, _data: calls.append(rid)
     )
-    data = SimpleNamespace()
+    data = SimpleNamespace(result_ready_event=None)
     req = SimpleNamespace(
         rid="req-1",
         finished=lambda: True,
@@ -1854,7 +1900,9 @@ def test_stream_output_closes_late_stream_ingress() -> None:
     scheduler._prefill_end_done = set()
     scheduler._result_adapter = lambda _data: {"ok": True}
 
-    data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
+    data = SimpleNamespace(
+        prefill_input_embeds=None, decode_input_embeds=None, result_ready_event=None
+    )
     req = SimpleNamespace(
         rid="req-late-stream",
         finished=lambda: True,
@@ -2875,6 +2923,7 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
         req=req,
         enforce_request_limits=True,
         max_new_tokens=10,
+        result_ready_event=None,
     )
     scheduler._request_builder = lambda payload: request_data
 
@@ -3027,6 +3076,7 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     request_data = SimpleNamespace(
         prefill_input_embeds=torch.ones(1),
         decode_input_embeds=[torch.ones(1)],
+        result_ready_event=None,
     )
     req = SimpleNamespace(
         rid="req-adapter",

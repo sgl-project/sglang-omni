@@ -1546,7 +1546,17 @@ def apply_sglang_qwen3_tts_result(
         codes = torch.cat(
             [part.to(device=device, dtype=torch.long) for part in code_parts],
             dim=0,
-        ).cpu()
+        )
+        if codes.is_cuda:
+            # note(ratish): a pageable copy here would wait for the predictor
+            # queued by this step, the runtime waits the event off this thread.
+            host_codes = torch.empty(codes.shape, dtype=torch.long, pin_memory=True)
+            host_codes.copy_(codes, non_blocking=True)
+            data.result_ready_event = torch.cuda.Event()
+            data.result_ready_event.record()
+            codes = host_codes
+        else:
+            codes = codes.cpu()
     else:
         codes = torch.empty((0, 0), dtype=torch.long)
 
@@ -1558,6 +1568,8 @@ def apply_sglang_qwen3_tts_result(
             "ref_code_len": data.ref_code_len,
             "prompt_tokens": data.ref_code_len,
             "completion_tokens": len(data.output_codes),
+            # note(ratish): host time through result construction, the runtime
+            # waits for the final copy before routing.
             "engine_time_s": time.perf_counter() - data.engine_start_s,
             "sample_rate": 24000,
             "finish_reason": _qwen3_tts_finish_reason(data),

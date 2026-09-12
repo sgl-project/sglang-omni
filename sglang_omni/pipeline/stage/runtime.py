@@ -1108,7 +1108,15 @@ class Stage:
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
                 if out.request_id in self._active_requests:
                     if out.type == "result":
-                        await self._route_result(out.request_id, out.data)
+                        ready = (out.metadata or {}).get("result_ready_event")
+                        if ready is not None and not ready.query():
+                            # note(ratish): the producer's copy into the payload
+                            # is in flight, waited here and not on its thread.
+                            await loop.run_in_executor(None, ready.synchronize)
+                        # note(ratish): an abort during the wait clears the
+                        # request and its replica bindings, the result is stale.
+                        if out.request_id in self._active_requests:
+                            await self._route_result(out.request_id, out.data)
                     elif out.type == "stream":
                         if out.target is None:
                             if self._stream_targets:
