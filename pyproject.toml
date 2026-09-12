@@ -19,10 +19,8 @@ dependencies = [
     "pydantic>=2.0.0",        # Data validation and serialization
     "PyYAML>=6.0",            # YAML config parsing
     "pybase64>=1.4.0",        # Fast base64 decoding for inline media payloads
-    "torch==2.13.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "torch==2.11.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "torchvision==0.28.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "torchvision==0.26.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "torch==2.13.0",
+    "torchvision==0.28.0",
     "accelerate>=0.27.0",     # init_empty_weights for meta initialization
     "transformers==5.12.1",  # Match the pinned sglang stack
     "safetensors>=0.4.3",     # Direct weight loading
@@ -33,8 +31,10 @@ dependencies = [
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
     # so Apple Silicon installs this exact tag from source with the all_mps extra.
-    "sglang==0.5.18; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "flashinfer_python[cu13]==0.6.17; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
+    "sglang==0.5.19; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "mlx>=0.32.0; sys_platform == 'darwin' and platform_machine == 'arm64'",  # floor enforced by SGLang's MLX runtime gate
+    "mlx-lm; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "flashinfer_python[cu13]==0.6.18; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
     "cache-dit==1.3.0",      # MiniMax Music 3 DIT (hard import, not optional)
     "addict==2.4.0",         # sglang.multimodal_gen server_args; MiniMax DIT import
     "imageio==2.36.0",       # sglang.multimodal_gen vision utils; MiniMax DIT import
@@ -62,9 +62,10 @@ dependencies = [
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
     "mistral_common[audio]>=1.11.0",
-    # /v1/realtime — server-side VAD
+    # /v1/realtime — server-side turn detection
     "silero-vad>=5.1",
-    "onnxruntime>=1.17",
+    "onnxruntime-gpu>=1.17; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDAExecutionProvider for the FP32 Smart Turn model
+    "onnxruntime>=1.17; sys_platform == 'darwin' and platform_machine == 'arm64'",  # CPUExecutionProvider on Apple Silicon
     "websockets>=12.0",       # FastAPI WebSocket library + example clients
     # Testing
     "pytest>=7.0.0",
@@ -82,8 +83,7 @@ dependencies = [
     "hydra-core",
     "omegaconf",
     "torchaudio==2.11.0",
-    "torchcodec==0.15.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "torchcodec==0.11.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "torchcodec==0.15.0",
     # Gradio playground
     "gradio>=4.0.0",
     # note (yexiaodong): dots.tts pulls Pynini, whose OpenFst build is not
@@ -104,6 +104,7 @@ dev = [
 audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",
+    "torchao==0.13.0",  # NeuCodec's torchtune imports the removed torchao.dtypes.nf4tensor.
 ]
 fun-cosyvoice3 = [
     "conformer==0.3.2",
@@ -163,6 +164,7 @@ version = {attr = "sglang_omni.__version__"}
 
 # Non-Python data files that must ship with the wheel.
 [tool.setuptools.package-data]
+"sglang_omni.models.auk" = ["LICENSE"]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
 "sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

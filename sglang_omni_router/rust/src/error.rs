@@ -84,9 +84,9 @@ pub enum RouterError {
     /// Signal observation could not be installed or completed.
     #[error("failed to observe process termination signals: {0}")]
     Signal(#[source] io::Error),
-    /// The generation data-plane client failed to build.
-    #[error("failed to initialize the generation HTTP client")]
-    GenerationClient(#[source] reqwest::Error),
+    /// The shared data-plane client failed to build.
+    #[error("failed to initialize the HTTP relay client")]
+    HttpClient(#[source] reqwest::Error),
     /// The isolated health client failed to build.
     #[error("failed to initialize the isolated health client")]
     HealthClient(#[source] reqwest::Error),
@@ -117,7 +117,7 @@ impl RouterError {
             | Self::Lifecycle
             | Self::ShutdownNotify
             | Self::Signal(_)
-            | Self::GenerationClient(_)
+            | Self::HttpClient(_)
             | Self::HealthClient(_)
             | Self::WorkerPoolInvariant
             | Self::HealthTaskExited
@@ -134,6 +134,7 @@ impl ConfigError {
 
 /// Stable topology-free failures generated before response commitment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
 pub(crate) enum HttpFault {
     MalformedRequest,
     AmbiguousModel,
@@ -153,6 +154,28 @@ pub(crate) enum HttpFault {
 }
 
 impl HttpFault {
+    pub(crate) const ALL: [Self; 15] = [
+        Self::MalformedRequest,
+        Self::AmbiguousModel,
+        Self::MethodNotAllowed,
+        Self::RequestTimeout,
+        Self::RequestBodyTooLarge,
+        Self::UnsupportedMediaType,
+        Self::UnsupportedContentEncoding,
+        Self::ExpectationFailed,
+        Self::NoCompatibleWorker,
+        Self::RouterOverloaded,
+        Self::InternalError,
+        Self::UpstreamProtocolError,
+        Self::RouterUnavailable,
+        Self::UpstreamTimeout,
+        Self::HttpVersionNotSupported,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
     const fn status(self) -> StatusCode {
         match self {
             Self::MalformedRequest | Self::AmbiguousModel => StatusCode::BAD_REQUEST,
@@ -173,7 +196,7 @@ impl HttpFault {
         }
     }
 
-    const fn code(self) -> &'static str {
+    pub(crate) const fn code(self) -> &'static str {
         match self {
             Self::MalformedRequest => "malformed_request",
             Self::AmbiguousModel => "ambiguous_model",
@@ -197,7 +220,7 @@ impl HttpFault {
         match self {
             Self::MalformedRequest => "The request is malformed.",
             Self::AmbiguousModel => "An explicit model is required.",
-            Self::MethodNotAllowed => "POST is required for this route.",
+            Self::MethodNotAllowed => "The request method is not allowed for this route.",
             Self::RequestTimeout => "The request body timed out.",
             Self::RequestBodyTooLarge => "The request body is too large.",
             Self::UnsupportedMediaType => "The content type is unsupported.",
@@ -222,6 +245,10 @@ impl HttpFault {
     }
 
     pub(crate) fn into_response(self) -> Response<Body> {
+        self.into_response_with_allow(HeaderValue::from_static("POST"))
+    }
+
+    pub(crate) fn into_response_with_allow(self, allow: HeaderValue) -> Response<Body> {
         let body = format!(
             "{{\"error\":{{\"message\":\"{}\",\"type\":\"{}\",\"param\":null,\"code\":\"{}\"}}}}",
             self.message(),
@@ -241,10 +268,9 @@ impl HttpFault {
             .headers_mut()
             .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         if self == Self::MethodNotAllowed {
-            response
-                .headers_mut()
-                .insert(ALLOW, HeaderValue::from_static("POST"));
+            response.headers_mut().insert(ALLOW, allow);
         }
+        response.extensions_mut().insert(self);
         response
     }
 }

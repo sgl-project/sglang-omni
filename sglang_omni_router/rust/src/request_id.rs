@@ -1,6 +1,7 @@
 use std::hash::{BuildHasher, RandomState};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -8,6 +9,7 @@ use axum::http::{HeaderMap, HeaderValue, Response};
 use axum::middleware::Next;
 
 use crate::error::HttpFault;
+use crate::metrics::{HttpRoute, RouterMetrics};
 
 pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -26,6 +28,53 @@ impl CanonicalRequestId {
 pub(crate) struct RequestIds {
     prefix: String,
     sequence: AtomicU64,
+}
+
+pub(crate) struct RequestBoundary {
+    request_ids: Arc<RequestIds>,
+    metrics: Arc<RouterMetrics>,
+}
+
+struct BoundaryObservation<'a> {
+    metrics: &'a RouterMetrics,
+    route: HttpRoute,
+    started: Instant,
+    completed: bool,
+}
+
+impl<'a> BoundaryObservation<'a> {
+    fn new(metrics: &'a RouterMetrics, route: HttpRoute) -> Self {
+        Self {
+            metrics,
+            route,
+            started: Instant::now(),
+            completed: false,
+        }
+    }
+
+    fn complete<B>(&mut self, response: &Response<B>) {
+        self.metrics.record_response(self.route, response);
+        self.metrics
+            .record_response_header_duration(self.route, self.started.elapsed());
+        self.completed = true;
+    }
+}
+
+impl Drop for BoundaryObservation<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.metrics.record_cancelled_before_headers(self.route);
+        }
+    }
+}
+
+impl RequestBoundary {
+    pub(crate) fn new(request_ids: Arc<RequestIds>, metrics: Arc<RouterMetrics>) -> Arc<Self> {
+        Arc::new(Self {
+            request_ids,
+            metrics,
+        })
+    }
 }
 
 impl RequestIds {
@@ -60,29 +109,35 @@ impl RequestIds {
 }
 
 pub(crate) async fn canonicalize(
-    State(request_ids): State<Arc<RequestIds>>,
+    State(boundary): State<Arc<RequestBoundary>>,
     mut request: Request,
     next: Next,
 ) -> Response<Body> {
-    let Some((request_id, accepted)) = request_ids.canonicalize(request.headers()) else {
-        return HttpFault::InternalError.into_response();
+    let route = HttpRoute::from_path(request.uri().path());
+    let mut observation = BoundaryObservation::new(&boundary.metrics, route);
+    boundary.metrics.record_request(route);
+    let response = match boundary.request_ids.canonicalize(request.headers()) {
+        None => HttpFault::InternalError.into_response(),
+        Some((request_id, false)) => {
+            let mut response = HttpFault::MalformedRequest.into_response();
+            response
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, request_id.0);
+            response
+        }
+        Some((request_id, true)) => {
+            request
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, request_id.0.clone());
+            request.extensions_mut().insert(request_id.clone());
+            let mut response = next.run(request).await;
+            response
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, request_id.0);
+            response
+        }
     };
-    if !accepted {
-        let mut response = HttpFault::MalformedRequest.into_response();
-        response
-            .headers_mut()
-            .insert(REQUEST_ID_HEADER, request_id.0);
-        return response;
-    }
-
-    request
-        .headers_mut()
-        .insert(REQUEST_ID_HEADER, request_id.0.clone());
-    request.extensions_mut().insert(request_id.clone());
-    let mut response = next.run(request).await;
-    response
-        .headers_mut()
-        .insert(REQUEST_ID_HEADER, request_id.0);
+    observation.complete(&response);
     response
 }
 
@@ -100,9 +155,11 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
 
-    use axum::http::{HeaderMap, HeaderValue};
+    use axum::body::Body;
+    use axum::http::{HeaderMap, HeaderValue, Response};
 
-    use super::{RequestIds, valid};
+    use super::{BoundaryObservation, RequestIds, valid};
+    use crate::metrics::{HttpRoute, RouterMetrics};
 
     #[test]
     fn missing_valid_and_invalid_ids_have_one_authority() {
@@ -172,5 +229,22 @@ mod tests {
         };
         assert!(exhausted.generate().is_none());
         assert!(exhausted.generate().is_none());
+    }
+
+    #[test]
+    fn boundary_observation_distinguishes_response_headers_from_cancellation() {
+        let metrics = RouterMetrics::new();
+        {
+            let _cancelled = BoundaryObservation::new(&metrics, HttpRoute::Chat);
+        }
+        assert_eq!(metrics.cancelled_before_headers(HttpRoute::Chat), 1);
+        assert_eq!(metrics.response_header_duration(HttpRoute::Chat).count(), 0);
+
+        {
+            let mut completed = BoundaryObservation::new(&metrics, HttpRoute::Chat);
+            completed.complete(&Response::new(Body::empty()));
+        }
+        assert_eq!(metrics.cancelled_before_headers(HttpRoute::Chat), 1);
+        assert_eq!(metrics.response_header_duration(HttpRoute::Chat).count(), 1);
     }
 }

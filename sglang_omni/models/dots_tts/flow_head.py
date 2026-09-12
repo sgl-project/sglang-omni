@@ -156,6 +156,10 @@ class DotsTTSFlowHead(nn.Module):
     def is_batched(self) -> bool:
         return self._tail is not None
 
+    @property
+    def batched_tail(self) -> Any | None:
+        return self._tail
+
     def init_batched_tail(
         self,
         *,
@@ -661,6 +665,7 @@ class DotsTTSFlowHead(nn.Module):
             slots,
             patch_encoder_input,
         )
+        self._tail.note_decode_cycle()
         self._stage_batched_eos(eos_hits)
         results = []
         for row, state in enumerate(states):

@@ -70,7 +70,7 @@ class EvictHeapRadixCache(RadixCache):
             num_evicted += len(x.value)
             # note (Junnan Li): _delete_leaf relands the parent via _update_leaf_status.
             self._delete_leaf(x)
-            self._record_remove_event(x)
+            self.kv_events.record_remove(x)
 
         self.update_eviction_metrics(num_evicted, start_time)
         return EvictResult(num_tokens_evicted=num_evicted)

@@ -21,7 +21,7 @@ tests/
     ├── ci/
     │   ├── test_cpu_contention.py
     │   ├── test_cpuset_pinning.py
-    │   ├── test_tts_model_rotation_contract.py
+    │   ├── test_ci_model_pick.py
     │   ├── test_tts_mps_runtime.py
     │   └── test_tts_mps_workflow_contract.py
     ├── cli/
@@ -38,10 +38,12 @@ tests/
     │   └── test_weight_preprocess.py
     ├── fixtures/
     │   ├── fish_fakes.py
+    │   ├── mini_checkpoint.py
     │   ├── pipeline_fakes.py
     │   └── qwen_fakes.py
     ├── utils/
-    │   └── test_audio.py
+    │   ├── test_audio.py
+    │   └── test_g711.py
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
@@ -84,6 +86,7 @@ tests/
     ├── audar_tts/
     │   └── test_pipeline.py
     ├── qwen3_omni/
+    │   ├── test_audio_encoder_batch_dedup.py
     │   ├── test_cli.py
     │   ├── test_code2wav.py
     │   ├── test_code2wav_batching.py
@@ -144,6 +147,11 @@ tests/
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
+    ├── nemotron_voicechat/
+    │   ├── test_checkpoint_shim.py
+    │   ├── test_paged_rollback.py
+    │   ├── test_request_builders.py
+    │   └── test_streaming_codec.py
     ├── qwen3_asr/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_pipeline.py
@@ -208,6 +216,7 @@ tests/
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
+    │   ├── test_openai_errors.py
     │   ├── test_speech_to_text.py
     │   ├── test_subtitles.py
     │   ├── test_transcription_chunking.py
@@ -219,6 +228,7 @@ tests/
     │   ├── test_evict_heap_radix_cache.py
     │   ├── test_pipeline_state.py
     │   ├── test_reference_encoder.py
+    │   ├── test_server_args_builder_resolution.py
     │   ├── test_stage_cache.py
     │   └── test_streaming_vocoder.py
     ├── fishaudio_s2_pro/
@@ -421,6 +431,11 @@ Expected command:
 ```bash
 pytest tests/unit_test -q
 ```
+
+Select CPU cases with `-m "not accelerator"`. Run hardware cases with
+`-m accelerator` on a compatible accelerator; check the reported skips
+to confirm the intended hardware paths actually ran.
+
 Choose the location by the behavior contract being protected, not by the file
 that happened to contain an older version of the test.
 
@@ -459,6 +474,16 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
+  isolation, failure reporting, disabled warmup, and CLI configuration using
+  the real benchmark runner with a fake speech generator.
+  - `test_realtime_asr_benchmark.py`: the realtime ASR benchmark client
+    (`benchmarks/realtime_asr/client.py`) against an in-process fake
+    `/v1/realtime` WebSocket server (packet splitting, wall-clock pacing,
+    manual commit, trailing silence, timeout reporting), and the metric
+    definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
+    traces (first-partial refresh-point lookup, partial gaps, committed→final,
+    protocol invariant violations, percentile summaries). No GPU or server.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
@@ -472,12 +497,16 @@ that happened to contain an older version of the test.
 
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
-    and mono/channel preservation.
-  - pinned CUDA staging primitives (`cuda_staging`): exact-size growth that
-    keeps the old storage on allocation failure, allocation outside inference
-    mode, one reusable completion event per transfer slot, and record/sync
-    error propagation with same-device stream checks, using CPU stand-ins
-    where no GPU is present.
+    and mono/channel preservation, plus the 8 kHz telephony fixtures under
+    `tests/data/`.
+  - G.711 helpers (`test_g711.py`): media-type and extension resolution, and
+    wrapping headerless bytes in a WAV container that matches ffmpeg's while
+    leaving WAV and Sun AU inputs untouched.
+  - pinned CUDA staging primitives (`cuda_staging`): exact-size growth,
+    reusable events, non-blocking completion queries, device checks, and
+    record/query/synchronize failure handling. Failed records invalidate
+    completion reads until a later record succeeds. CPU tests use stand-ins;
+    `accelerator` cases cover in-flight D2H queries and cross-device use.
 - `unit_test/model_runner/`: Shared model-runner contract tests:
   - arch override pool sizing: a sub-model engine's KV pool takes the
     sub-model's layer count through SGLang's layer resolver (the Qwen3-Omni
@@ -506,6 +535,10 @@ that happened to contain an older version of the test.
     newer replacements,
     the `remove_if` eviction predicate evaluated outside the lock (re-entrant
     and deadlock-free), and concurrent remove_if/put state integrity.
+  - `build_sglang_server_args` on a real mini checkpoint: the record leaves the
+    builder resolved once, the CUDA Graph config it declared reads back through
+    `resolution_result` and the generation batch policy accessors, and the
+    encoder memory reserve is applied to the declared fraction.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory `max_running_requests=64` default,
     async-decode default,
@@ -566,6 +599,8 @@ that happened to contain an older version of the test.
     conditioning, bucketed admission, and serial-parity invariants
   - vocoder batching, conditioning handoff, output payload construction, and
     abort/error handling
+  - opt-in Flow DiT TensorRT wrapper: ONNX resolution, request-wise CFG-pair
+    chunking, CUDA-only attach, and mutual exclusion with torch.compile
 - `unit_test/moss_transcribe_diarize/`: MOSS-Transcribe-Diarize unit tests:
   - pipeline config and stage factory default routing/memory contracts
   - request builder audio-source resolution, single-audio enforcement, audio
@@ -581,6 +616,16 @@ that happened to contain an older version of the test.
   - SGLang argument builders
   - backend policy and quantization compatibility contracts
   - tokenizer and preprocessing fallback behavior
+  - audio cache identity from complete decoded content, mixed-batch cache
+    hits, and cached output ownership across reused encoder buffers
+    (`test_pipeline.py`, `test_audio_encoder_batch_dedup.py`). The output
+    ownership case is marked `accelerator`; the cache-key cases use CPU.
+  - preprocessing dispatch defaults to serial `SimpleScheduler`;
+    `max_concurrency > 1` opts into `ThreadedSimpleScheduler`
+    (`test_pipeline.py`).
+  - threaded preprocessing request isolation, error propagation, and running
+    request cancellation, plus repeated remote-image loading against a local
+    HTTP server and media-loader cleanup on failure (`test_pipeline.py`).
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - full-model fixture overrides target the preprocessing and thinker context
@@ -609,11 +654,11 @@ that happened to contain an older version of the test.
     ```bash
     pytest tests/unit_test/qwen3_omni/test_code2wav_cuda_graph.py -m accelerator -q
     ```
-  - Code2Wav output overlap (depth-2 pipelined D2H): message-for-message byte
-    identity against the synchronous path, first-window sync cadence,
-    stream-done pending flush, lazy batched EOS scanning, pinned-slot pool
-    lifecycle across abort/replay-failure/exhaustion, and profiler event
-    shape; the `accelerator`-marked case runs real pinned buffers and CUDA events
+  - Code2Wav output overlap (depth-2 pipelined D2H): byte parity with the
+    synchronous path, first-window and stream-done behavior, CUDA Graph replay,
+    and slot lifecycle across abort and failure paths. The `accelerator` cases
+    cover real pinned buffers and events, eager/graph parity, in-flight
+    completion queries, abort recovery, and cross-device use.
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
   - Thinker prefill contracts: `OmniPrefillInputs` adoption for text and
     audio-input → text-output prefills, whole-batch fail-closed qualification,
@@ -732,8 +777,12 @@ that happened to contain an older version of the test.
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
-  - shared speech-to-text form, request, response-format, and serialization mechanics
+  - shared speech-to-text form, request, response-format, and serialization mechanics,
+    including headerless G.711 uploads getting a WAV container at read time
   - streaming response framing and failure semantics.
+  - the stop-list bounds that SGLang's `SamplingParams.normalize` enforces
+    (stop string count, stop regex count and length) mapped to a bad request,
+    the bounds themselves accepted, and an unrelated failure staying internal.
   - realtime barge-in cancellation, partial session updates, terminal races,
     VAD stop-to-start segmentation, and assistant-history truncation.
   - Browser-side realtime playback state is covered separately by
@@ -797,6 +846,14 @@ that happened to contain an older version of the test.
   acoustic state, vocoder batching, and streaming cleanup. CUDA Graph parity in
   `test_tail.py` is marked `accelerator`; the remaining tests run on CPU.
 
+- `unit_test/nemotron_voicechat/`: NemotronLabs VoiceChat request frame-count
+  contract (thinker tokens vs talker steps), streaming code2wav equivalence
+  with whole-utterance decoding, and checkpoint-shim isolation across
+  checkpoint switches. Talker rollback tests cover paged KV ownership across
+  stream waits and decode resumption using simulated decode preparation.
+  Tests run on CPU without model weights; request and rollback tests require
+  SGLang, but do not start an engine.
+
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
 
@@ -806,8 +863,9 @@ that happened to contain an older version of the test.
   Kernel and CUDA Graph parity cases in `test_core.py` are marked `accelerator`.
 
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
-  resampling, audio-source resolution, duration validation, fingerprinting,
-  downmixing, and legacy input compatibility.
+  resampling, audio-source resolution (including declared G.711 bytes getting
+  a WAV container), duration validation, fingerprinting, downmixing, and
+  legacy input compatibility.
 
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
@@ -826,5 +884,9 @@ that happened to contain an older version of the test.
   installer rollback, interrupted-run recovery, and lock serialization. No
   accelerator is required.
 
-- `unit_test/fixtures/`: Shared fakes. Single-test
-  helpers should stay local until a second test needs them.
+- `unit_test/fixtures/`: Shared fakes, plus the runtime accelerator probe
+  (`accelerator.py`, `require_cuda(min_devices)`) that `accelerator`-marked
+  tests call in the test body. `mini_checkpoint.py` writes a two-layer Llama
+  `config.json` for tests that need a record the SGLang resolution pipeline can
+  resolve end to end. Single-test helpers should stay local until a second
+  test needs them.

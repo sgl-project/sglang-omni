@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import numpy as np
 
 from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
+from sglang_omni.utils.g711 import resolve_g711_encoding, wrap_g711_as_wav
 
 if TYPE_CHECKING:
     from sglang_omni.proto import StagePayload
@@ -39,6 +40,13 @@ def resolve_audio_source(payload: StagePayload) -> Any:
         for key in _BYTES_SOURCE_KEYS:
             value = inputs.get(key)
             if value is not None:
+                # If the value is a bytes-like object, check if it's G.711 and wrap it in a WAV container.
+                if isinstance(value, (bytes, bytearray, memoryview)):
+                    g711_encoding = resolve_g711_encoding(
+                        inputs.get("content_type"), inputs.get("filename")
+                    )
+                    if g711_encoding is not None:
+                        return wrap_g711_as_wav(bytes(value), g711_encoding)
                 return value
         for key in _PATH_SOURCE_KEYS:
             value = inputs.get(key)

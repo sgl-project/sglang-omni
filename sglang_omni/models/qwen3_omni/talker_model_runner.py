@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -13,6 +13,9 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.scheduling.messages import OutgoingMessage
+
+if TYPE_CHECKING:
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 
 class QwenTalkerModelRunner(ModelRunner):
@@ -383,19 +386,14 @@ class QwenTalkerModelRunner(ModelRunner):
         feedback_mask[rows_t] = True
 
     @staticmethod
-    def _data_has_next_decode_input(data: Any) -> bool:
+    def _data_has_next_decode_input(data: SGLangARRequestData | None) -> bool:
         if data is None:
             return False
-        pending_feedback_queue = getattr(data, "pending_feedback_queue", None)
-        if not pending_feedback_queue:
+        if not data.pending_feedback_queue:
             return False
-        pending_text_queue = getattr(data, "pending_text_queue", None)
-        if pending_text_queue:
+        if data.pending_text_queue:
             return True
-        return bool(
-            data.thinker_chunks_done
-            and getattr(data, "tts_pad_embed", None) is not None
-        )
+        return bool(data.thinker_chunks_done and data.tts_pad_embed is not None)
 
     def _requests_ready_for_decode(self, requests: list) -> bool:
         return all(
@@ -423,15 +421,17 @@ class QwenTalkerModelRunner(ModelRunner):
         return None
 
     @staticmethod
-    def _decode_input_history(data: Any) -> list[torch.Tensor]:
-        history = getattr(data, "decode_input_embeds", None)
+    def _decode_input_history(data: SGLangARRequestData) -> list[torch.Tensor]:
+        history = data.decode_input_embeds
         if history is None:
             history = []
             data.decode_input_embeds = history
         return history
 
     @staticmethod
-    def _append_decode_input_history(data: Any, row: torch.Tensor) -> None:
+    def _append_decode_input_history(
+        data: SGLangARRequestData, row: torch.Tensor
+    ) -> None:
         QwenTalkerModelRunner._decode_input_history(data).append(row.detach())
 
     @staticmethod
@@ -451,31 +451,44 @@ class QwenTalkerModelRunner(ModelRunner):
         return row
 
     @staticmethod
-    def _combine_feedback_with_next_text(
-        *,
-        data: Any,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        pending_feedback_queue = getattr(data, "pending_feedback_queue", None)
-        feedback = QwenTalkerModelRunner._peek_left(pending_feedback_queue)
+    def _peek_next_decode_inputs(
+        data: SGLangARRequestData,
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """The feedback row and the text row of the next decode input. None
+        while the feedback row is missing, or while the text row is missing
+        and the text stream is still open. After the stream has closed, the
+        pad embedding stands in for the text row."""
+        feedback = QwenTalkerModelRunner._peek_left(data.pending_feedback_queue)
         if feedback is None:
             return None
-
-        combined = QwenTalkerModelRunner._decode_row(
-            feedback,
-            device=device,
-            dtype=dtype,
-        )
-        next_text = QwenTalkerModelRunner._peek_left(
-            getattr(data, "pending_text_queue", None)
-        )
+        next_text = QwenTalkerModelRunner._peek_left(data.pending_text_queue)
         if next_text is None:
             if not data.thinker_chunks_done:
                 return None
             next_text = data.tts_pad_embed
+        return feedback, next_text
 
-        return combined + QwenTalkerModelRunner._decode_row(
+    @staticmethod
+    def _pop_next_decode_inputs(data: SGLangARRequestData) -> None:
+        QwenTalkerModelRunner._pop_left(data.pending_feedback_queue)
+        QwenTalkerModelRunner._pop_left(data.pending_text_queue)
+
+    @staticmethod
+    def _combine_feedback_with_next_text(
+        *,
+        data: SGLangARRequestData,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        inputs = QwenTalkerModelRunner._peek_next_decode_inputs(data)
+        if inputs is None:
+            return None
+        feedback, next_text = inputs
+        return QwenTalkerModelRunner._decode_row(
+            feedback,
+            device=device,
+            dtype=dtype,
+        ) + QwenTalkerModelRunner._decode_row(
             next_text,
             device=device,
             dtype=dtype,
@@ -496,8 +509,5 @@ class QwenTalkerModelRunner(ModelRunner):
         )
         if combined is None:
             return None
-
-        QwenTalkerModelRunner._pop_left(getattr(data, "pending_feedback_queue", None))
-        if getattr(data, "pending_text_queue", None):
-            QwenTalkerModelRunner._pop_left(data.pending_text_queue)
+        QwenTalkerModelRunner._pop_next_decode_inputs(data)
         return combined

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 import torch
@@ -11,6 +12,7 @@ from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.qwen3_tts import sampling_kernels as sampling_kernels_module
+from sglang_omni.models.qwen3_tts import sglang_model as sglang_model_module
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logits_with_seed_top_k_top_p,
     sample_from_sorted_logprobs_with_seed_small_k,
@@ -201,13 +203,16 @@ def _build_sampling_talker(
     """Build only the fields used by the production sampled-token reference."""
     talker = object.__new__(Qwen3TTSTalker)
     talker.config = SimpleNamespace(num_code_groups=16)
-    talker._sub_temperature_tensor = temperatures
+    talker._sub_temperature_tensor = temperatures.clamp_min(1e-5)
     talker._sub_top_k_tensor = top_ks
     talker._sub_top_p_tensor = top_ps
     talker._sub_sampling_seed_tensor = seeds
     talker._sub_sampled_max_top_k = max_top_k
     talker._sub_sampled_has_top_p = bool(((top_ps > 0.0) & (top_ps < 1.0)).any().item())
     talker._sub_sampled_has_unbounded_top_k = False
+    talker._sub_seed_offsets = torch.arange(
+        1, talker.config.num_code_groups, device=temperatures.device, dtype=torch.long
+    )
     return talker
 
 
@@ -218,13 +223,30 @@ def _production_seeded_tokens(
     layer_idx: int,
     semantic_positions: torch.Tensor,
 ) -> torch.Tensor:
-    rows = torch.arange(logits.shape[0], device=logits.device, dtype=torch.long)
     return talker._sample_subtalker_token_seeded(
         logits,
-        layer_idx,
-        row_indices=rows,
-        semantic_positions=semantic_positions,
+        sub_positions=talker._sub_seed_positions(semantic_positions)[layer_idx],
     )
+
+
+def _reference_seeded_tokens(
+    talker: Qwen3TTSTalker,
+    logits: torch.Tensor,
+    *,
+    layer_idx: int,
+    semantic_positions: torch.Tensor,
+) -> torch.Tensor:
+    with mock.patch.object(
+        sglang_model_module,
+        "sample_from_logits_with_seed_top_k_top_p",
+        return_value=None,
+    ):
+        return _production_seeded_tokens(
+            talker,
+            logits,
+            layer_idx=layer_idx,
+            semantic_positions=semantic_positions,
+        )
 
 
 def _fused_seeded_tokens(
@@ -241,7 +263,7 @@ def _fused_seeded_tokens(
     )
     sampled = sample_from_logits_with_seed_top_k_top_p(
         logits,
-        talker._sub_temperature_tensor.clamp_min(1e-5),
+        talker._sub_temperature_tensor,
         talker._sub_top_k_tensor,
         talker._sub_top_p_tensor,
         talker._sub_sampling_seed_tensor,
@@ -268,7 +290,7 @@ def _fused_seeded_tokens(
         (1, 1024, 0.95),
     ],
 )
-def test_fused_raw_logit_sampler_matches_production_reference(
+def test_fused_raw_logit_sampler_matches_reference(
     batch_size: int,
     max_top_k: int,
     top_p: float,
@@ -304,7 +326,7 @@ def test_fused_raw_logit_sampler_matches_production_reference(
         max_top_k=max_top_k,
     )
 
-    expected = _production_seeded_tokens(
+    expected = _reference_seeded_tokens(
         talker,
         logits,
         layer_idx=3,
@@ -339,7 +361,7 @@ def test_fused_raw_logit_sampler_matches_reference_for_equal_logits(
             seeds,
             max_top_k=max_top_k,
         )
-        expected = _production_seeded_tokens(
+        expected = _reference_seeded_tokens(
             talker,
             logits,
             layer_idx=2,
@@ -391,7 +413,7 @@ def test_fused_raw_logit_sampler_matches_reference_for_threshold_ties(
             seeds,
             max_top_k=max_top_k,
         )
-        expected = _production_seeded_tokens(
+        expected = _reference_seeded_tokens(
             talker,
             logits,
             layer_idx=5,
@@ -447,7 +469,7 @@ def test_fused_raw_logit_sampler_matches_reference_for_signed_zero_order(
             seeds,
             max_top_k=max_top_k,
         )
-        expected = _production_seeded_tokens(
+        expected = _reference_seeded_tokens(
             talker,
             logits,
             layer_idx=6,
@@ -487,7 +509,7 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
         max_top_k=32,
     )
 
-    expected = _production_seeded_tokens(
+    expected = _reference_seeded_tokens(
         talker,
         logits,
         layer_idx=4,
@@ -545,7 +567,7 @@ def test_fused_raw_logit_sampler_capture_falls_back_without_triton_gather(
         seeds,
         max_top_k=32,
     )
-    expected = _production_seeded_tokens(
+    expected = _reference_seeded_tokens(
         talker,
         logits,
         layer_idx=5,

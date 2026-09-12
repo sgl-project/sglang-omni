@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import ReqKvInfo
 from torch import nn
 
 import sglang_omni.models.qwen3_omni.components.talker as talker_module
@@ -86,7 +87,10 @@ def test_configure_talker_server_args_writes_through_the_mutation_guard() -> Non
     configuration must go through the audited override path.
     """
     server_args_mod = pytest.importorskip("sglang.srt.server_args")
+    from sglang.srt.arg_groups.overrides import resolution_result
+
     server_args = server_args_mod.ServerArgs(model_path="dummy")
+    server_args.resolve_once()
 
     want_cuda_graph = configure_talker_server_args(
         server_args,
@@ -94,10 +98,11 @@ def test_configure_talker_server_args_writes_through_the_mutation_guard() -> Non
     )
 
     assert want_cuda_graph is True
-    assert server_args.disable_overlap_schedule is True
-    assert server_args.disable_cuda_graph is False
-    assert server_args.disable_radix_cache is True
-    assert server_args.chunked_prefill_size == 0
+    assert resolution_result(server_args, "disable_overlap_schedule") is True
+    assert resolution_result(server_args, "disable_cuda_graph") is False
+    assert resolution_result(server_args, "disable_radix_cache") is True
+    assert resolution_result(server_args, "chunked_prefill_size") == 0
+    assert server_args.disable_radix_cache is False
     audited_overrides = {}
     for source, fields in server_args._runtime_mutations:
         assert source == "qwen3_omni.talker"
@@ -215,6 +220,33 @@ def test_qwen_talker_decode_readiness_requires_feedback_and_text_or_pad() -> Non
     assert not QwenTalkerModelRunner._data_has_next_decode_input(no_text)
     assert QwenTalkerModelRunner._data_has_next_decode_input(with_text)
     assert QwenTalkerModelRunner._data_has_next_decode_input(with_pad)
+
+
+def test_qwen_talker_decode_inputs_read_the_request_data_as_built() -> None:
+    """The decode input helpers read the request data fields as the builders
+    leave them: empty queues, the pad fallback, and the history the scheduler
+    clears at finish."""
+    data = SGLangARRequestData()
+
+    assert not QwenTalkerModelRunner._data_has_next_decode_input(data)
+    assert QwenTalkerModelRunner._peek_next_decode_inputs(data) is None
+
+    data.pending_feedback_queue.append(torch.tensor([1.0, 2.0]))
+    data.tts_pad_embed = torch.tensor([7.0, 8.0])
+    assert QwenTalkerModelRunner._data_has_next_decode_input(data)
+    feedback, text = QwenTalkerModelRunner._peek_next_decode_inputs(data)
+    assert torch.equal(feedback, torch.tensor([1.0, 2.0]))
+    assert text is data.tts_pad_embed
+
+    QwenTalkerModelRunner._pop_next_decode_inputs(data)
+    assert len(data.pending_feedback_queue) == 0
+    assert QwenTalkerModelRunner._peek_next_decode_inputs(data) is None
+
+    QwenTalkerModelRunner._append_decode_input_history(data, feedback)
+    assert len(data.decode_input_embeds) == 1
+    data.decode_input_embeds = None
+    assert QwenTalkerModelRunner._decode_input_history(data) == []
+    assert data.decode_input_embeds == []
 
 
 def test_qwen_talker_scheduler_waits_for_stream_done_without_replay() -> None:
@@ -512,6 +544,27 @@ def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> Non
     )
 
 
+def test_code_predictor_forward_runs_without_grad_tracking() -> None:
+    grad_enabled = []
+    source = torch.ones(1, requires_grad=True)
+
+    class FakeTalker:
+        def _code_predictor_forward_incremental(self, **_kwargs):
+            grad_enabled.append(torch.is_grad_enabled())
+            return torch.zeros(1, dtype=torch.long), source * 2
+
+    with torch.enable_grad():
+        result_codes, summed_embeddings = Qwen3OmniTalker.code_predictor_forward(
+            FakeTalker(), torch.zeros(1), torch.zeros(1)
+        )
+
+    assert grad_enabled == [False]
+    assert result_codes.requires_grad is False
+    assert summed_embeddings.requires_grad is False
+    assert result_codes.grad_fn is None
+    assert summed_embeddings.grad_fn is None
+
+
 class _FakePredictorLmHead(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -640,9 +693,8 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
-    # SGLang 0.5.15 constructs nested model buffers while its outer runner is
-    # in inference mode. Replaying later from a no-grad capture must still be
-    # allowed to update those inference tensors in place.
+    # Note (zijiecode): SGLang runs the predictor from inference mode, so capture
+    # and replay are exercised in that mode here as well.
     with torch.inference_mode():
         talker.code_predictor_forward(layer0_codes, talker_hidden)
         torch.cuda.synchronize()
@@ -1438,13 +1490,11 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     reqs = [
         SimpleNamespace(
             decode_batch_idx=5,
-            kv_committed_len=12,
-            kv=SimpleNamespace(kv_allocated_len=13),
+            kv=ReqKvInfo(kv_committed_len=12, kv_allocated_len=13),
         ),
         SimpleNamespace(
             decode_batch_idx=7,
-            kv_committed_len=12,
-            kv=SimpleNamespace(kv_allocated_len=13),
+            kv=ReqKvInfo(kv_committed_len=12, kv_allocated_len=13),
         ),
     ]
     req_pool_indices = torch.tensor([3, 4])
@@ -1473,7 +1523,7 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     assert batch.out_cache_loc is None
     for req in reqs:
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
-        assert req.kv_committed_len == 11
+        assert req.kv.kv_committed_len == 11
         assert req.kv.kv_allocated_len == 12
     assert torch.equal(batch.seq_lens, pre_seq_lens)
     assert torch.equal(batch.seq_lens_cpu, pre_seq_lens_cpu)
@@ -1492,7 +1542,7 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     batch.out_cache_loc = object()
     for req in reqs:
         req.decode_batch_idx += 1
-        req.kv_committed_len += 1
+        req.kv.kv_committed_len += 1
         req.kv.kv_allocated_len += 1
     batch.seq_lens.add_(1)
     batch.seq_lens_cpu.add_(1)
@@ -1505,7 +1555,7 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     assert batch.out_cache_loc is None
     for req in reqs:
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
-        assert req.kv_committed_len == 11
+        assert req.kv.kv_committed_len == 11
         assert req.kv.kv_allocated_len == 12
     assert batch.seq_lens_sum is None
     assert len(freed) == 2
@@ -1543,10 +1593,10 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     reqs = [
         SimpleNamespace(
             decode_batch_idx=0,
-            kv_committed_len=10,
-            kv=SimpleNamespace(kv_allocated_len=11),
+            kv=ReqKvInfo(kv_committed_len=10, kv_allocated_len=11),
             output_ids=[6],
             origin_input_ids=[5],
+            beam_group=None,
         )
     ]
     batch.reqs = reqs
@@ -1574,6 +1624,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
         b.req_to_token_pool.req_to_token[b.req_pool_indices, locs] = out.to(torch.int32)
         for req in b.reqs:
             req.kv.kv_allocated_len += token_per_req
+            req.kv.kv_committed_len += token_per_req
         return out
 
     monkeypatch.setattr(
@@ -1586,6 +1637,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     ScheduleBatch.prepare_for_decode(batch)
     assert batch.seq_lens_sum is None
     assert reqs[0].kv.kv_allocated_len == 12
+    assert reqs[0].kv.kv_committed_len == 11
     assert int(req_to_token[2, 10]) == 123
 
     allocated = batch.out_cache_loc
@@ -1597,7 +1649,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     assert batch.seq_lens_sum is None
     assert torch.equal(batch.seq_lens, torch.tensor([10], dtype=torch.long))
     assert reqs[0].decode_batch_idx == 0
-    assert reqs[0].kv_committed_len == 10
+    assert reqs[0].kv.kv_committed_len == 10
     assert reqs[0].kv.kv_allocated_len == 11
     assert batch.out_cache_loc is None
     assert len(freed) == 1
@@ -1792,6 +1844,7 @@ class TestBuildTalkerRequestTensorStorage:
             codec_vocab_size=4096,
         )
 
+        assert data.req.sampling_params.repetition_penalty == 1.05
         assert data.prefill_input_embeds is hidden_states
         assert data.req.input_embeds is None
         assert data.req._input_embeds_are_projected is False
@@ -2410,3 +2463,25 @@ def test_talker_prefill_forward_invalidates_next_decode_reuse() -> None:
     )
 
     assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(("is_rocm", "expected"), [(True, False), (False, True)])
+def test_qwen_predictor_decode_graph_skips_outer_sglang_capture_on_rocm(
+    monkeypatch: pytest.MonkeyPatch, is_rocm: bool, expected: bool
+) -> None:
+    """SGLang's warmup forwards run inside model_capture_mode() before the
+    stream capture starts; ROCm keeps the predictor eager there, CUDA does not."""
+    monkeypatch.setattr(talker_module, "get_is_capture_mode", lambda: True)
+    monkeypatch.setattr(talker_module.current_platform, "is_rocm", lambda: is_rocm)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    talker = object.__new__(Qwen3OmniTalker)
+
+    assert (
+        talker._can_use_predictor_decode_graph(
+            layer0_codes=SimpleNamespace(dtype=torch.int, is_cuda=True),
+            talker_hidden=SimpleNamespace(is_cuda=True),
+            seq_len=1,
+        )
+        is expected
+    )

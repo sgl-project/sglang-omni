@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sglang.srt.server_args import ServerArgs
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
@@ -459,8 +461,7 @@ def test_padding_gap_warning_requires_a_non_empty_eager_range(caplog) -> None:
 
 
 def _sglang_prefill_ladder(max_bs: int) -> list[int]:
-    unresolved = ServerArgs.__new__(ServerArgs)
-    return ServerArgs._generate_prefill_cuda_graph_batch_sizes(unresolved, max_bs)
+    return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
 @pytest.mark.parametrize("cap", [256, 512, 2048, 4096, 8192, 16384])
@@ -543,8 +544,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     from sglang_omni.utils import cuda_graph_batch_validator
 
     infra_kwargs_seen: list[dict[str, Any]] = []
-    attest_calls: list[tuple[Any, Any]] = []
-    backend_locks_seen: list[bool] = []
+    attest_calls: list[tuple[Any, bool]] = []
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
@@ -561,11 +561,8 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
         )
 
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
-        del gpu_id
+        del gpu_id, server_args
         infra_kwargs_seen.append(dict(kwargs))
-        backend_locks_seen.append(
-            ("prefill", "backend") in server_args._cuda_graph_config_locked
-        )
         model_runner = SimpleNamespace(
             model=SimpleNamespace(),
             init_cuda_graphs=lambda: None,
@@ -584,8 +581,8 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
             "model_config",
         )
 
-    def fake_attest(model_runner, server_args) -> None:
-        attest_calls.append((model_runner, server_args))
+    def fake_attest(model_runner, *, operator_selected: bool) -> None:
+        attest_calls.append((model_runner, operator_selected))
 
     monkeypatch.setattr(
         sglang_backend, "build_sglang_server_args", fake_build_sglang_server_args
@@ -635,13 +632,12 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     )
 
     assert infra_kwargs_seen[-1]["enable_prefill_input_embeds"] is True
-    assert backend_locks_seen[-1] is True
+    assert attest_calls[-1][1] is True
     assert len(attest_calls) == 1
 
     PolicyBuilder().build("model")
 
     assert "enable_prefill_input_embeds" not in infra_kwargs_seen[-1]
-    assert backend_locks_seen[-1] is False
     assert len(attest_calls) == 1
 
 
@@ -691,3 +687,42 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
                 "cuda_graph_bs_prefill": [128, 256],
             },
         )
+
+
+def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets() -> None:
+    """A raised cap must grow a stage ladder, not replace it with the shared one.
+
+    The stage ladders carry buckets the shared one does not, such as the
+    Qwen3-TTS 1-token bucket, and losing them sends those shapes back to eager.
+    """
+    stage_ladder = [1, 2] + build_default_prefill_cuda_graph_bs(512)
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        cuda_graph_backend_prefill="breakable",
+        cuda_graph_bs_prefill=list(stage_ladder),
+        server_args_overrides={"cuda_graph_max_bs_prefill": 1024},
+    )
+
+    result = overrides["cuda_graph_bs_prefill"]
+    assert overrides["cuda_graph_max_bs_prefill"] == 1024
+    # Every stage bucket survives, including the ones the shared ladder lacks.
+    assert set(stage_ladder) <= set(result)
+    assert 1 in result and 2 in result
+    assert max(result) == 1024
+    assert result == sorted(result)
+    assert len(result) == len(set(result))
+
+
+def test_raised_operator_cap_leaves_an_operator_declared_ladder_alone() -> None:
+    """When the operator declares both, they own the pair."""
+    overrides = build_generation_batch_overrides(
+        max_running_requests=4,
+        server_args_overrides={
+            "cuda_graph_backend_prefill": "breakable",
+            "cuda_graph_bs_prefill": [128, 256],
+            "cuda_graph_max_bs_prefill": 1024,
+        },
+    )
+
+    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_max_bs_prefill"] == 1024

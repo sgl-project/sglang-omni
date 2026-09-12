@@ -5,6 +5,7 @@ from array import array
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.managers.schedule_batch import ReqKvInfo
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
@@ -24,7 +25,7 @@ class _ReqDouble:
         self.output_ids: list[int] = []
         self.output_ids_through_stop: list[int] = self.output_ids
         self.finished_reason = None
-        self.req_pool_idx = 3
+        self.kv = ReqKvInfo(req_pool_idx=3)
         self.accepted_lengths: list[int] = []
         self._finished = False
 
@@ -154,11 +155,9 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
 def test_dllm_staging_admission_uses_dllm_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from sglang.srt.runtime_context import get_context
+
     scheduler = _scheduler(fdfo=True)
-    scheduler.server_args = SimpleNamespace(
-        page_size=1,
-        max_prefill_tokens=16,
-    )
     scheduler.tree_cache = object()
     scheduler.token_to_kv_pool_allocator = object()
     scheduler.req_to_token_pool = object()
@@ -192,7 +191,8 @@ def test_dllm_staging_admission_uses_dllm_config(
     monkeypatch.setattr(dllm_scheduler_module, "PrefillAdder", _Adder)
     monkeypatch.setattr(dllm_scheduler_module, "ScheduleBatch", _Batch)
 
-    batch = scheduler._schedule_next_batch()
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=16):
+        batch = scheduler._schedule_next_batch()
 
     assert batch is not None
     assert created["dllm_config"] is scheduler.dllm_config
@@ -233,7 +233,7 @@ def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     assert scheduler._staging_queue == [req]
     assert cache_calls == []
     assert free_calls == []
-    assert req.req_pool_idx == 3
+    assert req.kv.req_pool_idx == 3
 
 
 def test_fdfo_resolved_block_commits_fill_ids_and_output_tokens() -> None:

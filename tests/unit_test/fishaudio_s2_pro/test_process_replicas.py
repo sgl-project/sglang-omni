@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fish Audio process-replica factory contracts."""
 
-import pytest
-
 from sglang_omni.config import ProcessConfig, resolve_stage_factory_args
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
@@ -19,14 +17,19 @@ def _expanded_replica_stages():
     return config, {stage.name: stage for stage in expanded}
 
 
-def test_engine_factory_rejects_process_replica_device_injection() -> None:
+def test_engine_factory_forwards_each_process_replica_gpu_id() -> None:
     config, by_name = _expanded_replica_stages()
 
-    with pytest.raises(
-        ValueError,
-        match="tts_engine@r0.*replica_devices.*does not declare a gpu_id parameter",
-    ):
-        resolve_stage_factory_args(by_name["tts_engine@r0"], config, gpu_id=1)
+    gpu_ids = [
+        resolve_stage_factory_args(
+            by_name[f"tts_engine@r{replica_id}"],
+            config,
+            gpu_id=gpu_id,
+        )["gpu_id"]
+        for replica_id, gpu_id in enumerate((1, 2))
+    ]
+
+    assert gpu_ids == [1, 2]
 
 
 def test_vocoder_factory_accepts_each_process_replica_gpu_id() -> None:

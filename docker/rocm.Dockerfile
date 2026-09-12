@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # Build on the validated SGLang ROCm stack without replacing GPU-coupled components.
-ARG SGLANG_IMAGE=lmsysorg/sglang:v0.5.18-rocm720-mi35x@sha256:6d68cd19206716cb3f1e31e2ad89cd0852d7ae614a792773c30a4277f8955c72
+ARG SGLANG_IMAGE=lmsysorg/sglang:v0.5.19-rocm720-mi35x@sha256:f4b6260f7cd2fe46e09f0eb4cbdf2f6a13f4023ebd9dde91144cb97b10c3def0
 
 FROM ${SGLANG_IMAGE} AS runtime
 

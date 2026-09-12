@@ -112,7 +112,10 @@ Supported Models
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md
    cookbook/ming_omni.md
+   cookbook/nemotron_voicechat.md
    cookbook/llada2_uni.md
+   cookbook/fun_cosyvoice3.md
+   cookbook/auk.md
 
 .. toctree::
    :maxdepth: 1
@@ -121,6 +124,7 @@ Supported Models
    basic_usage/qwen3_omni.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
+   basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
    basic_usage/process_topology_migration.md
    basic_usage/omni_router.md

@@ -32,9 +32,7 @@ These rules apply whether groups run Mode B or Mode C.
 1. **Disjoint GPUs.** Include sets must not overlap. Respect `TUNE_GPU_EXCLUDE`
    for host-reserved devices; never launch on or clean those GPUs.
 2. **Per-group cache root.** Give each group a distinct `XDG_CACHE_HOME` and/or
-   `HOME` (or equivalent `OMNI_CI_HOME` partition). FlashInfer cleanup wipes
-   only this job’s first cache dir; wiping every candidate path races live
-   workers on other groups.
+   `HOME` (or equivalent `OMNI_CI_HOME` partition).
 3. **Scoped cleanup only.** Every cleanup path must pass physical GPU ids via
    `CUDA_VISIBLE_DEVICES`. See Cleanup below.
 4. **No interactive shell pollution.** Bootstrap from
@@ -114,7 +112,7 @@ Tab C — cpuset foreign-load supervisor (**one per GPU group**, matching that
 group's lane — not only `0,1`):
 
 ```bash
-# Prefer the GPU group; the script resolves the matching 32-core cpuset.
+# Prefer the GPU group; the script resolves the matching NUMA-local cpuset.
 bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 0,1
 bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 2,3
 bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 4,5
@@ -124,7 +122,7 @@ bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 6,7
 
 | `TUNE_GPU_INCLUDE` | Tab C argument / cpuset |
 |---|---|
-| `0,1` | `0,1` → `0-15,64-79` |
+| `0,1` | `0,1` → `2-15,66-79` |
 | `2,3` | `2,3` → `16-31,80-95` |
 | `4,5` | `4,5` → `48-63,112-127` |
 | `6,7` | `6,7` → `32-47,96-111` |
@@ -153,9 +151,9 @@ complete.
 Tab B behavior:
 
 - Resolves the active pytest from its process and `--basetemp`.
-- Prefers `server.log` under that basetemp. Locally (non-CI),
-  `server_log_file()` returns `None`, so router/worker stdout is multiplexed
-  into the sibling pytest `runN.log`; Tab B falls back to that file.
+- Prefers the sibling pytest `runN.log`. Calibration streams server output
+  into this combined log even when the shell inherits CI variables. Falls
+  back to `server.log` files when the pytest log is unavailable.
 - Detaches when cleanup kills a server or pytest exits; attaches the next
   launch in the same Tab B (must not stay stuck on a completed log).
 - IDE terminals truncate around ~1MiB. Tab B filters Decode/Prefill batch spam

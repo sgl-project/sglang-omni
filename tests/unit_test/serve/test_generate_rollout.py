@@ -198,7 +198,7 @@ def test_generate_rejects_missing_logprobs_when_requested() -> None:
     assert "output_token_logprobs" in resp.text
 
 
-def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
+def test_generate_audio_requires_logprob_opt_out_without_omni_rollout() -> None:
     result = _text_result()
     result.output_token_logprobs = None
     result.audio = CompletionAudio(id="a1", data="QUJD", transcript="hello world")
@@ -216,6 +216,17 @@ def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
 
     assert resp.status_code == 501
     assert "return_omni_rollout=true" in resp.text
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "hi",
+            "output_modalities": ["audio"],
+            "return_logprob": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["audio"]["data"] == "QUJD"
 
 
 def test_generate_rejects_logprob_length_mismatch() -> None:

@@ -633,7 +633,7 @@ def test_qwen3_asr_request_builder_rejects_corrupt_local_audio_path(
         assert source == str(corrupt_path)
         raise RuntimeError("invalid audio data")
 
-    monkeypatch.setattr(audio_utils, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio_utils, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(audio_utils.torchaudio, "load", raise_decode_error)
     request_builder, _ = make_qwen3_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),

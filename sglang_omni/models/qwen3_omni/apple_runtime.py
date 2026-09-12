@@ -21,7 +21,7 @@ _TORCH_MPS_CHECKPOINT_ERROR = (
 
 
 def qwen3_omni_uses_mlx_backend() -> bool:
-    from sglang.srt.utils.tensor_bridge import use_mlx
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
     return bool(use_mlx())
 

@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -10,26 +11,46 @@ from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_con
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.utils import (
     architecture_from_hf_config,
+    try_resolve_arch_from_auk_layout,
+    try_resolve_arch_from_cosyvoice3_layout,
     try_resolve_arch_from_mistral_config,
+    try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_raw_config,
 )
 
 
 def resolve_config_cls_for_model_path(model_path: str):
     """Resolve a PipelineConfig class from HF config metadata."""
+    # note (db-ol): a pinned <repo-id>@<revision> spec resolves metadata at
+    # the pinned revision without materializing the snapshot. The weights
+    # download happens later, when resolve_checkpoint loads a stage.
+    repo_id, revision = model_path, None
+    if "@" in model_path and not os.path.isdir(model_path):
+        repo_id, _, pinned = model_path.partition("@")
+        revision = pinned or None
+    hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(model_path)
+        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
     except (OSError, ValueError, KeyError):
         hf_config = None
 
     arch = architecture_from_hf_config(hf_config) if hf_config is not None else None
     if arch is None:
-        arch = try_resolve_arch_from_raw_config(model_path)
+        arch = try_resolve_arch_from_raw_config(repo_id, revision=revision)
     if arch is None:
-        arch = try_resolve_arch_from_mistral_config(model_path)
+        arch = try_resolve_arch_from_mistral_config(repo_id, revision=revision)
     if arch is None:
-        raise ValueError(f"Could not resolve model architecture for {model_path!r}")
+        arch = try_resolve_arch_from_nemo_config(repo_id, revision=revision)
+    if arch is None:
+        arch = try_resolve_arch_from_cosyvoice3_layout(repo_id, revision=revision)
+    if arch is None:
+        arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
+    if arch is None:
+        hint = f", check that revision {revision} exists" if revision else ""
+        raise ValueError(
+            f"Could not resolve model architecture for {model_path!r}{hint}"
+        )
     return PIPELINE_CONFIG_REGISTRY.get_config(arch)
 
 
@@ -82,11 +103,11 @@ class ConfigManager:
         """Merge the configuration and the extra arguments.
 
         The dotted keys are translated into canonical patches and applied by
-        :class:`~sglang_omni.config.resolver.ConfigResolver`, which is the only
+        :class:sglang_omni.config.resolver.ConfigResolver, which is the only
         code that writes into a configuration.
 
-        ``extra_patches`` carries patches a caller has already translated --
-        the ``--model-path`` flag in ``sgl-omni serve``, for instance.
+        extra_patches carries patches a caller has already translated --
+        the --model-path flag in sgl-omni serve, for instance.
         Everything is resolved together, in one patch set, so that writing the
         same path two ways is refused (or settled by declared specificity)
         rather than by the order the translations happen to run in.
@@ -125,11 +146,11 @@ class ConfigManager:
         """
         Load the configuration from the file path.
 
-        The file's ``stages:`` mapping entries are folded into the
-        configuration that comes back, so callers holding a ``ConfigManager``
+        The file's stages: mapping entries are folded into the
+        configuration that comes back, so callers holding a ConfigManager
         see one settled config rather than a config plus a pile of pending
-        overrides. ``sgl-omni config explain`` wants the opposite and calls
-        ``sources_from_config_file`` directly.
+        overrides. sgl-omni config explain wants the opposite and calls
+        sources_from_config_file directly.
         """
         config, patches = sources_from_config_file(file_path)
         if not patches:

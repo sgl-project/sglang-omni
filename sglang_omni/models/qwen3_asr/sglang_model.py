@@ -160,10 +160,15 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
     def init_encoder_graphs(
         self, *, max_batch_size: int, max_tokens_per_clip: int
     ) -> None:
+        device = next(self.audio_tower.parameters()).device
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            return
         runner = Qwen3ASREncoderLayerStackGraphRunner(
             self.audio_tower,
             buckets=build_buckets(max_batch_size, max_tokens_per_clip),
             max_batch_size=max_batch_size,
+            graph_backend=graph_backend,
         )
         runner.capture_all()
         self._encoder_graph_runner = runner

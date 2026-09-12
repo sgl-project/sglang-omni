@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -108,6 +109,10 @@ class _FakeCudaBackend:
         ]
         self._memory_index = 0
 
+    def graph_backend(self, device: torch.device) -> object:
+        del device
+        return object()
+
     def device_context(self, device: torch.device):
         del device
         return nullcontext()
@@ -118,7 +123,8 @@ class _FakeCudaBackend:
         self._memory_index += 1
         return dict(self._memory_snapshots[index])
 
-    def empty_cache(self) -> None:
+    def empty_cache(self, device: torch.device) -> None:
+        del device
         self.empty_cache_calls += 1
 
     def new_static_input(
@@ -143,7 +149,8 @@ class _FakeCudaBackend:
         for _ in range(iterations):
             model(static_input)
 
-    def graph_pool_handle(self) -> object:
+    def graph_pool_handle(self, device: torch.device) -> object:
+        del device
         self.pool_calls += 1
         return object()
 
@@ -181,8 +188,9 @@ class _FakeCudaBackend:
         del device
         self.synchronize_calls += 1
 
-    def is_cuda_tensor(self, tensor: torch.Tensor) -> bool:
-        return id(tensor) in self._tensor_devices
+    def is_accelerator_tensor(self, tensor: torch.Tensor, device: torch.device) -> bool:
+        marked = self._tensor_devices.get(id(tensor))
+        return marked is not None and marked.type == device.type
 
     def tensor_device_matches(self, tensor: torch.Tensor, device: torch.device) -> bool:
         return self._tensor_devices.get(id(tensor)) == device
@@ -208,7 +216,7 @@ def _build_runner(
         num_quantizers=16,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         graph_keys=_DEFAULT_GRAPH_KEYS,
-        cuda_api=backend,
+        device_api=backend,
     )
     return runner, backend, model
 
@@ -238,7 +246,7 @@ def test_build_captures_only_the_explicit_graph_keys() -> None:
         num_quantizers=16,
         total_gpu_memory_fraction=0.5,
         graph_keys=graph_keys,
-        cuda_api=backend,
+        device_api=backend,
     )
 
     assert [tuple(graph.static_input.shape) for graph in backend.graphs] == [
@@ -357,9 +365,11 @@ def test_all_serving_keys_hit_while_batch_two_misses() -> None:
     }
 
 
-def test_cuda_api_restores_original_stream_when_capture_exit_raises(
+def test_device_api_restores_original_stream_when_capture_exit_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from sglang_omni import platforms
+
     original_stream = object()
     current = {"stream": original_stream}
 
@@ -376,29 +386,29 @@ def test_cuda_api_restores_original_stream_when_capture_exit_raises(
         def __exit__(self, *_args: object) -> None:
             raise RuntimeError("fake capture_end failed")
 
-    def graph_context(*_args: object, **kwargs: object) -> _FailingCaptureContext:
+    def capture(**kwargs: object) -> _FailingCaptureContext:
         assert kwargs["stream"] is side_stream
+        assert kwargs["thread_local_errors"] is True
         return _FailingCaptureContext()
 
-    monkeypatch.setattr(
-        code2wav_cuda_graph.torch.cuda,
-        "current_stream",
-        lambda _device: current["stream"],
+    fake_module = SimpleNamespace(
+        __name__="fake",
+        current_stream=lambda _device: current["stream"],
+        set_stream=lambda stream: current.update(stream=stream),
     )
     monkeypatch.setattr(
-        code2wav_cuda_graph.torch.cuda,
-        "set_stream",
-        lambda stream: current.update(stream=stream),
+        code2wav_cuda_graph.torch,
+        "get_device_module",
+        lambda *_args, **_kwargs: fake_module,
     )
     monkeypatch.setattr(
-        code2wav_cuda_graph.torch.cuda,
-        "CUDAGraph",
-        lambda: object(),
+        platforms.current_platform,
+        "get_device_graph_backend",
+        lambda _device: SimpleNamespace(capture=capture),
     )
-    monkeypatch.setattr(code2wav_cuda_graph.torch.cuda, "graph", graph_context)
 
     with pytest.raises(RuntimeError, match="fake capture_end failed"):
-        code2wav_cuda_graph._TorchCudaApi().capture(
+        code2wav_cuda_graph._TorchDeviceApi().capture(
             _FakeModel(),
             torch.zeros((1, 16, 10), dtype=torch.long),
             pool=object(),
@@ -411,7 +421,7 @@ def test_cuda_api_restores_original_stream_when_capture_exit_raises(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_real_cuda_invalid_capture_preserves_current_stream() -> None:
-    api = code2wav_cuda_graph._TorchCudaApi()
+    api = code2wav_cuda_graph._TorchDeviceApi()
     device = torch.device("cuda", torch.cuda.current_device())
     original_stream = torch.cuda.current_stream(device)
     side_stream = api.new_stream(device)
@@ -621,7 +631,7 @@ def test_intentional_eager_fallbacks(
 @pytest.mark.parametrize(
     ("case", "expected_error", "message"),
     [
-        ("non_cuda", TypeError, "CUDA tensor"),
+        ("non_cuda", TypeError, "must be on device type 'cuda'"),
         ("wrong_dtype", TypeError, "torch.long"),
         ("wrong_device", ValueError, "cuda:0"),
         ("wrong_shape", ValueError, "shape"),
@@ -818,7 +828,7 @@ def _build_tiered_runner(
         num_quantizers=16,
         total_gpu_memory_fraction=0.5,
         graph_keys=_TIERED_GRAPH_KEYS,
-        cuda_api=backend,
+        device_api=backend,
     )
 
 
@@ -1048,3 +1058,160 @@ def test_runtime_disable_clears_tier1_availability() -> None:
 
     assert runner.available_batch_sizes(10) == ()
     assert runner.stats()["enabled"] is False
+
+
+def test_the_mask_pin_refuses_a_concurrent_holder() -> None:
+    import threading
+
+    held = threading.Event()
+    release = threading.Event()
+    outcome: list[str] = []
+
+    def holder() -> None:
+        with code2wav_cuda_graph._unpacked_sequence_mask():
+            held.set()
+            release.wait(timeout=5)
+
+    worker = threading.Thread(target=holder)
+    worker.start()
+    try:
+        assert held.wait(timeout=5), "holder never acquired the pin"
+        try:
+            with code2wav_cuda_graph._unpacked_sequence_mask():
+                outcome.append("acquired")
+        except RuntimeError:
+            outcome.append("refused")
+    finally:
+        release.set()
+        worker.join(timeout=5)
+
+    assert outcome == ["refused"]
+    with code2wav_cuda_graph._unpacked_sequence_mask():
+        pass
+
+
+def test_a_failure_reading_the_mask_global_does_not_leak_the_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from transformers import masking_utils
+
+    monkeypatch.delattr(masking_utils, "find_packed_sequence_indices")
+
+    with pytest.raises(AttributeError):
+        with code2wav_cuda_graph._unpacked_sequence_mask():
+            pass
+
+    monkeypatch.undo()
+    with code2wav_cuda_graph._unpacked_sequence_mask():
+        assert masking_utils.find_packed_sequence_indices([1, 2]) is None
+
+
+def test_a_device_whose_platform_names_no_graph_backend_is_refused_at_build() -> None:
+
+    class _NoBackend(_FakeCudaBackend):
+        def graph_backend(self, device: torch.device) -> None:
+            del device
+            return None
+
+    with pytest.raises(ValueError, match="names no device graph backend"):
+        Code2WavCudaGraphRunner.build(
+            _FakeModel(),
+            device="cuda:0",
+            num_quantizers=16,
+            total_gpu_memory_fraction=0.5,
+            graph_keys=_DEFAULT_GRAPH_KEYS,
+            device_api=_NoBackend(),
+        )
+
+
+def test_an_indexless_device_is_refused_at_build() -> None:
+    with pytest.raises(ValueError, match="concrete device"):
+        Code2WavCudaGraphRunner.build(
+            _FakeModel(),
+            device="cuda",
+            num_quantizers=16,
+            total_gpu_memory_fraction=0.5,
+            graph_keys=_DEFAULT_GRAPH_KEYS,
+            device_api=_FakeCudaBackend(),
+        )
+
+
+class _PhaseRecordingBackend(_FakeCudaBackend):
+
+    def __init__(self, phase: list[str]) -> None:
+        super().__init__()
+        self._phase = phase
+
+    def warmup(self, model, static_input, **kwargs):
+        parent = super().warmup
+        return self._during("warmup", lambda: parent(model, static_input, **kwargs))
+
+    def capture(self, model, static_input, **kwargs):
+        parent = super().capture
+        graph, output = self._during(
+            "capture", lambda: parent(model, static_input, **kwargs)
+        )
+        inner_replay = graph.replay
+        graph.replay = lambda: self._during("replay", inner_replay)
+        return graph, output
+
+    def _during(self, phase: str, call):
+        previous, self._phase[0] = self._phase[0], phase
+        try:
+            return call()
+        finally:
+            self._phase[0] = previous
+
+
+@pytest.mark.parametrize("is_xpu", [False, True], ids=["non_xpu", "xpu"])
+def test_capture_pins_cover_warmup_capture_and_the_equivalence_check(
+    monkeypatch: pytest.MonkeyPatch, is_xpu: bool
+) -> None:
+    """_verify_equivalence compares with torch.equal, so an eager reference taken
+    outside the pins can reject a good capture and disable the runner."""
+    from transformers import masking_utils
+
+    from sglang_omni import platforms
+
+    events: list[str] = []
+    phase = ["eager"]
+
+    @contextmanager
+    def recording_pin():
+        events.append("pin_enter")
+        try:
+            yield
+        finally:
+            events.append("pin_exit")
+
+    monkeypatch.setattr(platforms.current_platform, "is_xpu", lambda: is_xpu)
+    monkeypatch.setattr(
+        platforms.current_platform, "graph_capture_attention", recording_pin
+    )
+    original_probe = masking_utils.find_packed_sequence_indices
+    seen_probe: list[object] = []
+    model = _FakeModel()
+
+    def recording_model(codes: torch.Tensor) -> torch.Tensor:
+        events.append(phase[0])
+        seen_probe.append(masking_utils.find_packed_sequence_indices)
+        return model(codes)
+
+    runner = Code2WavCudaGraphRunner.build(
+        recording_model,
+        device="cuda:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=(GraphKey(batch_size=1, frames=10),),
+        device_api=_PhaseRecordingBackend(phase),
+    )
+
+    assert runner.stats()["build"]["published_graph_count"] == 1
+    inner = ["warmup"] * 3 + ["capture", "eager", "replay"]
+    if is_xpu:
+        assert events == ["pin_enter", *inner, "pin_exit"]
+        assert all(probe is not original_probe for probe in seen_probe)
+    else:
+        assert events == inner, "no pin may be entered off XPU"
+        assert all(probe is original_probe for probe in seen_probe)
+    assert masking_utils.find_packed_sequence_indices is original_probe

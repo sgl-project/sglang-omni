@@ -56,8 +56,8 @@ class SGLangExecutionBridge:
         *,
         device: torch.device,
         worker: Any,
-        req_to_token_pool: Any,
         spec_algorithm: Any,
+        future_map: Any,
     ) -> None:
         from sglang.srt.managers.overlap_utils import RelayPayload
 
@@ -69,11 +69,7 @@ class SGLangExecutionBridge:
         self.worker = worker
         self.runner = worker.model_runner
         self.device_module = torch.get_device_module(device)
-        self.future_map = spec_algorithm.create_future_map(
-            device,
-            req_to_token_pool,
-            needs_cpu_seq_lens=True,
-        )
+        self.future_map = future_map
         self._relay_payload_type = RelayPayload
 
     @contextlib.contextmanager

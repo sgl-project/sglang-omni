@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavRunResult,
@@ -253,7 +254,7 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(
     )
 
     def _unexpected_build(*args, **kwargs):
-        raise AssertionError("disabled default must not build CUDA graphs")
+        raise AssertionError("disabled default must not build device graphs")
 
     monkeypatch.setattr(
         code2wav_scheduler.Code2WavCudaGraphRunner,
@@ -297,21 +298,17 @@ def test_qwen_code2wav_factory_skips_torch_ownership_log_on_constructor_failure(
     assert "Qwen3-Omni code2wav scheduler backend=torch" not in caplog.messages
 
 
-def test_non_cuda_platforms_disable_the_code2wav_graph() -> None:
-    """The runner is CUDA-only, and the platform owns that decision rather than the
-    factory re-deriving it from the device type. A platform inheriting the base True
-    would reach the CUDA-only runner, so every non-CUDA platform declares itself.
-    """
+def test_only_graph_capable_platforms_enable_the_code2wav_graph() -> None:
     from sglang_omni.platforms.cpu import CPUOmniPlatform
     from sglang_omni.platforms.cuda import CUDAOmniPlatform
     from sglang_omni.platforms.npu import NPUOmniPlatform
     from sglang_omni.platforms.rocm import ROCMOmniPlatform
     from sglang_omni.platforms.xpu import XPUOmniPlatform
 
-    assert XPUOmniPlatform().enable_code2wav_graph() is False
+    assert XPUOmniPlatform().enable_code2wav_graph() is True
+    assert CUDAOmniPlatform().enable_code2wav_graph() is True
     assert NPUOmniPlatform().enable_code2wav_graph() is False
     assert CPUOmniPlatform().enable_code2wav_graph() is False
-    assert CUDAOmniPlatform().enable_code2wav_graph() is True
     assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
@@ -340,14 +337,18 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
 
     monkeypatch.setattr(code2wav_scheduler, "load_code2wav_model", _load)
 
-    with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
+    with pytest.raises(ValueError, match="gpu_memory_fraction") as excinfo:
         code2wav_scheduler.create_code2wav_scheduler(
             "dummy",
-            device="cuda:0",
+            device="cuda",
+            gpu_id=0,
             enable_cuda_graph=True,
         )
 
     assert load_calls == 0
+    # The message aborts startup, so the key it names has to be settable.
+    named = {word.strip("'\".,:") for word in str(excinfo.value).split()}
+    assert named & set(StageConfig.model_fields), str(excinfo.value)
 
 
 def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
@@ -370,7 +371,8 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         enable_batching=True,
         enable_cuda_graph=True,
         total_gpu_memory_fraction=0.02,
@@ -408,7 +410,8 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         enable_batching=True,
         batch_ceiling=4,
         enable_cuda_graph=True,
@@ -455,7 +458,8 @@ def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler(
         "dummy",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         enable_batching=True,
         enable_cuda_graph=True,
         total_gpu_memory_fraction=0.02,
@@ -571,7 +575,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     stats_record = next(
         record
         for record in caplog.records
-        if "CUDA graph startup stats=" in record.message
+        if "device graph startup stats=" in record.message
     )
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == runner.stats()
 
@@ -619,7 +623,7 @@ def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
     stats_record = next(
         record
         for record in caplog.records
-        if "CUDA graph startup stats=" in record.message
+        if "device graph startup stats=" in record.message
     )
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == {
         "disable_reason": "capture_failed: RuntimeError: capture failed",

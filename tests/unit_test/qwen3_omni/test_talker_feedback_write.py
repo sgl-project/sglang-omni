@@ -28,6 +28,7 @@ def _data(feedback: torch.Tensor | None, text: torch.Tensor | None) -> SimpleNam
     return SimpleNamespace(
         pending_feedback_queue=deque([feedback]) if feedback is not None else deque(),
         pending_text_queue=deque([text]) if text is not None else deque(),
+        decode_input_embeds=[],
         thinker_chunks_done=False,
         tts_pad_embed=None,
     )

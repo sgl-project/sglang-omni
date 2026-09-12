@@ -5,6 +5,7 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.cuda import CudaDeviceMixin
 
 from sglang_omni.platforms.interface import OmniPlatform
@@ -14,6 +15,8 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang_omni.platforms.interface import JointRopeInplaceKernel
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,11 @@ def _is_fp8_cutlass_moe_supported() -> bool:
 
 
 class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
+    def _get_device_graph_backend(self) -> DeviceGraphBackend:
+        from sglang_omni.platforms.device_graph import CudaDeviceGraphBackend
+
+        return CudaDeviceGraphBackend()
+
     def get_stage_process_env(
         self,
         spec: StageLaunchConfig,
@@ -71,11 +79,19 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         else:
             mapped_gpu = str(spec.gpu_id)
 
-        return {
+        env_updates = {
             "CUDA_VISIBLE_DEVICES": mapped_gpu,
             "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         }
+        # note (ratish): NVLS multicast binding is not available on every host,
+        # and NCCL 2.29 fails communicator init instead of falling back. A
+        # value from the shell or the stage configuration stands.
+        if "NCCL_NVLS_ENABLE" not in source_env and (
+            "NCCL_NVLS_ENABLE" not in spec.env_defaults
+        ):
+            env_updates["NCCL_NVLS_ENABLE"] = "0"
+        return env_updates
 
     def get_intra_node_transport(self) -> TransportKind:
         from sglang_omni.comm.data_ref import TransportKind
@@ -86,6 +102,11 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         from sgl_kernel import fused_qk_norm_rope
 
         return fused_qk_norm_rope
+
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+        from sglang.kernels.ops.attention.rope import apply_rope_inplace
+
+        return apply_rope_inplace
 
     def apply_model_worker_backend_policy(
         self,
@@ -98,7 +119,8 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             server_args, model_config, model_arch_override
         )
 
-        moe_runner_backend = server_args.moe_runner_backend
+        cfg = resolved_view(server_args)
+        moe_runner_backend = cfg.moe_runner_backend
         is_qwen3_omni_arch = model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
@@ -118,14 +140,12 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         ):
             # Note:(Chenchen Hong) flashinfer_cutlass MoE deadlocks CUDA-graph
             # capture on H20 (no H20 kernel coverage); triton captures cleanly there.
+            moe_runner_backend = "triton" if _is_h20_device() else "flashinfer_cutlass"
             override_server_args(
                 server_args,
                 "sglang-omni-qwen3-backend-policy",
-                moe_runner_backend=(
-                    "triton" if _is_h20_device() else "flashinfer_cutlass"
-                ),
+                moe_runner_backend=moe_runner_backend,
             )
-            moe_runner_backend = server_args.moe_runner_backend
 
         if (
             is_qwen3_omni_arch
@@ -135,12 +155,12 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             and has_native_fp8_block_quant
             and _is_fp8_cutlass_moe_supported()
         ):
+            moe_runner_backend = "cutlass"
             override_server_args(
                 server_args,
                 "sglang-omni-qwen3-backend-policy",
-                moe_runner_backend="cutlass",
+                moe_runner_backend=moe_runner_backend,
             )
-            moe_runner_backend = server_args.moe_runner_backend
 
         if (
             is_qwen3_omni_arch
@@ -165,23 +185,26 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                 "'auto' so Omni selects a native-FP8-compatible MoE runner."
             )
 
-        fp8_gemm_backend = normalize_quantization(server_args.fp8_gemm_runner_backend)
+        fp8_gemm_backend = normalize_quantization(cfg.fp8_gemm_runner_backend)
         if (
-            model_arch_override == "Qwen3OmniTalker"
+            is_qwen3_omni_arch
             and effective_quantization == "fp8"
             and has_native_fp8_block_quant
             and fp8_gemm_backend in (None, "auto")
         ):
-            # Projected talker prefill has request-dependent FP8 dense GEMM shapes
-            # outside decode CUDA graph replay; DeepGEMM can otherwise JIT there.
+            # Prefill has request-dependent FP8 dense GEMM shapes outside CUDA
+            # graph replay, and DeepGEMM compiles one kernel per shape after
+            # readiness. note (ratish): on H100 the thinker measured 3 to 6
+            # percent more throughput on Triton at c1 and c16 with equal
+            # accuracy over 5000 MMSU prompts, and no post-ready compiles.
+            fp8_gemm_backend = "triton"
             override_server_args(
                 server_args,
                 "sglang-omni-qwen3-backend-policy",
-                fp8_gemm_runner_backend="triton",
+                fp8_gemm_runner_backend=fp8_gemm_backend,
             )
-            fp8_gemm_backend = server_args.fp8_gemm_runner_backend
 
-        server_quantization = server_args.quantization
+        server_quantization = cfg.quantization
         logger.info(
             f"Configured SGLang backend policy: arch={model_arch_override} "
             f"effective_quantization={effective_quantization} "

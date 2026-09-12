@@ -44,6 +44,15 @@ DEFAULT_TOP_K = 50
 # tokens per audio second including time markers, so 10 leaves roughly 2x
 # headroom without approaching the input token cost of the same audio.
 _OUTPUT_TOKENS_PER_AUDIO_SECOND = 10
+# Floor for the duration-scaled budget. Short, dense multi-speaker clips need
+# room for transcript text plus repeated timestamp and speaker-label framing;
+# a 128-token floor truncated valid outputs in the movies800times ASR set.
+# This remains far below the legacy 5120-token default that allowed short
+# non-speech repetition loops to run for thousands of tokens.
+_MIN_SCALED_OUTPUT_TOKENS = 512
+# A zero-duration input has no legitimate transcript to preserve, so retain a
+# tighter fallback than the floor used for short, dense speech.
+_EMPTY_AUDIO_OUTPUT_TOKENS = 128
 # Note (yichi): MOSS-Transcribe-Diarize is an audio LLM: a Qwen3 text decoder
 # over Whisper audio embeddings, trained on a fixed transcribe+diarize
 # instruction with the timestamped/speaker-labelled transcript as the target
@@ -449,6 +458,15 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         )
         top_p = _sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
         top_k = _sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
+        # Opt-in mitigation for repetition loops (#975): honoured only when
+        # the caller sets it explicitly, so greedy defaults stay unchanged.
+        repetition_penalty = _sampling_param(
+            params, explicit_fields, "repetition_penalty", 1.0, float
+        )
+        # Same range SamplingParams enforces; failing here keeps the error
+        # on the request path instead of inside the scheduler.
+        if not 0.0 < repetition_penalty <= 2.0:
+            raise ValueError("repetition_penalty must be in (0, 2]")
         # note (db-ol): the model default was sized for short clips and
         # silently cuts transcripts past about 20 minutes. Scale the default
         # budget with duration unless the operator configured a fixed one.
@@ -462,16 +480,29 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 raise ValueError("max_new_tokens must be at least 1")
         elif duration_scaled_default:
             if audio_duration_s <= 0.0:
+                # Empty audio has no legitimate long transcript; keep the
+                # same floor as the scaled path so a loop cannot burn the
+                # full fixed default here either.
+                request_max_new_tokens = min(max_new_tokens, _EMPTY_AUDIO_OUTPUT_TOKENS)
                 logger.warning(
                     "Request %s decoded to empty audio, the output budget "
-                    "falls back to the fixed default %d",
+                    "falls back to %d",
                     payload.request_id,
-                    max_new_tokens,
+                    request_max_new_tokens,
                 )
-            request_max_new_tokens = max(
-                max_new_tokens,
-                math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),
-            )
+            else:
+                # Note (Ruilin Gao): scale the budget with duration in both directions.
+                # Raising it keeps dense transcripts past ~20 minutes from
+                # being cut; capping it keeps greedy decoding from looping
+                # until the fixed default on short non-speech audio
+                # (laughter, noise), which inflated per-request latency
+                # ~40x and cut CI batch throughput ~19% (#975). The floor
+                # never exceeds the operator's fixed default, so a small
+                # configured budget still bounds short requests.
+                request_max_new_tokens = max(
+                    min(max_new_tokens, _MIN_SCALED_OUTPUT_TOKENS),
+                    math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),
+                )
         else:
             request_max_new_tokens = max_new_tokens
         sampling_params = SamplingParams(
@@ -479,6 +510,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            repetition_penalty=repetition_penalty,
             stop_token_ids=[eos_token_id],
         )
         sampling_params.normalize(tokenizer=None)
@@ -509,6 +541,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            repetition_penalty=repetition_penalty,
             audio_duration_s=audio_duration_s,
             language=str(params.get("language") or "auto"),
             engine_start_s=time.perf_counter(),

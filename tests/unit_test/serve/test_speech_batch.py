@@ -6,12 +6,14 @@ import asyncio
 import base64
 import logging
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client import ClientError
 from sglang_omni.client.types import SpeechResult
+from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import _create_speech_batch_with_disconnect_watch
 from sglang_omni.serve.speech_service import SpeechRequestValidator
@@ -125,6 +127,47 @@ class CountingReferenceSpeechRequestValidator(SpeechRequestValidator):
     ) -> dict[str, str]:
         self.reference_loads.append(value)
         return {"data": "UklGRg==", "media_type": "audio/wav"}
+
+
+def test_custom_voice_batch_validates_each_item_before_io(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path))
+    client_impl = RecordingBatchSpeechClient()
+    app = create_app(
+        client_impl,
+        custom_voice_config=CustomVoiceConfig(
+            speakers=("speaker",), task_type="CustomVoice"
+        ),
+    )
+    load = Mock(side_effect=AssertionError("Invalid reference must not be read"))
+    monkeypatch.setattr(
+        app.state.speech_service.reference_connector, "load_resource", load
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/audio/speech/batch",
+            json={
+                "voice": "speaker",
+                "items": [
+                    {"input": "valid"},
+                    {"input": "bad voice", "voice": "missing"},
+                    {"input": "bad task", "task_type": "Base"},
+                    {
+                        "input": "bad reference",
+                        "ref_audio": "https://example.com/ref.wav",
+                    },
+                ],
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (1, 3)
+    assert [
+        item["error"]["param"] for item in body["results"] if item["status"] == "error"
+    ] == ["items.1.voice", "items.2.task_type", "items.3.ref_audio"]
+    assert [request.prompt for request in client_impl.requests] == ["valid"]
+    load.assert_not_called()
 
 
 def test_batch_speech_preserves_order_and_item_errors() -> None:

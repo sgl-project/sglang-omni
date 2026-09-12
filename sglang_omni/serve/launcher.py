@@ -430,6 +430,7 @@ async def _run_server(
             supports_uploaded_voice_references=(
                 pipeline_config.supports_uploaded_voice_references()
             ),
+            custom_voice_config=pipeline_config.resolve_custom_voice_config(),
             supports_audio_translation=(pipeline_config.supports_audio_translation()),
             required_speech_reference_count=(
                 pipeline_config.required_speech_reference_count
@@ -446,6 +447,7 @@ async def _run_server(
             supports_realtime_audio_output=(
                 type(pipeline_config).code2wav_stage() is not None
             ),
+            realtime_transcription=type(pipeline_config).realtime_transcription,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,

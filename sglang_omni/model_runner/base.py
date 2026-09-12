@@ -7,6 +7,7 @@ pass, sampling, logit post-processing, and output extraction.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -29,9 +30,9 @@ from sglang_omni.scheduling.types import (
 
 def _current_sglang_sampling_backend() -> str | None:
     try:
-        from sglang.srt.server_args import get_global_server_args
+        from sglang.srt.runtime_context import get_exec
 
-        return get_global_server_args().sampling_backend
+        return get_exec().kernel.sampling_backend
     except ValueError:
         return None
 
@@ -196,10 +197,77 @@ class ModelRunner:
         *,
         isolate_sampling: bool = False,
     ):
+        if schedule_batch.forward_mode.is_extend():
+            self._restore_output_penalty_history(schedule_batch)
         return self._execution_bridge.forward_context(
             schedule_batch,
             isolate_sampling=isolate_sampling,
         )
+
+    @staticmethod
+    def _restore_output_penalty_history(schedule_batch: Any) -> None:
+        """Re-seed retained output history into the prepared penalizers."""
+        sampling_info = schedule_batch.sampling_info
+        if sampling_info.penalizer_orchestrator is None:
+            return
+        from sglang.srt.sampling.penaltylib import (
+            BatchedFrequencyPenalizer,
+            BatchedPresencePenalizer,
+            BatchedRepetitionPenalizer,
+        )
+
+        orchestrator = sampling_info.penalizer_orchestrator
+        prepared = []
+        for cls, state_name, param_name in (
+            (
+                BatchedRepetitionPenalizer,
+                "cumulated_repetition_penalties",
+                "repetition_penalty",
+            ),
+            (
+                BatchedFrequencyPenalizer,
+                "cumulated_frequency_penalties",
+                "frequency_penalty",
+            ),
+            (
+                BatchedPresencePenalizer,
+                "cumulated_presence_penalties",
+                "presence_penalty",
+            ),
+        ):
+            penalizer = orchestrator.penalizers.get(cls)
+            if penalizer is not None and penalizer.is_prepared():
+                prepared.append((getattr(penalizer, state_name), param_name))
+        if not prepared:
+            return
+
+        rows, token_ids, counts = [], [], []
+        for row, req in enumerate(schedule_batch.reqs):
+            # Note: (Junnan Li) prepare_for_extend clears req.is_retracted, so
+            # the retained output_ids are the only record of emitted tokens.
+            retained = Counter(
+                token_id
+                for token_id in req.output_ids
+                if 0 <= token_id < orchestrator.vocab_size
+            )
+            rows.extend([row] * len(retained))
+            token_ids.extend(retained)
+            counts.extend(retained.values())
+        if not rows:
+            return
+
+        device = prepared[0][0].device
+        row_indices = torch.tensor(rows, dtype=torch.long, device=device)
+        token_indices = torch.tensor(token_ids, dtype=torch.long, device=device)
+        for state, param_name in prepared:
+            values = [
+                float(getattr(schedule_batch.reqs[row].sampling_params, param_name))
+                * (count if param_name == "frequency_penalty" else 1)
+                for row, count in zip(rows, counts)
+            ]
+            state[row_indices, token_indices] = torch.tensor(
+                values, dtype=state.dtype, device=device
+            )
 
     def _next_host_staging(
         self, shape: tuple[int, ...] | torch.Size, dtype: torch.dtype
@@ -770,7 +838,8 @@ class ModelRunner:
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        self._apply_repetition_penalty(logits_output, requests)
+        # Note: (Junnan Li) repetition/frequency/presence penalties are already
+        # in the SGLang sampler's state; a second pass here squares them.
         self._apply_codec_suppress_tokens(logits_output, requests)
         self._install_sampling_seeds(forward_batch, requests)
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
@@ -894,63 +963,6 @@ class ModelRunner:
     @staticmethod
     def _req_is_retracted(req: Any) -> bool:
         return bool(req.is_retracted)
-
-    @staticmethod
-    def _rep_penalty_unique_tokens(data: Any, output_ids: list, vocab: int) -> set:
-        # Note: (Jiaxin Deng) rebuilding unique(output_ids) every decode step is
-        # quadratic over the generation; track the consumed prefix and fold in
-        # only new tokens. A shrunk output_ids (retract/restart) resets the state.
-        seen_len = getattr(data, "_rep_seen_len", 0)
-        seen: set | None = getattr(data, "_rep_seen_tokens", None)
-        if seen is None or len(output_ids) < seen_len:
-            seen = set()
-            seen_len = 0
-        for t in output_ids[seen_len:]:
-            tok = int(t)
-            if 0 <= tok < vocab:
-                seen.add(tok)
-        data._rep_seen_tokens = seen
-        data._rep_seen_len = len(output_ids)
-        return seen
-
-    def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
-        logits = logits_output.next_token_logits
-        if logits is None or logits.ndim != 2:
-            return
-        vocab = logits.shape[1]
-        device = logits.device
-        rep_rows: list[int] = []
-        rep_toks: list[int] = []
-        rep_penalties: list[float] = []
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            req = data.req
-            penalty = req.sampling_params.repetition_penalty
-            if penalty == 1.0:
-                continue
-            output_ids = req.output_ids
-            if not output_ids:
-                # Note: (Jiaxin Deng) a retract can replace output_ids with an
-                # empty list; drop the incremental state so a restart does not
-                # inherit stale tokens.
-                if getattr(data, "_rep_seen_len", 0):
-                    data._rep_seen_tokens = set()
-                    data._rep_seen_len = 0
-                continue
-            unique = ModelRunner._rep_penalty_unique_tokens(data, output_ids, vocab)
-            if not unique:
-                continue
-            rep_rows.extend([row_idx] * len(unique))
-            rep_toks.extend(unique)
-            rep_penalties.extend([float(penalty)] * len(unique))
-        if rep_rows:
-            orig_dtype = logits.dtype
-            rows_t = torch.tensor(rep_rows, dtype=torch.long, device=device)
-            toks_t = torch.tensor(rep_toks, dtype=torch.long, device=device)
-            pens_t = torch.tensor(rep_penalties, dtype=torch.float32, device=device)
-            scores = logits[rows_t, toks_t].to(torch.float32)
-            scores = torch.where(scores > 0, scores / pens_t, scores * pens_t)
-            logits[rows_t, toks_t] = scores.to(orig_dtype)
 
     def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits

@@ -41,8 +41,10 @@ def create_thinker_scheduler(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    operator_selected_prefill_backend: bool = False,
 ):
     """Create the Qwen thinker scheduler."""
+    from sglang.srt.arg_groups.model_override_base import resolved_view
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.external_model_worker import uses_external_forward
@@ -68,11 +70,12 @@ def create_thinker_scheduler(
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
     from sglang_omni.utils import cuda_graph_batch_validator
 
+    cfg = resolved_view(server_args)
     capture_hidden_layers = [0, 24] if speech_enabled else None
     capture_hidden = speech_enabled
     prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
     enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
-    want_cuda_graph = not bool(server_args.disable_cuda_graph)
+    want_cuda_graph = not bool(cfg.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
 
     infrastructure = create_sglang_infrastructure(
@@ -103,7 +106,8 @@ def create_thinker_scheduler(
 
     if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
         cuda_graph_batch_validator.attest_prefill_cuda_graphs(
-            model_worker.model_runner, server_args
+            model_worker.model_runner,
+            operator_selected=operator_selected_prefill_backend,
         )
 
     def _should_generate_qwen_audio_output(request: Any) -> bool:

@@ -105,7 +105,7 @@ def _make_runner(model, *, enabled=True, async_enabled=False):
 
 
 def _reqs(rids, temps=None, top_ps=None, top_ks=None):
-    # The 0.5.15 adaptation reads sampling params host-side from the request
+    # The launch cache reads sampling params host-side from the request
     # objects, not from forward_batch.sampling_info.
     reqs = []
     for i, rid in enumerate(rids):

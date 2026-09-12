@@ -66,6 +66,7 @@ class ArkasrForConditionalGeneration(nn.Module):
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
 
+    @torch.no_grad()
     def get_audio_feature(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         """Encode cache-miss audio items in bounded sequential microbatches.
 

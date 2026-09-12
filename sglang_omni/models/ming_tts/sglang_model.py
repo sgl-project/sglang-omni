@@ -6,17 +6,25 @@ from __future__ import annotations
 import logging
 import math
 import re
-from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.runtime_context import get_forward, get_parallel
+from sglang.srt.runtime_context import (
+    get_exec,
+    get_forward,
+    get_model,
+    get_parallel,
+    get_schedule,
+)
 from torch import nn
 
 from sglang_omni.models.ming_omni.talker.talker_module.aggregator import Aggregator
+from sglang_omni.models.ming_omni.talker.talker_module.execution import (
+    TalkerExecutionConfig,
+)
 from sglang_omni.models.ming_tts.flow_matching import (
     FlowLoss,
     build_cfm_sde_random,
@@ -36,6 +44,7 @@ from sglang_omni.models.ming_tts.weight_loading import (
     classify_ming_tts_weight,
 )
 from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
     get_tensor_model_parallel_world_size,
@@ -62,7 +71,6 @@ from sglang_omni.vendor.sglang.models import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
 )
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import add_prefix
 
 logger = logging.getLogger(__name__)
@@ -129,33 +137,29 @@ class _MingTTSTailGraph:
             )
         )
 
-        context = (
-            torch.autocast(device_type="cuda", dtype=hidden_dtype)
-            if device.type == "cuda" and hidden_dtype in (torch.float16, torch.bfloat16)
-            else nullcontext()
-        )
-        with context:
-            warmup_stream = torch.cuda.Stream(device=device)
-            warmup_stream.wait_stream(torch.cuda.current_stream(device))
-            with torch.cuda.stream(warmup_stream):
-                for _ in range(2):
-                    self.model._compute_tail_step(
-                        self.inputs,
-                        noise=self.noise,
-                        timesteps=self.timesteps,
-                        sde_random=self.sde_random,
-                    )
-            torch.cuda.current_stream(device).wait_stream(warmup_stream)
-            torch.cuda.synchronize(device=device)
-
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                self.outputs = self.model._compute_tail_step(
+        warmup_stream = torch.cuda.Stream(device=device)
+        warmup_stream.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(warmup_stream):
+            for _ in range(2):
+                self.model._compute_tail_step(
                     self.inputs,
                     noise=self.noise,
                     timesteps=self.timesteps,
                     sde_random=self.sde_random,
                 )
+        torch.cuda.current_stream(device).wait_stream(warmup_stream)
+        torch.cuda.synchronize(device=device)
+
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.outputs = self.model._compute_tail_step(
+                self.inputs,
+                noise=self.noise,
+                timesteps=self.timesteps,
+                sde_random=self.sde_random,
+            )
+        graph.replay()
+        torch.cuda.synchronize(device)
         self.graph = graph
 
     def replay(
@@ -750,6 +754,14 @@ class MingTTSSGLangModel(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
+        # Note(yzxiao): Ming-TTS requires a platform joint-RoPE implementation;
+        # this release provides CUDA. Resolve it before constructing the model.
+        rope_kernel = current_platform.get_joint_rope_inplace_kernel()
+        if rope_kernel is None:
+            raise RuntimeError(
+                "Ming-TTS requires a joint in-place RoPE kernel, but "
+                f"{type(current_platform).__name__} does not provide one."
+            )
         self.config = config
         self.llm_config = getattr(config, "llm_config", config)
         self.quant_config = quant_config
@@ -761,27 +773,31 @@ class MingTTSSGLangModel(nn.Module):
         self.hidden_size = int(self.llm_config.hidden_size)
         self.vocab_size = int(self.llm_config.vocab_size)
 
-        max_batch_size = 1
+        tail_batch_capacity = 1
+        aggregator_batch_capacity = 1
         try:
-            server_args = get_global_server_args()
+            graph = get_exec().graph
         except ValueError:
-            server_args = None
-        if server_args is not None:
-            from sglang_omni.scheduling.generation_batch_policy import (
-                get_decode_cuda_graph_max_bs,
-            )
-
-            max_batch_size = int(server_args.max_running_requests)
-            if not bool(server_args.disable_cuda_graph):
-                max_batch_size = max(
-                    max_batch_size,
-                    int(get_decode_cuda_graph_max_bs(server_args) or 1),
+            graph = None
+        if graph is not None:
+            tail_batch_capacity = int(get_schedule().max_running_requests)
+            if not bool(graph.disable_cuda_graph):
+                tail_batch_capacity = max(
+                    tail_batch_capacity,
+                    int(graph.cuda_graph_config.decode.max_bs or 1),
                 )
+            # Note(yzxiao): Each reference patch becomes one AR prompt token.
+            # Covering the context limit keeps valid reference positions at a
+            # stable address for eager execution and future graph capture.
+            aggregator_batch_capacity = max(
+                tail_batch_capacity,
+                int(get_model().context_length),
+            )
         tail_attn_backend = MING_TTS_TAIL_ATTN_BACKEND
 
         weight = self.model.word_embeddings.weight
         self._decode_input_embedding = nn.Embedding(
-            max_batch_size,
+            tail_batch_capacity,
             self.hidden_size,
             device=weight.device,
             dtype=weight.dtype,
@@ -789,7 +805,11 @@ class MingTTSSGLangModel(nn.Module):
         self._decode_input_embedding.weight.requires_grad_(False)
         self.register_buffer(
             "_decode_input_row_ids",
-            torch.arange(max_batch_size, dtype=torch.long, device=weight.device),
+            torch.arange(
+                tail_batch_capacity,
+                dtype=torch.long,
+                device=weight.device,
+            ),
             persistent=False,
         )
 
@@ -808,14 +828,27 @@ class MingTTSSGLangModel(nn.Module):
         )
         self.tail_attn_backend = tail_attn_backend
         aggregator_config = dict(self.config.aggregator_config)
-        aggregator_config["attn_backend"] = tail_attn_backend
+        ditar_config = dict(self.config.ditar_config)
+        # Note(yzxiao): Runtime policy overrides any checkpoint-provided
+        # execution config. Other shared-component callers keep native.
+        aggregator_config["execution_config"] = TalkerExecutionConfig(
+            attn_backend=tail_attn_backend,
+            rope_kernel=rope_kernel,
+            rope_seq_len=1 + self.patch_size,
+            rope_max_batch_size=aggregator_batch_capacity,
+        )
+        ditar_config["execution_config"] = TalkerExecutionConfig(
+            attn_backend=tail_attn_backend,
+            rope_kernel=rope_kernel,
+            rope_seq_len=1 + self.history_patch_size + self.patch_size,
+            rope_max_batch_size=2 * tail_batch_capacity,
+        )
+
         self.linear_proj_audio = Aggregator(
             in_channels=self.latent_dim,
             llm_input_dim=self.hidden_size,
             **aggregator_config,
         )
-        ditar_config = dict(self.config.ditar_config)
-        ditar_config["attn_backend"] = tail_attn_backend
         self.flowloss = FlowLoss(
             z_channels=self.latent_dim,
             llm_cond_dim=self.hidden_size,
@@ -828,6 +861,15 @@ class MingTTSSGLangModel(nn.Module):
 
     def get_input_embeddings(self) -> nn.Module:
         return self.model.get_input_embeddings()
+
+    @torch.no_grad()
+    def project_reference_latents(self, latents: torch.Tensor) -> torch.Tensor:
+        weight = self.linear_proj_audio.x_embedder.weight
+        with torch.autocast(device_type=weight.device.type, enabled=False):
+            patches = latents.to(device=weight.device, dtype=weight.dtype).reshape(
+                -1, self.patch_size, self.latent_dim
+            )
+            return self.linear_proj_audio(patches).reshape(-1, self.hidden_size)
 
     @torch.no_grad()
     def stage_decode_feedback(
@@ -879,21 +921,29 @@ class MingTTSSGLangModel(nn.Module):
         timesteps: torch.Tensor,
         sde_random: torch.Tensor,
     ) -> MingTTSTailOutputs:
-        sampled = self.flowloss.sample(
-            z=inputs.hidden_states,
-            latent_history=inputs.latent_history,
-            noise=noise,
-            cfg=inputs.cfg,
-            sigma=inputs.sigma,
-            temperature=inputs.temperature,
-            timesteps=timesteps,
-            sde_random=sde_random,
-        )
-        feedback = self.linear_proj_audio(sampled).reshape(
-            int(inputs.hidden_states.shape[0]),
-            -1,
-        )
-        stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
+        weight = self._decode_input_embedding.weight
+        # Note(yzxiao): Eager and captured tails share one precision policy.
+        # FP32 explicitly disables any autocast inherited from the caller.
+        with torch.autocast(
+            device_type=weight.device.type,
+            dtype=weight.dtype,
+            enabled=weight.dtype in (torch.float16, torch.bfloat16),
+        ):
+            sampled = self.flowloss.sample(
+                z=inputs.hidden_states,
+                latent_history=inputs.latent_history,
+                noise=noise,
+                cfg=inputs.cfg,
+                sigma=inputs.sigma,
+                temperature=inputs.temperature,
+                timesteps=timesteps,
+                sde_random=sde_random,
+            )
+            feedback = self.linear_proj_audio(sampled).reshape(
+                int(inputs.hidden_states.shape[0]),
+                -1,
+            )
+            stop_prob = self.stop_head(inputs.hidden_states).softmax(dim=-1)[:, 0, 1]
         return MingTTSTailOutputs(
             sampled=sampled,
             feedback_embeddings=feedback,

@@ -72,6 +72,7 @@ def encoder_bundle():
         model_parallel_is_initialized,
     )
     from sglang.srt.models.whisper import WhisperEncoder
+    from sglang.srt.runtime_context import get_context
     from transformers import AutoConfig
 
     torch.cuda.set_device(0)
@@ -91,11 +92,18 @@ def encoder_bundle():
     audio_config = AutoConfig.from_pretrained(
         snaps[0], trust_remote_code=True
     ).audio_config
-    encoder = WhisperEncoder(audio_config).cuda().to(torch.bfloat16).eval()
-    num_mel_bins = int(audio_config.num_mel_bins)
-    runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, _INPUT_FEATURE_LEN)
-    runner.capture(_CHUNK_BUCKETS)
-    return encoder, num_mel_bins, runner
+    published = get_context().override_server_args()
+    published.install()
+    try:
+        encoder = WhisperEncoder(audio_config).cuda().to(torch.bfloat16).eval()
+        num_mel_bins = int(audio_config.num_mel_bins)
+        runner = WhisperEncoderCudaGraphRunner(
+            encoder, num_mel_bins, _INPUT_FEATURE_LEN
+        )
+        runner.capture(_CHUNK_BUCKETS)
+        yield encoder, num_mel_bins, runner
+    finally:
+        published.restore()
 
 
 def _feat(num_mel_bins: int, n: int) -> torch.Tensor:

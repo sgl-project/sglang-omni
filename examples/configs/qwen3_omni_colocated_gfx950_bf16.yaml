@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# BF16 colocated profile for AMD MI355X (gfx950).
+config_cls: Qwen3OmniSpeechColocatedPipelineConfig
+name: qwen3-omni-colocated-gfx950-bf16
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+
+stages:
+  image_encoder:
+    gpu_memory_fraction: 0.02
+  audio_encoder:
+    gpu_memory_fraction: 0.02
+  thinker:
+    gpu_memory_fraction: 0.78
+    engine:
+      # The breakable prefill graph enabled by the H100 profile is not yet
+      # qualified on gfx950; keep sglang's default (decode graph only).
+      cuda_graph_backend_prefill: disabled
+  talker_ar:
+    gpu_memory_fraction: 0.10
+  code2wav:
+    gpu_memory_fraction: 0.02

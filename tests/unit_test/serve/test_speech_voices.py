@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_wav
+from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.scheduling.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import VoiceUploadBodyLimitMiddleware
@@ -644,6 +646,62 @@ def test_speech_service_can_disable_uploaded_voice_resolution(
     assert gen_req.prompt == "hello"
     assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_create_app_forwards_uploaded_voice_options(
+    tmp_path, monkeypatch, required
+) -> None:
+    monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path))
+    app = create_app(
+        RecordingSpeechClient(),
+        requires_uploaded_voice_for_named_voice=required,
+        supports_uploaded_voice_references=False,
+    )
+    assert app.state.speech_service.requires_uploaded_voice_for_named_voice is required
+    assert app.state.speech_service.supports_uploaded_voice_references is required
+
+
+def test_custom_voice_discovery_and_speech_share_checkpoint_config(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path / "uploads"))
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "tts_model_type": "custom_voice",
+                "talker_config": {"spk_id": {"Zed": 9, "alpha": 3}},
+            }
+        )
+    )
+    config = Qwen3TTSPipelineConfig(
+        model_path=str(tmp_path)
+    ).resolve_custom_voice_config()
+    client_impl = RecordingSpeechClient()
+    app = create_app(client_impl, custom_voice_config=config)
+    store = app.state.speaker_sample_store
+    store.upload(
+        name="Uploaded",
+        consent="consent",
+        audio_bytes=_reference_wav(),
+        filename="ref.wav",
+        content_type="audio/wav",
+    )
+    with TestClient(app) as client:
+        listed = client.get("/v1/audio/voices").json()
+        assert listed["voices"] == ["alpha", "default", "Zed"]
+        assert listed["uploaded_voices"][0]["name"] == "Uploaded"
+        accepted = client.post(
+            "/v1/audio/speech", json={"input": "hello", "voice": "ALPHA"}
+        )
+        assert accepted.status_code == 200
+        rejected = client.post(
+            "/v1/audio/speech", json={"input": "hello", "voice": "Uploaded"}
+        )
+        assert rejected.status_code == 400
+        assert rejected.json()["error"]["param"] == "voice"
+    assert app.state.speech_service.custom_voice_config is config
+    assert len(client_impl.requests) == 1
 
 
 def _reference_wav(

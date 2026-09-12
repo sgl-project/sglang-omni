@@ -6,11 +6,36 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+if TYPE_CHECKING:
+    from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
+
 REPLICA_SEPARATOR = "@r"
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeTranscriptionConfig:
+    """Pipeline-owned declaration for live ASR over /v1/realtime."""
+
+    strategy_cls: type[StreamingASRStrategy]
+    decode_interval_ms: int = 2000
+    # Whether the model accepts server-VAD segmentation. When False the
+    # session never runs a VAD, and a client asking for turn_detection
+    # server_vad gets an error.
+    server_vad: bool = False
+    # Longest audio one segment may span before a forced split. None
+    # means the session never splits on length.
+    max_segment_s: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.decode_interval_ms <= 0:
+            raise ValueError("realtime transcription decode interval must be positive")
+
+        if self.max_segment_s is not None and self.max_segment_s <= 0:
+            raise ValueError("realtime transcription max_segment_s must be positive")
 
 
 def replica_instance_name(logical_name: str, replica_id: int) -> str:
@@ -39,6 +64,17 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 
 logger = logging.getLogger(__name__)
+
+# Factory kwargs owned by placement and process construction: injected from
+# stage.gpu / stage.gpu_memory_fraction, so a config may not set them directly.
+PLACEMENT_OWNED_FACTORY_KWARGS = frozenset(
+    {
+        "gpu_id",
+        "total_gpu_memory_fraction",
+        "process_total_gpu_memory_fraction",
+    }
+)
+
 
 MAX_SPEECH_INPUT_CHARS: int = 4096
 
@@ -533,6 +569,14 @@ class ResolvedAudioChunking:
         return max(int(self.max_audio_clip_s * sample_rate), 1)
 
 
+@dataclass(frozen=True)
+class CustomVoiceConfig:
+    # Note(yzxiao): CustomVoice selects a checkpoint speaker without reference
+    # audio. Only an absent config disables this contract; speakers is required.
+    speakers: tuple[str, ...]
+    task_type: str
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -550,6 +594,7 @@ class PipelineConfig(BaseModel):
     speech_reference_text_required: ClassVar[bool] = False
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
+    realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
 
     # Note (Jeffro): the model-owned parameters of the long-audio transcription
     # contract. Chunking stays off by default: some models can't correctly
@@ -584,6 +629,7 @@ class PipelineConfig(BaseModel):
     processes: dict[str, ProcessConfig] = Field(default_factory=dict)
     env_defaults: dict[str, str] = Field(default_factory=dict)
     mps: Literal["off", "on", "auto"] = "off"
+    weight_share: Literal["off", "on"] = "off"
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
@@ -761,6 +807,9 @@ class PipelineConfig(BaseModel):
         """Return whether uploaded voices can be lowered as reference audio."""
         return False
 
+    def resolve_custom_voice_config(self) -> CustomVoiceConfig | None:
+        return None
+
     def supports_audio_translation(self) -> bool:
         """Return whether this pipeline can serve /v1/audio/translations."""
         return False
@@ -776,6 +825,17 @@ class PipelineConfig(BaseModel):
     def _validate_general(self) -> None:
         if not self.model_path:
             raise ValueError("Model path is required")
+
+        for stage in self.stages:
+            factory = stage.factory
+            set_keys = set(factory.model_fields_set) | set(factory.model_extra or {})
+            reserved = PLACEMENT_OWNED_FACTORY_KWARGS & set_keys
+            if reserved:
+                raise ValueError(
+                    f"stage {stage.name!r} sets {sorted(reserved)} under factory.*; "
+                    "these kwargs are owned by placement and are injected from "
+                    "stage.gpu and stage.gpu_memory_fraction"
+                )
 
         names = [s.name for s in self.stages]
         if not names:

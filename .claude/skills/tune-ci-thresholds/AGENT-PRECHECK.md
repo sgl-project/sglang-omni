@@ -127,6 +127,8 @@ calibration; sibling cleanup may SIGKILL it. `tune.py` prefers
 - Calibration venv exists.
 - `torch` and `sglang` match current project pins.
 - Editable package points to the selected worktree.
+- `SGLANG_OMNI_ROUTER_BIN` names the release binary built from the selected
+  checkout.
 - `CAP_SYS_PTRACE` is present for the FP8 TP=2 test.
 
 Using the maintained calibration venv normally requires only:
@@ -137,7 +139,20 @@ uv pip install -e .
 ```
 
 Do not rebuild the venv or bulk-download assets before precheck identifies a
-specific gap.
+specific gap. Prepare the router once before running the precheck:
+
+```bash
+cd "$TUNE_REPO_ROOT/sglang_omni_router/rust"
+cargo build --release --locked
+export SGLANG_OMNI_ROUTER_BIN="$(
+  realpath "${CARGO_TARGET_DIR:-./target}/release/sgl-omni-router"
+)"
+cd "$TUNE_REPO_ROOT"
+```
+
+Install Rust using the
+[router installation guide](../../../docs/basic_usage/omni_router.md#installation)
+if `cargo` is unavailable.
 
 ## 5. Caches and assets
 
@@ -150,8 +165,6 @@ specific gap.
   throwaway server launch, or calibrate from a container that has run the
   model before.
 - This group’s cache root and `.torchinductor` are writable.
-- Concurrent groups must not share a writable FlashInfer JIT dir that another
-  group may delete mid-run.
 
 ## 6. Official precheck
 
@@ -183,7 +196,7 @@ the Terminal panel (see `OPERATIONS.md`).
 bash .claude/skills/tune-ci-thresholds/watch_calibration_group.sh \
   <gpu-group> <run-dir> [<run-dir> ...]
 
-# Tab B: dynamically follows server.log (or local pytest runN.log fallback).
+# Tab B: follows the combined pytest runN.log (or server.log fallback).
 bash .claude/skills/tune-ci-thresholds/watch_calibration_servers.sh \
   <gpu-group> <run-dir> [<run-dir> ...]
 
@@ -196,9 +209,9 @@ bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh \
 The number of Tab A terminals and Tab B terminals must each equal the number of
 GPU groups (one pair per group; no duplicates). Start one Tab C per active
 cpuset. Tab B must switch away from killed servers and attach logs from each
-new server launch in the same terminal. Locally, expect `runN.log` fallback
-because `server_log_file()` only creates `server.log` when
-`GITHUB_ACTIONS=true`. Durable filtered Tab B output is teed under
+new server launch in the same terminal. Calibration streams worker and router
+output into `runN.log`; Tab B falls back to `server.log` when needed. Durable
+filtered Tab B output is teed under
 `/tmp/calibration_tabB_<group>.log` as a backup.
 
 During a run, also poll at most every 120 seconds with `status`, `strict-audit`,

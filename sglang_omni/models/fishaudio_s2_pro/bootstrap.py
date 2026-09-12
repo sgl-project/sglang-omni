@@ -127,8 +127,12 @@ def load_audio_decoder(
     num_codebooks = int(config.audio_decoder_config.num_codebooks)
     codebook_size = int(config.audio_decoder_config.vocab_size)
 
-    if str(device).startswith("cuda"):
-        torch.cuda.empty_cache()
+    device_type = str(device).split(":")[0]
+    if device_type in ("cuda", "npu"):
+        try:
+            torch.get_device_module(device).empty_cache()
+        except (AttributeError, ModuleNotFoundError, RuntimeError) as exc:
+            logger.warning("Cache reclaim failed for device %s: %s", device, exc)
 
     logger.info(
         "Fish audio decoder loaded in %.2fs (num_codebooks=%d, codebook_size=%d)",

@@ -4,11 +4,22 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Any
+
+import torch
+from sglang.srt.runtime_context import get_model, get_schedule
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _is_truthy(value: Any) -> bool:
@@ -19,6 +30,16 @@ def _is_truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return False
+
+
+# note (luojiaxuan): the generic ladder starts at 4, and a replay falls back to
+# eager when its bucket exceeds twice the real token count, so a 1-token prefill
+# lands in bucket 4 and misses. Measured over 3203 prefills at 10 and 20 RPS on
+# H100 CustomVoice, 1301 of them (40.6%) are exactly one token, and they are the
+# only shapes that fall back: 2 and 3 already replay inside bucket 4. Adding the
+# single 1 bucket takes the fallback rate to zero, so the default is the shared
+# ladder plus that bucket rather than a hand-picked list.
+QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
 
 
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
@@ -41,6 +62,10 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None
+        # note (luojiaxuan): the factory assigns this before generation_defaults
+        # runs, but Qwen3TTSPipelineConfig.generation_admission_defaults builds a
+        # bare builder just to read the admission keys, so it needs a value.
+        self.checkpoint_dir: str = ""
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
@@ -60,7 +85,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
-        return {
+        defaults: dict[str, Any] = {
             "max_running_requests": 16,
             "max_queued_requests": 16,
             "cuda_graph_max_bs": 32,
@@ -74,8 +99,20 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
         }
+        if (
+            self.checkpoint_dir
+            and qwen3_tts_checkpoint_model_type(self.checkpoint_dir) == "custom_voice"
+        ):
+            # note (luojiaxuan): the ladder is sized from the text-only prompt
+            # length distribution, and under load prefills coalesce into one
+            # extend batch, so it must reach well past a single prompt. Base
+            # prefills also carry reference audio, giving them a different shape
+            # distribution, so they keep the eager path until measured.
+            defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+            defaults["cuda_graph_bs_prefill"] = list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
+        return defaults
 
-    def setup_model(
+    def before_memory_pool(
         self,
         *,
         model_worker: Any,
@@ -84,10 +121,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del gpu_id, server_args
+        del gpu_id
         from qwen_tts import Qwen3TTSModel
         from transformers import AutoProcessor
 
+        # note(ratish): the tokenizer and the predictor graphs live for the whole
+        # process, so they are attached before sglang reads free memory for the pool.
         model = model_worker.model_runner.model
         speech_tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
             checkpoint_dir,
@@ -110,11 +149,55 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         request_builders.set_qwen3_tts_preprocessing_context(
             model=model,
             wrapper=self.wrapper,
+            device=torch.device(device),
         )
+        if bool(server_args.disable_cuda_graph):
+            return
+        # note(ratish): the bucket warmups also build cuDNN's attention plans,
+        # which otherwise land inside the first serving step of each batch size.
+        subtalker = request_builders.resolve_subtalker_sampling(
+            self.wrapper._merge_generate_kwargs()
+        )
+        model.capture_predictor_graphs(
+            do_sample=subtalker.do_sample,
+            top_k=subtalker.top_k,
+            top_p=subtalker.top_p,
+        )
+
+    def setup_model(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        # note(ratish): everything Qwen3-TTS attaches stays resident, so it all
+        # runs in before_memory_pool and nothing is left for after the pool.
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
+
+    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+        del model_runner
+        schedule = get_schedule()
+        running = int(schedule.max_running_requests)
+        context = int(get_model().context_length)
+        pool = scheduler.tp_worker.model_runner.token_to_kv_pool
+        k_bytes, v_bytes = pool.get_kv_size_bytes()
+        logger.info(
+            "Qwen3-TTS KV pool holds %d tokens, %.2f GiB, against a configured "
+            "maximum demand of %d (%d running x %d context), mem_fraction_static %.3f",
+            int(scheduler.max_total_num_tokens),
+            (int(k_bytes) + int(v_bytes)) / float(1 << 30),
+            running * context,
+            running,
+            context,
+            float(schedule.mem_fraction_static),
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(
