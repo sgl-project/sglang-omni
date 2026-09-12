@@ -23,7 +23,7 @@ import torch
 
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef
-from sglang_omni.comm.engine import CommEngine, KVTransferCancelled
+from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
 from sglang_omni.comm.kv_transfer import KVPageTransfer
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.replicas import ReplicaTopology
@@ -1924,6 +1924,10 @@ class Stage:
             return
         exc = task.exception()
         if exc is None:
+            return
+        if isinstance(exc, KVTransferRejected):
+            # The ACK watcher also propagates this to _send_kv_transfer(), which
+            # reports the request failure even if the local abort arrives later.
             return
         logger.exception(
             "Stage %s %s task crashed",

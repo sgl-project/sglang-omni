@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 import torch
 
-from sglang_omni.comm.engine import CommEngine, KVTransferCancelled
+from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
 from sglang_omni.comm.kv_transfer import (
     KVBufferRegion,
     KVPageDestination,
@@ -528,6 +528,9 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
 ) -> None:
     async def _run() -> None:
         relay, source, destination = await _start_pair()
+        stage = make_stage(name="source")
+        stage._running = True
+        source._task_done_callback = stage._on_background_task_done
 
         async def drop_data_ready(
             sockets: dict[str, Any], target_endpoint: str, message: Any
@@ -563,6 +566,9 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
             assert relay.put_ops[0].failed is None
             assert "transfer" not in source._pending
             assert len(source._retained_pending_kv_transfers) == 1
+            assert isinstance(stage._background_task_error, TimeoutError)
+            assert not stage._running
+            assert stage.control_plane.closed
         finally:
             await source.close()
             await destination.close()
@@ -620,12 +626,14 @@ def test_kv_cleanup_before_ready_cancels_only_the_transfer(
 
 
 @pytest.mark.parametrize("ack_success", [True, False])
-def test_kv_cleanup_after_data_ready_waits_for_terminal_ack_without_killing_stage(
-    ack_success: bool,
+@pytest.mark.parametrize("abort_first", [True, False])
+def test_kv_abort_and_terminal_ack_order_does_not_kill_stage(
+    ack_success: bool, abort_first: bool
 ) -> None:
     async def _run() -> None:
         stage = make_stage(name="source")
         stage._running = True
+        stage._active_requests.add("other-request")
         op = FakeOp({"transfer_info": {"size": 4}, "key": "kv-put"})
         lease = Mock()
         stage._comm._outbound_kv_requests["transfer"] = "request"
@@ -639,9 +647,11 @@ def test_kv_cleanup_after_data_ready_waits_for_terminal_ack_without_killing_stag
         await asyncio.sleep(0)
 
         try:
-            stage._on_abort("request")
-            assert stage._comm._pending["transfer"].cleanup_requested
-            assert not pending_task.done()
+            if abort_first:
+                stage._on_abort("request")
+                assert stage._comm._pending["transfer"].cleanup_requested
+                assert not pending_task.done()
+                lease.release.assert_not_called()
 
             stage._comm.ack_transfer(
                 DataAckMessage(
@@ -653,8 +663,14 @@ def test_kv_cleanup_after_data_ready_waits_for_terminal_ack_without_killing_stag
                     error=None if ack_success else "request aborted",
                 )
             )
-            assert await pending_task
+            if not ack_success and not abort_first:
+                with pytest.raises(KVTransferRejected, match="request aborted"):
+                    await pending_task
+            else:
+                assert await pending_task == abort_first
             await asyncio.sleep(0)
+            if not abort_first:
+                stage._on_abort("request")
 
             assert not pending_task.cancelled()
             assert "transfer" not in stage._comm._pending
@@ -664,20 +680,24 @@ def test_kv_cleanup_after_data_ready_waits_for_terminal_ack_without_killing_stag
             assert stage._background_task_error is None
             assert stage._running
             assert not stage.control_plane.closed
+            assert stage._active_requests == {"other-request"}
         finally:
             await stage._comm.close()
 
     asyncio.run(_run())
 
 
-def test_stage_consumes_request_scoped_kv_cancellation() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [KVTransferCancelled("request aborted"), KVTransferRejected("KV copy failed")],
+    ids=["cancelled", "rejected"],
+)
+def test_stage_handles_request_scoped_kv_failure(error: RuntimeError) -> None:
     async def _run() -> None:
         stage = make_stage(name="source")
         stage._running = True
-        stage._aborted.add("request")
-        stage._comm.send_kv_pages = AsyncMock(
-            side_effect=KVTransferCancelled("request aborted")
-        )
+        stage._active_requests.update({"request", "other-request"})
+        stage._comm.send_kv_pages = AsyncMock(side_effect=error)
         transfer = KVPageTransfer(
             request_id="request",
             transfer_id="transfer",
@@ -689,6 +709,15 @@ def test_stage_consumes_request_scoped_kv_cancellation() -> None:
 
         await stage._send_kv_transfer(transfer)
 
+        stage._comm.send_kv_pages.assert_awaited_once()
+        if isinstance(error, KVTransferRejected):
+            [completion] = stage.control_plane.completions
+            assert completion.request_id == "request"
+            assert not completion.success
+            assert completion.error == "KV copy failed"
+        else:
+            assert not stage.control_plane.completions
+        assert stage._active_requests == {"other-request"}
         assert stage._running
         assert stage._background_task_error is None
         assert not stage.control_plane.closed

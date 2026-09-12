@@ -50,6 +50,10 @@ class KVTransferCancelled(RuntimeError):
     """Request-scoped cancellation of an outbound paged-KV transfer."""
 
 
+class KVTransferRejected(RuntimeError):
+    """Request-scoped failure reported by the KV receiver's terminal ACK."""
+
+
 @dataclass
 class _InboundKVTransfer:
     request: KVTransferPrepareMessage
@@ -856,7 +860,12 @@ class CommEngine:
             raise ValueError("failed data_ack is missing error")
         pending.receiver_terminal = True
         if not pending.ack.done():
-            pending.ack.set_exception(RuntimeError(error))
+            error_type = (
+                KVTransferRejected
+                if pending.retain_pending_on_failure
+                else RuntimeError
+            )
+            pending.ack.set_exception(error_type(error))
 
     def _send_queue_for(
         self, queue_key: str
