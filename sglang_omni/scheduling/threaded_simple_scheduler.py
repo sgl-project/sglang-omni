@@ -21,7 +21,21 @@ _ABORTED_REQUEST_ID_RETAINED = 5000
 
 
 class _CountingInbox(_queue_mod.Queue):
-    """Track queued and claimed ``new_request`` ids."""
+    """Track queued and claimed ``new_request`` ids.
+
+    An id is queued on ``_put``, moves to claimed on ``_get``, and is dropped on
+    ``release_claim``. ``is_reachable`` reads both ledgers, so an abort that
+    arrives between the dequeue and the ``_pending`` registration is still routed
+    to ``_queued_aborts`` instead of being recorded as speculative.
+
+    Invariant: every dequeued ``new_request`` must reach ``release_claim``. The
+    dispatch loop in :meth:`ThreadedSimpleScheduler.start` pairs the two in a
+    ``finally``. A future drain path that bypasses dispatch must reconcile
+    ``_claimed_counts`` itself, or ``is_reachable`` stays true forever and later
+    aborts pile up unconsumed in the unbounded ``_queued_aborts``. Note that
+    ``queue.Queue.shutdown`` holds ``self.mutex`` while it drains, so such a path
+    cannot call ``release_claim``, which takes the same non-reentrant lock.
+    """
 
     def _init(self, maxsize: int) -> None:
         super()._init(maxsize)

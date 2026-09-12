@@ -338,3 +338,48 @@ def test_running_abort_survives_speculative_eviction() -> None:
                 scheduler.outbox.get(timeout=0.2)
         finally:
             release.set()
+
+
+def test_dispatch_drains_claim_accounting() -> None:
+    scheduler = ThreadedSimpleScheduler(lambda payload: payload, max_concurrency=2)
+    scheduler.enqueue(_request("aborted", "must-not-run"))
+    scheduler.abort("aborted")
+
+    with _running(scheduler):
+        for i in range(4):
+            scheduler.enqueue(_request(f"req-{i}", f"payload-{i}"))
+        for _ in range(4):
+            scheduler.outbox.get(timeout=5.0)
+        _wait_until(lambda: not scheduler.inbox._claimed_counts)
+
+    assert not scheduler.inbox._request_counts
+    assert not scheduler.inbox.is_reachable("req-0")
+
+
+def test_drain_without_release_strands_the_claim_ledger() -> None:
+    """Pin what an immediate drain costs, so a future drain path has to fix it.
+
+    ``_CountingInbox._get`` moves an id from the queued ledger to the claimed
+    ledger, and only the dispatch ``finally`` in ``start`` releases it. A drain
+    that bypasses dispatch therefore strands the id. ``Queue.shutdown`` is the
+    concrete future case: it calls ``self._get()`` in a loop, and it arrived in
+    Python 3.13, which ``requires-python`` does not admit yet. Driving ``_get``
+    directly reproduces that path on a supported interpreter.
+    """
+    scheduler = ThreadedSimpleScheduler(lambda payload: payload, max_concurrency=1)
+    scheduler.enqueue(_request("stranded", "never-dispatched"))
+
+    with scheduler.inbox.mutex:
+        while scheduler.inbox._qsize():
+            scheduler.inbox._get()
+
+    assert not scheduler.inbox._request_counts
+    assert scheduler.inbox._claimed_counts == {"stranded": 1}
+    assert scheduler.inbox.is_reachable("stranded")
+
+    scheduler.abort("stranded")
+
+    # Nothing can consume this tombstone: the request left the queue without
+    # reaching dispatch, and _queued_aborts is deliberately unbounded.
+    assert "stranded" in scheduler._queued_aborts
+    assert not scheduler._speculative_aborts
