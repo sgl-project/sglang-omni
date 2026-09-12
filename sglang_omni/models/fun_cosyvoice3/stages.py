@@ -1182,65 +1182,6 @@ def _group_by_padding_waste(
         yield group
 
 
-def _prepare_vocoder_item(
-    payload: StagePayload,
-) -> tuple[FunCosyVoice3State, torch.Tensor]:
-    state = load_state(payload)
-    if state.audio_codes is None:
-        raise RuntimeError(
-            "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
-        )
-    return state, torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
-
-
-def _make_flow_input(state: FunCosyVoice3State, codes: torch.Tensor) -> FlowBatchInput:
-    prompt_token = (
-        torch.as_tensor(state.flow_prompt_speech_token, dtype=torch.int32).reshape(
-            1, -1
-        )
-        if state.flow_prompt_speech_token is not None
-        else torch.zeros(1, 0, dtype=torch.int32)
-    )
-    prompt_feat = (
-        torch.as_tensor(state.flow_prompt_speech_feat).reshape(1, -1, 80)
-        if state.flow_prompt_speech_feat is not None
-        else torch.zeros(1, 0, 80)
-    )
-    embedding = (
-        torch.as_tensor(state.flow_embedding).reshape(1, -1)
-        if state.flow_embedding is not None
-        else torch.zeros(1, 192)
-    )
-    return FlowBatchInput(
-        token=codes.reshape(1, -1).to(torch.int32),
-        prompt_token=prompt_token,
-        prompt_feat=prompt_feat,
-        embedding=embedding,
-    )
-
-
-def _store_vocoder_result(
-    payload: StagePayload,
-    state: FunCosyVoice3State,
-    wav: Any,
-    sample_rate: int,
-) -> StagePayload:
-    if wav is None:
-        raise RuntimeError("Fun-CosyVoice3 vocoder did not return audio")
-    audio_payload = audio_waveform_payload(wav, source_hint="Fun-CosyVoice3")
-    state.audio_samples = None
-    state.sample_rate = int(sample_rate)
-    state.audio_codes = None
-    payload = store_state(payload, state)
-    payload.data.update(audio_payload)
-    payload.data["sample_rate"] = state.sample_rate
-    payload.data["modality"] = "audio"
-    usage = build_usage(state)
-    if usage is not None:
-        payload.data["usage"] = usage
-    return payload
-
-
 class CosyVoice3Vocoder(BatchVocoderBase):
     def __init__(
         self,
@@ -1315,7 +1256,6 @@ class CosyVoice3Vocoder(BatchVocoderBase):
             flow_merge_max_gap_frames=self.flow_merge_max_gap_frames,
             flow_merge_pad_budget_percent=self.flow_merge_pad_budget_percent,
         )
-
         for flow_group in flow_groups:
             with torch.autocast(
                 device_type=current_platform.device_type,
@@ -1580,7 +1520,9 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
     ) -> tuple[FunCosyVoice3State, torch.Tensor]:
         state = load_state(payload)
         if state.audio_codes is None:
-            raise RuntimeError("Fun-CosyVoice3 vocoder requires audio_codes from tts_engine")
+            raise RuntimeError(
+                "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
+            )
         return state, torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
 
     async def decode_batch(
@@ -1597,8 +1539,12 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
             wav = self._vocoder.decode_mx(
                 token=mx.array(flow_input.token.numpy(), dtype=mx.int32),
                 prompt_token=mx.array(flow_input.prompt_token.numpy(), dtype=mx.int32),
-                prompt_feat=mx.array(flow_input.prompt_feat.float().numpy(), dtype=mx.float32),
-                embedding=mx.array(flow_input.embedding.float().numpy(), dtype=mx.float32),
+                prompt_feat=mx.array(
+                    flow_input.prompt_feat.float().numpy(), dtype=mx.float32
+                ),
+                embedding=mx.array(
+                    flow_input.embedding.float().numpy(), dtype=mx.float32
+                ),
             )
             mx.eval(wav)
             wav = np.ascontiguousarray(np.asarray(wav, dtype=np.float32))
@@ -1611,7 +1557,9 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
         return FlowBatchInput(
             token=codes.reshape(1, -1).to(torch.int32),
             prompt_token=(
-                torch.as_tensor(state.flow_prompt_speech_token, dtype=torch.int32).reshape(1, -1)
+                torch.as_tensor(
+                    state.flow_prompt_speech_token, dtype=torch.int32
+                ).reshape(1, -1)
                 if state.flow_prompt_speech_token is not None
                 else torch.zeros(1, 0, dtype=torch.int32)
             ),
@@ -1668,11 +1616,11 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
     ) -> StagePayload:
         if wav is None:
             raise RuntimeError("Fun-CosyVoice3 vocoder did not return audio")
-        payload.data.update(audio_waveform_payload(wav, source_hint="Fun-CosyVoice3"))
         state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
         payload = store_state(payload, state)
+        payload.data.update(audio_waveform_payload(wav, source_hint="Fun-CosyVoice3"))
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"
         usage = build_usage(state)
