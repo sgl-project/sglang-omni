@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.runtime_context import get_memory, get_schedule
+from sglang.srt.runtime_context import get_memory, get_schedule, get_serving
 
 from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
     EvictHeapRadixCache,
@@ -33,11 +33,19 @@ def create_tree_cache(
     if get_memory().disable_radix_cache:
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
-        return ChunkCache(params)
+        cache = ChunkCache(params)
+    elif params.eviction_policy.lower() == "lru":
+        cache = EvictHeapRadixCache(params)
+    else:
+        from sglang.srt.mem_cache.radix_cache import RadixCache
 
-    if params.eviction_policy.lower() == "lru":
-        return EvictHeapRadixCache(params)
+        cache = RadixCache(params)
 
-    from sglang.srt.mem_cache.radix_cache import RadixCache
+    if (
+        get_serving().enable_streaming_session
+        and not cache.supports_streaming_session()
+    ):
+        from sglang.srt.session.streaming_session import StreamingSession
 
-    return RadixCache(params)
+        cache = StreamingSession(cache)
+    return cache

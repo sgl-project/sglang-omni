@@ -870,3 +870,52 @@ that happened to contain an older version of the test.
   fences cover shutdown during abort/append hooks and the open/append window
   between the final hook check and owner unlock, requiring exactly-once cleanup
   after native work returns without blocking shutdown.
+
+### Native AR streaming sessions
+
+A model-stage factory enables this bridge by passing its `ARSessionAdapter` as `OmniScheduler(..., session_adapter=adapter)` with `enable_streaming_session=True` in ServerArgs. No built-in model-stage factory enables it in this change. The adapter must build synchronous `SGLangARRequestData` and preserve the native history/ownership contract.
+
+CPU contracts and existing scheduler/embedding-sidecar regression checks:
+
+```bash
+python -m pytest -q tests/unit_test/scheduling/test_ar_session_*.py \
+  tests/unit_test/pipeline/test_scheduler.py \
+  tests/unit_test/pipeline/test_async_decode.py \
+  tests/unit_test/model_runner/test_prefill_inputs.py
+```
+
+The real GPU gate is opt-in and loads a local small dense causal LM. It runs
+through OmniScheduler and its normal ModelRunner, using greedy generation,
+disabled radix/CUDA graphs, and an exact allocator baseline. Qwen3-0.6B is a
+suitable fixture; the shared bridge has no model-name branches.
+
+```bash
+OMNI_SESSION_TEST_MODEL=/path/to/local/model \
+  python -m pytest -s tests/test_model/test_ar_streaming_session_gpu.py
+```
+
+The gate requires one CUDA GPU and validates physical prefix/slot reuse,
+full-history token parity, session cancellation after a mixed three-row async
+decode unit completes without losing its slot or KV prefix, rejection before
+enqueue preserving the retained prefix,
+queued abort, refill after running abort, completed-lookahead close/append, repeated
+close resource return, and actual retained slot/KV exhaustion. It does not
+validate mixed chunked prefill, model-specific audio consumption, or performance.
+
+AR session unit tests use one `bridge_env` fixture in
+`unit_test/fixtures/ar_session.py`. It owns scheduler construction, native slots,
+and async step fault injection; the test modules express these contracts:
+
+| Contract | Tests |
+| --- | --- |
+| History and rollback | `test_materialization_preserves_sidecars_and_drains_previous_lookahead`, `test_append_rejection_rolls_back_native_history[native\|length\|input_length\|priority\|queue]`, `test_rejection_of_one_inflight_owner_leaves_others_intact`, `test_session_embeddings_explicitly_rejected` |
+| Native admission | `test_admission_accounts_for_native_slots[retained_kv_available\|retained_kv_exhausted\|reserve_row_exhausted\|reserve_row_available]` |
+| Native lifetime | `test_queued_cancel_detaches_request_without_releasing_session_kv`, `test_cancel_does_not_abort_active_core_request`, `test_cancel_at_boundary_preserves_native_session`, `test_idle_close_drains_completed_lookahead_before_slot_release`, `test_adapter_state_follows_core_session_lifetime`, `test_request_abort_fences_output_before_async_drain`, `test_cancelled_close_retains_cleanup_intent` |
+| Async cleanup | `test_failed_device_wait_retains_ownership_and_retries[gpu_wait\|regular_async\|regular_async_shutdown\|launch_first_previous\|launch_first_current\|post_wait_collect]`, `test_shutdown_callback_runs_even_if_native_cleanup_fails` |
+| Dispatch | `test_lifecycle_bypasses_builder_and_queue_capacity`, `test_output_budget_includes_flush_and_terminal_only`, `test_ordinary_embeddings_and_sidecars_unchanged_with_bridge`, `test_stream_conversion_without_ordinary_builder`, `test_retained_sessions_block_direct_cache_flush_and_weight_reset`, `test_empty_eof_is_relayed_or_bypassed[relayed\|unhandled\|nonempty]` |
+| Native integration | `test_hidden_state_requests_have_an_empty_native_reporting_object`, `test_factory_wraps_streaming_sessions` |
+
+`post_wait_collect` checks a successful wait followed by a failed collection:
+the consumed step must not be collected again. Output fencing, cancelled close
+message handling, and shutdown callback finalization remain separate invariants.
+`test_real_streaming_session_gpu` remains the opt-in physical gate above.

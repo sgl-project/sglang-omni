@@ -97,6 +97,7 @@ def test_factory_selects_evict_heap_only_for_lru():
             disable_radix_cache=False,
             chunked_prefill_size=None,
             radix_eviction_policy=policy,
+            enable_streaming_session=False,
         ):
             return create_tree_cache(None, _MockAllocator(), 1)
 
@@ -135,3 +136,20 @@ def test_reset_then_reuse():
     result = cache.evict(EvictParams(num_tokens=1 << 20))
     assert result.num_tokens_evicted == 2
     assert not cache.evictable_leaves
+
+
+def test_factory_wraps_streaming_sessions():
+    from sglang.srt.runtime_context import get_context
+    from sglang.srt.session.streaming_session import StreamingSession
+
+    from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
+
+    with get_context().override_server_args(
+        disable_radix_cache=False,
+        chunked_prefill_size=None,
+        radix_eviction_policy="lru",
+        enable_streaming_session=True,
+    ):
+        assert isinstance(
+            create_tree_cache(None, _MockAllocator(), 1), StreamingSession
+        )
