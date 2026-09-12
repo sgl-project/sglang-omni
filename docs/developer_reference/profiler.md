@@ -9,8 +9,11 @@ and are controlled by the same HTTP surface:
   a single request's end-to-end timeline and to aggregate stage / hop costs
   across a batch;
 - a **torch profiler** that produces a Chrome trace of kernel-level CPU /
-  CUDA activity — used to drill into a specific window once the event
-  recorder has identified where the time is going.
+  device activity — used to drill into a specific window once the event
+  recorder has identified where the time is going. Activities are `CPU` plus
+  whatever device activity this torch build reports via
+  `torch.profiler.supported_activities()` — `CUDA` on NVIDIA / ROCm, `XPU` on
+  Intel.
 
 Most diagnostics use the event recorder. The torch profiler is opt-in for
 deeper kernel investigation.
@@ -201,7 +204,7 @@ trace stays small enough to load in `chrome://tracing` or
 | Env var | Effect |
 |---|---|
 | `SGLANG_TORCH_PROFILER_RECORD_SHAPES=1` | Record input tensor shapes per op |
-| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Track every CUDA caching-allocator alloc / free |
+| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Record tensor memory allocation / free events |
 | `SGLANG_TORCH_PROFILER_WITH_STACK=1` | Record the Python (and C++) call stack per op |
 | `SGLANG_TORCH_PROFILER_WITH_FLOPS=1` | Estimate FLOPs per op |
 
