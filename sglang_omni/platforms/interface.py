@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang_omni.profiler.torch_profiler import TorchProfiler
 
 
 # Note(yzxiao): Joint RoPE rotates all supplied Q/K heads in place. Same-dtype
@@ -133,3 +134,8 @@ class OmniPlatform(DeviceMixin):
         from torch.nn.attention import sdpa_kernel
 
         return sdpa_kernel(list(backends))
+
+    def get_torch_profiler(self) -> TorchProfiler:
+        from sglang_omni.profiler.torch_profiler import TorchProfiler
+
+        return TorchProfiler
