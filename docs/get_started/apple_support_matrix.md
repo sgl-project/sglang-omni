@@ -167,6 +167,76 @@ and the Fun-ASR-Nano reports for
 [Torch/MPS (#1982)](https://github.com/sgl-project/sglang-omni/pull/1982) and
 [MLX (#1983)](https://github.com/sgl-project/sglang-omni/pull/1983).
 
+### Community-reported hardware results
+
+Two contributors posted matched-checkpoint Qwen3-ASR runs on hosts that are not
+covered above. Their results are reproduced here with attribution and links to the
+original reports. They were collated for this page and were not independently
+reproduced on those machines.
+
+Each block keeps its own reported environment, input and timing protocol. The runs
+above used a WAV input at `6ff46426` with three warm-ups and twenty timed requests
+per service launch, reporting a median for each of two launches. Both reports below
+used an M4A input at `b2cc93b` with two warm-ups and ten measured requests,
+reporting p50 and p95. Those p95 figures are the reported result of ten
+measurements, not a validated tail-latency characterisation. Results are not pooled
+across hosts and no combined statistic is derived from them.
+
+Weight-load and RSS figures from the original reports are not repeated here. This
+page already notes that the internal weight-loading logs do not share a boundary
+across backends, and the reports do not state which processes their RSS values
+cover. Both remain readable at the source links.
+
+Torch/MPS used a 2048-token budget in all three reports on this page. The MLX
+figures are the allocations each host reported at startup. These are scheduler
+budgets rather than measured capacity limits, so maximum supported audio duration
+remains a separate question for dedicated long-audio validation.
+
+#### M1 Pro, 32 GB
+
+Reported by [@fengxiaohu](https://github.com/fengxiaohu) in
+[#1967](https://github.com/sgl-project/sglang-omni/issues/1967#issuecomment-5638459674).
+
+Reported environment: Apple M1 Pro, 32 GB, macOS 15.3, installed through
+`./install.sh`, sglang-omni `b2cc93b`, Python 3.12.13, torch 2.13.0 and MLX 0.32.2.
+The report does not state a SGLang version.
+
+Reported protocol: official `Qwen/Qwen3-ASR-0.6B` on both backends,
+`--asr.engine.max_running_requests 1` and
+`--asr.factory.enable_async_decode false`, two warm-ups and ten measured requests
+on an ffmpeg@7 M4A conversion of `tests/data/query_to_cars.wav`. Both backends
+returned `How many cars are there in the picture?`.
+
+| | MLX | Torch/MPS |
+| --- | --- | --- |
+| Warm M4A request, p50 of 10 | 0.24 s | 0.55 s |
+| Warm M4A request, p95 of 10 | 0.26 s | 0.64 s |
+| Reported startup, warm Hugging Face cache | 14.7 s | 16.7 s |
+| Reported KV pool, tokens | 52034 | 2048 |
+
+#### M4, 16 GB
+
+Reported by [@Mimosa-Lin](https://github.com/Mimosa-Lin) in
+[#1967](https://github.com/sgl-project/sglang-omni/issues/1967#issuecomment-5644015949).
+
+Reported environment: Apple M4, 16 GB, macOS 15.7.3, installed through
+`./install.sh`, sglang-omni `b2cc93b`, Python 3.12.12, torch 2.13.0, MLX 0.32.2 and
+SGLang v0.5.19 built from source with `[all_mps]`.
+
+Reported protocol: official `Qwen/Qwen3-ASR-0.6B` on both backends, one active
+request, asynchronous decode disabled, two warm-ups and ten measured requests on an
+ffmpeg@7 M4A conversion of `tests/data/query_to_cars.wav`. Both backends returned
+`How many cars are there in the picture?`.
+
+Latencies were reported in milliseconds and are shown here in seconds.
+
+| | MLX | Torch/MPS |
+| --- | --- | --- |
+| Warm M4A request, p50 of 10 | 0.2855 s | 0.4205 s |
+| Warm M4A request, p95 of 10 | 0.2876 s | 0.4256 s |
+| Reported startup, warm Hugging Face cache | 9.3 s | 14.4 s |
+| Reported KV pool, tokens | 45345 | 2048 |
+
 ## Import surface
 
 Recorded at `6ff46426` on the same host with the Torch/MPS selection
