@@ -22,6 +22,48 @@ Then download the model:
 hf download fishaudio/s2-pro
 ```
 
+## Experimental Apple Silicon support
+
+Follow the [Apple Silicon installation instructions](../get_started/installation.md#macos-apple-silicon),
+then install the DAC codec dependencies listed above into `.venv-apple`.
+S2-Pro provides a native MLX path and a Torch/MPS compatibility path, selected
+with `SGLANG_USE_MLX`. Both use the official `fishaudio/s2-pro` checkpoint with
+unquantized BF16 weights; no converted MLX artifact or `mlx-audio` runtime
+package is needed. `SGLANG_USE_MLX=1` off Apple Metal fails at startup instead of
+silently falling back.
+
+```bash
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+# Native MLX
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --port 8000 --allowed-local-media-path .
+
+# Alternatively, stop the server and use Torch/MPS
+SGLANG_USE_MLX=0 sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --port 8000 --allowed-local-media-path .
+```
+
+Both paths share one Apple profile: they serve one request at a time
+(`max_running_requests=1`) and additional requests queue and complete in turn,
+CUDA graphs, `torch.compile`, radix caching, and chunked prefill are all
+disabled, the request context is bounded to 4,096 tokens, and quantized
+checkpoints are rejected. MLX runs the Slow AR and the whole Fast-AR residual
+chain natively and crosses only the semantic logits to CPU for the shared Fish
+sampler; Torch/MPS runs both eagerly with the `torch_native` attention backend.
+Plain TTS, voice cloning, streaming PCM, and the `seed` parameter use the shared
+Fish request and output adapters on either path. Cross-device numerical or
+voice-quality parity with CUDA has not been established.
+
+This is an experimental compatibility profile. It has not been qualified for
+real-time serving or production throughput. See the model README for validation
+and the opt-in HTTP checks.
+
 ## Server Configuration
 
 ```bash

@@ -9,6 +9,18 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.serve.speech_errors import speech_generation_error
 
 
+def test_fish_invalid_top_k_survives_pipeline_error_serialization() -> None:
+    # The coordinator reconstructs stage errors as RuntimeError across processes.
+    err = speech_generation_error(
+        RuntimeError("S2-Pro top_k must be -1 or between 1 and 30; got 31")
+    )
+    assert err.status_code == 400
+    assert err.error_type == "BadRequestError"
+
+    unrelated = speech_generation_error(RuntimeError("S2-Pro decoder failed"))
+    assert unrelated.status_code == 500
+
+
 @pytest.mark.parametrize(
     "exc",
     [QueueFullError(), RuntimeError(QueueFullError.MESSAGE)],

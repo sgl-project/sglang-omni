@@ -202,9 +202,13 @@ def flash_attn_kvcache_op(
             num_splits=num_splits,
             cache_position=cache_position,
         )
+    elif device_type == "mps":
+        from sglang_omni.models.fishaudio_s2_pro.torch_mps import fast_attention
+
+        output = fast_attention(q, k_cache, v_cache, k, v, cache_position)
     else:
         raise RuntimeError(
-            "FishAudio S2-Pro Fast-AR attention supports CUDA and NPU, "
+            "FishAudio S2-Pro Fast-AR attention supports CUDA, NPU, and MPS, "
             f"but got device type {device_type!r}"
         )
     return output

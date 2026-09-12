@@ -31,6 +31,7 @@ _BAD_REQUEST_PATTERNS = (
     re.compile(
         r"\bAuK (?:nfe|cfg_strength|sway_sampling_coef|max_seconds) is a server-level setting"
     ),
+    re.compile(r"^S2-Pro top_k must be -1 or between 1 and 30; got "),
     re.compile(r"^Request\s+\S+\s+exceeds the maximum number of tokens:"),
     re.compile(r"^Request\s+\S+\s+requires too many SWA KV tokens for"),
     re.compile(r"^stop_regex is \d+ bytes, over the \d+-byte limit"),

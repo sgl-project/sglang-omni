@@ -114,7 +114,7 @@ def test_fast_ar_attention_rejects_unsupported_device_clearly() -> None:
     k_cache = torch.zeros(1, 11, 4, 8)
     v_cache = torch.zeros(1, 11, 4, 8)
 
-    with pytest.raises(RuntimeError, match="supports CUDA and NPU"):
+    with pytest.raises(RuntimeError, match="supports CUDA, NPU, and MPS"):
         fish_audio_decoder.flash_attn_kvcache_op(
             q=q,
             k_cache=k_cache,
