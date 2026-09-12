@@ -264,10 +264,11 @@ def _solve_flow_euler(
     x_in = torch.zeros(2 * batch_size, channels, frames, device=x.device, dtype=dtype)
     mask_in = torch.zeros(2 * batch_size, 1, frames, device=x.device, dtype=dtype)
     mu_in = torch.zeros_like(x_in)
-    t_in = torch.zeros(1, device=x.device, dtype=dtype)
+    t_in = torch.zeros(2 * batch_size, device=x.device, dtype=dtype)
     spks_in = torch.zeros(2 * batch_size, spks.shape[1], device=x.device, dtype=dtype)
     cond_in = torch.zeros_like(x_in)
     t, dt = t_span[0], t_span[1] - t_span[0]
+    t = t.unsqueeze(0)
     for step in range(1, len(t_span)):
         x_in[:batch_size] = x
         x_in[batch_size:] = x
@@ -574,7 +575,7 @@ def _attach_flow_estimator_trt(
     del flow.decoder.estimator
     flow.decoder.estimator = wrapper
     logger.info(
-        "Fun-CosyVoice3 Flow DiT estimator is TensorRT Module (%s, max_cfg_batch=%d)",
+        "Fun-CosyVoice3 Flow DiT estimator is a TensorRT module (%s, cfg_batch=%d)",
         onnx_path,
         wrapper.max_batch,
     )
