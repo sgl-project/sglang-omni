@@ -838,13 +838,15 @@ class _Qwen3TTSRefCodeBatcher:
             handoff.record(self._encode_stream)
             handoff.synchronize()
             return
-        cuda_devices = {
+        accelerator_devices = {
             outcome.device
             for outcome in outcomes.values()
-            if not isinstance(outcome, Exception) and getattr(outcome, "is_cuda", False)
+            if not isinstance(outcome, Exception)
+            and getattr(outcome, "device", None) is not None
+            and getattr(getattr(outcome, "device", None), "type", None) != "cpu"
         }
-        for device in cuda_devices:
-            torch.cuda.current_stream(device).synchronize()
+        for device in accelerator_devices:
+            torch.get_device_module(device).current_stream(device).synchronize()
 
     def _run(self) -> None:
         while True:

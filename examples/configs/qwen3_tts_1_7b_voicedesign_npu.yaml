@@ -1,0 +1,35 @@
+config_cls: Qwen3TTSPipelineConfig
+model_path: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+
+stages:
+  preprocessing:
+    factory:
+      max_concurrency: 1
+  tts_engine:
+    gpu: 0
+    tp_size: 1
+    factory:
+      dtype: bfloat16
+      attn_implementation: sdpa
+    engine:
+      attention_backend: ascend
+      disable_cuda_graph: true
+      disable_overlap_schedule: true
+      enable_torch_compile: false
+      torch_compile_max_bs: 1
+      max_running_requests: 1
+      max_queued_requests: 8
+      max_prefill_tokens: 4096
+      mem_fraction_static: 0.60
+      sampling_backend: pytorch
+  vocoder:
+    gpu: 0
+    factory:
+      dtype: bfloat16
+      attn_implementation: sdpa
+      max_batch_size: 1
+      initial_max_batch_size: 1
+      followup_max_batch_size: 1
+      async_decode: false
+      initial_cuda_graph: false
+      followup_cuda_graph: false

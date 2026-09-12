@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -40,6 +41,7 @@ from sglang_omni.models.qwen3_tts.predictor_kernels import (
 )
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logits_with_seed_top_k_top_p,
+    sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -61,6 +63,42 @@ _PREDICTOR_TOP_K_LADDER = (4, 8, 16, 32, 50, 64, 128, 256, 512, 1024)
 def _predictor_graph_env_enabled() -> bool:
     value = os.environ.get(QTTS_PREDICTOR_GRAPH_ENV, "1").strip().lower()
     return value not in ("0", "false", "off", "no")
+
+
+def _predictor_gqa_attention(
+    q: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    num_heads: int,
+    num_key_value_heads: int,
+) -> torch.Tensor:
+    """Run Predictor GQA, preferring Ascend's inference kernel on NPU."""
+    if q.device.type == "npu":
+        fused_attention = getattr(
+            getattr(torch.ops, "npu", None),
+            "npu_fused_infer_attention_score",
+            None,
+        )
+        if fused_attention is not None:
+            output, _ = fused_attention(
+                q.transpose(1, 2).contiguous(),
+                key.transpose(1, 2).contiguous(),
+                value.transpose(1, 2).contiguous(),
+                num_heads=num_heads,
+                num_key_value_heads=num_key_value_heads,
+                input_layout="BSND",
+                scale=1.0 / math.sqrt(q.shape[-1]),
+            )
+            return output.transpose(1, 2)
+
+    return torch.nn.functional.scaled_dot_product_attention(
+        q,
+        key,
+        value,
+        is_causal=False,
+        enable_gqa=True,
+    )
 
 
 def _quantize_predictor_top_k(max_top_k: int, vocab_size: int) -> int | None:
@@ -100,6 +138,11 @@ def _sample_seeded_categorical(
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor:
+    if logprobs.device.type == "npu":
+        sampled = sample_from_logprobs_with_seed_npu(logprobs, seeds, positions)
+        if sampled is None:  # pragma: no cover - guarded by the device check
+            raise RuntimeError("NPU seeded sampling did not return a result")
+        return sampled
     return multinomial_with_seed(logprobs, seeds, positions).view(-1)
 
 
@@ -1259,6 +1302,10 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     def _resolve_predictor_graph_enabled(self) -> bool:
         if not _predictor_graph_env_enabled():
             return False
+        codec_embedding = getattr(getattr(self, "model", None), "codec_embedding", None)
+        weight = getattr(codec_embedding, "weight", None)
+        if weight is not None and weight.device.type != "cuda":
+            return False
         if bool(get_exec().graph.disable_cuda_graph):
             return False
         # Note: (Jiaxin Deng) capture under TP would record collectives; the
@@ -1859,22 +1906,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         cached_v = self._predictor_v_cache[
             layer_idx, :batch_size, : cache_len + 1
         ].transpose(1, 2)
-        num_kv_groups = attn.num_heads // attn.num_kv_heads
-        if num_kv_groups == 1:
-            attn_output = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                cached_k,
-                cached_v,
-                is_causal=False,
-            )
-        else:
-            attn_output = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                cached_k,
-                cached_v,
-                is_causal=False,
-                enable_gqa=True,
-            )
+        attn_output = _predictor_gqa_attention(
+            q,
+            cached_k,
+            cached_v,
+            num_heads=attn.num_heads,
+            num_key_value_heads=attn.num_kv_heads,
+        )
         attn_output = attn_output.transpose(1, 2).reshape(
             batch_size, attn.num_heads * attn.head_dim
         )
