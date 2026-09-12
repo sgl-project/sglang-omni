@@ -335,19 +335,41 @@ class ModelWorker:
         from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
             PrefillCudaGraphRunner,
         )
+        from sglang.srt.runtime_context import get_exec
+
+        from sglang_omni.model_runner.hybrid_prefill_router import (
+            HybridPrefillGraphRouter,
+        )
 
         runner = self.model_runner.prefill_cuda_graph_runner
+        backend = get_exec().graph.cuda_graph_config.prefill.backend
+        hybrid_backends = None
         if isinstance(runner, PrefillCudaGraphRunner):
             capture_num_tokens = [int(value) for value in runner.capture_num_tokens]
             backend_runner = type(runner.backend).__name__
             input_embeds_slot = runner.buffer_registry.has_slot("input_embeds")
+        elif isinstance(runner, HybridPrefillGraphRouter):
+            backend = "hybrid"
+            capture_num_tokens = [int(value) for value in runner.capture_num_tokens]
+            backend_runner = type(runner).__name__
+            hybrid_backends = {
+                name: {
+                    "backend_runner": type(child.backend).__name__,
+                    "capture_num_tokens": [int(v) for v in child.capture_num_tokens],
+                    "input_embeds_slot": child.buffer_registry.has_slot("input_embeds"),
+                }
+                for name, child in (
+                    ("breakable", runner.breakable_runner),
+                    ("full", runner.full_runner),
+                )
+            }
+            input_embeds_slot = all(
+                info["input_embeds_slot"] for info in hybrid_backends.values()
+            )
         else:
             capture_num_tokens, backend_runner, input_embeds_slot = None, None, False
-        from sglang.srt.runtime_context import get_exec
-
-        backend = get_exec().graph.cuda_graph_config.prefill.backend
         usage = self._prefill_cuda_graph_usage
-        return {
+        info = {
             "backend": backend,
             "runner": type(runner).__name__ if runner is not None else None,
             "backend_runner": backend_runner,
@@ -361,6 +383,9 @@ class ModelWorker:
                 for bucket, count in sorted(usage.replay_buckets.items())
             },
         }
+        if hybrid_backends is not None:
+            info["hybrid_backends"] = hybrid_backends
+        return info
 
     def model_info(self) -> dict[str, Any]:
         from sglang.srt.runtime_context import get_model, get_parallel, get_serving

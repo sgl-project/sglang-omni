@@ -82,6 +82,7 @@ tests/
     ├── model_runner/
     │   ├── test_arch_override.py
     │   ├── test_hidden_capture.py
+    │   ├── test_hybrid_prefill_router.py
     │   └── test_prefill_cuda_graph_usage.py
     ├── audar_tts/
     │   └── test_pipeline.py
@@ -517,6 +518,11 @@ that happened to contain an older version of the test.
     Graph replay without exposing padded rows.
   - prefill CUDA Graph usage: isolated counter state, replay/eager phase
     classification, executed-bucket counts, and JSON-safe model-info output.
+  - `test_hybrid_prefill_router.py`: configuration isolation, disjoint
+    bucket validation, breakable/full/eager routing, capture rollback,
+    and complete-capture publication. Together with hybrid attestation
+    in `test_prefill_cuda_graph_usage.py`, these CPU tests use fake
+    runners and do not capture real CUDA graphs.
 - `unit_test/models/`: Model registry and cross-model contract tests:
   - static TTS `ModelCapabilities` declarations, registry lookup, aliases, and
     launcher startup logging.

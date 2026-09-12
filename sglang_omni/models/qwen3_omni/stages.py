@@ -1050,6 +1050,13 @@ def create_sglang_thinker_executor_from_config(
     # the streaming-SST thinker path benefits out of the box; either key can be
     # overridden via server_args_overrides (set enable_mixed_chunk=False to opt
     # out). Note: mixed-chunk only engages when chunked_prefill_size > 0.
+    from sglang_omni.model_runner.hybrid_prefill_router import (
+        extract_hybrid_prefill_overrides,
+    )
+
+    server_args_overrides, hybrid_full_bs = extract_hybrid_prefill_overrides(
+        server_args_overrides
+    )
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
@@ -1149,6 +1156,7 @@ def create_sglang_thinker_executor_from_config(
         operator_selected_prefill_backend=operator_selected_prefill_backend(
             server_args_overrides
         ),
+        hybrid_full_bs=hybrid_full_bs,
     )
     from sglang.srt.runtime_context import get_schedule
 

@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 class ThinkerModelRunner(ModelRunner):
+    _stage_sync_token_ids = True
+
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
 
