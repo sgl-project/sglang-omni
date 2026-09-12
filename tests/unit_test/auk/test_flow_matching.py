@@ -112,7 +112,11 @@ class _BucketPadding:
     captured, so the padded batch runs through the eager backbone.
     """
 
-    def pad_lengths(self, *, frames, ref, text):
+    max_graph_batch = 8
+
+    def pad_lengths(self, *, frames, ref, text, batch):
+        if batch > self.max_graph_batch:
+            return None
         return (
             round_to_bucket(frames, 16),
             round_to_bucket(ref, 16),
@@ -182,3 +186,41 @@ def test_bucket_padding_does_not_change_the_sampled_latents(monkeypatch, count):
     for output, reference in zip(actual, expected):
         assert output.shape == reference.shape
         torch.testing.assert_close(output, reference, rtol=1e-5, atol=1e-6)
+
+
+def test_a_batch_the_runner_declines_is_not_padded(monkeypatch):
+    """Padding is only worth its waste on a batch that gets a graph."""
+    from sglang_omni.models.auk.dit import AuKDit
+    from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+
+    torch.manual_seed(0)
+    flow = AuKFlowMatching(
+        AuKDit(
+            dim=32,
+            heads=2,
+            dim_head=16,
+            latent_dim=8,
+            text_hidden_dim=16,
+            num_layers=1,
+            num_single_layers=1,
+        ),
+        num_llm_layers=2,
+    ).eval()
+    items = [
+        AuKSampleItem(
+            torch.randn(5, 16), torch.ones(5, dtype=torch.bool), frames, seed=index
+        )
+        for index, frames in enumerate((19, 11, 15))
+    ]
+    widths = []
+    original = type(flow.transformer).forward
+
+    def forward(self, x, *args, **kwargs):
+        widths.append(x.shape[1])
+        return original(self, x, *args, **kwargs)
+
+    monkeypatch.setattr(type(flow.transformer), "forward", forward)
+    declining = _BucketPadding()
+    declining.max_graph_batch = 2
+    flow.sample_batch(items, steps=2, cfg_strength=2.0, step_graph=declining)
+    assert set(widths) == {19}

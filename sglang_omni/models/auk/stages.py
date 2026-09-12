@@ -112,10 +112,13 @@ def _load_flow(
     return flow
 
 
-def _warmup_flow(
-    flow, device, dtype, *, frames: int = 32, ref: int = 16, text: int = 8
-):
-    """Pay the block compile once at startup instead of on the first request."""
+def _warmup_flow(flow, device, dtype):
+    """Pay the block compile once at startup instead of on the first request.
+
+    The blocks compile for dynamic shapes, so a short trajectory pays most of
+    the cost; a later length can still trigger a smaller recompile.
+    """
+    frames, ref, text = 32, 16, 8
     item = AuKSampleItem(
         torch.zeros(text, flow.transformer.txt_proj.in_features, device=device),
         torch.ones(text, dtype=torch.bool, device=device),

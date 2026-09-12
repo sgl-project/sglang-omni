@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
@@ -14,6 +15,9 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
+
+if TYPE_CHECKING:
+    from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
 
 
 def request_generator(
@@ -88,7 +92,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
-        step_graph=None,
+        step_graph: AuKStepCudaGraphRunner | None = None,
     ) -> torch.Tensor:
         return self.sample_batch(
             [item],
@@ -108,12 +112,12 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
-        step_graph=None,
+        step_graph: AuKStepCudaGraphRunner | None = None,
     ) -> list[torch.Tensor]:
         """Integrate the velocity field for a batch of requests.
 
-        ``step_graph`` is an AuKStepCudaGraphRunner: the batch then pads to its
-        shape buckets so one captured step can be replayed for every NFE step.
+        With a ``step_graph`` the batch pads to that runner's shape buckets, so
+        one captured step can be replayed for every NFE step.
         """
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -136,14 +140,19 @@ class AuKFlowMatching(nn.Module):
             )
             for item in items
         ]
+        # A runner declines a batch too wide to gain from a graph, and then this
+        # batch neither pads nor binds: buckets carries both decisions.
         buckets = None
         if step_graph is not None:
             buckets = step_graph.pad_lengths(
                 frames=max(item.target_frames for item in items),
                 ref=max(reference.shape[0] for reference in references),
                 text=max(item.conditioning.shape[0] for item in items),
+                batch=len(items),
             )
-        frame_rows, ref_rows, text_rows = buckets or (None, None, None)
+        frame_rows, ref_rows, text_rows = (
+            buckets if buckets is not None else (None, None, None)
+        )
 
         ref = pack(references, ref_rows).to(weight_dtype)
         ref_mask = (
@@ -209,7 +218,7 @@ class AuKFlowMatching(nn.Module):
             ref_mask=ref_mask,
             # The projected text is constant per trajectory either way; a graph
             # holds it in its own buffers and must not write the python cache.
-            cache=step_graph is None,
+            cache=buckets is None,
             audio_positions=audio_positions,
             joint_positions=joint_positions,
         )
@@ -226,7 +235,7 @@ class AuKFlowMatching(nn.Module):
 
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
         fn = None
-        if step_graph is not None:
+        if buckets is not None:
             fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
         try:
             result = integrate(fn or partial(step, inputs), y0, t)
