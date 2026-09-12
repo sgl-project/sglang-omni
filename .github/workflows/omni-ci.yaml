@@ -58,7 +58,7 @@ env:
   QWEN3_TTS_MODEL_PATH: Qwen/Qwen3-TTS-12Hz-1.7B-Base
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
-  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf@7ef6cafdc445b5beff0b730cbeb51952c793ca6e
+  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
   WHISPER_ASR_MODEL_PATH: openai/whisper-large-v3
 
 

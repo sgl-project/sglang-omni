@@ -87,14 +87,14 @@ def _feature_extractor(num_lfr_frames: int):
     return _call
 
 
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("layout", ["flat", "split"])
 def test_fun_asr_request_builder_records_inclusive_audio_offsets(
-    monkeypatch, legacy
+    monkeypatch, layout
 ) -> None:
     num_lfr_frames = 17
-    num_audio_tokens = 3 if legacy else 17
+    num_audio_tokens = 17 if layout == "flat" else 3
     extractor = _feature_extractor(num_lfr_frames)
-    extractor.legacy_audio_lengths = legacy
+    extractor.checkpoint_layout = layout
 
     monkeypatch.setattr(
         transcription,

@@ -116,9 +116,9 @@ def test_fun_asr_stage_default_enables_async_decode() -> None:
     assert signature.parameters["async_decode_min_batch_size"].default == 2
 
 
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("layout", ["flat", "split"])
 def test_fun_asr_threads_generation_batch_and_request_build_policy(
-    monkeypatch, legacy
+    monkeypatch, layout
 ) -> None:
     from sglang_omni.scheduling.generation_batch_policy import (
         build_default_prefill_cuda_graph_bs,
@@ -148,7 +148,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         fun_asr_builder.AutoFeatureExtractor,
         "from_pretrained",
         lambda *args, **kwargs: SimpleNamespace(
-            nb_max_frames=500, legacy_audio_lengths=legacy
+            nb_max_frames=500, checkpoint_layout=layout
         ),
     )
     monkeypatch.setattr(
@@ -204,7 +204,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     )
 
     def _fake_server_args_builder(model_path, context_length, **overrides):
-        expected_audio_tokens = 63 if legacy else 500
+        expected_audio_tokens = 500 if layout == "flat" else 63
         assert (
             context_length
             == expected_audio_tokens

@@ -27,7 +27,7 @@ from transformers.activations import ACT2FN
 
 from .checkpoint import canonical_weight_name
 from .configuration_fun_asr import FunAsrNanoConfig
-from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
+from .tool_funcs.audio_lengths import fun_asr_audio_token_length
 
 logger = logging.getLogger(__name__)
 
@@ -70,22 +70,17 @@ def _fused_qkv_project(
 
 class SinusoidalPositionEncoder(nn.Module):
 
-    def __init__(self, *, compute_in_fp32: bool = True):
-        super().__init__()
-        self.compute_in_fp32 = compute_in_fp32
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, timesteps, input_dim = x.size()
-        dtype = torch.float32 if self.compute_in_fp32 else x.dtype
-        positions = torch.arange(1, timesteps + 1, device=x.device, dtype=dtype)
+        positions = torch.arange(1, timesteps + 1, device=x.device, dtype=x.dtype)
         log_timescale_increment = math.log(10000.0) / (input_dim / 2 - 1)
         inv_timescales = torch.exp(
-            torch.arange(input_dim / 2, device=x.device, dtype=dtype)
+            torch.arange(input_dim / 2, device=x.device, dtype=x.dtype)
             * (-log_timescale_increment)
         )
         scaled_time = positions.view(1, -1, 1) * inv_timescales.view(1, 1, -1)
         encoding = torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=2)
-        return x + encoding.to(dtype=x.dtype)
+        return x + encoding
 
 
 class MultiHeadedAttentionSANM(nn.Module):
@@ -104,7 +99,7 @@ class MultiHeadedAttentionSANM(nn.Module):
         self.q_proj = nn.Linear(in_feat, n_feat)
         self.k_proj = nn.Linear(in_feat, n_feat)
         self.v_proj = nn.Linear(in_feat, n_feat)
-        self.o_proj = nn.Linear(n_feat, n_feat)
+        self.out_proj = nn.Linear(n_feat, n_feat)
         self.attn_dropout_p = float(dropout_rate)
 
     def forward(
@@ -128,7 +123,7 @@ class MultiHeadedAttentionSANM(nn.Module):
             is_causal=False,
         )
         out = out.transpose(1, 2).contiguous().view(b, t, self.h * self.d_k)
-        return self.o_proj(out), v
+        return self.out_proj(out), v
 
 
 class FunAsrNanoFSMN(nn.Module):
@@ -239,11 +234,10 @@ class FunAsrNanoAudioEncoder(nn.Module):
         activation_dropout_rate: float = 0.1,
         activation_function: str = "relu",
         layer_norm_eps: float = 1e-5,
-        position_embedding_fp32: bool = True,
     ) -> None:
         super().__init__()
         self._output_size = output_size
-        self.embed = SinusoidalPositionEncoder(compute_in_fp32=position_embedding_fp32)
+        self.embed = SinusoidalPositionEncoder()
 
         if num_blocks < 1 or tp_blocks < 0:
             raise ValueError(
@@ -297,7 +291,7 @@ class MultiHeadedAttention(nn.Module):
         self.q_proj = nn.Linear(n_feat, n_feat)
         self.k_proj = nn.Linear(n_feat, n_feat)
         self.v_proj = nn.Linear(n_feat, n_feat)
-        self.o_proj = nn.Linear(n_feat, n_feat)
+        self.out_proj = nn.Linear(n_feat, n_feat)
         self.attn_dropout_p = float(dropout_rate)
 
     def forward(
@@ -320,7 +314,7 @@ class MultiHeadedAttention(nn.Module):
             is_causal=False,
         )
         out = out.transpose(1, 2).contiguous().view(b, t, self.h * self.d_k)
-        return self.o_proj(out)
+        return self.out_proj(out)
 
 
 class AdaptorEncoderLayer(nn.Module):
@@ -448,7 +442,6 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             activation_dropout_rate=enc_cfg.activation_dropout,
             activation_function=enc_cfg.activation_function,
             layer_norm_eps=enc_cfg.layer_norm_eps,
-            position_embedding_fp32=config.checkpoint_layout == "flat",
         )
         self.multi_modal_projector = FunAsrNanoAdaptor(
             encoder_dim=enc_cfg.d_model,
@@ -541,12 +534,11 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
 
         embeddings: List[torch.Tensor] = []
         for b, length in enumerate(lengths):
-            legacy = (
-                getattr(getattr(self, "config", None), "checkpoint_layout", "split")
-                == "split"
+            layout = getattr(
+                getattr(self, "config", None), "checkpoint_layout", "split"
             )
             num_tokens = max(
-                int(fun_asr_low_frame_rate_length(length, legacy=legacy)), 1
+                int(fun_asr_audio_token_length(length, checkpoint_layout=layout)), 1
             )
             embeddings.append(adp_out[b, :num_tokens, :])
         return torch.cat(embeddings, dim=0)

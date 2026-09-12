@@ -50,11 +50,10 @@ def canonical_weight_name(
         raise ValueError(
             f"Fun-ASR {layout} config disagrees with checkpoint weight {name}"
         )
-    if layout == "flat":
-        return name
-    name = name.replace("model.audio_adaptor.", "model.multi_modal_projector.")
+    if layout == "split":
+        name = name.replace("model.audio_adaptor.", "model.multi_modal_projector.")
     prefix = "model.audio_tower."
-    if name.startswith(prefix):
+    if layout == "split" and name.startswith(prefix):
         suffix = name[len(prefix) :]
         if suffix.startswith("stem."):
             suffix = "layers.0." + suffix[len("stem.") :]
@@ -80,19 +79,21 @@ def canonical_weight_name(
                 index += 1 if group == "layers" else num_blocks
                 suffix = f"layers.{index}.{tail}"
         name = prefix + suffix
-    else:
+    elif layout == "split":
         name = name.replace(".blocks.", ".layers.")
-    for old_part, new_part in (
-        (".self_attn_layer_norm.", ".input_layernorm."),
-        (".final_layer_norm.", ".post_attention_layernorm."),
-        (".self_attn.out_proj.", ".self_attn.o_proj."),
-        (".feedforward_sequential_memory.", ".self_attn.fsmn."),
-        (".fsmn.", ".self_attn.fsmn."),
-        (".fc1.", ".mlp.fc1."),
-        (".fc2.", ".mlp.fc2."),
-    ):
-        # FSMN was a sibling of attention in both split export variants.
-        if old_part == ".fsmn." and ".self_attn.fsmn." in name:
-            continue
-        name = name.replace(old_part, new_part)
+    # Keep the local projection name stable; current HF calls it `o_proj`.
+    name = name.replace(".self_attn.o_proj.", ".self_attn.out_proj.")
+    if layout == "split":
+        for old_part, new_part in (
+            (".self_attn_layer_norm.", ".input_layernorm."),
+            (".final_layer_norm.", ".post_attention_layernorm."),
+            (".feedforward_sequential_memory.", ".self_attn.fsmn."),
+            (".fsmn.", ".self_attn.fsmn."),
+            (".fc1.", ".mlp.fc1."),
+            (".fc2.", ".mlp.fc2."),
+        ):
+            # FSMN was a sibling of attention in both split export variants.
+            if old_part == ".fsmn." and ".self_attn.fsmn." in name:
+                continue
+            name = name.replace(old_part, new_part)
     return name

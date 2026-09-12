@@ -50,7 +50,6 @@ OMNI_WHISPER_SAMPLE_RATE = 16000
 QWEN3_ASR_MODEL_PATH = "Qwen/Qwen3-ASR-1.7B"
 QWEN3_ASR_REQUEST_TIMEOUT_S = 300
 FUN_ASR_MODEL_PATH = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
-FUN_ASR_MODEL_REVISION = "7ef6cafdc445b5beff0b730cbeb51952c793ca6e"
 # note (aaron): ASR transcription fan-out for WER, not TTS generation concurrency.
 DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32
 # note (aaron): warmup requests sent before the timed window, per unit of concurrency.

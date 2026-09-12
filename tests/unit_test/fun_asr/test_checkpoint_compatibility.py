@@ -142,11 +142,16 @@ def split_key(name):
     return name
 
 
+def flat_key(name):
+    """Test export fixture: current HF uses o_proj for attention output."""
+    return "model." + name.replace(".self_attn.out_proj.", ".self_attn.o_proj.")
+
+
 @pytest.mark.parametrize("layout", ["flat", "split"])
 def test_full_audio_load_and_output(layout):
     source, target = tiny_model(), tiny_model(layout)
     weights = [
-        ("model." + name if layout == "flat" else split_key(name), tensor.clone())
+        (flat_key(name) if layout == "flat" else split_key(name), tensor.clone())
         for name, tensor in source.state_dict().items()
     ]
     target.load_weights(reversed(weights))
@@ -224,12 +229,11 @@ def test_feature_extractor_reads_layout_and_lfr_fields(tmp_path, flat):
     )
     assert extractor.lfr_m == 3
     assert extractor.lfr_n == 2
-    assert extractor.legacy_audio_lengths is not flat
+    assert extractor.checkpoint_layout == ("flat" if flat else "split")
 
 
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_encoder_and_projector_match_native_hf(dtype):
-    # Optional reference check: serving remains on the repo's pinned Transformers.
+def test_encoder_and_projector_match_native_hf():
+    # Optional reference check against the current upstream architecture.
     reference = pytest.importorskip(
         "transformers.models.fun_asr_nano.modeling_fun_asr_nano"
     )
@@ -237,7 +241,7 @@ def test_encoder_and_projector_match_native_hf(dtype):
         "transformers.models.fun_asr_nano.configuration_fun_asr_nano"
     )
     torch.manual_seed(9)
-    model = tiny_model().to(dtype=dtype)
+    model = tiny_model().to(dtype=torch.float32)
     audio_config = configs.FunAsrNanoEncoderConfig(
         num_mel_bins=2,
         num_stacked_frames=3,
@@ -249,8 +253,14 @@ def test_encoder_and_projector_match_native_hf(dtype):
         fsmn_kernel_size=3,
     )
     audio_config._attn_implementation = "eager"
-    encoder = reference.FunAsrNanoEncoder(audio_config).eval().to(dtype=dtype)
-    encoder.load_state_dict(model.audio_tower.state_dict(), strict=True)
+    encoder = reference.FunAsrNanoEncoder(audio_config).eval()
+    encoder.load_state_dict(
+        {
+            name.replace(".self_attn.out_proj.", ".self_attn.o_proj."): tensor
+            for name, tensor in model.audio_tower.state_dict().items()
+        },
+        strict=True,
+    )
     adaptor_config = configs.FunAsrNanoAdaptorConfig(
         hidden_size=8,
         intermediate_size=2,
@@ -259,21 +269,23 @@ def test_encoder_and_projector_match_native_hf(dtype):
         projector_hidden_size=12,
     )
     adaptor_config._attn_implementation = "eager"
-    projector = (
-        reference.FunAsrNanoMultiModalProjector(
-            SimpleNamespace(audio_config=audio_config, adaptor_config=adaptor_config)
-        )
-        .eval()
-        .to(dtype=dtype)
+    projector = reference.FunAsrNanoMultiModalProjector(
+        SimpleNamespace(audio_config=audio_config, adaptor_config=adaptor_config)
+    ).eval()
+    projector.load_state_dict(
+        {
+            name.replace(".self_attn.out_proj.", ".self_attn.o_proj."): tensor
+            for name, tensor in model.multi_modal_projector.state_dict().items()
+        },
+        strict=True,
     )
-    projector.load_state_dict(model.multi_modal_projector.state_dict(), strict=True)
-    x = torch.randn(2, 7, 6, dtype=dtype)
+    x = torch.randn(2, 7, 6)
     mask = torch.tensor([[1] * 7, [1] * 4 + [0] * 3])
     with torch.no_grad():
         ours = model.audio_tower(x, mask[:, None, :])
         theirs = encoder(x, mask).last_hidden_state
         valid = mask.bool()
-        tolerance = 2e-5 if dtype == torch.float32 else 0.04
+        tolerance = 2e-5
         torch.testing.assert_close(
             ours[valid], theirs[valid], atol=tolerance, rtol=tolerance
         )

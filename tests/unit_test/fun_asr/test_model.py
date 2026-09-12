@@ -37,7 +37,7 @@ def test_fun_asr_audio_modules_match_current_checkpoint_parameter_names() -> Non
     assert "layers.0.self_attn.q_proj.weight" in encoder_names
     assert "layers.0.self_attn.k_proj.weight" in encoder_names
     assert "layers.0.self_attn.v_proj.weight" in encoder_names
-    assert "layers.0.self_attn.o_proj.weight" in encoder_names
+    assert "layers.0.self_attn.out_proj.weight" in encoder_names
     assert "layers.0.self_attn.fsmn.conv.weight" in encoder_names
     assert "layers.0.mlp.fc1.weight" in encoder_names
     assert "layers.0.input_layernorm.weight" in encoder_names

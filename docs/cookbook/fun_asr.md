@@ -14,7 +14,7 @@ then download the model:
 
 ```bash
 # Use the -hf variant
-hf download FunAudioLLM/Fun-ASR-Nano-2512-hf --revision 7ef6cafdc445b5beff0b730cbeb51952c793ca6e
+hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ```
 
 ## Server Configuration
@@ -26,13 +26,6 @@ sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
   --port 8000
 ```
-
-For reproducibility, pass the snapshot directory printed by `hf download` as
-`--model-path`. Passing the repository ID uses its default revision instead.
-The loader supports both the flat HF encoder layout and earlier split-layout
-checkpoints, including revisions `972ee603a3abb40a66c802ffaa9ba0ce88742b60` and
-`1fd03aa58072a4c00bf0a0b149cc4cf0d36d11ed`. Split checkpoints retain the prior
-audio-token length behavior; flat checkpoints use one token per valid LFR frame.
 
 ## Transcribe Audio
 
