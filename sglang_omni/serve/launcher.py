@@ -99,6 +99,7 @@ def _find_available_port(host: str, port: int) -> int:
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return port
     except OSError as exc:
@@ -392,6 +393,10 @@ async def _run_server(
     # 0. Check port availability before loading models
     port = _find_available_port(host, port)
 
+    from sglang_omni.serve.native_media import prepare_native_media_app
+
+    native_media_app = prepare_native_media_app(pipeline_config, host=host, port=port)
+
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
     await mp_runner.start(timeout=startup_timeout)
@@ -457,7 +462,6 @@ async def _run_server(
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
         _mount_profiler_routes(app, profiler_ctl, profiler_dir)
-
         config = uvicorn.Config(
             app,
             host=host,
@@ -466,7 +470,20 @@ async def _run_server(
             timeout_keep_alive=120,
         )
         server = _PipelineUvicornServer(config)
-        await _serve_with_failure_watch(server, [mp_runner.wait_failed()])
+        runtime_failure = asyncio.create_task(mp_runner.wait_failed())
+        try:
+            if native_media_app is not None:
+                from sglang_omni.serve.native_media import mount_native_media_app
+
+                mount_native_media_app(
+                    app, native_media_app, runtime_failure=runtime_failure
+                )
+            await _serve_with_failure_watch(server, [runtime_failure])
+        finally:
+            if not runtime_failure.done():
+                runtime_failure.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await runtime_failure
     finally:
         logger.info("Shutting down pipeline …")
         await mp_runner.stop()
