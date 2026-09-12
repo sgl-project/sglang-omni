@@ -163,7 +163,7 @@ async def ensure_video_list_async(
     else:
         items = [videos]
     normalized: list[Any] = []
-    sample_fps_list: list[float] = []
+    sample_fps_list: list[float] = [0.0] * len(items)
     extracted_audios: list[Any] = [] if extract_audio else []
     all_paths = True
 
@@ -243,7 +243,6 @@ async def ensure_video_list_async(
                 coroutines.append(task)
                 url_indices.append(idx)
                 normalized.append(None)  # Placeholder for video
-                sample_fps_list.append(0.0)  # Placeholder for fps
                 if extract_audio:
                     extracted_audios.append(None)  # Placeholder for audio
             elif Path(video_item).exists():
@@ -253,7 +252,6 @@ async def ensure_video_list_async(
                 coroutines.append(task)
                 url_indices.append(idx)
                 normalized.append(None)  # Placeholder for video
-                sample_fps_list.append(0.0)  # Placeholder for fps
                 if extract_audio:
                     extracted_audios.append(None)  # Placeholder for audio
             else:
