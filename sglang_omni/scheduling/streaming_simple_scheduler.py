@@ -246,6 +246,12 @@ class StreamingSimpleScheduler:
             return 0
         return max(int(self._request_cost_fn(msg.data)), 0)
 
+    def _get_batch_message(self, *, timeout: float = 0.0) -> IncomingMessage:
+        """Consume deferred work before new arrivals without running dispatch hooks."""
+        if self._pending_messages:
+            return self._pending_messages.popleft()
+        return self.inbox.get(timeout=timeout)
+
     def _collect_new_request_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
@@ -257,17 +263,18 @@ class StreamingSimpleScheduler:
         ):
             return batch
 
+        deferred: list[IncomingMessage] = []
         batch_cost = self._message_cost(first_msg)
         deadline = time.monotonic() + self._max_batch_wait_s
         while len(batch) < self._max_batch_size:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 try:
-                    msg = self.inbox.get(timeout=remaining)
+                    msg = self._get_batch_message(timeout=remaining)
                 except _queue_mod.Empty:
                     break
 
@@ -280,9 +287,9 @@ class StreamingSimpleScheduler:
                 ):
                     # Note(Chenchen Hong): Done-before-payload only latches state,
                     # so defer it and keep looking for terminal payloads that can batch.
-                    self._pending_messages.append(msg)
+                    deferred.append(msg)
                     continue
-                self._pending_messages.append(msg)
+                deferred.append(msg)
                 break
             try:
                 is_streaming = self.is_streaming_payload(msg.data)
@@ -291,7 +298,7 @@ class StreamingSimpleScheduler:
                 self.abort(msg.request_id)
                 continue
             if is_streaming:
-                self._pending_messages.append(msg)
+                deferred.append(msg)
                 break
             if self._max_batch_cost is not None:
                 try:
@@ -301,10 +308,13 @@ class StreamingSimpleScheduler:
                     self.abort(msg.request_id)
                     continue
                 if batch and batch_cost + msg_cost > self._max_batch_cost:
-                    self._pending_messages.appendleft(msg)
+                    deferred.append(msg)
                     break
                 batch_cost += msg_cost
             batch.append(msg)
+        # Do not re-read done-before-payload markers during this collection.
+        # Restore them ahead of any unconsumed pending or inbox messages.
+        self._pending_messages.extendleft(reversed(deferred))
         return batch
 
     def _collect_stream_chunk_batch(
@@ -323,7 +333,7 @@ class StreamingSimpleScheduler:
             return batch
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 break
             if msg.type != "stream_chunk":

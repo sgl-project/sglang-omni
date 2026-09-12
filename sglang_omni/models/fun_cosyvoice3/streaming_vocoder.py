@@ -206,7 +206,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         cap = max(int(self._max_batch_size), 1)
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 break
             if self._is_aborted(msg.request_id):
@@ -259,12 +259,14 @@ class FunCosyVoice3StreamingVocoderScheduler(
             return super()._collect_stream_chunk_batch(first_msg)
         batch = [first_msg]
         seen = {first_msg.request_id}
+        # Keep duplicate-request chunks aside until collection ends so they
+        # cannot be re-read while looking for compatible peers.
         deferred: list[IncomingMessage] = []
         leftover: IncomingMessage | None = None
         cap = self._stream_chunk_batch_max or max(self._max_batch_size, 1)
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 break
             if msg.type != "stream_chunk":
@@ -356,7 +358,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 return
             remaining = deadline - time.monotonic()
             try:
-                if remaining <= 0:
+                if self._pending_messages:
+                    msg = self._pending_messages.popleft()
+                elif remaining <= 0:
                     msg = self.inbox.get_nowait()
                 else:
                     msg = self.inbox.get(timeout=remaining)
@@ -422,7 +426,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 return
             remaining = deadline - time.monotonic()
             try:
-                if remaining <= 0:
+                if self._pending_messages:
+                    msg = self._pending_messages.popleft()
+                elif remaining <= 0:
                     msg = self.inbox.get_nowait()
                 else:
                     msg = self.inbox.get(timeout=remaining)
@@ -442,7 +448,12 @@ class FunCosyVoice3StreamingVocoderScheduler(
         """
         while True:
             try:
-                msg = self.inbox.get_nowait()
+                # The collector may have pushed back an older
+                # chunk or done marker. Consume it before newer inbox messages.
+                if self._pending_messages:
+                    msg = self._pending_messages.popleft()
+                else:
+                    msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
                 return
             if not self._ingest_peer_message(msg):

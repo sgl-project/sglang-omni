@@ -741,6 +741,213 @@ def test_inbox_first_hop_preempts_follow_up_backlog() -> None:
     assert len(messages) == 4
 
 
+def test_backlogged_chunks_stay_ordered_before_stream_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow, scheduler = _scheduler(max_batch_size=8)
+    tokens = list(range(78))
+    scheduler._on_streaming_new_request("req-a", _stream_payload("req-a", codes=tokens))
+    for codes in (tokens[:28], tokens[28:53]):
+        scheduler.inbox.put(
+            IncomingMessage(request_id="req-a", type="stream_chunk", data=_item(codes))
+        )
+    original_inference = flow.inference
+
+    def inference(**kwargs):
+        result = original_inference(**kwargs)
+        if len(flow.calls) == 1:
+            # The AR producer adds a newer chunk and
+            # completion during Flow's first hop, with an older chunk deferred.
+            scheduler.inbox.put(
+                IncomingMessage(
+                    request_id="req-a", type="stream_chunk", data=_item(tokens[53:])
+                )
+            )
+            scheduler.inbox.put(IncomingMessage(request_id="req-a", type="stream_done"))
+        return result
+
+    monkeypatch.setattr(flow, "inference", inference)
+
+    while scheduler._pending_messages or not scheduler.inbox.empty():
+        scheduler._handle_message(scheduler._next_message(), None)
+
+    # The first batch defers the second chunk because its
+    # request ID is already in the batch. Pumping must not ingest the third chunk
+    # or finalize the request ahead of that second chunk.
+    assert flow.calls[-1]["finalize"] is True
+    assert flow.calls[-1]["token"].flatten().tolist() == tokens
+    messages = _drain(scheduler)
+    assert [m.type for m in messages].count("result") == 1
+    assert messages[-1].type == "result"
+    audio = np.concatenate([_waveform(m.data) for m in messages if m.type == "stream"])
+    np.testing.assert_array_equal(audio, np.arange(len(tokens) * TOKEN_MEL_RATIO))
+    assert "req-a" not in scheduler._stream_states
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_new_request_collection_stops_at_pending_chunk(streaming: bool) -> None:
+    _, scheduler = _scheduler(max_batch_size=8)
+    payload = _stream_payload("req-a")
+    payload.request.params["stream"] = streaming
+    first = IncomingMessage(request_id="req-a", type="new_request", data=payload)
+    pending = IncomingMessage(request_id="req-a", type="stream_chunk", data=_item([2]))
+    newer = IncomingMessage(request_id="req-a", type="stream_chunk", data=_item([3]))
+    scheduler._pending_messages.append(pending)
+    scheduler.inbox.put(newer)
+
+    assert scheduler._collect_new_request_batch(first) == [first]
+    assert list(scheduler._pending_messages) == [pending]
+    assert scheduler.inbox.get_nowait() is newer
+
+
+def test_chunk_collection_batches_pending_peers_without_reordering_followups() -> None:
+    _, scheduler = _scheduler(max_batch_size=8)
+    first = IncomingMessage("a", "stream_chunk", _item([1]))
+    second = IncomingMessage("a", "stream_chunk", _item([2]))
+    third = IncomingMessage("a", "stream_chunk", _item([3]))
+    peer_b = IncomingMessage("b", "stream_chunk", _item([4]))
+    peer_c = IncomingMessage("c", "stream_chunk", _item([5]))
+    done = IncomingMessage("a", "stream_done")
+    later = IncomingMessage("d", "stream_chunk", _item([6]))
+    scheduler._pending_messages.extend([second, peer_b])
+    for msg in (third, peer_c, done, later):
+        scheduler.inbox.put(msg)
+
+    batch = scheduler._collect_stream_chunk_batch(first)
+
+    assert batch == [first, peer_b, peer_c]
+    assert list(scheduler._pending_messages) == [second, third, done]
+    assert scheduler.inbox.get_nowait() is later
+
+
+def test_streaming_payload_collection_batches_pending_before_inbox() -> None:
+    _, scheduler = _scheduler(max_batch_size=3)
+    messages = [
+        IncomingMessage(rid, "new_request", _stream_payload(rid))
+        for rid in ("a", "b", "c", "d")
+    ]
+    scheduler._pending_messages.extend(messages[1:3])
+    scheduler.inbox.put(messages[3])
+
+    assert scheduler._collect_new_request_batch(messages[0]) == messages[:3]
+    assert not scheduler._pending_messages
+    assert scheduler.inbox.get_nowait() is messages[3]
+
+
+@pytest.mark.parametrize("coalescing", [False, True])
+def test_non_streaming_fallback_batches_past_pending_done_with_cost_limit(
+    coalescing: bool,
+) -> None:
+    _, scheduler = _scheduler(
+        max_batch_size=8, request_cost_fn=lambda payload: 1, max_batch_cost=2
+    )
+    scheduler._can_batch_stream_chunks = coalescing
+    messages = []
+    for rid in ("a", "b", "c", "d"):
+        payload = _stream_payload(rid)
+        payload.request.params["stream"] = False
+        messages.append(IncomingMessage(rid, "new_request", payload))
+    done = IncomingMessage("b", "stream_done")
+    scheduler._pending_messages.extend([done, messages[1], messages[2]])
+    scheduler.inbox.put(messages[3])
+
+    assert scheduler._collect_new_request_batch(messages[0]) == messages[:2]
+    assert list(scheduler._pending_messages) == [done, messages[2]]
+    assert scheduler.inbox.get_nowait() is messages[3]
+
+
+def test_pending_peer_payloads_still_share_a_causal_flow_batch() -> None:
+    flow, scheduler = _packed_scheduler()
+    first = IncomingMessage("a", "new_request", _aligned_payload("a"))
+    peer = IncomingMessage("b", "new_request", _aligned_payload("b"))
+    for rid in ("a", "b"):
+        scheduler._ingest_stream_item(rid, _item(list(range(28))))
+    scheduler._pending_messages.append(peer)
+
+    batch = scheduler._collect_new_request_batch(first)
+    assert batch == [first, peer]
+    scheduler._handle_new_request_batch(batch)
+
+    assert flow.decoder.estimator.calls
+    # CFG packs each request twice: two requests share one causal Flow call.
+    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    assert len([msg for msg in _drain(scheduler) if msg.type == "stream"]) == 2
+
+
+@pytest.mark.parametrize("follow_up", [False, True])
+def test_peer_wait_consumes_pending_chunks_before_inbox(follow_up: bool) -> None:
+    _, scheduler = _scheduler(max_batch_size=8)
+    for rid in ("req-a", "req-b"):
+        scheduler._on_streaming_new_request(rid, _stream_payload(rid))
+    target = 78 if follow_up else 28
+    start = 28 if follow_up else 0
+    middle = 53 if follow_up else 14
+    scheduler._ingest_stream_item("req-a", _item(list(range(target))))
+    scheduler._ingest_stream_item("req-b", _item(list(range(start))))
+    if follow_up:
+        for state in scheduler._stream_states.values():
+            state.token_offset = 25
+            state.hop_len = 50
+    scheduler._pending_messages.append(
+        IncomingMessage(
+            request_id="req-b",
+            type="stream_chunk",
+            data=_item(list(range(start, middle))),
+        )
+    )
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id="req-b",
+            type="stream_chunk",
+            data=_item(list(range(middle, target))),
+        )
+    )
+    scheduler.inbox.put(IncomingMessage(request_id="req-b", type="stream_done"))
+
+    if follow_up:
+        scheduler._wait_for_follow_up_peers()
+    else:
+        scheduler._wait_for_first_hop_peers()
+
+    assert scheduler._stream_states["req-b"].tokens == list(range(target))
+    assert not scheduler._pending_messages
+    assert scheduler.inbox.get_nowait().type == "stream_done"
+
+
+@pytest.mark.parametrize(
+    "reader",
+    ["_ingest_ready_inbox", "_wait_for_first_hop_peers", "_wait_for_follow_up_peers"],
+)
+def test_peer_readers_do_not_pass_pending_done(reader: str) -> None:
+    _, scheduler = _scheduler(max_batch_size=8)
+    for rid in ("req-a", "req-b"):
+        scheduler._on_streaming_new_request(rid, _stream_payload(rid))
+    follow_up = reader == "_wait_for_follow_up_peers"
+    target = 78 if follow_up else 28
+    start = 28 if follow_up else 0
+    scheduler._ingest_stream_item("req-a", _item(list(range(target))))
+    scheduler._ingest_stream_item("req-b", _item(list(range(start))))
+    if follow_up:
+        for state in scheduler._stream_states.values():
+            state.token_offset = 25
+            state.hop_len = 50
+    done = IncomingMessage(request_id="req-a", type="stream_done")
+    scheduler._pending_messages.append(done)
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id="req-b",
+            type="stream_chunk",
+            data=_item(list(range(start, target))),
+        )
+    )
+
+    getattr(scheduler, reader)()
+
+    assert list(scheduler._pending_messages) == [done]
+    assert scheduler._stream_states["req-b"].tokens == list(range(start))
+    assert scheduler.inbox.qsize() == 1
+
+
 def test_disable_hop_growth_keeps_fixed_follow_up_windows() -> None:
     flow, scheduler = _scheduler(disable_hop_growth=True)
     scheduler._on_streaming_new_request("req-a", _stream_payload("req-a"))
