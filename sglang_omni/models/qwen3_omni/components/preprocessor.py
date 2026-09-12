@@ -73,6 +73,54 @@ def _combine_cache_keys(*keys: str | None) -> str | None:
     return "|".join(parts)
 
 
+def _extract_image_content_parts(
+    messages: Any,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep chat image placeholders in their originating message and order."""
+    if not isinstance(messages, list):
+        return normalize_messages(messages), []
+
+    normalized: list[dict[str, Any]] = []
+    images: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(
+            message.get("content"), list
+        ):
+            normalized.extend(normalize_messages([message]))
+            continue
+
+        parts: list[dict[str, Any]] = []
+        message_images: list[str] = []
+        supported = True
+        for part in message["content"]:
+            if not isinstance(part, dict):
+                supported = False
+                continue
+            if part.get("type") == "text":
+                text = part.get("text")
+                if not isinstance(text, str):
+                    raise ValueError("text content part requires a string text field")
+                parts.append({"type": "text", "text": text})
+            elif part.get("type") == "image_url":
+                url = part.get("image_url")
+                if isinstance(url, dict):
+                    url = url.get("url")
+                if not isinstance(url, str) or not url:
+                    raise ValueError("image_url content part requires a non-empty url")
+                parts.append({"type": "image"})
+                message_images.append(url)
+            else:
+                supported = False
+
+        if supported:
+            normalized.append({"role": message.get("role", "user"), "content": parts})
+            images.extend(message_images)
+        else:
+            # Preserve legacy handling of model-specific content as a whole.
+            normalized.extend(normalize_messages([message]))
+    return normalized, images
+
+
 # Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
 _QWEN3_OMNI_SPECIAL_TOKEN_KEYS = (
     "image_token",
@@ -273,14 +321,18 @@ class Qwen3OmniPreprocessor:
             # Only inject placeholders into the last user message
             if i == len(messages) - 1 and role == "user":
                 content_parts: list[dict[str, Any]] = []
-                # Placeholders come BEFORE text (Qwen3-Omni format)
                 for _ in range(num_images):
                     content_parts.append({"type": "image"})
                 for _ in range(num_videos):
                     content_parts.append({"type": "video"})
                 for _ in range(num_audios):
                     content_parts.append({"type": "audio"})
-                content_parts.append({"type": "text", "text": content})
+                if isinstance(content, list):
+                    # Inline images have already been extracted in conversation
+                    # order; top-level media follows them in the processor input.
+                    content_parts = [*content, *content_parts]
+                else:
+                    content_parts.append({"type": "text", "text": content})
                 result.append({"role": role, "content": content_parts})
             else:
                 result.append(msg)
@@ -441,6 +493,9 @@ class Qwen3OmniPreprocessor:
         inputs = payload.request.inputs
         if _is_pretokenized_prompt(inputs):
             return self._preprocess_train_inputs(payload, inputs)
+        if isinstance(inputs, list):
+            inputs = {"messages": inputs}
+        content_images: list[str] = []
         if isinstance(inputs, dict):
             multimodal_train_inputs = inputs.get("multimodal_train_inputs")
             if multimodal_train_inputs is not None:
@@ -449,8 +504,17 @@ class Qwen3OmniPreprocessor:
                     inputs["input_ids"],
                     multimodal_train_inputs,
                 )
-            messages = inputs.get("messages", [])
+            messages, content_images = _extract_image_content_parts(
+                inputs.get("messages", [])
+            )
             raw_images = inputs.get("images")
+            if content_images:
+                top_level_images = (
+                    raw_images
+                    if isinstance(raw_images, list)
+                    else [raw_images] if raw_images is not None else []
+                )
+                raw_images = [*content_images, *top_level_images]
             raw_videos = inputs.get("videos") or inputs.get("video")
             raw_audios = inputs.get("audio") or inputs.get("audios")
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
@@ -566,7 +630,7 @@ class Qwen3OmniPreprocessor:
             else:
                 audios = audios_result
         else:
-            messages = inputs
+            messages = normalize_messages(inputs)
             images = []
             videos = []
             audios = []
@@ -596,14 +660,13 @@ class Qwen3OmniPreprocessor:
         # so audio cache keys include every decoded sample, including video tracks.
         audio_cache_key = compute_audio_cache_key(audios)
 
-        messages_norm = normalize_messages(messages)
         # Insert placeholders:
         # - Explicit audio files get independent audio placeholders
         # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
         num_audios_for_placeholder = num_explicit_audios
         messages_mm = self._build_multimodal_messages(
-            messages_norm,
-            num_images=len(images),
+            messages,
+            num_images=len(images) - len(content_images),
             num_audios=num_audios_for_placeholder,
             num_videos=len(videos),
         )

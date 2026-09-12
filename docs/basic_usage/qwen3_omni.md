@@ -76,6 +76,24 @@ result = resp.json()
 print(result["choices"][0]["message"]["content"])
 ```
 
+Images may also use the OpenAI multi-content form. The `url` can be an HTTP(S)
+URL, a data URL, or a local path visible to the server:
+
+```json
+{
+  "role": "user",
+  "content": [
+    {"type": "image_url", "image_url": {"url": "tests/data/cars.jpg"}},
+    {"type": "text", "text": "How many cars are there in the picture?"}
+  ]
+}
+```
+
+Inline images retain their message and content order across conversation turns.
+When combined with the top-level `images` field, top-level images follow inline
+images in the final user message. The optional `detail` field does not override
+the model's image preprocessing settings.
+
 ### Audio and Image Input
 
 Send an audio file together with an image. The audio contains the spoken question ("How many cars are there in the picture?") and the model answers based on both inputs.
