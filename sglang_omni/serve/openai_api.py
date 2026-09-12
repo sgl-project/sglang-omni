@@ -784,7 +784,26 @@ async def _chat_non_stream(
     return JSONResponse(content=response.model_dump())
 
 
-async def _chat_stream(
+async def _chat_stream(*args: Any, **kwargs: Any) -> AsyncIterator[str]:
+    """Report failures inside an already-started event stream."""
+    try:
+        async with aclosing(_chat_stream_events(*args, **kwargs)) as events:
+            async for event in events:
+                yield event
+    except Exception as exc:
+        bad_request = _is_bad_request_error(exc)
+        error = {
+            "error": {
+                "message": str(exc),
+                "type": "invalid_request_error" if bad_request else "server_error",
+                "code": 400 if bad_request else 500,
+            }
+        }
+        yield f"data: {json.dumps(error)}\n\n"
+        yield f"data: {STREAM_DONE_SENTINEL}\n\n"
+
+
+async def _chat_stream_events(
     client: Client,
     gen_req: GenerateRequest,
     request_id: str,
@@ -987,6 +1006,8 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["video_max_pixels"] = req.video_max_pixels
     if req.video_total_pixels is not None:
         metadata["video_total_pixels"] = req.video_total_pixels
+    if req.use_audio_in_video is not None:
+        metadata["use_audio_in_video"] = req.use_audio_in_video
     _record_explicit_generation_params(
         metadata,
         _explicit_generation_params(req),

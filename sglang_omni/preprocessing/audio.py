@@ -14,6 +14,7 @@ import numpy.typing as npt
 import torch
 
 from .base import MediaIO, _is_url
+from .resource_connector import await_media_cleanup
 
 
 def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
@@ -217,35 +218,41 @@ async def ensure_audio_list_async(
         resource_connector = get_global_resource_connector()
 
     # Collect coroutines for URL items
-    coroutines: list[asyncio.Task[tuple[npt.NDArray, float]] | None] = []
+    coroutines: list[asyncio.Task[tuple[npt.NDArray, float]]] = []
     url_indices: list[int] = []
     normalized: list[Any] = []
 
-    # First pass: identify URL items and create coroutines
-    for idx, item in enumerate(items):
-        if isinstance(item, (str, Path)):
-            if _is_url(item):
-                # Create coroutine for async URL fetching
-                coro = resource_connector.fetch_audio_async(
-                    str(item), target_sr=target_sr
-                )
-                task = asyncio.create_task(coro)
-                coroutines.append(task)
-                url_indices.append(idx)
-                normalized.append(None)  # Placeholder
+    try:
+        # First pass: identify URL items and create coroutines
+        for idx, item in enumerate(items):
+            if isinstance(item, (str, Path)):
+                if _is_url(item):
+                    # Create coroutine for async URL fetching
+                    coro = resource_connector.fetch_audio_async(
+                        str(item), target_sr=target_sr
+                    )
+                    task = asyncio.create_task(coro)
+                    coroutines.append(task)
+                    url_indices.append(idx)
+                    normalized.append(None)  # Placeholder
+                else:
+                    # Local path - can be loaded synchronously
+                    normalized.append(load_audio_path(item, target_sr=target_sr))
             else:
-                # Local path - can be loaded synchronously
-                normalized.append(load_audio_path(item, target_sr=target_sr))
-        else:
-            # Already processed (numpy array, etc.)
-            normalized.append(item)
+                # Already processed (numpy array, etc.)
+                normalized.append(item)
 
-    # Wait for all URL fetches to complete
-    if coroutines:
-        results = await asyncio.gather(*coroutines)
-        # Fill in the results at the correct indices (extract audio array, ignore sample rate)
-        for url_idx, (audio, _) in zip(url_indices, results):
-            normalized[url_idx] = audio
+        # Wait for all URL fetches to complete
+        if coroutines:
+            results = await asyncio.gather(*coroutines)
+            # Fill in the results at the correct indices (extract audio array, ignore sample rate)
+            for url_idx, (audio, _) in zip(url_indices, results):
+                normalized[url_idx] = audio
+    finally:
+        for task in coroutines:
+            if not task.done():
+                task.cancel()
+        await await_media_cleanup(asyncio.gather(*coroutines, return_exceptions=True))
 
     return normalized
 

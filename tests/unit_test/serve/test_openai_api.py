@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from typing import Any
 
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
+from sglang_omni.client.client import _extract_inputs
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import (
@@ -893,7 +895,7 @@ def test_admin_routes_forward_to_client() -> None:
     ]
 
 
-def test_chat_stream_failure_closes_without_done_sentinel() -> None:
+def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
     chunks: list[str] = []
     client = _fault_client("qwen3-omni")
     req = ChatCompletionRequest(
@@ -915,11 +917,15 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
         ):
             chunks.append(chunk)
 
-    with pytest.raises(RuntimeError, match="cuda out of memory"):
-        asyncio.run(_drive())
+    asyncio.run(_drive())
 
     assert chunks
-    assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
+    assert chunks[-1] == "data: [DONE]\n\n"
+    assert json.loads(chunks[-2][6:])["error"] == {
+        "message": "cuda out of memory",
+        "type": "server_error",
+        "code": 500,
+    }
 
 
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
@@ -1210,6 +1216,23 @@ def test_chat_request_omits_explicit_params_when_sampling_omitted() -> None:
     assert gen_req.sampling.top_p == 1.0
     assert gen_req.sampling.top_k == -1
     assert EXPLICIT_GENERATION_PARAMS_KEY not in gen_req.metadata
+
+
+@pytest.mark.parametrize("use_audio_in_video", [True, False])
+def test_chat_request_forwards_embedded_video_audio_flag(
+    use_audio_in_video: bool,
+) -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": "hello"}],
+        videos=["clip.mp4"],
+        use_audio_in_video=use_audio_in_video,
+    )
+
+    gen_req = _build_chat_generate_request(req)
+
+    assert gen_req.metadata["use_audio_in_video"] is use_audio_in_video
+    assert _extract_inputs(gen_req)["use_audio_in_video"] is use_audio_in_video
 
 
 def test_chat_request_preserves_explicit_default_sampling_values() -> None:
@@ -2545,6 +2568,160 @@ def test_unprobeable_audio_with_chunking_enabled_stays_one_request() -> None:
         transcription_client.requests[0][1].prompt["audio_bytes"]
         == b"RIFF not really audio"
     )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (
+            "use_audio_in_video requires every video in a multi-video request "
+            "to contain a decodable audio track",
+            400,
+        ),
+        ("Embedded audio stream decoded no samples: /tmp/empty.mp4", 400),
+        (
+            "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
+            400,
+        ),
+        (
+            "Invalid media data while extracting embedded audio from /tmp/corrupt.mp4: "
+            "Invalid data found when processing input",
+            400,
+        ),
+        ("Failed to extract embedded audio from /tmp/video.mp4: out of memory", 500),
+        (
+            "Failed to extract embedded audio from /tmp/video.mp4: permission denied",
+            500,
+        ),
+        ("Failed to decode video path=/tmp/video.mp4: out of memory", 500),
+        ("Failed to decode video path=/tmp/video.mp4: permission denied", 500),
+    ],
+)
+def test_chat_endpoint_classifies_embedded_audio_errors(error, expected_status) -> None:
+    client = TestClient(create_app(_fault_client("qwen3-omni", error=error)))
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "Describe the video."}],
+            "use_audio_in_video": True,
+        },
+    )
+    assert response.status_code == expected_status
+    assert error in response.text
+
+
+@pytest.mark.parametrize("source_kind", ["path", "file_uri", "data_uri", "http_url"])
+@pytest.mark.parametrize("use_audio_in_video", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+def test_chat_endpoint_rejects_corrupt_video(
+    tmp_path, monkeypatch, source_kind, use_audio_in_video, stream
+) -> None:
+    from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+    from sglang_omni.preprocessing.video import ensure_video_list_async
+
+    corrupt_bytes = b"not a valid mp4 container"
+    video_path = tmp_path / "corrupt.mp4"
+    video_path.write_bytes(corrupt_bytes)
+    sources = {
+        "path": str(video_path),
+        "file_uri": video_path.as_uri(),
+        "data_uri": "data:video/mp4;base64,"
+        + base64.b64encode(corrupt_bytes).decode("ascii"),
+        "http_url": "https://example.com/corrupt.mp4",
+    }
+    connector = MultiModalResourceConnector(allowed_local_media_path=tmp_path)
+    if source_kind == "http_url":
+
+        async def download_video(url, **_kwargs):
+            assert url == sources["http_url"]
+            return corrupt_bytes, "video/mp4"
+
+        monkeypatch.setattr(connector, "_load_http_bytes_async", download_video)
+
+    class VideoDecodingCoordinator(FaultInjectingCoordinator):
+        async def _submit_request(self, request_id, request, *, stream_queue=None):
+            assert isinstance(request, OmniRequest)
+            assert request.inputs["use_audio_in_video"] is use_audio_in_video
+            try:
+                await ensure_video_list_async(
+                    request.inputs["videos"],
+                    extract_audio=request.inputs["use_audio_in_video"],
+                    resource_connector=connector,
+                )
+            except Exception as exc:
+                self.error = str(exc)
+            else:
+                pytest.fail("Corrupt video was accepted by the video loader")
+            await super()._submit_request(
+                request_id, request, stream_queue=stream_queue
+            )
+
+    coordinator = VideoDecodingCoordinator("code2wav")
+    with TestClient(create_app(Client(coordinator))) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3-omni",
+                "messages": [{"role": "user", "content": "Describe the video."}],
+                "stream": stream,
+                "videos": [sources[source_kind]],
+                "use_audio_in_video": use_audio_in_video,
+            },
+        )
+
+    if stream:
+        assert response.status_code == 200
+        events = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+        ]
+        error = next(event["error"] for event in events if "error" in event)
+        assert error["code"] == 400
+        assert "Invalid media data" in error["message"]
+        assert response.text.endswith("data: [DONE]\n\n")
+    else:
+        assert response.status_code == 400
+        assert "Invalid media data" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize(
+    "error,code",
+    [
+        (
+            "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
+            400,
+        ),
+        ("cuda out of memory", 500),
+    ],
+)
+def test_chat_stream_reports_error_and_terminates(partial, error, code):
+    class CoordinatorWithOptionalPartial(FaultInjectingCoordinator):
+        async def _handle_stream(self, message):
+            if partial:
+                await super()._handle_stream(message)
+
+    coordinator = CoordinatorWithOptionalPartial("code2wav", error)
+    with TestClient(create_app(Client(coordinator))) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3-omni",
+                "stream": True,
+                "messages": [{"role": "user", "content": "Describe the video."}],
+            },
+        )
+    assert response.status_code == 200
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    assert events[-1]["error"]["code"] == code
+    assert events[-1]["error"]["message"] == error
+    assert response.text.count("data: [DONE]") == 1
 
 
 def test_transcription_endpoint_returns_text_json() -> None:
