@@ -1,0 +1,69 @@
+name: Release Docker Images (NPU)
+
+on:
+  push:
+    tags: ['v[0-9]+.*']
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: Additional image tag, including the hardware suffix
+        type: string
+        default: ''
+      publish:
+        type: boolean
+        default: false
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-npu-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+          docker-images: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: lmsysorg/sglang-omni
+          flavor: latest=false
+          tags: |
+            type=ref,event=tag,suffix=-cann9.0.0-a3
+            type=sha,suffix=-cann9.0.0-a3
+            type=raw,value=${{ inputs.image_tag }},enable=${{ inputs.image_tag != '' }}
+      - name: Log into Docker Hub
+        if: github.repository == 'sgl-project/sglang-omni' && github.event_name != 'pull_request' && (inputs.publish || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/npu.Dockerfile
+          # Expand only after the corresponding hardware/architecture is validated.
+          platforms: linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: ${{ github.repository == 'sgl-project/sglang-omni' && github.event_name != 'pull_request' && (inputs.publish || github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+          provenance: false
+          cache-from: type=gha,scope=npu-a3
+          cache-to: type=gha,mode=max,scope=npu-a3
