@@ -86,6 +86,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         defaults: dict[str, Any] = {
+            "disable_radix_cache": True,
             "max_running_requests": 16,
             "max_queued_requests": 16,
             "cuda_graph_max_bs": 32,

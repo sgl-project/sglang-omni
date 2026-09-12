@@ -174,6 +174,22 @@ A closed-loop `--concurrencies 16,32,48,64` sweep is still available for
 comparing healthy vs past-ceiling points, but it does not hold overshoot. Each
 concurrency writes inspectable artifacts under `<output-dir>/c<N>/`.
 
+### Radix (prefix KV) cache
+
+| Knob | Meaning | Qwen3-TTS default |
+|---|---|---|
+| `--tts_engine.engine.disable_radix_cache` | Reuse prompt KV across requests that share a prefix | `true` (off) |
+
+Off by default: the reusable part of a Qwen3-TTS prompt is only the reference transcript, recomputing it costs milliseconds against seconds of decoding, and a full cache adds eviction work under load. Reference audio preprocessing is cached separately and is not affected. Measured with 13.5 s to 54 s references, throughput and time-to-first-audio do not change with the cache on.
+
+**Consider** turning it on when the same reference *and* the same text are served repeatedly (prefill is skipped entirely), or when the reference transcript is much longer than the text being synthesized, so the shared prefix dominates the prompt:
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --tts_engine.engine.disable_radix_cache false
+```
+
 ### Prefill Admission Coalescing
 
 Under concurrent load, the `tts_engine` stage can coalesce prefill admission:
