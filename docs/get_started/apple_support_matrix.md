@@ -173,8 +173,8 @@ and the Fun-ASR-Nano reports for
 Recorded at `6ff46426` on the same host with the Torch/MPS selection
 (`SGLANG_USE_MLX` unset). Model packages were discovered as direct child
 directories of `sglang_omni/models` containing `__init__.py`. For each package the
-sweep attempted six module names — `config`, `engine_builder`, `stages`,
-`model_runner`, `sglang_model` and `request_builders` — importing every present
+sweep attempted six module names (`config`, `engine_builder`, `stages`,
+`model_runner`, `sglang_model` and `request_builders`), importing every present
 module in its own sequential child process.
 
 | | Count |
@@ -203,7 +203,7 @@ validated", not "known broken".
 ## Limitations
 
 - Evidence was collected on a machine with **8 GiB of unified memory**. Some models
-  cannot be evaluated on it at all — MiniMax Music 3 alone loads 16 GB of weights.
+  cannot be evaluated on it at all. MiniMax Music 3 alone loads 16 GB of weights.
   A `❌` on a large model may reflect that, not a defect.
 - The matrix is model-level and does not enumerate conditional fallbacks inside a
   model path.
