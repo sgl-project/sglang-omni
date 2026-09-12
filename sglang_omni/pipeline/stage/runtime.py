@@ -23,7 +23,8 @@ import torch
 
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef
-from sglang_omni.comm.engine import CommEngine
+from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
+from sglang_omni.comm.kv_transfer import KVPageTransfer
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
@@ -152,6 +153,10 @@ class Stage:
             rank_endpoints=rank_endpoints,
             task_done_callback=self._on_background_task_done,
         )
+        for pool, receiver in getattr(scheduler, "kv_registrations", ()):
+            self._comm.register_kv_pool(pool)
+            if receiver is not None:
+                self._comm.register_kv_receiver(pool.pool_id, receiver)
 
         self._running = False
         self._aborted: set[str] = set()
@@ -1106,7 +1111,18 @@ class Stage:
                 continue
 
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
-                if out.request_id in self._active_requests:
+                if out.type == "admitted":
+                    if out.request_id not in self._aborted:
+                        self._record_replica_bindings(
+                            out.request_id, (out.metadata or {}).get("replica_bindings")
+                        )
+                        self._active_requests.add(out.request_id)
+                elif out.type == "kv_transfer":
+                    if out.request_id in self._active_requests:
+                        self._launch_kv_transfer(out.data)
+                    else:
+                        self._discard_kv_transfer(out.data)
+                elif out.request_id in self._active_requests:
                     if out.type == "result":
                         await self._route_result(out.request_id, out.data)
                     elif out.type == "stream":
@@ -1163,10 +1179,91 @@ class Stage:
                 self._clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
+            elif out.type == "admitted":
+                self._active_requests.add(out.request_id)
+            elif out.type == "kv_transfer":
+                raise RuntimeError(
+                    f"TP follower stage {self.name} cannot publish a KV transfer"
+                )
             elif out.type == "error":
                 raise RuntimeError(
                     f"TP follower stage {self.name} received scheduler error: {out.data}"
                 )
+
+    def _launch_kv_transfer(self, transfer: KVPageTransfer) -> None:
+        started = False
+
+        async def send():
+            nonlocal started
+            started = True
+            await self._send_kv_transfer(transfer)
+
+        def done(task):
+            if not started:
+                self._discard_kv_transfer(transfer)
+            self._receive_tasks.discard(task)
+            self._on_background_task_done(task, f"KV transfer {transfer.request_id}")
+
+        task = asyncio.create_task(send())
+        self._receive_tasks.add(task)
+        task.add_done_callback(done)
+
+    async def _send_kv_transfer(self, transfer: KVPageTransfer) -> None:
+        if not isinstance(transfer, KVPageTransfer):
+            raise TypeError(
+                "kv_transfer outbox messages require KVPageTransfer data, got "
+                f"{type(transfer).__name__}"
+            )
+        lease = transfer.lease
+        try:
+            if transfer.request_id in self._aborted:
+                return
+            to_stage = self._resolve_target_instance(
+                transfer.request_id, transfer.to_stage
+            )
+            target_pool_id = (
+                transfer.target_pool_id
+                if to_stage == transfer.to_stage
+                else f"{to_stage}:kv"
+            )
+            metadata = {
+                **transfer.metadata,
+                "replica_bindings": self._replica_bindings.get(transfer.request_id),
+            }
+            # From here CommEngine owns the lease, including cancellation and
+            # copies retained while their remote completion is uncertain.
+            lease = None
+            await self._comm.send_kv_pages(
+                request_id=transfer.request_id,
+                source_pool_id=transfer.source_pool_id,
+                source_page_indices=transfer.source_page_indices,
+                target_pool_id=target_pool_id,
+                to_stage=to_stage,
+                metadata=metadata,
+                transfer_id=transfer.transfer_id,
+                lease=transfer.lease,
+            )
+        except KVTransferCancelled:
+            # Request cleanup is terminal for this transfer, but not for the
+            # stage's long-lived outbox drain.
+            return
+        except Exception as exc:
+            logger.exception(
+                "Stage %s KV transfer failed for %s",
+                self.name,
+                transfer.request_id,
+            )
+            await self._send_failure(transfer.request_id, _error_text(exc))
+            return
+        finally:
+            if lease is not None:
+                lease.release()
+            self._clear_request_state(transfer.request_id)
+
+    @staticmethod
+    def _discard_kv_transfer(transfer: Any) -> None:
+        if isinstance(transfer, KVPageTransfer) and transfer.lease is not None:
+            transfer.lease.release()
 
     async def _route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
@@ -1827,6 +1924,10 @@ class Stage:
             return
         exc = task.exception()
         if exc is None:
+            return
+        if isinstance(exc, KVTransferRejected):
+            # The ACK watcher also propagates this to _send_kv_transfer(), which
+            # reports the request failure even if the local abort arrives later.
             return
         logger.exception(
             "Stage %s %s task crashed",

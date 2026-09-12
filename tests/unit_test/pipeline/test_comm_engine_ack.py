@@ -134,7 +134,8 @@ async def _send_stream_for_ack_test(
     return DataRef.from_dict(control_plane.sent_to_stage[-1][2].data_ref)
 
 
-def test_comm_engine_releases_sender_op_after_data_ack() -> None:
+@pytest.mark.parametrize("ack_success", [True, False])
+def test_comm_engine_releases_sender_op_after_data_ack(ack_success: bool) -> None:
     async def _run() -> None:
         relay = _AckedRelay()
         control_plane = RecordingStageControlPlane()
@@ -174,10 +175,15 @@ def test_comm_engine_releases_sender_op_after_data_ack() -> None:
                 from_stage="receiver",
                 to_stage="sender",
                 object_id=data_ref.object_id,
+                success=ack_success,
+                error=None if ack_success else "payload read failed",
             )
         )
         await _wait_until(lambda: op.waited)
-        assert op.acked
+        assert op.acked == ack_success
+        if not ack_success:
+            assert type(op.failed) is RuntimeError
+            assert str(op.failed) == "payload read failed"
 
     asyncio.run(_run())
 

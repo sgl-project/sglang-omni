@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Omni communication engine facade used by pipeline stages."""
+
 from __future__ import annotations
 
 import asyncio
@@ -45,6 +46,14 @@ from sglang_omni.relay.base import Relay
 logger = logging.getLogger(__name__)
 
 
+class KVTransferCancelled(RuntimeError):
+    """Request-scoped cancellation of an outbound paged-KV transfer."""
+
+
+class KVTransferRejected(RuntimeError):
+    """Request-scoped failure reported by the KV receiver's terminal ACK."""
+
+
 @dataclass
 class _InboundKVTransfer:
     request: KVTransferPrepareMessage
@@ -57,10 +66,11 @@ class _InboundKVTransfer:
 class _PendingTransfer(msgspec.Struct):
     ops: list[Any]
     ack: asyncio.Future[None]
-    task: asyncio.Task | None = None
+    task: asyncio.Task[bool] | None = None
     lease: KVPageLease | None = None
     retain_pending_on_failure: bool = False
     receiver_terminal: bool = False
+    cleanup_requested: bool = False
 
 
 class _PayloadSendJob(msgspec.Struct, frozen=True):
@@ -393,6 +403,10 @@ class CommEngine:
             tp_size=self.tp_size,
         )
         try:
+            if request_id in self._aborted_kv_requests:
+                raise KVTransferCancelled(
+                    f"KV transfer request {request_id!r} was cleaned up"
+                )
             pool = self._kv_pools.get(source_pool_id)
             if pool is None:
                 raise KeyError(f"unknown source KV pool {source_pool_id!r}")
@@ -448,12 +462,20 @@ class CommEngine:
             )
             if not ready.success:
                 raise RuntimeError(ready.error)
+            if request_id in self._aborted_kv_requests:
+                raise KVTransferCancelled(
+                    f"KV transfer request {request_id!r} was cleaned up"
+                )
             op = await relay.put_kv_pages(
                 source_pool_id=source_pool_id,
                 source_page_indices=source_page_indices,
                 destination_ref=ready.destination_ref,
                 transfer_id=transfer_id,
             )
+            if request_id in self._aborted_kv_requests:
+                raise KVTransferCancelled(
+                    f"KV transfer request {request_id!r} was cleaned up"
+                )
             data_ref = DataRef(
                 version=1,
                 object_id=transfer_id,
@@ -489,7 +511,11 @@ class CommEngine:
                 self._fail_pending(data_ref.object_id, exc)
                 raise
             pending_task = self._arm_pending(data_ref.object_id)
-            await asyncio.shield(pending_task)
+            cleanup_requested = await asyncio.shield(pending_task)
+            if cleanup_requested or request_id in self._aborted_kv_requests:
+                raise KVTransferCancelled(
+                    f"KV transfer request {request_id!r} was cleaned up"
+                )
             _comm_trace(
                 "comm_kv_transfer_complete",
                 transfer_id=transfer_id,
@@ -758,10 +784,17 @@ class CommEngine:
         ):
             if outbound_request_id != request_id:
                 continue
+            pending = self._pending.get(transfer_id)
+            if pending is not None:
+                # DataReady may already have exposed the sender buffers.  Keep
+                # their lease pinned until the receiver reaches a terminal ACK;
+                # the watcher converts that terminal result into request-scoped
+                # cancellation instead of a stage-fatal transfer failure.
+                pending.cleanup_requested = True
+                continue
             future = self._kv_ready.get(transfer_id)
             if future is not None and not future.done():
-                future.set_exception(error)
-            self._fail_pending(transfer_id, error)
+                future.set_exception(KVTransferCancelled(str(error)))
         self.router.cleanup(request_id)
 
     async def close(self) -> None:
@@ -827,7 +860,12 @@ class CommEngine:
             raise ValueError("failed data_ack is missing error")
         pending.receiver_terminal = True
         if not pending.ack.done():
-            pending.ack.set_exception(RuntimeError(error))
+            error_type = (
+                KVTransferRejected
+                if pending.retain_pending_on_failure
+                else RuntimeError
+            )
+            pending.ack.set_exception(error_type(error))
 
     def _send_queue_for(
         self, queue_key: str
@@ -1043,14 +1081,14 @@ class CommEngine:
             retain_pending_on_failure=retain_pending_on_failure,
         )
 
-    def _arm_pending(self, object_id: str) -> asyncio.Task:
+    def _arm_pending(self, object_id: str) -> asyncio.Task[bool]:
         pending = self._pending[object_id]
         assert pending.task is None
         pending.task = asyncio.create_task(self._watch_pending(object_id, pending))
         self._track_task(pending.task, f"comm ack {object_id}")
         return pending.task
 
-    async def _watch_pending(self, object_id: str, pending: _PendingTransfer) -> None:
+    async def _watch_pending(self, object_id: str, pending: _PendingTransfer) -> bool:
         retained = False
         try:
             ack = (
@@ -1063,6 +1101,7 @@ class CommEngine:
                 op.mark_receiver_done()
             for op in pending.ops:
                 await op.wait_for_completion(timeout=self._ack_timeout_s)
+            return pending.cleanup_requested
         except asyncio.CancelledError as exc:
             if pending.retain_pending_on_failure and not pending.receiver_terminal:
                 # A local failure is not proof that the peer stopped reading.
@@ -1080,6 +1119,8 @@ class CommEngine:
             for op in pending.ops:
                 with suppress(Exception):
                     await op.wait_for_completion(timeout=self._ack_timeout_s)
+            if pending.cleanup_requested:
+                return True
             raise
         finally:
             if not retained:
