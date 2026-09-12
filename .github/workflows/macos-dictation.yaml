@@ -1,0 +1,34 @@
+name: macOS Dictation Example
+
+on:
+  pull_request:
+    paths:
+      - 'examples/macos_dictation/**'
+      - '.github/workflows/macos-dictation.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-dictation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the application and verify deployment target
+        run: |
+          bash examples/macos_dictation/build_client.sh
+          bash examples/macos_dictation/build_compatibility_test.sh
+      - name: Run deterministic regressions
+        run: bash examples/macos_dictation/verify_all_test.sh
+      - name: Check installation and startup helpers without downloads
+        run: bash examples/macos_dictation/local_setup_test.sh
+      - name: Check warmup and backend lifecycles without models
+        run: bash examples/macos_dictation/lifecycle_test.sh
+      - name: Run package core tests
+        run: swift test --package-path examples/macos_dictation --arch arm64
