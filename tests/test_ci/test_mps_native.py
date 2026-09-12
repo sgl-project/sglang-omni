@@ -324,7 +324,7 @@ def _operator_cleanup(session_ids: int | Iterable[int]) -> None:
     daemon_pids: dict[Path, int] = {}
     try:
         for pipe_dir in pipe_dirs:
-            daemon_pids[pipe_dir] = control.read_daemon_identity(pipe_dir)
+            daemon_pids[pipe_dir] = control.read_daemon_process_identity(pipe_dir).pid
             control.snapshot(pipe_dir)
     finally:
         _signal_test_sessions(live_sessions, signal.SIGKILL)
