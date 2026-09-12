@@ -6,8 +6,10 @@ oldest queued request has waited ``prefill_coalesce_wait_ms``. The deadline is
 keyed on each request's enqueue time (``_coalesce_enqueue_t``), so partial
 upstream admission or an aborted request never restarts the window for the
 requests left behind. Chunked prefill in flight and an empty queue pass
-straight through. Tested against a stub scheduler with the upstream call
-patched to a sentinel.
+straight through. With ``prefill_coalesce_min_expected_arrivals`` > 0 and no
+build work pending, the hold-off is released early unless the observed
+arrival gap predicts that many companions inside the remaining window.
+Tested against a stub scheduler with the upstream call patched to a sentinel.
 """
 
 from __future__ import annotations
@@ -45,6 +47,8 @@ class _StubScheduler:
         coalesce_when_idle: bool = False,
         requires_pending_builds: bool = False,
         coalesce_after_builds_during_decode: bool = False,
+        min_expected_arrivals: float = 0.0,
+        arrival_gap_s: float | None = None,
     ) -> None:
         self.prefill_coalesce_requests = coalesce_requests
         self.prefill_coalesce_wait_s = wait_ms / 1e3
@@ -53,6 +57,9 @@ class _StubScheduler:
         self.prefill_coalesce_after_builds_during_decode = (
             coalesce_after_builds_during_decode
         )
+        self.prefill_coalesce_min_expected_arrivals = min_expected_arrivals
+        self._arrival_gap_ema_s = arrival_gap_s
+        self._last_arrival_t = None
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
@@ -66,6 +73,11 @@ class _StubScheduler:
         # unwrap it so the assertions below stay about the gate decision.
         plan = OmniScheduler.get_new_batch_prefill(self, self.running_batch)
         return plan.batch_to_run
+
+    _ARRIVAL_GAP_EMA_ALPHA = OmniScheduler._ARRIVAL_GAP_EMA_ALPHA
+    _coalesce_build_work_pending = OmniScheduler._coalesce_build_work_pending
+    _coalesce_companion_expected = OmniScheduler._coalesce_companion_expected
+    _observe_arrival = OmniScheduler._observe_arrival
 
 
 @pytest.fixture()
@@ -349,3 +361,108 @@ def test_unstamped_request_is_stamped_and_eventually_released(upstream, clock):
 
     clock.return_value = 200.07  # past the deadline
     assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+
+
+# Arrival-rate check (prefill_coalesce_min_expected_arrivals > 0): a small queue
+# is held only while build work is in flight, or while the observed arrival gap
+# predicts at least that many companions inside the remaining window.
+
+
+def test_rate_check_disabled_keeps_fixed_window(upstream, clock):
+    sched = _StubScheduler(coalesce_requests=8, wait_ms=24.0, arrival_gap_s=0.045)
+    sched.waiting_queue = [_req(100.0)]
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+
+def test_sparse_arrivals_release_lone_request_immediately(upstream, clock):
+    # Closed-loop concurrency 2: ~45 ms between arrivals against a 24 ms window.
+    sched = _StubScheduler(
+        coalesce_requests=8,
+        wait_ms=24.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+        min_expected_arrivals=1.0,
+        arrival_gap_s=0.045,
+    )
+    sched.waiting_queue = [_req(100.0)]
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+
+
+def test_dense_arrivals_still_hold_for_the_window(upstream, clock):
+    # Saturation: ~5 ms between arrivals, so a companion is expected well
+    # inside the 24 ms window and the hold-off behaves as before.
+    sched = _StubScheduler(
+        coalesce_requests=8,
+        wait_ms=24.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+        min_expected_arrivals=1.0,
+        arrival_gap_s=0.005,
+    )
+    sched.waiting_queue = [_req(100.0)]
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+    clock.return_value = 100.021  # 3 ms left: 3/5 < 1 expected arrival
+    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+
+
+def test_pending_build_holds_regardless_of_arrival_rate(upstream, clock):
+    sched = _StubScheduler(
+        coalesce_requests=8,
+        wait_ms=24.0,
+        coalesce_when_idle=True,
+        min_expected_arrivals=1.0,
+        arrival_gap_s=0.045,
+    )
+    sched._pending_request_builds["building"] = object()
+    sched.waiting_queue = [_req(100.0)]
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+
+def test_no_arrival_history_does_not_hold(upstream, clock):
+    sched = _StubScheduler(
+        coalesce_requests=8,
+        wait_ms=24.0,
+        coalesce_when_idle=True,
+        min_expected_arrivals=1.0,
+        arrival_gap_s=None,
+    )
+    sched.waiting_queue = [_req(100.0)]
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+
+
+def test_higher_threshold_needs_proportionally_denser_arrivals(upstream, clock):
+    # 24 ms window / 10 ms gap = 2.4 expected companions: enough for 2, not 3.
+    kwargs = dict(
+        coalesce_requests=8,
+        wait_ms=24.0,
+        coalesce_when_idle=True,
+        arrival_gap_s=0.010,
+    )
+    sched = _StubScheduler(min_expected_arrivals=2.0, **kwargs)
+    sched.waiting_queue = [_req(100.0)]
+    assert sched.get_new_batch_prefill() is None
+
+    sched = _StubScheduler(min_expected_arrivals=3.0, **kwargs)
+    sched.waiting_queue = [_req(100.0)]
+    assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
+
+
+def test_observe_arrival_tracks_gap_ema():
+    sched = _StubScheduler(coalesce_requests=8)
+    sched._observe_arrival(now=100.0)
+    assert sched._arrival_gap_ema_s is None  # first arrival: no gap yet
+    sched._observe_arrival(now=100.010)
+    assert sched._arrival_gap_ema_s == pytest.approx(0.010)
+    sched._observe_arrival(now=100.060)  # 50 ms gap
+    alpha = sched._ARRIVAL_GAP_EMA_ALPHA
+    assert sched._arrival_gap_ema_s == pytest.approx(
+        (1 - alpha) * 0.010 + alpha * 0.050
+    )

@@ -49,6 +49,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
         prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_min_expected_arrivals: float,
         mm_attention_backend: str | None,
         enable_pre_lm_encoder: bool,
         pre_lm_cache_max_entries: int,
@@ -76,6 +77,9 @@ class FunASREngineBuilder(AsrEngineBuilder):
         )
         self.prefill_coalesce_after_builds_during_decode = (
             prefill_coalesce_after_builds_during_decode
+        )
+        self.prefill_coalesce_min_expected_arrivals = (
+            prefill_coalesce_min_expected_arrivals
         )
         self.mm_attention_backend = mm_attention_backend
         self.enable_pre_lm_encoder = enable_pre_lm_encoder
@@ -228,6 +232,9 @@ class FunASREngineBuilder(AsrEngineBuilder):
             ),
             "prefill_coalesce_after_builds_during_decode": (
                 self.prefill_coalesce_after_builds_during_decode
+            ),
+            "prefill_coalesce_min_expected_arrivals": (
+                self.prefill_coalesce_min_expected_arrivals
             ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
