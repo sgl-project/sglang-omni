@@ -351,6 +351,10 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         return False
 
     def synchronize_batch(self) -> None:
+        # Only the side stream needs waiting on. Where there is none, the encoder
+        # and the LM both issue on the device's default stream -- Fun-ASR keeps
+        # disable_overlap_schedule, so nothing forwards on a stream of its own --
+        # and submission order already orders the embedding before its reader.
         if self._stream is not None:
             self._stream.synchronize()
 
