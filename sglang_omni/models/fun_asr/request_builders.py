@@ -208,7 +208,12 @@ def make_fun_asr_scheduler_adapters(
                 (features.shape[0], features.shape[-1]), dtype=torch.long
             )
         num_lfr_frames = int(feature_attention_mask.sum().item())
-        num_audio_tokens = int(fun_asr_low_frame_rate_length(num_lfr_frames))
+        num_audio_tokens = int(
+            fun_asr_low_frame_rate_length(
+                num_lfr_frames,
+                legacy=getattr(feature_extractor, "legacy_audio_lengths", True),
+            )
+        )
         logger.debug(
             f"[fun-asr] lfr_frames={num_lfr_frames} "
             f"num_audio_tokens={num_audio_tokens} feat_shape={tuple(features.shape)}"

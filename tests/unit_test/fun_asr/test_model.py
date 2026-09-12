@@ -34,17 +34,17 @@ def test_fun_asr_audio_modules_match_current_checkpoint_parameter_names() -> Non
     )
     encoder_names = set(dict(encoder.named_parameters()))
 
-    assert "stem.self_attn.q_proj.weight" in encoder_names
-    assert "stem.self_attn.k_proj.weight" in encoder_names
-    assert "stem.self_attn.v_proj.weight" in encoder_names
-    assert "stem.self_attn.out_proj.weight" in encoder_names
-    assert "stem.fsmn.conv.weight" in encoder_names
-    assert "stem.fc1.weight" in encoder_names
-    assert "layers.0.self_attn_layer_norm.weight" in encoder_names
-    assert "layers.0.final_layer_norm.weight" in encoder_names
-    assert "layer_norm.weight" in encoder_names
-    assert "timestamp_prediction_layers.0.fc2.weight" in encoder_names
-    assert "timestamp_prediction_layer_norm.weight" in encoder_names
+    assert "layers.0.self_attn.q_proj.weight" in encoder_names
+    assert "layers.0.self_attn.k_proj.weight" in encoder_names
+    assert "layers.0.self_attn.v_proj.weight" in encoder_names
+    assert "layers.0.self_attn.o_proj.weight" in encoder_names
+    assert "layers.0.self_attn.fsmn.conv.weight" in encoder_names
+    assert "layers.0.mlp.fc1.weight" in encoder_names
+    assert "layers.0.input_layernorm.weight" in encoder_names
+    assert "layers.0.post_attention_layernorm.weight" in encoder_names
+    assert "layers.1.final_layernorm.weight" in encoder_names
+    assert "layers.2.mlp.fc2.weight" in encoder_names
+    assert "layers.2.final_layernorm.weight" in encoder_names
 
     projector = FunAsrNanoAdaptor(
         encoder_dim=8,
@@ -57,10 +57,10 @@ def test_fun_asr_audio_modules_match_current_checkpoint_parameter_names() -> Non
 
     assert "linear_1.weight" in projector_names
     assert "linear_2.weight" in projector_names
-    assert "blocks.0.self_attn.q_proj.weight" in projector_names
-    assert "blocks.0.self_attn_layer_norm.weight" in projector_names
-    assert "blocks.0.fc1.weight" in projector_names
-    assert "blocks.0.final_layer_norm.weight" in projector_names
+    assert "layers.0.self_attn.q_proj.weight" in projector_names
+    assert "layers.0.input_layernorm.weight" in projector_names
+    assert "layers.0.mlp.fc1.weight" in projector_names
+    assert "layers.0.post_attention_layernorm.weight" in projector_names
 
 
 def _weight_loader_target() -> FunAsrNanoForConditionalGeneration:
@@ -69,12 +69,16 @@ def _weight_loader_target() -> FunAsrNanoForConditionalGeneration:
     )
     nn.Module.__init__(model)
     model.config = SimpleNamespace(
-        text_config=SimpleNamespace(tie_word_embeddings=False)
+        text_config=SimpleNamespace(tie_word_embeddings=False),
+        checkpoint_layout="split",
+        encoder_config=SimpleNamespace(
+            encoder_layers=2, num_timestamp_prediction_blocks=1
+        ),
     )
     model.audio_tower = nn.Module()
-    model.audio_tower.layer_norm = nn.LayerNorm(2)
+    model.audio_tower.layers = nn.ModuleList([nn.Module(), nn.Module()])
+    model.audio_tower.layers[1].final_layernorm = nn.LayerNorm(2, bias=False)
     model.multi_modal_projector = nn.Module()
-    model.multi_modal_projector.linear_1 = nn.Linear(2, 2)
     return model
 
 
@@ -84,19 +88,23 @@ def test_fun_asr_weight_loader_loads_current_audio_prefixes() -> None:
 
     model.load_weights([("model.audio_tower.layer_norm.weight", expected.clone())])
 
-    assert torch.equal(model.audio_tower.layer_norm.weight, expected)
+    assert torch.equal(model.audio_tower.layers[1].final_layernorm.weight, expected)
 
 
 def test_fun_asr_weight_loader_maps_new_checkpoint_names() -> None:
     model = _weight_loader_target()
-    model.audio_tower.stem = nn.Module()
-    model.audio_tower.stem.fsmn = nn.Module()
-    model.audio_tower.stem.fsmn.conv = nn.Conv1d(2, 2, 1, bias=False)
-    model.multi_modal_projector.blocks = nn.ModuleList([nn.Module()])
-    model.multi_modal_projector.blocks[0].fc1 = nn.Linear(2, 2, bias=False)
-    expected_fsmn = torch.full_like(model.audio_tower.stem.fsmn.conv.weight, 2.0)
+    model.audio_tower.layers[1].final_layernorm = nn.Identity()
+    model.audio_tower.layers[0].self_attn = nn.Module()
+    model.audio_tower.layers[0].self_attn.fsmn = nn.Module()
+    model.audio_tower.layers[0].self_attn.fsmn.conv = nn.Conv1d(2, 2, 1, bias=False)
+    model.multi_modal_projector.layers = nn.ModuleList([nn.Module()])
+    model.multi_modal_projector.layers[0].mlp = nn.Module()
+    model.multi_modal_projector.layers[0].mlp.fc1 = nn.Linear(2, 2, bias=False)
+    expected_fsmn = torch.full_like(
+        model.audio_tower.layers[0].self_attn.fsmn.conv.weight, 2.0
+    )
     expected_adaptor = torch.full_like(
-        model.multi_modal_projector.blocks[0].fc1.weight, 3.0
+        model.multi_modal_projector.layers[0].mlp.fc1.weight, 3.0
     )
 
     model.load_weights(
@@ -109,9 +117,11 @@ def test_fun_asr_weight_loader_maps_new_checkpoint_names() -> None:
         ]
     )
 
-    assert torch.equal(model.audio_tower.stem.fsmn.conv.weight, expected_fsmn)
     assert torch.equal(
-        model.multi_modal_projector.blocks[0].fc1.weight, expected_adaptor
+        model.audio_tower.layers[0].self_attn.fsmn.conv.weight, expected_fsmn
+    )
+    assert torch.equal(
+        model.multi_modal_projector.layers[0].mlp.fc1.weight, expected_adaptor
     )
 
 
@@ -247,7 +257,7 @@ def test_encoder_layer_runs_attention_once() -> None:
         dropout_rate=0.0,
         attention_dropout_rate=0.0,
         activation_dropout_rate=0.0,
-    ).stem
+    ).layers[0]
     layer.eval()
     calls = {"attn": 0}
     original = layer.self_attn.forward

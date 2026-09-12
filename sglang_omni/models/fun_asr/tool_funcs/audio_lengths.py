@@ -5,7 +5,10 @@ from __future__ import annotations
 _LOW_FRAME_RATE_STAGES = 3
 
 
-def fun_asr_low_frame_rate_length(lfr_frames: int) -> int:
+def fun_asr_low_frame_rate_length(lfr_frames: int, *, legacy: bool = True) -> int:
+    """Preserve split-checkpoint serving lengths; native HF uses every LFR frame."""
+    if not legacy:
+        return lfr_frames
     out = lfr_frames
     for _ in range(_LOW_FRAME_RATE_STAGES):
         out = (out + 1) // 2

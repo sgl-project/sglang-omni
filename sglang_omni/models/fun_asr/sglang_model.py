@@ -22,25 +22,14 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
-from sglang.srt.models.utils import WeightsMapper
 from sglang.srt.utils import add_prefix
 from transformers.activations import ACT2FN
 
+from .checkpoint import canonical_weight_name
 from .configuration_fun_asr import FunAsrNanoConfig
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 
 logger = logging.getLogger(__name__)
-
-# Note (Akazaakane): Normalize the September 2026 HF key renames while keeping
-# the existing module names compatible with the pinned earlier checkpoint.
-FUN_ASR_HF_TO_SGLANG_MAPPER = WeightsMapper(
-    orig_to_new_substr={
-        ".feedforward_sequential_memory.": ".fsmn.",
-    },
-    orig_to_new_prefix={
-        "model.audio_adaptor.": "model.multi_modal_projector.",
-    },
-)
 
 
 def _sanm_mask_from_lengths(
@@ -81,17 +70,22 @@ def _fused_qkv_project(
 
 class SinusoidalPositionEncoder(nn.Module):
 
+    def __init__(self, *, compute_in_fp32: bool = True):
+        super().__init__()
+        self.compute_in_fp32 = compute_in_fp32
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size, timesteps, input_dim = x.size()
-        positions = torch.arange(1, timesteps + 1, device=x.device, dtype=x.dtype)
+        dtype = torch.float32 if self.compute_in_fp32 else x.dtype
+        positions = torch.arange(1, timesteps + 1, device=x.device, dtype=dtype)
         log_timescale_increment = math.log(10000.0) / (input_dim / 2 - 1)
         inv_timescales = torch.exp(
-            torch.arange(input_dim / 2, device=x.device, dtype=x.dtype)
+            torch.arange(input_dim / 2, device=x.device, dtype=dtype)
             * (-log_timescale_increment)
         )
         scaled_time = positions.view(1, -1, 1) * inv_timescales.view(1, 1, -1)
         encoding = torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=2)
-        return x + encoding
+        return x + encoding.to(dtype=x.dtype)
 
 
 class MultiHeadedAttentionSANM(nn.Module):
@@ -110,7 +104,7 @@ class MultiHeadedAttentionSANM(nn.Module):
         self.q_proj = nn.Linear(in_feat, n_feat)
         self.k_proj = nn.Linear(in_feat, n_feat)
         self.v_proj = nn.Linear(in_feat, n_feat)
-        self.out_proj = nn.Linear(n_feat, n_feat)
+        self.o_proj = nn.Linear(n_feat, n_feat)
         self.attn_dropout_p = float(dropout_rate)
 
     def forward(
@@ -134,7 +128,7 @@ class MultiHeadedAttentionSANM(nn.Module):
             is_causal=False,
         )
         out = out.transpose(1, 2).contiguous().view(b, t, self.h * self.d_k)
-        return self.out_proj(out), v
+        return self.o_proj(out), v
 
 
 class FunAsrNanoFSMN(nn.Module):
@@ -167,6 +161,13 @@ class FunAsrNanoFSMN(nn.Module):
         return _apply_time_mask(hidden_states, mask)
 
 
+class FunAsrNanoMLP(nn.Module):
+    def __init__(self, size: int, intermediate_size: int) -> None:
+        super().__init__()
+        self.fc1 = nn.Linear(size, intermediate_size)
+        self.fc2 = nn.Linear(intermediate_size, size)
+
+
 class EncoderLayerSANM(nn.Module):
 
     def __init__(
@@ -180,16 +181,20 @@ class EncoderLayerSANM(nn.Module):
         attention_dropout_rate: float,
         activation_dropout_rate: float,
         activation_function: str,
+        layer_norm_eps: float = 1e-5,
+        add_norm: bool = False,
     ) -> None:
         super().__init__()
         self.self_attn = MultiHeadedAttentionSANM(
             attention_heads, in_size, size, attention_dropout_rate
         )
-        self.self_attn_layer_norm = nn.LayerNorm(in_size, eps=1e-5)
-        self.final_layer_norm = nn.LayerNorm(size, eps=1e-5)
-        self.fc1 = nn.Linear(size, linear_units)
-        self.fc2 = nn.Linear(linear_units, size)
-        self.fsmn = FunAsrNanoFSMN(size, kernel_size, attention_dropout_rate)
+        self.input_layernorm = nn.LayerNorm(in_size, eps=layer_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(size, eps=layer_norm_eps)
+        self.mlp = FunAsrNanoMLP(size, linear_units)
+        self.self_attn.fsmn = FunAsrNanoFSMN(size, kernel_size, attention_dropout_rate)
+        self.final_layernorm = (
+            nn.LayerNorm(size, eps=layer_norm_eps) if add_norm else nn.Identity()
+        )
         self.dropout = nn.Dropout(dropout_rate)
         self.activation_dropout = nn.Dropout(activation_dropout_rate)
         self.activation = ACT2FN[activation_function]
@@ -200,22 +205,22 @@ class EncoderLayerSANM(nn.Module):
         self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         residual = x
-        x = self.self_attn_layer_norm(x)
+        x = self.input_layernorm(x)
         # note (guozhihao): attn returns v so FSMN does not recompute v_proj.
         attn_out, value_states = self.self_attn(x, mask)
-        x = self.dropout(attn_out + self.fsmn(value_states, mask))
+        x = self.dropout(attn_out + self.self_attn.fsmn(value_states, mask))
         x = _apply_time_mask(x, mask)
         if self.in_size == self.size:
             x = residual + x
         residual = x
-        x = self.final_layer_norm(x)
-        x = self.activation_dropout(self.activation(self.fc1(x)))
-        x = residual + self.dropout(self.fc2(x))
+        x = self.post_attention_layernorm(x)
+        x = self.activation_dropout(self.activation(self.mlp.fc1(x)))
+        x = residual + self.dropout(self.mlp.fc2(x))
         x = _apply_time_mask(x, mask)
         if x.dtype == torch.float16:
             clamp_value = torch.finfo(x.dtype).max - 1000
             x = torch.clamp(x, min=-clamp_value, max=clamp_value)
-        return x
+        return _apply_time_mask(self.final_layernorm(x), mask)
 
 
 class FunAsrNanoAudioEncoder(nn.Module):
@@ -233,14 +238,21 @@ class FunAsrNanoAudioEncoder(nn.Module):
         attention_dropout_rate: float = 0.1,
         activation_dropout_rate: float = 0.1,
         activation_function: str = "relu",
+        layer_norm_eps: float = 1e-5,
+        position_embedding_fp32: bool = True,
     ) -> None:
         super().__init__()
         self._output_size = output_size
-        self.embed = SinusoidalPositionEncoder()
+        self.embed = SinusoidalPositionEncoder(compute_in_fp32=position_embedding_fp32)
 
-        def make_layer(in_size: int) -> EncoderLayerSANM:
+        if num_blocks < 1 or tp_blocks < 0:
+            raise ValueError(
+                "Fun-ASR requires positive transcription blocks and nonnegative timestamp blocks"
+            )
+
+        def make_layer(index: int) -> EncoderLayerSANM:
             return EncoderLayerSANM(
-                in_size,
+                input_size if index == 0 else output_size,
                 output_size,
                 attention_heads,
                 linear_units,
@@ -249,17 +261,13 @@ class FunAsrNanoAudioEncoder(nn.Module):
                 attention_dropout_rate,
                 activation_dropout_rate,
                 activation_function,
+                layer_norm_eps,
+                index in {num_blocks - 1, num_blocks + tp_blocks - 1},
             )
 
-        self.stem = make_layer(input_size)
         self.layers = nn.ModuleList(
-            [make_layer(output_size) for _ in range(num_blocks - 1)]
+            [make_layer(i) for i in range(num_blocks + tp_blocks)]
         )
-        self.layer_norm = nn.LayerNorm(output_size, eps=1e-5)
-        self.timestamp_prediction_layers = nn.ModuleList(
-            [make_layer(output_size) for _ in range(tp_blocks)]
-        )
-        self.timestamp_prediction_layer_norm = nn.LayerNorm(output_size, eps=1e-5)
 
     def output_size(self) -> int:
         return self._output_size
@@ -269,15 +277,8 @@ class FunAsrNanoAudioEncoder(nn.Module):
     ) -> torch.Tensor:
         xs = xs * (self._output_size**0.5)
         xs = self.embed(xs)
-        xs = self.stem(xs, mask)
         for layer in self.layers:
             xs = layer(xs, mask)
-        xs = self.layer_norm(xs)
-        xs = _apply_time_mask(xs, mask)
-        for layer in self.timestamp_prediction_layers:
-            xs = layer(xs, mask)
-        xs = self.timestamp_prediction_layer_norm(xs)
-        xs = _apply_time_mask(xs, mask)
         return xs
 
 
@@ -296,7 +297,7 @@ class MultiHeadedAttention(nn.Module):
         self.q_proj = nn.Linear(n_feat, n_feat)
         self.k_proj = nn.Linear(n_feat, n_feat)
         self.v_proj = nn.Linear(n_feat, n_feat)
-        self.out_proj = nn.Linear(n_feat, n_feat)
+        self.o_proj = nn.Linear(n_feat, n_feat)
         self.attn_dropout_p = float(dropout_rate)
 
     def forward(
@@ -319,7 +320,7 @@ class MultiHeadedAttention(nn.Module):
             is_causal=False,
         )
         out = out.transpose(1, 2).contiguous().view(b, t, self.h * self.d_k)
-        return self.out_proj(out)
+        return self.o_proj(out)
 
 
 class AdaptorEncoderLayer(nn.Module):
@@ -331,13 +332,13 @@ class AdaptorEncoderLayer(nn.Module):
         feed_forward_dim: int,
         dropout_rate: float,
         activation_function: str,
+        layer_norm_eps: float = 1e-5,
     ) -> None:
         super().__init__()
         self.self_attn = self_attn
-        self.self_attn_layer_norm = nn.LayerNorm(size, eps=1e-5)
-        self.final_layer_norm = nn.LayerNorm(size, eps=1e-5)
-        self.fc1 = nn.Linear(size, feed_forward_dim)
-        self.fc2 = nn.Linear(feed_forward_dim, size)
+        self.input_layernorm = nn.LayerNorm(size, eps=layer_norm_eps)
+        self.post_attention_layernorm = nn.LayerNorm(size, eps=layer_norm_eps)
+        self.mlp = FunAsrNanoMLP(size, feed_forward_dim)
         self.activation = ACT2FN[activation_function]
         self.dropout = nn.Dropout(dropout_rate)
 
@@ -345,12 +346,12 @@ class AdaptorEncoderLayer(nn.Module):
         self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         residual = x
-        x = self.self_attn_layer_norm(x)
+        x = self.input_layernorm(x)
         x = residual + self.dropout(self.self_attn(x, mask))
         x = _apply_time_mask(x, mask)
         residual = x
-        x = self.final_layer_norm(x)
-        x = residual + self.dropout(self.fc2(self.activation(self.fc1(x))))
+        x = self.post_attention_layernorm(x)
+        x = residual + self.dropout(self.mlp.fc2(self.activation(self.mlp.fc1(x))))
         return _apply_time_mask(x, mask)
 
 
@@ -365,16 +366,21 @@ class FunAsrNanoAdaptor(nn.Module):
         attention_heads: int = 8,
         dropout_rate: float = 0.0,
         activation_function: str = "relu",
+        intermediate_size: int | None = None,
+        layer_norm_eps: float = 1e-5,
+        projector_activation_function: str | None = None,
     ) -> None:
         super().__init__()
         self.encoder_dim = encoder_dim
         self.llm_dim = llm_dim
         self.linear_1 = nn.Linear(encoder_dim, ffn_dim)
-        self.act = ACT2FN[activation_function]
+        self.act = ACT2FN[projector_activation_function or activation_function]
         self.linear_2 = nn.Linear(ffn_dim, llm_dim)
 
-        ffn_hidden = llm_dim // 4
-        self.blocks = nn.ModuleList(
+        ffn_hidden = (
+            intermediate_size if intermediate_size is not None else llm_dim // 4
+        )
+        self.layers = nn.ModuleList(
             [
                 AdaptorEncoderLayer(
                     llm_dim,
@@ -382,6 +388,7 @@ class FunAsrNanoAdaptor(nn.Module):
                     ffn_hidden,
                     dropout_rate,
                     activation_function,
+                    layer_norm_eps,
                 )
                 for _ in range(num_layers)
             ]
@@ -394,7 +401,7 @@ class FunAsrNanoAdaptor(nn.Module):
         x = self.act(x)
         x = self.linear_2(x)
         x = _apply_time_mask(x, mask)
-        for block in self.blocks:
+        for block in self.layers:
             x = block(x, mask)
         return x
 
@@ -440,6 +447,8 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             attention_dropout_rate=enc_cfg.attention_dropout,
             activation_dropout_rate=enc_cfg.activation_dropout,
             activation_function=enc_cfg.activation_function,
+            layer_norm_eps=enc_cfg.layer_norm_eps,
+            position_embedding_fp32=config.checkpoint_layout == "flat",
         )
         self.multi_modal_projector = FunAsrNanoAdaptor(
             encoder_dim=enc_cfg.d_model,
@@ -449,6 +458,9 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             attention_heads=config.adaptor_num_attention_heads,
             dropout_rate=0.0,
             activation_function=config.activation_function,
+            intermediate_size=config.adaptor_ffn_dim,
+            layer_norm_eps=config.adaptor_layer_norm_eps,
+            projector_activation_function=config.projector_hidden_act,
         )
         self.language_model = Qwen3ForCausalLM(
             config.text_config,
@@ -529,7 +541,13 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
 
         embeddings: List[torch.Tensor] = []
         for b, length in enumerate(lengths):
-            num_tokens = max(int(fun_asr_low_frame_rate_length(length)), 1)
+            legacy = (
+                getattr(getattr(self, "config", None), "checkpoint_layout", "split")
+                == "split"
+            )
+            num_tokens = max(
+                int(fun_asr_low_frame_rate_length(length, legacy=legacy)), 1
+            )
             embeddings.append(adp_out[b, :num_tokens, :])
         return torch.cat(embeddings, dim=0)
 
@@ -552,7 +570,6 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        weights = FUN_ASR_HF_TO_SGLANG_MAPPER.apply(weights)
 
         # Qwen3 LLM: q/k/v → qkv_proj, gate/up → gate_up_proj (sglang stacked).
         llm_stacked_params = [
@@ -563,9 +580,17 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
             ("gate_up_proj", "up_proj", 1),
         ]
         params_dict = dict(self.named_parameters(remove_duplicate=False))
+        loaded_audio = set()
 
         for name, loaded_weight in weights:
             checkpoint_name = name
+            enc = self.config.encoder_config
+            name = canonical_weight_name(
+                name,
+                layout=self.config.checkpoint_layout,
+                num_blocks=enc.encoder_layers,
+                tp_blocks=enc.num_timestamp_prediction_blocks,
+            )
             if "rotary_emb.inv_freq" in name:
                 continue
             if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
@@ -612,7 +637,11 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                 if stacked:
                     continue
 
-            if name.endswith(".bias") and name not in params_dict:
+            if (
+                name.endswith(".bias")
+                and name not in params_dict
+                and not strict_multimodal
+            ):
                 continue
             if name not in params_dict:
                 if strict_multimodal:
@@ -622,8 +651,28 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                     )
                 continue
             param = params_dict[name]
+            if strict_multimodal:
+                if name in loaded_audio:
+                    raise ValueError(
+                        f"Duplicate Fun-ASR checkpoint destination: {name}"
+                    )
+                if param.shape != loaded_weight.shape:
+                    raise ValueError(
+                        f"Fun-ASR checkpoint shape mismatch for {checkpoint_name}: {loaded_weight.shape} != {param.shape}"
+                    )
+                loaded_audio.add(name)
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)
+
+        missing = {
+            name
+            for name in params_dict
+            if name.startswith(("audio_tower.", "multi_modal_projector."))
+        } - loaded_audio
+        if missing:
+            raise ValueError(
+                f"Missing Fun-ASR checkpoint parameters: {sorted(missing)}"
+            )
 
 
 EntryClass = FunAsrNanoForConditionalGeneration

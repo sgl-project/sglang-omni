@@ -99,7 +99,10 @@ class FunASREngineBuilder(AsrEngineBuilder):
             checkpoint_dir, trust_remote_code=True
         )
         encoder_token_count = int(
-            fun_asr_low_frame_rate_length(self.feature_extractor.nb_max_frames)
+            fun_asr_low_frame_rate_length(
+                self.feature_extractor.nb_max_frames,
+                legacy=getattr(self.feature_extractor, "legacy_audio_lengths", True),
+            )
         )
         prompt_overhead = request_builders.fun_asr_prompt_overhead_tokens(
             self.tokenizer
