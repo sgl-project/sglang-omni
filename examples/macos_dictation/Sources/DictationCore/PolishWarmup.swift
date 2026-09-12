@@ -14,6 +14,7 @@ public final class PolishWarmup: ObservableObject {
     private var generation = 0
     private var desired: Request?
     private var attempted: Request?
+    private var interrupted = false
 
     private init(performRequest: @escaping (Request) async throws -> Void) { perform = performRequest }
     public static func configured(_ perform: @escaping (Request) async throws -> Void) -> PolishWarmup {
@@ -29,6 +30,7 @@ public final class PolishWarmup: ObservableObject {
             invalidate()
             desired = next
             attempted = nil
+            interrupted = false
         }
         guard let profile = desired else {
             status = "整理关闭，未预热"
@@ -37,11 +39,14 @@ public final class PolishWarmup: ObservableObject {
         if busy {
             if task != nil {
                 invalidate()
-                // The foreground request will process its own prefix; do not immediately
-                // submit another warmup after it finishes.
-                status = "预热已让位于听写，正式请求会自动建立缓存"
+                interrupted = true
+                status = "预热已让位于听写"
             } else if attempted != profile { status = "等待本轮结束后预热" }
             return
+        }
+        if interrupted {
+            attempted = nil
+            interrupted = false
         }
         guard attempted != profile else { return }
         attempted = profile
@@ -61,15 +66,21 @@ public final class PolishWarmup: ObservableObject {
         }
     }
 
+    /// Entering foreground polishing takes over prefix processing. If the session
+    /// ends before reaching this stage, the interrupted warmup can retry on idle.
+    public func foregroundWillPolish() { interrupted = false }
+
     public func retry() {
         invalidate()
         attempted = nil
+        interrupted = false
     }
 
     public func stop() {
         invalidate()
         desired = nil
         attempted = nil
+        interrupted = false
         status = "整理关闭，未预热"
     }
 

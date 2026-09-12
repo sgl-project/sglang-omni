@@ -25,6 +25,15 @@ For the polishing and service-readiness regressions, run
 fixtures from the same offline suites used by CI, including their HTTP fallback
 and configuration integration checks.
 
+Run `bash examples/macos_dictation/lifecycle_test.sh` for warmup and backend
+lifecycle regressions. The real `ClientState` and intercepted HTTP verify saved
+startup preferences, preemption before foreground polishing, foreground takeover,
+and a model change during recording. Shell tests use a simulated clock to check
+ASR readiness beyond 300 seconds, configured budgets and timeout failures. Disposable
+Python spawn/daemon workers exercise parent crashes, graceful launcher shutdown,
+forced cleanup and isolation from unrelated processes. These fixtures do not load
+models or measure Metal memory reclamation. CI runs this entry point separately.
+
 The suite includes `Timing_test.swift`. It uses a simulated monotonic
 clock to verify ASR/LLM/total boundaries, failed-request durations, skipped/disabled
 stages and cancellation across rounds. Its numbers are fixtures, not performance

@@ -34,6 +34,15 @@ keep its terminal open and use Ctrl+C to stop only those owned processes. Startu
 uses the local ASR model cache, never intentionally downloads models, and binds
 new services to loopback. Logs go to the ignored `.build/runtime-logs` directory.
 
+ASR readiness uses `SGLANG_OMNI_STARTUP_TIMEOUT` (default 600 seconds) plus a
+60-second allowance for imports, setup and HTTP startup. Set the variable when
+launching if model initialization needs longer. Ollama readiness has a separate
+300-second limit. Each newly started service runs in its own process group under
+a Python standard-library supervisor. Shutdown first allows the backend up to
+30 seconds to exit normally, then terminates remaining workers in that group and
+force-kills them after another 5 seconds. The same group cleanup runs if the
+backend parent crashes; reused services are outside this ownership scope.
+
 Manual setup remains available:
 
 - Apple Silicon, macOS 14 or newer, and Swift 5.9 or newer from Xcode or Command Line Tools.
@@ -53,7 +62,7 @@ sgl-omni serve \
   --model-path mlx-community/Qwen3-ASR-0.6B-4bit \
   --model-name Qwen/Qwen3-ASR-0.6B \
   --asr.engine.max_running_requests 1 \
-  --port 8000
+  --host 127.0.0.1 --port 8000
 ```
 
 The example's default configuration is:
@@ -156,7 +165,9 @@ A normally delivered fallback follows the same hover/fade behavior as other comp
 When polishing is enabled, idle startup or a changed LLM model, address or background
 triggers best-effort warmup. It uses the same prompt prefix and discards the output.
 Dictation takes priority and cancels the client's warmup wait; server cancellation
-is best-effort. Warmup failure never blocks recording.
+is best-effort. If the round ends before foreground polishing, the interrupted
+warmup retries on idle. Once foreground polishing takes over, it does not trigger
+another warmup for the same configuration. Warmup failure never blocks recording.
 
 Requests use a fixed 8,192-token context and `keep_alive: "10m"`. Full context is
 still sent on every request. Ollama manages prefix reuse; completion of warmup
@@ -212,6 +223,7 @@ Run the complete deterministic regression entry point on an Apple Silicon Mac:
 ```bash
 bash examples/macos_dictation/verify_all_test.sh
 bash examples/macos_dictation/local_setup_test.sh
+bash examples/macos_dictation/lifecycle_test.sh
 bash examples/macos_dictation/build_client.sh
 bash examples/macos_dictation/build_compatibility_test.sh
 ```

@@ -28,5 +28,7 @@ jobs:
         run: bash examples/macos_dictation/verify_all_test.sh
       - name: Check installation and startup helpers without downloads
         run: bash examples/macos_dictation/local_setup_test.sh
+      - name: Check warmup and backend lifecycles without models
+        run: bash examples/macos_dictation/lifecycle_test.sh
       - name: Run package core tests
         run: swift test --package-path examples/macos_dictation --arch arm64

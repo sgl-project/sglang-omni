@@ -118,6 +118,14 @@ except (ValueError, AttributeError):
 
 port_in_use() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
+start_owned() {
+    local log_path="$1"
+    shift
+    "$dictation_python" "$dictation_dir/service_process.py" "$@" >"$log_path" 2>&1 &
+    last_owned_pid=$!
+    owned_pids+=("$last_owned_pid")
+}
+
 cleanup_owned() {
     local pid
     for pid in ${owned_pids[@]+"${owned_pids[@]}"}; do
@@ -126,9 +134,25 @@ cleanup_owned() {
     done
 }
 
+asr_startup_timeout() {
+    "$dictation_python" - <<'PY'
+import math
+import os
+
+try:
+    timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError
+except ValueError:
+    raise SystemExit("SGLANG_OMNI_STARTUP_TIMEOUT must be a positive finite number.")
+# Allow imports, pipeline setup and HTTP readiness beyond the backend's budget.
+print(math.ceil(timeout) + 60)
+PY
+}
+
 wait_ready() {
     local pid="$1" check="$2" label="$3" log_path="$4"
-    local deadline=$((SECONDS + 300))
+    local deadline=$((SECONDS + $5))
     while ((SECONDS < deadline)); do
         kill -0 "$pid" 2>/dev/null || die "$label 已退出，请查看 $log_path"
         if "$check"; then return; fi
@@ -142,10 +166,8 @@ ensure_ollama() {
     port_in_use 11434 && die '端口 11434 已占用，但不是可用的 Ollama；请检查原服务。'
     find_ollama || die '未找到 Ollama，请先运行 install_local.sh。'
     mkdir -p "$dictation_logs"
-    OLLAMA_HOST=127.0.0.1:11434 "$ollama_bin" serve >"$dictation_logs/ollama.log" 2>&1 &
-    local pid=$!
-    owned_pids+=("$pid")
-    wait_ready "$pid" ollama_ready Ollama "$dictation_logs/ollama.log"
+    start_owned "$dictation_logs/ollama.log" env OLLAMA_HOST=127.0.0.1:11434 "$ollama_bin" serve
+    wait_ready "$last_owned_pid" ollama_ready Ollama "$dictation_logs/ollama.log" 300
 }
 
 link_app() {

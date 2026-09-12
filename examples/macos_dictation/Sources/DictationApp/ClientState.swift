@@ -81,6 +81,7 @@ final class ClientState: ObservableObject {
             self.updateWarmup(enabled: enabled)
         }.store(in: &observers)
         session.$phase.combineLatest(insertion.$isDelivering).sink { [weak self] phase, delivering in
+            if phase == .polishing { self?.warmup.foregroundWillPolish() }
             self?.updateWarmup(busy: [.authorizing, .recording, .recognizing, .polishing].contains(phase) || delivering)
         }.store(in: &observers)
     }

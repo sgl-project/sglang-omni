@@ -44,11 +44,11 @@ else
     [[ -x "$dictation_venv/bin/sgl-omni" ]] || die '缺少 sgl-omni 命令，请先运行 install_local.sh。'
     model_path="$(asr_snapshot offline)" || die '找不到已缓存的 ASR 模型，请先运行 install_local.sh。'
     [[ -d "$model_path" ]] || die 'ASR 模型缓存路径无效。'
-    "$dictation_venv/bin/sgl-omni" serve --model-path "$model_path" --model-name "$asr_model" \
-        --asr.engine.max_running_requests 1 --host 127.0.0.1 --port 8000 >"$dictation_logs/asr.log" 2>&1 &
-    pid=$!
-    owned_pids+=("$pid")
-    wait_ready "$pid" asr_ready 'Omni ASR' "$dictation_logs/asr.log"
+    startup_seconds="$(asr_startup_timeout)" || die 'ASR 启动超时配置无效。'
+    start_owned "$dictation_logs/asr.log" "$dictation_venv/bin/sgl-omni" serve \
+        --model-path "$model_path" --model-name "$asr_model" \
+        --asr.engine.max_running_requests 1 --host 127.0.0.1 --port 8000
+    wait_ready "$last_owned_pid" asr_ready 'Omni ASR' "$dictation_logs/asr.log" "$startup_seconds"
 fi
 if ! "$asr_only"; then
     ensure_ollama
