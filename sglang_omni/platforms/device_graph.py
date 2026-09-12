@@ -52,6 +52,29 @@ class CudaDeviceGraphBackend:
             yield graph
 
 
+class NpuDeviceGraphBackend:
+    """Ascend NPU."""
+
+    @contextmanager
+    def capture(
+        self,
+        *,
+        pool: Any | None = None,
+        stream: Any | None = None,
+        thread_local_errors: bool = False,
+    ) -> Iterator[Any]:
+        graph = torch.npu.NPUGraph()
+        kwargs: dict[str, Any] = {}
+        if pool is not None:
+            kwargs["pool"] = pool
+        if stream is not None:
+            kwargs["stream"] = stream
+        if thread_local_errors:
+            kwargs["capture_error_mode"] = "thread_local"
+        with torch.npu.graph(npu_graph=graph, **kwargs):
+            yield graph
+
+
 class XpuDeviceGraphBackend:
     """Intel XPU."""
 
@@ -79,5 +102,6 @@ class XpuDeviceGraphBackend:
 __all__ = [
     "CudaDeviceGraphBackend",
     "DeviceGraphBackend",
+    "NpuDeviceGraphBackend",
     "XpuDeviceGraphBackend",
 ]

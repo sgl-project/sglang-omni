@@ -13,6 +13,7 @@ import torch
 
 from sglang_omni.models.higgs_tts.sampler import (
     K_MAX,
+    NO_SEED,
     STOP_CODE,
     HiggsBatchedSamplerState,
     batched_step,
@@ -68,6 +69,93 @@ def _assert_pools_equal(a: dict, b: dict) -> None:
         assert torch.equal(
             a[key], b[key]
         ), f"mismatch on {key}\n a={a[key]}\n b={b[key]}"
+
+
+def _fill_sampler_pool(pool: HiggsBatchedSamplerState) -> None:
+    pool.delay_count.fill_(7)
+    pool.eoc_countdown.fill_(5)
+    pool.generation_done.fill_(True)
+    pool.last_codes.copy_(
+        torch.arange(
+            pool.max_batch_size * pool.num_codebooks,
+            device=pool.device,
+        ).view(pool.max_batch_size, pool.num_codebooks)
+    )
+    pool.seeds.fill_(1234)
+    pool.step_count.fill_(99)
+
+
+@pytest.mark.parametrize("row", [0, 4, 8])
+def test_reset_row_clears_selected_row_only(row: int) -> None:
+    pool = HiggsBatchedSamplerState(9, N, device=DEVICE)
+    _fill_sampler_pool(pool)
+    neighbors = {
+        name: tensor.clone()
+        for name, tensor in vars(pool).items()
+        if isinstance(tensor, torch.Tensor)
+    }
+
+    pool.reset_row(row)
+
+    assert pool.delay_count[row].item() == 0
+    assert pool.eoc_countdown[row].item() == -1
+    assert not pool.generation_done[row].item()
+    assert torch.equal(pool.last_codes[row], torch.zeros_like(pool.last_codes[row]))
+    assert pool.seeds[row].item() == NO_SEED
+    assert pool.step_count[row].item() == 0
+    for name, before in neighbors.items():
+        actual = getattr(pool, name)
+        assert torch.equal(actual[:row], before[:row])
+        assert torch.equal(actual[row + 1 :], before[row + 1 :])
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(DEVICE != "cuda", reason="fused reset only runs on CUDA")
+def test_reset_row_compiles_once_and_respects_last_codes_stride() -> None:
+    from sglang_omni.models.higgs_tts import reset_kernels
+
+    pool = HiggsBatchedSamplerState(33, N, device=DEVICE)
+    caches = reset_kernels._reset_sampler_row_kernel.device_caches
+
+    def variants() -> int:
+        return sum(len(entry[0]) for entry in caches.values())
+
+    assert variants() == 1  # compiled by the constructor
+
+    for row in (1, 16, 32):  # the values Triton would otherwise specialize on
+        pool.reset_row(row)
+    assert variants() == 1
+
+    wide = torch.full((33, 2 * N), 3, dtype=torch.long, device=DEVICE)
+    strided = wide[:, :N]
+    assert reset_kernels.reset_sampler_row(
+        pool.delay_count,
+        pool.eoc_countdown,
+        pool.generation_done,
+        strided,
+        pool.seeds,
+        pool.step_count,
+        5,
+        NO_SEED,
+    )
+    assert torch.equal(strided[5], torch.zeros(N, dtype=torch.long, device=DEVICE))
+    assert torch.equal(wide[:, N:], torch.full_like(wide[:, N:], 3))
+    assert torch.equal(strided[4], torch.full_like(strided[4], 3))
+
+    # Codebooks not contiguous: the fused path declines and the generic
+    # path handles it. Out of range: the generic path's IndexError is kept.
+    assert not reset_kernels.reset_sampler_row(
+        pool.delay_count,
+        pool.eoc_countdown,
+        pool.generation_done,
+        wide[:, ::2],
+        pool.seeds,
+        pool.step_count,
+        5,
+        NO_SEED,
+    )
+    with pytest.raises(IndexError):
+        pool.reset_row(pool.max_batch_size)
 
 
 # ---------------------------------------------------------------------------
