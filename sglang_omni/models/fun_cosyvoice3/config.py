@@ -84,6 +84,12 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
+                flow_merge_max_gap_frames=384,
+                flow_merge_pad_budget_percent=20,
+                # Note (chenyang): Adjacent flow buckets will may be merged when
+                # the maximum padding mel-length difference is less within
+                # flow_merge_max_gap_frames and the total padding increase remains
+                # with flow_merge_pad_budget_percent (in percentage).
             ),
             gpu=0,
             terminal=True,
