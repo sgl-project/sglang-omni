@@ -117,6 +117,12 @@ class Qwen3TTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch, requests
         return True
 
+    def lookahead_eligible(self, batch: Any) -> bool:
+        # note(ratish): the lookahead's launch and resolve hooks do not run the
+        # codec collect, they would feed token embeddings back.
+        del batch
+        return False
+
     def _sample_next_token_ids(
         self,
         logits_output: Any,
@@ -180,6 +186,9 @@ class Qwen3TTSModelRunner(ModelRunner):
         layer0_codes = result.next_token_ids
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
+        # note(ratish): the layer 0 id is the step's only host read, staged ahead
+        # of the predictor so the finalize wait covers the sample, not the predictor.
+        self._stage_token_ids(result, result.next_token_ids)
 
         hidden = result.logits_output.hidden_states
         if isinstance(hidden, torch.Tensor) and hidden.ndim == 2:
@@ -190,10 +199,6 @@ class Qwen3TTSModelRunner(ModelRunner):
             hidden,
             semantic_positions=semantic_positions,
         )
-        # Note: (Jiaxin Deng) stage the ids into pinned host memory now so the
-        # output processor's .tolist() waits on an event instead of issuing a
-        # blocking pageable copy inside the decode loop.
-        self._stage_token_ids(result, result.next_token_ids)
         self._has_pending_code_step = True
 
     def post_process_outputs(

@@ -21,30 +21,6 @@ def _runner(*, vocab_size: int, codec_eos_token_id: int) -> Qwen3TTSModelRunner:
     return runner
 
 
-def _sampling_request(repetition_penalty: float) -> types.SimpleNamespace:
-    sampling_params = types.SimpleNamespace(
-        repetition_penalty=repetition_penalty,
-        frequency_penalty=0.0,
-        presence_penalty=0.0,
-        min_new_tokens=0,
-    )
-    return types.SimpleNamespace(
-        sampling_params=sampling_params,
-        custom_logit_processor=None,
-    )
-
-
-def test_qwen3_tts_public_penalty_disables_async_lookahead() -> None:
-    runner = _runner(vocab_size=128, codec_eos_token_id=127)
-
-    assert runner.lookahead_eligible(
-        types.SimpleNamespace(reqs=[_sampling_request(1.0)])
-    )
-    assert not runner.lookahead_eligible(
-        types.SimpleNamespace(reqs=[_sampling_request(1.05)])
-    )
-
-
 def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
     configured_vocab = 3072
     codec_eos = 2150
