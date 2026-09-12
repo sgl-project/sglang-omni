@@ -16,7 +16,10 @@ tests/
 └── unit_test/
     ├── benchmarks/
     │   ├── test_dataset_regressions.py
-    │   └── test_runtime_metrics.py
+    │   ├── test_runtime_metrics.py
+    │   ├── test_socialomni_dataset.py
+    │   ├── test_socialomni_metrics.py
+    │   └── test_socialomni_protocol.py
     ├── test_tune_ci_thresholds.py
     ├── ci/
     │   ├── test_cpu_contention.py
@@ -474,6 +477,10 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  SocialOmni tests cover dataset identity and paths, video-prefix cancellation
+  cleanup, final-line answers, completion validation, judge completeness, and
+  CLI health/completion routing. Small local HTTP servers and media fixtures
+  exercise these paths without model weights or accelerator hardware.
   `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
   isolation, failure reporting, disabled warmup, and CLI configuration using
   the real benchmark runner with a fake speech generator.

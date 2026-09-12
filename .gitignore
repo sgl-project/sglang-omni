@@ -39,6 +39,7 @@ Thumbs.db
 .ruff_cache/
 uv.lock
 results/
+benchmarks/cache/
 .humanize/
 .benchmark-data/
 
