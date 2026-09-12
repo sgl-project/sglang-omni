@@ -7,6 +7,7 @@ from typing import Any
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 
+from sglang_omni.models.weight_loader import resolve_cached_model_path
 from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
@@ -86,20 +87,24 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
 
         from sglang_omni.models.moss_transcribe_diarize import stages
 
+        # When the checkpoint is fully cached, hand every from_pretrained the
+        # local directory so none of them revalidates against the Hub. On a
+        # cache miss this resolves to the original string and nothing changes.
+        local_dir = str(resolve_cached_model_path(checkpoint_dir) or checkpoint_dir)
         with stages._missing_additional_chat_templates_compat():
             self.processor = AutoProcessor.from_pretrained(
-                checkpoint_dir, trust_remote_code=True
+                local_dir, trust_remote_code=True
             )
         self.tokenizer = self.processor.tokenizer
         self.max_new_tokens = (
             int(self.requested_max_new_tokens)
             if self.requested_max_new_tokens is not None
-            else stages._default_max_new_tokens(checkpoint_dir)
+            else stages._default_max_new_tokens(local_dir)
         )
         self.context_length = (
             int(self.requested_context_length)
             if self.requested_context_length is not None
-            else stages._default_context_length(checkpoint_dir)
+            else stages._default_context_length(local_dir)
         )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:

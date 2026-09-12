@@ -34,6 +34,23 @@ def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
 
 
 @lru_cache(maxsize=4)
+def resolve_cached_model_path(model_path: str) -> Path | None:
+    """Resolve model_path to a local directory without touching the network.
+
+    Returns the path itself when it exists, the cached snapshot when the whole
+    repo is already on disk, and None otherwise. Callers fall back to their
+    original behaviour on None, so a cache miss changes nothing.
+    """
+    path = Path(model_path)
+    if path.exists():
+        return path
+    try:
+        return Path(snapshot_download(model_path, local_files_only=True))
+    except Exception:  # noqa: BLE001 - any cache miss means "not resolvable"
+        return None
+
+
+@lru_cache(maxsize=4)
 def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Path:
     """Resolve a model_path to a local path, downloading if needed."""
     path = Path(model_path)
