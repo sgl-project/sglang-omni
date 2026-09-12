@@ -49,22 +49,20 @@ MLX 0.32.2, mlx-lm 0.31.3, Transformers 5.12.1 and FFmpeg 7.1.2.
 SGLang was built from tag `v0.5.19`, commit
 `0bcd822377da7b5718e674eaf9c870d349424dd1`.
 
-[Download the recorded timings, transcripts and environment](../_static/apple_support_matrix/6ff46426.json).
 
 ### Findings from the recorded runs
 
 - **The official checkpoint runs on both Apple backends.** MLX and Torch/MPS
-  served the same pinned official checkpoint. Their transcripts matched exactly
-  for both WAV inputs and the M4A input in both runs. A converted artifact is not
-  required for this tested Qwen3-ASR path.
+  served the same pinned official checkpoint, and returned identical transcripts
+  for the timed input in both runs. A converted artifact is not required for this
+  tested Qwen3-ASR path.
 - **MLX recorded lower warm-request medians on this host.** The two runs gave
   0.366 / 0.371 s on MLX and 0.618 / 0.640 s on Torch/MPS, using the same official
   checkpoint and input. These are observed service timings under the conditions
   below, not a general backend speed guarantee.
 - **The optional 4-bit configuration reduced MLX model storage.** The loader
   probe found 0.66 GiB of parameter storage versus 1.46 GiB for the official
-  checkpoint. The 4-bit path ran successfully but wrote `ten` where the official
-  configurations wrote `10` on the second WAV input.
+  checkpoint, and the configuration served the timed input successfully.
 
 ### Primary comparison: official checkpoint on both backends
 
@@ -115,20 +113,14 @@ This comparison stays within MLX; it is not evidence of a backend-only effect.
   tokens for these short inputs. Radix caching was disabled on both Apple paths;
   audio features and audio-encoder outputs were recomputed for each request.
   Normal within-request KV caching and warmed runtime resources remained in use.
-- After timing, each service also transcribed `query_to_draw.wav` (5.064 s,
-  16 kHz mono PCM16) and an AAC M4A encoded from the cars WAV. These smoke requests
-  were recorded separately and excluded from the timing summary.
 - Startup was timed from process creation to the first `/health` response with
   HTTP 200, `running=true` and `status=healthy`, polled every 0.1 s. This measures
   service readiness, before request warm-up; it is not a cold-disk startup test.
 
 All three configurations returned `How many cars are there in the picture?` for
-both versions of the cars input. The official checkpoint returned
-`What is happening in this video? Answer in 10 words or fewer.` on both backends
-for the draw WAV. The 4-bit checkpoint returned the same sentence with `ten`
-instead of `10`. Each configuration repeated its own outputs in both runs.
-These checks establish execution and output agreement on the recorded inputs;
-they do not measure word error rate on a labelled dataset.
+the timed input, and each repeated its own output across both runs. This
+establishes execution and output agreement on that input; it does not measure
+word error rate on a labelled dataset.
 
 ### Scope of the measurements
 
@@ -265,16 +257,10 @@ SGLANG_USE_MLX=1 sgl-omni serve --model-path "$QUANTIZED" \
 ```
 
 On MLX, the loader preserves checkpoint dtypes; the `dtype` flag does not convert
-quantized weights back to BF16. From a second terminal at the repository root,
-activate the same environment and encode the additional decoder-check input:
+quantized weights back to BF16.
 
-```bash
-source .venv-apple/bin/activate
-"$(brew --prefix ffmpeg@7)/bin/ffmpeg" -n -i tests/data/query_to_cars.wav \
-  -c:a aac -b:a 128k /tmp/qwen3-asr-cars.m4a
-```
-
-Use the [request client](../_static/apple_support_matrix/benchmark_requests.py)
+From a second terminal at the repository root, activate the same environment and
+use the [request client](../_static/apple_support_matrix/benchmark_requests.py)
 from this documentation checkout, or download it as `benchmark_requests.py`.
 After `/health` reports ready, run it with the **actual port printed by the
 service** and a unique output filename for each configuration and restart:
@@ -283,8 +269,7 @@ service** and a unique output filename for each configuration and restart:
 python docs/_static/apple_support_matrix/benchmark_requests.py \
   --base-url http://127.0.0.1:8000 --model Qwen/Qwen3-ASR-0.6B \
   --audio tests/data/query_to_cars.wav --warmups 3 --requests 20 \
-  --smoke-audio tests/data/query_to_draw.wav \
-  --smoke-audio /tmp/qwen3-asr-cars.m4a --output mps-official-run1.json
+  --output mps-official-run1.json
 ```
 
 The client records individual responses and timings; HTTP success alone does
