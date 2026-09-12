@@ -167,7 +167,12 @@ def _load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=Non
     )
 
     audio_module = ModuleType("sglang_omni.preprocessing.audio")
-    audio_module.load_audio_path = lambda *args, **kwargs: None
+
+    async def fake_ensure_audio_list_async(audios, **kwargs):
+        del kwargs
+        return [None for _ in audios]
+
+    audio_module.ensure_audio_list_async = fake_ensure_audio_list_async
     audio_module.compute_audio_cache_key = lambda audios: None
     monkeypatch.setitem(sys.modules, "sglang_omni.preprocessing.audio", audio_module)
 
@@ -189,6 +194,141 @@ def _load_preprocessor_with_fake_deps(monkeypatch, *, config=None, tokenizer=Non
     spec.loader.exec_module(module)
     sys.modules.pop(module_name, None)
     return module
+
+
+def test_ming_preprocessor_extracts_inline_audio_urls(monkeypatch) -> None:
+    module = _load_preprocessor_with_fake_deps(monkeypatch)
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {
+                    "type": "audio_url",
+                    "audio_url": {"url": "https://example/audio.wav"},
+                },
+                {"type": "audio_url", "audio_url": "file.wav"},
+            ],
+        }
+    ]
+
+    assert module._extract_audio_inputs(messages) == [
+        "https://example/audio.wav",
+        "file.wav",
+    ]
+
+
+def test_ming_preprocessor_extracts_inline_input_audio_as_data_url(monkeypatch) -> None:
+    module = _load_preprocessor_with_fake_deps(monkeypatch)
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "YWJj", "format": "WAV"},
+                }
+            ],
+        }
+    ]
+
+    assert module._extract_audio_inputs(messages) == [
+        "data:audio/wav;base64,YWJj",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ming_preprocessor_loads_inline_audio_inputs(monkeypatch) -> None:
+    module = _load_preprocessor_with_fake_deps(monkeypatch)
+    loaded: list[list[str]] = []
+
+    async def fake_loader(audios, **kwargs):
+        loaded.append(list(audios))
+        assert kwargs == {"target_sr": module.WHISPER_SAMPLE_RATE}
+        return [None for _ in audios]
+
+    monkeypatch.setattr(module, "ensure_audio_list_async", fake_loader)
+
+    class FakeState:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def to_dict(self):
+            return self.kwargs
+
+    monkeypatch.setattr(module, "MingOmniPipelineState", FakeState)
+
+    class FakePayload:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    monkeypatch.setattr(module, "StagePayload", FakePayload)
+    processor = module.MingPreprocessor.__new__(module.MingPreprocessor)
+    processor._tokenizer = _FakeMingTokenizer()
+    processor._audio_patch_id = 12
+    processor._audio_start_id = 10
+    processor._audio_end_id = 11
+    processor._image_patch_id = 22
+    processor._video_patch_id = 30
+    processor._audio_config = SimpleNamespace()
+
+    payload = SimpleNamespace(
+        request_id="request-1",
+        request=SimpleNamespace(
+            inputs=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {
+                            "type": "audio_url",
+                            "audio_url": {"url": "https://example/audio.wav"},
+                        },
+                    ],
+                }
+            ]
+        ),
+    )
+
+    result = await processor(payload)
+
+    assert loaded == [["https://example/audio.wav"]]
+    assert result.data["prompt"]["input_ids"].tolist()[0].count(12) == 1
+
+
+@pytest.mark.asyncio
+async def test_ming_preprocessor_reports_audio_load_errors(monkeypatch) -> None:
+    module = _load_preprocessor_with_fake_deps(monkeypatch)
+
+    async def failing_loader(audios, **kwargs):
+        del audios, kwargs
+        raise RuntimeError("audio backend unavailable")
+
+    monkeypatch.setattr(module, "ensure_audio_list_async", failing_loader)
+    processor = module.MingPreprocessor.__new__(module.MingPreprocessor)
+    processor._tokenizer = _FakeMingTokenizer()
+    processor._audio_patch_id = 12
+    processor._audio_start_id = 10
+    processor._audio_end_id = 11
+    processor._image_patch_id = 22
+    processor._video_patch_id = 30
+
+    payload = SimpleNamespace(
+        request_id="request-1",
+        request=SimpleNamespace(
+            inputs=[
+                {
+                    "role": "user",
+                    "content": [{"type": "audio_url", "audio_url": "audio://1"}],
+                }
+            ]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Failed to load Ming audio input"):
+        await processor(payload)
 
 
 class _FakeMingTokenizer:
