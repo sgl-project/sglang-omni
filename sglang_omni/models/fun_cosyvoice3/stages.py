@@ -20,7 +20,10 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
 )
-from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.fun_cosyvoice3.payload_types import (
+    FlowBatchInput,
+    FunCosyVoice3State,
+)
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
@@ -61,14 +64,6 @@ _COSYVOICE_INSTALL_HINT = (
 )
 
 _CHUNK_MASK_COMPILE_DISABLED = False
-
-
-@dataclass(frozen=True)
-class FlowBatchInput:
-    token: torch.Tensor
-    prompt_token: torch.Tensor
-    prompt_feat: torch.Tensor
-    embedding: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -444,11 +439,15 @@ def _forward_flow_estimator(
 ) -> torch.Tensor:
     # note (guozhihao-224): CosyVoice forward_estimator hardcodes TRT shapes to
     # (2, 80, T). Packed Flow is CFG=2N, so TRT uses execute_flow_estimator.
-    # TRT ONNX freezes attention, so streaming is only meaningful for PyTorch.
     estimator = decoder.estimator
     if isinstance(estimator, torch.nn.Module):
         return decoder.forward_estimator(
             x, mask, mu, t, spks, cond, streaming=streaming
+        )
+    if streaming:
+        raise ValueError(
+            "Causal Flow requires a streaming-aware estimator; wrap TensorRT in "
+            "FlowEstimatorTRTModule with a PyTorch fallback estimator"
         )
     return execute_flow_estimator(estimator, x, mask, mu, t, spks, cond)
 

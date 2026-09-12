@@ -12,8 +12,10 @@ from typing import Any, Mapping
 
 import torch
 
-from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
-from sglang_omni.models.fun_cosyvoice3.stages import FlowBatchInput
+from sglang_omni.models.fun_cosyvoice3.payload_types import (
+    FlowBatchInput,
+    FunCosyVoice3State,
+)
 from sglang_omni.models.fun_cosyvoice3.streaming import (
     LEFTOVER_FLOW_STREAMING,
     PRE_LOOKAHEAD_LEN,
@@ -206,7 +208,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         cap = max(int(self._max_batch_size), 1)
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_message()
             except _queue_mod.Empty:
                 break
             if self._is_aborted(msg.request_id):
@@ -264,7 +266,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         cap = self._stream_chunk_batch_max or max(self._max_batch_size, 1)
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_message()
             except _queue_mod.Empty:
                 break
             if msg.type != "stream_chunk":
@@ -357,9 +359,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             remaining = deadline - time.monotonic()
             try:
                 if remaining <= 0:
-                    msg = self.inbox.get_nowait()
+                    msg = self._get_message()
                 else:
-                    msg = self.inbox.get(timeout=remaining)
+                    msg = self._get_message(timeout=remaining)
             except _queue_mod.Empty:
                 if remaining <= 0:
                     return
@@ -423,9 +425,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             remaining = deadline - time.monotonic()
             try:
                 if remaining <= 0:
-                    msg = self.inbox.get_nowait()
+                    msg = self._get_message()
                 else:
-                    msg = self.inbox.get(timeout=remaining)
+                    msg = self._get_message(timeout=remaining)
             except _queue_mod.Empty:
                 if remaining <= 0:
                     return
@@ -442,7 +444,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         """
         while True:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_message()
             except _queue_mod.Empty:
                 return
             if not self._ingest_peer_message(msg):

@@ -254,6 +254,41 @@ def test_stream_chunk_batch_can_stop_before_duplicate_request() -> None:
     assert scheduler._next_message().request_id == "c"
 
 
+def test_stream_chunk_batch_consumes_pending_before_inbox() -> None:
+    scheduler = _BatchStreamingScheduler(max_batch_size=4)
+    scheduler._pending_messages.extend([_chunk("a", "second"), _chunk("a", "third")])
+    scheduler.inbox.put(_chunk("a", "fourth"))
+
+    scheduler._handle_message(_chunk("a", "first"), None)
+    while scheduler._pending_messages or not scheduler.inbox.empty():
+        scheduler._handle_message(scheduler._next_message(), None)
+
+    assert [m.data["chunk"] for m in _drain_results(scheduler)] == [
+        "first",
+        "second",
+        "third",
+        "fourth",
+    ]
+
+
+def test_new_request_batch_does_not_bypass_pending_chunk() -> None:
+    scheduler = _TestStreamingScheduler(max_batch_size=3)
+    old_chunk = _chunk("stream", "old")
+    done = IncomingMessage("stream", "stream_done")
+    scheduler._pending_messages.append(old_chunk)
+    scheduler.inbox.put(done)
+    scheduler.inbox.put(IncomingMessage("b", "new_request", _payload("b")))
+
+    batch = scheduler._collect_new_request_batch(
+        IncomingMessage("a", "new_request", _payload("a"))
+    )
+
+    assert [msg.request_id for msg in batch] == ["a"]
+    assert scheduler._next_message() is old_chunk
+    assert scheduler._next_message() is done
+    assert scheduler._next_message().request_id == "b"
+
+
 def test_stream_chunk_batch_stops_at_non_chunk_and_pushes_back() -> None:
     scheduler = _BatchStreamingScheduler(max_batch_size=4)
     scheduler.inbox.put(_chunk("b", "y"))

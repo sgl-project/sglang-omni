@@ -245,7 +245,11 @@ class FlowEstimatorTRT:
         cond: torch.Tensor,
         streaming: bool = False,
     ) -> torch.Tensor:
-        del streaming
+        if streaming:
+            raise ValueError(
+                "The Flow-estimator TensorRT engine does not support streaming=True; "
+                "use FlowEstimatorTRTModule with a PyTorch fallback estimator"
+            )
         return execute_flow_estimator(self, x, mask, mu, t, spks, cond)
 
 
@@ -379,8 +383,9 @@ class FlowEstimatorTRTModule(torch.nn.Module):
 
     - runs TRT through ``execute_flow_estimator`` (CFG-pair chunking,
       profile-checked, dedicated stream);
-    - falls back to the original PyTorch DiT when ``T`` is outside
-      ``[_PROFILE_MIN_TIME, _PROFILE_MAX_TIME]``.
+    - falls back to the original PyTorch DiT for causal streaming or when
+      ``T`` is outside ``[_PROFILE_MIN_TIME, _PROFILE_MAX_TIME]``. The official
+      ONNX export freezes ``streaming=False`` and cannot select a chunk mask.
     """
 
     def __init__(
@@ -410,6 +415,13 @@ class FlowEstimatorTRTModule(torch.nn.Module):
         cond: torch.Tensor,
         streaming: bool = False,
     ) -> torch.Tensor:
+        if streaming:
+            if self._fallback is None:
+                raise ValueError(
+                    "The Flow-estimator TensorRT engine does not support "
+                    "streaming=True and no PyTorch fallback estimator is available"
+                )
+            return self._fallback(x, mask, mu, t, spks, cond, streaming=True)
         frames = int(x.shape[2])
         if frames < self.min_time or frames > self.max_time:
             if self._fallback is None:
@@ -426,8 +438,6 @@ class FlowEstimatorTRTModule(torch.nn.Module):
                 self.max_time,
             )
             return self._fallback(x, mask, mu, t, spks, cond, streaming=streaming)
-        # TRT ONNX freezes attention; streaming only affects the torch path.
-        del streaming
         return execute_flow_estimator(self.trt, x, mask, mu, t, spks, cond)
 
 

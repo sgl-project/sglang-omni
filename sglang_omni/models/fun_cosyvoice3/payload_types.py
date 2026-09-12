@@ -6,7 +6,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import torch
+
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+
+@dataclass(frozen=True)
+class FlowBatchInput:
+    token: torch.Tensor
+    prompt_token: torch.Tensor
+    prompt_feat: torch.Tensor
+    embedding: torch.Tensor
 
 
 @dataclass

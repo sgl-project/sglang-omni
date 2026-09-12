@@ -12,6 +12,7 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     _MEL_DIM,
     _PROFILE_MAX_TIME,
     _PROFILE_MIN_TIME,
+    FlowEstimatorTRT,
     FlowEstimatorTRTModule,
     _cfg_pair_shapes,
     _dynamic_shapes,
@@ -225,10 +226,51 @@ def test_flow_estimator_trt_module_forwards_in_profile(monkeypatch) -> None:
     spks = torch.zeros(_CFG_BATCH, _MEL_DIM)
     cond = torch.zeros_like(x)
 
-    out = module(x, mask, mu, t, spks, cond, streaming=True)
+    out = module(x, mask, mu, t, spks, cond, streaming=False)
 
     assert seen["estimator"] is engine
     torch.testing.assert_close(out, x + 1.0)
+
+
+@pytest.mark.parametrize("cfg_batch", [2, 32])
+@pytest.mark.parametrize("frames", [2, 16, _PROFILE_MAX_TIME + 1])
+def test_streaming_trt_uses_causal_fallback(cfg_batch, frames) -> None:
+    class _CausalDiT(torch.nn.Module):
+        def forward(self, x, mask, mu, t, spks, cond, streaming=False):
+            assert streaming is True
+            assert x.shape[0] == cfg_batch
+            return x + 2.0
+
+    engine = _ExecuteTRT(max_batch=2)
+    module = FlowEstimatorTRTModule(engine, fallback=_CausalDiT())
+    x = torch.zeros(cfg_batch, 1, frames)
+    out = module(
+        x,
+        torch.ones_like(x),
+        x,
+        torch.zeros(cfg_batch),
+        torch.zeros(cfg_batch, 1),
+        x,
+        streaming=True,
+    )
+    assert not engine.calls
+    torch.testing.assert_close(out, x + 2.0)
+
+
+def test_streaming_trt_rejects_missing_causal_fallback() -> None:
+    engine = _ExecuteTRT(max_batch=2)
+    module = FlowEstimatorTRTModule(engine)
+    x = torch.zeros(2, 1, 16)
+    with pytest.raises(ValueError, match="streaming=True"):
+        module(x, x, x, torch.zeros(2), torch.zeros(2, 1), x, streaming=True)
+    assert not engine.calls
+
+
+def test_raw_trt_rejects_streaming_before_enqueue() -> None:
+    estimator = object.__new__(FlowEstimatorTRT)
+    x = torch.zeros(2, 1, 16)
+    with pytest.raises(ValueError, match="streaming=True"):
+        estimator.execute(x, x, x, torch.zeros(2), torch.zeros(2, 1), x, streaming=True)
 
 
 def test_flow_estimator_trt_module_falls_back_outside_profile() -> None:
