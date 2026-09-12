@@ -362,7 +362,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
         embedding = embedding.to(self._device, non_blocking=True)
-        if self._stream is not None and embedding.device.type != "cpu":
+        if self._stream is not None:
             # note (luojiaxuan): the batch path allocates on the private
             # stream while the LM consumes on the default stream; register
             # the consumer so the allocator cannot recycle the block for a
