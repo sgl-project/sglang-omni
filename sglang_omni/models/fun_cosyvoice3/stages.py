@@ -16,6 +16,10 @@ import torch.nn.functional as F
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
+from sglang_omni.models.fun_cosyvoice3.profile_log import (
+    cosy_profile_range,
+    log_cosy_profile,
+)
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
@@ -824,6 +828,7 @@ class _PreparedFlowRequest:
     index: int
     sample_rate: int
     flow_input: FlowBatchInput
+    request_id: str = "batch"
 
 
 def _group_by_padding_waste(
@@ -886,6 +891,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         self._hift_compute_dtype = _AUTOCAST_DTYPES[hift_compute_dtype]
         self._hift_max_padding_waste = hift_max_padding_waste
         self._hift_samples_per_mel_frame: int | None = None
+        self._profile_request_ids: list[str] = []
 
     def _mel_stride(self) -> int:
         if self._hift_samples_per_mel_frame is None:
@@ -905,41 +911,93 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
         return state, codes
 
-    async def decode_batch(
+    async def decode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
+        self._profile_request_ids = [payload.request_id for payload in payloads]
+        try:
+            return await super().decode_payloads(payloads)
+        finally:
+            self._profile_request_ids = []
+
+    def _prepared_flow_requests(
         self, items: list[tuple[FunCosyVoice3State, torch.Tensor]]
-    ) -> list[tuple[Any, int]]:
-        prepared = [
+    ) -> list[_PreparedFlowRequest]:
+        ids = self._profile_request_ids
+        return [
             _PreparedFlowRequest(
                 index=index,
                 sample_rate=state.sample_rate,
                 flow_input=self._make_flow_input(state, codes),
+                request_id=ids[index] if index < len(ids) else "batch",
             )
             for index, (state, codes) in enumerate(items)
         ]
-        results: list[tuple[Any, int] | None] = [None] * len(prepared)
-        buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
-        for request in prepared:
-            buckets[self._flow_bucket_key(request.flow_input)].append(request)
 
-        for bucket in buckets.values():
-            with torch.autocast(
-                device_type=current_platform.device_type,
-                dtype=self._compute_dtype,
-                enabled=self._compute_dtype is not None,
+    def _fill_hift_results(
+        self,
+        pairs: list[tuple[_PreparedFlowRequest, torch.Tensor]],
+        results: list[tuple[Any, int] | None],
+    ) -> None:
+        for group in _group_by_padding_waste(
+            pairs, max_waste=self._hift_max_padding_waste
+        ):
+            mel_lens = [int(mel.shape[-1]) for _, mel in group]
+            with cosy_profile_range(
+                "hift_group",
+                request_ids=[request.request_id for request, _ in group],
+                batch=len(group),
+                mel_lens=mel_lens,
+                padded=int(min(mel_lens) != max(mel_lens)),
+            ):
+                wavs = self._mel2wav_batch([mel for _, mel in group])
+            for (request, _), wav in zip(group, wavs, strict=True):
+                results[request.index] = (wav, request.sample_rate)
+
+    def _run_flow_bucket(
+        self,
+        bucket_key: int,
+        bucket: list[_PreparedFlowRequest],
+        results: list[tuple[Any, int] | None],
+    ) -> None:
+        token_lens = [int(request.flow_input.token.shape[1]) for request in bucket]
+        with torch.autocast(
+            device_type=current_platform.device_type,
+            dtype=self._compute_dtype,
+            enabled=self._compute_dtype is not None,
+        ):
+            with cosy_profile_range(
+                "flow_bucket",
+                request_ids=[request.request_id for request in bucket],
+                key=bucket_key,
+                batch=len(bucket),
+                token_lens=token_lens,
             ):
                 mel_list = self._flow.inference(
                     [request.flow_input for request in bucket]
                 )
+            self._fill_hift_results(list(zip(bucket, mel_list, strict=True)), results)
+        self._flow.log_last_solve()
 
-                pairs = list(zip(bucket, mel_list, strict=True))
-                for group in _group_by_padding_waste(
-                    pairs, max_waste=self._hift_max_padding_waste
-                ):
-                    wavs = self._mel2wav_batch([mel for _, mel in group])
-                    for (request, _), wav in zip(group, wavs, strict=True):
-                        results[request.index] = (wav, request.sample_rate)
-            self._flow.log_last_solve()
-
+    async def decode_batch(
+        self, items: list[tuple[FunCosyVoice3State, torch.Tensor]]
+    ) -> list[tuple[Any, int]]:
+        prepared = self._prepared_flow_requests(items)
+        results: list[tuple[Any, int] | None] = [None] * len(prepared)
+        buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
+        for request in prepared:
+            buckets[self._flow_bucket_key(request.flow_input)].append(request)
+        costs = [
+            self._flow_total_mel_frames(request.flow_input) for request in prepared
+        ]
+        log_cosy_profile(
+            "flow_admit",
+            request_ids=[request.request_id for request in prepared],
+            n=len(prepared),
+            n_buckets=len(buckets),
+            costs=costs,
+            bucket_keys=sorted(buckets),
+        )
+        for bucket_key, bucket in buckets.items():
+            self._run_flow_bucket(bucket_key, bucket, results)
         if any(result is None for result in results):
             raise RuntimeError("Fun-CosyVoice3 vocoder did not decode every request")
         return [cast(tuple[Any, int], result) for result in results]

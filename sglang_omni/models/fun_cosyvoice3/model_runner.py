@@ -10,6 +10,10 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.models.fun_cosyvoice3.profile_log import (
+    log_cosy_profile,
+    request_ids_of,
+)
 from sglang_omni.models.fun_cosyvoice3.streaming import (
     TOKEN_HOP_LEN,
     first_ar_flush_tokens,
@@ -52,6 +56,11 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         requests: list,
     ) -> GenerationBatchResult | None:
         del schedule_batch
+        log_cosy_profile(
+            "ar_prefill",
+            request_ids=request_ids_of(requests),
+            batch=len(requests),
+        )
         input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
         return self._forward_with_input_embeds(forward_batch, input_embeds)
 
@@ -71,6 +80,11 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
+        log_cosy_profile(
+            "ar_decode",
+            request_ids=request_ids_of(requests),
+            batch=len(requests),
+        )
         self._collect_tokens(result, forward_batch, schedule_batch, requests)
 
     def sample_before_post_prefill(
