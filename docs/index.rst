@@ -112,6 +112,7 @@ Supported Models
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md
    cookbook/ming_omni.md
+   cookbook/nemotron_voicechat.md
    cookbook/llada2_uni.md
    cookbook/fun_cosyvoice3.md
    cookbook/auk.md

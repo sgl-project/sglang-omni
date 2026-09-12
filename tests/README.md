@@ -147,6 +147,11 @@ tests/
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
+    ├── nemotron_voicechat/
+    │   ├── test_checkpoint_shim.py
+    │   ├── test_paged_rollback.py
+    │   ├── test_request_builders.py
+    │   └── test_streaming_codec.py
     ├── qwen3_asr/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_pipeline.py
@@ -840,6 +845,14 @@ that happened to contain an older version of the test.
   lowering, reference encoding, model-runner lifecycle, flow matching, bounded
   acoustic state, vocoder batching, and streaming cleanup. CUDA Graph parity in
   `test_tail.py` is marked `accelerator`; the remaining tests run on CPU.
+
+- `unit_test/nemotron_voicechat/`: NemotronLabs VoiceChat request frame-count
+  contract (thinker tokens vs talker steps), streaming code2wav equivalence
+  with whole-utterance decoding, and checkpoint-shim isolation across
+  checkpoint switches. Talker rollback tests cover paged KV ownership across
+  stream waits and decode resumption using simulated decode preparation.
+  Tests run on CPU without model weights; request and rollback tests require
+  SGLang, but do not start an engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

@@ -28,6 +28,11 @@ class MUSAOmniPlatform(CUDAOmniPlatform):
         # Use the native QK-norm + RoPE path on MUSA.
         return None
 
+    def get_joint_rope_inplace_kernel(self) -> None:
+        # Note(yzxiao): Do not inherit NVIDIA's joint-RoPE provider; MUSA needs
+        # its own implementation and validation of this capability.
+        return None
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,
