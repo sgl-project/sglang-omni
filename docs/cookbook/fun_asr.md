@@ -17,6 +17,42 @@ then download the model:
 hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ```
 
+## Apple Silicon
+
+The CUDA setup above is unchanged. On Apple Silicon, follow the
+[Apple Silicon installation instructions](../get_started/installation.md#macos-apple-silicon),
+then expose Homebrew's keg-only FFmpeg libraries to TorchCodec:
+
+```bash
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Support is experimental. Both backends load the official
+`FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized BF16 weights; no
+converted MLX artifact or `mlx-audio` runtime package is needed. Inference runs
+one request at a time and additional requests queue. Use `temperature=0` and
+upload audio segments no longer than 30 seconds. JSON and SSE transcription are
+supported; quantized checkpoints are not.
+
+### MLX
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
+
+### Torch/MPS
+
+Without `SGLANG_USE_MLX=1`, the same checkpoint runs through PyTorch MPS:
+
+```bash
+SGLANG_USE_MLX=0 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
+
+See [the Apple backend PRs](https://github.com/sgl-project/sglang-omni/pull/1983) for hardware validation and benchmark results.
+
 ## Server Configuration
 
 Fun-ASR-Nano runs a single ASR stage on one GPU.
