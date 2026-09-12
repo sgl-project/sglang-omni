@@ -899,7 +899,12 @@ def apply_thinker_result(
     return thinker_out
 
 
-def make_thinker_stream_output_builder():
+def _supports_token_only_talker_inputs(model_inputs: Any, capture_keys: Any) -> bool:
+    # note(wenyao): Keep multimodal/custom conditioning on the validated legacy path.
+    return isinstance(model_inputs, dict) and not model_inputs and not capture_keys
+
+
+def make_thinker_stream_output_builder(*, talker_stream_token_only: bool = False):
     def _normalize_chunk_hidden(hidden: torch.Tensor | None) -> torch.Tensor | None:
         if hidden is None:
             return None
@@ -968,6 +973,21 @@ def make_thinker_stream_output_builder():
         if not should_generate_audio_output(stage_payload):
             return messages
 
+        if talker_stream_token_only and _supports_token_only_talker_inputs(
+            getattr(req_data, "model_inputs", None),
+            getattr(req_data, "capture_model_output_keys", ()),
+        ):
+            messages.append(
+                OutgoingMessage(
+                    request_id=request_id,
+                    type="stream",
+                    data=torch.tensor([token_id], dtype=torch.long, device="cpu"),
+                    target="talker_ar",
+                    metadata={"token_id": token_id},
+                )
+            )
+            return messages
+
         # Speech mode: also stream hidden states to the talker for codec gen.
         extra = req_output.extra
         if isinstance(extra, dict) and "hidden_states" in extra:
@@ -995,12 +1015,52 @@ def make_thinker_scheduler_adapters(
     vocab_size: int,
     thinker_config: Any = None,
     stage_name: str = "thinker",
+    require_token_only_talker_input: bool = False,
+    require_dflash_compatible_request: bool = False,
 ):
     """Build model-specific StagePayload <-> scheduler adapters for thinker."""
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
         state = Qwen3OmniPipelineState.from_dict(payload.data)
+        if (
+            require_token_only_talker_input
+            and should_generate_audio_output(payload)
+            and not _supports_token_only_talker_inputs(
+                _extract_thinker_model_inputs(state.thinker_inputs),
+                state.thinker_inputs.get("capture_model_output_keys", ()),
+            )
+        ):
+            # note(wenyao): Missing capture hooks cannot provide a multimodal fallback.
+            raise ValueError(
+                "capture_speech_hidden_states=False supports only text-input speech "
+                "requests without custom model inputs or hidden capture; enable "
+                "capture_speech_hidden_states for multimodal speech"
+            )
         params = payload.request.params or {}
+        if require_dflash_compatible_request:
+            if not _supports_token_only_talker_inputs(
+                _extract_thinker_model_inputs(state.thinker_inputs),
+                state.thinker_inputs.get("capture_model_output_keys", ()),
+            ):
+                raise ValueError(
+                    "DFLASH supports only text-input requests without custom "
+                    "model inputs or hidden capture"
+                )
+            if params.get("temperature", 0.0) != 0.0:
+                raise ValueError("DFLASH currently requires greedy temperature=0")
+            if any(
+                params.get(key)
+                for key in (
+                    "return_logprob",
+                    "logprobs",
+                    "top_logprobs",
+                    "return_hidden_states",
+                    "return_sampling_mask",
+                )
+            ):
+                raise ValueError(
+                    "DFLASH does not support logprobs, hidden outputs, or sampling masks"
+                )
         req_data = build_sglang_thinker_request(
             state,
             params=params,

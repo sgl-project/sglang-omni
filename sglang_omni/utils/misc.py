@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import pickle
 import random
 import re
@@ -105,3 +106,25 @@ def normalize_quantization(value: object) -> str | None:
 
 def model_config_has_moe(model_config: ModelConfig) -> bool:
     return hasattr(model_config.hf_text_config, "num_experts_per_tok")
+
+
+async def finish_despite_cancellation(coro) -> None:
+    """Run *coro* to completion, then re-raise any cancellation it absorbed."""
+
+    task = asyncio.ensure_future(coro)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+        except BaseException:
+            break
+    try:
+        task.result()
+    except BaseException as error:
+        if cancelled is not None and not isinstance(error, asyncio.CancelledError):
+            raise cancelled from error
+        raise
+    if cancelled is not None:
+        raise cancelled

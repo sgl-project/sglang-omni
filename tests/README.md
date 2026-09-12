@@ -71,9 +71,12 @@ tests/
     │   ├── test_runtime_schema.py
     │   ├── test_scheduler.py
     │   ├── test_simple_scheduler_concurrent.py
+    │   ├── test_speculative_admin.py
+    │   ├── test_speculative_decode.py
     │   ├── test_stage.py
     │   ├── test_stage_process_env.py
-    │   └── test_stage_streaming.py
+    │   ├── test_stage_streaming.py
+    │   └── test_tp_forward_context.py
     ├── relay/
     │   ├── test_cuda_ipc_relay.py
     │   └── test_shm_relay.py
@@ -93,6 +96,7 @@ tests/
     │   ├── test_code2wav_cuda_graph.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
+    │   ├── test_dflash_admission.py
     │   ├── test_fp8_backend_config.py
     │   ├── test_example_launcher.py
     │   ├── test_logit_shaping.py
@@ -217,6 +221,7 @@ tests/
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
     │   ├── test_openai_errors.py
+    │   ├── test_speculative_target_worker.py
     │   ├── test_speech_to_text.py
     │   ├── test_subtitles.py
     │   ├── test_transcription_chunking.py
@@ -435,6 +440,24 @@ pytest tests/unit_test -q
 Select CPU cases with `-m "not accelerator"`. Run hardware cases with
 `-m accelerator` on a compatible accelerator; check the reported skips
 to confirm the intended hardware paths actually ran.
+
+Focused Qwen3-Omni DFlash checks (CPU, with project dependencies installed):
+
+```bash
+pytest -q \
+  tests/unit_test/qwen3_omni/test_dflash_admission.py \
+  tests/unit_test/pipeline/test_speculative_decode.py \
+  tests/unit_test/pipeline/test_speculative_admin.py \
+  tests/unit_test/pipeline/test_tp_forward_context.py \
+  tests/unit_test/serve/test_speculative_target_worker.py
+```
+
+These cover supported request/config admission, accepted-token order and EOS,
+abort suppression, TP communicator reuse, target-worker dispatch, and rejected
+weight-update operations. Scheduler cancellation and KV cleanup live in
+`unit_test/pipeline/test_scheduler.py`. The standard Qwen3-Omni model CI does
+not enable DFlash; GPU output parity, cancellation during model execution,
+and performance require separate validation with DFlash enabled.
 
 Choose the location by the behavior contract being protected, not by the file
 that happened to contain an older version of the test.

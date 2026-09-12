@@ -113,7 +113,11 @@ def test_cuda_tp_stage_env_is_the_narrowing_plus_nvls_off() -> None:
     spec = StageLaunchConfig(stage_name="thinker", tp_size=2, gpu_id=1)
 
     env = CUDAOmniPlatform().get_stage_process_env(
-        spec, {"CUDA_VISIBLE_DEVICES": "3,4"}
+        spec,
+        {
+            "CUDA_VISIBLE_DEVICES": "3,4",
+            "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        },
     )
 
     assert env == {

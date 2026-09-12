@@ -32,7 +32,7 @@ import signal
 import socket
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from typing import Any
 
 import uvicorn
@@ -57,6 +57,27 @@ from sglang_omni.utils.gpu_memory import (
 logger = logging.getLogger(__name__)
 
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+@asynccontextmanager
+async def _cancel_on_signals():
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    task = asyncio.current_task()
+
+    def cancel(_sig, _frame):
+        # note(wenyao): Repeated signals must let startup cleanup finish.
+        if not task.cancelling():
+            task.cancel()
+
+    original = {sig: signal.signal(sig, cancel) for sig in _HANDLED_SIGNALS}
+    try:
+        yield
+    finally:
+        for sig, handler in original.items():
+            signal.signal(sig, handler)
 
 
 class _PipelineUvicornServer(uvicorn.Server):
@@ -99,6 +120,8 @@ def _find_available_port(host: str, port: int) -> int:
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # note(wenyao): Match Uvicorn's reuse of a closed server's TIME_WAIT port.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return port
     except OSError as exc:
@@ -372,6 +395,8 @@ def _mount_profiler_routes(
     app.include_router(router)
 
 
+# note(wenyao): Own signals before spawning workers; Uvicorn overrides them while serving.
+@_cancel_on_signals()
 async def _run_server(
     pipeline_config: PipelineConfig,
     *,

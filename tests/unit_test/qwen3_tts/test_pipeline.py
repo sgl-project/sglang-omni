@@ -5571,6 +5571,8 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         scheduler.cur_batch = None
         scheduler.last_batch = None
         scheduler._async_pending = None
+        scheduler.chunked_req = None
+        scheduler._pending_chunked_abort_req = None
         scheduler.inbox = Queue()
 
         scheduler.abort(request_id)

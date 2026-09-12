@@ -486,7 +486,11 @@ def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
         prep.runtime_dir.close()
     leader, follower = group.specs
     env = CUDAOmniPlatform().get_stage_process_env(
-        follower, env={"CUDA_VISIBLE_DEVICES": "4,5,6,7"}
+        follower,
+        env={
+            "CUDA_VISIBLE_DEVICES": "4,5,6,7",
+            "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        },
     )
 
     assert leader.role == "leader"

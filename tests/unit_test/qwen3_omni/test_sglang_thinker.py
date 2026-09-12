@@ -124,6 +124,7 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     wrapper.logits_processor = lambda *args: args[0]
     wrapper.lm_head = object()
     wrapper._fused_rope_gate = None
+    wrapper.capture_aux_hidden_states = False
     input_ids = torch.tensor([1, 2], dtype=torch.long)
     positions = torch.tensor([0, 1], dtype=torch.long)
     input_embeds = torch.ones((2, 3))
@@ -140,3 +141,39 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     assert result is input_ids
     assert seen["input_embeds"] is input_embeds
     assert seen["positions"] is positions
+
+
+def test_dflash_capture_preserves_aux_states_and_layer_alignment():
+    seen = {}
+    hidden = torch.ones(2, 3)
+    aux = [torch.full((2, 3), 2.0)]
+
+    class TextModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed_tokens = torch.nn.Embedding(8, 3)
+
+        def set_dflash_layers_to_capture(self, layer_ids):
+            seen["layers"] = layer_ids
+
+        def forward(self, **kwargs):
+            return hidden, aux
+
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.model = TextModel()
+    wrapper.lm_head = object()
+    wrapper._fused_rope_gate = None
+    wrapper.logits_processor = lambda *args: args
+    wrapper.set_dflash_layers_to_capture([0, 2])
+    result = wrapper.forward(
+        torch.tensor([1, 2]),
+        torch.tensor([0, 1]),
+        SimpleNamespace(mrope_positions=None),
+    )
+    assert seen["layers"] == [1, 3]
+    assert result[1] is hidden
+    assert result[4] is aux
+    assert wrapper.get_input_embeddings() is wrapper.model.embed_tokens
+    with pytest.raises(ValueError, match="explicit layer_ids"):
+        wrapper.set_dflash_layers_to_capture(None)

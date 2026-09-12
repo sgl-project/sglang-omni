@@ -290,9 +290,14 @@ class TalkerPrefillBuilder:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
         if token_id is not None:
-            chunk_tensor = self._load_prompt_token_embeddings(
-                torch.tensor([int(token_id)], dtype=torch.long)
-            )
+            token_id = int(token_id)
+            cached_row = self._thinker_embed_cache.get(token_id)
+            if cached_row is not None:
+                chunk_tensor = cached_row.unsqueeze(0)
+            else:
+                chunk_tensor = self._load_prompt_token_embeddings(
+                    torch.tensor([token_id], dtype=torch.long)
+                )
         else:
             chunk_tensor = chunk.data.to(
                 device=self._device, dtype=self._dtype

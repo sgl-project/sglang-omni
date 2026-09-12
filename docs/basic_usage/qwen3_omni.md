@@ -299,6 +299,39 @@ stages:
       max_running_requests: 16
 ```
 
+### Experimental DFlash
+
+DFlash is disabled by default. It is an explicit opt-in for greedy
+(`temperature=0`), text-input speech requests only. Enable it with
+`thinker.engine.speculative_algorithm=DFLASH`, a compatible
+`thinker.engine.speculative_draft_model_path`,
+`thinker.factory.talker_stream_token_only=true`, and
+`thinker.factory.capture_speech_hidden_states=false`.
+
+Even supported requests are **not guaranteed to produce identical Thinker
+tokens or text with speculation OFF and ON**. Saved measurements from
+2026-09-07 at source `68713b09`, using two H100 GPUs and BF16, found
+12/640 paired outputs different in each of the single-pipeline and replica
+topologies across C1/C8/C16/C32. These are prior measurements, not a new run
+or a qualification of later source revisions. Two C1 examples occurred in both topologies:
+
+| sample_id | Seed | OFF text excerpt | ON text excerpt |
+| --- | --- | --- | --- |
+| `common_voice_en_18993020-common_voice_en_18993067` | 200072 | He also made himself useful | He also makes himself useful |
+| `constructed-seedtts-0312-0315` | 300014 | weapons, vehicles and uniforms | weapons, vehicles, and uniforms |
+
+For the first example, the emitted token prefix was OFF `[1519, 1083, 1865]`
+versus ON `[1519, 1083, 3643]`: the first difference is at zero-based token
+position 2. See [PR #1965](https://github.com/sgl-project/sglang-omni/pull/1965)
+for the measured workload and results.
+
+To disable speculation, remove `thinker.engine.speculative_algorithm` and
+the DFlash-specific draft/speculative settings from the config and CLI.
+This alone does not restore the original speech path: also set
+`thinker.factory.talker_stream_token_only=false` and
+`thinker.factory.capture_speech_hidden_states=true` to restore that path.
+Restart the server after changing these settings.
+
 ### Speech Stage Placement
 
 At concurrency 8, the talker is the heaviest speech stage: it holds its GPU

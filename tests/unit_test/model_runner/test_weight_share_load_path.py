@@ -196,7 +196,8 @@ def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch
     assert calls == ["verify", "capture"]  # attach guard precedes capture
 
 
-def test_graph_capture_finalizes_post_capture_kv_pool():
+@pytest.mark.parametrize("defer_resize", [False, True])
+def test_graph_capture_finalizes_post_capture_kv_pool(defer_resize):
     runner = _bare_runner()
     runner.token_to_kv_pool = SimpleNamespace(post_capture_active=True)
     calls = []
@@ -210,9 +211,9 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
             lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
         ),
     ):
-        runner.init_cuda_graphs()
+        runner.init_cuda_graphs(defer_post_capture_kv_resize=defer_resize)
 
-    assert calls == ["capture", "resize"]
+    assert calls == (["capture"] if defer_resize else ["capture", "resize"])
 
 
 def test_graph_capture_pins_sdpa_around_the_upstream_capture():

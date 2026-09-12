@@ -44,6 +44,9 @@ from sglang_omni.pipeline.stage_workers import (
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
 from sglang_omni.utils.imports import import_string
+from sglang_omni.utils.misc import (
+    finish_despite_cancellation as _finish_despite_cancellation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -447,28 +450,6 @@ class _NcclPortAllocator:
                     return port
             except OSError:
                 continue
-
-
-async def _finish_despite_cancellation(coro) -> None:
-    """Run *coro* to completion, then re-raise any cancellation it absorbed."""
-
-    task = asyncio.ensure_future(coro)
-    cancelled: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
-        except BaseException:
-            break
-    try:
-        task.result()
-    except BaseException as error:
-        if cancelled is not None and not isinstance(error, asyncio.CancelledError):
-            raise cancelled from error
-        raise
-    if cancelled is not None:
-        raise cancelled
 
 
 def _wave_stage_names(wave: list[StageGroup]) -> list[str]:

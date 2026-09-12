@@ -75,23 +75,24 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                     f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
                     f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
                 )
-            mapped_gpu = visible_devices[spec.gpu_id]
-        else:
-            mapped_gpu = str(spec.gpu_id)
 
-        env_updates = {
-            "CUDA_VISIBLE_DEVICES": mapped_gpu,
-            "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        updates = {
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         }
+        # Note (wenyao): Symmetric memory needs distinct device IDs per TP rank.
+        if source_env.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
+            updates["CUDA_VISIBLE_DEVICES"] = (
+                visible_devices[spec.gpu_id] if original_visible else str(spec.gpu_id)
+            )
+            updates["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "true"
         # note (ratish): NVLS multicast binding is not available on every host,
         # and NCCL 2.29 fails communicator init instead of falling back. A
         # value from the shell or the stage configuration stands.
         if "NCCL_NVLS_ENABLE" not in source_env and (
             "NCCL_NVLS_ENABLE" not in spec.env_defaults
         ):
-            env_updates["NCCL_NVLS_ENABLE"] = "0"
-        return env_updates
+            updates["NCCL_NVLS_ENABLE"] = "0"
+        return updates
 
     def get_intra_node_transport(self) -> TransportKind:
         from sglang_omni.comm.data_ref import TransportKind
