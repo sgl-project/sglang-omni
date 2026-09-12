@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import math
+import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -19,6 +22,27 @@ from sglang_omni.scheduling.streaming_vocoder import (
     StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
 )
+
+DEFAULT_MOSS_TTS_STREAM_SLACK_MARGIN_S = 1.0
+
+
+def _validate_slack_ladder(
+    value: tuple[int, ...] | list[int] | None,
+) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (tuple, list)):
+        raise TypeError("stream_slack_ladder must be a tuple or list of ints")
+    if not value:
+        raise ValueError("stream_slack_ladder must contain at least one entry")
+    if any(isinstance(f, bool) or not isinstance(f, int) for f in value):
+        raise TypeError("stream_slack_ladder entries must be ints")
+    ladder = tuple(int(f) for f in value)
+    if any(f <= 0 for f in ladder):
+        raise ValueError("stream_slack_ladder entries must be > 0")
+    if any(b <= a for a, b in zip(ladder, ladder[1:])):
+        raise ValueError("stream_slack_ladder must be strictly ascending")
+    return ladder
 
 
 @dataclass
@@ -42,6 +66,7 @@ class _MossStreamState:
     sample_rate: int = 24000
     initial_codec_chunk_frames: int = 0
     samples_per_frame: int | None = None
+    playback_deadline_s: float = 0.0
 
 
 class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]):
@@ -56,8 +81,11 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         stream_overlap_tokens: int = 8,
         stream_holdback_tokens: int = 1,
         initial_chunk_frames: int = 0,
+        stream_slack_ladder: tuple[int, ...] | list[int] | None = None,
+        stream_slack_margin_s: float = DEFAULT_MOSS_TTS_STREAM_SLACK_MARGIN_S,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -65,6 +93,13 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
             raise ValueError("stream overlap must be > 0")
         if stream_holdback_tokens < 0:
             raise ValueError("stream holdback must be >= 0")
+        slack_ladder = _validate_slack_ladder(stream_slack_ladder)
+        if isinstance(stream_slack_margin_s, bool) or not isinstance(
+            stream_slack_margin_s, (int, float)
+        ):
+            raise TypeError("stream_slack_margin_s must be a number")
+        if not math.isfinite(stream_slack_margin_s) or stream_slack_margin_s < 0:
+            raise ValueError("stream_slack_margin_s must be finite and >= 0")
 
         self._vocoder = vocoder
         self._audio_vocoder = vocoder._audio_vocoder
@@ -72,6 +107,11 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         self._stream_followup_stride = int(stream_followup_stride)
         self._stream_overlap_tokens = int(stream_overlap_tokens)
         self._stream_holdback_tokens = int(stream_holdback_tokens)
+        self._slack_ladder = slack_ladder
+        self._slack_margin_s = float(stream_slack_margin_s)
+        self._clock: Callable[[], float] = (
+            clock if clock is not None else time.monotonic
+        )
         self._default_initial_chunk_frames = max(0, int(initial_chunk_frames))
         self._default_n_vq = int(
             getattr(getattr(vocoder._processor, "model_config", None), "n_vq", 0) or 0
@@ -228,8 +268,18 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
                 chunks.append(chunk)
 
         if chunks:
-            state.next_decode_rows = state.delayed_count + self._stream_followup_stride
-            return chunks[0] if len(chunks) == 1 else torch.cat(chunks)
+            delta = chunks[0] if len(chunks) == 1 else torch.cat(chunks)
+            # Note (Jiaxin Deng): the deadline advances before the stride is chosen
+            # so the ladder sees the audio this chunk is about to buffer.
+            now = self._clock()
+            sample_rate = float(state.sample_rate or self._sample_rate)
+            state.playback_deadline_s = max(state.playback_deadline_s, now) + (
+                float(delta.numel()) / sample_rate
+            )
+            state.next_decode_rows = state.delayed_count + self._steady_followup_stride(
+                state, now=now
+            )
+            return delta
 
         if not is_final:
             if len(state.pending_raw_frames) <= self._stream_holdback_tokens:
@@ -239,7 +289,8 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
                 )
             else:
                 state.next_decode_rows = (
-                    state.delayed_count + self._stream_followup_stride
+                    state.delayed_count
+                    + self._steady_followup_stride(state, now=self._clock())
                 )
         return None
 
@@ -351,6 +402,31 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         state.segments[state.active_segment].closed = True
         state.active_segment = None
 
+    def _steady_followup_stride(self, state: _MossStreamState, *, now: float) -> int:
+        # Note (Jiaxin Deng): a rung is used only when its own playback duration fits
+        # in the client's remaining buffer minus the margin, so a bigger step never
+        # opens a gap the client cannot cover. Measured on H200: raising the step from
+        # 8 to 32 frames is +133% throughput but grows the playback gap 91ms -> 923ms,
+        # so the step has to follow the buffer instead of being configured once.
+        ladder = self._slack_ladder
+        if ladder is None:
+            return self._stream_followup_stride
+        if state.playback_deadline_s <= 0.0:
+            return ladder[0]
+        samples_per_frame = int(
+            state.samples_per_frame or self._default_samples_per_frame or 0
+        )
+        if samples_per_frame <= 0:
+            return ladder[0]
+        sample_rate = float(state.sample_rate or self._sample_rate)
+        slack_s = state.playback_deadline_s - now - self._slack_margin_s
+        stride = ladder[0]
+        for rung in ladder:
+            if rung * samples_per_frame / sample_rate > slack_s:
+                break
+            stride = rung
+        return stride
+
     def _first_decode_rows(self, state: _MossStreamState, n_vq: int) -> int:
         initial_frames = int(state.initial_codec_chunk_frames)
         if initial_frames > 0:
@@ -363,7 +439,11 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         values: Mapping[str, Any] | None,
     ) -> None:
         self._require_contract(state, "<stream>")
-        steady_frames = self._stream_followup_stride
+        steady_frames = (
+            self._slack_ladder[0]
+            if self._slack_ladder is not None
+            else self._stream_followup_stride
+        )
         state.initial_codec_chunk_frames = resolve_initial_codec_chunk_frames(
             values,
             steady_chunk_frames=steady_frames,
