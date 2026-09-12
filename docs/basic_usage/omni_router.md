@@ -319,8 +319,11 @@ complete bodies, upstream body errors, and bodies dropped before completion.
 The post-commit relay-failure counter is the upstream-error subset.
 `/diagnostics` returns bounded deterministic JSON for the same router-local
 state and marks the configured voice owner. Each diagnostic worker includes
-its latest probe result, HTTP status when present, observation time, transition
-streaks, and cumulative outcomes.
+cumulative dispatch counts for the fixed service classes and voice-control
+operations. A speech batch contributes one dispatch while active worker load
+remains item-weighted. Workers also include their latest probe result, HTTP
+status when present, observation time, transition streaks, and cumulative
+outcomes.
 
 Operations responses snapshot router-local state and never contact workers.
 Admission values come from the semaphores that enforce router limits. Worker

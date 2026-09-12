@@ -47,7 +47,6 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             name="audio_encoder",
             process="tts_frontend",
             factory_path=f"{_PKG}.stages.create_audio_encoder_executor",
-            factory=FactoryArgs(device=current_platform.device_type),
             gpu=0,
             gpu_memory_fraction=0.03,
             next="tts_engine",
@@ -56,11 +55,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(
-                device=current_platform.device_type,
-                max_new_tokens=2048,
-                enable_async_decode=True,
-            ),
+            factory=FactoryArgs(max_new_tokens=2048, enable_async_decode=True),
             gpu=0,
             gpu_memory_fraction=0.85,
             next="vocoder",
@@ -73,7 +68,6 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             # serving concurrency and prevents decode/vocoder overlap.
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FactoryArgs(device=current_platform.device_type),
             gpu=0,
             gpu_memory_fraction=0.10,
             terminal=True,

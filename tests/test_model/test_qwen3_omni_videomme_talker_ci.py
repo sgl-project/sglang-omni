@@ -61,19 +61,19 @@ SHORT_ANSWER_PROMPT = (
     "'Answer: $LETTER'. Do not include step-by-step reasoning."
 )
 
-VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.6
-VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0483
+VIDEOMME_TALKER_THINKER_TEXT_MIN_ACCURACY = 0.55
+VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0474
 VIDEOMME_TALKER_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX
 )
-VIDEOMME_TALKER_N_ABOVE_50_MAX = 1.0
+VIDEOMME_TALKER_N_ABOVE_50_MAX = 0.0
 
 _VIDEOMME_TALKER_AUDIO_P95 = {
     16: {
-        "throughput_qps": 1.017,
-        "output_tok_per_req_s": 4.3,
-        "latency_mean_s": 10.638,
-        "rtf_mean": 0.9035,
+        "throughput_qps": 1.099,
+        "output_tok_per_req_s": 4.8,
+        "latency_mean_s": 9.894,
+        "rtf_mean": 0.8354,
     },
 }
 VIDEOMME_TALKER_THRESHOLDS = apply_slack(_VIDEOMME_TALKER_AUDIO_P95)

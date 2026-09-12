@@ -22,6 +22,11 @@ class _CapturedServerArgs:
         self.enable_nccl_nvls = kwargs.get("enable_nccl_nvls", False)
         self.enable_symm_mem = kwargs.get("enable_symm_mem", False)
         self.startup_weight_load_mode = kwargs.get("startup_weight_load_mode", "serial")
+        self.weight_cache_mode = kwargs.get("weight_cache_mode", "off")
+        self._resolution_finished = False
+
+    def resolve_once(self) -> None:
+        self._resolution_finished = True
 
 
 def _build(monkeypatch, **extra: Any) -> dict[str, Any]:
@@ -56,6 +61,19 @@ def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="startup_weight_load_mode"):
         _build(monkeypatch, startup_weight_load_mode="overlap")
+
+
+def test_ipc_weight_cache_modes_are_rejected(monkeypatch) -> None:
+    """The bootstrap sizes the KV pool from a free-memory baseline that never
+    has the bytes a weight cache daemon already holds added back.
+    """
+    import pytest
+
+    for mode in ("client", "daemon"):
+        with pytest.raises(ValueError, match="weight_cache_mode"):
+            _build(monkeypatch, weight_cache_mode=mode)
+
+    assert _build(monkeypatch, weight_cache_mode="off")["weight_cache_mode"] == "off"
 
 
 def test_nvls_and_symmetric_memory_engine_flags_are_rejected(monkeypatch) -> None:
@@ -130,7 +148,7 @@ def test_an_operator_device_that_contradicts_placement_is_rejected(monkeypatch) 
     resolved = platforms.current_platform.device_type
     other = "cuda" if resolved != "cuda" else "xpu"
 
-    with pytest.raises(ValueError, match="Omni owns placement"):
+    with pytest.raises(ValueError, match="stage placement"):
         _drive_build(monkeypatch, overrides={"device": other})
 
 

@@ -208,14 +208,6 @@ class MingStreamingSegmenterScheduler:
         state.finalized = True
 
         final_segments = state.segmenter.flush()
-        if not final_segments:
-            final_segments = [
-                TextSegment(
-                    segment_id=state.segment_count,
-                    text="",
-                    is_final_segment=True,
-                )
-            ]
         for segment in final_segments:
             self._emit_segment(request_id, segment)
             state.segment_count += 1

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Any
 
 import torch
+from sglang.srt.runtime_context import get_model, get_schedule
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
@@ -16,6 +18,8 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _is_truthy(value: Any) -> bool:
@@ -108,7 +112,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             defaults["cuda_graph_bs_prefill"] = list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
         return defaults
 
-    def setup_model(
+    def before_memory_pool(
         self,
         *,
         model_worker: Any,
@@ -117,10 +121,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del gpu_id, server_args
+        del gpu_id
         from qwen_tts import Qwen3TTSModel
         from transformers import AutoProcessor
 
+        # note(ratish): the tokenizer and the predictor graphs live for the whole
+        # process, so they are attached before sglang reads free memory for the pool.
         model = model_worker.model_runner.model
         speech_tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
             checkpoint_dir,
@@ -145,20 +151,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             wrapper=self.wrapper,
             device=torch.device(device),
         )
-
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        if _is_truthy(overrides.get("enable_torch_compile", False)):
-            raise ValueError("Qwen3-TTS torch.compile is not supported")
-
-    def setup_model_resources(
-        self,
-        model: Any,
-        server_args: Any,
-        *,
-        generation_cuda_graph_enabled: bool,
-    ) -> None:
-        del server_args
-        if not generation_cuda_graph_enabled:
+        if bool(server_args.disable_cuda_graph):
             return
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.
@@ -169,6 +162,41 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             do_sample=subtalker.do_sample,
             top_k=subtalker.top_k,
             top_p=subtalker.top_p,
+        )
+
+    def setup_model(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        # note(ratish): everything Qwen3-TTS attaches stays resident, so it all
+        # runs in before_memory_pool and nothing is left for after the pool.
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
+
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if _is_truthy(overrides.get("enable_torch_compile", False)):
+            raise ValueError("Qwen3-TTS torch.compile is not supported")
+
+    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+        del model_runner
+        schedule = get_schedule()
+        running = int(schedule.max_running_requests)
+        context = int(get_model().context_length)
+        pool = scheduler.tp_worker.model_runner.token_to_kv_pool
+        k_bytes, v_bytes = pool.get_kv_size_bytes()
+        logger.info(
+            "Qwen3-TTS KV pool holds %d tokens, %.2f GiB, against a configured "
+            "maximum demand of %d (%d running x %d context), mem_fraction_static %.3f",
+            int(scheduler.max_total_num_tokens),
+            (int(k_bytes) + int(v_bytes)) / float(1 << 30),
+            running * context,
+            running,
+            context,
+            float(schedule.mem_fraction_static),
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:

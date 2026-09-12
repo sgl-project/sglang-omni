@@ -72,7 +72,7 @@ def test_pinned_spec_resolves_architecture_without_snapshot(
         path.write_text('{"architectures": ["DotsTTSForConditionalGeneration"]}')
         return str(path)
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hub_download)
+    monkeypatch.setattr("sglang_omni.utils.hf.hf_hub_download", fake_hub_download)
 
     config_cls = manager.resolve_config_cls_for_model_path(
         "dots-studio/dots.tts-mf@c28105adc8228143392b4e346994ff613ee48a06"
@@ -93,7 +93,7 @@ def test_unresolvable_pinned_spec_names_the_revision(monkeypatch) -> None:
         raise OSError("metadata offline in this test")
 
     monkeypatch.setattr(manager.AutoConfig, "from_pretrained", fail_metadata)
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fail_metadata)
+    monkeypatch.setattr("sglang_omni.utils.hf.hf_hub_download", fail_metadata)
 
     with pytest.raises(ValueError, match="check that revision c28105ad"):
         manager.resolve_config_cls_for_model_path("org/model@c28105ad")

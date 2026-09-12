@@ -53,20 +53,41 @@ class _FakeHiFT(torch.nn.Module):
         return speech_feat.new_zeros(batch, frames * 480), None
 
 
-def _decode_and_collect(flow: torch.nn.Module, caplog) -> list[str]:
-    vocoder = stages._CosyVoice3Vocoder(flow, _FakeHiFT())
+def _decode_and_collect(
+    flow: torch.nn.Module,
+    caplog,
+    *,
+    split: bool = False,
+) -> list[str]:
+    vocoder = stages._CosyVoice3Vocoder(
+        flow,
+        _FakeHiFT(),
+        flow_merge_max_gap_frames=4 if split else 384,
+        flow_merge_pad_budget_percent=25,
+    )
     state = FunCosyVoice3State(flow_embedding=torch.ones(1, 192))
-    items = [(state, torch.tensor([1, 2])), (state, torch.tensor([3]))]
+    items = (
+        [
+            (state, torch.ones(24, dtype=torch.long)),
+            (state, torch.ones(25, dtype=torch.long)),
+            (state, torch.ones(50, dtype=torch.long)),
+            (state, torch.ones(51, dtype=torch.long)),
+        ]
+        if split
+        else [(state, torch.tensor([1, 2])), (state, torch.tensor([3, 4]))]
+    )
     with caplog.at_level(logging.DEBUG, logger=stages.logger.name):
         asyncio.run(vocoder.decode_batch(items))
     return [r.getMessage() for r in caplog.records if "flow solve:" in r.getMessage()]
 
 
 def test_decode_batch_logs_one_line_per_solve(caplog) -> None:
-    # note (db-ol): both requests share one frame bucket, one solve, one line.
-    [message] = _decode_and_collect(_SolvableFlow(), caplog)
-    assert "batch_items=2" in message
-    assert float(message.rsplit("solve_elapsed_ms=", 1)[1]) > 0.0
+    messages = _decode_and_collect(_SolvableFlow(), caplog, split=True)
+    assert len(messages) == 2
+    assert all("batch_items=2" in message for message in messages)
+    assert all(
+        float(message.rsplit("solve_elapsed_ms=", 1)[1]) > 0.0 for message in messages
+    )
 
 
 def test_flow_solve_is_timed_only_when_debug_is_enabled(caplog, monkeypatch) -> None:

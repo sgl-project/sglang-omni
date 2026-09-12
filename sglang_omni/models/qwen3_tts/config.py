@@ -62,15 +62,8 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             # split frontend passes --preprocessing.gpu with its own fraction.
             next="tts_engine",
         ),
-        EngineStageConfig(
-            name="tts_engine",
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(dtype="bfloat16"),
-            gpu=0,
-            next="vocoder",
-            stream_to=["vocoder"],
-        ),
+        # note(ratish): stages are built in list order. The vocoder comes before
+        # the engine so its weights and graphs are resident when the KV pool is sized.
         StageConfig(
             name="vocoder",
             process="pipeline",
@@ -79,6 +72,15 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
+        ),
+        EngineStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FactoryArgs(dtype="bfloat16"),
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
         ),
     ]
 

@@ -77,16 +77,23 @@ class ModelWorker:
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank
         self._init_model_config()
-        self._configure_backend_policy()
+        effective_quantization = self._configure_backend_policy()
+        from sglang.srt.runtime_context import publish
+
+        publish(self.server_args, role="scheduler")
+        _initialize_model_worker_backend_globals(
+            self.model_config, effective_quantization
+        )
         self._init_model_runner()
         self._init_dllm_algorithm()
         self._prefill_cuda_graph_usage = _PrefillCudaGraphUsage()
 
         self.device = self.model_runner.device
+        from sglang.srt.runtime_context import get_device
         from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
         self.random_seed = broadcast_pyobj(
-            [server_args.random_seed],
+            [get_device().random_seed],
             self.tp_rank,
             self.model_runner.tp_group.cpu_group,
         )[0]
@@ -116,8 +123,6 @@ class ModelWorker:
 
         self.model_config = ModelConfig.from_server_args(
             server_args=self.server_args,
-            model_path=self.server_args.model_path,
-            model_revision=self.server_args.revision,
             is_draft_model=False,
         )
 
@@ -162,7 +167,7 @@ class ModelWorker:
             model_config.v_head_dim = model_config.head_dim
             model_config.vocab_size = int(text_cfg.vocab_size)
 
-    def _configure_backend_policy(self) -> None:
+    def _configure_backend_policy(self) -> str | None:
         # Apply Omni-specific quantization adapters (stage-local checkpoint name
         # normalization) before SGLang builds its quant config, then run the
         # model_worker backend policy.
@@ -173,15 +178,10 @@ class ModelWorker:
             self.model_arch_override,
         )
 
-        effective_quantization = current_platform.apply_model_worker_backend_policy(
+        return current_platform.apply_model_worker_backend_policy(
             self.server_args,
             self.model_config,
             self.model_arch_override,
-        )
-        _initialize_model_worker_backend_globals(
-            self.server_args,
-            self.model_config,
-            effective_quantization,
         )
 
     def get_memory_pool(self):
@@ -343,7 +343,9 @@ class ModelWorker:
             input_embeds_slot = runner.buffer_registry.has_slot("input_embeds")
         else:
             capture_num_tokens, backend_runner, input_embeds_slot = None, None, False
-        backend = self.server_args.cuda_graph_config.prefill.backend
+        from sglang.srt.runtime_context import get_exec
+
+        backend = get_exec().graph.cuda_graph_config.prefill.backend
         usage = self._prefill_cuda_graph_usage
         return {
             "backend": backend,
@@ -361,14 +363,14 @@ class ModelWorker:
         }
 
     def model_info(self) -> dict[str, Any]:
-        from sglang.srt.runtime_context import get_model, get_serving
+        from sglang.srt.runtime_context import get_model, get_parallel, get_serving
 
         return {
             "model_path": get_model().model_path,
             "load_format": get_model().load_format,
             "weight_version": get_serving().weight_version,
             "tp_rank": self.tp_rank,
-            "tp_size": self.server_args.tp_size,
+            "tp_size": get_parallel().tp_size,
             "model_arch_override": self.model_arch_override,
             "supports_weight_update": True,
             "supports_weight_checker": True,
@@ -516,11 +518,14 @@ def _apply_model_worker_backend_common_policy(
     server_args: ServerArgs,
     model_arch_override: str | None,
 ) -> str | None:
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+
+    cfg = resolved_view(server_args)
     is_qwen3_omni_arch = model_arch_override in (
         "Qwen3OmniTalker",
         "Qwen3OmniThinkerForCausalLM",
     )
-    if is_qwen3_omni_arch and server_args.ep_size != 1:
+    if is_qwen3_omni_arch and cfg.ep_size != 1:
         raise ValueError(
             "Qwen3-Omni ModelWorker does not support expert parallelism; "
             "use ep_size=1."
@@ -544,18 +549,20 @@ def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
 
 
 def _initialize_model_worker_backend_globals(
-    server_args: ServerArgs,
     model_config: ModelConfig,
     effective_quantization: str | None,
 ) -> None:
-    """Initialize backend globals needed by direct workers before model loading."""
+    """Initialize backend globals needed by direct workers before model loading.
+
+    Both initializers read the published config bags, so this runs after publish.
+    """
 
     if model_config_has_moe(model_config):
         from sglang.srt.layers.moe import initialize_moe_config
 
-        initialize_moe_config(server_args)
+        initialize_moe_config()
 
     if effective_quantization == "fp8":
         from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 
-        initialize_fp8_gemm_config(server_args)
+        initialize_fp8_gemm_config()

@@ -19,8 +19,8 @@ MODEL_PATH="$(
 
 ### Apple Silicon (MLX)
 
-The Apple Silicon path requires macOS, Python 3.12, Homebrew, and SGLang's MLX
-runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
+SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
 
 ```bash
 brew install ffmpeg@7
@@ -28,7 +28,7 @@ export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DY
 ```
 
 Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
-currently installs FFmpeg 9, while Apple installs `torchcodec==0.11.1`, which
+currently installs FFmpeg 9, while Apple installs `torchcodec==0.15.0`, which
 supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
 directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
 
@@ -43,7 +43,7 @@ SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.18 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.19 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple

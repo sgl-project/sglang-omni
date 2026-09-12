@@ -83,6 +83,22 @@ def _dynamic_shapes(time: int) -> dict[str, tuple[int, ...]]:
     }
 
 
+def _try_enable_fp16_tactics(config: Any, trt: Any) -> bool:
+    """Enable weak-typed FP16 tactics when TensorRT still exposes the flag.
+
+    Note (chenyang):
+
+    TensorRT 11 removed BuilderFlag.FP16; networks are strongly typed and
+    the engine follows the ONNX dtypes. Skipping the missing flag lets the
+    fp32 checkpoint build instead of crashing at startup.
+    """
+    fp16_flag = getattr(trt.BuilderFlag, "FP16", None)
+    if fp16_flag is None:
+        return False
+    config.set_flag(fp16_flag)
+    return True
+
+
 def _cfg_pair_shapes(frames: int) -> dict[str, tuple[int, ...]]:
     return {
         "x": (_CFG_BATCH, _MEL_DIM, frames),
@@ -128,6 +144,13 @@ def _convert_onnx_to_trt(
         _PROFILE_OPT_TIME,
         _PROFILE_MAX_TIME,
     )
+    use_fp16_tactics = not strongly_typed and hasattr(trt.BuilderFlag, "FP16")
+    if strongly_typed:
+        precision = "strongly-typed/fp16"
+    elif use_fp16_tactics:
+        precision = "fp32+FP16"
+    else:
+        precision = "fp32"
     logger.info(
         "Building Flow-estimator TensorRT engine from %s "
         "(CFG batch=%d, time %d..%d, %s)",
@@ -135,7 +158,7 @@ def _convert_onnx_to_trt(
         _CFG_BATCH,
         min_time,
         max_time,
-        "strongly-typed/fp16" if strongly_typed else "fp32+FP16",
+        precision,
     )
     trt_logger = _trt_logger()
     builder = trt.Builder(trt_logger)
@@ -152,9 +175,9 @@ def _convert_onnx_to_trt(
             raise ValueError(f"Failed to parse {onnx_path}: {errs}")
 
     config = builder.create_builder_config()
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 32)
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 33)
     if not strongly_typed:
-        config.set_flag(trt.BuilderFlag.FP16)
+        _try_enable_fp16_tactics(config, trt)
 
     profile = builder.create_optimization_profile()
     mins = _dynamic_shapes(min_time)

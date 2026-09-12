@@ -239,7 +239,7 @@ def test_moss_tts_codec_runtime_overrides_take_precedence() -> None:
 
     config = ConfigManager(MossTTSPipelineConfig(model_path="model")).merge_config(
         [
-            ("preprocessing.factory.device", "cuda:7"),
+            ("preprocessing.factory.device", "cuda"),
             ("preprocessing.factory.compute_dtype", "bfloat16"),
             ("vocoder.factory.device", "cpu"),
             ("vocoder.factory.dtype", "float32"),
@@ -252,7 +252,7 @@ def test_moss_tts_codec_runtime_overrides_take_precedence() -> None:
     )
     vocoder_args = resolve_stage_factory_args(stages["vocoder"], config, gpu_id=2)
 
-    assert preprocessing_args["device"] == "cuda:7"
+    assert preprocessing_args["device"] == "cuda"
     assert preprocessing_args["compute_dtype"] == "bfloat16"
     assert preprocessing_args["gpu_id"] == 2
     assert vocoder_args["device"] == "cpu"
@@ -615,6 +615,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         *,
         model_arch_override=None,
         defer_cuda_graph_capture=False,
+        before_memory_pool=None,
     ):
         captured["gpu_id"] = gpu_id
         captured["model_arch_override"] = model_arch_override
@@ -643,6 +644,8 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
             model_runner=model_runner,
             enable_prefill_input_embeds=False,
         )
+        if before_memory_pool is not None:
+            before_memory_pool(model_worker)
         return (
             model_worker,
             object(),
@@ -903,6 +906,7 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
 ) -> None:
     from sglang_omni.models.moss_tts import request_builders as rb
     from sglang_omni.models.moss_tts import stages
+    from sglang_omni.platforms import current_platform
 
     processor = SimpleNamespace(
         audio_tokenizer=None,
@@ -927,6 +931,7 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
 
     monkeypatch.setattr(stages, "_load_moss_processor", lambda model_path: processor)
     monkeypatch.setattr(stages, "load_moss_audio_encoder", load_encoder)
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
 
     try:
         stages.create_preprocessing_executor(

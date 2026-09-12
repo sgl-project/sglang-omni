@@ -40,7 +40,7 @@ def _install_fake_forward_batch_module(monkeypatch: pytest.MonkeyPatch) -> None:
             capture_hidden_mode=None,
             return_hidden_states_before_norm,
         ):
-            # Mirrors the sglang 0.5.16 signature: both overrides are
+            # Mirrors the upstream signature: both overrides are
             # keyword-only and return_hidden_states_before_norm is required.
             del model_runner, return_hidden_states_before_norm
             return SimpleNamespace(

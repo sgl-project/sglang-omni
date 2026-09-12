@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
@@ -33,6 +34,18 @@ def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
                 f"{legacy_value!r} != {kwargs[decode_name]!r}"
             )
         kwargs[decode_name] = legacy_value
+
+
+def pin_resolved_device_type(overrides: dict[str, Any], resolved_type: str) -> None:
+    """Write the placement-resolved device type into ServerArgs overrides."""
+    requested_type = overrides.get("device")
+    if requested_type is not None and requested_type != resolved_type:
+        raise ValueError(
+            f"server_args_overrides set device={requested_type!r}, but stage placement "
+            f"resolved to {resolved_type!r}. Drop the "
+            f"override or set device={resolved_type!r}."
+        )
+    overrides["device"] = resolved_type
 
 
 def _apply_platform_decode_cuda_graph_backend(kwargs: dict[str, Any]) -> None:
@@ -86,13 +99,15 @@ def build_sglang_server_args(
     kwargs.setdefault("device", _platform_device_type())
     _apply_platform_decode_cuda_graph_backend(kwargs)
     server_args = ServerArgs(**kwargs)
+    server_args.resolve_once()
+    resolved = resolved_view(server_args)
     # DP attention is unsupported; reject at configuration time. Mixed
     # chunked prefill stays allowed (the bridge handles it natively).
-    if server_args.enable_dp_attention:
+    if resolved.enable_dp_attention:
         raise ValueError("sglang-omni does not support enable_dp_attention")
     # note (ratish): NVLS is controlled through the process environment and
     # symmetric memory is never set up, so either flag would run without effect.
-    if server_args.enable_nccl_nvls or server_args.enable_symm_mem:
+    if resolved.enable_nccl_nvls or resolved.enable_symm_mem:
         raise ValueError(
             "enable_nccl_nvls and enable_symm_mem are not supported; remove them. "
             "NVLS is enabled with NCCL_NVLS_ENABLE=1 in the shell or the stage "
@@ -101,9 +116,16 @@ def build_sglang_server_args(
     # Overlapped startup weight load leaves sentinel weights until the scheduler
     # calls finalize_startup_weight_load after capture; omni's bootstrap never
     # does, so profiling, weight sharing and capture would run on the sentinels.
-    if server_args.startup_weight_load_mode == "overlap":
+    if resolved.startup_weight_load_mode == "overlap":
         raise ValueError(
             "sglang-omni does not support startup_weight_load_mode='overlap'"
+        )
+    # note (ratish): the bootstrap allocates the KV pool without the
+    # resident-weight accounting an IPC-cached engine needs.
+    if resolved.weight_cache_mode != "off":
+        raise ValueError(
+            "sglang-omni does not support "
+            f"weight_cache_mode={resolved.weight_cache_mode!r}"
         )
     return server_args
 
@@ -118,7 +140,8 @@ def apply_encoder_mem_reserve(
     if encoder_mem_reserve == 0:
         return
 
-    current = server_args.mem_fraction_static
+    cfg = resolved_view(server_args)
+    current = cfg.mem_fraction_static
     if current is None:
         return
 

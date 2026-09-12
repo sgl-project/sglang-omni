@@ -7,8 +7,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
-from sglang.srt.server_args import ServerArgs
 from transformers import WhisperConfig
 
 import sglang_omni.model_runner.base as model_runner_base
@@ -55,8 +57,7 @@ def _tiny_config():
 
 
 def _sglang_prefill_ladder(max_bs: int) -> list[int]:
-    unresolved = ServerArgs.__new__(ServerArgs)
-    return ServerArgs._generate_prefill_cuda_graph_batch_sizes(unresolved, max_bs)
+    return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
 def test_arkasr_config_registered():

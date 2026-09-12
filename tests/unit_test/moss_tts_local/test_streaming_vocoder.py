@@ -3,8 +3,7 @@
 
 All tests are CPU-only and drive the scheduler hooks synchronously in the real
 pipeline order (chunks -> stream_done -> terminal payload replay). The fake
-codec implements the v2 streaming surface (persistent ``streaming()`` session,
-per-slot ``exec_mask``/offsets, per-slot ``reset``) with a decode whose output
+codec implements the native indexed streaming interface with a decode whose output
 depends on each slot's cumulative frame offset, so any state-advance error,
 cross-slot leak, or missed reset changes the waveform. The headline assertion
 is that streamed PCM concatenates to exactly the offline decode of the same
@@ -14,7 +13,6 @@ codes — the property the v2 codec provides by construction.
 from __future__ import annotations
 
 import queue
-from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -40,20 +38,6 @@ from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_
 N_VQ = 4
 SAMPLES_PER_FRAME = 4
 SAMPLE_RATE = 48000
-
-
-class _FakeStreamingState:
-    def __init__(self, batch_size: int) -> None:
-        self.device = torch.device("cpu")
-        self.offsets = torch.zeros(batch_size, dtype=torch.long)
-        self.exec_mask = torch.ones(batch_size, dtype=torch.bool)
-
-    def set_exec_mask(self, exec_mask: torch.Tensor) -> None:
-        self.exec_mask = exec_mask.clone().to(torch.bool)
-
-    def reset(self, reset_mask: torch.Tensor) -> None:
-        self.offsets[reset_mask] = 0
-        self.exec_mask[reset_mask] = True
 
 
 class FakeQuantizer:
@@ -91,110 +75,65 @@ class _FakeDecoderStage(nn.Module):
 
 
 class FakeCodec(nn.Module):
-    """Stateful fake of the MOSS-Audio-Tokenizer-v2 decode surface.
-
-    Frame ``t`` of slot ``b`` decodes to ``sum(codes[:, b, t]) + 1000 * o``
-    where ``o`` is the slot's cumulative frame offset, replicated over
-    SAMPLES_PER_FRAME samples (negated on the second channel). Offsets only
-    advance for exec-masked slots, mirroring the real codec.
-    """
+    """Native codec fake whose PCM depends on each persistent slot's offset."""
 
     def __init__(self) -> None:
         super().__init__()
         self.dummy = nn.Parameter(torch.zeros(1))
-        self._streaming_state: _FakeStreamingState | None = None
         self.config = SimpleNamespace(sampling_rate=SAMPLE_RATE)
-        self.attention_implementation = "flash_attention_2"
-        self.attention_implementation_calls: list[str] = []
         self.decoder = nn.ModuleList([_FakeDecoderStage()])
         self.quantizer = FakeQuantizer()
+        self.offsets: torch.Tensor | None = None
+        self.batch_shapes: list[tuple[int, ...]] = []
+        self.slot_ids: list[torch.Tensor] = []
         self.frame_calls = 0
         self.decode_calls = 0
-        self.decode_chunk_durations: list[float | None] = []
-        self.decode_decoders: list[nn.Module] = []
 
-    def set_attention_implementation(self, attention_implementation: str) -> None:
-        self.attention_implementation_calls.append(attention_implementation)
-        self.attention_implementation = attention_implementation
+    def initialize_decoder_state_pool(
+        self, state_capacity: int, scratch_capacity: int = 0
+    ) -> None:
+        if self.offsets is not None:
+            raise RuntimeError("already streaming")
+        self.offsets = torch.zeros(state_capacity + scratch_capacity, dtype=torch.long)
 
-    @contextmanager
-    def streaming(self, batch_size: int):
-        if self._streaming_state is not None:
-            raise RuntimeError("already streaming!")
-        self._streaming_state = _FakeStreamingState(batch_size)
-        try:
-            yield
-        finally:
-            self._streaming_state = None
+    def reset_decoder_state_slots(self, slot_ids: torch.Tensor) -> None:
+        assert self.offsets is not None
+        self.offsets[slot_ids.to("cpu")] = 0
 
-    def _set_streaming_exec_mask(self, exec_mask: torch.Tensor) -> None:
-        assert self._streaming_state is not None
-        self._streaming_state.set_exec_mask(exec_mask)
+    def close_decoder_state_pool(self) -> None:
+        self.offsets = None
 
-    def _decode_frame(self, codes: torch.Tensor, codes_lengths: torch.Tensor):
+    def decode_streaming_tensors(
+        self,
+        codes: torch.Tensor,
+        codes_lengths: torch.Tensor,
+        slot_ids: torch.Tensor,
+        valid_rows: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        assert self.offsets is not None
         self.frame_calls += 1
+        self.batch_shapes.append(tuple(codes.shape))
+        self.slot_ids.append(slot_ids.detach().to("cpu").clone())
         _, batch_size, step_t = codes.shape
-        state = self._streaming_state
         audio = torch.zeros(batch_size, 2, step_t * SAMPLES_PER_FRAME)
         audio_lengths = torch.zeros(batch_size, dtype=torch.long)
-        for b in range(batch_size):
-            if state is not None and not bool(state.exec_mask[b]):
+        for row, slot in enumerate(slot_ids.tolist()):
+            if not bool(valid_rows[row]):
                 continue
-            t_len = int(codes_lengths[b])
-            if t_len == 0:
-                continue
-            base = int(state.offsets[b]) if state is not None else 0
-            for t in range(t_len):
-                value = float(codes[:, b, t].sum()) + 1000.0 * (base + t)
-                start = t * SAMPLES_PER_FRAME
-                audio[b, 0, start : start + SAMPLES_PER_FRAME] = value
-                audio[b, 1, start : start + SAMPLES_PER_FRAME] = -value
-            audio_lengths[b] = t_len * SAMPLES_PER_FRAME
-            if state is not None:
-                state.offsets[b] += t_len
-        return SimpleNamespace(audio=audio, audio_lengths=audio_lengths)
+            length = int(codes_lengths[row])
+            base = int(self.offsets[slot])
+            for frame in range(length):
+                value = float(codes[:, row, frame].sum()) + 1000.0 * (base + frame)
+                start = frame * SAMPLES_PER_FRAME
+                audio[row, 0, start : start + SAMPLES_PER_FRAME] = value
+                audio[row, 1, start : start + SAMPLES_PER_FRAME] = -value
+            audio_lengths[row] = length * SAMPLES_PER_FRAME
+            self.offsets[slot] += length
+        return audio, audio_lengths
 
-    def decode(
-        self,
-        audio_codes: torch.Tensor,
-        *,
-        padding_mask: torch.Tensor | None = None,
-        return_dict: bool = True,
-        chunk_duration: float | None = None,
-        num_quantizers: int | None = None,
-    ):
+    def decode(self, *args, **kwargs):
         self.decode_calls += 1
-        self.decode_chunk_durations.append(chunk_duration)
-        self.decode_decoders.append(self.decoder)
-        assert return_dict
-        assert chunk_duration is None
-        if num_quantizers is not None:
-            audio_codes = audio_codes[:num_quantizers]
-        if padding_mask is None:
-            lengths = torch.full(
-                (audio_codes.shape[1],),
-                audio_codes.shape[2],
-                device=audio_codes.device,
-                dtype=torch.long,
-            )
-        else:
-            lengths = padding_mask.sum(dim=-1).long()
-        # note (Zhang Yiyang): full-sequence decode is stateless in the real
-        # codec — production runs it through the shared batched path
-        # (decode_codes_batch), which never consults a live streaming session's
-        # exec_mask/offsets; the fake mirrors that by ignoring _streaming_state.
-        _, batch_size, total = audio_codes.shape
-        audio = torch.zeros(batch_size, 2, total * SAMPLES_PER_FRAME)
-        audio_lengths = torch.zeros(batch_size, dtype=torch.long)
-        for b in range(batch_size):
-            t_len = int(lengths[b])
-            for t in range(t_len):
-                value = float(audio_codes[:, b, t].sum()) + 1000.0 * t
-                start = t * SAMPLES_PER_FRAME
-                audio[b, 0, start : start + SAMPLES_PER_FRAME] = value
-                audio[b, 1, start : start + SAMPLES_PER_FRAME] = -value
-            audio_lengths[b] = t_len * SAMPLES_PER_FRAME
-        return SimpleNamespace(audio=audio, audio_lengths=audio_lengths)
+        raise AssertionError("offline requests must use the batched decoder")
 
 
 class FakeProcessor:
@@ -204,27 +143,8 @@ class FakeProcessor:
         self.decode_calls = 0
 
     def decode_audio_codes(self, codes_list, *, return_stereo: bool = True):
-        # Mirrors the real processor: chunked decode inside its own streaming
-        # context, which the codec forbids while a session is live.
         self.decode_calls += 1
-        codec = self.audio_tokenizer
-        wavs = []
-        with codec.streaming(len(codes_list)):
-            for index, rows in enumerate(codes_list):
-                codes = rows[:, :N_VQ].T.unsqueeze(1)  # [n_vq, 1, T]
-                exec_mask = torch.zeros(len(codes_list), dtype=torch.bool)
-                exec_mask[index] = True
-                codec._set_streaming_exec_mask(exec_mask)
-                full = torch.zeros(
-                    N_VQ, len(codes_list), codes.shape[2], dtype=torch.long
-                )
-                full[:, index, :] = codes[:, 0, :]
-                lengths = torch.zeros(len(codes_list), dtype=torch.long)
-                lengths[index] = codes.shape[2]
-                result = codec._decode_frame(full, lengths)
-                n = int(result.audio_lengths[index])
-                wavs.append(result.audio[index, :, :n].to(torch.float32))
-        return wavs
+        raise AssertionError("vocoder must not re-enter processor decode")
 
 
 def reference_waveform(rows: torch.Tensor) -> torch.Tensor:
@@ -261,7 +181,7 @@ def _patch_vocoder_factory_loaders(
     )
     monkeypatch.setattr(
         stages,
-        "load_moss_tts_local_audio_vocoder",
+        "load_moss_audio_vocoder",
         lambda model_path, **kwargs: SimpleNamespace(
             model=codec,
             sample_rate=SAMPLE_RATE,
@@ -438,38 +358,133 @@ def test_default_session_streaming_lane_capacity(monkeypatch) -> None:
     # offline reserve = 16; the freed lane goes to streaming, not the trash.
     assert scheduler._stream_slots == 16
     assert not hasattr(session, "_offline_slots")
-    assert session._batch_size == 16
+    assert session._stream_slots == 16
+    assert session._graph_batch_sizes() == [1, 2, 4, 8, 12, 16]
 
 
-def test_streaming_session_forces_sdpa_and_restores_codec_backend() -> None:
+def test_streaming_session_initializes_and_closes_codec_state() -> None:
+    codec = FakeCodec()
+    session = _CodecStreamSession(codec, stream_slots=2, n_vq=N_VQ)
+    assert codec.offsets.tolist() == [0, 0, 0, 0]
+    session.close()
+    assert codec.offsets is None
+
+
+def test_compact_native_session_uses_active_batch_and_reuses_sparse_slots() -> None:
     codec = FakeCodec()
     session = _CodecStreamSession(
         codec,
         stream_slots=2,
         n_vq=N_VQ,
     )
+    slot_a = session.acquire()
+    slot_b = session.acquire()
+    assert (slot_a, slot_b) == (1, 0)
 
-    assert codec.attention_implementation == "sdpa"
-    assert codec.attention_implementation_calls == ["sdpa"]
+    codes_a = _rows(2, seed=101)[:, 1:].transpose(0, 1).contiguous()
+    codes_b = _rows(1, seed=102)[:, 1:].transpose(0, 1).contiguous()
+    first = session.step({slot_a: codes_a})
+    assert first[slot_a].shape[-1] == 2 * SAMPLES_PER_FRAME
+    both = session.step({slot_a: codes_b, slot_b: codes_b})
+    assert set(both) == {slot_a, slot_b}
+    assert codec.batch_shapes == [
+        (N_VQ, 1, 2),
+        (N_VQ, 2, 1),
+    ]
+    assert [slots.tolist() for slots in codec.slot_ids] == [[1], [1, 0]]
 
+    session.release(slot_a)
+    reused = session.acquire()
+    assert reused == slot_a
+    reset_audio = session.step({reused: codes_b})[reused]
+    expected = reference_waveform(_rows(1, seed=102)[:, 1:]).numpy()
+    np.testing.assert_array_equal(reset_audio.numpy(), expected)
+    session.close()
+    assert codec.offsets is None
+
+
+def test_compact_native_session_replays_graph_and_slices_bucket() -> None:
+    codec = FakeCodec()
+    session = _CodecStreamSession(
+        codec,
+        stream_slots=3,
+        n_vq=N_VQ,
+    )
+    runner = _FakeVocoderCudaGraphRunner(
+        bucket_size=2,
+        samples_per_frame=SAMPLES_PER_FRAME,
+    )
+    session._cg_runner = runner
+    slot = session.acquire()
+    assert slot == 2
+    codes = _rows(5, seed=103)[:, 1:].transpose(0, 1).contiguous()
+
+    output = session.step({slot: codes})[slot]
+
+    assert output.shape == (2, 5 * SAMPLES_PER_FRAME)
+    assert output[:, 0].tolist() == [3.0, -3.0]
+    assert runner.calls == [((N_VQ, 1, 5), [2])]
     session.close()
 
-    assert codec.attention_implementation == "flash_attention_2"
-    assert codec.attention_implementation_calls == ["sdpa", "flash_attention_2"]
+
+def test_compact_runner_requires_scratch_rows() -> None:
+    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+        MossVocoderCudaGraphRunner,
+    )
+
+    with pytest.raises(ValueError, match="scratch_capacity"):
+        MossVocoderCudaGraphRunner(
+            FakeCodec(),
+            real_state_capacity=4,
+            scratch_capacity=1,
+            batch_sizes=[1, 2],
+            frame_sizes=[5],
+            num_quantizers=N_VQ,
+        )
 
 
-def test_streaming_session_restores_backend_when_streaming_setup_fails() -> None:
-    class FailingCodec(FakeCodec):
-        def streaming(self, batch_size: int):
-            del batch_size
-            raise RuntimeError("streaming setup failed")
+def test_runner_skips_capture_on_cpu() -> None:
+    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+        MossVocoderCudaGraphRunner,
+    )
 
-    codec = FailingCodec()
-    with pytest.raises(RuntimeError, match="streaming setup failed"):
-        _CodecStreamSession(codec, stream_slots=1, n_vq=N_VQ)
+    runner = MossVocoderCudaGraphRunner(
+        FakeCodec(),
+        real_state_capacity=4,
+        scratch_capacity=4,
+        batch_sizes=[1, 2, 4],
+        frame_sizes=[5],
+        num_quantizers=N_VQ,
+    )
+    assert runner.warmup() == []
+    assert runner.capture_sizes == []
 
-    assert codec.attention_implementation == "flash_attention_2"
-    assert codec.attention_implementation_calls == ["sdpa", "flash_attention_2"]
+
+@pytest.mark.parametrize("graph_miss", [False, True])
+def test_streaming_session_padding_preserves_inactive_slots(graph_miss) -> None:
+    codec = FakeCodec()
+    session = _CodecStreamSession(
+        codec,
+        stream_slots=8,
+        n_vq=N_VQ,
+    )
+    # An idle request retains its state while a sparse batch uses scratch padding.
+    codes = _rows(2, seed=104)[:, 1:].transpose(0, 1).contiguous()
+    session.step({2: codes})
+    expected_offsets = codec.offsets.clone()
+    if graph_miss:
+        session._cg_runner = _FakeCudaGraphRunner([5])
+
+    active_slots = [7, 0, 4]
+    output = session.step({slot: codes for slot in active_slots})
+
+    assert codec.batch_shapes[-1] == (N_VQ, 4, 2)
+    assert codec.slot_ids[-1].tolist() == [7, 0, 4, 8]
+    for slot in active_slots:
+        torch.testing.assert_close(output[slot], reference_waveform(codes.T))
+    expected_offsets[active_slots] = 2
+    torch.testing.assert_close(codec.offsets, expected_offsets)
+    session.close()
 
 
 def test_factory_default_decouples_first_chunk_from_join_floor(monkeypatch) -> None:
@@ -1058,7 +1073,7 @@ def test_non_streaming_path_leaves_startup_session_untouched(monkeypatch) -> Non
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
     startup_session = scheduler._ensure_session()
-    assert scheduler._codec._streaming_state is not None
+    assert scheduler._codec.offsets is not None
 
     rows = _rows(11, seed=59)
     original_decoder = scheduler._codec.decoder
@@ -1072,7 +1087,7 @@ def test_non_streaming_path_leaves_startup_session_untouched(monkeypatch) -> Non
     assert scheduler._codec.quantizer.calls == 1
     assert scheduler._codec.decoder is original_decoder
     assert scheduler._session is startup_session
-    assert scheduler._codec._streaming_state is not None
+    assert scheduler._codec.offsets is not None
     np.testing.assert_array_equal(
         _decode_audio(result.data), reference_waveform(rows[:, 1:]).numpy()
     )
@@ -1225,35 +1240,37 @@ def test_stop_closes_persistent_streaming_session(monkeypatch) -> None:
     scheduler = _make_scheduler(monkeypatch, processor)
     scheduler._on_chunk("req", _stream_item(_rows(1, seed=74)[0], _metadata()))
     assert scheduler._session is not None
-    assert scheduler._codec._streaming_state is not None
+    assert scheduler._codec.offsets is not None
 
     scheduler.stop()
 
     assert scheduler._session is None
     assert scheduler._stream_states == {}
-    assert scheduler._codec._streaming_state is None
+    assert scheduler._codec.offsets is None
 
     # Reusing the same codec instance after stop must be able to open a fresh
     # streaming context instead of tripping the codec's nested-session guard.
     restarted = _make_scheduler(monkeypatch, processor)
     restarted._on_chunk("req2", _stream_item(_rows(1, seed=75)[0], _metadata()))
     assert restarted._session is not None
-    assert restarted._codec._streaming_state is not None
+    assert restarted._codec.offsets is not None
     restarted.stop()
 
 
 class _FailingCodec(FakeCodec):
-    """FakeCodec whose Nth ``_decode_frame`` call raises."""
+    """FakeCodec whose Nth streaming decode call raises."""
 
     def __init__(self, fail_on_call: int) -> None:
         super().__init__()
         self._fail_on_call = fail_on_call
 
-    def _decode_frame(self, codes: torch.Tensor, codes_lengths: torch.Tensor):
+    def decode_streaming_tensors(self, codes, codes_lengths, slot_ids, valid_rows):
         if self.frame_calls + 1 == self._fail_on_call:
             self.frame_calls += 1
             raise RuntimeError("codec decode exploded")
-        return super()._decode_frame(codes, codes_lengths)
+        return super().decode_streaming_tensors(
+            codes, codes_lengths, slot_ids, valid_rows
+        )
 
 
 def test_decode_step_failure_fails_participants_only(monkeypatch) -> None:
@@ -1359,8 +1376,41 @@ class _FakeCudaGraphRunner:
     def captured_frames(self) -> list:
         return list(self._frames)
 
-    def decode_step(self, codes_step, exec_mask):
+    def decode_step(self, codes_step, state_slot_ids, valid_rows=None):
         return None
+
+
+class _FakeVocoderCudaGraphRunner:
+    """Small runner double for the native compact replay contract."""
+
+    def __init__(self, *, bucket_size: int, samples_per_frame: int) -> None:
+        self.bucket_size = bucket_size
+        self.samples_per_frame = samples_per_frame
+        self.calls: list[tuple[tuple[int, ...], list[int]]] = []
+
+    def captured_frames(self) -> list[int]:
+        return [5]
+
+    def decode_step(
+        self,
+        codes_step: torch.Tensor,
+        state_slot_ids: torch.Tensor,
+        valid_rows: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.calls.append(
+            (tuple(codes_step.shape), state_slot_ids.detach().to("cpu").tolist())
+        )
+        _, batch_size, step_t = codes_step.shape
+        audio = torch.zeros(
+            self.bucket_size,
+            2,
+            step_t * self.samples_per_frame,
+        )
+        audio[:batch_size, 0].fill_(3.0)
+        audio[:batch_size, 1].fill_(-3.0)
+        lengths = torch.zeros(self.bucket_size, dtype=torch.long)
+        lengths[:batch_size] = step_t * self.samples_per_frame
+        return audio, lengths
 
 
 def _install_fake_capture(monkeypatch, calls: list, *, seal: bool = True) -> None:
@@ -1381,23 +1431,32 @@ def _install_fake_capture(monkeypatch, calls: list, *, seal: bool = True) -> Non
 
 
 def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
-    scheduler = _make_scheduler(monkeypatch, FakeProcessor(), cuda_graph=False)
-    assert scheduler._cuda_graph is False
-    scheduler2 = _make_scheduler(
-        monkeypatch,
-        FakeProcessor(),
-        cuda_graph_frames=[5, 25],
-        cuda_graph_min_free_gb=7.0,
+    from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
+
+    config = MossTTSLocalPipelineConfig(
+        model_path="fake-model", vocoder_cuda_graph=False
     )
-    assert scheduler2._cuda_graph_frames == [5, 25]
-    assert scheduler2._cuda_graph_min_free_gb == 7.0
+    scheduler = _make_scheduler(
+        monkeypatch, FakeProcessor(), **config.stage_factory_kwargs("vocoder")
+    )
+    assert scheduler._vocoder_cuda_graph is False
+    config2 = MossTTSLocalPipelineConfig(
+        model_path="fake-model",
+        vocoder_cuda_graph_frames=[5, 25],
+        vocoder_cuda_graph_min_free_gb=7.0,
+    )
+    scheduler2 = _make_scheduler(
+        monkeypatch, FakeProcessor(), **config2.stage_factory_kwargs("vocoder")
+    )
+    assert scheduler2._vocoder_cuda_graph_frames == [5, 25]
+    assert scheduler2._vocoder_cuda_graph_min_free_gb == 7.0
 
 
 def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> None:
     calls: list[bool | None] = []
 
-    def resolve(cuda_graph: bool | None) -> bool:
-        calls.append(cuda_graph)
+    def resolve(vocoder_cuda_graph: bool | None) -> bool:
+        calls.append(vocoder_cuda_graph)
         raise ValueError("unsafe graph")
 
     monkeypatch.setattr(stages, "resolve_vocoder_cuda_graph", resolve)
@@ -1408,11 +1467,22 @@ def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> No
     )
 
     with pytest.raises(ValueError, match="unsafe graph"):
-        stages.create_vocoder_executor("fake-model", device="cpu", cuda_graph=True)
+        stages.create_vocoder_executor(
+            "fake-model", device="cpu", vocoder_cuda_graph=True
+        )
     assert calls == [True]
 
 
-def test_default_cuda_graph_frames_cover_stream_chunk_exactly(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({}, list(range(1, 26))),
+        ({"stream_chunk_frames": 4, "initial_chunk_frames": 2}, [1, 2, 3, 4]),
+    ],
+)
+def test_default_cuda_graph_frames_cover_stream_chunk_exactly(
+    monkeypatch, kwargs, expected
+) -> None:
     captured: list[list[int]] = []
     monkeypatch.setattr(
         MossTTSLocalStreamingVocoderScheduler, "_codec_on_cuda", lambda self: True
@@ -1426,16 +1496,13 @@ def test_default_cuda_graph_frames_cover_stream_chunk_exactly(monkeypatch) -> No
 
     monkeypatch.setattr(_CodecStreamSession, "warmup_cuda_graph", fake_warmup)
 
-    scheduler = _make_scheduler(
-        monkeypatch,
-        FakeProcessor(),
-        stream_chunk_frames=4,
-        initial_chunk_frames=2,
-    )
-
-    assert captured == [[1, 2, 3, 4]]
-    assert scheduler._session is not None
-    assert scheduler._session.captured_frames() == [1, 2, 3, 4]
+    scheduler = _make_scheduler(monkeypatch, FakeProcessor(), **kwargs)
+    try:
+        assert captured == [expected]
+        assert scheduler._session is not None
+        assert scheduler._session.captured_frames() == expected
+    finally:
+        scheduler.stop()
 
 
 def test_create_vocoder_executor_uses_separate_codec(monkeypatch) -> None:
@@ -1507,7 +1574,7 @@ def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> No
     )
     monkeypatch.setattr(
         stages,
-        "load_moss_tts_local_audio_vocoder",
+        "load_moss_audio_vocoder",
         fake_load_audio_vocoder,
     )
 
@@ -1516,7 +1583,7 @@ def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> No
     assert loaded_codec_paths == ["codec-from-model-config"]
 
 
-def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
+def test_pipeline_config_injects_vocoder_graph_settings() -> None:
     from sglang_omni.models.moss_tts_local.config import (
         MossTTSLocalPipelineConfig,
         MossTTSLocalSplitPipelineConfig,
@@ -1528,40 +1595,40 @@ def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
     assert voc.factory.compute_dtype == "bfloat16"
     assert voc.factory.attention_backend == "auto"
     kwargs = cfg.stage_factory_kwargs("vocoder")
-    assert kwargs["cuda_graph"] is True
-    assert kwargs["cuda_graph_frames"] is None
-    assert kwargs["cuda_graph_min_free_gb"] == 3.0
+    assert kwargs["vocoder_cuda_graph"] is True
+    assert kwargs["vocoder_cuda_graph_frames"] is None
+    assert kwargs["vocoder_cuda_graph_min_free_gb"] == 3.0
 
     cfg2 = MossTTSLocalPipelineConfig(
         model_path="x",
-        cuda_graph=False,
-        cuda_graph_frames=[5, 25],
-        cuda_graph_min_free_gb=4.5,
+        vocoder_cuda_graph=False,
+        vocoder_cuda_graph_frames=[5, 25],
+        vocoder_cuda_graph_min_free_gb=4.5,
     )
     kwargs2 = cfg2.stage_factory_kwargs("vocoder")
-    assert kwargs2["cuda_graph"] is False
-    assert kwargs2["cuda_graph_frames"] == [5, 25]
-    assert kwargs2["cuda_graph_min_free_gb"] == 4.5
+    assert kwargs2["vocoder_cuda_graph"] is False
+    assert kwargs2["vocoder_cuda_graph_frames"] == [5, 25]
+    assert kwargs2["vocoder_cuda_graph_min_free_gb"] == 4.5
 
     # The split variant overrides `stages`; the injection must still reach its vocoder.
-    split = MossTTSLocalSplitPipelineConfig(model_path="x", cuda_graph=False)
-    assert split.stage_factory_kwargs("vocoder")["cuda_graph"] is False
+    split = MossTTSLocalSplitPipelineConfig(model_path="x", vocoder_cuda_graph=False)
+    assert split.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
 
 
-def test_pipeline_config_rejects_invalid_cuda_graph_settings() -> None:
+def test_pipeline_config_rejects_invalid_vocoder_graph_settings() -> None:
     from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 
-    # [] is ambiguous (cuda_graph: false is the disable switch) -> reject, not "use default".
-    with pytest.raises(ValueError, match="cuda_graph_frames must be non-empty"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_frames=[])
+    # note (Zhang Yiyang): Use vocoder_cuda_graph: false to disable graphs.
+    with pytest.raises(ValueError, match="vocoder_cuda_graph_frames must be non-empty"):
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_frames=[])
     # Non-positive frame counts must error, not be silently filtered.
     with pytest.raises(ValueError, match="positive ints"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_frames=[5, 0])
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_frames=[5, 0])
     with pytest.raises(ValueError, match="positive ints"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_frames=[-1])
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_frames=[-1])
     # Negative VRAM headroom is nonsensical (would disable the guard); error.
-    with pytest.raises(ValueError, match="cuda_graph_min_free_gb"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_min_free_gb=-1.0)
+    with pytest.raises(ValueError, match="vocoder_cuda_graph_min_free_gb"):
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_min_free_gb=-1.0)
 
 
 def test_scheduler_rejects_frame_above_max_step(monkeypatch) -> None:
@@ -1573,7 +1640,7 @@ def test_scheduler_rejects_frame_above_max_step(monkeypatch) -> None:
             n_vq=N_VQ,
             sample_rate=SAMPLE_RATE,
             max_step_frames=25,
-            cuda_graph_frames=[5, 100],
+            vocoder_cuda_graph_frames=[5, 100],
         )
 
 

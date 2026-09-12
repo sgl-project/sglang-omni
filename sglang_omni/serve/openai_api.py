@@ -1223,7 +1223,6 @@ def _register_realtime(app: FastAPI) -> None:
         model_name=model_name,
         supports_audio_output=app.state.supports_realtime_audio_output,
         transcription_config=app.state.realtime_transcription,
-        audio_chunking=app.state.audio_chunking,
         smart_turn_model=smart_turn_model,
     )
     app.state.realtime_manager = manager

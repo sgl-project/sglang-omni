@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.rocm import RocmDeviceMixin
 
 from sglang_omni.platforms.interface import OmniPlatform
@@ -83,13 +84,15 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
             server_args, model_config, model_arch_override
         )
 
+        cfg = resolved_view(server_args)
+        moe_runner_backend = cfg.moe_runner_backend
         if model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
-        ) and server_args.moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
+        ) and moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
             raise ValueError(
                 "Qwen3-Omni on AMD ROCm cannot use "
-                f"moe_runner_backend={server_args.moe_runner_backend!r}; the "
+                f"moe_runner_backend={moe_runner_backend!r}; the "
                 "CUTLASS MoE runners are NVIDIA CUDA-only. Leave the backend as "
                 "'auto' or pass 'aiter' or 'triton'."
             )

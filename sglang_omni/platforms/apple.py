@@ -56,7 +56,7 @@ class AppleOmniPlatform(OmniPlatform):
 
     def get_device_total_memory(self, device_id: int = 0) -> int:
         self._validate_device_id(device_id)
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx
@@ -67,7 +67,7 @@ class AppleOmniPlatform(OmniPlatform):
     def get_current_memory_usage(self, device: torch.device | None = None) -> float:
         if device is not None and device.type != "mps":
             raise ValueError(f"Expected an MPS device, got {device}")
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx
@@ -96,7 +96,7 @@ class AppleOmniPlatform(OmniPlatform):
         return TransportKind.SHM
 
     def empty_cache(self) -> None:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx
@@ -106,7 +106,7 @@ class AppleOmniPlatform(OmniPlatform):
             torch.mps.empty_cache()
 
     def synchronize(self) -> None:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx

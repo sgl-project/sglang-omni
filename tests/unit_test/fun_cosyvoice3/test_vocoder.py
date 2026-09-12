@@ -249,6 +249,24 @@ def _codes(length: int, value: int = 1) -> torch.Tensor:
     return torch.full((length,), value, dtype=torch.long)
 
 
+def _flow_requests(totals: list[int]) -> list[stages._PreparedFlowRequest]:
+    flow_input = stages.FlowBatchInput(
+        token=torch.empty((1, 0), dtype=torch.int32),
+        prompt_token=torch.empty((1, 0), dtype=torch.int32),
+        prompt_feat=torch.empty((1, 0, 80)),
+        embedding=torch.empty((1, 192)),
+    )
+    return [
+        stages._PreparedFlowRequest(
+            index=index,
+            sample_rate=24000,
+            flow_input=flow_input,
+            total_mel_frames=total,
+        )
+        for index, total in enumerate(totals)
+    ]
+
+
 def _install_fake_batch_adapter(monkeypatch, calls: list[list]) -> None:
     def fake_infer(flow, inputs):
         del flow
@@ -292,33 +310,94 @@ def test_decode_payload_size_one_uses_batch_adapter(monkeypatch) -> None:
     assert [len(call) for call in batch_calls] == [1]
 
 
-def test_decode_batch_singleton_buckets_use_batch_adapter(monkeypatch) -> None:
+def test_decode_batch_merges_flow_preserving_hift_groups_and_order(
+    monkeypatch,
+) -> None:
+    items = [
+        (_state(sample_rate=16003, prompt_tokens=0), _codes(50, 3)),
+        (_state(sample_rate=16001, prompt_tokens=0), _codes(24, 1)),
+        (_state(sample_rate=16004, prompt_tokens=0), _codes(51, 4)),
+        (_state(sample_rate=16002, prompt_tokens=0), _codes(25, 2)),
+    ]
+
     flow = _BatchCapableFakeFlow()
     hift = _FakeHiFT()
-    batch_calls: list[list] = []
-    _install_fake_batch_adapter(monkeypatch, batch_calls)
-    vocoder = stages._CosyVoice3Vocoder(flow, hift)
+    flow_calls: list[list] = []
+    _install_fake_batch_adapter(monkeypatch, flow_calls)
+    vocoder = stages._CosyVoice3Vocoder(
+        flow,
+        hift,
+        flow_merge_max_gap_frames=4,
+        flow_merge_pad_budget_percent=25,
+    )
+    results = asyncio.run(vocoder.decode_batch(items))
+    hift_memberships = [
+        tuple(int(value) for value in call[0][:, 0, 0].tolist()) for call in hift.calls
+    ]
 
-    asyncio.run(vocoder.decode_batch([(_state(), _codes(2)), (_state(), _codes(26))]))
+    assert [sample_rate for _, sample_rate in results] == [16003, 16001, 16004, 16002]
+    assert [[item.token.shape[1] for item in call] for call in flow_calls] == [
+        [24, 25],
+        [50, 51],
+    ]
+    # Mel lengths 48/50 vs 100/102 exceed default HiFT waste=1.5, so HiFT
+    # keeps the same cut Flow already made. Result order is still original.
+    assert hift_memberships == [(1, 2), (3, 4)]
 
-    assert [len(call) for call in batch_calls] == [1, 1]
-    assert len(hift.calls) == 2
 
+@pytest.mark.parametrize(
+    (
+        "totals",
+        "flow_merge_max_gap_frames",
+        "flow_merge_pad_budget_percent",
+        "expected",
+    ),
+    [
+        pytest.param(
+            [10, 13, 30, 33],
+            4,
+            5,
+            [[10], [13], [30, 33]],
+            id="global-padding-cap",
+        ),
+        pytest.param(
+            [10, 10, 10, 11, 13],
+            3,
+            10,
+            [[10, 10, 10], [11, 13]],
+            id="minimum-padded-work",
+        ),
+        pytest.param(
+            [10, 10, 20, 40],
+            40,
+            30,
+            [[10, 10, 20], [40]],
+            id="maximum-merged-span",
+        ),
+        pytest.param(
+            [450] + [500] * 15,
+            384,
+            25,
+            [[450] + [500] * 15],
+            id="b16-production-regime",
+        ),
+    ],
+)
+def test_flow_merge_partition_policy(
+    totals: list[int],
+    flow_merge_max_gap_frames: int,
+    flow_merge_pad_budget_percent: float,
+    expected: list[list[int]],
+) -> None:
+    groups = stages.adaptive_flow_requests_grouping(
+        _flow_requests(totals),
+        flow_merge_max_gap_frames=flow_merge_max_gap_frames,
+        flow_merge_pad_budget_percent=flow_merge_pad_budget_percent,
+    )
 
-def test_decode_batch_same_bucket_batches_flow_once(monkeypatch) -> None:
-    flow = _BatchCapableFakeFlow()
-    hift = _FakeHiFT()
-    batch_calls: list[list] = []
-    _install_fake_batch_adapter(monkeypatch, batch_calls)
-    vocoder = stages._CosyVoice3Vocoder(flow, hift)
-
-    asyncio.run(vocoder.decode_batch([(_state(), _codes(2)), (_state(), _codes(3))]))
-
-    assert len(batch_calls) == 1
-    assert len(batch_calls[0]) == 2
-    # HiFT runs once over the padded batch rather than once per request.
-    assert len(hift.calls) == 1
-    assert hift.calls[0][0].shape[0] == 2
+    assert [
+        [request.total_mel_frames for request in group] for group in groups
+    ] == expected
 
 
 def test_decode_batch_runs_hift_once_over_padded_mels(monkeypatch) -> None:
@@ -368,45 +447,6 @@ def test_decode_batch_long_singleton_uses_batch_adapter(monkeypatch) -> None:
 
     assert [len(call) for call in batch_calls] == [1]
     assert batch_calls[0][0].token.shape[1] == 2200
-
-
-def test_decode_batch_different_buckets_do_not_share_padding(monkeypatch) -> None:
-    flow = _BatchCapableFakeFlow()
-    batch_calls: list[list] = []
-    _install_fake_batch_adapter(monkeypatch, batch_calls)
-    vocoder = stages._CosyVoice3Vocoder(flow, _FakeHiFT())
-    items = [
-        (_state(), _codes(9)),
-        (_state(), _codes(10)),
-        (_state(), _codes(25)),
-        (_state(), _codes(26)),
-    ]
-
-    asyncio.run(vocoder.decode_batch(items))
-
-    assert [len(call) for call in batch_calls] == [2, 2]
-    assert [[item.token.shape[1] for item in call] for call in batch_calls] == [
-        [9, 10],
-        [25, 26],
-    ]
-
-
-def test_decode_batch_preserves_input_order_across_buckets(monkeypatch) -> None:
-    flow = _BatchCapableFakeFlow()
-    batch_calls: list[list] = []
-    _install_fake_batch_adapter(monkeypatch, batch_calls)
-    vocoder = stages._CosyVoice3Vocoder(flow, _FakeHiFT())
-    items = [
-        (_state(sample_rate=16001), _codes(9, 1)),
-        (_state(sample_rate=16002), _codes(25, 2)),
-        (_state(sample_rate=16003), _codes(10, 3)),
-        (_state(sample_rate=16004), _codes(26, 4)),
-    ]
-
-    results = asyncio.run(vocoder.decode_batch(items))
-
-    assert [sample_rate for _, sample_rate in results] == [16001, 16002, 16003, 16004]
-    assert [len(call) for call in batch_calls] == [2, 2]
 
 
 def test_vocoder_rejects_non_pytorch_flow_estimator() -> None:
@@ -473,25 +513,18 @@ def test_decode_batch_does_not_retry_after_batch_failure(monkeypatch) -> None:
         )
 
 
-def test_vocoder_rejects_non_positive_flow_bucket_size() -> None:
-    with pytest.raises(ValueError, match="flow_batch_bucket_frames"):
-        stages._CosyVoice3Vocoder(
-            _BatchCapableFakeFlow(), _FakeHiFT(), flow_batch_bucket_frames=0
-        )
-
-
-def test_flow_scheduler_cost_rounds_to_bucket() -> None:
-    vocoder = stages._CosyVoice3Vocoder(
-        _BatchCapableFakeFlow(), _FakeHiFT(), flow_batch_bucket_frames=50
-    )
+def test_flow_scheduler_cost_uses_exact_frames() -> None:
+    vocoder = stages._CosyVoice3Vocoder(_BatchCapableFakeFlow(), _FakeHiFT())
     state = _state(prompt_tokens=1)
     state.audio_codes = _codes(2)
 
-    assert vocoder._flow_scheduler_cost(_payload(state)) == 50
+    assert vocoder._flow_scheduler_cost(_payload(state)) == 6
 
 
 def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None:
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
     monkeypatch.setattr(
         stages,
@@ -521,7 +554,9 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
 
 
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
     monkeypatch.setattr(
         stages,
@@ -539,6 +574,8 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
     ), "default admission budget no longer holds a useful batch"
     assert scheduler._max_batch_size == 16
     assert scheduler._max_batch_wait_s == pytest.approx(0.03)
+    assert scheduler._vocoder._flow_merge_max_gap_frames == 384
+    assert scheduler._vocoder._flow_merge_pad_budget_percent == 25.0
 
 
 def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> None:
@@ -546,7 +583,9 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
 
     fake_flow = _BatchCapableFakeFlow()
     fake_hift = _FakeHiFT()
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
@@ -570,8 +609,9 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         dtype="float16",
         max_batch_size=6,
         max_batch_wait_ms=7,
-        flow_batch_bucket_frames=100,
         flow_batch_admission_frames=200,
+        flow_merge_max_gap_frames=0,
+        flow_merge_pad_budget_percent=0,
     )
 
     assert isinstance(scheduler, FunCosyVoice3StreamingVocoderScheduler)
@@ -579,9 +619,11 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     assert scheduler._max_batch_wait_s == pytest.approx(0.007)
     assert scheduler._max_batch_cost == 200
     assert callable(scheduler._request_cost_fn)
+    assert scheduler._vocoder._flow_merge_max_gap_frames == 0
+    assert scheduler._vocoder._flow_merge_pad_budget_percent == 0
     state = _state(prompt_tokens=1)
     state.audio_codes = _codes(2)
-    assert scheduler._request_cost_fn(_payload(state)) == 100
+    assert scheduler._request_cost_fn(_payload(state)) == 6
     assert captured == {
         "checkpoint_dir": "/checkpoint",
         "device": "cpu",
@@ -592,7 +634,9 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
 
 def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
@@ -618,7 +662,9 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
 
 
 def _executor_compiles(monkeypatch, **kwargs) -> bool:
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
     monkeypatch.setattr(
         stages,
@@ -638,9 +684,9 @@ def _executor_compiles(monkeypatch, **kwargs) -> bool:
     return bool(compiled)
 
 
-def test_create_vocoder_executor_compiles_dit_by_default(monkeypatch) -> None:
-    assert _executor_compiles(monkeypatch)
-    assert not _executor_compiles(monkeypatch, enable_dit_torch_compile=False)
+def test_create_vocoder_executor_skips_dit_compile_by_default(monkeypatch) -> None:
+    assert not _executor_compiles(monkeypatch)
+    assert _executor_compiles(monkeypatch, enable_dit_torch_compile=True)
 
 
 def test_create_vocoder_executor_trt_alone_skips_the_default_compile(
@@ -782,7 +828,9 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
 def test_create_vocoder_executor_rejects_non_positive_admission_budget(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
 
     with pytest.raises(ValueError, match="flow_batch_admission_frames"):
         stages.create_vocoder_executor(
@@ -792,7 +840,7 @@ def test_create_vocoder_executor_rejects_non_positive_admission_budget(
         )
 
 
-def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
+def test_pipeline_config_sets_flow_batch_admission_by_default() -> None:
     vocoder_stage = next(
         stage
         for stage in FunCosyVoice3PipelineConfig(model_path="model").stages
@@ -801,8 +849,9 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
 
     assert vocoder_stage.factory.model_dump(exclude_none=True) == {
         "dtype": "bfloat16",
-        "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 8000,
+        "flow_merge_max_gap_frames": 384,
+        "flow_merge_pad_budget_percent": 25.0,
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
         "enable_flow_estimator_trt": False,

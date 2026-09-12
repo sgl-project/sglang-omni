@@ -56,7 +56,7 @@ Install the matching CPU SGLang build:
 ```bash
 git clone https://github.com/sgl-project/sglang ../sglang
 cd ../sglang
-git checkout v0.5.18
+git checkout v0.5.19
 
 cd python
 cp pyproject_cpu.toml pyproject.toml

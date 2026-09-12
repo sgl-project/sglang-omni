@@ -6,15 +6,16 @@ from __future__ import annotations
 import importlib
 import logging
 import time
-from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
+from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
@@ -39,7 +40,7 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.device import resolve_device_spec
+from sglang_omni.utils.device import resolve_concrete_device
 
 # Note (xinran): This is an admission budget, not a maximum supported request
 # length. The scheduler admits a request that exceeds it as a singleton Flow
@@ -793,7 +794,7 @@ def create_preprocessing_executor(
 def create_sglang_tts_engine_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
@@ -824,6 +825,92 @@ class _PreparedFlowRequest:
     index: int
     sample_rate: int
     flow_input: FlowBatchInput
+    total_mel_frames: int
+
+
+def adaptive_flow_requests_grouping(
+    requests: Sequence[_PreparedFlowRequest],
+    *,
+    flow_merge_max_gap_frames: int,
+    flow_merge_pad_budget_percent: float,
+) -> list[list[_PreparedFlowRequest]]:
+    """Adaptive flow grouping to merge requests with similar padding waste.
+
+    Note (chenyang):
+    detailed discussion in https://github.com/sgl-project/sglang-omni/pull/1899
+    """
+    ordered_requests = tuple(
+        sorted(requests, key=lambda request: (request.total_mel_frames, request.index))
+    )
+    if not ordered_requests:
+        return []
+
+    non_patching_workload = sum(
+        request.total_mel_frames for request in ordered_requests
+    )
+    request_count = len(ordered_requests)
+
+    @lru_cache(maxsize=None)
+    def optimal_suffix_partition(
+        suffix_start: int,
+        remaining_group_count: int,
+        current_max_group_gap_frames: int,
+    ) -> tuple[int, int, tuple[int, ...]] | None:
+        if remaining_group_count == 0:
+            if suffix_start == request_count:
+                return (0, current_max_group_gap_frames, ())
+            return None
+        if request_count - suffix_start < remaining_group_count:
+            return None
+
+        best_plan: tuple[int, int, tuple[int, ...]] | None = None
+        shortest_frames = ordered_requests[suffix_start].total_mel_frames
+        group_end_limit = request_count - remaining_group_count + 1
+        # Note (chenyang): group_end_limit is max possible end index
+        # for the current group, since each remaining group must have
+        # at least one request.
+        for group_end in range(suffix_start + 1, group_end_limit + 1):
+            longest_frames = ordered_requests[group_end - 1].total_mel_frames
+            group_gap_frames = longest_frames - shortest_frames
+            if group_gap_frames > flow_merge_max_gap_frames:
+                break
+            suffix_plan = optimal_suffix_partition(
+                suffix_start=group_end,
+                remaining_group_count=remaining_group_count - 1,
+                current_max_group_gap_frames=max(
+                    current_max_group_gap_frames, group_gap_frames
+                ),
+            )
+            if suffix_plan is None:
+                continue
+            candidate = (
+                (group_end - suffix_start) * longest_frames + suffix_plan[0],
+                suffix_plan[1],
+                (group_end,) + suffix_plan[2],
+            )
+            if best_plan is None or candidate < best_plan:
+                best_plan = candidate
+        return best_plan
+
+    for group_count in range(1, request_count + 1):
+        plan = optimal_suffix_partition(
+            suffix_start=0,
+            remaining_group_count=group_count,
+            current_max_group_gap_frames=0,
+        )
+        if (
+            plan is not None
+            and (plan[0] / non_patching_workload - 1) * 100
+            <= flow_merge_pad_budget_percent + 1e-9
+        ):
+            start = 0
+            groups: list[list[_PreparedFlowRequest]] = []
+            for end in plan[2]:
+                groups.append(list(ordered_requests[start:end]))
+                start = end
+            return groups
+
+    raise AssertionError("valid Flow requests must have a feasible partition")
 
 
 def _group_by_padding_waste(
@@ -856,12 +943,11 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         flow: Any,
         hift: Any,
         compute_dtype: torch.dtype | None = None,
-        flow_batch_bucket_frames: int = 50,
         hift_compute_dtype: str = "float32",
         hift_max_padding_waste: float = 1.5,
+        flow_merge_max_gap_frames: int = 384,
+        flow_merge_pad_budget_percent: float = 25.0,
     ) -> None:
-        if flow_batch_bucket_frames <= 0:
-            raise ValueError("flow_batch_bucket_frames must be greater than zero")
         if hift_max_padding_waste < 1.0:
             raise ValueError("hift_max_padding_waste must be at least 1.0")
         if hift_compute_dtype not in _AUTOCAST_DTYPES:
@@ -882,7 +968,8 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         )
         self._hift = hift
         self._compute_dtype = compute_dtype
-        self._flow_batch_bucket_frames = flow_batch_bucket_frames
+        self._flow_merge_max_gap_frames = flow_merge_max_gap_frames
+        self._flow_merge_pad_budget_percent = flow_merge_pad_budget_percent
         self._hift_compute_dtype = _AUTOCAST_DTYPES[hift_compute_dtype]
         self._hift_max_padding_waste = hift_max_padding_waste
         self._hift_samples_per_mel_frame: int | None = None
@@ -908,36 +995,41 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
     async def decode_batch(
         self, items: list[tuple[FunCosyVoice3State, torch.Tensor]]
     ) -> list[tuple[Any, int]]:
-        prepared = [
-            _PreparedFlowRequest(
-                index=index,
-                sample_rate=state.sample_rate,
-                flow_input=self._make_flow_input(state, codes),
+        prepared: list[_PreparedFlowRequest] = []
+        for index, (state, codes) in enumerate(items):
+            flow_input = self._make_flow_input(state, codes)
+            prepared.append(
+                _PreparedFlowRequest(
+                    index=index,
+                    sample_rate=state.sample_rate,
+                    flow_input=flow_input,
+                    total_mel_frames=self._flow_total_mel_frames(flow_input),
+                )
             )
-            for index, (state, codes) in enumerate(items)
-        ]
-        results: list[tuple[Any, int] | None] = [None] * len(prepared)
-        buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
-        for request in prepared:
-            buckets[self._flow_bucket_key(request.flow_input)].append(request)
 
-        for bucket in buckets.values():
+        results: list[tuple[Any, int] | None] = [None] * len(items)
+        flow_groups = adaptive_flow_requests_grouping(
+            prepared,
+            flow_merge_max_gap_frames=self._flow_merge_max_gap_frames,
+            flow_merge_pad_budget_percent=self._flow_merge_pad_budget_percent,
+        )
+
+        for flow_group in flow_groups:
             with torch.autocast(
                 device_type=current_platform.device_type,
                 dtype=self._compute_dtype,
                 enabled=self._compute_dtype is not None,
             ):
                 mel_list = self._flow.inference(
-                    [request.flow_input for request in bucket]
+                    [request.flow_input for request in flow_group]
                 )
-
-                pairs = list(zip(bucket, mel_list, strict=True))
-                for group in _group_by_padding_waste(
-                    pairs, max_waste=self._hift_max_padding_waste
-                ):
-                    wavs = self._mel2wav_batch([mel for _, mel in group])
-                    for (request, _), wav in zip(group, wavs, strict=True):
-                        results[request.index] = (wav, request.sample_rate)
+            for group in _group_by_padding_waste(
+                list(zip(flow_group, mel_list, strict=True)),
+                max_waste=self._hift_max_padding_waste,
+            ):
+                wavs = self._mel2wav_batch([mel for _, mel in group])
+                for (request, _), wav in zip(group, wavs, strict=True):
+                    results[request.index] = (wav, request.sample_rate)
             self._flow.log_last_solve()
 
         if any(result is None for result in results):
@@ -1081,24 +1173,13 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             embedding=embedding,
         )
 
-    def _flow_bucket_key(self, item: FlowBatchInput) -> int:
-        total_mel = self._flow_total_mel_frames(item)
-        return (
-            total_mel + self._flow_batch_bucket_frames - 1
-        ) // self._flow_batch_bucket_frames
-
     def _flow_total_mel_frames(self, item: FlowBatchInput) -> int:
         total_tokens = item.prompt_token.shape[1] + item.token.shape[1]
         return total_tokens * self._flow.token_mel_ratio
 
     def _flow_scheduler_cost(self, payload: StagePayload) -> int:
         state, codes = self.prepare_item(payload)
-        total_mel = self._flow_total_mel_frames(self._make_flow_input(state, codes))
-        return (
-            (total_mel + self._flow_batch_bucket_frames - 1)
-            // self._flow_batch_bucket_frames
-            * self._flow_batch_bucket_frames
-        )
+        return self._flow_total_mel_frames(self._make_flow_input(state, codes))
 
     def _mel2wav(self, tts_mel: torch.Tensor) -> torch.Tensor:
         with self._hift_autocast():
@@ -1170,9 +1251,10 @@ def create_vocoder_executor(
     dtype: str = "bfloat16",
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 30,
-    flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
-    enable_dit_torch_compile: bool | None = None,
+    flow_merge_max_gap_frames: int = 384,
+    flow_merge_pad_budget_percent: float = 25.0,
+    enable_dit_torch_compile: bool = False,
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
@@ -1186,14 +1268,12 @@ def create_vocoder_executor(
 
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
-    if enable_flow_estimator_trt and enable_dit_torch_compile:
-        raise ValueError(
-            "enable_flow_estimator_trt and enable_dit_torch_compile both "
-            "target flow.decoder.estimator; enable only one"
-        )
-    if enable_dit_torch_compile is None:
-        enable_dit_torch_compile = not enable_flow_estimator_trt
-    device = resolve_device_spec(device, gpu_id)
+
+    reject_conflicting_dit_accelerators(
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_flow_estimator_trt=enable_flow_estimator_trt,
+    )
+    device = str(resolve_concrete_device(device, gpu_id))
     checkpoint_dir = resolve_checkpoint(model_path)
     if dtype not in _AUTOCAST_DTYPES:
         raise ValueError(
@@ -1214,7 +1294,8 @@ def create_vocoder_executor(
         flow,
         hift,
         compute_dtype=compute_dtype,
-        flow_batch_bucket_frames=flow_batch_bucket_frames,
+        flow_merge_max_gap_frames=flow_merge_max_gap_frames,
+        flow_merge_pad_budget_percent=flow_merge_pad_budget_percent,
         hift_compute_dtype=hift_dtype,
         hift_max_padding_waste=hift_max_padding_waste,
     )

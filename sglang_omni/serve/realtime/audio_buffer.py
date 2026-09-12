@@ -7,8 +7,10 @@ import base64
 import io
 import wave
 
+PCM_SAMPLE_RATE = 16000
+
 # 60 seconds hard cap for audio buffer.
-DEFAULT_MAX_BUFFER_BYTES = 60 * 16000 * 2
+DEFAULT_MAX_BUFFER_BYTES = 60 * PCM_SAMPLE_RATE * 2
 
 
 class BufferOverflow(ValueError):
@@ -25,8 +27,8 @@ class RealtimeAudioBuffer:
     def __init__(
         self,
         *,
-        source_sr: int = 16000,
-        target_sr: int = 16000,
+        source_sr: int = PCM_SAMPLE_RATE,
+        target_sr: int = PCM_SAMPLE_RATE,
         channels: int = 1,
         max_bytes: int = DEFAULT_MAX_BUFFER_BYTES,
     ) -> None:

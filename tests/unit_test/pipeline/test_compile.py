@@ -204,7 +204,7 @@ def test_runner_specs_defer_factory_signature_import_to_child(
     assert "gpu_id" not in spec.factory_kwargs
 
 
-def test_tp_specs_carry_typed_gpu_id_to_single_visible_device_child(
+def test_tp_specs_take_gpu_id_from_placement_only(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -225,7 +225,6 @@ def test_tp_specs_carry_typed_gpu_id_to_single_visible_device_child(
                 "thinker",
                 gpu=[2, 4],
                 tp_size=2,
-                factory={"gpu_id": 4},
                 terminal=True,
             )
         ],
@@ -245,7 +244,7 @@ def test_tp_specs_carry_typed_gpu_id_to_single_visible_device_child(
 
     specs = [spec for group in groups for spec in group.specs]
     assert [spec.gpu_id for spec in specs] == [2, 4]
-    assert [spec.typed_kwargs["gpu_id"] for spec in specs] == [4, 4]
+    assert all("gpu_id" not in spec.typed_kwargs for spec in specs)
     assert all("gpu_id" not in spec.factory_kwargs for spec in specs)
 
 
@@ -450,8 +449,13 @@ def test_runner_specs_do_not_wire_same_process_targets_to_tp_stages() -> None:
     )
 
 
-def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(tmp_path) -> None:
+def test_mp_runner_preserves_tp_rank_and_visible_device_contracts(
+    tmp_path, monkeypatch
+) -> None:
     """Preserves TP process specs and one-visible-device env mapping."""
+    monkeypatch.setattr(
+        "sglang_omni.pipeline.runtime_config._visible_device_count", lambda: 4
+    )
     config = PipelineConfig(
         model_path="model",
         name="mp",

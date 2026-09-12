@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.runtime_context import get_context
 
 from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
@@ -131,11 +133,13 @@ def test_model_runner_selects_whisper_prefill_adapter_only_when_needed(
 ) -> None:
     runner = object.__new__(SGLModelRunner)
     runner._model_arch_override = architecture
-    runner.server_args = SimpleNamespace(
-        cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend=backend))
-    )
 
-    assert runner._prefill_cuda_graph_runner_cls() is expected
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(
+            decode=PhaseConfig(), prefill=PhaseConfig(backend=backend)
+        )
+    ):
+        assert runner._prefill_cuda_graph_runner_cls() is expected
 
 
 def _install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
@@ -172,11 +176,13 @@ def test_prefill_runner_dispatch_selects_by_instance(
 
     runner = object.__new__(SGLModelRunner)
     runner._model_arch_override = "WhisperForConditionalGeneration"
-    runner.server_args = SimpleNamespace(
-        cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="breakable"))
-    )
 
-    cuda_graph_setup.PrefillCudaGraphRunner(runner)
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(
+            decode=PhaseConfig(), prefill=PhaseConfig(backend="breakable")
+        )
+    ):
+        cuda_graph_setup.PrefillCudaGraphRunner(runner)
 
     assert constructed == [(WhisperPrefillCudaGraphRunner, runner)]
 

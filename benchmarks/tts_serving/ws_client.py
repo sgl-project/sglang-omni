@@ -75,6 +75,7 @@ async def run_ws_scenario(
                 timeout_s=spec.params.timeout_s,
                 expect_success=scenario.expect_success,
                 request_start_s=start,
+                alternate_close=scenario.alternate_ws_close,
             )
         if scenario.capability_key == "ws.disconnect" and result.status == "ok":
             await _probe_websocket_after_disconnect(session, spec, scenario, result)
@@ -123,6 +124,7 @@ async def _run_ws_script(
     timeout_s: int,
     expect_success: bool,
     request_start_s: float | None = None,
+    alternate_close: tuple[int, str] | None = None,
 ) -> None:
     audio_state = WebSocketAudioState(
         request_start_s=request_start_s or time.perf_counter()
@@ -149,6 +151,7 @@ async def _run_ws_script(
                     audio_state,
                     expected_event=str(action.get("event", "")),
                     expect_success=expect_success,
+                    alternate_close=alternate_close,
                 )
                 if not matched:
                     return
@@ -192,6 +195,7 @@ async def _expect_next_event(
     *,
     expected_event: str,
     expect_success: bool,
+    alternate_close: tuple[int, str] | None,
 ) -> bool:
     while True:
         msg = await ws.receive()
@@ -222,7 +226,18 @@ async def _expect_next_event(
             )
             return False
         if msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE}:
-            result.ws_close_reason = "server_closed"
+            result.ws_close_code = msg.data if isinstance(msg.data, int) else None
+            result.ws_close_reason = str(msg.extra or "")
+            if (
+                expected_event == "error"
+                and not expect_success
+                and alternate_close == (result.ws_close_code, result.ws_close_reason)
+            ):
+                result.status = "expected_error"
+                result.success = False
+                result.capability = "pass"
+                result.error_class = "expected_client_error"
+                return True
             if expected_event == "close":
                 result.status = "ok"
                 result.success = True

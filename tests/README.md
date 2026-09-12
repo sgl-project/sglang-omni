@@ -21,7 +21,7 @@ tests/
     ├── ci/
     │   ├── test_cpu_contention.py
     │   ├── test_cpuset_pinning.py
-    │   ├── test_tts_model_rotation_contract.py
+    │   ├── test_ci_model_pick.py
     │   ├── test_tts_mps_runtime.py
     │   └── test_tts_mps_workflow_contract.py
     ├── cli/
@@ -38,6 +38,7 @@ tests/
     │   └── test_weight_preprocess.py
     ├── fixtures/
     │   ├── fish_fakes.py
+    │   ├── mini_checkpoint.py
     │   ├── pipeline_fakes.py
     │   └── qwen_fakes.py
     ├── utils/
@@ -85,6 +86,7 @@ tests/
     ├── audar_tts/
     │   └── test_pipeline.py
     ├── qwen3_omni/
+    │   ├── test_audio_encoder_batch_dedup.py
     │   ├── test_cli.py
     │   ├── test_code2wav.py
     │   ├── test_code2wav_batching.py
@@ -145,6 +147,11 @@ tests/
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
+    ├── nemotron_voicechat/
+    │   ├── test_checkpoint_shim.py
+    │   ├── test_paged_rollback.py
+    │   ├── test_request_builders.py
+    │   └── test_streaming_codec.py
     ├── qwen3_asr/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_pipeline.py
@@ -209,6 +216,7 @@ tests/
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
+    │   ├── test_openai_errors.py
     │   ├── test_speech_to_text.py
     │   ├── test_subtitles.py
     │   ├── test_transcription_chunking.py
@@ -220,6 +228,7 @@ tests/
     │   ├── test_evict_heap_radix_cache.py
     │   ├── test_pipeline_state.py
     │   ├── test_reference_encoder.py
+    │   ├── test_server_args_builder_resolution.py
     │   ├── test_stage_cache.py
     │   └── test_streaming_vocoder.py
     ├── fishaudio_s2_pro/
@@ -422,6 +431,11 @@ Expected command:
 ```bash
 pytest tests/unit_test -q
 ```
+
+Select CPU cases with `-m "not accelerator"`. Run hardware cases with
+`-m accelerator` on a compatible accelerator; check the reported skips
+to confirm the intended hardware paths actually ran.
+
 Choose the location by the behavior contract being protected, not by the file
 that happened to contain an older version of the test.
 
@@ -460,6 +474,16 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
+  isolation, failure reporting, disabled warmup, and CLI configuration using
+  the real benchmark runner with a fake speech generator.
+  - `test_realtime_asr_benchmark.py`: the realtime ASR benchmark client
+    (`benchmarks/realtime_asr/client.py`) against an in-process fake
+    `/v1/realtime` WebSocket server (packet splitting, wall-clock pacing,
+    manual commit, trailing silence, timeout reporting), and the metric
+    definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
+    traces (first-partial refresh-point lookup, partial gaps, committed→final,
+    protocol invariant violations, percentile summaries). No GPU or server.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
@@ -511,6 +535,10 @@ that happened to contain an older version of the test.
     newer replacements,
     the `remove_if` eviction predicate evaluated outside the lock (re-entrant
     and deadlock-free), and concurrent remove_if/put state integrity.
+  - `build_sglang_server_args` on a real mini checkpoint: the record leaves the
+    builder resolved once, the CUDA Graph config it declared reads back through
+    `resolution_result` and the generation batch policy accessors, and the
+    encoder memory reserve is applied to the declared fraction.
 - `unit_test/qwen3_asr/`: Qwen3-ASR unit tests:
   - pipeline config and stage factory `max_running_requests=64` default,
     async-decode default,
@@ -588,6 +616,16 @@ that happened to contain an older version of the test.
   - SGLang argument builders
   - backend policy and quantization compatibility contracts
   - tokenizer and preprocessing fallback behavior
+  - audio cache identity from complete decoded content, mixed-batch cache
+    hits, and cached output ownership across reused encoder buffers
+    (`test_pipeline.py`, `test_audio_encoder_batch_dedup.py`). The output
+    ownership case is marked `accelerator`; the cache-key cases use CPU.
+  - preprocessing dispatch defaults to serial `SimpleScheduler`;
+    `max_concurrency > 1` opts into `ThreadedSimpleScheduler`
+    (`test_pipeline.py`).
+  - threaded preprocessing request isolation, error propagation, and running
+    request cancellation, plus repeated remote-image loading against a local
+    HTTP server and media-loader cleanup on failure (`test_pipeline.py`).
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - full-model fixture overrides target the preprocessing and thinker context
@@ -742,6 +780,9 @@ that happened to contain an older version of the test.
   - shared speech-to-text form, request, response-format, and serialization mechanics,
     including headerless G.711 uploads getting a WAV container at read time
   - streaming response framing and failure semantics.
+  - the stop-list bounds that SGLang's `SamplingParams.normalize` enforces
+    (stop string count, stop regex count and length) mapped to a bad request,
+    the bounds themselves accepted, and an unrelated failure staying internal.
   - realtime barge-in cancellation, partial session updates, terminal races,
     VAD stop-to-start segmentation, and assistant-history truncation.
   - Browser-side realtime playback state is covered separately by
@@ -805,6 +846,14 @@ that happened to contain an older version of the test.
   acoustic state, vocoder batching, and streaming cleanup. CUDA Graph parity in
   `test_tail.py` is marked `accelerator`; the remaining tests run on CPU.
 
+- `unit_test/nemotron_voicechat/`: NemotronLabs VoiceChat request frame-count
+  contract (thinker tokens vs talker steps), streaming code2wav equivalence
+  with whole-utterance decoding, and checkpoint-shim isolation across
+  checkpoint switches. Talker rollback tests cover paged KV ownership across
+  stream waits and decode resumption using simulated decode preparation.
+  Tests run on CPU without model weights; request and rollback tests require
+  SGLang, but do not start an engine.
+
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
 
@@ -837,5 +886,7 @@ that happened to contain an older version of the test.
 
 - `unit_test/fixtures/`: Shared fakes, plus the runtime accelerator probe
   (`accelerator.py`, `require_cuda(min_devices)`) that `accelerator`-marked
-  tests call in the test body. Single-test helpers should stay local until a
-  second test needs them.
+  tests call in the test body. `mini_checkpoint.py` writes a two-layer Llama
+  `config.json` for tests that need a record the SGLang resolution pipeline can
+  resolve end to end. Single-test helpers should stay local until a second
+  test needs them.

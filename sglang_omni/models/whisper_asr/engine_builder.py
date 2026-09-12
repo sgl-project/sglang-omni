@@ -241,9 +241,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
     ) -> None:
         if not self.enable_encoder_cuda_graph or not generation_cuda_graph_enabled:
             return
+        from sglang.srt.runtime_context import get_schedule
 
-        max_prefill_tokens = int(server_args.max_prefill_tokens)
-        max_running_requests = int(server_args.max_running_requests)
+        max_prefill_tokens = int(get_schedule().max_prefill_tokens)
+        max_running_requests = int(get_schedule().max_running_requests)
         resolved_buckets = _resolve_encoder_graph_buckets(
             self.encoder_graph_batch_buckets,
             enable_pre_lm_encoder=self.enable_pre_lm_encoder,

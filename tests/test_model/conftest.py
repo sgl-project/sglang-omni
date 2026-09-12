@@ -145,7 +145,9 @@ QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION = "0.40"
 def qwen3_omni_bf16_colocated_thinker_server(tmp_path_factory: pytest.TempPathFactory):
     """BF16 colocated-DP2, thinker-only (0.92); MMMU."""
     yield from _start_qwen3_omni_bf16_colocated_router(
-        tmp_path_factory, worker_extra_args=QWEN3_OMNI_BF16_THINKER_ARGS
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_BF16_THINKER_ARGS,
+        audio_output=False,
     )
 
 
@@ -153,7 +155,9 @@ def qwen3_omni_bf16_colocated_thinker_server(tmp_path_factory: pytest.TempPathFa
 def qwen3_omni_bf16_colocated_server(tmp_path_factory: pytest.TempPathFactory):
     """BF16 colocated-DP2, full thinker+talker; TTS."""
     yield from _start_qwen3_omni_bf16_colocated_router(
-        tmp_path_factory, worker_extra_args=QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS
+        tmp_path_factory,
+        worker_extra_args=QWEN3_OMNI_BF16_COLOCATED_VIDEO_ARGS,
+        audio_output=True,
     )
 
 
@@ -183,13 +187,17 @@ def qwen3_omni_bf16_tp2_server(tmp_path_factory: pytest.TempPathFactory):
 
 def _start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFactory):
     """Start 2 FP8 colocated replicas (one per H100) behind the managed router."""
-    from tests.test_model.omni_router_utils import launch_managed_router
+    from tests.test_model.omni_router_utils import (
+        CiRouterTopology,
+        launch_managed_router,
+    )
 
     with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
         model_path=QWEN3_OMNI_FP8_TEST_MODEL_PATH,
         model_name=QWEN3_OMNI_MODEL_NAME,
         worker_extra_args=QWEN3_OMNI_FP8_COLOCATED_VIDEO_ARGS,
+        router_topology=CiRouterTopology.OMNI_TEXT,
         num_workers=2,
         num_gpus_per_worker=1,
     ) as router:
@@ -200,15 +208,22 @@ def _start_qwen3_omni_bf16_colocated_router(
     tmp_path_factory: pytest.TempPathFactory,
     *,
     worker_extra_args: str,
+    audio_output: bool,
 ):
     """Start 2 BF16 colocated replicas (one per H100) behind the managed router."""
-    from tests.test_model.omni_router_utils import launch_managed_router
+    from tests.test_model.omni_router_utils import (
+        CiRouterTopology,
+        launch_managed_router,
+    )
 
     with launch_managed_router(
         tmp_path_factory=tmp_path_factory,
         model_path=QWEN3_OMNI_TEST_MODEL_PATH,
         model_name=QWEN3_OMNI_MODEL_NAME,
         worker_extra_args=worker_extra_args,
+        router_topology=(
+            CiRouterTopology.OMNI_AUDIO if audio_output else CiRouterTopology.OMNI_TEXT
+        ),
         num_workers=2,
         num_gpus_per_worker=1,
     ) as router:
@@ -489,7 +504,8 @@ def qwen3_omni_vision_sglang_env():
     from sglang.srt.models.qwen3_omni_moe import (  # noqa: F401 -- lazy-import order
         Qwen3OmniMoeVisionEncoder,
     )
-    from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
+    from sglang.srt.runtime_context import publish
+    from sglang.srt.server_args import ServerArgs
 
     if not torch_dist.is_initialized():
         init_distributed_environment(
@@ -510,7 +526,7 @@ def qwen3_omni_vision_sglang_env():
         disable_cuda_graph=True,
         random_seed=123,
     )
-    set_global_server_args_for_scheduler(sa)
+    publish(sa, role="scheduler")
     initialize_dp_attention(sa, ModelConfig.from_server_args(sa))
 
 

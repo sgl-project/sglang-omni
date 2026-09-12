@@ -179,7 +179,15 @@ def create_mlx_model_worker(
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
-    from sglang.srt.runtime_context import publish
+    from sglang.srt.runtime_context import (
+        get_device,
+        get_exec,
+        get_memory,
+        get_model,
+        get_parallel,
+        get_schedule,
+        publish,
+    )
     from sglang.srt.server_args import PortArgs
 
     from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
@@ -193,24 +201,24 @@ def create_mlx_model_worker(
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
             runner_class = make_qwen3_asr_mlx_runner_class()
             init_kwargs = {
-                "model_path": self.server_args.model_path,
-                "trust_remote_code": self.server_args.trust_remote_code,
-                "disable_radix_cache": self.server_args.disable_radix_cache,
-                "mem_fraction_static": self.server_args.mem_fraction_static,
-                "quantization": self.server_args.quantization,
-                "revision": self.server_args.revision,
-                "enable_sampling": self.server_args.mlx_enable_sampling,
-                "sampling_rng_seed": self.server_args.random_seed,
+                "model_path": get_model().model_path,
+                "trust_remote_code": get_model().trust_remote_code,
+                "disable_radix_cache": get_memory().disable_radix_cache,
+                "mem_fraction_static": get_schedule().mem_fraction_static,
+                "quantization": get_model().quantization,
+                "revision": get_model().revision,
+                "enable_sampling": get_device().mlx_enable_sampling,
+                "sampling_rng_seed": get_device().random_seed,
                 "deterministic_seeding": (
-                    self.server_args.enable_deterministic_inference
+                    get_exec().deterministic.enable_deterministic_inference
                 ),
             }
-            if self.server_args.max_total_tokens is not None:
-                init_kwargs["pool_size"] = self.server_args.max_total_tokens
+            if get_schedule().max_total_tokens is not None:
+                init_kwargs["pool_size"] = get_schedule().max_total_tokens
             self._mlx_runner = runner_class(**init_kwargs)
             self._model_runner = MlxModelRunnerStub(
                 model_config=self.model_config,
-                mem_fraction_static=self.server_args.mem_fraction_static,
+                mem_fraction_static=get_schedule().mem_fraction_static,
                 gpu_id=self.gpu_id,
                 ps=self.ps,
                 nccl_port=self.nccl_port,
@@ -233,42 +241,40 @@ def create_mlx_model_worker(
         def get_attention_tp_cpu_group(self):
             return self.model_runner.attention_tp_group.cpu_group
 
+    publish(server_args, role="scheduler")
     attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
         compute_dp_attention_world_info(
-            server_args.enable_dp_attention,
+            get_parallel().enable_dp_attention,
             tp_rank,
-            server_args.tp_size,
-            server_args.dp_size,
-            server_args.attn_cp_size,
+            get_parallel().tp_size,
+            get_parallel().dp_size,
+            get_parallel().attn_cp_size,
         )
     )
     ps = ParallelState(
         tp_rank=tp_rank,
-        tp_size=server_args.tp_size,
+        tp_size=get_parallel().tp_size,
         pp_rank=0,
         pp_size=1,
         dp_rank=None,
-        dp_size=server_args.dp_size,
+        dp_size=get_parallel().dp_size,
         attn_tp_rank=attn_tp_rank,
         attn_tp_size=attn_tp_size,
         attn_cp_rank=0,
-        attn_cp_size=server_args.attn_cp_size,
-        attn_dcp_rank=tp_rank % server_args.dcp_size,
-        attn_dcp_size=server_args.dcp_size,
+        attn_cp_size=get_parallel().attn_cp_size,
+        attn_dcp_rank=tp_rank % get_parallel().dcp_size,
+        attn_dcp_size=get_parallel().dcp_size,
         attn_dp_rank=attn_dp_rank,
         attn_dp_size=attn_dp_size,
         moe_ep_rank=0,
         moe_ep_size=1,
         moe_dp_rank=None,
-        moe_dp_size=server_args.moe_dp_size,
+        moe_dp_size=get_parallel().moe_dp_size,
         gpu_id=gpu_id,
     )
     nccl_port = config.nccl_port
     if nccl_port is None:
         nccl_port = PortArgs.init_new(server_args).nccl_port
-    # note (yexiaodong): MlxTpModelWorker reads the split runtime configuration
-    # while building its model config, before the bookkeeping stub exists.
-    publish(server_args, role="scheduler")
     return OmniQwen3ASRMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,

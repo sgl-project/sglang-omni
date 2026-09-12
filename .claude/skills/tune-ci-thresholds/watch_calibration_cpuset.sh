@@ -3,7 +3,7 @@
 # usage: watch_calibration_cpuset.sh <gpu-group|cpuset-spec> [interval-s]
 #
 # Pass the same GPU pair as TUNE_GPU_INCLUDE (e.g. 0,1 / 2,3 / 4,5 / 6,7);
-# the script resolves that lane's 32-core cpuset from hosts/*.yaml. A raw
+# the script resolves that lane's NUMA-local cpuset from hosts/*.yaml. A raw
 # cpulist (e.g. 16-31,80-95) is also accepted.
 #
 # Operator-visible only. tune.py enforces the policy for whichever GPUs
@@ -25,7 +25,7 @@ arg, interval, host_yaml = sys.argv[1], float(sys.argv[2]), Path(sys.argv[3])
 
 # Built-in lane table (kept in sync with hosts/sglang-h100-ci.yaml).
 DEFAULT_GPU_GROUP_CPUSETS = {
-    "0,1": "0-15,64-79",
+    "0,1": "2-15,66-79",
     "2,3": "16-31,80-95",
     "4,5": "48-63,112-127",
     "6,7": "32-47,96-111",
@@ -36,7 +36,7 @@ def load_table(path: Path) -> dict[str, str]:
     table = dict(DEFAULT_GPU_GROUP_CPUSETS)
     if not path.is_file():
         return table
-    # Minimal YAML subset: lines like `  "0,1": "0-15,64-79"`.
+    # Minimal YAML subset: lines like `  "0,1": "2-15,66-79"`.
     in_block = False
     for line in path.read_text().splitlines():
         stripped = line.strip()

@@ -26,6 +26,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from sglang_omni.config.schema import (
+    PLACEMENT_OWNED_FACTORY_KWARGS,
     PipelineConfig,
     StageConfig,
     parse_replica_instance_name,
@@ -36,14 +37,9 @@ from sglang_omni.utils.imports import import_string
 # Kwargs owned by placement and process construction. They are injected from
 # ``factory_arg_defaults`` (and only when the factory declares them), so a
 # pipeline author returning them from ``stage_factory_kwargs`` would fight
-# the launch planner.
-_PLACEMENT_OWNED_KWARGS = frozenset(
-    {
-        "gpu_id",
-        "total_gpu_memory_fraction",
-        "process_total_gpu_memory_fraction",
-    }
-)
+# the launch planner. Config-file writes are rejected earlier, at
+# PipelineConfig validation.
+_PLACEMENT_OWNED_KWARGS = PLACEMENT_OWNED_FACTORY_KWARGS
 
 
 def resolve_stage_factory_kwargs(
@@ -174,6 +170,13 @@ def resolve_factory_signature_args(
         raise ValueError(
             f"{stage_context}uses processes.replica_devices, but factory "
             f"{factory_name!r} does not declare a gpu_id parameter"
+        )
+
+    if defaults.get("gpu_id") is not None and "gpu_id" not in sig.parameters:
+        raise ValueError(
+            f"{factory.__module__}.{factory.__qualname__} is placed on a GPU "
+            "but its signature has no gpu_id parameter, so placement can "
+            "never reach it"
         )
 
     for name, value in defaults.items():

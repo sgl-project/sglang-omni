@@ -19,6 +19,13 @@ sgl-omni serve \
   --port 8008
 ```
 
+Multimodal preprocessing (tokenization, image/video/audio feature extraction)
+runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to
+run it on a thread pool when CPU preprocessing is the bottleneck under
+concurrent load. Threaded preprocessing changes how requests arrive at the
+thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
+keep the default when comparing accuracy across runs.
+
 For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:

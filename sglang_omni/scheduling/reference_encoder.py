@@ -185,6 +185,10 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             self._batch_thread.start()
 
     @property
+    def hook(self) -> ReferenceEncodeHook[InputT, ArtifactT, StoredT]:
+        return self._hook
+
+    @property
     def batching_enabled(self) -> bool:
         return self._batching
 

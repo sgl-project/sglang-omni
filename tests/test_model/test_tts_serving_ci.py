@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,10 +20,14 @@ import pytest
 
 from benchmarks.tts_serving.spec import load_spec
 from tests.test_model.omni_router_utils import (
+    CiRouterTopology,
     ManagedRouterHandle,
+    assert_router_healthy,
+    assert_workers_served_requests_since,
     launch_managed_router,
     print_router_diagnostics,
     router_get_json,
+    worker_request_delta,
 )
 from tests.test_model.tts_ci_config import (
     THRESHOLD_SLACK_HIGHER,
@@ -43,6 +47,8 @@ CLEANUP_VALIDATION_FILE = "cleanup_validation.json"
 BENCHMARK_TIMEOUT_S = 1800
 BENCHMARK_TIMEOUT_RETURNCODE = 124
 MIXED_STAGE = "mixed-production"
+ROUTER_STAGE_SNAPSHOTS = "router_stage_snapshots.json"
+ROUTER_REJECTION_METRIC = "sglang_omni_router_rejections_total"
 EXPECTED_WORKLOAD_SAMPLES = {
     "speech_normal": 50,
     "rest_stream": 50,
@@ -54,29 +60,24 @@ EXPECTED_WORKLOAD_SAMPLES = {
 EXPECTED_COLLISION_EPOCHS = 20
 EXPECTED_COVERAGE_REQUESTS = 102
 EXPECTED_COVERAGE_ERRORS = 35
-WORKER_RESPONSE_HEADER = "x-sglang-omni-worker"
-WEBSOCKET_COMPLETION_RE = re.compile(
-    r"tts_websocket_completed request_id=(\S+) worker=(\S+)"
-)
-
-SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF: float | None = 1.084079084917903
-SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF: float | None = 0.19163990644567716
-SERVING_MIXED_REST_STREAM_TTFA_P95_S_REF: float | None = 0.17183812288567424
-SERVING_MIXED_REST_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.5016029649414122
-SERVING_MIXED_REST_STREAM_LATENCY_P95_S_REF: float | None = 0.775
-SERVING_MIXED_REST_STREAM_RTF_P95_REF: float | None = 0.1474196594878749
-SERVING_MIXED_BATCH32_LATENCY_P95_S_REF: float | None = 9.988
-SERVING_MIXED_WS_NORMAL_TTFA_P95_S_REF: float | None = 1.065609860001132
-SERVING_MIXED_WS_NORMAL_LATENCY_P95_S_REF: float | None = 1.066
-SERVING_MIXED_WS_STREAM_TTFA_P95_S_REF: float | None = 0.19511429104022682
-SERVING_MIXED_WS_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.5907330440822989
-SERVING_MIXED_WS_STREAM_LATENCY_P95_S_REF: float | None = 8.29540724400431
-SERVING_MIXED_WS_STREAM_RTF_P95_REF: float | None = 0.12514483785880592
+SERVING_MIXED_SPEECH_NORMAL_LATENCY_P95_S_REF: float | None = 0.930258288004552
+SERVING_MIXED_SPEECH_NORMAL_RTF_P95_REF: float | None = 0.1662
+SERVING_MIXED_REST_STREAM_TTFA_P95_S_REF: float | None = 0.20333050900080707
+SERVING_MIXED_REST_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.5503353969979798
+SERVING_MIXED_REST_STREAM_LATENCY_P95_S_REF: float | None = 1.061
+SERVING_MIXED_REST_STREAM_RTF_P95_REF: float | None = 0.1787005540906896
+SERVING_MIXED_BATCH32_LATENCY_P95_S_REF: float | None = 9.522
+SERVING_MIXED_WS_NORMAL_TTFA_P95_S_REF: float | None = 1.0704407309967792
+SERVING_MIXED_WS_NORMAL_LATENCY_P95_S_REF: float | None = 1.071
+SERVING_MIXED_WS_STREAM_TTFA_P95_S_REF: float | None = 0.1661
+SERVING_MIXED_WS_STREAM_INTER_CHUNK_P95_S_REF: float | None = 0.5645
+SERVING_MIXED_WS_STREAM_LATENCY_P95_S_REF: float | None = 7.827005511997413
+SERVING_MIXED_WS_STREAM_RTF_P95_REF: float | None = 0.1195
 SERVING_MIXED_LONG_PROMPT_TOKENS_MIN_REF: float | None = 681.0
 SERVING_MIXED_LONG_COMPLETION_TOKENS_MIN_REF: float | None = 95.0
-SERVING_MIXED_LONG_LATENCY_P95_S_REF: float | None = 9.965
+SERVING_MIXED_LONG_LATENCY_P95_S_REF: float | None = 9.521216713998001
 SERVING_MIXED_LONG_AUDIO_DURATION_MIN_S_REF: float | None = 3.52
-SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF: float | None = 212.45783021856016
+SERVING_MIXED_LONG_OUTPUT_TOK_PER_REQ_S_REF: float | None = 219.47325440026654
 
 
 def _minimum(reference: float | None) -> float | None:
@@ -95,8 +96,8 @@ class ServingRun:
     spec_path: Path
     request_timeout_s: int
     router: ManagedRouterHandle
-    workers_before: dict
-    health_before: dict
+    router_before: dict
+    router_rejections_before: int
 
 
 @dataclass(frozen=True)
@@ -292,7 +293,7 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
         str(REFERENCE_AUDIO_ROOT),
         *shlex.split(MODEL_PRESET.worker_extra_args),
     ]
-    process_env = {
+    worker_env = {
         "PYTHONPATH": str(PROJECT_ROOT),
         "SPEAKER_SAMPLES_DIR": str(speaker_dir),
         "SPEAKER_MAX_UPLOADED": "1000",
@@ -305,15 +306,22 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
             model_path=MODEL_PATH,
             model_name=MODEL_PATH,
             worker_extra_args=shlex.join(worker_args),
+            router_topology=CiRouterTopology.TTS_SERVING,
             num_workers=2,
             num_gpus_per_worker=1,
             wait_timeout=MODEL_PRESET.startup_timeout,
             force_log=True,
-            process_env=process_env,
+            worker_env=worker_env,
         ) as router:
             base_url = f"http://127.0.0.1:{router.port}"
             spec_path = _materialize_spec(run_dir, base_url)
             request_timeout_s = load_spec(spec_path).params.timeout_s
+            assert_router_healthy(router)
+            router_before = router_get_json(router.port, "/diagnostics")
+            router_rejections_before = _router_rejections_total(
+                base_url,
+                request_timeout_s,
+            )
             yield ServingRun(
                 base_url=base_url,
                 run_dir=run_dir,
@@ -321,8 +329,8 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
                 spec_path=spec_path,
                 request_timeout_s=request_timeout_s,
                 router=router,
-                workers_before=router_get_json(router.port, "/workers"),
-                health_before=router_get_json(router.port, "/health"),
+                router_before=router_before,
+                router_rejections_before=router_rejections_before,
             )
     except Exception as exc:
         cleanup_error = exc
@@ -360,6 +368,8 @@ def _run_benchmark(run: ServingRun) -> subprocess.CompletedProcess:
         str(run.spec_path),
         "--out",
         str(run.benchmark_dir),
+        "--router-stage-snapshots",
+        str(run.benchmark_dir / ROUTER_STAGE_SNAPSHOTS),
     ]
     started = time.perf_counter()
     try:
@@ -456,39 +466,7 @@ def _check_performance(
             )
 
 
-def _worker_deltas(before: dict, after: dict) -> list[dict]:
-    before_by_id = {worker["worker_id"]: worker for worker in before["workers"]}
-    deltas: list[dict] = []
-    for worker in after["workers"]:
-        baseline = before_by_id.get(worker["worker_id"], {})
-        classes = {
-            key: int(value)
-            - int(baseline.get("routed_requests_by_class", {}).get(key, 0))
-            for key, value in worker.get("routed_requests_by_class", {}).items()
-        }
-        deltas.append(
-            {
-                "worker_id": worker["worker_id"],
-                "routed": int(worker.get("routed_requests", 0))
-                - int(baseline.get("routed_requests", 0)),
-                "classes": classes,
-                "healthy": worker.get("health_state") == "healthy",
-                "routable": worker.get("routable") is True,
-            }
-        )
-    return deltas
-
-
-def _mixed_worker_counts(
-    run: ServingRun,
-    workers_after: dict,
-) -> dict[str, int]:
-    worker_aliases = {
-        alias: worker["worker_id"]
-        for worker in workers_after["workers"]
-        for alias in (worker["worker_id"], worker["display_id"])
-    }
-    worker_counts = {worker["worker_id"]: 0 for worker in workers_after["workers"]}
+def _mixed_result_summary(run: ServingRun) -> dict:
     events_path = run.benchmark_dir / "raw" / "events.jsonl"
     results = [
         json.loads(line)
@@ -500,168 +478,170 @@ def _mixed_worker_counts(
         for result in results
         if result.get("stage_id") == MIXED_STAGE and result.get("workload") is not None
     ]
-    expected_sample_count = sum(EXPECTED_WORKLOAD_SAMPLES.values())
+    expected_count = sum(EXPECTED_WORKLOAD_SAMPLES.values())
     assert (
-        len(mixed_results) == expected_sample_count
-    ), f"expected {expected_sample_count} mixed results, got {len(mixed_results)}"
-    scenario_ids = [result["scenario_id"] for result in mixed_results]
+        len(mixed_results) == expected_count
+    ), f"expected {expected_count} mixed results, got {len(mixed_results)}"
+    scenario_ids = [result.get("scenario_id") for result in mixed_results]
     assert all(
-        isinstance(scenario_id, str) for scenario_id in scenario_ids
+        isinstance(value, str) for value in scenario_ids
     ), "mixed results contain an invalid scenario ID"
     assert len(set(scenario_ids)) == len(
         scenario_ids
     ), "mixed results contain duplicate scenario IDs"
-
-    websocket_scenario_ids = {
-        result["scenario_id"]
-        for result in mixed_results
-        if result["endpoint"] == "websocket"
-    }
-    assert run.router.log_file is not None, "router log is unavailable"
-    websocket_workers: dict[str, str] = {}
-    for line in run.router.log_file.read_text(
-        encoding="utf-8", errors="replace"
-    ).splitlines():
-        match = WEBSOCKET_COMPLETION_RE.search(line)
-        if match is None or match.group(1) not in websocket_scenario_ids:
-            continue
-        scenario_id, worker_alias = match.groups()
-        assert (
-            scenario_id not in websocket_workers
-        ), f"WebSocket scenario {scenario_id!r} has multiple completions"
-        assert (
-            worker_alias in worker_aliases
-        ), f"WebSocket scenario {scenario_id!r} names unknown worker {worker_alias!r}"
-        websocket_workers[scenario_id] = worker_aliases[worker_alias]
-
+    workload_counts: Counter[str] = Counter()
     for result in mixed_results:
         scenario_id = result["scenario_id"]
-        assert result["workload"] in EXPECTED_WORKLOAD_SAMPLES, (
-            f"mixed scenario {scenario_id!r} has unexpected workload "
-            f"{result['workload']!r}"
-        )
+        workload = result.get("workload")
         assert (
-            result["expected_success"] is True and result["success"] is True
+            workload in EXPECTED_WORKLOAD_SAMPLES
+        ), f"mixed scenario {scenario_id!r} has unexpected workload {workload!r}"
+        assert (
+            result.get("expected_success") is True and result.get("success") is True
         ), f"mixed scenario {scenario_id!r} did not pass"
-        endpoint = result["endpoint"]
-        if endpoint == "websocket":
-            assert (
-                scenario_id in websocket_workers
-            ), f"WebSocket scenario {scenario_id!r} has no completion"
-            worker_id = websocket_workers[scenario_id]
-        elif endpoint in {"speech", "speech_stream", "batch"}:
-            headers = result["response_headers"]
-            assert isinstance(
-                headers, dict
-            ), f"mixed scenario {scenario_id!r} has invalid response headers"
-            worker_headers = [
-                value
-                for key, value in headers.items()
-                if key.lower() == WORKER_RESPONSE_HEADER
-            ]
-            assert (
-                len(worker_headers) == 1
-            ), f"mixed scenario {scenario_id!r} has no unique worker header"
-            worker_id = worker_headers[0]
-        else:
-            raise AssertionError(
-                f"mixed scenario {scenario_id!r} has unexpected endpoint {endpoint!r}"
-            )
-        assert (
-            worker_id in worker_counts
-        ), f"mixed scenario {scenario_id!r} names unknown worker {worker_id!r}"
-        worker_counts[worker_id] += 1
-
-    return worker_counts
+        assert result.get("endpoint") in {
+            "speech",
+            "speech_stream",
+            "batch",
+            "websocket",
+        }, f"mixed scenario {scenario_id!r} has an unexpected endpoint"
+        workload_counts[workload] += 1
+    assert (
+        dict(workload_counts) == EXPECTED_WORKLOAD_SAMPLES
+    ), f"mixed workload counts changed: {dict(workload_counts)}"
+    return {
+        "total_samples": len(mixed_results),
+        "by_workload": dict(workload_counts),
+    }
 
 
-def _check_router(
-    run: ServingRun,
-    checks: MetricCheckCollector,
-) -> None:
-    try:
-        workers_after = router_get_json(run.router.port, "/workers")
-        health_after = router_get_json(run.router.port, "/health")
-    except Exception as exc:
-        checks.fail(f"router state probe failed: {exc}")
-        return
-    deltas = _worker_deltas(run.workers_before, workers_after)
-    try:
-        mixed_counts = _mixed_worker_counts(run, workers_after)
-    except (AssertionError, KeyError, json.JSONDecodeError, OSError) as exc:
-        checks.fail(f"mixed workload attribution failed: {exc}")
-        mixed_attribution = {"valid": False, "error": str(exc)}
-    else:
-        mixed_attribution = {
-            "valid": True,
-            "total_samples": sum(mixed_counts.values()),
-            "by_worker": mixed_counts,
-        }
-    (run.run_dir / "router_validation.json").write_text(
-        json.dumps(
-            {
-                "workers_before": run.workers_before,
-                "workers_after": workers_after,
-                "health_before": run.health_before,
-                "health_after": health_after,
-                "worker_deltas": deltas,
-                "mixed_workload_attribution": mixed_attribution,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    checks.check(len(deltas) == 2, f"expected two router workers: {deltas}")
-    checks.check(
-        all(item["healthy"] and item["routable"] for item in deltas),
-        f"router workers did not remain healthy and routable: {deltas}",
-    )
-    if mixed_attribution["valid"]:
-        worker_counts = list(mixed_attribution["by_worker"].values())
-        checks.check(
-            all(count > 0 for count in worker_counts),
-            f"both workers must serve mixed production traffic: {worker_counts}",
-        )
-    minimum_class_requests = {
+def _measured_worker_minimums(mixed_delta: dict) -> tuple[list[int], list[str]]:
+    measured_by_class = {
         "speech_http": (
             EXPECTED_WORKLOAD_SAMPLES["speech_normal"]
             + EXPECTED_WORKLOAD_SAMPLES["rest_stream"]
             + EXPECTED_WORKLOAD_SAMPLES["long_prefill_decode"]
         ),
         "speech_batch": EXPECTED_WORKLOAD_SAMPLES["batch_32_all_valid"],
-        "tts_websocket": (
+        "speech_websocket": (
             EXPECTED_WORKLOAD_SAMPLES["ws_normal"]
             + EXPECTED_WORKLOAD_SAMPLES["ws_stream_audio"]
         ),
     }
-    for service_class, minimum_requests in minimum_class_requests.items():
-        class_counts = [item["classes"].get(service_class, 0) for item in deltas]
-        class_total = sum(class_counts)
-        checks.check(
-            class_total >= minimum_requests,
-            f"router served {class_total} {service_class} "
-            f"requests; expected at least {minimum_requests}",
+    workers = mixed_delta["workers"]
+    minimums = [0] * len(workers)
+    failures: list[str] = []
+    for service_class, measured_requests in measured_by_class.items():
+        dispatches = [
+            int(worker["routed_requests_by_class"].get(service_class, 0))
+            for worker in workers
+        ]
+        total_dispatches = sum(dispatches)
+        if total_dispatches < measured_requests:
+            failures.append(
+                f"mixed stage served {total_dispatches} {service_class} requests; "
+                f"expected at least {measured_requests}"
+            )
+            continue
+        unmeasured_dispatches = total_dispatches - measured_requests
+        for index, worker_dispatches in enumerate(dispatches):
+            minimums[index] += max(0, worker_dispatches - unmeasured_dispatches)
+    return minimums, failures
+
+
+def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
+    try:
+        delta = assert_workers_served_requests_since(
+            handle=run.router,
+            before_snapshot=run.router_before,
+            label="TTS serving",
+            min_worker_share=0.0,
         )
-    voice_counts = {
-        item["worker_id"]: item["classes"].get("voice_control", 0) for item in deltas
+        mixed_summary = _mixed_result_summary(run)
+        stage_snapshots = json.loads(
+            (run.benchmark_dir / ROUTER_STAGE_SNAPSHOTS).read_text(encoding="utf-8")
+        )
+        mixed_snapshots = stage_snapshots[MIXED_STAGE]
+        mixed_delta = worker_request_delta(
+            mixed_snapshots["before"],
+            mixed_snapshots["after"],
+        )
+        measured_worker_minimums, dispatch_failures = _measured_worker_minimums(
+            mixed_delta
+        )
+        router_rejections_after = _router_rejections_total(
+            run.base_url,
+            run.request_timeout_s,
+        )
+    except Exception as exc:
+        checks.fail(f"router validation failed: {exc}")
+        return
+    workers = delta["workers"]
+    class_counts = {
+        service_class: sum(
+            int(worker["routed_requests_by_class"].get(service_class, 0))
+            for worker in workers
+        )
+        for service_class in (
+            "speech_http",
+            "speech_batch",
+            "speech_websocket",
+            "voice_control",
+        )
     }
-    owner_worker_id = run.workers_before["workers"][0]["worker_id"]
-    checks.check(
-        voice_counts.get(owner_worker_id, 0) > 0
-        and all(
-            count == 0
-            for worker_id, count in voice_counts.items()
-            if worker_id != owner_worker_id
-        ),
-        f"voice control did not remain on the exact owner: {voice_counts}",
+    rejected_delta = router_rejections_after - run.router_rejections_before
+    (run.run_dir / "router_validation.json").write_text(
+        json.dumps(
+            {
+                "workers_before": run.router_before,
+                "worker_delta": delta,
+                "mixed_worker_delta": mixed_delta,
+                "mixed_measured_worker_minimums": measured_worker_minimums,
+                "mixed_results": mixed_summary,
+                "class_dispatches": class_counts,
+                "router_rejections": {
+                    "before": run.router_rejections_before,
+                    "after": router_rejections_after,
+                    "delta": rejected_delta,
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )
-    rejected_delta = int(
-        health_after.get("admission", {}).get("rejected_total", 0)
-    ) - int(run.health_before.get("admission", {}).get("rejected_total", 0))
+    for failure in dispatch_failures:
+        checks.fail(failure)
     checks.check(
         rejected_delta == 0,
         f"router rejected valid scheduled traffic: delta={rejected_delta}",
+    )
+    checks.check(
+        all(count > 0 for count in measured_worker_minimums),
+        "both workers must provably serve measured mixed-production traffic: "
+        f"minimums={measured_worker_minimums}",
+    )
+    owners = [
+        worker["worker_id"] for worker in workers if worker.get("voice_owner") is True
+    ]
+    checks.check(
+        owners == ["tts-serving-1"],
+        f"unexpected voice owner: {owners}",
+    )
+    voice_counts = {
+        worker["worker_id"]: int(
+            worker["routed_requests_by_class"].get("voice_control", 0)
+        )
+        for worker in workers
+    }
+    checks.check(
+        voice_counts.get("tts-serving-1", 0) > 0
+        and all(
+            count == 0
+            for worker_id, count in voice_counts.items()
+            if worker_id != "tts-serving-1"
+        ),
+        f"voice control did not remain on the exact owner: {voice_counts}",
     )
 
 
@@ -672,6 +652,21 @@ def _get_json(url: str, timeout_s: int) -> dict:
     if not isinstance(payload, dict):
         raise AssertionError(f"expected JSON object from {url}")
     return payload
+
+
+def _router_rejections_total(base_url: str, timeout_s: int) -> int:
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(f"{base_url}/metrics", timeout=timeout_s) as response:
+        metrics = response.read().decode("utf-8")
+    prefix = f"{ROUTER_REJECTION_METRIC}{{"
+    samples = [
+        int(line.rsplit(" ", 1)[1])
+        for line in metrics.splitlines()
+        if line.startswith(prefix)
+    ]
+    if not samples:
+        raise AssertionError(f"router metrics omit {ROUTER_REJECTION_METRIC}")
+    return sum(samples)
 
 
 def _write_benchmark_validation(
@@ -784,19 +779,6 @@ def test_tts_serving_stress(serving_run: ServingRun) -> None:
             _check_performance(report, measurement_checks, threshold_checks)
 
     _check_router(serving_run, benchmark_checks)
-    try:
-        health = _get_json(
-            f"{serving_run.base_url}/health",
-            serving_run.request_timeout_s,
-        )
-    except Exception as exc:
-        benchmark_checks.fail(f"post-benchmark health probe failed: {exc}")
-    else:
-        benchmark_checks.check(
-            str(health.get("status", "")).lower() in {"healthy", "ok"},
-            f"router is unhealthy after benchmark: {health}",
-        )
-
     try:
         voices = _get_json(
             f"{serving_run.base_url}/v1/audio/voices",
