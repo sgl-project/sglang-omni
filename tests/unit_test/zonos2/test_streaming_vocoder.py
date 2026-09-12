@@ -418,3 +418,32 @@ def test_eos_near_chunk_boundary(eos):
     sch = _scheduler(steady=32, initial=5, overlap=2)
     pcm = _drive(sch, codes, eos, emit=32)
     assert len(pcm) == _aligned_len(codes, eos)
+
+
+@pytest.mark.parametrize("payload_first", [False, True])
+def test_final_payload_recovers_tail_after_early_eos(payload_first):
+    codes = _codes(32)
+    eos = 24
+    scheduler = _scheduler(steady=32, initial=5, overlap=0)
+    payload = _payload(codes, eos)
+    if payload_first:
+        scheduler._on_streaming_new_request("req", payload)
+    scheduler._on_chunk(
+        "req",
+        StreamItem(
+            chunk_id=0, data=codes[:16], from_stage="tts_engine", metadata=_meta()
+        ),
+    )
+    scheduler._on_done("req")
+    if not payload_first:
+        # Note (wenyao): EOS cannot recover missing code rows without the payload.
+        scheduler._on_done("req")
+        scheduler._on_streaming_new_request("req", payload)
+    messages = []
+    while not scheduler.outbox.empty():
+        messages.append(scheduler.outbox.get_nowait())
+    np.testing.assert_array_equal(
+        _pcm_from_messages(messages, "req"), _fake_decode(codes, eos).numpy()
+    )
+    assert sum(message.type == "result" for message in messages) == 1
+    assert scheduler._stream_states == {}

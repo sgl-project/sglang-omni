@@ -1324,10 +1324,10 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
     assert data.req is req
 
 
-def test_stream_output_drains_runner_before_terminal_payload() -> None:
+def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() -> None:
     """The runner hook must fire on a non-abort finish, and strictly before the
     terminal payload lands on the shared outbox."""
-    calls: list[tuple[str, object, int]] = []
+    calls: list[tuple[str, object, str | None, int]] = []
     scheduler = object.__new__(OmniScheduler)
     _init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
@@ -1340,13 +1340,14 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
     scheduler._model_runner = SimpleNamespace(
         on_request_finished=lambda rid, req_data: calls.append(
-            (rid, req_data, scheduler.outbox.qsize())
+            (rid, req_data, req_data.finish_reason, scheduler.outbox.qsize())
         )
     )
+    finished_reason = SimpleNamespace(to_json=lambda: {"type": "stop"})
     req = SimpleNamespace(
         rid="req-1",
         finished=lambda: True,
-        finished_reason=None,
+        finished_reason=finished_reason,
         output_ids=[7],
         _omni_data=data,
         _omni_terminal_claimed=False,
@@ -1356,7 +1357,7 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     scheduler.stream_output([req])
 
     # qsize 0 at call time proves the flush is ordered ahead of the result.
-    assert calls == [("req-1", data, 0)]
+    assert calls == [("req-1", data, "stop", 0)]
     assert scheduler.outbox.qsize() == 1
     assert scheduler.outbox.get().type == "result"
     assert req._omni_data is None

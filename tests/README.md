@@ -91,6 +91,7 @@ tests/
     │   ├── test_code2wav.py
     │   ├── test_code2wav_batching.py
     │   ├── test_code2wav_cuda_graph.py
+    │   ├── test_code2wav_overlap.py
     │   ├── test_colocation_config.py
     │   ├── test_config_manager.py
     │   ├── test_fp8_backend_config.py
@@ -102,6 +103,7 @@ tests/
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
     │   ├── test_talker.py
+    │   ├── test_talker_codec_coalesce.py
     │   ├── test_talker_prefill_embed_cache.py
     │   ├── test_talker_emit_snapshot.py
     │   ├── test_talker_feedback_write.py
@@ -459,6 +461,8 @@ that happened to contain an older version of the test.
   - GPU memory accounting helpers
   - IPC lifecycle
   - scheduler batching
+  - stream termination drains the runner before publishing the terminal
+    output and preserves the finish reason (`test_scheduler.py`).
   - scheduler errors
   - scheduler concurrency
   - async-decode drop-stale handling, including per-token field reslicing on
@@ -521,6 +525,8 @@ that happened to contain an older version of the test.
   - static TTS `ModelCapabilities` declarations, registry lookup, aliases, and
     launcher startup logging.
 - `unit_test/scheduling/`: Shared scheduling-service unit tests:
+  - early-tail flushing remains opt-in when stream completion arrives
+    before the final payload (`test_streaming_vocoder.py`).
   - `EvictHeapRadixCache` eviction-order equivalence against upstream
     `RadixCache` on randomized traces, heap boundedness and recovery after a
     full drain, and reset-then-reuse behavior.
@@ -644,8 +650,14 @@ that happened to contain an older version of the test.
     `_rollback_decode_prep_after_skip` idempotency contract, projected prefill
     tensor storage/slicing, decode feedback/text FIFO consumption, and replay
     of generated-token input embeds after decode retract
+  - `test_talker_codec_coalesce.py`: CPU frame-threshold, snapshot
+    ownership, first-flush, post-prefix window cadence, EOS removal, final-tail,
+    and feedback-order contracts. Early Talker startup opt-in, chunk gates, and
+    config forwarding are covered in `test_talker.py` and `test_config_manager.py`.
   - Code2Wav streaming/cleanup behavior plus bounded batching deadlines,
-    fire rules, sub-batch decomposition, output equivalence, and lifecycle
+    fire rules, sub-batch decomposition, output equivalence, and lifecycle.
+    `test_code2wav_batching.py` also covers per-window batch ceilings,
+    staging-pool capacity, graph keys, and bounded first-window telemetry.
   - Code2Wav CUDA Graph lifecycle, exact-shape replay, atomic rollback, memory
     budget enforcement, eager fallbacks, replay failures, and JSON-safe stats;
     the `accelerator`-marked cases exercise real CUDA stream restoration and

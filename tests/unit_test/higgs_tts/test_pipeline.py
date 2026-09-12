@@ -1844,7 +1844,10 @@ def test_higgs_streaming_vocoder_honors_initial_codec_chunk_frames() -> None:
     assert codec.decode_inputs[0].shape[0] == 1
 
 
-def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail() -> None:
+@pytest.mark.parametrize("payload_first", [False, True])
+def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail(
+    payload_first: bool,
+) -> None:
     raw_codes = torch.tensor(
         [
             [1, 2, 3],
@@ -1875,12 +1878,17 @@ def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail() -> None:
     full = scheduler._decode_state_to_audio(HiggsTtsState.from_dict(payload.data))
     assert full is not None
 
-    scheduler._on_streaming_new_request("req", payload)
+    if payload_first:
+        scheduler._on_streaming_new_request("req", payload)
     for idx, row in enumerate(delayed):
         item = _higgs_stream_item(row, codebook_size=64)
         item.chunk_id = idx
         scheduler._on_chunk("req", item)
     scheduler._on_done("req")
+
+    if not payload_first:
+        scheduler._on_done("req")
+        scheduler._on_streaming_new_request("req", payload)
 
     stream_chunks = [
         np.frombuffer(msg.data["audio_waveform"], dtype=np.float32).copy()

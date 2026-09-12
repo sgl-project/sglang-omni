@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.scheduling.types import ARRequestData
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass
@@ -26,6 +29,9 @@ class SGLangARRequestData(ARRequestData):
     talker_model_inputs: dict[str, Any] = field(default_factory=dict)
     pending_feedback_queue: Any = field(default_factory=collections.deque)
     pending_text_queue: Any = field(default_factory=collections.deque)
+    pending_codec_rows: list["torch.Tensor"] = field(default_factory=list)
+    codec_first_flush_done: bool = False
+    codec_frames_seen: int = 0
     tts_pad_embed: Any = None
     tts_eos_embed: Any = None
     thinker_chunks_done: bool = True

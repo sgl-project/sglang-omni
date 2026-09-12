@@ -87,10 +87,14 @@ def build_assistant_part(
 
     projected = text_projection(assistant_embed)  # [N, hidden]
 
-    # Text side: [first 3] + [4x pad] + [bos] + [4th token]
-    # The initial talker request can be built before the thinker has emitted
-    # four assistant tokens, so keep the slot stable and fill it later through
-    # future text-row queue updates.
+    # Note (wenyao): Three template rows plus one thinker row complete the 9-row
+    # assistant tail; fewer template rows would cause a broadcast mismatch.
+    if projected.shape[0] < 3:
+        raise RuntimeError(
+            "talker assistant segment needs at least 3 rows (the "
+            "<|im_start|>assistant chat-template prefix) to assemble the 9-row "
+            f"prompt tail; got {projected.shape[0]}"
+        )
     fourth_token = (
         projected[3:4]
         if projected.shape[0] > 3

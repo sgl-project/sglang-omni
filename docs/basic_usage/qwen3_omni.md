@@ -167,6 +167,31 @@ print(result["choices"][0]["message"]["content"])
 Speech mode runs the full eight-stage pipeline on one or more GPUs. It produces
 both text (from the thinker) and audio (from the talker) output.
 
+### Codec Coalescing and First-Audio Latency
+
+The speech pipeline sets `codec_coalesce_frames=10`,
+`codec_coalesce_early_frames=12`, and `codec_coalesce_first_frames=0` under
+`stages.talker_ar.factory`. The first 12 codec frames are sent individually;
+later frames are coalesced into groups of 10. Omitting a YAML override keeps
+these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to
+disable the early prefix.
+
+With Code2Wav batching enabled, `initial_codec_chunk_frames=2`, and
+`stream_chunk_size=10`, the early prefix makes the first two windows eligible
+at generated frames 2 and 12.
+Uniform groups of 10 (`early_frames=0`, `first_frames=0`) instead publish the
+first group at step 11: the sender retains the newest row until the next step
+can exclude EOS, or the request finishes. For a request that continues past
+step 10, first-window input readiness therefore moves from step 2 to step 11,
+adding nine Talker decode intervals. If the interval is approximately `d` ms,
+the added input wait is approximately `9d` ms. With the serial 10-frame first
+window, readiness instead moves from step 10 to step 11.
+
+This is an input-readiness estimate, not a measured end-to-end TTFA delta or
+nine frames of audio playback time. Actual TTFA also depends on transport,
+queueing, and vocoder execution; the overall coalescing benchmark does not
+isolate the early-prefix setting.
+
 ### Launch the Server
 
 Speech mode can run as a colocated one-GPU worker using the colocated config:
