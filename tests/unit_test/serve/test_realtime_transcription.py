@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from typing import Any
 
 import pytest
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import CompletionResult, GenerateRequest
-from sglang_omni.config import AudioChunkingConfig, RealtimeTranscriptionConfig
+from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime import transcription_session as session_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
@@ -152,7 +153,7 @@ async def _session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     outputs: list[str] | None = None,
-    max_audio_clip_s: float = 60.0,
+    max_segment_s: float | None = 60.0,
 ) -> tuple[RealtimeTranscriptionSession, RecordingWebSocket, FakeClient]:
     monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: FakeVAD())
     websocket = RecordingWebSocket()
@@ -161,11 +162,11 @@ async def _session(
         websocket,  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
         model_name="qwen3-asr",
-        capability=RealtimeTranscriptionConfig(
+        transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            max_segment_s=max_segment_s,
         ),
-        audio_chunking=AudioChunkingConfig(max_audio_clip_s=max_audio_clip_s),
         strategy=FakeStrategy(),
         session_id="sess-test",
     )
@@ -260,11 +261,12 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
         websocket,  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
         model_name="qwen3-asr",
-        capability=RealtimeTranscriptionConfig(
+        transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            server_vad=True,
+            max_segment_s=30.0,
         ),
-        audio_chunking=AudioChunkingConfig(),
         strategy=strategy,
         session_id="sess-clear",
     )
@@ -334,7 +336,7 @@ async def test_silent_final_does_not_reach_the_model(
 async def test_hard_limit_finalizes_in_audio_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _client = await _session(monkeypatch, max_audio_clip_s=1.0)
+    session, websocket, _client = await _session(monkeypatch, max_segment_s=1.0)
     await session.dispatch(_audio_event(_pcm(2.25)))
     await session.dispatch({"type": "transcription.done"})
 
@@ -358,17 +360,18 @@ async def test_vad_idle_silence_keeps_buffer_bounded(
         websocket,  # type: ignore[arg-type]
         client=FakeClient([]),  # type: ignore[arg-type]
         model_name="qwen3-asr",
-        capability=RealtimeTranscriptionConfig(
+        transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            server_vad=True,
+            max_segment_s=1.0,
         ),
-        audio_chunking=AudioChunkingConfig(max_audio_clip_s=1.0),
         strategy=FakeStrategy(),
         session_id="sess-idle",
     )
 
     # Server VAD never reports speech, so no segment starts and _queue_final
-    # never drains the buffer. Streaming past max_audio_clip_s + 4s of audio
+    # never drains the buffer. Streaming past max_segment_s + 4s of audio
     # must still not raise BufferOverflow.
     for _ in range(8):
         await session.dispatch(_audio_event(_pcm(1.0, amplitude=0)))
@@ -376,4 +379,193 @@ async def test_vad_idle_silence_keeps_buffer_bounded(
     assert session.active_segment is None
     assert not [event for event in websocket.events if event["type"] == "error"]
     assert session.audio_buffer.num_bytes < session.audio_buffer.max_bytes
+    await session.teardown()
+
+
+class ExplodingStrategy(FakeStrategy):
+    def create_state(self, **settings: Any) -> object:
+        raise RuntimeError("strategy exploded")
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_is_reported_and_session_survives(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    session, websocket, client = await _session(monkeypatch, outputs=["hello"])
+    session.strategy = ExplodingStrategy()
+
+    with caplog.at_level(logging.ERROR):
+        await session.dispatch(_audio_event(_pcm(0.5)))
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "internal_error"
+    assert "strategy exploded" in caplog.text
+
+    session.strategy = FakeStrategy()
+    await session.dispatch(_audio_event(_pcm(0.5)))
+    await session.dispatch({"type": "input_audio_buffer.commit"})
+    await session.dispatch({"type": "transcription.done"})
+    assert websocket.events[-1]["type"] == "transcription.completed"
+    assert websocket.events[-1]["text"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_prefix_padding_must_fit_inside_silence_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await _session(monkeypatch)
+    session.transcription_config = RealtimeTranscriptionConfig(
+        strategy_cls=FakeStrategy, server_vad=True
+    )
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {
+                "turn_detection": {
+                    "type": "server_vad",
+                    "prefix_padding_ms": 600,
+                    "silence_duration_ms": 500,
+                }
+            },
+        }
+    )
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "invalid_turn_detection"
+    assert session.vad is None
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {
+                "turn_detection": {
+                    "type": "server_vad",
+                    "prefix_padding_ms": 400,
+                    "silence_duration_ms": 500,
+                }
+            },
+        }
+    )
+    assert websocket.events[-1]["type"] == "session.updated"
+    assert session.vad is not None
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_vad_settings_reject_negative_padding_and_zero_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await _session(monkeypatch)
+    session.transcription_config = RealtimeTranscriptionConfig(
+        strategy_cls=FakeStrategy, server_vad=True
+    )
+
+    for turn_detection in (
+        {"type": "server_vad", "prefix_padding_ms": -300, "silence_duration_ms": 500},
+        {"type": "server_vad", "prefix_padding_ms": 0, "silence_duration_ms": 0},
+    ):
+        await session.dispatch(
+            {"type": "session.update", "session": {"turn_detection": turn_detection}}
+        )
+        assert websocket.events[-1]["type"] == "error", turn_detection
+        assert websocket.events[-1]["error"]["code"] == "invalid_turn_detection"
+        assert session.vad is None
+    await session.teardown()
+
+
+class FailOnceStrategy(FakeStrategy):
+    def __init__(self) -> None:
+        self.failures_left = 1
+
+    def create_state(self, **settings: Any) -> object:
+        if self.failures_left:
+            self.failures_left -= 1
+            raise RuntimeError("onset exploded")
+        return super().create_state(**settings)
+
+
+@pytest.mark.asyncio
+async def test_failed_onset_does_not_strand_the_vad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vad = StartOnNextAppendVAD()
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: vad)
+    websocket = RecordingWebSocket()
+    session = RealtimeTranscriptionSession(
+        websocket,  # type: ignore[arg-type]
+        client=FakeClient([]),  # type: ignore[arg-type]
+        model_name="qwen3-asr",
+        transcription_config=RealtimeTranscriptionConfig(
+            strategy_cls=FakeStrategy,
+            decode_interval_ms=2000,
+            server_vad=True,
+            max_segment_s=30.0,
+        ),
+        strategy=FailOnceStrategy(),
+        session_id="sess-onset",
+    )
+
+    # First onset: the VAD flips to speech, then segment creation fails.
+    await session.dispatch(_audio_event(_pcm(0.5)))
+    assert websocket.events[-1]["type"] == "error"
+    assert session.active_segment is None
+    assert vad.reset_calls == 1  # resynced, so the VAD can report onset again
+
+    # The VAD reports the (re-detected) onset on the next packet and the
+    # utterance is transcribed normally.
+    await session.dispatch(_audio_event(_pcm(2.0)))
+    assert session.active_segment is not None
+    await session.dispatch({"type": "input_audio_buffer.commit"})
+    await session.dispatch({"type": "transcription.done"})
+    finals = [
+        event
+        for event in websocket.events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert len(finals) == 1 and finals[0]["text"]
+    assert websocket.events[-1]["type"] == "transcription.completed"
+    assert websocket.events[-1]["text"] == finals[0]["text"]
+
+
+def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
+    websocket = RecordingWebSocket()
+    session = RealtimeTranscriptionSession(
+        websocket,  # type: ignore[arg-type]
+        client=FakeClient([]),  # type: ignore[arg-type]
+        model_name="no-vad-asr",
+        transcription_config=RealtimeTranscriptionConfig(
+            strategy_cls=FakeStrategy,
+            server_vad=False,
+        ),
+        strategy=FakeStrategy(),
+        session_id="sess-no-vad",
+    )
+    return session, websocket
+
+
+@pytest.mark.asyncio
+async def test_model_without_server_vad_starts_in_manual_mode() -> None:
+    session, websocket = _no_vad_session()
+    await session.send(session.initial_event())
+
+    assert websocket.events[-1]["session"]["turn_detection"] is None
+    assert session.vad is None
+    await session.dispatch(_audio_event(_pcm(0.5)))
+    assert session.active_segment is not None
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_model_without_server_vad_rejects_turn_detection() -> None:
+    session, websocket = _no_vad_session()
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {"turn_detection": {"type": "server_vad"}},
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "unsupported_turn_detection"
+    assert session.vad is None
     await session.teardown()

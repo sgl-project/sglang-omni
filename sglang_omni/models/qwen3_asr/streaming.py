@@ -39,8 +39,11 @@ class Qwen3ASRStreamingStrategy:
     ) -> GenerateRequest:
         del is_final, request_id
         qwen_state = self._state(state)
-        use_prefix = qwen_state.chunk_id >= _UNFIXED_CHUNK_NUM and bool(
-            qwen_state.transcript
+
+        use_prefix = (
+            qwen_state.chunk_id >= _UNFIXED_CHUNK_NUM
+            and bool(qwen_state.transcript)
+            and qwen_state.language is not None
         )
         request = build_speech_to_text_generate_request(
             audio_bytes=audio,
