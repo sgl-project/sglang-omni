@@ -126,6 +126,21 @@ def test_forward_prefill_skips_lm_head_and_keeps_full_hidden_rows() -> None:
     assert model.qwen2.model_kwargs["input_embeds"] is embeds
 
 
+def test_prefill_sidecar_kwargs_reach_exposed_backbone() -> None:
+    model = _forward_model(torch.zeros(3, 2))
+    embeds = torch.ones(3, 2)
+    batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+        input_embeds=None,
+        extend_seq_lens=torch.tensor([3]),
+    )
+    model.forward(torch.zeros(3, dtype=torch.long), torch.arange(3), batch, embeds)
+
+    assert model.language_model is model.qwen2
+    assert model.qwen2.model_kwargs["input_embeds"] is embeds
+    assert batch.input_embeds is None
+
+
 def test_forward_decode_skips_lm_head_and_returns_per_request_rows() -> None:
     hidden = torch.arange(6.0).reshape(3, 2)
     model = _forward_model(hidden)

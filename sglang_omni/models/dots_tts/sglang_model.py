@@ -50,6 +50,11 @@ class DotsTTSSGLangModel(nn.Module):
         return self.qwen2.get_input_embeddings()
 
     @property
+    def language_model(self) -> Qwen2ForCausalLM:
+        """Expose the backbone boundary used by SGLang's prefill graph runner."""
+        return self.qwen2
+
+    @property
     def graph_feedback_buffer(self) -> torch.Tensor | None:
         return self._graph_feedback_buffer
 
