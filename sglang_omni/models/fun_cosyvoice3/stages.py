@@ -863,8 +863,50 @@ def adaptive_flow_grouping(
 
         
         optimal_suffix_plan = None
-        shortest_frames = ordered[suffix_start].total_mel_frames
-        last_group_end = request_num - remaining_group_count + 1
+        shortest_frames = ordered_requests[suffix_start].total_mel_frames
+        group_end_limit = request_num - remaining_group_count + 1
+        # Note (chenyang): group_end_limit is max possible end index
+        # for the current group, since each remaining group must have
+        # at least one request.
+
+        for group_end in range(suffix_start + 1, group_end_limit + 1):
+            longest_frames = ordered_requests[suffix_start:group_end].total_mel_frames.max()
+            group_gap_frames = longest_frames - shortest_frames
+            if group_gap_frames > flow_merge_max_gap_frames:
+                break
+            suffix_plan = compute_optimal_suffix_partition(
+                suffix_start=group_end,
+                remaining_group_count = remaining_group_count - 1,
+                current_max_group_gap_frames = max(current_max_group_gap_frames, group_gap_frames),
+            )
+            if suffix_plan is not None:
+                continue
+            optimal_plan_candidate = (
+                (group_end_limit = suffix_start) * longest_frames + suffix_plan[0],
+                suffix_plan[1],
+                (group_end,) + suffix_plan[2],
+            )
+            if optimal_plan_candidate is None or optimal_plan_cadidate < optimal_suffix_plan:
+                optimal_suffix_plan = optimal_plan_candidate
+        return optimal_suffix_plan
+
+    for group_count in range(1, request_count + 1):
+        optimal_suffix_plan = compute_optimal_suffix_partition(
+            suffix_start=0,
+            remaining_group_count=group_count,
+            current_max_group_gap_frames=0,
+        )
+        if (
+            optimal_suffix_plan is not Nonme
+            and (optimal_suffix_plan[0] / baseline_flow_workload - 1) * 100
+            <= flow_merge_pad_budget_percent + 1e-9
+        ):
+            start = 0
+            groups: list[list[_PreparedFlowRequest]] = []
+            for end in optimal_suffix_plan[2]:
+                groups.append(ordered_requests[start:end])
+                start = end
+            return groups
 
 
 def _group_by_padding_waste(
