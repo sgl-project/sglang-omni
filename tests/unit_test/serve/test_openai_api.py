@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import logging
+import wave
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -2886,6 +2889,102 @@ def test_transcription_stream_maps_input_length_error_to_400() -> None:
 
     assert response.status_code == 400
     assert "exceeds the maximum allowed length" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("outcome", ["cancel", "disconnect", "complete", "error"])
+def test_transcription_asgi_before_first_chunk_cleans_request(outcome: str) -> None:
+    """Cancellation before response headers must release an admitted request."""
+
+    async def _run() -> None:
+        client, coordinator, control_plane = _streaming_client()
+        app = create_app(client, model_name="qwen3-omni")
+        audio = io.BytesIO()
+        with wave.open(audio, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\0\0" * 1600)
+        upload = httpx.Request(
+            "POST",
+            "http://testserver/v1/audio/transcriptions",
+            data={"model": "qwen3-omni", "stream": "true"},
+            files={"file": ("sample.wav", audio.getvalue(), "audio/wav")},
+        )
+        body = upload.read()
+        scope = _http_scope(path="/v1/audio/transcriptions", spec_version="2.4")
+        scope["headers"] = [(name.lower(), value) for name, value in upload.headers.raw]
+        received_body = False
+        disconnected = asyncio.Event()
+        sent: list[dict[str, Any]] = []
+
+        async def receive() -> dict[str, Any]:
+            nonlocal received_body
+            if not received_body:
+                received_body = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict[str, Any]) -> None:
+            sent.append(message)
+
+        original_tasks = asyncio.all_tasks()
+        handler = asyncio.create_task(app(scope, receive, send))
+
+        async def wait_for_admission() -> None:
+            while not control_plane.submitted:
+                if handler.done():
+                    await handler
+                    pytest.fail(f"Request ended before admission: {sent}")
+                await asyncio.sleep(0)
+
+        try:
+            await asyncio.wait_for(wait_for_admission(), timeout=5)
+            request_id = control_plane.submitted[0][2].request_id
+            assert request_id in coordinator._requests
+            assert request_id in coordinator._stream_queues
+            assert not sent  # Admission occurs before response headers.
+
+            if outcome == "cancel":
+                handler.cancel()
+            elif outcome == "disconnect":
+                disconnected.set()
+            else:
+                await coordinator._handle_completion(
+                    CompleteMessage(
+                        request_id=request_id,
+                        from_stage="decode",
+                        success=outcome == "complete",
+                        result={"text": "recognized speech"},
+                        error="transcription failed" if outcome == "error" else None,
+                    )
+                )
+
+            if outcome in {"cancel", "disconnect"}:
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(handler, timeout=5)
+            else:
+                await asyncio.wait_for(handler, timeout=5)
+                assert sent[0]["status"] == (200 if outcome == "complete" else 500)
+            for _ in range(100):
+                if request_id not in coordinator._requests:
+                    break
+                await asyncio.sleep(0)
+            assert request_id not in coordinator._requests
+            assert request_id not in coordinator._stream_queues
+            assert request_id not in coordinator._completion_futures
+            assert request_id not in coordinator._abort_tasks
+            if outcome in {"cancel", "disconnect"}:
+                assert [msg.request_id for msg in control_plane.aborts] == [request_id]
+            assert not (asyncio.all_tasks() - original_tasks)
+        finally:
+            # Clean up a failed baseline before asyncio.run masks leaked tasks.
+            pending = asyncio.all_tasks() - original_tasks
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(_run())
 
 
 def test_transcription_first_chunk_disconnect_aborts_backend() -> None:
