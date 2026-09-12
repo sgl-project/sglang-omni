@@ -285,6 +285,7 @@ class GenerateResponse(BaseModel):
 
     text: str = ""
     audio: GenerateAudio | None = None
+    media: list[dict[str, Any]] | None = None
     meta_info: GenerateMetaInfo
 
 

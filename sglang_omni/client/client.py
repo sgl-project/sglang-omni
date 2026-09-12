@@ -149,6 +149,7 @@ class Client:
             request_id=request_id,
             text=full_text,
             audio=audio,
+            media=last_chunk.media,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -527,6 +528,7 @@ class Client:
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
+            chunk.media = result.get("media")
             chunk.stage_id = result.get("stage_id")
             chunk.stage_name = result.get("stage_name")
             modality = result.get("modality")

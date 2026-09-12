@@ -201,6 +201,9 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
     # enforced by StageConfig validation, but launcher helpers mutate
     # tp_size and gpu after construction, so re-check the TP shape here
     # rather than expanding a scalar into duplicate ranks.
+    if stage.runtime_gpu_ids is not None:
+        stage.model_post_init()
+        return tuple(stage.runtime_gpu_ids)
     gpu = stage.gpu
     if gpu is None:
         return ()

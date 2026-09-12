@@ -1074,3 +1074,94 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
         assert control_plane.submitted[0][2].replica_bindings is None
 
     asyncio.run(_run())
+
+
+def test_coordinator_stop_releases_completion_waiter() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+        task = asyncio.create_task(coordinator.submit("pending", "hello"))
+        for _ in range(100):
+            if "pending" in coordinator._completion_futures:
+                break
+            await asyncio.sleep(0)
+        assert "pending" in coordinator._completion_futures
+
+        await coordinator.stop()
+
+        with pytest.raises(RuntimeError, match="Coordinator stopped"):
+            await asyncio.wait_for(task, timeout=1)
+        assert coordinator._requests == {}
+        assert coordinator._completion_futures == {}
+        with pytest.raises(RuntimeError, match="Coordinator stopped"):
+            await coordinator.submit("after-stop", "hello")
+        await coordinator.stop()
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stop_releases_stream_waiter() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+        contexts = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: contexts.append(context)
+        )
+        task, errors, future = await _drive_stream_until_registered(
+            coordinator, "stream-pending"
+        )
+
+        await coordinator.stop()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert errors == ["Coordinator stopped"]
+        assert future.cancelled()
+        assert coordinator._stream_queues == {}
+        assert coordinator._completion_futures == {}
+        del future
+        gc.collect()
+        assert not any(
+            "never retrieved" in str(context.get("message", "")) for context in contexts
+        )
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stop_preserves_completed_result_and_prior_failure() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator._submit_request("completed", "hello")
+        await coordinator._handle_completion(
+            CompleteMessage("completed", "decode", True, result={"text": "done"})
+        )
+        future = coordinator._completion_futures["completed"]
+        await coordinator.fail_pending_requests("original worker failure")
+
+        await coordinator.stop()
+
+        assert future.result() == {"text": "done"}
+        assert coordinator._fatal_error == "original worker failure"
+
+    asyncio.run(_run())
