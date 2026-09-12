@@ -371,6 +371,18 @@ class TalkerPrefillBuilder:
         return prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs
 
     def _load_prompt_token_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
+        if token_ids.numel() == 1:
+            token_id = int(token_ids.item())
+            row = self._thinker_embed_cache.get(token_id)
+            if row is None:
+                row = (
+                    load_thinker_embedding_rows(self._model_path, [token_id])
+                    .to(device=self._device, dtype=self._dtype)[0]
+                    .detach()
+                    .clone()
+                )
+                self._thinker_embed_cache[token_id] = row
+            return row.unsqueeze(0).clone()
         token_ids = token_ids.to(dtype=torch.long).view(-1).cpu()
         unique_ids, inverse = torch.unique(token_ids, sorted=False, return_inverse=True)
         missing_ids = [
