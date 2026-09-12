@@ -130,6 +130,41 @@ class LocalSetupTests(unittest.TestCase):
         )
         self.assertEqual(result.stdout.strip(), "/cached/model with spaces")
 
+    def test_mlx_rejects_non_native_homebrew_before_loading_libraries(self):
+        ffmpeg = self.root / "ffmpeg@7"
+        (ffmpeg / "lib").mkdir(parents=True)
+        for prefix in ("/usr/local", "/custom/homebrew", "/opt/homebrew"):
+            with self.subTest(prefix=prefix):
+                calls = self.root / "brew-calls"
+                calls.write_text("")
+                brew = self.executable(
+                    "brew-test",
+                    "import sys\nfrom pathlib import Path\n"
+                    f"with Path({str(calls)!r}).open('a') as log:\n"
+                    "    log.write(' '.join(sys.argv[1:]) + '\\n')\n"
+                    f"print({prefix!r} if sys.argv[1:] == ['--prefix'] else {str(ffmpeg)!r})\n",
+                )
+                result = self.run_shell(
+                    'set -eu; source "$1"; fake_brew="$2"; '
+                    'find_brew() { brew_bin="$fake_brew"; }; '
+                    "export DYLD_LIBRARY_PATH=/existing/lib; configure_mlx; "
+                    'printf "%s\\n" "$SGLANG_USE_MLX" "$DYLD_LIBRARY_PATH"',
+                    brew,
+                    success=prefix == "/opt/homebrew",
+                )
+                if prefix == "/opt/homebrew":
+                    self.assertEqual(
+                        result.stdout.splitlines(), ["1", f"{ffmpeg}/lib:/existing/lib"]
+                    )
+                    self.assertEqual(
+                        calls.read_text().splitlines(),
+                        ["--prefix", "--prefix ffmpeg@7"],
+                    )
+                else:
+                    self.assertIn(prefix, result.stderr)
+                    self.assertIn("Apple Silicon", result.stderr)
+                    self.assertEqual(calls.read_text().splitlines(), ["--prefix"])
+
     def test_cleanup_stops_only_owned_children(self):
         other = subprocess.Popen(["sleep", "30"])
         self.addCleanup(lambda: other.poll() is None and other.terminate())

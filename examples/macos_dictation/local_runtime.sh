@@ -61,7 +61,9 @@ check_python() {
 
 configure_mlx() {
     find_brew
-    local ffmpeg_prefix
+    local brew_prefix ffmpeg_prefix
+    brew_prefix="$("$brew_bin" --prefix)" || die '无法读取 Homebrew 安装路径。'
+    [[ "$brew_prefix" == /opt/homebrew ]] || die "需要原生 Apple Silicon Homebrew（/opt/homebrew），当前路径：$brew_prefix"
     ffmpeg_prefix="$("$brew_bin" --prefix ffmpeg@7)"
     [[ -d "$ffmpeg_prefix/lib" ]] || die '缺少 ffmpeg@7，请先运行 install_local.sh。'
     export DYLD_LIBRARY_PATH="$ffmpeg_prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"

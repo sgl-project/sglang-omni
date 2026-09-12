@@ -41,6 +41,7 @@ private final class MockHTTP: URLProtocol {
         case "/v1/audio/transcriptions": body = #"{"text":"可以换快捷键吗？"}"#
         case "/api/chat": body = #"{"done":true,"done_reason":"stop","message":{"content":"可以换快捷键吗？"}}"#
         case "/health": body = #"{"status":"healthy"}"#
+        case "/v1/models": body = #"{"data":[{"id":"asr-b"}]}"#
         case "/api/tags": body = #"{"models":[{"name":"polish-b"}]}"#
         default: body = "{}"
         }
@@ -125,8 +126,9 @@ private enum ServiceConfigurationTests {
                   && next[1].0.port == 9102 && next[1].1.contains("polish-b"), "下一轮应使用新的独立配置")
         let health = await service.health()
         try check(health.asr == "可连接" && health.ollama.contains("模型已安装"), "健康检查应使用相同配置")
-        let probes = MockHTTP.requests.all.suffix(2).map(\.0)
-        try check(probes.contains(b.asr.endpoint("health")) && probes.contains(b.polish.endpoint("api/tags")),
+        let probes = MockHTTP.requests.all.suffix(3).map(\.0)
+        try check(probes.contains(b.asr.endpoint("health")) && probes.contains(b.asr.endpoint("v1/models"))
+                  && probes.contains(b.polish.endpoint("api/tags")),
                   "健康检查不能使用写死的默认地址")
 
         var calls: [PolishWarmup.Request] = []

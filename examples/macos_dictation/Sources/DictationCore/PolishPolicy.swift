@@ -21,9 +21,9 @@ public enum PolishPolicy {
                 throw DictationError("整理改变了原文简繁用字，已拒绝该结果。")
             }
         }
-        // A small model can still paraphrase despite the prompt. Accept formatting,
-        // adjacent Chinese stutter removal, and explicitly supplied spelling pairs;
-        // reject other lexical edits so the session retains its original transcript.
+        // A small model can still paraphrase despite the prompt. Accept formatting
+        // and explicitly supplied spelling pairs. Repeated words remain significant:
+        // text alone cannot reliably distinguish stutter from meaningful repetition.
         func matches(_ pattern: String, in text: String) -> [String] {
             let regex = try! NSRegularExpression(pattern: pattern)
             return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
@@ -34,22 +34,12 @@ public enum PolishPolicy {
         guard matches(numberPattern, in: original) == matches(numberPattern, in: result) else {
             throw DictationError("整理改变了原文数字，已拒绝该结果。")
         }
-        if original.contains("?") || original.contains("？") {
-            guard result.contains("?") || result.contains("？") else {
-                throw DictationError("整理改变了原文问句，已拒绝该结果。")
-            }
+        let originalQuestion = original.contains("?") || original.contains("？")
+        let resultQuestion = result.contains("?") || result.contains("？")
+        guard originalQuestion == resultQuestion else {
+            throw DictationError("整理改变了原文问句，已拒绝该结果。")
         }
-        func canonical(_ text: String) -> String {
-            var value = contentSignature(text)
-            let repeats = try! NSRegularExpression(pattern: #"([\p{Han}]{1,6})\1+"#)
-            for _ in 0..<8 {
-                let reduced = repeats.stringByReplacingMatches(in: value, range: NSRange(value.startIndex..., in: value), withTemplate: "$1")
-                if reduced == value { break }
-                value = reduced
-            }
-            return value
-        }
-        var before = canonical(original), after = canonical(result)
+        var before = contentSignature(original), after = contentSignature(result)
         for negation in ["不", "没", "未", "无", "别"] {
             guard before.filter({ String($0) == negation }).count == after.filter({ String($0) == negation }).count else {
                 throw DictationError("整理改变了原文否定表达，已拒绝该结果。")
@@ -61,7 +51,7 @@ public enum PolishPolicy {
         for pair in pairs.matches(in: personalBackground, range: NSRange(personalBackground.startIndex..., in: personalBackground)) {
             guard let oldRange = Range(pair.range(at: 1), in: personalBackground),
                   let newRange = Range(pair.range(at: 2), in: personalBackground) else { continue }
-            let old = canonical(String(personalBackground[oldRange])), new = canonical(String(personalBackground[newRange]))
+            let old = contentSignature(String(personalBackground[oldRange])), new = contentSignature(String(personalBackground[newRange]))
             guard !old.isEmpty, !new.isEmpty, old.count <= 40, new.count <= 40 else { continue }
             before = before.replacingOccurrences(of: old, with: new)
             after = after.replacingOccurrences(of: old, with: new)
@@ -82,8 +72,8 @@ public enum PolishPolicy {
         }
     }
 
-    // Keep ASCII syntax by default. Only ordinary prose separators may disappear;
-    // dots inside paths, URL punctuation and punctuation in brackets remain significant.
+    // Keep ASCII syntax and word boundaries. Whitespace may be normalized, including
+    // spacing around Han text, but must not join or split ASCII words.
     private static func contentSignature(_ text: String) -> String {
         let scalars = Array(text.unicodeScalars)
         let prose = CharacterSet(charactersIn: "，。！？、；：…“”‘’")
@@ -91,18 +81,24 @@ public enum PolishPolicy {
         let operators = CharacterSet(charactersIn: "=<>!&|+-*/%~^([{\\")
         var result = String.UnicodeScalarView()
         var depth = 0
+        var pendingSpace = false
         func isWord(_ scalar: Unicode.Scalar?) -> Bool {
             guard let scalar else { return false }
             return scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || scalar == "_")
         }
         for (index, scalar) in scalars.enumerated() {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                pendingSpace = true
+                continue
+            }
             if scalar == "(" || scalar == "[" || scalar == "{" { depth += 1 }
             let next = index + 1 < scalars.count ? scalars[index + 1] : nil
             let followsSyntax = next.map { operators.contains($0) } ?? false
             let significantSeparator = depth > 0 || isWord(next) || followsSyntax
-            if !CharacterSet.whitespacesAndNewlines.contains(scalar), !prose.contains(scalar),
-               !separators.contains(scalar) || significantSeparator {
+            if !prose.contains(scalar), !separators.contains(scalar) || significantSeparator {
+                if pendingSpace && isWord(result.last) && isWord(scalar) { result.append(" ") }
                 result.append(scalar)
+                pendingSpace = false
             }
             if scalar == ")" || scalar == "]" || scalar == "}" { depth = max(0, depth - 1) }
         }

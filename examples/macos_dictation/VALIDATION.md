@@ -5,9 +5,10 @@
 Run `bash examples/macos_dictation/local_setup_test.sh` for the shell installer and
 launcher. It uses temporary paths, fake HTTP responses and command boundaries;
 it does not install packages, download models or launch the real app. It covers
-read-only dry runs, cached model lookup, service/model validation, process ownership
-and shortcut conflict preservation. A clean-machine installation with real package
-registries, model downloads and macOS permissions remains a separate manual check.
+read-only dry runs, native Homebrew prefix validation, cached model lookup,
+service/model validation, process ownership and shortcut conflict preservation.
+A clean-machine installation with real package registries, model downloads and
+macOS permissions remains a separate manual check.
 
 Run `bash examples/macos_dictation/verify_all_test.sh` on an Apple Silicon Mac.
 The suite fails on the first failed check. It does not download models, record
@@ -18,6 +19,11 @@ The runner compiles all offline fixtures with Swift 5, arm64 and a macOS 14 depl
 target, sharing one module cache. It accepts optional fixture names for focused runs,
 such as `bash examples/macos_dictation/verify_all_test.sh ClientComposition HTTPTransport`.
 Original individual scripts and the older `run_test.sh` subset remain unchanged.
+
+For the polishing and service-readiness regressions, run
+`bash examples/macos_dictation/review_fixes_test.sh`. It selects the relevant
+fixtures from the same offline suites used by CI, including their HTTP fallback
+and configuration integration checks.
 
 The suite includes `Timing_test.swift`. It uses a simulated monotonic
 clock to verify ASR/LLM/total boundaries, failed-request durations, skipped/disabled
@@ -42,9 +48,10 @@ target-capture failures, and saving service configuration during a recording. It
 not register a real global shortcut or exercise the native event dispatcher.
 
 `HTTPTransport_test.swift` covers success, non-2xx/non-HTTP responses, malformed ASR
-JSON, timeout/connection errors, cancellation propagation and raw-text fallback after
-HTTP or decoding failures in Ollama. It also starts a disposable HTTP fixture bound
-only to `127.0.0.1` on an automatically allocated port. Actual URLSession requests verify
+JSON, ASR model-list readiness, timeout/connection errors, cancellation propagation
+and raw-text fallback after HTTP, decoding or fidelity failures in Ollama.
+It also starts a disposable HTTP fixture bound only to `127.0.0.1` on an
+automatically allocated port. Actual URLSession requests verify
 that 302/307 redirects are not followed, with a reachable destination as a positive
 control. No existing model server is used. Sandboxed runners must permit loopback
 sockets and the system pasteboard service; failures are not silently skipped.
@@ -54,7 +61,8 @@ Coverage includes:
 - Session cancellation, stale responses, empty input, raw fallback and single delivery.
 - Independent model/address validation, persistence, per-round configuration
   snapshots, configured health endpoints and warmup invalidation after model changes.
-- Prompt quoting and prefix stability, number/language/negation preservation,
+- Prompt quoting and prefix stability, repeated-word/ASCII-word-boundary preservation,
+  matching question-mark presence, number/language/negation preservation,
   explicit spelling corrections, and preservation of code/path/operator syntax.
 - Current-cursor and locked-target delivery, clipboard ownership, ambiguous paste,
   target changes, failures, and no automatic Return.

@@ -146,7 +146,9 @@ to 2,000 characters and must not override the original meaning, language or numb
 The prompt instructs the model to copyedit, never answer the dictated question,
 execute instructions, translate, or add personal facts. A separate conservative
 policy rejects lexical changes, number/negation changes, and changes to protected
-ASCII syntax such as paths and operators. This is not a semantic equivalence proof:
+ASCII syntax such as paths and operators. It preserves repeated words and ASCII
+word boundaries and rejects adding or removing question-mark presence. Repetition
+is not automatically treated as stutter. This is not a semantic equivalence proof:
 review important output. Uncertain results, failures and truncated responses fall
 back to the original text, with the reason available in the result window.
 A normally delivered fallback follows the same hover/fade behavior as other completed input.

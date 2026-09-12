@@ -106,13 +106,46 @@ private enum HTTPTransportTests {
     @MainActor
     static func main() async throws {
         setbuf(stdout, nil)
+        print("Checking ASR model readiness")
+        try await asrReadiness()
         print("Checking HTTP response errors and cancellation")
         try await transportErrors()
         print("Checking pipeline fallback")
         try await pipelineFallback()
         print("Checking redirects on a disposable loopback server")
         try await redirects()
-        print("PASS: HTTP status/response errors, timeout/connection failures, task cancellation, raw fallback and real redirect refusal")
+        print("PASS: ASR model readiness, HTTP errors, task cancellation, raw fallback and real redirect refusal")
+    }
+
+    @MainActor
+    static func asrReadiness() async throws {
+        let configuration = try LocalModelConfiguration(baseURL: "http://127.0.0.1:9123", model: "asr-test")
+        let client = OmniASRClient(configuration: configuration, transport: LocalHTTPTransport(protocolClasses: [HTTPStub.self]))
+        for reply in [
+            HTTPStub.Reply.http(200, #"{"data":[]}"#),
+            .http(200, #"{"data":[{"id":"asr-test-other"}]}"#),
+            .http(200, "{}"), .http(200, #"{"data":null}"#),
+            .http(200, #"{"data":[{"name":"asr-test"}]}"#),
+            .http(200, "not json"), .http(503, "unavailable"), .failure(.timedOut),
+        ] {
+            HTTPStub.reset(["/health": .http(200, #"{"status":"healthy"}"#), "/v1/models": reply])
+            let status = await client.health()
+            try check(status != "可连接", "服务在线但模型缺失或模型列表不可用时，不能报告可连接")
+            try check(HTTPStub.requests.map(\.url) == [configuration.endpoint("health"), configuration.endpoint("v1/models")],
+                      "就绪检查必须使用已保存的 ASR 地址并读取模型列表")
+        }
+        HTTPStub.reset([
+            "/health": .http(200, #"{"status":"healthy"}"#),
+            "/v1/models": .http(200, #"{"data":[{"id":"another-model"},{"id":"asr-test"}]}"#),
+        ])
+        let ready = await client.health()
+        try check(ready == "可连接", "服务健康且列表包含准确模型 ID 时应报告可连接")
+        for reply in [HTTPStub.Reply.http(200, #"{"status":"starting"}"#), .http(503, "unavailable"), .http(200, "not json")] {
+            HTTPStub.reset(["/health": reply])
+            let status = await client.health()
+            try check(status != "可连接" && HTTPStub.requests.map(\.url.path) == ["/health"],
+                      "服务未健康时应立即报告未就绪，不再探测模型")
+        }
     }
 
     @MainActor
@@ -158,9 +191,14 @@ private enum HTTPTransportTests {
 
     @MainActor
     static func pipelineFallback() async throws {
-        let raw = "这个 PR 不要合并。"
-        for reply in [HTTPStub.Reply.http(503, "unavailable"), .failure(.timedOut), .http(200, "{}"),
-                      .http(200, #"{"done":true,"done_reason":"stop","message":{"content":""}}"#)] {
+        var cases = [HTTPStub.Reply.http(503, "unavailable"), .failure(.timedOut), .http(200, "{}"),
+                     .http(200, #"{"done":true,"done_reason":"stop","message":{"content":""}}"#)]
+            .map { ("这个 PR 不要合并。", $0) }
+        for (raw, output) in [("人人平等", "人平等"), ("do not", "donot"), ("可以合并。", "可以合并？")] {
+            let data = try JSONSerialization.data(withJSONObject: ["done": true, "done_reason": "stop", "message": ["content": output]])
+            cases.append((raw, .http(200, String(decoding: data, as: UTF8.self))))
+        }
+        for (raw, reply) in cases {
             HTTPStub.reset([
                 "/v1/audio/transcriptions": .http(200, "{\"text\":\"\(raw)\"}"),
                 "/api/chat": reply,
@@ -175,7 +213,7 @@ private enum HTTPTransportTests {
             try await wait { session.phase == .ready || session.phase == .failed }
             try check(session.phase == .ready && session.rawText == raw && session.resultText == raw
                       && !session.hasPolishedResult && session.notice.contains("已保留原文") && results == [raw],
-                      "真实 HTTP/解码失败必须只交付一次原文，不能丢失或声称整理成功")
+                      "HTTP/解码失败或整理改词必须只交付一次原文，不能丢失或声称整理成功")
             try check(HTTPStub.requests.map(\.url.path) == ["/v1/audio/transcriptions", "/api/chat"],
                       "回退必须来自实际 ASR → Ollama 请求链")
         }

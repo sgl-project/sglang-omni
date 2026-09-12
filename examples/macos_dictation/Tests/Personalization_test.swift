@@ -91,7 +91,7 @@ struct PersonalizationTests {
         try LocalSpeechService.validatePolish("Where is the config file?", original: "Where is the config file?")
         try LocalSpeechService.validatePolish("我们用 MLX 跑模型。", original: "我们用 em el ex 跑模型。",
                                               personalBackground: "术语纠错对照：em el ex → MLX。")
-        try LocalSpeechService.validatePolish("这个 PR 先不要合并。", original: "这个PR先先不要合并")
+        try LocalSpeechService.validatePolish("这个 PR 先先不要合并。", original: "这个PR先先不要合并")
         for (original, output) in [("可以换快捷键吗？", "可以换个快捷键吗？"),
                                    ("等 CI 通过以后再说。", "等 CI 通过之后再处理。"),
                                    ("不要合并。", "要合并。"), ("学习率 0.0001。", "学习率 00001。"),

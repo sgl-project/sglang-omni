@@ -48,6 +48,7 @@ private enum ClientCompositionTests {
         HTTPStub.reset([
             "/v1/audio/transcriptions": .http(200, #"{"text":"保留这段原文。"}"#),
             "/health": .http(200, #"{"status":"healthy"}"#),
+            "/v1/models": .http(200, #"{"data":[{"id":"asr-next"}]}"#),
             "/api/tags": .http(200, #"{"models":[{"name":"polish-next"}]}"#),
         ])
         let domain = "local.omni.composition-test.\(UUID().uuidString)"

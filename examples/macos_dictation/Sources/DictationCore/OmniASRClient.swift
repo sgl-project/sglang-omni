@@ -20,7 +20,16 @@ public final class OmniASRClient: AudioTranscribing {
         do {
             let data = try await transport.send(request, stage: "Omni ASR")
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            return object?["status"] as? String == "healthy" ? "可连接" : "服务尚未就绪"
+            guard object?["status"] as? String == "healthy" else { return "服务尚未就绪" }
+            var modelsRequest = URLRequest(url: configuration.endpoint("v1/models"))
+            modelsRequest.timeoutInterval = 5
+            let modelsData = try await transport.send(modelsRequest, stage: "Omni ASR")
+            let modelsObject = try JSONSerialization.jsonObject(with: modelsData) as? [String: Any]
+            guard let models = modelsObject?["data"] as? [[String: Any]] else {
+                throw DictationError("Omni ASR 模型列表格式异常。")
+            }
+            return models.contains { $0["id"] as? String == configuration.model }
+                ? "可连接" : "服务可连接，但未提供模型：\(configuration.model)"
         } catch { return "不可用：\(error.localizedDescription)" }
     }
     public static func request(wav: Data, configuration: LocalModelConfiguration = .omni) -> URLRequest {
