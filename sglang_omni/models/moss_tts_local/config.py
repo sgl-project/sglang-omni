@@ -44,13 +44,17 @@ def _uses_rocm_wsl_dxg() -> bool:
     )
 
 
-def resolve_vocoder_cuda_graph(vocoder_cuda_graph: bool | None) -> bool:
+def resolve_vocoder_cuda_graph(
+    vocoder_cuda_graph: bool | None,
+    *,
+    model_name: str = "MOSS-TTS Local",
+) -> bool:
     """Resolve the platform default and reject an unsafe DXG opt-in."""
     if not _uses_rocm_wsl_dxg():
         return True if vocoder_cuda_graph is None else vocoder_cuda_graph
     if vocoder_cuda_graph is True:
         raise ValueError(
-            "MOSS-TTS Local vocoder CUDA graphs cannot be enabled on ROCm "
+            f"{model_name} vocoder CUDA graphs cannot be enabled on ROCm "
             "WSL/DXG because HIP graph capture can abort the process; omit "
             "vocoder_cuda_graph or set it to false"
         )
@@ -143,6 +147,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
             "Vietnamese",
         }
     )
+    vocoder_cuda_graph_model_name: ClassVar[str] = "MOSS-TTS Local"
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": EngineStageConfig,
@@ -186,7 +191,8 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         if stage_name == "vocoder":
             return {
                 "vocoder_cuda_graph": resolve_vocoder_cuda_graph(
-                    self.vocoder_cuda_graph
+                    self.vocoder_cuda_graph,
+                    model_name=type(self).vocoder_cuda_graph_model_name,
                 ),
                 "vocoder_cuda_graph_frames": self.vocoder_cuda_graph_frames,
                 "vocoder_cuda_graph_min_free_gb": self.vocoder_cuda_graph_min_free_gb,
@@ -226,7 +232,10 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
-        resolve_vocoder_cuda_graph(self.vocoder_cuda_graph)
+        resolve_vocoder_cuda_graph(
+            self.vocoder_cuda_graph,
+            model_name=type(self).vocoder_cuda_graph_model_name,
+        )
         if self.ref_audio_cache_max_items < 1:
             raise ValueError(
                 "ref_audio_cache_max_items must be >= 1; got "
