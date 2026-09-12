@@ -389,13 +389,36 @@ def test_ming_speech_allows_talker_outside_explicit_thinker_tp_gpus() -> None:
     assert config.gpu_placement["talker"] == 2
 
 
+@pytest.mark.parametrize(
+    (
+        "prefill_backend",
+        "operator_selected",
+        "expected_input_embeds",
+        "expected_attestations",
+    ),
+    [
+        ("disabled", False, False, []),
+        ("breakable", False, True, [False]),
+        ("breakable", True, True, [True]),
+    ],
+)
 def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     monkeypatch,
+    prefill_backend,
+    operator_selected,
+    expected_input_embeds,
+    expected_attestations,
 ) -> None:
+    from unittest.mock import create_autospec
+
     from sglang.srt.arg_groups.overrides import resolution_result
+    from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
     from sglang.srt.server_args import ServerArgs
 
+    from sglang_omni.utils.cuda_graph_batch_validator import attest_prefill_cuda_graphs
+
     captured: dict[str, object] = {}
+    attestations: list[tuple[object, bool]] = []
 
     common_module = ModuleType("sglang_omni.models.ming_omni.components.common")
     common_module.load_ming_tokenizer = lambda _model_path: SimpleNamespace(
@@ -436,16 +459,19 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
         tp_rank,
         nccl_port,
         model_arch_override,
+        enable_prefill_input_embeds,
     ):
         captured["server_args_tp_size"] = resolution_result(server_args, "tp_size")
         captured["gpu_id"] = gpu_id
         captured["tp_rank"] = tp_rank
         captured["nccl_port"] = nccl_port
         captured["model_arch_override"] = model_arch_override
+        captured["enable_prefill_input_embeds"] = enable_prefill_input_embeds
         model = object()
         model_worker = SimpleNamespace(
             model_runner=SimpleNamespace(model=model),
         )
+        captured["model_runner"] = model_worker.model_runner
         return (
             model_worker,
             "tree_cache",
@@ -461,6 +487,21 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
         sys.modules,
         "sglang_omni.scheduling.bootstrap",
         scheduling_bootstrap_module,
+    )
+
+    validator_module = ModuleType("sglang_omni.utils.cuda_graph_batch_validator")
+
+    def fake_attest_prefill_cuda_graphs(model_runner, *, operator_selected):
+        attestations.append((model_runner, operator_selected))
+
+    validator_module.attest_prefill_cuda_graphs = create_autospec(
+        attest_prefill_cuda_graphs,
+        side_effect=fake_attest_prefill_cuda_graphs,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.utils.cuda_graph_batch_validator",
+        validator_module,
     )
 
     omni_scheduler_module = ModuleType("sglang_omni.scheduling.omni_scheduler")
@@ -490,7 +531,12 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     )
 
     bootstrap = importlib.import_module("sglang_omni.models.ming_omni.bootstrap")
-    server_args = ServerArgs(model_path="dummy")
+    server_args = ServerArgs(
+        model_path="dummy",
+        cuda_graph_config=CudaGraphConfig.from_dict(
+            {"prefill": {"backend": prefill_backend}}
+        ),
+    )
     server_args.resolve_once()
 
     scheduler = bootstrap.create_thinker_scheduler(
@@ -500,6 +546,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
         tp_rank=1,
         tp_size=2,
         nccl_port=29500,
+        operator_selected_prefill_backend=operator_selected,
     )
 
     assert captured["server_args_tp_size"] == 2
@@ -508,6 +555,10 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     assert captured["tp_rank"] == 1
     assert captured["nccl_port"] == 29500
     assert captured["model_arch_override"] == "BailingMoeV2ForCausalLM"
+    assert captured["enable_prefill_input_embeds"] is expected_input_embeds
+    assert attestations == [
+        (captured["model_runner"], value) for value in expected_attestations
+    ]
     assert scheduler.kwargs["server_args"] is server_args
 
 

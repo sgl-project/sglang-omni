@@ -179,7 +179,11 @@ class BailingMoeV2Attention(nn.Module):
         q = torch.cat([q_rot, q_pass], dim=-1)
         k = torch.cat([k_rot, k_pass], dim=-1)
 
-        return q, k, v
+        return (
+            q.reshape(-1, self.q_size),
+            k.reshape(-1, self.kv_size),
+            v.reshape(-1, self.kv_size),
+        )
 
     def forward_core(
         self,
@@ -887,7 +891,9 @@ class BailingMoeV2ForCausalLM(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
+        omni_prefill_rids: Optional[list[str] | tuple[str, ...]] = None,
     ):
+        del omni_prefill_rids
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
 
         return self.logits_processor(

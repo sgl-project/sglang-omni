@@ -24,6 +24,7 @@ def create_thinker_scheduler(
     tp_size: int = 1,
     nccl_port: int | None = None,
     enable_streaming_tts: bool = False,
+    operator_selected_prefill_backend: bool = False,
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
@@ -42,8 +43,13 @@ def create_thinker_scheduler(
         load_ming_tokenizer,
     )
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        get_prefill_cuda_graph_backend,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+    from sglang_omni.utils.cuda_graph_batch_validator import attest_prefill_cuda_graphs
 
     tokenizer = load_ming_tokenizer(model_path)
     config = load_ming_config(model_path)
@@ -51,6 +57,8 @@ def create_thinker_scheduler(
     vocab_size = getattr(llm_cfg, "vocab_size", None) or getattr(
         tokenizer, "vocab_size", 32000
     )
+    prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
+    enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
 
     (
         model_worker,
@@ -64,7 +72,13 @@ def create_thinker_scheduler(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         model_arch_override="BailingMoeV2ForCausalLM",
+        enable_prefill_input_embeds=enable_prefill_input_embeds,
     )
+    if enable_prefill_input_embeds:
+        attest_prefill_cuda_graphs(
+            model_worker.model_runner,
+            operator_selected=operator_selected_prefill_backend,
+        )
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,
