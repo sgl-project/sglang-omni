@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -67,6 +68,7 @@ class StageLaunchConfig:
     typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
+    allow_child_processes: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
     # Note (Jiaxin Deng): the byte budgets are first-class fields, never
     # factory kwargs, so no factory signature can accidentally absorb them.
@@ -153,6 +155,12 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     tenant, so mixing a TP stage with any other stage in the same process group
     is a placement bug.
     """
+    if len(spec.stage_specs) > 1 and any(
+        s.allow_child_processes for s in spec.stage_specs
+    ):
+        raise ValueError(
+            "A stage that owns native child processes must own its OS process"
+        )
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
         return {}
@@ -283,7 +291,7 @@ class StageGroup:
                 target=stage_process_main,
                 args=(spec, event, startup_error_channel),
                 name=proc_name,
-                daemon=True,
+                daemon=not any(s.allow_child_processes for s in spec.stage_specs),
             )
             try:
                 extra_env = (
@@ -544,13 +552,13 @@ def _cleanup_constructed_stages(
 
 
 def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
-    return sorted(
-        {
-            int(stage_spec.gpu_id)
-            for stage_spec in stage_specs
-            if stage_spec.gpu_id is not None
-        }
-    )
+    gpu_ids = set()
+    for spec in stage_specs:
+        if spec.gpu_id is not None:
+            gpu_ids.add(int(spec.gpu_id))
+        if spec.allow_child_processes:
+            gpu_ids.update(spec.stage_gpu_ids.get(spec.stage_name, ()))
+    return sorted(gpu_ids)
 
 
 def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:

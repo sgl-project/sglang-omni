@@ -142,6 +142,7 @@ class GenerateChunk:
     modality: str = "text"
     language: str | None = None
     audio_data: Any = None
+    media: list[dict[str, Any]] | None = None
     sample_rate: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -161,6 +162,7 @@ class GenerateChunk:
             "modality": self.modality,
             "language": self.language,
             "audio_data": self.audio_data,
+            "media": self.media,
             "sample_rate": self.sample_rate,
         }
 
@@ -202,6 +204,7 @@ class CompletionResult:
     request_id: str
     text: str
     audio: CompletionAudio | None = None
+    media: list[dict[str, Any]] | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
     output_token_logprobs: list[Any] | None = None
