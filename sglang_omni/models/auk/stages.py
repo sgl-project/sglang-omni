@@ -107,7 +107,13 @@ def _load_flow(checkpoint: str, device: str, backbone_dtype: torch.dtype):
     return flow
 
 
-def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
+def _scheduler(
+    compute_batch,
+    device,
+    max_batch_size,
+    max_batch_wait_ms,
+    batch_wait_when_idle=False,
+):
     stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
 
     @torch.inference_mode()
@@ -120,7 +126,7 @@ def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
         batch_compute_fn=run,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
-        batch_wait_when_idle=False,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
@@ -191,6 +197,7 @@ def create_conditioning_executor(
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
+    batch_wait_when_idle: bool = False,
 ) -> SimpleScheduler:
     compute_dtype = _resolve_dtype(field="dtype", name=dtype)
     device = resolve_concrete_device(device, gpu_id)
@@ -207,6 +214,7 @@ def create_conditioning_executor(
         device,
         max_batch_size,
         max_batch_wait_ms,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
@@ -250,6 +258,7 @@ def create_auk_engine_executor(
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
     weight_dtype: str = "float32",
+    batch_wait_when_idle: bool = False,
 ) -> SimpleScheduler:
     """Build the DiT sampling stage.
 
@@ -285,6 +294,7 @@ def create_auk_engine_executor(
         device,
         max_batch_size,
         max_batch_wait_ms,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
