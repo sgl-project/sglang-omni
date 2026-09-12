@@ -64,7 +64,7 @@ def _as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
         return CPUOmniPlatform()
     if platform.is_xpu():
         return XPUOmniPlatform()
-    # note (yexiaodong): Explicit CPU and registered platform selections must
+    # Note (yexiaodong): Explicit CPU and registered platform selections must
     # win. SGLang otherwise leaves Apple Metal on its generic platform.
     if type(platform) is SRTPlatform and _is_apple_silicon_mps_available():
         return AppleOmniPlatform()

@@ -166,6 +166,9 @@ tests/
     │   └── test_streaming_client.py
     ├── fun_cosyvoice3/
     │   ├── test_flow_batch.py
+    │   ├── test_engine_builder.py
+    │   ├── test_mlx_model.py
+    │   ├── test_mlx_vocoder_backend.py
     │   ├── test_model_runner.py
     │   ├── test_pipeline.py
     │   ├── test_request_builders.py

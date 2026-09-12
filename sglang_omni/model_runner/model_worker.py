@@ -33,6 +33,8 @@ class ModelWorkerConfig:
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
+    mlx_model_path: str | None = None
+    mlx_model_revision: str | None = None
 
 
 @dataclass(slots=True)

@@ -28,6 +28,11 @@ class AppleOmniPlatform(OmniPlatform):
     device_name: str = "mps"
     device_type: str = "mps"
 
+    @classmethod
+    def is_float64_supported(cls) -> bool:
+        # Note (yexiaodong): PyTorch MPS has no float64 tensor implementation.
+        return False
+
     @staticmethod
     def _validate_device_id(device_id: int) -> None:
         if int(device_id) != 0:
@@ -47,7 +52,7 @@ class AppleOmniPlatform(OmniPlatform):
         else:
             index = int(device)
         self._validate_device_id(index)
-        # note (yexiaodong): PyTorch MPS and MLX share one process-global Metal
+        # Note (yexiaodong): PyTorch MPS and MLX share one process-global Metal
         # device, so there is no CUDA-style device selection to perform.
 
     def get_device_name(self, device_id: int = 0) -> str:

@@ -116,7 +116,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
                 f"{QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS:g}s"
             )
 
-        # note (yexiaodong): Torch MPS currently uses one clip shape for the
+        # Note (yexiaodong): Torch MPS currently uses one clip shape for the
         # encoder path. Keep its native and whole-upload limits within the
         # qualified cap, while retaining the independently configurable chunk
         # size for non-streaming scheduling. MLX retains the model-native cap.

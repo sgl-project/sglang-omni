@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 from typing import ClassVar
 
+import numpy as np
 import pytest
 import torch
 
+from sglang_omni.client.client import Client
 from sglang_omni.models.fun_cosyvoice3 import stages
 from sglang_omni.models.fun_cosyvoice3.config import FunCosyVoice3PipelineConfig
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
     FunCosyVoice3StreamingVocoderScheduler,
 )
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage
 
@@ -40,6 +44,140 @@ class _FakeEstimator(torch.nn.Module):
     def forward(self, *args, **kwargs):
         del args, kwargs
         raise AssertionError("batch adapter should be mocked in vocoder unit tests")
+
+
+def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
+    class _FakeMlxVocoder:
+        sample_rate = 24000
+
+        async def decode_payload(self, payload):
+            return payload
+
+        async def decode_payloads(self, payloads):
+            return payloads
+
+        def decode_tokens(self, *, token, prompt_token, prompt_feat, embedding):
+            del prompt_token, prompt_feat, embedding
+            assert token.tolist() == [[11, 12]]
+            return torch.ones(1, 16)
+
+    scheduler = stages._FunCosyVoice3MlxStreamingVocoderScheduler(
+        _FakeMlxVocoder(), max_batch_wait_ms=0
+    )
+    state = FunCosyVoice3State(
+        stream=True,
+        flow_prompt_speech_token=torch.tensor([[1, 2]], dtype=torch.int32),
+        flow_prompt_speech_feat=torch.ones(1, 2, 80),
+        flow_embedding=torch.ones(1, 192),
+    )
+    payload = _payload(state)
+    scheduler._stream_payloads["req"] = payload
+    scheduler.on_streaming_new_request("req", payload)
+    scheduler.on_stream_chunk(
+        "req",
+        StreamItem(
+            chunk_id=0,
+            data=torch.tensor([11, 12]),
+            from_stage="tts_engine",
+            metadata={"stream": True, "modality": "audio_codes"},
+        ),
+    )
+
+    messages = scheduler.on_stream_done("req")
+
+    assert [message.type for message in messages] == ["stream", "result"]
+
+
+def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
+    calls = []
+
+    class _Predictor:
+        def to(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return self
+
+    hift = SimpleNamespace(f0_predictor=_Predictor())
+
+    stages._MpsHiFTAdapter(hift, "mps")
+
+    assert calls == [
+        ((), {"device": "cpu"}),
+        ((), {"dtype": torch.float64}),
+    ]
+
+
+def test_lightweight_loader_skips_llm_and_loads_flow_hift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    observed = {}
+
+    class _Model:
+        def __init__(self) -> None:
+            self.loaded = None
+            self.device = None
+            self.evaluated = False
+
+        def load_state_dict(self, state, strict=True):
+            self.loaded = (state, strict)
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            self.evaluated = True
+            return self
+
+    flow = _Model()
+    hift = _Model()
+
+    def fake_load_hyperpyyaml(handle, overrides):
+        observed.update(config=handle.name, overrides=overrides)
+        return {"flow": flow, "hift": hift}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hyperpyyaml",
+        SimpleNamespace(load_hyperpyyaml=fake_load_hyperpyyaml),
+    )
+    for filename in ("cosyvoice3.yaml", "flow.pt", "hift.pt"):
+        (tmp_path / filename).touch()
+
+    def fake_torch_load(path, *, map_location, weights_only):
+        assert map_location == "cpu"
+        assert weights_only is True
+        if str(path).endswith("flow.pt"):
+            return {"flow_weight": torch.tensor(1)}
+        return {
+            "generator.hift_weight": torch.tensor(2),
+            "unprefixed": torch.tensor(3),
+        }
+
+    monkeypatch.setattr(torch, "load", fake_torch_load)
+
+    loaded_flow, loaded_hift = stages._load_cosyvoice3_flow_hift_lightweight(
+        str(tmp_path),
+        device="cpu",
+    )
+
+    assert isinstance(loaded_flow, stages.FunCosyVoice3Flow)
+    assert loaded_hift is hift
+    assert observed["overrides"] == {
+        "qwen_pretrain_path": str(tmp_path / "CosyVoice-BlankEN"),
+        "llm": None,
+        "hifigan": None,
+    }
+    assert flow.loaded == ({"flow_weight": torch.tensor(1)}, True)
+    assert hift.loaded == (
+        {
+            "hift_weight": torch.tensor(2),
+            "unprefixed": torch.tensor(3),
+        },
+        True,
+    )
+    assert flow.device == hift.device == "cpu"
+    assert flow.evaluated is hift.evaluated is True
 
 
 class _BatchCapableFakeFlow(torch.nn.Module):
@@ -201,6 +339,28 @@ def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
         vocoder.prepare_item(payload)
 
 
+def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
+    state = FunCosyVoice3State(
+        text="hello",
+        audio_codes=torch.tensor([[1], [2]]),
+        audio_samples=[9.0],
+        prompt_tokens=3,
+        completion_tokens=2,
+    )
+    waveform = np.array([[0.1, -0.2]], dtype=np.float32)
+
+    mlx_vocoder = object.__new__(stages._CosyVoice3MlxVocoderAdapter)
+    stored = mlx_vocoder.store_result(_payload(state), state, waveform, 24000)
+    result = Client._default_result_builder(stored.request_id, stored.data)
+
+    np.testing.assert_array_equal(result.audio_data, waveform.reshape(-1))
+    assert result.sample_rate == 24000
+    assert result.modality == "audio"
+    assert result.usage.total_tokens == 5
+    assert "audio_codes" not in stored.data
+    assert "audio_samples" not in stored.data
+
+
 def test_cosyvoice3_vocoder_rejects_missing_audio_output() -> None:
     vocoder = stages._CosyVoice3Vocoder(_BatchCapableFakeFlow(), _FakeHiFT())
     state = FunCosyVoice3State(text="hello")
@@ -227,6 +387,30 @@ def test_cosyvoice3_vocoder_decode_batch_uses_state_conditioning(monkeypatch) ->
     assert len(results) == 1
     assert results[0][1] == 24000
     assert batch_calls[0][0].prompt_token.tolist() == [[5]]
+
+
+def test_vocoder_autocast_uses_the_flow_device(monkeypatch) -> None:
+    from contextlib import nullcontext
+
+    observed = []
+    monkeypatch.setattr(
+        torch,
+        "autocast",
+        lambda *, device_type, dtype, enabled: observed.append(
+            (device_type, dtype, enabled)
+        )
+        or nullcontext(),
+    )
+    _install_fake_batch_adapter(monkeypatch, [])
+    vocoder = stages._CosyVoice3Vocoder(
+        _BatchCapableFakeFlow(),
+        _FakeHiFT(),
+        compute_dtype=torch.float16,
+    )
+
+    asyncio.run(vocoder.decode_batch([(_state(), torch.tensor([1, 2]))]))
+
+    assert observed == [("cpu", torch.float16, True), ("mps", None, False)]
 
 
 def _state(
@@ -812,10 +996,8 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
     )
 
     assert vocoder_stage.factory.model_dump(exclude_none=True) == {
-        "dtype": "bfloat16",
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 8000,
-        "max_batch_size": 16,
         "max_batch_wait_ms": 30,
         "enable_flow_estimator_trt": False,
         "token_hop_len": 25,

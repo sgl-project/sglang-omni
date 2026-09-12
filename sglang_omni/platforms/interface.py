@@ -44,6 +44,11 @@ class JointRopeInplaceKernel(Protocol):
 class OmniPlatform(DeviceMixin):
     _omni_platform_qualname: str | None = None
 
+    @classmethod
+    def is_float64_supported(cls) -> bool:
+        """Whether device kernels support native float64 tensors."""
+        return True
+
     def get_stage_process_env(
         self,
         spec: StageLaunchConfig,

@@ -47,6 +47,46 @@ sgl-omni serve \
   --port 8000
 ```
 
+## Apple Silicon
+
+The CUDA setup above is unchanged. On Apple Silicon, install the optional
+Fun-CosyVoice3 extra with the repository installer, then expose Homebrew's
+keg-only FFmpeg libraries to TorchCodec:
+
+```bash
+brew install sox
+SGLANG_OMNI_EXTRAS=fun-cosyvoice3 ./install.sh
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Keep the official checkpoint as `--model-path`; it supplies the ONNX
+preprocessing assets. The MLX path additionally needs the converted speech
+model artifact, which contains the Qwen2, Flow, and HiFT weights. `mlx-audio`
+is not a runtime dependency.
+
+### MLX
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --tts-engine.factory.mlx_model_path \
+    mlx-community/Fun-CosyVoice3-0.5B-2512-4bit \
+  --tts-engine.engine.quantization mlx_q4 \
+  --port 8000
+```
+
+### Torch/MPS
+
+Without `SGLANG_USE_MLX=1`, the same model runs through PyTorch MPS and does
+not need a converted MLX artifact:
+
+```bash
+unset SGLANG_USE_MLX
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --port 8000
+```
 
 ## Synthesizing Speech
 
