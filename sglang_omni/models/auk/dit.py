@@ -163,6 +163,7 @@ class Attention(nn.Module):
         self.inner_dim = dim_head * heads
         self.dropout = dropout
         self.context_dim = context_dim
+        self.qk_fusion = None
 
         self.to_qkv = nn.Linear(dim, 3 * self.inner_dim)
         self.q_norm = nn.RMSNorm(dim_head, elementwise_affine=True)
@@ -205,6 +206,12 @@ class Attention(nn.Module):
         )
         return out.transpose(1, 2).reshape(batch, -1, q.shape[1] * q.shape[3])
 
+    def _norm_rope(self, q, k, q_norm, k_norm, rope):
+        if self.qk_fusion is not None and rope is not None:
+            return self.qk_fusion(q, k, q_norm, k_norm, rope)
+        q, k = q_norm(q), k_norm(k)
+        return self._apply_rope(q, k, rope) if rope is not None else (q, k)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -230,12 +237,10 @@ class Attention(nn.Module):
         c_key = self._split_heads(c_key, self.heads, head_dim)
         c_value = self._split_heads(c_value, self.heads, head_dim)
 
-        query, key = self.q_norm(query), self.k_norm(key)
-        c_query, c_key = self.c_q_norm(c_query), self.c_k_norm(c_key)
-        if rope is not None:
-            query, key = self._apply_rope(query, key, rope)
-        if c_rope is not None:
-            c_query, c_key = self._apply_rope(c_query, c_key, c_rope)
+        query, key = self._norm_rope(query, key, self.q_norm, self.k_norm, rope)
+        c_query, c_key = self._norm_rope(
+            c_query, c_key, self.c_q_norm, self.c_k_norm, c_rope
+        )
 
         out = self._attend(
             torch.cat([query, c_query], dim=2),
@@ -267,9 +272,7 @@ class Attention(nn.Module):
         key = self._split_heads(key, self.heads, head_dim)
         value = self._split_heads(value, self.heads, head_dim)
 
-        query, key = self.q_norm(query), self.k_norm(key)
-        if rope is not None:
-            query, key = self._apply_rope(query, key, rope)
+        query, key = self._norm_rope(query, key, self.q_norm, self.k_norm, rope)
 
         out = self._attend(query, key, value, bias).to(query.dtype)
         out = self.to_out[1](self.to_out[0](out))
@@ -485,6 +488,7 @@ class AuKDit(nn.Module):
 
         self.text_cond: torch.Tensor | None = None
         self.text_uncond: torch.Tensor | None = None
+        self.qk_fusion = None
 
         self.initialize_weights()
 
@@ -504,6 +508,8 @@ class AuKDit(nn.Module):
 
     def clear_cache(self) -> None:
         self.text_cond, self.text_uncond = None, None
+        if self.qk_fusion is not None:
+            self.qk_fusion.clear()
 
     @property
     def dtype(self) -> torch.dtype:
