@@ -49,6 +49,7 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.session import SESSION_METADATA_KEY
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.messages import IncomingMessage
 
@@ -1173,6 +1174,44 @@ class Stage:
         if not self._owns_external_io:
             self._clear_request_state(request_id)
             return
+        command = (
+            result.request.metadata.get(SESSION_METADATA_KEY)
+            if isinstance(result, StagePayload)
+            else None
+        )
+        if command is not None and command["op"] != "append":
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=True,
+                    result=result.data,
+                )
+            )
+            self._clear_request_state(request_id)
+            return
+        if command is not None:
+            owners = command["stages"]
+            if self.name not in owners or self._stream_targets:
+                await self._send_failure(
+                    request_id, "session route must use fixed, linear payload edges"
+                )
+                return
+            index = owners.index(self.name)
+            expected = (
+                self._logical_source(owners[index + 1])
+                if index + 1 < len(owners)
+                else None
+            )
+            actual = self.get_next(request_id, result)
+            actual_target = (
+                actual[0] if isinstance(actual, list) and len(actual) == 1 else actual
+            )
+            if actual_target != expected:
+                await self._send_failure(
+                    request_id, "session route differs from the stage payload route"
+                )
+                return
         # Send stream done to the active stream targets for this request.
         stream_targets = self._stream_targets
         if self.get_stream_done_targets is not None:
@@ -1191,7 +1230,7 @@ class Stage:
                 is_done=True,
             )
 
-        next_stages = self.get_next(request_id, result)
+        next_stages = self.get_next(request_id, result) if command is None else actual
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
