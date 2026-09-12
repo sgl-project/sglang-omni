@@ -10,6 +10,7 @@ from __future__ import annotations
 # subclass owns their shared registry key while retaining chunk-context behavior.
 from sglang_omni.serve.transcription_adapters import (  # noqa: F401
     moss_transcribe_diarize,
+    nemotron3_5_asr,
     whisper,
     whisper_asr,
 )
