@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import httpx
 import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.moss_transcribe_diarize import stages
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
@@ -25,6 +28,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
+from sglang_omni.utils.imports import import_string
 
 
 def _make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
@@ -50,6 +54,8 @@ def _make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
         request_build_max_workers=8,
         request_build_max_pending=16,
         stream_emit_interval_s=0.05,
+        buffered_no_progress_marker_segments=0,
+        buffered_no_progress_repeat_segments=0,
     )
 
 
@@ -79,6 +85,8 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     assert factory.prefill_coalesce_when_idle is True
     assert factory.prefill_coalesce_requires_pending_builds is True
     assert factory.prefill_coalesce_after_builds_during_decode is True
+    assert factory.buffered_no_progress_marker_segments == 0
+    assert factory.buffered_no_progress_repeat_segments == 0
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config(
             "MossTranscribeDiarizeForConditionalGeneration"
@@ -213,6 +221,8 @@ def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
     assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
     assert signature.parameters["encoder_chunk_buckets"].default is None
     assert signature.parameters["encoder_torch_compile"].default is False
+    assert signature.parameters["buffered_no_progress_marker_segments"].default == 0
+    assert signature.parameters["buffered_no_progress_repeat_segments"].default == 0
 
 
 def test_compile_encoder_sets_runner_and_warms_each_bucket(
@@ -306,6 +316,8 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         "init_encoder_graphs": [],
         "encoder_services": [],
         "scheduler_kwargs": [],
+        "stream_builder_kwargs": [],
+        "stream_builder_sentinel": object(),
     }
     model = SimpleNamespace(
         compile_encoder=lambda buckets, feat_len: calls["compile_encoder"].append(
@@ -379,10 +391,15 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         "make_moss_transcribe_diarize_scheduler_adapters",
         lambda **k: (object(), object()),
     )
+
+    def capture_stream_builder(**kwargs: object) -> object:
+        calls["stream_builder_kwargs"].append(kwargs)
+        return calls["stream_builder_sentinel"]
+
     monkeypatch.setattr(
         request_builders,
         "make_moss_transcribe_diarize_stream_output_builder",
-        lambda **k: object(),
+        capture_stream_builder,
     )
     monkeypatch.setattr(sglang_backend, "SGLangOutputProcessor", lambda **k: object())
     monkeypatch.setattr(
@@ -415,6 +432,97 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     assert scheduler_kwargs["prefill_coalesce_when_idle"] is True
     assert scheduler_kwargs["prefill_coalesce_requires_pending_builds"] is True
     assert scheduler_kwargs["prefill_coalesce_after_builds_during_decode"] is True
+
+
+def test_factory_wires_buffered_no_progress_limits_to_stream_output_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stub_factory_env(monkeypatch, want_cuda_graph=False)
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        device="cpu",
+        buffered_no_progress_marker_segments=3,
+        buffered_no_progress_repeat_segments=7,
+    )
+
+    stream_builder_kwargs = calls["stream_builder_kwargs"]
+    assert len(stream_builder_kwargs) == 1
+    captured_kwargs = stream_builder_kwargs[0]
+    assert (
+        captured_kwargs.get("buffered_no_progress_marker_segments"),
+        captured_kwargs.get("buffered_no_progress_repeat_segments"),
+    ) == (3, 7)
+    assert (
+        calls["scheduler_kwargs"][0]["stream_output_builder"]
+        is calls["stream_builder_sentinel"]
+    )
+
+
+@pytest.mark.parametrize("config_source", ["dotted", "yaml"])
+def test_configured_buffered_no_progress_limits_reach_output_builder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config_source: str,
+) -> None:
+    if config_source == "dotted":
+        config = ConfigManager(
+            MossTranscribeDiarizePipelineConfig(model_path="dummy")
+        ).merge_config(
+            [
+                ("asr.factory.device", "cpu"),
+                ("asr.factory.buffered_no_progress_marker_segments", "3"),
+                ("asr.factory.buffered_no_progress_repeat_segments", "7"),
+            ]
+        )
+    else:
+        config_path = tmp_path / "moss_td_no_progress.yaml"
+        config_path.write_text(
+            """
+config_cls: MossTranscribeDiarizePipelineConfig
+model_path: dummy
+stages:
+  asr:
+    factory:
+      device: cpu
+      buffered_no_progress_marker_segments: 3
+      buffered_no_progress_repeat_segments: 7
+""".strip(),
+            encoding="utf-8",
+        )
+        config = ConfigManager.from_file(str(config_path)).config
+        assert config is not None
+
+    calls = _stub_factory_env(monkeypatch, want_cuda_graph=False)
+    stage = next(stage for stage in config.stages if stage.name == "asr")
+    resolved_args = resolve_stage_factory_args(stage, config)
+    factory = import_string(stage.factory_path)
+    factory(**resolved_args)
+
+    assert (
+        calls["stream_builder_kwargs"][0]["buffered_no_progress_marker_segments"],
+        calls["stream_builder_kwargs"][0]["buffered_no_progress_repeat_segments"],
+    ) == (3, 7)
+    assert (
+        calls["scheduler_kwargs"][0]["stream_output_builder"]
+        is calls["stream_builder_sentinel"]
+    )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "buffered_no_progress_marker_segments",
+        "buffered_no_progress_repeat_segments",
+    ],
+)
+def test_config_rejects_negative_buffered_no_progress_limits(
+    field_name: str,
+) -> None:
+    manager = ConfigManager(MossTranscribeDiarizePipelineConfig(model_path="dummy"))
+
+    with pytest.raises(ValueError, match=field_name):
+        manager.merge_config([(f"asr.factory.{field_name}", "-1")])
 
 
 def test_factory_context_length_override_uses_final_server_value(
