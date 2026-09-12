@@ -1,0 +1,211 @@
+{
+  "run_id": "dots-pr1445-h100-ab-20260811-080403-722495000",
+  "status": "COMPLETE",
+  "pull_request": "https://github.com/sgl-project/sglang-omni/pull/1445",
+  "pull_request_comment": "https://github.com/sgl-project/sglang-omni/pull/1445#issuecomment-5250903451",
+  "base_commit": "2b45073cc08f3bdb202248cb247f491bd0e059c2",
+  "candidate_commit": "6d54e21adb70eef2533940a4201c88d5a9e2f452",
+  "hardware": "NVIDIA H100",
+  "samples_per_run": 1088,
+  "runs": [
+    {
+      "revision": "base",
+      "concurrency": 16,
+      "round": 1,
+      "physical_gpu_id": 0,
+      "throughput_qps": 4.692,
+      "latency_mean_s": 3.391,
+      "rtf_mean": 0.824,
+      "audio_throughput_s_per_s": 19.578
+    },
+    {
+      "revision": "candidate",
+      "concurrency": 16,
+      "round": 1,
+      "physical_gpu_id": 1,
+      "throughput_qps": 4.852,
+      "latency_mean_s": 3.279,
+      "rtf_mean": 0.7957,
+      "audio_throughput_s_per_s": 20.244
+    },
+    {
+      "revision": "candidate",
+      "concurrency": 16,
+      "round": 2,
+      "physical_gpu_id": 0,
+      "throughput_qps": 4.714,
+      "latency_mean_s": 3.375,
+      "rtf_mean": 0.816,
+      "audio_throughput_s_per_s": 19.703
+    },
+    {
+      "revision": "base",
+      "concurrency": 16,
+      "round": 2,
+      "physical_gpu_id": 1,
+      "throughput_qps": 4.827,
+      "latency_mean_s": 3.296,
+      "rtf_mean": 0.8009,
+      "audio_throughput_s_per_s": 20.139
+    },
+    {
+      "revision": "base",
+      "concurrency": 32,
+      "round": 1,
+      "physical_gpu_id": 0,
+      "throughput_qps": 4.956,
+      "latency_mean_s": 6.386,
+      "rtf_mean": 1.61,
+      "audio_throughput_s_per_s": 20.672
+    },
+    {
+      "revision": "candidate",
+      "concurrency": 32,
+      "round": 1,
+      "physical_gpu_id": 1,
+      "throughput_qps": 4.812,
+      "latency_mean_s": 6.581,
+      "rtf_mean": 1.6542,
+      "audio_throughput_s_per_s": 20.084
+    },
+    {
+      "revision": "candidate",
+      "concurrency": 32,
+      "round": 2,
+      "physical_gpu_id": 0,
+      "throughput_qps": 5.032,
+      "latency_mean_s": 6.289,
+      "rtf_mean": 1.5822,
+      "audio_throughput_s_per_s": 21.004
+    },
+    {
+      "revision": "base",
+      "concurrency": 32,
+      "round": 2,
+      "physical_gpu_id": 1,
+      "throughput_qps": 5.051,
+      "latency_mean_s": 6.264,
+      "rtf_mean": 1.5762,
+      "audio_throughput_s_per_s": 21.085
+    },
+    {
+      "revision": "base",
+      "concurrency": 32,
+      "round": 3,
+      "physical_gpu_id": 0,
+      "throughput_qps": 4.96,
+      "latency_mean_s": 6.382,
+      "rtf_mean": 1.6037,
+      "audio_throughput_s_per_s": 20.706
+    },
+    {
+      "revision": "candidate",
+      "concurrency": 32,
+      "round": 3,
+      "physical_gpu_id": 1,
+      "throughput_qps": 4.964,
+      "latency_mean_s": 6.376,
+      "rtf_mean": 1.6006,
+      "audio_throughput_s_per_s": 20.739
+    },
+    {
+      "revision": "candidate",
+      "concurrency": 32,
+      "round": 4,
+      "physical_gpu_id": 0,
+      "throughput_qps": 4.981,
+      "latency_mean_s": 6.356,
+      "rtf_mean": 1.5964,
+      "audio_throughput_s_per_s": 20.807
+    },
+    {
+      "revision": "base",
+      "concurrency": 32,
+      "round": 4,
+      "physical_gpu_id": 1,
+      "throughput_qps": 4.986,
+      "latency_mean_s": 6.345,
+      "rtf_mean": 1.5943,
+      "audio_throughput_s_per_s": 20.81
+    }
+  ],
+  "aggregates": {
+    "16": {
+      "runs_per_revision": 2,
+      "base": {
+        "throughput_qps_mean": 4.7595,
+        "latency_mean_s_mean": 3.3435,
+        "rtf_mean_mean": 0.81245,
+        "audio_throughput_s_per_s_mean": 19.8585
+      },
+      "candidate": {
+        "throughput_qps_mean": 4.783,
+        "latency_mean_s_mean": 3.327,
+        "rtf_mean_mean": 0.80585,
+        "audio_throughput_s_per_s_mean": 19.9735
+      },
+      "delta_percent": {
+        "throughput_qps": 0.494,
+        "latency_mean_s": -0.493,
+        "rtf_mean": -0.812,
+        "audio_throughput_s_per_s": 0.579
+      },
+      "per_gpu_throughput_delta_percent": {
+        "0": 0.469,
+        "1": 0.518
+      }
+    },
+    "32": {
+      "runs_per_revision": 4,
+      "base": {
+        "throughput_qps_mean": 4.98825,
+        "throughput_qps_median": 4.973,
+        "latency_mean_s_mean": 6.34425,
+        "rtf_mean_mean": 1.59605,
+        "audio_throughput_s_per_s_mean": 20.81825
+      },
+      "candidate": {
+        "throughput_qps_mean": 4.94725,
+        "throughput_qps_median": 4.9725,
+        "latency_mean_s_mean": 6.4005,
+        "rtf_mean_mean": 1.60835,
+        "audio_throughput_s_per_s_mean": 20.6585
+      },
+      "delta_percent": {
+        "throughput_qps_mean": -0.822,
+        "throughput_qps_median": -0.01,
+        "latency_mean_s": 0.887,
+        "rtf_mean": 0.771,
+        "audio_throughput_s_per_s": -0.767
+      },
+      "per_gpu_throughput_delta_percent": {
+        "0": 0.978,
+        "1": -2.6
+      },
+      "variance_note": "One candidate run on GPU 1 measured 4.812 req/s; the next candidate run on the same GPU measured 4.964 req/s. The median is unchanged from base, but candidate run variance is higher."
+    }
+  },
+  "historical_context": {
+    "pr_1393_h100": {
+      "concurrency_16_qps": 4.64,
+      "concurrency_32_qps": 4.43
+    },
+    "current_main_delta_percent": {
+      "concurrency_16": 2.575,
+      "concurrency_32": 12.601
+    },
+    "conclusion": "Current main on H100 meets or exceeds the PR #1393 H100 reference, confirming that the earlier apparent regression was caused by comparing different hardware/runtime environments."
+  },
+  "decision": {
+    "non_streaming": "At c=16 the split lock is a repeatable but small approximately 0.5% gain. At c=32 the median is flat and the mean is 0.82% lower because candidate variance increased. Do not claim a general non-streaming throughput gain from this change.",
+    "pull_request_scope": "Keep evaluating PR #1445 as a streaming optimization. Its previous streaming throughput and TTFC gains remain the main value, while the disclosed ITL regression and high-concurrency non-streaming variance remain tradeoffs.",
+    "next_step": "Do not add more c=32 repeats solely to seek a positive mean. If the streaming tradeoff is acceptable, rebase the split-lock patch onto current main and rerun the streaming c=8 contract."
+  },
+  "raw_artifacts": {
+    "status": "LOCAL_PERSISTENT_TRANSIENT",
+    "host_root": "/data/jaxan/dots_seedtts_runs/dots-pr1445-h100-ab-20260811-080403-722495000",
+    "size": "6.2G",
+    "task_container_removed_after_verification": true,
+    "wer_rerun": false
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "run_id": "dots-seedtts-stream-1444-20260811",
+  "status": "COMPLETE",
+  "source": {
+    "repository": "https://github.com/sgl-project/sglang-omni",
+    "code_base_commit": "7f5529ad8f8b0e3baff3391946b51474eec45832",
+    "pull_request": "https://github.com/sgl-project/sglang-omni/pull/1444"
+  },
+  "dataset": {
+    "repository": "zhaochenyang20/seed-tts-eval-arrow",
+    "revision": "27f4c1adee83b5b29b7c4b375f6b976324bda308",
+    "split": "en",
+    "full_sample_count": 1088
+  },
+  "model": "dots-studio/dots.tts-mf",
+  "hardware": "NVIDIA H200",
+  "hosts": [
+    "hyper00",
+    "hyper01"
+  ],
+  "original_exclusive_hosts_requested": true,
+  "actual_exclusive_hosts": false,
+  "actual_allocation_policy": "free GPUs only, descending GPU id",
+  "stream": true,
+  "seed": 42,
+  "warmup_requests": 10,
+  "server_config": "examples/configs/dots_tts.yaml",
+  "max_running_requests": 16,
+  "cuda_graph_max_bs": 16,
+  "asr_model": "Qwen/Qwen3-ASR-1.7B",
+  "workers": [
+    {"host": "hyper00", "gpu": 7, "port": 28763, "concurrency": 1, "samples": 50},
+    {"host": "hyper00", "gpu": 7, "port": 31847, "concurrency": 2, "samples": 1088},
+    {"host": "hyper00", "gpu": 6, "port": 35611, "concurrency": 4, "samples": 1088},
+    {"host": "hyper00", "gpu": 5, "port": 40127, "concurrency": 8, "samples": 1088},
+    {"host": "hyper01", "gpu": 7, "port": 43781, "concurrency": 16, "samples": 1088},
+    {"host": "hyper01", "gpu": 6, "port": 48619, "concurrency": 32, "samples": 1088}
+  ],
+  "persistent_run_root": "/data/dots_seedtts_runs/dots-seedtts-stream-1444-20260811",
+  "resume_run_root": "/data/dots_seedtts_runs/dots-seedtts-stream-1444-20260811/resume-20260811-022527-944075000",
+  "summary": "results-summary.json"
+}

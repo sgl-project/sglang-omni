@@ -1,0 +1,60 @@
+{
+  "run_id": "dots-seedtts-nonstream-1444-20260811-065202-411912000",
+  "created_at": "2026-08-11T06:52:13Z",
+  "inventory_observed_at": "2026-08-11T06:53:16Z",
+  "task_gpu_cap": 6,
+  "per_host_cap": 2,
+  "logical_shard_count": 6,
+  "worker_count": 4,
+  "selection_policy": "free GPUs only; exclude mapped or reserved GPUs; descending physical GPU id",
+  "hosts": {
+    "hyper00": {
+      "gpu_ids": [7, 5],
+      "worker_ids": [0, 1],
+      "logical_shard_ids": [0, 4, 1, 5]
+    },
+    "hyper01": {
+      "gpu_ids": [7, 6],
+      "worker_ids": [2, 3],
+      "logical_shard_ids": [2, 3]
+    }
+  },
+  "workers": [
+    {
+      "host": "hyper00",
+      "local_rank": 0,
+      "physical_gpu_id": 7,
+      "worker_id": 0,
+      "logical_shard_ids": [0, 4]
+    },
+    {
+      "host": "hyper00",
+      "local_rank": 1,
+      "physical_gpu_id": 5,
+      "worker_id": 1,
+      "logical_shard_ids": [1, 5]
+    },
+    {
+      "host": "hyper01",
+      "local_rank": 0,
+      "physical_gpu_id": 7,
+      "worker_id": 2,
+      "logical_shard_ids": [2]
+    },
+    {
+      "host": "hyper01",
+      "local_rank": 1,
+      "physical_gpu_id": 6,
+      "worker_id": 3,
+      "logical_shard_ids": [3]
+    }
+  ],
+  "shards": [
+    {"logical_shard_id": 0, "concurrency": 1, "samples": 50, "host": "hyper00", "physical_gpu_id": 7, "container_local_gpu_id": 0, "port": 38473},
+    {"logical_shard_id": 1, "concurrency": 2, "samples": 1088, "host": "hyper00", "physical_gpu_id": 5, "container_local_gpu_id": 1, "port": 52921},
+    {"logical_shard_id": 2, "concurrency": 4, "samples": 1088, "host": "hyper01", "physical_gpu_id": 7, "container_local_gpu_id": 0, "port": 41839},
+    {"logical_shard_id": 3, "concurrency": 8, "samples": 1088, "host": "hyper01", "physical_gpu_id": 6, "container_local_gpu_id": 1, "port": 57347},
+    {"logical_shard_id": 4, "concurrency": 16, "samples": 1088, "host": "hyper00", "physical_gpu_id": 7, "container_local_gpu_id": 0, "port": 46381},
+    {"logical_shard_id": 5, "concurrency": 32, "samples": 1088, "host": "hyper00", "physical_gpu_id": 5, "container_local_gpu_id": 1, "port": 61729}
+  ]
+}
