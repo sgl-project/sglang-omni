@@ -824,7 +824,22 @@ class _PreparedFlowRequest:
     index: int
     sample_rate: int
     flow_input: FlowBatchInput
+    total_mel_frames: int
 
+
+
+def adaptive_flow_grouping(
+    requests: Sequence[_PreparedFlowRequest],
+    *,
+    merge_max_gap_frames: int,
+    merge_pad_budget_percent: float,
+) -> Iterator[list[_PreparedFlowRequest]]:
+    ordered = sorted(requests, key=lambda request: request.total_mel_frames)
+    current_max_group_gap_frames = 0
+    current_group = []
+    for request in ordered:
+        if current_group and request.total_mel_frames - current_group[-1].total_mel_frames > merge_max_gap_frames:
+            yield current_group
 
 def _group_by_padding_waste(
     items: Sequence[tuple[Any, torch.Tensor]],
