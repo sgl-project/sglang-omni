@@ -256,17 +256,41 @@ class S2ProSGLangTextModel(nn.Module):
 
         # Audio decoder (fast head)
         self._audio_decoder = audio_decoder
-        self._codebook_size = codebook_size
-        self._num_codebooks = num_codebooks
-        self._semantic_begin_id = semantic_begin_id
-        self._semantic_end_id = semantic_end_id
-        self._im_end_token_id = int(im_end_token_id)
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
         self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
         self._vq_codebook_offsets = audio_decoder.codebook_offsets.to(device)
         self._vq_scale = 1.0 / math.sqrt(num_codebooks + 1)
 
+        self.setup_decode_buffers(
+            device=device,
+            num_codebooks=num_codebooks,
+            codebook_size=codebook_size,
+            semantic_begin_id=semantic_begin_id,
+            semantic_end_id=semantic_end_id,
+            im_end_token_id=im_end_token_id,
+            max_batch_size=max_batch_size,
+            rep_history_len=rep_history_len,
+        )
+
+    def setup_decode_buffers(
+        self,
+        *,
+        device,
+        num_codebooks,
+        codebook_size,
+        semantic_begin_id,
+        semantic_end_id,
+        im_end_token_id,
+        max_batch_size,
+        rep_history_len=16,
+    ) -> None:
+        """Allocate request/sampler state independently of transformer execution."""
+        self._codebook_size = codebook_size
+        self._num_codebooks = num_codebooks
+        self._semantic_begin_id = semantic_begin_id
+        self._semantic_end_id = semantic_end_id
+        self._im_end_token_id = int(im_end_token_id)
         # Input buffers: VQ codes from previous step (updated by ModelRunner)
         self._vq_codes = torch.zeros(
             max_batch_size, num_codebooks, dtype=torch.long, device=device
@@ -396,6 +420,39 @@ class S2ProSGLangTextModel(nn.Module):
         """
         bs = logits.shape[0]
 
+        semantic_token = self._sample_semantic_token(logits)
+
+        # Batched codebook loop
+        self._audio_decoder.reset_caches()
+        fast_input = self._audio_decoder.project_in(hidden_states)
+        fast_input = fast_input.unsqueeze(1)  # [bs, 1, fast_dim]
+        self._audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
+
+        is_eos = semantic_token == self._im_end_token_id
+        sem_id = (semantic_token - self._semantic_begin_id).clamp(
+            min=0,
+            max=self._codebook_size - 1,
+        )
+        sem_id = torch.where(is_eos, torch.zeros_like(sem_id), sem_id)
+        cb_hidden = self._audio_decoder.embeddings(sem_id).unsqueeze(1)
+
+        self._output_codes[:bs, 0] = semantic_token
+        self._output_codes[:bs, 1] = sem_id
+
+        for cb_idx in range(1, self._num_codebooks):
+            cb_logits = self._audio_decoder.forward_kvcached(
+                cb_hidden, codebook_idx=cb_idx
+            )
+            cb_logits = cb_logits[:, 0, : self._codebook_size]
+            cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
+            cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
+            self._output_codes[:bs, cb_idx + 1] = cb_token
+
+        self._output_semantic_ids[:bs] = semantic_token
+
+    def _sample_semantic_token(self, logits: Tensor) -> Tensor:
+        """Shared Fish semantic mask, RAS, repetition penalty, and top-k/top-p."""
+        bs = logits.shape[0]
         biased_logits = logits + self._semantic_bias
         biased_logits = biased_logits.to(torch.bfloat16).to(torch.float32)
 
@@ -444,41 +501,19 @@ class S2ProSGLangTextModel(nn.Module):
         )
         # Seeded rows draw reproducibly from (seed, step); unseeded rows keep the
         # legacy torch.multinomial draw, so unseeded decode is unchanged.
-        seeds = self._sampling_seeds[:bs]
-        unseeded_choice = torch.multinomial(probs, num_samples=1)
-        seeded_choice = multinomial_with_seed(
-            torch.log(probs), seeds.clamp_min(0), self._step_count[:bs]
+        choice = self._sample_semantic_choice(
+            probs, self._sampling_seeds[:bs], self._step_count[:bs]
         )
-        choice = torch.where((seeds >= 0).unsqueeze(-1), seeded_choice, unseeded_choice)
         semantic_token = top_k_indices.gather(-1, choice).squeeze(-1)
 
-        # Batched codebook loop
-        self._audio_decoder.reset_caches()
-        fast_input = self._audio_decoder.project_in(hidden_states)
-        fast_input = fast_input.unsqueeze(1)  # [bs, 1, fast_dim]
-        self._audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
+        return semantic_token
 
-        is_eos = semantic_token == self._im_end_token_id
-        sem_id = (semantic_token - self._semantic_begin_id).clamp(
-            min=0,
-            max=self._codebook_size - 1,
+    def _sample_semantic_choice(self, probs, seeds, positions):
+        unseeded_choice = torch.multinomial(probs, num_samples=1)
+        seeded_choice = multinomial_with_seed(
+            torch.log(probs), seeds.clamp_min(0), positions
         )
-        sem_id = torch.where(is_eos, torch.zeros_like(sem_id), sem_id)
-        cb_hidden = self._audio_decoder.embeddings(sem_id).unsqueeze(1)
-
-        self._output_codes[:bs, 0] = semantic_token
-        self._output_codes[:bs, 1] = sem_id
-
-        for cb_idx in range(1, self._num_codebooks):
-            cb_logits = self._audio_decoder.forward_kvcached(
-                cb_hidden, codebook_idx=cb_idx
-            )
-            cb_logits = cb_logits[:, 0, : self._codebook_size]
-            cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
-            cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
-            self._output_codes[:bs, cb_idx + 1] = cb_token
-
-        self._output_semantic_ids[:bs] = semantic_token
+        return torch.where((seeds >= 0).unsqueeze(-1), seeded_choice, unseeded_choice)
 
     def get_embed_tokens(self):
         return self.embed_tokens

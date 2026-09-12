@@ -67,8 +67,20 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         self.ras_window = ras_window
         self.adapter: Any | None = None
         self.tokenizer: Any | None = None
+        self._apple_runner: Any | None = None
+
+    def _uses_torch_mps(self) -> bool:
+        return str(getattr(self, "device", "")).split(":")[0] == "mps"
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            if not current_platform.is_mps():
+                raise ValueError("Fish MLX requires Apple Metal")
+            self.model_arch_override = "FishS2ProMlxModel"
+        elif self._uses_torch_mps():
+            self.model_arch_override = "S2ProTorchMpsTextModel"
         del checkpoint_dir
         from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
 
@@ -79,7 +91,23 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
         del dtype
+        if use_mlx() or self._uses_torch_mps():
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_total_tokens": self.context_length,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "attention_backend": "torch_native",
+                "sampling_backend": "pytorch",
+                "dtype": "bfloat16",
+            }
         if current_platform.is_npu():
             # NPU graph decode avoids the ascend backend's eager concurrent-
             # decode content corruption. Limit concurrency to the validated NPU
@@ -109,6 +137,16 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         }
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx() or self._uses_torch_mps():
+            expected = self.generation_defaults(dtype="bfloat16")
+            for key, value in expected.items():
+                if overrides.get(key) != value:
+                    raise ValueError(f"Fish Apple requires {key}={value!r}")
+            if overrides.get("quantization") is not None:
+                raise ValueError("Fish Apple requires unquantized weights")
+            return
         fast_ar_backend = _resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
         if overrides.get("attention_backend") is None:
             overrides["attention_backend"] = fast_ar_backend
@@ -141,7 +179,17 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
         model = model_worker.model_runner.model
-        fish_bootstrap.truncate_rope_to_bf16(model)
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            from transformers import PreTrainedTokenizerFast
+
+            self.tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint_dir)
+            self.adapter = S2ProTokenizerAdapter(self.tokenizer)
+            model.configure(self.adapter, self.ras_window)
+            return
+        if not self._uses_torch_mps():
+            fish_bootstrap.truncate_rope_to_bf16(model)
         audio_decoder, num_codebooks, codebook_size, tokenizer = (
             fish_bootstrap.load_audio_decoder(
                 checkpoint_dir,
@@ -163,6 +211,10 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         )
 
     def get_model_buffer_bs(self, model: Any) -> int | None:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            return model.vq_decode_max_batch_size
         return fish_stages._resolve_s2pro_model_buffer_bs(model)
 
     def compile_model(self, model: Any, server_args: Any) -> None:
@@ -180,11 +232,32 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        if use_mlx():
+            from sglang_omni.models.fishaudio_s2_pro.mlx.runner import (
+                FishMlxSchedulerRunner,
+            )
+
+            self._apple_runner = FishMlxSchedulerRunner(model_worker, output_proc)
+            return self._apple_runner
+        if self._uses_torch_mps():
+            from sglang_omni.models.fishaudio_s2_pro.torch_mps import (
+                FishS2ProTorchMpsRunner,
+            )
+
+            self._apple_runner = FishS2ProTorchMpsRunner(model_worker, output_proc)
+            return self._apple_runner
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.fishaudio_s2_pro.model_runner"
         )
 
         return model_runner_mod.FishS2ProModelRunner(model_worker, output_proc)
+
+    def make_abort_callback(self) -> Any | None:
+        if self._apple_runner is not None:
+            return self._apple_runner.abort_request
+        return None
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
