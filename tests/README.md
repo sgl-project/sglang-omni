@@ -412,7 +412,8 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flags `--tts-stage {tts-stage-1-nonstream,tts-stage-2-stream,tts-stage-3-consistency,all}`
   and `--concurrency {1,2,4,8,16,all}`: scope a TTS CI sweep without
   editing source.
-- CLI flag `--tts-ci-model {higgs,moss}`: select the TTS CI model preset for
+- CLI flag `--tts-ci-model {higgs,moss,qwen3-tts,qwen3-tts-custom-voice}`:
+  select the TTS CI model preset for
   `test_tts_ci.py` without editing source. Defaults to the `TTS_CI_MODEL`
   environment variable, then `higgs`.
 - CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for

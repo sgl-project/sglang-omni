@@ -170,6 +170,8 @@ def _run_benchmark(
         stream=stream,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
+        voice=_PRESET.voice,
+        voice_clone=_PRESET.voice_clone,
     )
     speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
     _validate_speed_results_keys(speed_results)
@@ -208,6 +210,8 @@ def _run_wer_transcribe(
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
+        voice=_PRESET.voice,
+        voice_clone=_PRESET.voice_clone,
     )
     run_tts_seedtts_transcribe(
         config,
@@ -948,6 +952,11 @@ def test_voice_cloning_similarity(
     similarity_checkpoint: str | None,
     selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    if not _PRESET.voice_clone:
+        pytest.skip(
+            "speaker similarity scores generated audio against the request's "
+            "reference clip, and this preset serves a named voice instead"
+        )
     checks = MetricCheckCollector("TTS non-streaming speaker similarity")
     for concurrency in selected_tts_concurrencies:
         _print_stage(
