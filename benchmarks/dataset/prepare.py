@@ -18,6 +18,7 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset videomme-ci-50
     python -m benchmarks.dataset.prepare --dataset videomme-ci-25
     python -m benchmarks.dataset.prepare --dataset videoamme-ci-50
+    python -m benchmarks.dataset.prepare --dataset ming-freeform-audio-edit
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ LONGLIBRIHEAVY_DATASET_ID = "inesc-id/longlibriheavy"
 LONGLIBRIHEAVY_DATASET_REVISION = "09bc067255eeb0d0bca62357ac985c2ebdc5169c"
 MEANWHILE_DATASET_ID = "distil-whisper/meanwhile"
 MEANWHILE_DATASET_REVISION = "5a6b431a268523a6603f199d859fc25a24c22900"
+MING_FREEFORM_AUDIO_EDIT_DATASET_ID = "inclusionAI/Ming-Freeform-Audio-Edit-Benchmark"
+MING_FREEFORM_AUDIO_EDIT_DATASET_REVISION = "c87ba1437e7ed3404db8705eda5f4f7ac6b5b129"
 
 DATASETS: dict[str, str] = {
     "seedtts": SEEDTTS_DATASET_ID,
@@ -55,6 +58,7 @@ DATASETS: dict[str, str] = {
     "videomme-ci-50": "zhaochenyang20/Video_MME_ci",
     "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
     "videoamme-ci-50": "zhaochenyang20/Video_AMME_ci",
+    "ming-freeform-audio-edit": MING_FREEFORM_AUDIO_EDIT_DATASET_ID,
 }
 
 
@@ -77,6 +81,8 @@ def download_dataset(
         revision = LONGLIBRIHEAVY_DATASET_REVISION
     elif revision is None and dataset_id == MEANWHILE_DATASET_ID:
         revision = MEANWHILE_DATASET_REVISION
+    elif revision is None and dataset_id == MING_FREEFORM_AUDIO_EDIT_DATASET_ID:
+        revision = MING_FREEFORM_AUDIO_EDIT_DATASET_REVISION
     revision_kwargs = {"revision": revision} if revision else {}
     if not quiet:
         logger.info(
@@ -86,7 +92,16 @@ def download_dataset(
             revision or "default",
         )
 
-    if dataset_id == "MMMU/MMMU":
+    if dataset_id == MING_FREEFORM_AUDIO_EDIT_DATASET_ID:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo_id=dataset_id,
+            repo_type="dataset",
+            allow_patterns=["meta/**", "wavs/**"],
+            **revision_kwargs,
+        )
+    elif dataset_id == "MMMU/MMMU":
         config_names = get_dataset_config_names(dataset_id, **revision_kwargs)
         for config_name in config_names:
             load_dataset(
