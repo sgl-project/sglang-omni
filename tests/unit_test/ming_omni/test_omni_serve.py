@@ -341,6 +341,18 @@ def test_ming_cli_applies_thinker_sglang_server_args() -> None:
     assert overrides["quantization"] == "fp8"
 
 
+def test_ming_cli_cpu_offload_gb_positive_flows_to_thinker_overrides() -> None:
+    config = MingOmniPipelineConfig(model_path="dummy")
+
+    merged = ConfigManager(config).merge_config(
+        [("thinker.engine.cpu_offload_gb", "8")]
+    )
+
+    overrides = _server_args_overrides(merged, "thinker")
+    assert overrides["cpu_offload_gb"] == 8
+    assert isinstance(overrides["cpu_offload_gb"], int)
+
+
 def test_ming_cli_talker_gpu_targets_talker_stage() -> None:
     config = MingOmniSpeechPipelineConfig(model_path="dummy")
 
