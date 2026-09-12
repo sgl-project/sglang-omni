@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import pathlib
 import subprocess
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,6 +20,23 @@ from examples.launchers.qwen3_omni import (
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 
 _EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
+_REPO_ROOT = _EXAMPLES_DIR.parent
+_APPLE_DOCS = (
+    _REPO_ROOT / "docs" / "cookbook" / "qwen3_omni.md",
+    _REPO_ROOT / "docs" / "basic_usage" / "qwen3_omni.md",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_qwen_apple_runtime(monkeypatch):
+    from sglang_omni.models.qwen3_omni import apple_runtime
+
+    monkeypatch.setattr(apple_runtime, "qwen3_omni_uses_mlx_backend", lambda: False)
+    monkeypatch.setattr(
+        apple_runtime,
+        "validate_qwen3_omni_apple_checkpoint",
+        lambda *args, **kwargs: None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -518,3 +536,264 @@ def test_gpu_thinker_tp_rejected_when_tp1(mock_launch_server):
         _launch_speech_server(args)
 
     mock_launch_server.assert_not_called()
+
+
+@pytest.fixture
+def apple_checkpoint(monkeypatch, tmp_path):
+    from sglang_omni.models.qwen3_omni import apple_runtime
+    from sglang_omni.models.qwen3_omni import config as qwen_config
+
+    monkeypatch.setattr(qwen_config.current_platform, "is_mps", lambda: True)
+    monkeypatch.setattr(qwen_config.current_platform, "device_type", "mps")
+    monkeypatch.setattr(
+        qwen_config.current_platform, "enable_code2wav_graph", lambda: False
+    )
+    monkeypatch.setattr(
+        apple_runtime,
+        "qwen3_omni_uses_mlx_backend",
+        lambda: os.environ.get("SGLANG_USE_MLX") == "1",
+    )
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Qwen3OmniMoeForConditionalGeneration"],
+                "model_type": "qwen3_omni_moe",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return checkpoint
+
+
+def test_apple_cli_help_documents_model_and_mode() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "sglang_omni.cli", "serve", "--help"],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "160"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--model-path" in result.stdout
+    assert "--text-only" in result.stdout
+    assert "--backend" not in result.stdout
+
+
+def test_apple_cli_requires_model_path_without_config() -> None:
+    import typer
+
+    from sglang_omni.cli.serve import serve
+
+    with pytest.raises(typer.BadParameter, match="--model-path is required"):
+        serve(ctx=SimpleNamespace(args=[]))
+
+
+@pytest.mark.parametrize("use_mlx", [False, True])
+@pytest.mark.parametrize("text_only", [False, True])
+def test_apple_cli_uses_backend_policy_and_forwards_server_arguments(
+    monkeypatch, apple_checkpoint, use_mlx, text_only, tmp_path
+) -> None:
+    from sglang_omni.cli.serve import serve
+    from sglang_omni.models.qwen3_omni import apple_runtime
+    from sglang_omni.models.qwen3_omni.config import (
+        Qwen3OmniPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig,
+    )
+
+    monkeypatch.setenv("SGLANG_USE_MLX", "1" if use_mlx else "0")
+    validated = []
+    monkeypatch.setattr(
+        apple_runtime,
+        "validate_qwen3_omni_apple_checkpoint",
+        lambda path, *, speech_enabled, use_mlx: validated.append(
+            (path, speech_enabled, use_mlx)
+        ),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.cli.serve.ConfigManager.from_file",
+        lambda *args: pytest.fail("Apple launch must not need a legacy YAML preset"),
+    )
+    launched = MagicMock()
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", launched)
+    media_path = tmp_path / "media"
+    media_path.mkdir()
+
+    serve(
+        ctx=SimpleNamespace(args=[]),
+        model_path=str(apple_checkpoint),
+        text_only=text_only,
+        host="127.0.0.1",
+        port=8008,
+        model_name="apple-qwen",
+        log_level="warning",
+        enable_realtime=True,
+        allowed_local_media_path=str(media_path),
+        allowed_media_domain=["assets.example.com"],
+    )
+
+    launched.assert_called_once()
+    config = launched.call_args.args[0]
+    config_cls = Qwen3OmniPipelineConfig if text_only else Qwen3OmniSpeechPipelineConfig
+    assert isinstance(config, config_cls)
+    assert config.model_path == str(apple_checkpoint)
+    assert validated
+    assert set(validated) == {(str(apple_checkpoint), not text_only, use_mlx)}
+    stage_names = {stage.name for stage in config.stages}
+    assert ("talker_ar" in stage_names) is not text_only
+    assert ("code2wav" in stage_names) is not text_only
+    assert all(stage.gpu in (None, 0) for stage in config.stages)
+    assert not (apple_checkpoint / "code2wav").exists()
+    assert launched.call_args.kwargs == {
+        "host": "127.0.0.1",
+        "port": 8008,
+        "model_name": "apple-qwen",
+        "log_level": "warning",
+        "enable_realtime": True,
+        "allowed_local_media_path": str(media_path),
+        "allowed_media_domains": ["assets.example.com"],
+        "tts_batch_max_items": 32,
+    }
+
+
+@pytest.mark.parametrize("use_mlx", [False, True])
+def test_apple_cli_checkpoint_failure_does_not_fallback(
+    monkeypatch, apple_checkpoint, use_mlx
+) -> None:
+    from sglang_omni.cli.serve import serve
+    from sglang_omni.models.qwen3_omni import apple_runtime
+
+    monkeypatch.setenv("SGLANG_USE_MLX", "1" if use_mlx else "0")
+    validated = []
+
+    def fail_validation(path, *, speech_enabled, use_mlx):
+        validated.append((path, speech_enabled, use_mlx))
+        raise RuntimeError("checkpoint validation failed")
+
+    monkeypatch.setattr(
+        apple_runtime, "validate_qwen3_omni_apple_checkpoint", fail_validation
+    )
+    launched = MagicMock()
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", launched)
+
+    with pytest.raises(RuntimeError, match="checkpoint validation failed"):
+        serve(ctx=SimpleNamespace(args=[]), model_path=str(apple_checkpoint))
+
+    assert validated == [(str(apple_checkpoint), True, use_mlx)]
+    launched.assert_not_called()
+
+
+@pytest.mark.parametrize("use_mlx", [False, True])
+def test_apple_cli_launch_failure_does_not_fallback(
+    monkeypatch, apple_checkpoint, use_mlx
+) -> None:
+    from sglang_omni.cli.serve import serve
+
+    selected = "1" if use_mlx else "0"
+    monkeypatch.setenv("SGLANG_USE_MLX", selected)
+    launched = MagicMock(side_effect=RuntimeError("launch failed"))
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", launched)
+
+    with pytest.raises(RuntimeError, match="launch failed"):
+        serve(ctx=SimpleNamespace(args=[]), model_path=str(apple_checkpoint))
+
+    launched.assert_called_once()
+    assert os.environ["SGLANG_USE_MLX"] == selected
+
+
+@pytest.mark.parametrize(("backend", "expected"), [("mlx", "1"), ("torch_mps", None)])
+def test_apple_harness_selects_backend_before_sensitive_import(
+    monkeypatch, tmp_path, backend, expected
+) -> None:
+    from tests.utils.qwen3_omni_apple_runtime import AppleOmniServer
+
+    monkeypatch.setenv("SGLANG_USE_MLX", "inherited-choice")
+    server = AppleOmniServer(
+        model_path=tmp_path / "checkpoint",
+        backend=backend,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    script = """
+import importlib.abc
+import json
+import os
+import sys
+
+sys.path.insert(0, sys.argv[1])
+
+class SensitiveImportObserved(Exception):
+    pass
+
+class ObserveSensitiveImport(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith("sglang_omni.models.qwen3_omni"):
+            print(json.dumps({"selected": os.environ.get("SGLANG_USE_MLX")}))
+            raise SensitiveImportObserved
+
+sys.meta_path.insert(0, ObserveSensitiveImport())
+try:
+    import sglang_omni.models.qwen3_omni.config
+except SensitiveImportObserved:
+    pass
+else:
+    raise AssertionError("No backend-sensitive import was observed")
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", script, str(_REPO_ROOT)],
+        cwd=_REPO_ROOT,
+        env=server._environment(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["selected"] == expected
+    assert os.environ["SGLANG_USE_MLX"] == "inherited-choice"
+
+
+@pytest.mark.parametrize("path", _APPLE_DOCS, ids=["cookbook", "usage"])
+def test_apple_mlx_recipe_uses_standard_cli_without_preparation(path) -> None:
+    text = path.read_text(encoding="utf-8")
+
+    assert 'SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve' in text
+    assert "qwen3-apple-server" not in text
+    assert "qwen3_omni_apple_mlx.yaml" not in text
+    assert "prepare_checkpoint" not in text
+    assert "hybrid MLX" not in text
+
+
+@pytest.mark.parametrize("path", _APPLE_DOCS, ids=["cookbook", "usage"])
+def test_apple_mlx_docs_qualify_supported_layouts(path) -> None:
+    text = " ".join(path.read_text(encoding="utf-8").split())
+
+    assert (
+        "Other MLX-compatible 4-bit layouts may also load when they satisfy the "
+        "Apple checkpoint validator, but the pinned mlx-community checkpoint "
+        "above is the tested and recommended deployment."
+    ) in text
+
+
+@pytest.mark.parametrize("cli", [False, True])
+def test_deleted_prepare_checkpoint_import_and_cli_fail(cli) -> None:
+    module = "sglang_omni.models.qwen3_omni.mlx.prepare_checkpoint"
+    command = (
+        [sys.executable, "-m", module]
+        if cli
+        else [
+            sys.executable,
+            "-c",
+            "import importlib, sys; importlib.import_module(sys.argv[1])",
+            module,
+        ]
+    )
+    result = subprocess.run(
+        command, cwd=_REPO_ROOT, capture_output=True, text=True, timeout=30
+    )
+
+    assert result.returncode != 0
+    assert "No module named" in result.stderr
+    assert "prepare_checkpoint" in result.stderr

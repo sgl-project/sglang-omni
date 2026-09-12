@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import logging
+import sys
 import threading
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -77,6 +79,208 @@ def _server_args_overrides(config: PipelineConfig, name: str) -> dict[str, objec
 def _engine_mem_fraction_static(config, name: str) -> float | None:
     engine = _stage(config, name).engine
     return None if engine is None else engine.mem_fraction_static
+
+
+def test_image_encoder_factory_selects_mlx_constructor(monkeypatch, caplog) -> None:
+    from sglang_omni.scheduling import simple_scheduler
+    from sglang_omni.utils import device as device_utils
+
+    constructed = {}
+
+    class FakeMlxImageEncoder:
+        spatial_merge_size = 2
+        out_hidden_size = 32
+        deepstack_layers = 2
+        visual_dtype_bytes = 4
+
+        def __init__(self, model_path):
+            constructed["model_path"] = model_path
+
+    class FakeScheduler:
+        def __init__(self, compute_fn, **kwargs):
+            self.compute_fn = compute_fn
+            self.kwargs = kwargs
+
+    vision_module = ModuleType("sglang_omni.models.qwen3_omni.mlx.vision")
+    vision_module.Qwen3OmniMlxImageEncoder = FakeMlxImageEncoder
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.models.qwen3_omni.mlx.vision",
+        vision_module,
+    )
+    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: True)
+    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
+    monkeypatch.setattr(
+        device_utils,
+        "resolve_device_spec",
+        lambda _device: pytest.fail("MLX image setup must not resolve a Torch device"),
+    )
+    monkeypatch.setattr(
+        qwen_stages,
+        "Qwen3OmniImageEncoder",
+        lambda *args, **kwargs: pytest.fail("MLX selection must not construct Torch"),
+    )
+
+    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
+        scheduler = qwen_stages.create_image_encoder_executor(
+            "checkpoint", device="mps", dtype="float16"
+        )
+    assert constructed == {"model_path": "checkpoint"}
+    assert scheduler.kwargs["max_batch_size"] == 32
+    assert "Qwen3-Omni image encoder backend=native_mlx" in caplog.messages
+
+
+def test_audio_encoder_factory_selects_mlx_constructor(monkeypatch, caplog) -> None:
+    from sglang_omni.scheduling import simple_scheduler
+    from sglang_omni.utils import device as device_utils
+
+    constructed = {}
+
+    class FakeMlxAudioEncoder:
+        def __init__(self, model_path):
+            constructed["model_path"] = model_path
+
+    class FakeScheduler:
+        def __init__(self, compute_fn, **kwargs):
+            self.compute_fn = compute_fn
+            self.kwargs = kwargs
+
+    audio_module = ModuleType("sglang_omni.models.qwen3_omni.mlx.audio")
+    audio_module.Qwen3OmniMlxAudioStageEncoder = FakeMlxAudioEncoder
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.models.qwen3_omni.mlx.audio",
+        audio_module,
+    )
+    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: True)
+    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
+    monkeypatch.setattr(
+        device_utils,
+        "resolve_device_spec",
+        lambda _device: pytest.fail("MLX audio setup must not resolve a Torch device"),
+    )
+    monkeypatch.setattr(
+        qwen_stages,
+        "Qwen3OmniAudioEncoder",
+        lambda *args, **kwargs: pytest.fail("MLX selection must not construct Torch"),
+    )
+
+    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
+        scheduler = qwen_stages.create_audio_encoder_executor(
+            "checkpoint",
+            device="mps",
+            dtype="float16",
+            enable_layer_cuda_graph=True,
+        )
+
+    assert constructed == {"model_path": "checkpoint"}
+    assert scheduler.kwargs["max_batch_size"] == 32
+    assert "Qwen3-Omni audio encoder backend=native_mlx" in caplog.messages
+
+
+def test_image_encoder_factory_logs_constructed_torch_backend(
+    monkeypatch,
+    caplog,
+) -> None:
+    from sglang_omni.scheduling import simple_scheduler
+    from sglang_omni.utils import device as device_utils
+
+    constructed = {}
+
+    class FakeTorchImageEncoder:
+        spatial_merge_size = 2
+        out_hidden_size = 32
+        deepstack_layers = 2
+        visual_dtype_bytes = 4
+
+        def __init__(self, *, model_path, device, dtype):
+            constructed.update(model_path=model_path, device=device, dtype=dtype)
+
+    class FakeScheduler:
+        def __init__(self, compute_fn, **kwargs):
+            self.compute_fn = compute_fn
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: False)
+    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
+    monkeypatch.setattr(
+        device_utils,
+        "resolve_concrete_device",
+        lambda device, index=None: torch.device(device),
+    )
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniImageEncoder", FakeTorchImageEncoder)
+
+    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
+        qwen_stages.create_image_encoder_executor(
+            "checkpoint",
+            device="mps",
+            dtype="float16",
+        )
+
+    assert constructed == {
+        "model_path": "checkpoint",
+        "device": "mps",
+        "dtype": "float16",
+    }
+    assert "Qwen3-Omni image encoder backend=torch" in caplog.messages
+
+
+def test_audio_encoder_factory_logs_constructed_torch_backend(
+    monkeypatch,
+    caplog,
+) -> None:
+    from sglang_omni.platforms import current_platform
+    from sglang_omni.scheduling import simple_scheduler
+    from sglang_omni.utils import device as device_utils
+
+    constructed = {}
+
+    class FakeTorchAudioEncoder:
+        def __init__(
+            self,
+            *,
+            model_path,
+            device,
+            dtype,
+            enable_layer_cuda_graph,
+        ):
+            constructed.update(
+                model_path=model_path,
+                device=device,
+                dtype=dtype,
+                enable_layer_cuda_graph=enable_layer_cuda_graph,
+            )
+
+    class FakeScheduler:
+        def __init__(self, compute_fn, **kwargs):
+            self.compute_fn = compute_fn
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(qwen_stages, "qwen3_omni_uses_mlx_backend", lambda: False)
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+    monkeypatch.setattr(simple_scheduler, "SimpleScheduler", FakeScheduler)
+    monkeypatch.setattr(
+        device_utils,
+        "resolve_concrete_device",
+        lambda device, index=None: torch.device(device),
+    )
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniAudioEncoder", FakeTorchAudioEncoder)
+
+    with caplog.at_level(logging.INFO, logger=qwen_stages.__name__):
+        qwen_stages.create_audio_encoder_executor(
+            "checkpoint",
+            device="cpu",
+            dtype="float32",
+            enable_layer_cuda_graph=True,
+        )
+
+    assert constructed == {
+        "model_path": "checkpoint",
+        "device": "cpu",
+        "dtype": "float32",
+        "enable_layer_cuda_graph": True,
+    }
+    assert "Qwen3-Omni audio encoder backend=torch" in caplog.messages
 
 
 def test_qwen_pipeline_config_and_state_contracts() -> None:

@@ -8,6 +8,7 @@ This module mirrors HF's talker prefill layout, then keeps HF's
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,49 +23,208 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import (
 )
 from sglang_omni.models.weight_loader import resolve_model_path
 
+_THINKER_EMBED_OFFICIAL_KEY = "thinker.model.embed_tokens.weight"
+_THINKER_EMBED_MLX_VLM_KEY = "thinker.language_model.model.embed_tokens.weight"
+_THINKER_EMBED_LOCAL_KEY = "model.embed_tokens.weight"
 _THINKER_EMBED_CANDIDATE_KEYS = (
-    "thinker.model.embed_tokens.weight",
-    "model.embed_tokens.weight",
+    _THINKER_EMBED_OFFICIAL_KEY,
+    _THINKER_EMBED_MLX_VLM_KEY,
+    _THINKER_EMBED_LOCAL_KEY,
 )
+# Subdirectory names a converted MLX export uses, matching the ownership rules
+# in ``sglang_omni.models.qwen3_omni.mlx.runner``.
+_COMPONENT_DIRECTORIES = ("thinker", "talker", "code2wav")
 
 
-_EMBED_SOURCE_CACHE: dict[str, tuple[Path, str]] = {}
-_EMBED_HANDLE_CACHE: dict[str, Any] = {}
+@dataclass(frozen=True)
+class _EmbedSource:
+    """Where the thinker embedding table lives, and how it is stored."""
+
+    shard: Path
+    tensor_name: str
+    scales_shard: Path | None = None
+    biases_shard: Path | None = None
+    #: ``{"bits", "group_size", "mode"}`` when the table is packed 4/8-bit.
+    quantization: dict[str, Any] | None = None
 
 
-def _resolve_embed_source(model_path: str) -> tuple[Path, str]:
+_EMBED_SOURCE_CACHE: dict[str, _EmbedSource] = {}
+_EMBED_HANDLE_CACHE: dict[Path, Any] = {}
+
+
+def _component_directory(shard: Path, root: Path) -> str | None:
+    try:
+        parts = shard.relative_to(root).parts
+    except ValueError:  # pragma: no cover - rglob results are always under root
+        return None
+    if len(parts) > 1 and parts[0] in _COMPONENT_DIRECTORIES:
+        return parts[0]
+    return None
+
+
+def _checkpoint_quantization(model_dir: Path) -> dict[str, Any] | None:
+    config_path = model_dir / "config.json"
+    if not config_path.is_file():
+        return None
+    raw = json.loads(config_path.read_text())
+    quantization = raw.get("quantization") or raw.get("quantization_config")
+    return quantization if isinstance(quantization, dict) else None
+
+
+def _embed_source_from_shard(
+    shard: Path,
+    *,
+    root: Path,
+    has_component_dirs: bool,
+) -> _EmbedSource | None:
+    """Claim the thinker embedding from ``shard`` only when it owns it.
+
+    An official checkpoint namespaces the key (``thinker.model.embed_tokens``),
+    so it is unambiguous wherever it lives. A converted export strips that
+    namespace, and the *talker* owns an identically named
+    ``model.embed_tokens.weight``; claiming it would splice the talker's table
+    into the talker prompt with no error at all. So an unprefixed key is taken
+    only from the ``thinker/`` component shard, or from the root when the
+    export has no component directories.
+    """
+
+    component = _component_directory(shard, root)
+    with safe_open(str(shard), framework="pt", device="cpu") as handle:
+        keys = set(handle.keys())
+    for tensor_name in (
+        _THINKER_EMBED_OFFICIAL_KEY,
+        _THINKER_EMBED_MLX_VLM_KEY,
+    ):
+        if tensor_name not in keys:
+            continue
+        prefix = tensor_name[: -len(".weight")]
+        quantization = None
+        has_scales = f"{prefix}.scales" in keys
+        has_biases = f"{prefix}.biases" in keys
+        if has_scales != has_biases:
+            raise KeyError(f"{shard} carries an incomplete packed thinker embedding")
+        if has_scales:
+            quantization = _checkpoint_quantization(root)
+            if quantization is None:
+                raise KeyError(
+                    f"{shard} carries a packed thinker embedding but "
+                    f"{root / 'config.json'} declares no quantization block"
+                )
+        return _EmbedSource(
+            shard=shard,
+            tensor_name=tensor_name,
+            scales_shard=shard if has_scales else None,
+            biases_shard=shard if has_biases else None,
+            quantization=quantization,
+        )
+    if _THINKER_EMBED_LOCAL_KEY not in keys:
+        return None
+    if component == "thinker" or (component is None and not has_component_dirs):
+        prefix = _THINKER_EMBED_LOCAL_KEY[: -len(".weight")]
+        packed = f"{prefix}.scales" in keys
+        has_biases = f"{prefix}.biases" in keys
+        if packed != has_biases:
+            raise KeyError(f"{shard} carries an incomplete packed thinker embedding")
+        quantization = None
+        if packed:
+            quantization = _checkpoint_quantization(root)
+            if quantization is None:
+                raise KeyError(
+                    f"{shard} carries a packed thinker embedding but "
+                    f"{root / 'config.json'} declares no quantization block"
+                )
+        return _EmbedSource(
+            shard=shard,
+            tensor_name=_THINKER_EMBED_LOCAL_KEY,
+            scales_shard=shard if packed else None,
+            biases_shard=shard if has_biases else None,
+            quantization=quantization,
+        )
+    return None
+
+
+def _resolve_embed_source(model_path: str) -> _EmbedSource:
     cached = _EMBED_SOURCE_CACHE.get(model_path)
     if cached is not None:
         return cached
 
     model_dir = Path(model_path)
-    for index_path in model_dir.glob("*.safetensors.index.json"):
+    index_paths = sorted(model_dir.rglob("*.safetensors.index.json"))
+    has_component_indexes = any(
+        _component_directory(index_path, model_dir) is not None
+        for index_path in index_paths
+    )
+    for index_path in index_paths:
         index_data = json.loads(index_path.read_text())
         weight_map = index_data["weight_map"]
+        component = _component_directory(index_path, model_dir)
         for tensor_name in _THINKER_EMBED_CANDIDATE_KEYS:
+            if tensor_name == _THINKER_EMBED_LOCAL_KEY and not (
+                component == "thinker"
+                or (component is None and not has_component_indexes)
+            ):
+                continue
             shard_name = weight_map.get(tensor_name)
             if shard_name is not None:
-                source = (model_dir / shard_name, tensor_name)
+                prefix = tensor_name[: -len(".weight")]
+                quantization = None
+                scales_name = weight_map.get(f"{prefix}.scales")
+                biases_name = weight_map.get(f"{prefix}.biases")
+                if (scales_name is None) != (biases_name is None):
+                    raise KeyError(
+                        f"{model_dir / shard_name} carries an incomplete packed "
+                        "thinker embedding"
+                    )
+                if scales_name is not None:
+                    quantization = _checkpoint_quantization(model_dir)
+                    if quantization is None:
+                        raise KeyError(
+                            f"{model_dir / shard_name} carries a packed thinker "
+                            f"embedding but {model_dir / 'config.json'} declares "
+                            "no quantization block"
+                        )
+                source = _EmbedSource(
+                    shard=index_path.parent / shard_name,
+                    tensor_name=tensor_name,
+                    scales_shard=(
+                        index_path.parent / str(scales_name)
+                        if scales_name is not None
+                        else None
+                    ),
+                    biases_shard=(
+                        index_path.parent / str(biases_name)
+                        if biases_name is not None
+                        else None
+                    ),
+                    quantization=quantization,
+                )
                 _EMBED_SOURCE_CACHE[model_path] = source
                 return source
 
-    for shard_path in model_dir.glob("*.safetensors"):
-        with safe_open(str(shard_path), framework="pt", device="cpu") as handle:
-            for tensor_name in _THINKER_EMBED_CANDIDATE_KEYS:
-                if tensor_name in handle.keys():
-                    source = (shard_path, tensor_name)
-                    _EMBED_SOURCE_CACHE[model_path] = source
-                    return source
+    shards = sorted(path for path in model_dir.rglob("*.safetensors") if path.is_file())
+    has_component_dirs = any(
+        _component_directory(shard, model_dir) is not None for shard in shards
+    )
+    for shard in shards:
+        source = _embed_source_from_shard(
+            shard, root=model_dir, has_component_dirs=has_component_dirs
+        )
+        if source is not None:
+            _EMBED_SOURCE_CACHE[model_path] = source
+            return source
 
     raise KeyError(f"Unable to locate thinker embedding weights in {model_path}")
 
 
-def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Tensor:
-    shard_path, tensor_name = _resolve_embed_source(model_path)
-    handle = _EMBED_HANDLE_CACHE.get(model_path)
+def _safetensor_rows(
+    shard: Path,
+    tensor_name: str,
+    row_ids: list[int],
+) -> torch.Tensor:
+    handle = _EMBED_HANDLE_CACHE.get(shard)
     if handle is None:
-        handle = safe_open(str(shard_path), framework="pt", device="cpu")
-        _EMBED_HANDLE_CACHE[model_path] = handle
+        handle = safe_open(str(shard), framework="pt", device="cpu")
+        _EMBED_HANDLE_CACHE[shard] = handle
     tensor_slice = handle.get_slice(tensor_name)
     try:
         rows = [tensor_slice[row_id] for row_id in row_ids]
@@ -72,6 +232,86 @@ def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Te
         tensor = handle.get_tensor(tensor_name)
         rows = [tensor[row_id].clone() for row_id in row_ids]
     return torch.stack(rows, dim=0)
+
+
+def _packed_embedding_rows(
+    model_path: str,
+    source: _EmbedSource,
+    row_ids: list[int],
+) -> torch.Tensor:
+    """Dequantize just the requested rows of a packed embedding table.
+
+    Affine quantization groups along the last axis, so selecting rows first is
+    exact and keeps a production-size table from being materialised in full.
+    """
+
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        get_qwen3_omni_mps_quantization,
+    )
+
+    if get_qwen3_omni_mps_quantization() is not None:
+        raise ValueError(
+            "Torch MPS HF INT4 requires dense thinker embeddings; "
+            "MLX affine embedding conversion is not supported"
+        )
+
+    import mlx.core as mx
+    import numpy as np
+
+    dequantized = _packed_embedding_rows_mlx(model_path, source, row_ids)
+    return torch.from_numpy(
+        np.ascontiguousarray(np.asarray(dequantized.astype(mx.float32)))
+    )
+
+
+def _packed_embedding_tensors(
+    source: _EmbedSource, row_ids: list[int]
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if source.scales_shard is None or source.biases_shard is None:
+        raise KeyError(f"packed thinker embedding {source.tensor_name!r} is incomplete")
+    prefix = source.tensor_name[: -len(".weight")]
+    return (
+        _safetensor_rows(source.shard, source.tensor_name, row_ids),
+        _safetensor_rows(source.scales_shard, f"{prefix}.scales", row_ids),
+        _safetensor_rows(source.biases_shard, f"{prefix}.biases", row_ids),
+    )
+
+
+def _packed_embedding_rows_mlx(
+    model_path: str,
+    source: _EmbedSource,
+    row_ids: list[int],
+):
+    """Return selectively loaded packed rows with checkpoint dtypes preserved."""
+
+    del model_path
+    import mlx.core as mx
+
+    from sglang_omni.models.qwen3_omni.mlx.tensor_utils import torch_to_mlx
+
+    def to_mlx(tensor: torch.Tensor):
+        array = torch_to_mlx(tensor)
+        if tensor.dtype == torch.bfloat16:
+            return array.astype(mx.bfloat16)
+        return array
+
+    weight, scales, biases = _packed_embedding_tensors(source, row_ids)
+    quantization = source.quantization or {}
+    return mx.dequantize(
+        to_mlx(weight),
+        to_mlx(scales),
+        to_mlx(biases),
+        group_size=int(quantization["group_size"]),
+        bits=int(quantization["bits"]),
+        mode=str(quantization.get("mode", "affine")),
+    )
+
+
+def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Tensor:
+    source = _resolve_embed_source(model_path)
+    if source.quantization is not None:
+        return _packed_embedding_rows(model_path, source, row_ids)
+    return _safetensor_rows(source.shard, source.tensor_name, row_ids)
 
 
 def coerce_feature_tensor(value: Any) -> torch.Tensor | None:

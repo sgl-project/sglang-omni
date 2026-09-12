@@ -65,6 +65,14 @@ class _ArMemoryContract:
     applied_encoder_mem_reserve: float
 
 
+def qwen3_omni_uses_mlx_backend() -> bool:
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        qwen3_omni_uses_mlx_backend as uses_mlx_backend,
+    )
+
+    return uses_mlx_backend()
+
+
 def _apply_qwen_thinker_encoder_reserve(
     server_args: Any,
     *,
@@ -859,10 +867,22 @@ def create_image_encoder_executor(
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = str(resolve_concrete_device(device, gpu_id))
-    model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
+    if qwen3_omni_uses_mlx_backend():
+        from sglang_omni.models.qwen3_omni.mlx.vision import Qwen3OmniMlxImageEncoder
+
+        model = Qwen3OmniMlxImageEncoder(model_path)
+        logger.info("Qwen3-Omni image encoder backend=native_mlx")
+    else:
+        from sglang_omni.utils.device import resolve_concrete_device
+
+        device = str(resolve_concrete_device(device, gpu_id))
+        model = Qwen3OmniImageEncoder(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+        )
+        logger.info("Qwen3-Omni image encoder backend=torch")
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
@@ -935,15 +955,32 @@ def create_audio_encoder_executor(
     enable_layer_cuda_graph: bool = False,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = str(resolve_concrete_device(device, gpu_id))
-    model = Qwen3OmniAudioEncoder(
-        model_path=model_path,
-        device=device,
-        dtype=dtype,
-        enable_layer_cuda_graph=enable_layer_cuda_graph,
-    )
+    if qwen3_omni_uses_mlx_backend():
+        from sglang_omni.models.qwen3_omni.mlx.audio import (
+            Qwen3OmniMlxAudioStageEncoder,
+        )
+
+        model = Qwen3OmniMlxAudioStageEncoder(model_path)
+        logger.info("Qwen3-Omni audio encoder backend=native_mlx")
+    else:
+        from sglang_omni.platforms import current_platform
+        from sglang_omni.utils.device import resolve_concrete_device
+
+        concrete_device = resolve_concrete_device(device, gpu_id)
+        device = str(concrete_device)
+        if concrete_device.type == "mps":
+            # Belt-and-suspenders alongside Qwen3OmniAudioEncoder's own
+            # device.type == "cuda" guard: the layer-stack CUDA graph runner is
+            # CUDA-only and must never be requested on Apple's Metal device.
+            enable_layer_cuda_graph = False
+        model = Qwen3OmniAudioEncoder(
+            model_path=model_path,
+            device=device,
+            dtype=dtype,
+            enable_layer_cuda_graph=enable_layer_cuda_graph,
+        )
+        logger.info("Qwen3-Omni audio encoder backend=torch")
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=QWEN3_ENCODER_CACHE_MAX_BYTES,
@@ -1033,6 +1070,7 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_when_idle: bool = False,
 ):
     """Returns OmniScheduler for thinker."""
+    explicit_overrides = dict(server_args_overrides or {})
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -1059,6 +1097,19 @@ def create_sglang_thinker_executor_from_config(
         sampling_backend="pytorch",
     )
     overrides["tp_size"] = tp_size
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        apply_qwen3_omni_apple_profile,
+        qwen3_omni_uses_apple_backend,
+    )
+
+    overrides = apply_qwen3_omni_apple_profile(
+        overrides,
+        explicit_overrides=explicit_overrides,
+        stage_name="thinker",
+    )
+    if qwen3_omni_uses_apple_backend():
+        enable_async_decode = False
+        prefill_coalesce_requests = 0
     from sglang_omni.platforms import current_platform
 
     if not current_platform.enable_thinker_decode_graph():
@@ -1193,6 +1244,7 @@ def create_talker_ar_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
 
+    explicit_overrides = dict(server_args_overrides or {})
     # Note (Xuesong, Chenyang): cuda_graph defaults to ON for the talker
     # after #384, which routed talker MoE through `self.experts` (FusedMoE)
     # — the `fused_experts (full graph)` backend picked in #344. Caller can
@@ -1214,6 +1266,18 @@ def create_talker_ar_executor_from_config(
     if not stated_disable and not current_platform.enable_talker_graph():
         overrides["disable_cuda_graph"] = True
     overrides["tp_size"] = tp_size
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        apply_qwen3_omni_apple_profile,
+        qwen3_omni_uses_apple_backend,
+    )
+
+    overrides = apply_qwen3_omni_apple_profile(
+        overrides,
+        explicit_overrides=explicit_overrides,
+        stage_name="talker_ar",
+    )
+    if qwen3_omni_uses_apple_backend():
+        enable_partial_start = False
     _apply_colocated_ar_memory_contract(
         overrides,
         stage_name="talker_ar",

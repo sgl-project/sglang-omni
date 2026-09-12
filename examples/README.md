@@ -12,6 +12,7 @@ preset to inspect its options.
 | --- | --- |
 | `qwen3-text-server` | Qwen3-Omni OpenAI server with text output |
 | `qwen3-speech-server` | Qwen3-Omni OpenAI server with text and audio output |
+| `qwen3-apple-server` | Qwen3-Omni OpenAI server on Apple Silicon with MLX or Torch MPS |
 | `qwen3-speech` | One offline Qwen3-Omni speech request |
 | `ming-text-server` | Ming-Omni OpenAI server with text output |
 | `ming-speech-server` | Ming-Omni OpenAI server with text and audio output |
@@ -48,6 +49,30 @@ python examples/run_omni.py qwen3-speech-server \
   --port 8000 \
   --model-name qwen3-omni
 ```
+
+Apple Silicon MLX hybrid text and audio output:
+
+```bash
+python examples/run_omni.py qwen3-apple-server \
+  --backend mlx \
+  --model-path "$HOME/models/Qwen3-Omni-30B-A3B-Instruct-4bit-93b3cbdd" \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+Apple Silicon dense Torch MPS text-only output:
+
+```bash
+python examples/run_omni.py qwen3-apple-server \
+  --backend mps \
+  --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+The Apple server process stays in the foreground and should be supervised
+externally for deployment.
 
 Qwen3-Omni FP8, one-GPU colocated H100/H20:
 

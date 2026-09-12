@@ -3,6 +3,11 @@ import pkgutil
 import platform as host_platform
 
 import torch
+
+from sglang_omni.utils.apple_torch_compat import prepare_torch_inductor_for_sglang
+
+prepare_torch_inductor_for_sglang()
+
 from sglang.srt import platforms as srt_platforms
 from sglang.srt.platforms.interface import SRTPlatform
 

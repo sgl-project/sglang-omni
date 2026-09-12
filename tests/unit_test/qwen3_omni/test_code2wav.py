@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -115,6 +116,11 @@ def test_qwen_load_code2wav_model_returns_eval_model(monkeypatch) -> None:
     monkeypatch.setattr(weight_loader, "resolve_dtype", lambda dtype: torch.float32)
     monkeypatch.setattr(
         weight_loader,
+        "resolve_model_path",
+        lambda model_path: Path(model_path),
+    )
+    monkeypatch.setattr(
+        weight_loader,
         "load_module",
         lambda loaded_model, *args, **kwargs: loaded_model,
     )
@@ -125,7 +131,123 @@ def test_qwen_load_code2wav_model_returns_eval_model(monkeypatch) -> None:
     assert model.eval_calls == 1
 
 
-def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -> None:
+def test_qwen_load_code2wav_model_accepts_official_root_prefixed_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from transformers import AutoConfig
+    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+        Qwen3OmniMoeCode2Wav,
+    )
+
+    from sglang_omni.models import weight_loader
+
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    "code2wav.pre_transformer.layers.0.weight": "root.safetensors"
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    model = _FactoryModel()
+    config = SimpleNamespace(code2wav_config=object())
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        AutoConfig,
+        "from_pretrained",
+        staticmethod(lambda *args, **kwargs: config),
+    )
+    monkeypatch.setattr(
+        Qwen3OmniMoeCode2Wav,
+        "_from_config",
+        staticmethod(lambda code2wav_config: model),
+    )
+    monkeypatch.setattr(weight_loader, "resolve_dtype", lambda dtype: torch.float32)
+
+    def _load_module(loaded_model, model_path, **kwargs):
+        captured.update(
+            model_path=model_path,
+            prefix=kwargs["prefix"],
+            strict=kwargs["strict"],
+        )
+        return loaded_model
+
+    monkeypatch.setattr(weight_loader, "load_module", _load_module)
+
+    loaded = code2wav_scheduler.load_code2wav_model(
+        str(tmp_path), device="cpu", dtype="float32"
+    )
+
+    assert loaded is model
+    assert captured == {
+        "model_path": str(tmp_path),
+        "prefix": "code2wav.",
+        "strict": False,
+    }
+
+
+def test_qwen_load_code2wav_model_accepts_official_split_component(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from transformers import AutoConfig
+    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+        Qwen3OmniMoeCode2Wav,
+    )
+
+    from sglang_omni.models import weight_loader
+
+    sidecar = tmp_path / "code2wav"
+    sidecar.mkdir()
+    (sidecar / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {}}),
+        encoding="utf-8",
+    )
+    model = _FactoryModel()
+    monkeypatch.setattr(
+        AutoConfig,
+        "from_pretrained",
+        staticmethod(lambda *args, **kwargs: SimpleNamespace(code2wav_config=object())),
+    )
+    monkeypatch.setattr(
+        Qwen3OmniMoeCode2Wav,
+        "_from_config",
+        staticmethod(lambda code2wav_config: model),
+    )
+    monkeypatch.setattr(weight_loader, "resolve_dtype", lambda dtype: torch.float32)
+    monkeypatch.setattr(
+        weight_loader,
+        "load_module",
+        lambda loaded_model, *args, **kwargs: loaded_model,
+    )
+
+    captured: dict[str, object] = {}
+
+    def _load_module(loaded_model, model_path, **kwargs):
+        captured.update(
+            model_path=model_path,
+            prefix=kwargs["prefix"],
+            strict=kwargs["strict"],
+        )
+        return loaded_model
+
+    monkeypatch.setattr(weight_loader, "load_module", _load_module)
+
+    loaded = code2wav_scheduler.load_code2wav_model(
+        str(tmp_path), device="cpu", dtype="float32"
+    )
+
+    assert loaded is model
+    assert captured == {"model_path": str(sidecar), "prefix": "", "strict": True}
+
+
+def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(
+    monkeypatch,
+    caplog,
+) -> None:
     model = _FactoryModel()
     monkeypatch.setattr(
         code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model
@@ -140,12 +262,40 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
         staticmethod(_unexpected_build),
     )
 
-    scheduler = code2wav_scheduler.create_code2wav_scheduler(
-        "dummy",
-        device="cpu",
-    )
+    with caplog.at_level(logging.INFO, logger=code2wav_scheduler.__name__):
+        scheduler = code2wav_scheduler.create_code2wav_scheduler(
+            "dummy",
+            device="cpu",
+        )
 
     assert scheduler._cuda_graph_runner is None
+    assert "Qwen3-Omni code2wav scheduler backend=torch" in caplog.messages
+
+
+def test_qwen_code2wav_factory_skips_torch_ownership_log_on_constructor_failure(
+    monkeypatch,
+    caplog,
+) -> None:
+    model = _FactoryModel()
+    error = RuntimeError("scheduler construction failed")
+    monkeypatch.setattr(
+        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "Code2WavScheduler",
+        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+    )
+
+    with pytest.raises(RuntimeError, match="scheduler construction failed") as excinfo:
+        with caplog.at_level(logging.INFO, logger=code2wav_scheduler.__name__):
+            code2wav_scheduler.create_code2wav_scheduler(
+                "dummy",
+                device="cpu",
+            )
+
+    assert excinfo.value is error
+    assert "Qwen3-Omni code2wav scheduler backend=torch" not in caplog.messages
 
 
 def test_only_graph_capable_platforms_enable_the_code2wav_graph() -> None:
@@ -830,6 +980,88 @@ def test_qwen_code2wav_replay_error_reaches_base_abort_without_eager_retry() -> 
     assert message.type == "error"
     assert message.data is replay_error
     assert scheduler._is_aborted("req-1")
+    assert "req-1" not in scheduler._stream_states
+
+
+def test_mlx_code2wav_preserves_streaming_context_trim_and_final_flush() -> None:
+    mx = pytest.importorskip("mlx.core")
+
+    class _RecordingMlxCode2Wav:
+        total_upsample = 2
+
+        def __init__(self) -> None:
+            self.calls: list[np.ndarray] = []
+
+        def __call__(self, codes):
+            self.calls.append(np.asarray(codes))
+            return mx.repeat(codes[:, :1, :].astype(mx.float32), 2, axis=-1)
+
+    model = _RecordingMlxCode2Wav()
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        backend="mlx",
+        stream_chunk_size=10,
+        left_context_size=25,
+        sample_rate=24000,
+        enable_batching=True,
+        enable_output_overlap=True,
+        enable_cuda_graph=True,
+        _cuda_graph_runner=object(),
+    )
+    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+    for chunk_id in range(43):
+        scheduler._handle_stream_chunk(
+            "req-1",
+            StreamItem(
+                chunk_id,
+                torch.tensor([chunk_id + 1, 100 + chunk_id]),
+                "talker",
+                metadata={"stream": True},
+            ),
+        )
+    scheduler._on_done("req-1")
+
+    assert [tuple(codes.shape) for codes in model.calls] == [
+        (1, 2, 10),
+        (1, 2, 20),
+        (1, 2, 30),
+        (1, 2, 35),
+        (1, 2, 28),
+    ]
+    messages = [scheduler.outbox.get_nowait() for _ in range(scheduler.outbox.qsize())]
+    stream_samples = [
+        len(np.frombuffer(message.data["audio_waveform"], dtype=np.float32))
+        for message in messages
+        if message.type == "stream"
+    ]
+    assert stream_samples == [20, 20, 20, 20, 6]
+    assert messages[-1].type == "result"
+    assert messages[-1].data.data == {"modality": "audio", "sample_rate": 24000}
+    assert scheduler._enable_batching is False
+    assert scheduler._enable_output_overlap is False
+    assert scheduler._cuda_graph_runner is None
+
+
+def test_mlx_code2wav_abort_clears_state_without_decode() -> None:
+    mx = pytest.importorskip("mlx.core")
+
+    class _UnusedMlxCode2Wav:
+        total_upsample = 2
+        calls = 0
+
+        def __call__(self, codes):
+            self.calls += 1
+            return mx.zeros((codes.shape[0], 1, codes.shape[-1] * 2))
+
+    model = _UnusedMlxCode2Wav()
+    scheduler = Code2WavScheduler(model, device="cpu", backend="mlx")
+    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+    scheduler._get_or_create_stream_state("req-1")
+
+    scheduler.abort("req-1")
+
+    assert model.calls == 0
     assert "req-1" not in scheduler._stream_states
 
 

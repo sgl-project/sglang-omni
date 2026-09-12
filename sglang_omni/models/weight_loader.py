@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -221,6 +222,9 @@ def load_module(
     device: str | torch.device | None = None,
     strict: bool = True,
     local_files_only: bool = False,
+    state_dict_transform: (
+        Callable[[nn.Module, dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None
+    ) = None,
 ) -> nn.Module:
     """Load weights into module by prefix, optionally move to device."""
     state_dict = load_weights_by_prefix(
@@ -228,6 +232,8 @@ def load_module(
         prefix=prefix,
         local_files_only=local_files_only,
     )
+    if state_dict_transform is not None:
+        state_dict = state_dict_transform(module, state_dict)
     # Prefer assign=True to avoid expensive in-place tensor copies during load.
     try:
         module.load_state_dict(state_dict, strict=strict, assign=True)

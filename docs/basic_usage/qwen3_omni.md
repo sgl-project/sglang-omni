@@ -635,6 +635,101 @@ with open("output.wav", "wb") as f:
     f.write(audio_data)
 ```
 
+<a id="apple-silicon-mlx-and-torch-mps"></a>
+## Apple Silicon (MLX and Torch MPS)
+
+Use `mlx>=0.32.2` and `mlx-lm>=0.31.2` for the native MLX path; `mlx-vlm`
+is not required. MLX 0.32.2 adds fused attention for the vision encoder's
+72-dimensional heads. Existing environments can upgrade MLX with
+`python -m pip install --upgrade 'mlx>=0.32.2'`.
+
+Qwen3-Omni also runs on Apple Silicon (`arm64`) through the same backend
+switch used by Qwen3-ASR: `SGLANG_USE_MLX=1` selects the all-native MLX
+Apple path, and an unset (or falsy) `SGLANG_USE_MLX` selects the eager Torch
+MPS Apple path. Both use the standard `sgl-omni serve` CLI (equivalently,
+`python -m sglang_omni.cli serve`). See the
+[Qwen3-Omni cookbook](../cookbook/qwen3_omni.md#apple-silicon-mlx-and-torch-mps)
+for installation prerequisites and supported checkpoint layouts.
+
+Set the pinned community checkpoint once:
+
+```bash
+export REPO="/path/to/sglang-omni"
+export PY="$REPO/.venv-apple/bin/python"
+export MODEL_DIR="$HOME/models/Qwen3-Omni-30B-A3B-Instruct-4bit-93b3cbdd"
+export MODEL_REVISION="93b3cbddd65ed4babff8f22fba491cdba7a21778"
+cd "$REPO"
+```
+
+```bash
+"$PY" - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+print(
+    snapshot_download(
+        repo_id="mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit",
+        revision=os.environ["MODEL_REVISION"],
+        local_dir=os.path.expanduser(os.environ["MODEL_DIR"]),
+    )
+)
+PY
+```
+
+Canonical native MLX launch (speech mode):
+
+```bash
+SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve \
+  --model-path "$MODEL_DIR" \
+  --port 8008
+```
+
+Text-only native MLX launch:
+
+```bash
+SGLANG_USE_MLX=1 "$PY" -m sglang_omni.cli serve \
+  --model-path "$MODEL_DIR" \
+  --text-only \
+  --port 8008
+```
+
+Other MLX-compatible 4-bit layouts may also load when they satisfy the Apple checkpoint validator,
+but the pinned mlx-community checkpoint above is the tested and recommended deployment.
+
+Both backends use one Metal device, one request at a time, greedy eager execution and SHM transport.
+Radix caching, overlap, chunked prefill, CUDA graphs, compilation, logprobs and partial talker start are unsupported; there is no cross-backend fallback.
+
+With `SGLANG_USE_MLX` unset, Torch MPS automatically selects dense or supported HF INT4 loading from `config.json`.
+INT4 requires a separate checkpoint from MLX; the optional legacy `SGLANG_QWEN3_OMNI_MPS_QUANTIZATION=int4` flag does not quantize dense weights.
+
+| Export | Revision | Packing |
+|---|---|---|
+| `Intel/Qwen3-Omni-30B-A3B-Instruct-int4-AutoRound` | `c3ef7bbf0b9d866866136c1d08b6314d27f7e151` | Symmetric GPTQ-style INT4, group size 128 |
+| `cyankiwi/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit` | `d6e1eff8d3414580a276744361d5b6d7d4798a56` | Symmetric compressed-tensors INT4, group size 32 |
+
+Download a pinned export, then launch its local directory:
+
+```bash
+hf download Intel/Qwen3-Omni-30B-A3B-Instruct-int4-AutoRound \
+  --revision c3ef7bbf0b9d866866136c1d08b6314d27f7e151 \
+  --local-dir "$HOME/models/Qwen3-Omni-AutoRound"
+
+env -u SGLANG_USE_MLX -u SGLANG_QWEN3_OMNI_MPS_QUANTIZATION \
+  PYTORCH_ENABLE_MPS_FALLBACK=0 \
+  "$PY" -m sglang_omni.cli serve \
+  --model-path "$HOME/models/Qwen3-Omni-AutoRound" \
+  --model-name qwen3-omni --host 127.0.0.1 --port 8008
+```
+
+For dense MPS, use the same command with the official dense checkpoint; it needs substantially more memory.
+INT4 repacks calibrated Thinker weights for native Torch Metal operators; Talker, encoders and code2wav remain dense.
+
+Only symmetric AutoRound `auto_round:auto_gptq` and compressed-tensors `pack-quantized` INT4 are supported, without activation ordering or mixed schemes.
+MLX affine and INT8 conversion are unsupported; run servers sequentially and do not combine the legacy INT4 flag with `SGLANG_USE_MLX=1`.
+
+Both pinned exports completed the eight-case text/image/audio/video+audio serving matrix on a 48-GiB Mac with Torch 2.13.0.
+This does not guarantee semantic quality or peak memory; unit coverage is in `tests/unit_test/qwen3_omni/test_torch_mps_hf_quantization.py`.
+
 ## Request Parameters
 
 The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for Qwen3-Omni.

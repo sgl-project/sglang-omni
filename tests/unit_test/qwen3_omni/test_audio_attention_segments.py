@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 import torch.nn as nn
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
@@ -149,3 +150,18 @@ def test_shared_splits_do_not_copy_from_device_per_layer() -> None:
     finally:
         torch.Tensor.tolist = original
     assert calls["n"] == 0
+
+
+def test_mlx_segments_use_each_samples_chunks_and_inference_windows() -> None:
+    mx = pytest.importorskip("mlx.core")
+    from sglang_omni.models.qwen3_omni.mlx.audio import (
+        qwen3_omni_audio_attention_segments,
+    )
+
+    segments = qwen3_omni_audio_attention_segments(
+        mx.array([37, 1200], dtype=mx.int32),
+        n_window=50,
+        n_window_infer=800,
+    )
+
+    assert segments == (5, 104, 52)

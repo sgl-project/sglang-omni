@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Apple Silicon dense Torch MPS deployment profile.
+# Canonical checkpoint:
+#   Qwen/Qwen3-Omni-30B-A3B-Instruct
+#
+# This path needs substantially more unified memory than the hybrid MLX
+# profile and has not completed the same production-checkpoint qualification.
+# Launch through qwen3-apple-server, which replaces the sentinel model path.
+
+config_cls: Qwen3OmniSpeechPipelineConfig
+name: qwen3-omni-apple-mps
+model_path: qwen3-omni-apple-model-path-required
+stages:
+  code2wav:
+    gpu_memory_fraction: null

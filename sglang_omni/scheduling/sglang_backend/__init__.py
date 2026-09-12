@@ -1,4 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
+from sglang_omni.utils.apple_torch_compat import prepare_torch_inductor_for_sglang
+
+prepare_torch_inductor_for_sglang()
+
 from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import (

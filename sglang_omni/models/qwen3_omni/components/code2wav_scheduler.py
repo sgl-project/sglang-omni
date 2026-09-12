@@ -17,6 +17,7 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
+from sglang_omni.models.qwen3_omni.apple_runtime import qwen3_omni_uses_mlx_backend
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
     Code2WavRunResult,
@@ -80,24 +81,43 @@ def load_code2wav_model(
     """Load Code2Wav model from HF checkpoint."""
     from transformers import AutoConfig
 
-    from sglang_omni.models.weight_loader import load_module, resolve_dtype
+    from sglang_omni.models.qwen3_omni.components.common import load_torch_component
+    from sglang_omni.models.weight_loader import (
+        resolve_dtype,
+        resolve_model_path,
+    )
 
     torch_dtype = resolve_dtype(dtype)
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     code2wav_config = config.code2wav_config
+    resolved_model_path = resolve_model_path(model_path)
+    component_path = resolved_model_path / "code2wav"
+    has_component_checkpoint = any(
+        path.is_file()
+        for path in (
+            component_path / "model.safetensors",
+            component_path / "model.safetensors.index.json",
+            component_path / "pytorch_model.bin",
+            component_path / "pytorch_model.bin.index.json",
+        )
+    )
+    weight_path = (
+        str(component_path) if has_component_checkpoint else str(resolved_model_path)
+    )
+    weight_prefix = "" if has_component_checkpoint else "code2wav."
 
     from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
         Qwen3OmniMoeCode2Wav,
     )
 
-    model = Qwen3OmniMoeCode2Wav._from_config(code2wav_config)
-    model = load_module(
-        model,
-        model_path,
-        prefix="code2wav.",
+    model = load_torch_component(
+        Qwen3OmniMoeCode2Wav,
+        code2wav_config,
+        weight_path,
+        prefix=weight_prefix,
         dtype=torch_dtype,
         device=device,
-        strict=False,
+        strict=has_component_checkpoint,
     )
     return model.eval()
 
@@ -148,9 +168,21 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         enable_output_overlap: bool = True,
         enable_cuda_graph: bool = False,
         _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
+        backend: str = "torch",
     ):
+        if backend not in ("torch", "mlx"):
+            raise ValueError(f"unsupported code2wav backend {backend!r}")
         self._model = model
+        self._backend = backend
         self._device = torch.device(device)
+        if self._backend == "mlx" or self._device.type == "mps":
+            # Note (Task 11): Apple exposes one Metal device with no CUDA
+            # events, pinned D2H buffers, or graph capture. Normalize here so
+            # direct construction (bypassing create_code2wav_scheduler) can
+            # never allocate any of that on MPS.
+            enable_output_overlap = False
+            enable_batching = False
+            enable_cuda_graph = False
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
         self._left_context_size = max(int(left_context_size), 0)
         self._codec_eos_token_id = codec_eos_token_id
@@ -232,7 +264,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
     ) -> torch.Tensor:
         del request_id, state
-        return codes.to(device=self._device, dtype=torch.long)
+        target = torch.device("cpu") if self._backend == "mlx" else self._device
+        return codes.to(device=target, dtype=torch.long)
 
     def ingest(
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
@@ -558,8 +591,27 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         *,
         graph_eligible: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
+        if self._backend == "mlx":
+            import mlx.core as mx
+
+            mlx_codes = mx.array(codes.detach().cpu().numpy()).astype(mx.int32)
+            mlx_wav = self._model(mlx_codes)
+            mx.eval(mlx_wav)
+            output = torch.from_numpy(
+                np.ascontiguousarray(np.asarray(mlx_wav.astype(mx.float32)))
+            )
+            return output, {
+                "execution_mode": "mlx_eager",
+                "graph_key": None,
+                "fallback_reason": None,
+            }
+
         with torch.no_grad():
-            if self._device.type != "cpu":
+            if self._device.type not in ("cpu", "mps"):
+                # Note (Task 11): CPU has no device module and Apple exposes a
+                # single Metal device with no CUDA-style "current device". Every
+                # other accelerator still needs its stage's device bound, or a
+                # forward placed on device 1 runs on the process default.
                 torch.get_device_module(self._device).set_device(self._device)
             if self._cuda_graph_runner is None:
                 result = Code2WavRunResult(
@@ -970,6 +1022,11 @@ def create_code2wav_scheduler(
     total_gpu_memory_fraction: float | None = None,
 ):
     """Factory: returns Code2WavScheduler."""
+    use_mlx = qwen3_omni_uses_mlx_backend()
+    if use_mlx:
+        enable_batching = False
+        enable_output_overlap = False
+        enable_cuda_graph = False
     from sglang_omni.utils.device import resolve_concrete_device
 
     if enable_cuda_graph and total_gpu_memory_fraction is None:
@@ -981,7 +1038,28 @@ def create_code2wav_scheduler(
     device = str(concrete_device)
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)
-    model = load_code2wav_model(model_path, device=device, dtype=dtype)
+    if enable_cuda_graph and concrete_device.type != "cuda":
+        # Note (Task 11): graph capture, its memory pool, and its replay buffers
+        # are CUDA-only. Gate here, before the build: leaving it to the
+        # scheduler's own normalization would already have captured graphs.
+        logger.info(
+            "Code2Wav CUDA graph requested on %s; graph capture is CUDA-only "
+            "and is disabled for this device",
+            device,
+        )
+        enable_cuda_graph = False
+    if use_mlx:
+        from sglang_omni.models.qwen3_omni.mlx.code2wav import (
+            load_qwen3_omni_mlx_code2wav,
+        )
+
+        model = load_qwen3_omni_mlx_code2wav(model_path)
+        backend = "mlx"
+        backend_marker = "Qwen3-Omni code2wav scheduler backend=native_mlx"
+    else:
+        model = load_code2wav_model(model_path, device=device, dtype=dtype)
+        backend = "torch"
+        backend_marker = "Qwen3-Omni code2wav scheduler backend=torch"
     cuda_graph_runner = None
     if enable_cuda_graph:
         if enable_batching:
@@ -1021,9 +1099,10 @@ def create_code2wav_scheduler(
                 separators=(",", ":"),
             ),
         )
-    return Code2WavScheduler(
+    scheduler = Code2WavScheduler(
         model,
         device=device,
+        backend=backend,
         stream_chunk_size=stream_chunk_size,
         left_context_size=left_context_size,
         enable_batching=enable_batching,
@@ -1035,3 +1114,5 @@ def create_code2wav_scheduler(
         enable_cuda_graph=enable_cuda_graph,
         _cuda_graph_runner=cuda_graph_runner,
     )
+    logger.info(backend_marker)
+    return scheduler

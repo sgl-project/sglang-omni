@@ -161,20 +161,14 @@ class MlxSchedulerModelRunner(ModelRunner):
         )
 
 
-def create_mlx_model_worker(
+def _create_qwen3_asr_mlx_worker(
     *,
     config: Any,
     server_args: Any,
     gpu_id: int,
     tp_rank: int = 0,
 ):
-    """Construct an MLX worker with the same scheduler-facing contract as Omni."""
-    if config.model_arch_override != "Qwen3ASRForConditionalGeneration":
-        raise NotImplementedError(
-            "Omni's MLX worker currently supports only "
-            "Qwen3ASRForConditionalGeneration"
-        )
-
+    """Construct the Qwen3-ASR MLX worker with Omni's scheduler contract."""
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
@@ -189,7 +183,6 @@ def create_mlx_model_worker(
         publish,
     )
     from sglang.srt.server_args import PortArgs
-
     from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
 
     class OmniQwen3ASRMlxWorker(MlxTpModelWorker):
@@ -280,4 +273,62 @@ def create_mlx_model_worker(
         gpu_id=gpu_id,
         ps=ps,
         nccl_port=nccl_port,
+    )
+
+
+def _create_qwen3_omni_mlx_worker(
+    *,
+    config: Any,
+    server_args: Any,
+    gpu_id: int,
+    tp_rank: int = 0,
+):
+    """Deferred entry point for the Qwen3-Omni MLX worker.
+
+    The Omni runner module subclasses this module's ``MlxSchedulerModelRunner``,
+    so the import must stay one-directional at module-import time.
+    """
+    from sglang_omni.models.qwen3_omni.mlx.runner import create_qwen3_omni_mlx_worker
+
+    return create_qwen3_omni_mlx_worker(
+        config=config,
+        server_args=server_args,
+        gpu_id=gpu_id,
+        tp_rank=tp_rank,
+    )
+
+
+# Architecture -> MLX worker factory. Each stage owns its own native runner, so
+# dispatch is a table rather than a chain of architecture conditionals.
+_MLX_WORKER_FACTORIES = {
+    "Qwen3ASRForConditionalGeneration": _create_qwen3_asr_mlx_worker,
+    "Qwen3OmniThinkerForCausalLM": _create_qwen3_omni_mlx_worker,
+    "Qwen3OmniTalker": _create_qwen3_omni_mlx_worker,
+}
+
+
+def create_mlx_model_worker(
+    *,
+    config: Any,
+    server_args: Any,
+    gpu_id: int,
+    tp_rank: int = 0,
+):
+    """Construct an MLX worker with the same scheduler-facing contract as Omni.
+
+    MLX was explicitly requested by the caller, so an unsupported architecture
+    or a failing MLX load is raised here and never silently retried on another
+    backend.
+    """
+    factory = _MLX_WORKER_FACTORIES.get(config.model_arch_override)
+    if factory is None:
+        raise NotImplementedError(
+            "Omni's MLX worker supports "
+            f"{sorted(_MLX_WORKER_FACTORIES)}; got {config.model_arch_override!r}"
+        )
+    return factory(
+        config=config,
+        server_args=server_args,
+        gpu_id=gpu_id,
+        tp_rank=tp_rank,
     )

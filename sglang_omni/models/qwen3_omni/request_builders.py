@@ -6,12 +6,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 import xxhash
 
-from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.payload_types import (
     Qwen3OmniPipelineState,
     ThinkerOutput,
@@ -39,6 +38,23 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 MAX_INT32_POSITIVE = 0x7FFFFFFF
 
 
+class TalkerPrefillBuilderProtocol(Protocol):
+    def build_prompt_prefill(
+        self,
+        payload: StagePayload,
+        thinker_chunks: list[Any],
+        *,
+        thinker_done: bool,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def append_text_chunk(self, req_data: Any, chunk: Any) -> None:
+        raise NotImplementedError
+
+    def mark_thinker_done(self, req_data: Any) -> None:
+        raise NotImplementedError
+
+
 def _resolve_seed(params: dict[str, Any]) -> int | None:
     """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
     for key in ("seed", "sampling_seed"):
@@ -46,6 +62,83 @@ def _resolve_seed(params: dict[str, Any]) -> int | None:
         if value is not None:
             return int(value)
     return None
+
+
+def _qwen3_omni_uses_apple_backend() -> bool:
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        qwen3_omni_uses_apple_backend,
+    )
+
+    return qwen3_omni_uses_apple_backend()
+
+
+def _validate_qwen3_omni_apple_request(
+    params: dict[str, Any],
+    *,
+    stage_name: str,
+) -> None:
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        validate_qwen3_omni_apple_request,
+    )
+
+    validate_qwen3_omni_apple_request(params, stage_name=stage_name)
+
+
+def _encoder_row_count(value: Any) -> int:
+    """Rows an encoder produced for one modality (``0`` when it produced none).
+
+    ``merge_for_thinker`` may hand a modality's rows over as one tensor or as a
+    sequence of chunks (the Torch MPS merge concatenates them), so both shapes
+    have to be counted the same way.
+    """
+
+    if value is None:
+        return 0
+    if isinstance(value, (list, tuple)):
+        return sum(int(part.shape[0]) for part in value)
+    return int(value.shape[0])
+
+
+def _validate_modality_placeholder_counts(
+    input_ids: torch.Tensor,
+    *,
+    thinker_config: Any,
+    model_inputs: dict[str, Any],
+    request_id: str,
+) -> None:
+    """Reject a request whose encoder rows cannot fill its placeholders.
+
+    Both Apple thinkers scatter encoder rows onto the *absolute* placeholder
+    positions recorded in ``req._omni_mm_positions``. Several separate runs of
+    one modality -- two images, two audio clips, or audio interleaved into a
+    video -- are therefore placed correctly and are accepted: the public API
+    takes a list for every modality and the chat template emits one placeholder
+    span per item.
+
+    What the runners cannot absorb is a *count* mismatch. A short row block
+    would leave placeholder positions holding their plain text embedding and a
+    long one would be silently truncated, so either is fatal here, before the
+    cache-key substitution rewrites the prompt.
+    """
+
+    if not _qwen3_omni_uses_apple_backend():
+        return
+    flattened = input_ids.reshape(-1)
+    for modality, embeds_key in (
+        ("image", "image_embeds"),
+        ("video", "video_embeds"),
+        ("audio", "audio_embeds"),
+    ):
+        token_id = int(getattr(thinker_config, f"{modality}_token_id"))
+        placeholders = int((flattened == token_id).sum())
+        rows = _encoder_row_count(model_inputs.get(embeds_key))
+        if rows == placeholders:
+            continue
+        raise ValueError(
+            f"Apple Qwen3-Omni {modality} rows for request {request_id!r} do not "
+            f"cover its placeholders: placeholders={placeholders} "
+            f"encoder rows={rows}"
+        )
 
 
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
@@ -587,6 +680,7 @@ def build_sglang_thinker_request(
     Constructs a SGLang Req with normalized SamplingParams, then wraps it
     in SGLangARRequestData (which inherits ARRequestData).
     """
+    _validate_qwen3_omni_apple_request(params, stage_name="thinker")
     from sglang.srt.managers.schedule_batch import MultimodalInputs, Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -595,11 +689,19 @@ def build_sglang_thinker_request(
     prompt = state.prompt
     input_ids = prompt["input_ids"]
     original_input_ids = input_ids
+    rid = request_id or "req-0"
 
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
     model_inputs = _extract_thinker_model_inputs(thinker_inputs)
+    if thinker_config is not None:
+        _validate_modality_placeholder_counts(
+            original_input_ids,
+            thinker_config=thinker_config,
+            model_inputs=model_inputs,
+            request_id=rid,
+        )
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     media_cache_keys = thinker_inputs.get("media_cache_keys", {})
     pad_values: dict[str, int] = {}
@@ -653,7 +755,6 @@ def build_sglang_thinker_request(
     sampling_params.verify(vocab_size)
 
     # Build SGLang Req
-    rid = request_id or "req-0"
     req = Req(
         rid=rid,
         origin_input_text="",
@@ -1029,8 +1130,7 @@ def make_talker_scheduler_adapters(
     *,
     tokenizer: Any,
     codec_vocab_size: int,
-    model: Any,
-    model_path: str,
+    prefill_builder: TalkerPrefillBuilderProtocol,
     thinker_config: Any,
     required_aux_hidden_key: int,
     codec_bos_id: int = 2149,
@@ -1053,42 +1153,31 @@ def make_talker_scheduler_adapters(
     speaker_map: dict[str, int] | None = None,
 ):
     """Build model-specific StagePayload <-> scheduler adapters for talker."""
-    prefill_builder = TalkerPrefillBuilder(
-        model=model,
-        model_path=model_path,
-        audio_token_id=audio_token_id,
-        image_token_id=image_token_id,
-        video_token_id=video_token_id,
-        tts_bos_token_id=tts_bos_token_id,
-        tts_eos_token_id=tts_eos_token_id,
-        tts_pad_token_id=tts_pad_token_id,
-        im_start_token_id=im_start_token_id,
-        im_end_token_id=im_end_token_id,
-        system_token_id=system_token_id,
-        user_token_id=user_token_id,
-        assistant_token_id=assistant_token_id,
-        codec_bos_id=codec_bos_id,
-        codec_nothink_id=codec_nothink_id,
-        codec_think_bos_id=codec_think_bos_id,
-        codec_think_eos_id=codec_think_eos_id,
-        codec_pad_id=codec_pad_id,
-        speaker_map=speaker_map,
-    )
 
     def _resolve_talker_sampling_config(params: dict[str, Any]) -> dict[str, Any]:
-        codec_eos_id = int(getattr(model.config, "codec_eos_token_id", -1))
+        apple_backend = _qwen3_omni_uses_apple_backend()
+        resolved_codec_eos_id = int(codec_eos_id) if codec_eos_id is not None else -1
         suppress_tokens = [
             token_id
             for token_id in range(max(codec_vocab_size - 1024, 0), codec_vocab_size)
-            if token_id != codec_eos_id
+            if token_id != resolved_codec_eos_id
         ]
         return {
             "max_new_tokens": int(params.get("talker_max_new_tokens", 4096)),
-            "temperature": float(params.get("talker_temperature", 0.9)),
-            "top_k": int(params.get("talker_top_k", 50)),
+            "temperature": float(
+                params.get("talker_temperature", 0.0 if apple_backend else 0.9)
+            ),
+            "top_k": int(params.get("talker_top_k", -1 if apple_backend else 50)),
             "top_p": float(params.get("talker_top_p", 1.0)),
-            "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
-            "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
+            "repetition_penalty": float(
+                params.get(
+                    "talker_repetition_penalty",
+                    1.0 if apple_backend else 1.05,
+                )
+            ),
+            "codec_eos_id": (
+                resolved_codec_eos_id if resolved_codec_eos_id >= 0 else None
+            ),
             "suppress_tokens": suppress_tokens,
             "seed": _resolve_seed(params),
         }
@@ -1126,7 +1215,7 @@ def make_talker_scheduler_adapters(
 def _build_talker_request_data(
     payload: StagePayload,
     *,
-    prefill_builder: TalkerPrefillBuilder,
+    prefill_builder: TalkerPrefillBuilderProtocol,
     tokenizer: Any,
     codec_vocab_size: int,
     codec_bos_id: int,
@@ -1137,6 +1226,7 @@ def _build_talker_request_data(
     resolve_sampling_config: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> SGLangARRequestData:
     params = payload.request.params
+    _validate_qwen3_omni_apple_request(params, stage_name="talker_ar")
     sampling_cfg = resolve_sampling_config(params)
     if sampling_cfg.get("seed") is None:
         sampling_cfg["seed"] = (

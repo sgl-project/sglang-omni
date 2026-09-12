@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any
+import importlib
+import logging
+import os
+import platform
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from ._common import (
     LauncherPreset,
@@ -18,6 +23,11 @@ from ._common import (
     set_stage_tp_size,
     validate_fraction,
 )
+
+if TYPE_CHECKING:
+    from sglang_omni.config import PipelineConfig
+
+logger = logging.getLogger(__name__)
 
 _TEXT_SERVER_DESCRIPTION = """Launch Qwen3-Omni with text-only OpenAI responses.
 
@@ -56,6 +66,22 @@ Examples:
 
   python examples/run_omni.py qwen3-speech \\
       --prompt "Read me a bedtime story." --output audio.wav
+"""
+
+_APPLE_CONFIGS = {
+    "mlx": Path(__file__).resolve().parents[1]
+    / "configs"
+    / "qwen3_omni_apple_mlx.yaml",
+    "mps": Path(__file__).resolve().parents[1]
+    / "configs"
+    / "qwen3_omni_apple_mps.yaml",
+}
+
+_APPLE_SERVER_DESCRIPTION = """Launch Qwen3-Omni on Apple Silicon.
+
+Uses the full multimodal speech pipeline by default. Add --text-only to omit
+the talker and code2wav stages. Backend selection is strict and never falls
+back between MLX and Torch MPS.
 """
 
 
@@ -207,6 +233,105 @@ def launch_qwen_text_server(args: argparse.Namespace) -> None:
         port=args.port,
         model_name=args.model_name,
         enable_realtime=args.enable_realtime,
+    )
+
+
+def _build_qwen_apple_server_parser() -> argparse.ArgumentParser:
+    target = parser(_APPLE_SERVER_DESCRIPTION)
+    target.add_argument("--backend", choices=("mlx", "mps"), required=True)
+    target.add_argument("--model-path", required=True)
+    target.add_argument("--text-only", action="store_true")
+    target.add_argument("--host", default="0.0.0.0")
+    target.add_argument("--port", type=int, default=8000)
+    target.add_argument("--model-name", default="qwen3-omni")
+    target.add_argument("--enable-realtime", action="store_true")
+    target.add_argument("--allowed-local-media-path")
+    target.add_argument("--allowed-media-domain", action="append", default=[])
+    return target
+
+
+def _validate_qwen_apple_host() -> None:
+    if platform.system() != "Darwin":
+        raise RuntimeError("qwen3-apple-server requires macOS (Darwin)")
+    if platform.machine() != "arm64":
+        raise RuntimeError("qwen3-apple-server requires Apple Silicon arm64")
+    import torch
+
+    if not torch.backends.mps.is_available():
+        raise RuntimeError(
+            "qwen3-apple-server requires torch.backends.mps.is_available()"
+        )
+
+
+def _select_qwen_apple_backend(backend: str) -> None:
+    if backend == "mlx":
+        os.environ["SGLANG_USE_MLX"] = "1"
+        try:
+            importlib.import_module("mlx.core")
+        except ImportError as exc:
+            raise RuntimeError(
+                "MLX backend requires the mlx package in this Python environment"
+            ) from exc
+        return
+    if backend == "mps":
+        os.environ.pop("SGLANG_USE_MLX", None)
+        return
+    raise ValueError(f"unknown Apple backend {backend!r}")
+
+
+def build_qwen_apple_server_config(args: argparse.Namespace) -> PipelineConfig:
+    model_path = Path(args.model_path).expanduser().resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Qwen3-Omni checkpoint does not exist: {model_path}")
+
+    _validate_qwen_apple_host()
+    _select_qwen_apple_backend(args.backend)
+
+    from sglang_omni.config.manager import ConfigManager
+    from sglang_omni.config.sources import patches_from_model_path_flag
+    from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
+
+    if args.text_only:
+        return Qwen3OmniPipelineConfig(model_path=str(model_path))
+
+    if args.backend == "mps":
+        logger.warning(
+            "Torch MPS speech uses a dense checkpoint, requires substantially "
+            "more unified memory, and is not production-qualified"
+        )
+    manager = ConfigManager.from_file(str(_APPLE_CONFIGS[args.backend]))
+    return manager.merge_config(
+        [],
+        extra_patches=patches_from_model_path_flag(
+            str(model_path),
+            manager.config,
+        ),
+    )
+
+
+def launch_qwen_apple_server(args: argparse.Namespace) -> None:
+    config = build_qwen_apple_server_config(args)
+    logger.info(
+        "Launching Qwen3-Omni Apple server: backend=%s mode=%s "
+        "model_path=%s profile=%s bind=%s:%d model_name=%s",
+        args.backend,
+        "text" if args.text_only else "speech",
+        config.model_path,
+        config.name,
+        args.host,
+        args.port,
+        args.model_name,
+    )
+    from sglang_omni.serve import launch_server
+
+    launch_server(
+        config,
+        host=args.host,
+        port=args.port,
+        model_name=args.model_name,
+        enable_realtime=args.enable_realtime,
+        allowed_local_media_path=args.allowed_local_media_path,
+        allowed_media_domains=args.allowed_media_domain or None,
     )
 
 
@@ -540,6 +665,12 @@ PRESETS = {
         "Qwen3-Omni speech server",
         _build_qwen_speech_server_parser,
         launch_qwen_speech_server,
+        spawn=True,
+    ),
+    "qwen3-apple-server": LauncherPreset(
+        "Qwen3-Omni Apple Silicon server",
+        _build_qwen_apple_server_parser,
+        launch_qwen_apple_server,
         spawn=True,
     ),
     "qwen3-speech": LauncherPreset(

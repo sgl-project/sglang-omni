@@ -31,6 +31,18 @@ class _FakeAudioEncoder:
         }
 
 
+class _DownsamplingFakeAudioEncoder:
+    def __call__(self, **kwargs: Any) -> dict[str, torch.Tensor]:
+        lengths = kwargs["audio_feature_lengths"].to(dtype=torch.long).view(-1)
+        output_lengths = (lengths + 7) // 8
+        total = int(output_lengths.sum().item())
+        return {
+            "audio_embeds": torch.arange(total, dtype=torch.float32).unsqueeze(1),
+            "audio_feature_lengths": lengths,
+            "audio_output_lengths": output_lengths,
+        }
+
+
 @pytest.mark.parametrize("raw", [None, "invalid", "-1"])
 def test_encoder_batch_wait_falls_back_to_zero(
     monkeypatch: pytest.MonkeyPatch, raw: str | None
@@ -87,6 +99,24 @@ def test_audio_encoder_batch_without_cache_keys_runs_every_request() -> None:
 
     assert model.calls == [2]
     assert len(out) == 2
+
+
+def test_audio_encoder_batch_slices_packed_tokens_by_output_length() -> None:
+    payloads = [_payload("short", "short-key", 9), _payload("long", "long-key", 25)]
+
+    out = _batch_audio_encoder_payloads(
+        payloads,
+        model=_DownsamplingFakeAudioEncoder(),
+        cache=None,
+    )
+
+    states = [Qwen3OmniPipelineState.from_dict(payload.data) for payload in out]
+    short = states[0].encoder_outs["audio_encoder"]
+    long = states[1].encoder_outs["audio_encoder"]
+    assert short["audio_output_lengths"].tolist() == [2]
+    assert long["audio_output_lengths"].tolist() == [4]
+    assert short["audio_embeds"].squeeze(1).tolist() == [0.0, 1.0]
+    assert long["audio_embeds"].squeeze(1).tolist() == [2.0, 3.0, 4.0, 5.0]
 
 
 def test_audio_encoder_cache_preserves_hits_in_mixed_batch():

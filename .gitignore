@@ -45,6 +45,7 @@ results/
 .tune-runs/
 .eval-runs/
 .profiling-runs/
+.worktrees/
 benchmarks/eval/*.edit.lock
 asr_seedtts_results.json
 .claude/*

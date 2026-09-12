@@ -14,8 +14,6 @@ import av
 import librosa
 import torch
 from qwen_vl_utils import vision_process as qwen_vision
-from torchvision.transforms import InterpolationMode
-from torchvision.transforms import functional as tv_f
 
 from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
@@ -308,7 +306,17 @@ def load_video_path(
     max_pixels: int | None = None,
     total_pixels: int | None = None,
 ) -> tuple[torch.Tensor, float]:
-    """Load a local video into a torch tensor (T, C, H, W) on CPU."""
+    """Load a local video into a torch tensor (T, C, H, W) on CPU.
+
+    Decoding, the per-frame pixel budget, and the resize are delegated to the
+    pinned ``qwen-vl-utils`` entry point rather than reimplemented here: the
+    reader results are 3-tuples in that release and the pixel-budget constants
+    this function used to read (``VIDEO_MIN_PIXELS``/``VIDEO_MAX_PIXELS``/
+    ``VIDEO_TOTAL_PIXELS``/``IMAGE_FACTOR``) no longer exist, so a private copy
+    of that arithmetic can only drift out of the dependency it is pinned to.
+    Every failure is still reported as :class:`VideoDecodeError`.
+    """
+
     path = Path(path)
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
@@ -321,58 +329,13 @@ def load_video_path(
         ele["max_pixels"] = int(max_pixels)
     if total_pixels is not None:
         ele["total_pixels"] = int(total_pixels)
-    backend = qwen_vision.get_video_reader_backend()
     try:
-        video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
-    except Exception as backend_exc:
-        if backend == "torchvision":
-            raise VideoDecodeError(
-                f"Failed to decode video path={path}; torchvision failed with "
-                f"{type(backend_exc).__name__}: {backend_exc}"
-            ) from backend_exc
-        logger.warning("Video reader %s failed, falling back to torchvision", backend)
-        try:
-            video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
-        except Exception as fallback_exc:
-            raise VideoDecodeError(
-                f"Failed to decode video path={path}; {backend} failed with "
-                f"{type(backend_exc).__name__}: {backend_exc}; "
-                f"torchvision failed with {type(fallback_exc).__name__}: "
-                f"{fallback_exc}"
-            ) from fallback_exc
-    nframes, _, height, width = video.shape
-    min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
-    total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
-    max_pixels = max(
-        min(
-            qwen_vision.VIDEO_MAX_PIXELS,
-            total_pixels / nframes * qwen_vision.FRAME_FACTOR,
-        ),
-        int(min_pixels * 1.05),
-    )
-    max_pixels_supposed = ele.get("max_pixels", max_pixels)
-    max_pixels = min(max_pixels_supposed, max_pixels)
-    if "resized_height" in ele and "resized_width" in ele:
-        resized_height, resized_width = qwen_vision.smart_resize(
-            ele["resized_height"],
-            ele["resized_width"],
-            factor=qwen_vision.IMAGE_FACTOR,
-        )
-    else:
-        resized_height, resized_width = qwen_vision.smart_resize(
-            height,
-            width,
-            factor=qwen_vision.IMAGE_FACTOR,
-            min_pixels=min_pixels,
-            max_pixels=max_pixels,
-        )
-    video = tv_f.resize(
-        video,
-        [resized_height, resized_width],
-        interpolation=InterpolationMode.BICUBIC,
-        antialias=True,
-    ).float()
-    return video, sample_fps
+        video, sample_fps = qwen_vision.fetch_video(ele, return_video_sample_fps=True)
+    except Exception as exc:
+        raise VideoDecodeError(
+            f"Failed to decode video path={path}; " f"{type(exc).__name__}: {exc}"
+        ) from exc
+    return video, float(sample_fps)
 
 
 def build_video_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
