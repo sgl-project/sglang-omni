@@ -133,9 +133,8 @@ probe found packed `uint32` weights alongside BF16 tensors.
 
 Startup and complete-request times have common external boundaries. The internal
 weight-loading logs do not: Torch/MPS's `Load weight end` precedes a further
-Hugging Face language-model replacement. Consequently, those diagnostic load
-values are retained in the downloadable record but are not compared as one
-weight-loading metric in the primary table.
+Hugging Face language-model replacement. Those diagnostic load values are
+therefore not compared as one weight-loading metric in the primary table.
 
 This was a working 8 GiB Mac with background applications and swap in use, not
 an otherwise idle machine. MLX auto-sized its KV pool using the available memory
