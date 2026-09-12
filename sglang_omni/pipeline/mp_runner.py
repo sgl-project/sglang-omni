@@ -144,11 +144,14 @@ def _build_stage_groups(
         # injects signature-dependent args after importing the factory it
         # must construct anyway.
         base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
+        if stage_cfg.runtime_gpu_ids is not None:
+            base_factory_kwargs["runtime_gpu_ids"] = list(gpu_ids)
         typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
             factory=stage_cfg.factory_path,
+            allow_child_processes=stage_cfg.allow_child_processes,
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
