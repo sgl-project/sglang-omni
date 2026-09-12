@@ -27,6 +27,7 @@ from typing import Any, cast
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
+from sglang.srt.utils import create_device_stream, device_stream_context
 
 from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
@@ -121,15 +122,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         self._device = reference.device
         self._dtype = reference.dtype
         self._hidden_size = _text_hidden_size(model)
-        # note (wangyao-i): the encoder must not submit on the generation's
-        # stream on Ascend. When it does, three host threads -- the encoder,
-        # the decode graph's `replay()` and its graph-update helper -- share
-        # one submission lane, and the device never completes the graph update
-        # task, which wedges the service. CUDA has always given the encoder its
-        # own stream, so this restores the same layout on NPU instead of adding
-        # a cross-thread lock.
+        # Keep encoder submissions off the generation lane on Ascend, where the
+        # decode graph replay and update threads can otherwise stall behind it.
         self._stream = (
-            torch.get_device_module(self._device).Stream(device=self._device)
+            create_device_stream(self._device)
             if self._device.type in {"cuda", "npu"}
             else None
         )
@@ -372,9 +368,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             # the consumer so the allocator cannot recycle the block for a
             # later batch while LM reads are still queued.
             device_module = torch.get_device_module(embedding.device)
-            record_stream = getattr(embedding, "record_stream", None)
-            if record_stream is not None:
-                record_stream(device_module.default_stream(embedding.device))
+            embedding.record_stream(device_module.default_stream(embedding.device))
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
@@ -418,7 +412,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             if self._stream is None:
                 yield
             else:
-                with torch.cuda.stream(self._stream):
+                with device_stream_context(self._stream):
                     yield
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
