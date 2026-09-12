@@ -31,6 +31,7 @@ from sglang_omni.models.auk.request_builders import (
     preprocess_auk_payload,
     set_auk_preprocessing_context,
 )
+from sglang_omni.models.auk.step_cuda_graph import build_step_graph_runner
 from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE
 from sglang_omni.models.auk.weight_loader import (
     load_dit_weights,
@@ -93,7 +94,9 @@ def _load_fusion(checkpoint: str, device: str):
 
 
 @lru_cache(maxsize=None)
-def _load_flow(checkpoint: str, device: str, backbone_dtype: torch.dtype):
+def _load_flow(
+    checkpoint: str, device: str, backbone_dtype: torch.dtype, compile_blocks: bool
+):
     config = make_runtime_config(checkpoint)
     layer_weights, _ = _load_fusion(checkpoint, device)
     dit_config = AuKDitConfig.from_dict(config.arch)
@@ -101,10 +104,34 @@ def _load_flow(checkpoint: str, device: str, backbone_dtype: torch.dtype):
     flow = AuKFlowMatching(dit, num_llm_layers=layer_weights.numel())
     load_dit_weights(flow, checkpoint)
     flow = flow.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
-    # Keyed by dtype: casting a cached backbone would retroactively change the
-    # recipe of every executor already built on it.
+    # Keyed by dtype and by the compile flag: both mutate the backbone, and a
+    # cached one would retroactively change every executor already built on it.
     flow.transformer.to(dtype=backbone_dtype)
+    if compile_blocks:
+        flow.transformer.enable_compiled_blocks()
     return flow
+
+
+def _warmup_flow(flow, device, dtype):
+    """Pay the block compile once at startup instead of on the first request.
+
+    The blocks compile for dynamic shapes, so a short trajectory pays most of
+    the cost; a later length can still trigger a smaller recompile.
+    """
+    frames, ref, text = 32, 16, 8
+    item = AuKSampleItem(
+        torch.zeros(text, flow.transformer.txt_proj.in_features, device=device),
+        torch.ones(text, dtype=torch.bool, device=device),
+        frames,
+        torch.zeros(ref, flow.transformer.latent_dim, device=device),
+        seed=0,
+        ref_length=ref,
+    )
+    started = time.perf_counter()
+    # Under inference_mode like the request path, so dynamo compiles once.
+    with torch.inference_mode(), _autocast(device, dtype):
+        flow.sample(item, steps=1, cfg_strength=C.DEFAULT_CFG_STRENGTH)
+    logger.info("AuK DiT: compiled the blocks in %.1fs", time.perf_counter() - started)
 
 
 def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
@@ -250,12 +277,17 @@ def create_auk_engine_executor(
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
     weight_dtype: str = "float32",
+    enable_dit_torch_compile: bool = False,
+    enable_dit_cuda_graph: bool = False,
 ) -> SimpleScheduler:
     """Build the DiT sampling stage.
 
     ``weight_dtype="float32"`` keeps fp32 weights under ``dtype`` autocast, the
     upstream-exact recipe; ``"bfloat16"`` stores the backbone in bf16 and skips
-    autocast (see docs/cookbook/auk.md, Sampling).
+    autocast. ``enable_dit_torch_compile`` fuses each block's elementwise chain,
+    and ``enable_dit_cuda_graph`` replays a whole Euler step from one captured
+    graph, padding the batch to shape buckets to do so (see
+    docs/cookbook/auk.md, Sampling).
     """
     # Named dtypes are checked before resolve_checkpoint, which downloads.
     compute_dtype = _resolve_dtype(field="dtype", name=dtype)
@@ -266,13 +298,24 @@ def create_auk_engine_executor(
     # A non-fp32 backbone runs natively, and _autocast reads fp32 as "off":
     # autocast would only re-cast per op and force the norms back to fp32.
     autocast_dtype = compute_dtype if backbone_dtype == torch.float32 else torch.float32
-    flow = _load_flow(checkpoint, str(device), backbone_dtype)
+    flow = _load_flow(checkpoint, str(device), backbone_dtype, enable_dit_torch_compile)
     sampling = dict(
         steps=C.FLASH_NFE if config.is_flash else nfe,
         cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
     )
+    if enable_dit_torch_compile:
+        _warmup_flow(flow, device, autocast_dtype)
+    if enable_dit_cuda_graph:
+        if not flow.transformer.attn_mask_enabled:
+            raise ValueError(
+                "AuK enable_dit_cuda_graph needs attn_mask_enabled: without the "
+                "attention bias, padded rows would reach the valid ones"
+            )
+        step_graph = build_step_graph_runner(device)
+        if step_graph is not None:
+            sampling["step_graph"] = step_graph
     return _scheduler(
         lambda payloads: _sample_batch(
             payloads,
