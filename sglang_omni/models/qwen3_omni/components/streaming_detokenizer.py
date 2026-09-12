@@ -129,9 +129,9 @@ class StreamingDetokenizeScheduler:
         s.pending_tokens.append(token_id)
 
         candidate = self._tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
-        # Incomplete multi-byte UTF-8 surfaces as U+FFFD; hold pending
-        # until the next token completes the byte sequence.
-        if "�" in candidate:
+        # Hold an incomplete UTF-8 suffix, but allow a literal replacement
+        # character earlier in the text to stream once the suffix is complete.
+        if candidate.endswith("�"):
             return
 
         s.pending_tokens.clear()
