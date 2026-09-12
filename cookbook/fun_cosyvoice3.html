@@ -790,16 +790,13 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="si">${</span><
 <h2>Serving Optimization<a class="headerlink" href="#serving-optimization" title="Link to this heading">#</a></h2>
 <section id="flow-decoder-batching">
 <h3>Flow Decoder Batching<a class="headerlink" href="#flow-decoder-batching" title="Link to this heading">#</a></h3>
-<p>The buffered vocoder batches requests through a two-stage pipeline. The scheduler collects up to 16 requests over at most 30 ms, then groups them by mel length in 50-frame buckets. Each bucket, including single-request buckets, invokes <code class="docutils literal notranslate"><span class="pre">Flow.inference()</span></code> once, where padding, masking, and CFM decoding are handled internally. To prevent long requests from blocking later ones, a bucket-rounded admission budget (<code class="docutils literal notranslate"><span class="pre">flow_batch_admission_frames</span></code>, default 8000 frames) controls batch assembly; requests exceeding this budget run as independent <code class="docutils literal notranslate"><span class="pre">B=1</span></code> batches.</p>
-<p>HiFT vocoding follows the same batching pattern. Mels from a Flow bucket are right-zero-padded into a single tensor, decoded in one HiFT call, and sliced back to each request’s true length. The padding budget (<code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>, default 1.5) limits wasted computation; since right-padding matches HiFT’s single-request behavior, batched output is equivalent to individual inference except on padded frames. This design trades off throughput against latency while maintaining output correctness.</p>
-<p>Change the mel-frame bucket size, for example to 100 frames:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--vocoder.factory.flow_batch_bucket_frames<span class="w"> </span><span class="m">100</span>
+<p>For complete buffered requests, scheduler admission uses exact mel frames (<code class="docutils literal notranslate"><span class="pre">flow_batch_admission_frames</span></code>, default <code class="docutils literal notranslate"><span class="pre">8000</span></code>). Adaptive Flow grouping is enabled by default: it sorts admitted requests by total mel length and lets adjacent requests share one Flow solve when the maximum within-group length gap and global added-padding budget stay within:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>flow_merge_max_gap_frames = 384
+flow_merge_pad_budget_percent = 25
 </pre></div>
 </div>
-<p>This would increase the throughput at the cost of latency and higher peak GPU memory. Increase the normal Flow batching budget only after measuring the target GPU.</p>
+<p>HiFT grouping is independent and applies its existing <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code> policy to the produced mels. Causal streaming uses a separate Flow + HiFT path.</p>
+<p>Increase the normal Flow batching budget only after measuring the target GPU.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
@@ -1026,8 +1023,7 @@ where <code class="docutils literal notranslate"><span class="pre">prompt_pad</s
 multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
 <code class="docutils literal notranslate"><span class="pre">CosyVoice3Model</span></code> (default; keep growth on). Each scheduler step runs at most
 one hop per request so a backlogged stream cannot monopolize the GPU.
-Non-streaming requests still decode the whole utterance in one Flow + HiFT
-pass.</p>
+Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.</p>
 <p>Optional serving knobs (vocoder factory; keep <code class="docutils literal notranslate"><span class="pre">tts_engine.factory.token_hop_len</span></code>
 in sync if you change the hop):</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1190,7 +1186,7 @@ in sync if you change the hop):</p>
 <li><p><strong>Speed control.</strong> Applied once, on the decoded waveform, by the shared <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> response-encoding path.</p></li>
 <li><p><strong>Voice conversion.</strong> Voice conversion is outside the current zero-shot TTS scope.</p></li>
 <li><p><strong>Streaming decode.</strong> Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (<code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>) also accelerates streaming hops; do not enable it together with <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice’s raw TRT enqueue is incompatible with packed hop-batch CFG shapes.</p></li>
-<li><p><strong>Flow batch scope.</strong> Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. HiFT batches only the mels produced by one Flow bucket while padding waste stays within <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>. Streaming coalesces first/follow-up hops across requests (<code class="docutils literal notranslate"><span class="pre">_can_batch_stream_chunks</span></code>, short peer wait) so TTFP stays low under load.</p></li>
+<li><p><strong>Flow batch scope.</strong> Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. Buffered HiFT grouping is independent and uses <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>. Streaming coalesces first/follow-up hops across requests (<code class="docutils literal notranslate"><span class="pre">_can_batch_stream_chunks</span></code>, short peer wait) so TTFP stays low under load.</p></li>
 <li><p><strong>cosyvoice dependency.</strong> The <code class="docutils literal notranslate"><span class="pre">cosyvoice</span></code> package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.</p></li>
 </ul>
 </section>
