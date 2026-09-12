@@ -12,6 +12,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import (
+    Modality,
+    MultimodalDataItem,
+    MultimodalInputFormat,
+)
 
 from sglang_omni.models.fun_asr import encoder_service
 from sglang_omni.models.fun_asr.encoder_service import (
@@ -95,13 +100,15 @@ def _item(
     num_audio_tokens: int,
     *,
     with_feature: bool = True,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> MultimodalDataItem:
+    return MultimodalDataItem(
+        modality=Modality.AUDIO,
         hash=audio_hash,
-        audio_fingerprint=str(audio_hash) if audio_hash is not None else None,
-        num_audio_tokens=num_audio_tokens,
         feature=torch.zeros(1, 560, 8) if with_feature else None,
-        precomputed_embeddings=None,
+        model_specific_data={
+            "audio_fingerprint": str(audio_hash) if audio_hash is not None else None,
+            "num_audio_tokens": num_audio_tokens,
+        },
     )
 
 
@@ -207,7 +214,7 @@ def test_concurrent_identical_requests_encode_once() -> None:
     items = [_item(123, 3) for _ in range(n_threads)]
     errors: list[BaseException] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             barrier.wait(timeout=10)
             service.encode_item(item)
@@ -286,7 +293,7 @@ def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
     items = [_item(123, 3) for _ in range(2)]
     errors: list[BaseException] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             barrier.wait(timeout=10)
             service.encode_item(item)
@@ -369,7 +376,7 @@ def test_execute_batch_commits_item_state_only_after_stream_success(
     for item, feature in zip(items, features):
         assert item.feature is feature
         assert item.precomputed_embeddings is None
-        assert not hasattr(item, "format")
+        assert item.format == MultimodalInputFormat.NORMAL
 
 
 def test_singleton_oom_is_not_retried_and_next_request_succeeds(
@@ -565,7 +572,7 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     items = [_item(31, 3), _item(32, 3), _item(33, 4)]
     errors: list[BaseException] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             service.encode_item(item)
         except BaseException as exc:  # noqa: BLE001
@@ -690,7 +697,7 @@ def test_token_count_mismatch_fails_loudly() -> None:
 
 def test_missing_token_count_raises() -> None:
     service = _make_service()
-    item = SimpleNamespace(hash=1, feature=None, precomputed_embeddings=None)
+    item = MultimodalDataItem(modality=Modality.AUDIO, hash=1)
 
     with pytest.raises(RuntimeError, match="num_audio_tokens"):
         service.encode_item(item)
@@ -714,9 +721,13 @@ def test_item_without_fingerprint_encodes_without_caching() -> None:
 
 
 def test_expected_audio_tokens_uses_request_metadata() -> None:
-    explicit = SimpleNamespace(num_audio_tokens=5, feature=torch.zeros(1, 560, 17))
+    explicit = MultimodalDataItem(
+        modality=Modality.AUDIO,
+        feature=torch.zeros(1, 560, 17),
+        model_specific_data={"num_audio_tokens": 5},
+    )
     assert _expected_audio_tokens(explicit) == 5
-    assert _expected_audio_tokens(SimpleNamespace()) is None
+    assert _expected_audio_tokens(MultimodalDataItem(modality=Modality.AUDIO)) is None
 
 
 def test_build_cache_namespace_is_stable_and_scoped() -> None:

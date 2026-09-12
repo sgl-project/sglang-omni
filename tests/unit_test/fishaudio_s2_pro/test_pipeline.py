@@ -12,6 +12,8 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
+from sglang.srt.runtime_context import get_context, get_exec, publish
 
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
@@ -36,6 +38,7 @@ from tests.unit_test.fixtures.fish_fakes import (
     make_s2pro_payload,
     make_s2pro_state,
 )
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
@@ -48,6 +51,25 @@ def fast_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "sglang.srt.sampling.sampling_params.SamplingParams.verify",
         lambda self, vocab_size: None,
+    )
+
+
+@pytest.fixture(autouse=True)
+def cuda_platform_for_engine_builder_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the engine-builder platform to non-NPU for SM-validated CUDA tests.
+
+    On Ascend hosts torch.npu is available, so current_platform resolves to
+    NPU and these CUDA SM-scope tests would route into the NPU branch instead
+    of the SM-validated path they assert on.
+    """
+    from sglang_omni.models.fishaudio_s2_pro import engine_builder as fish_engine
+
+    monkeypatch.setattr(
+        fish_engine,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: False),
     )
 
 
@@ -434,6 +456,117 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
     assert result_payload.data["output_codes"] == [[100], [1], [2]]
 
 
+class _RecordingFishTokenizer(FakeFishTokenizer):
+    vocab_size = 512
+
+    def __init__(self) -> None:
+        super().__init__()
+        del self.additional_stop_token_ids
+        self.metadata_calls: list[str] = []
+        self.added_vocab = {"<|semantic:4095|>": 639}
+        self.im_end_lookups = 0
+
+    def convert_tokens_to_ids(self, token):
+        if token == IM_END_TOKEN:
+            self.im_end_lookups += 1
+        return super().convert_tokens_to_ids(token)
+
+    def get_added_vocab(self) -> dict[str, int]:
+        self.metadata_calls.append("get_added_vocab")
+        return dict(self.added_vocab)
+
+    def __len__(self) -> int:
+        self.metadata_calls.append("len")
+        return 640
+
+
+def _attach_recording_stop_token_ids(tokenizer: _RecordingFishTokenizer) -> None:
+    tokenizer.additional_stop_token_ids = list(tokenizer.get_added_vocab().values())
+
+
+def test_fish_scheduler_resolves_tokenizer_invariants_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    request_builder, _, _ = make_tts_scheduler_adapters(tokenizer=tokenizer)
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.im_end_lookups == 1
+    first = request_builder(make_s2pro_payload(request_id="req-1"))
+    second = request_builder(make_s2pro_payload(request_id="req-2"))
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.im_end_lookups == 1
+    assert tokenizer.added_vocab == original_added_vocab
+    assert first.req.vocab_size == second.req.vocab_size == 640
+    assert first.req.eos_token_ids == second.req.eos_token_ids == {99}
+    assert first.req.sampling_params.stop_token_ids == {99}
+    assert second.req.sampling_params.stop_token_ids == {99}
+
+
+def test_fish_direct_builder_resolves_tokenizer_invariants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(), tokenizer, request_id="direct"
+    )
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.added_vocab == original_added_vocab
+    assert req_data.req.vocab_size == 640
+    assert req_data.req.eos_token_ids == {99}
+
+
+def test_fish_scheduler_reuses_caller_supplied_im_end_token_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+
+    request_builder, _, _ = make_tts_scheduler_adapters(
+        tokenizer=tokenizer, im_end_token_id=np.int64(99)
+    )
+
+    # The engine builder already owns an S2ProTokenizerAdapter, so no second
+    # adapter (and no extra <|im_end|> lookup) is built here.
+    assert tokenizer.im_end_lookups == 0
+    req_data = request_builder(make_s2pro_payload(request_id="req-1"))
+    assert tokenizer.im_end_lookups == 0
+    assert req_data.req.eos_token_ids == {99}
+    assert all(type(token_id) is int for token_id in req_data.req.eos_token_ids)
+    assert req_data.req.sampling_params.stop_token_ids == {99}
+
+
+def test_fish_direct_builder_normalizes_explicit_tokenizer_invariants() -> None:
+    tokenizer = FakeFishTokenizer()
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(),
+        tokenizer,
+        request_id="explicit",
+        im_end_token_id=np.int64(99),
+        vocab_size=np.int64(640),
+    )
+
+    assert type(req_data.req.vocab_size) is int
+    assert all(type(token_id) is int for token_id in req_data.req.eos_token_ids)
+
+
 @pytest.mark.parametrize("top_k", [0, 31])
 def test_fish_tts_rejects_top_k_outside_graph_width(top_k: int) -> None:
     tokenizer = FakeFishTokenizer()
@@ -552,6 +685,12 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
 
     monkeypatch.setattr(torch, "compile", fake_compile)
     monkeypatch.setenv("SGLANG_TORCH_COMPILE_MODE", "reduce-overhead")
+    warmup_calls: list[tuple[object, int]] = []
+    monkeypatch.setattr(
+        stages,
+        "_warmup_s2pro_codebook_decoder",
+        lambda model, *, max_batch_size: warmup_calls.append((model, max_batch_size)),
+    )
 
     class _Layer:
         def forward_kvcached(
@@ -587,14 +726,152 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     assert getattr(target, "__self__", None) is audio_decoder.layers[0]
     assert getattr(target, "__name__", "") == "forward_kvcached"
     assert mode == "reduce-overhead"
-    assert kwargs == {}
+    assert kwargs == {"dynamic": True}
     assert audio_decoder._compiled_forward_kvcached_layers == ["compiled-1"]
     assert audio_decoder._compiled_forward_kvcached_max_bs == 2
+    assert warmup_calls == [(model, 2)]
+
+
+def test_s2pro_compile_warmup_covers_batches_codebooks_and_resets() -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.embeddings = torch.nn.Embedding(32, 4, dtype=torch.bfloat16)
+            self.project_in = torch.nn.Identity()
+            self.config = SimpleNamespace(num_codebooks=10)
+            self.calls: list[tuple[int, int, torch.dtype, torch.device]] = []
+            self.reset_calls = 0
+
+        def reset_caches(self) -> None:
+            self.reset_calls += 1
+
+        def forward_kvcached(
+            self, decoder_input: torch.Tensor, *, codebook_idx: int
+        ) -> torch.Tensor:
+            self.calls.append(
+                (
+                    int(decoder_input.shape[0]),
+                    codebook_idx,
+                    decoder_input.dtype,
+                    decoder_input.device,
+                )
+            )
+            return decoder_input
+
+    audio_decoder = _AudioDecoder()
+    model = SimpleNamespace(_audio_decoder=audio_decoder)
+
+    stages._warmup_s2pro_codebook_decoder(model, max_batch_size=20)
+
+    expected = [
+        (batch_size, codebook_idx)
+        for _ in range(2)
+        for batch_size in (1, 2, 4, 8, 16, 20)
+        for codebook_idx in range(10)
+    ]
+    assert [
+        (batch_size, codebook_idx)
+        for batch_size, codebook_idx, _, _ in audio_decoder.calls
+    ] == expected
+    assert all(dtype is torch.bfloat16 for _, _, dtype, _ in audio_decoder.calls)
+    assert all(
+        device == audio_decoder.embeddings.weight.device
+        for _, _, _, device in audio_decoder.calls
+    )
+    assert audio_decoder.reset_calls == 2
+
+
+def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
+
+    fake_runner = ModuleType("sglang.srt.compilation.torch_compile_decoration")
+    fake_runner.set_torch_compile_config = lambda: None
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.compilation.torch_compile_decoration",
+        fake_runner,
+    )
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda target, **kwargs: target,
+    )
+
+    class _Layer:
+        def forward_kvcached(self, x: torch.Tensor) -> torch.Tensor:
+            return x
+
+    class _AudioDecoder:
+        def __init__(self) -> None:
+            self.layers = [_Layer()]
+            self.embeddings = torch.nn.Embedding(32, 4)
+            self.config = SimpleNamespace(num_codebooks=10)
+            self._eager_forward_kvcached_layers = ["eager"]
+            self._compiled_forward_kvcached_layers = None
+            self._compiled_forward_kvcached_max_bs = 0
+            self.reset_calls = 0
+
+        def set_compiled_forward_kvcached_layers(
+            self,
+            forward_kvcached_layers: list[object],
+            *,
+            max_batch_size: int,
+        ) -> None:
+            self._compiled_forward_kvcached_layers = forward_kvcached_layers
+            self._compiled_forward_kvcached_max_bs = max_batch_size
+
+        def reset_caches(self) -> None:
+            self.reset_calls += 1
+
+        def forward_kvcached(
+            self, decoder_input: torch.Tensor, *, codebook_idx: int
+        ) -> torch.Tensor:
+            del decoder_input, codebook_idx
+            raise RuntimeError("injected warmup failure")
+
+        def select_forward_kvcached_layers(self) -> list[object]:
+            return (
+                self._compiled_forward_kvcached_layers
+                if self._compiled_forward_kvcached_layers is not None
+                else self._eager_forward_kvcached_layers
+            )
+
+    audio_decoder = _AudioDecoder()
+    stages._compile_s2pro_codebook_decoder(
+        SimpleNamespace(_audio_decoder=audio_decoder),
+        max_batch_size=8,
+    )
+
+    assert audio_decoder._compiled_forward_kvcached_layers is None
+    assert audio_decoder._compiled_forward_kvcached_max_bs == 0
+    assert audio_decoder.select_forward_kvcached_layers() == ["eager"]
+    assert audio_decoder.reset_calls == 3
+
+
+@pytest.fixture
+def run_s2pro_engine(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    """The engine build with fakes around a real, resolved and published record."""
+    checkpoint = write_mini_llama_checkpoint(tmp_path)
+    published: list = []
+
+    def run(**kwargs):
+        return _run_s2pro_engine_with_fake_buffers(
+            monkeypatch, checkpoint=checkpoint, published=published, **kwargs
+        )
+
+    yield run
+    while published:
+        published.pop().restore()
 
 
 def _run_s2pro_engine_with_fake_buffers(
     monkeypatch: pytest.MonkeyPatch,
     *,
+    checkpoint: str,
+    published: list,
     text_buffer_bs: int = 64,
     audio_buffer_bs: int = 64,
     sm_version: int | None = 90,
@@ -606,9 +883,11 @@ def _run_s2pro_engine_with_fake_buffers(
     from sglang_omni.models.fishaudio_s2_pro import (
         engine_builder as fish_engine_builder,
     )
+    from sglang_omni.platforms import current_platform
     from sglang_omni.scheduling import bootstrap as scheduler_bootstrap
     from sglang_omni.scheduling import engine_factory, sglang_backend
 
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
     monkeypatch.setattr(
         fish_engine_builder,
         "get_visible_gpu_sm_version",
@@ -621,7 +900,7 @@ def _run_s2pro_engine_with_fake_buffers(
         raising=False,
     )
     monkeypatch.setattr(
-        engine_factory, "_resolve_checkpoint", lambda model_path: model_path
+        engine_factory, "_resolve_checkpoint", lambda model_path: checkpoint
     )
 
     build_kwargs: dict[str, object] = {}
@@ -635,8 +914,8 @@ def _run_s2pro_engine_with_fake_buffers(
             self.model = SimpleNamespace()
 
         def init_cuda_graphs(self) -> None:
-            assert self.server_args.enable_torch_compile is False
-            assert self.server_args.torch_compile_max_bs == 64
+            assert get_exec().graph.enable_torch_compile is False
+            assert get_exec().graph.torch_compile_max_bs == 64
             init_graph_calls.append(True)
 
     class _FakeWorker:
@@ -670,44 +949,34 @@ def _run_s2pro_engine_with_fake_buffers(
         fake_bootstrap_text_model_for_decode,
     )
 
-    def fake_build_sglang_server_args(
+    real_build_sglang_server_args = sglang_backend.build_sglang_server_args
+
+    def recording_build_sglang_server_args(
         model_path: str,
         context_length: int,
         **kwargs: object,
-    ) -> SimpleNamespace:
-        del model_path
+    ):
         build_kwargs.update(kwargs)
-        return SimpleNamespace(
-            context_length=context_length,
-            cuda_graph_bs=kwargs["cuda_graph_bs"],
-            cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
-            cuda_graph_config=SimpleNamespace(
-                decode=SimpleNamespace(
-                    max_bs=kwargs["cuda_graph_max_bs"],
-                    bs=kwargs["cuda_graph_bs"],
-                ),
-                prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
-            ),
-            disable_cuda_graph=kwargs["disable_cuda_graph"],
-            enable_torch_compile=kwargs["enable_torch_compile"],
-            torch_compile_max_bs=kwargs["torch_compile_max_bs"],
-            max_running_requests=kwargs["max_running_requests"],
-            page_size=1,
-            chunked_prefill_size=kwargs["chunked_prefill_size"],
-            max_prefill_tokens=16384,
-            attention_backend=kwargs.get("attention_backend", "auto-resolved"),
-        )
+        return real_build_sglang_server_args(model_path, context_length, **kwargs)
 
     def fake_create_sglang_infrastructure(
-        server_args: SimpleNamespace,
+        server_args,
         gpu_id: int,
         *,
         defer_cuda_graph_capture: bool = False,
+        before_memory_pool=None,
     ) -> tuple[object, object, object, object, object]:
         assert gpu_id == 0
         infrastructure_saw_deferred_capture.append(defer_cuda_graph_capture)
+        slot = get_context().override_server_args()
+        slot.install()
+        published.append(slot)
+        publish(server_args, role="scheduler")
+        worker = _FakeWorker(server_args)
+        if before_memory_pool is not None:
+            before_memory_pool(worker)
         return (
-            _FakeWorker(server_args),
+            worker,
             object(),
             object(),
             object(),
@@ -721,12 +990,16 @@ def _run_s2pro_engine_with_fake_buffers(
     )
 
     def fake_create_sglang_infrastructure_defer_cuda_graph(
-        server_args: SimpleNamespace,
+        server_args,
         gpu_id: int,
+        **kwargs,
     ) -> tuple[bool, tuple[object, object, object, object, object]]:
-        want_cuda_graph = not bool(server_args.disable_cuda_graph)
+        want_cuda_graph = not bool(resolution_result(server_args, "disable_cuda_graph"))
         infrastructure = fake_create_sglang_infrastructure(
-            server_args, gpu_id, defer_cuda_graph_capture=want_cuda_graph
+            server_args,
+            gpu_id,
+            defer_cuda_graph_capture=want_cuda_graph,
+            **kwargs,
         )
         return want_cuda_graph, infrastructure
 
@@ -739,7 +1012,7 @@ def _run_s2pro_engine_with_fake_buffers(
     monkeypatch.setattr(
         sglang_backend,
         "build_sglang_server_args",
-        fake_build_sglang_server_args,
+        recording_build_sglang_server_args,
     )
     monkeypatch.setattr(
         sglang_backend,
@@ -773,7 +1046,8 @@ def _run_s2pro_engine_with_fake_buffers(
 
     scheduler = stages.create_sglang_tts_engine_executor(
         "model",
-        device="cuda:0",
+        device="cuda",
+        gpu_id=0,
         server_args_overrides=server_args_overrides,
     )
     return SimpleNamespace(
@@ -786,9 +1060,9 @@ def _run_s2pro_engine_with_fake_buffers(
 
 
 def test_s2pro_engine_disables_generic_compile_after_local_compile(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
 ) -> None:
-    result = _run_s2pro_engine_with_fake_buffers(monkeypatch)
+    result = run_s2pro_engine()
     scheduler = result.scheduler
     build_kwargs = result.build_kwargs
 
@@ -819,10 +1093,11 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
         (scheduler.model_runner.args[0].model_runner.model, 64)
     ]
     assert result.init_graph_calls == [True]
-    assert scheduler.server_args.disable_cuda_graph is False
-    assert scheduler.server_args.enable_torch_compile is False
-    assert scheduler.server_args.cuda_graph_max_bs == 64
-    assert scheduler.server_args.cuda_graph_bs == [
+    graph = get_exec().graph
+    assert graph.disable_cuda_graph is False
+    assert graph.enable_torch_compile is False
+    assert graph.cuda_graph_config.decode.max_bs == 64
+    assert graph.cuda_graph_config.decode.bs == [
         1,
         2,
         4,
@@ -836,7 +1111,7 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
         56,
         64,
     ]
-    assert scheduler.server_args.torch_compile_max_bs == 64
+    assert graph.torch_compile_max_bs == 64
 
 
 @pytest.mark.parametrize(
@@ -849,29 +1124,32 @@ def test_s2pro_engine_disables_generic_compile_after_local_compile(
     ],
 )
 def test_s2pro_engine_selects_model_local_attention_backend(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
     sm_version: int | None,
     expected_backend: str,
 ) -> None:
-    result = _run_s2pro_engine_with_fake_buffers(
-        monkeypatch,
+    result = run_s2pro_engine(
         sm_version=sm_version,
     )
 
-    assert result.scheduler.server_args.attention_backend == expected_backend
+    assert (
+        resolution_result(result.scheduler.server_args, "attention_backend")
+        == expected_backend
+    )
 
 
 def test_s2pro_engine_preserves_explicit_attention_backend(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
 ) -> None:
-    result = _run_s2pro_engine_with_fake_buffers(
-        monkeypatch,
+    result = run_s2pro_engine(
         sm_version=89,
         flashinfer_available=True,
         server_args_overrides={"attention_backend": "triton"},
     )
 
-    assert result.scheduler.server_args.attention_backend == "triton"
+    assert (
+        resolution_result(result.scheduler.server_args, "attention_backend") == "triton"
+    )
 
 
 @pytest.mark.parametrize(
@@ -883,27 +1161,25 @@ def test_s2pro_engine_preserves_explicit_attention_backend(
     ],
 )
 def test_s2pro_engine_rejects_explicit_override_on_unvalidated_fast_ar_architecture(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
     sm_version: int | None,
     expected_error: str,
 ) -> None:
     with pytest.raises(RuntimeError, match=expected_error):
-        _run_s2pro_engine_with_fake_buffers(
-            monkeypatch,
+        run_s2pro_engine(
             sm_version=sm_version,
             server_args_overrides={"attention_backend": "fa3"},
         )
 
 
 def test_s2pro_engine_rejects_explicit_override_without_fast_ar_flashinfer(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
 ) -> None:
     with pytest.raises(
         RuntimeError,
         match="Fast-AR requires FlashInfer.*SGLANG_IS_FLASHINFER_AVAILABLE",
     ):
-        _run_s2pro_engine_with_fake_buffers(
-            monkeypatch,
+        run_s2pro_engine(
             sm_version=89,
             flashinfer_available=False,
             server_args_overrides={"attention_backend": "fa3"},
@@ -915,12 +1191,11 @@ def test_s2pro_engine_rejects_explicit_override_without_fast_ar_flashinfer(
     [(89, False), (90, True), (100, False), (120, False)],
 )
 def test_s2pro_engine_compile_default_follows_validation_scope(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
     sm_version: int,
     expected_compile: bool,
 ) -> None:
-    result = _run_s2pro_engine_with_fake_buffers(
-        monkeypatch,
+    result = run_s2pro_engine(
         sm_version=sm_version,
     )
 
@@ -943,27 +1218,26 @@ def test_s2pro_engine_compile_default_follows_validation_scope(
     ],
 )
 def test_s2pro_engine_rejects_unvalidated_automatic_backend_selection(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
     sm_version: int | None,
     expected_error: str,
 ) -> None:
     with pytest.raises(RuntimeError, match=expected_error):
-        _run_s2pro_engine_with_fake_buffers(
-            monkeypatch,
+        run_s2pro_engine(
             sm_version=sm_version,
         )
 
 
 def test_s2pro_engine_rejects_flashinfer_disabled_by_environment(
     monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
 ) -> None:
     monkeypatch.setenv("SGLANG_IS_FLASHINFER_AVAILABLE", "false")
     with pytest.raises(
         RuntimeError,
         match="FlashInfer is unavailable.*SGLANG_IS_FLASHINFER_AVAILABLE",
     ):
-        _run_s2pro_engine_with_fake_buffers(
-            monkeypatch,
+        run_s2pro_engine(
             sm_version=89,
             flashinfer_available=False,
         )
@@ -977,7 +1251,7 @@ def test_s2pro_engine_rejects_flashinfer_disabled_by_environment(
     ],
 )
 def test_s2pro_engine_validates_allocated_decode_buffers(
-    monkeypatch: pytest.MonkeyPatch,
+    run_s2pro_engine,
     text_buffer_bs: int,
     audio_buffer_bs: int,
 ) -> None:
@@ -985,8 +1259,7 @@ def test_s2pro_engine_validates_allocated_decode_buffers(
         ValueError,
         match="model_buffer_bs must cover max_running_requests",
     ):
-        _run_s2pro_engine_with_fake_buffers(
-            monkeypatch,
+        run_s2pro_engine(
             text_buffer_bs=text_buffer_bs,
             audio_buffer_bs=audio_buffer_bs,
         )
@@ -1133,20 +1406,15 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
     ref_path = tmp_path / "ref.wav"
     ref_path.write_bytes(b"version-a")
 
-    def load(path: str):
+    def load_audio(path: str, *, target_sample_rate: int, mono: bool):
         assert path == str(ref_path)
-        return torch.zeros((1, 8), dtype=torch.float32), 16000
+        assert target_sample_rate == 16000
+        assert mono is True
+        return np.zeros(8, dtype=np.float32)
 
-    monkeypatch.setitem(
-        sys.modules,
-        "torchaudio",
-        SimpleNamespace(
-            load=load,
-            functional=SimpleNamespace(
-                resample=lambda audio, sr, target_sr: audio,
-            ),
-        ),
-    )
+    from sglang_omni.utils import audio as audio_utils
+
+    monkeypatch.setattr(audio_utils, "load_audio", load_audio)
 
     class _Codec:
         sample_rate = 16000

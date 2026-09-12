@@ -1,4 +1,4 @@
-config_cls: MossTTSPipelineConfig
+config_cls: MossTTSSingleProcessPipelineConfig
 model_path: OpenMOSS-Team/MOSS-TTS-v1.5
 
 stages:

@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.client import Client, GenerateChunk
+from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_pcm
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.pipeline.coordinator import Coordinator
@@ -181,6 +181,18 @@ class FailingSpeechGenerateClient:
         del request, request_id
         raise RuntimeError(self.error)
         yield
+
+    async def speech(
+        self,
+        request: Any,
+        *,
+        request_id: str,
+        response_format: str = "wav",
+        speed: float = 1.0,
+        allow_format_fallback: bool = True,
+    ):
+        del request, request_id, response_format, speed, allow_format_fallback
+        raise ClientError(self.error)
 
     async def abort(self, request_id: str) -> None:
         del request_id
@@ -632,6 +644,42 @@ def test_speech_stream_admission_reject_returns_503_without_traceback(
     assert not any(rec.exc_info for rec in caplog.records)
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_context_rejection_returns_400_without_traceback(
+    stream: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    message = "Requested token count exceeds the model's maximum context length"
+    client = TestClient(
+        create_app(FailingSpeechGenerateClient(message), model_name="s2-pro")
+    )
+
+    with caplog.at_level(logging.WARNING, logger="sglang_omni.serve.openai_api"):
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "s2-pro",
+                "input": "hello",
+                "voice": "default",
+                "stream": stream,
+                "response_format": "pcm" if stream else "wav",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "message": message,
+        "type": "BadRequestError",
+        "param": None,
+        "code": 400,
+    }
+    assert any(
+        rec.levelno == logging.WARNING and "Rejecting speech request" in rec.message
+        for rec in caplog.records
+    )
+    assert not any(rec.exc_info for rec in caplog.records)
+
+
 def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
 
@@ -675,6 +723,16 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert response.headers["x-finish-reason"] == "length"
     assert speech_client.speech_requests[0].model == "tts"
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
+
+
+def test_create_app_passes_model_specific_speech_input_limit() -> None:
+    app = create_app(
+        SuccessfulSpeechClient(),
+        model_name="moss-tts",
+        max_speech_input_chars=None,
+    )
+
+    assert app.state.speech_service.max_speech_input_chars is None
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1726,6 +1784,25 @@ def test_streamed_audio_beyond_the_native_limit_is_rejected() -> None:
     assert transcription_client.requests == []
 
 
+def test_streamed_audio_beyond_total_limit_requests_shorter_file() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient()
+    client = _chunking_test_client(
+        transcription_client,
+        max_total_audio_s=2.0,
+        max_native_clip_s=2.0,
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "stream": "true"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert "use a shorter audio file" in response.json()["detail"]
+    assert transcription_client.requests == []
+
+
 def test_streamed_short_audio_streams_as_before() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = _chunking_test_client(transcription_client)
@@ -1941,6 +2018,7 @@ def _run_chunks(
             language=None,
             prompt=prompt,
             temperature=None,
+            repetition_penalty=None,
             max_new_tokens=None,
             max_concurrent=max_concurrent,
             condition_on_previous_text=condition_on_previous_text,
@@ -2317,6 +2395,7 @@ def test_client_disconnect_aborts_all_running_chunks() -> None:
             language=None,
             prompt=None,
             temperature=None,
+            repetition_penalty=None,
             max_new_tokens=None,
             max_concurrent=2,
             condition_on_previous_text=False,
@@ -2378,6 +2457,7 @@ def test_cancelling_the_wrapper_itself_aborts_running_chunks() -> None:
             language=None,
             prompt=None,
             temperature=None,
+            repetition_penalty=None,
             max_new_tokens=None,
             max_concurrent=2,
             condition_on_previous_text=False,
@@ -3366,3 +3446,41 @@ def test_stub_endpoint_checks_auth_before_501() -> None:
 
     resp = client.post("/update_weights_from_tensor", json={})
     assert resp.status_code == 401
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None:
+    message = "MOSS-TTS Local generated no audio frames. Please retry the request."
+
+    class FailOnceClient(SuccessfulSpeechClient):
+        failed = False
+
+        async def generate(self, request, request_id=None):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError(message)
+            async for chunk in super().generate(request, request_id):
+                yield chunk
+
+        async def speech(self, request, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise ClientError(message)
+            return await super().speech(request, **kwargs)
+
+        async def abort(self, request_id):
+            pass
+
+    client = TestClient(create_app(FailOnceClient(), model_name="moss-tts"))
+    body = {
+        "model": "moss-tts",
+        "input": "hello",
+        "stream": stream,
+        "response_format": "pcm" if stream else "wav",
+    }
+    response = client.post("/v1/audio/speech", json=body)
+    assert response.status_code == 500
+    assert message in response.json()["error"]["message"]
+    response = client.post("/v1/audio/speech", json=body)
+    assert response.status_code == 200
+    assert response.content

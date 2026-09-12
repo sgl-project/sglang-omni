@@ -24,6 +24,9 @@ _FACTORY_WITHOUT_TOTAL_BUDGET = (
     "tests.unit_test.fixtures.pipeline_fakes.runtime_factory_without_total_budget"
 )
 _OPEN_FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
+_FACTORY_WITHOUT_GPU_ID = (
+    "tests.unit_test.fixtures.pipeline_fakes.runtime_factory_without_gpu_id"
+)
 
 
 def _stage(**kwargs) -> EngineStageConfig:
@@ -135,8 +138,25 @@ def test_a_set_key_the_factory_does_not_accept_is_refused() -> None:
         resolve_stage_factory_args(stage, config)
 
 
+def test_gpu_placed_stage_rejects_a_factory_with_no_gpu_id_parameter() -> None:
+    stage = _stage(factory_path=_FACTORY_WITHOUT_GPU_ID)
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    with pytest.raises(ValueError, match="no gpu_id parameter"):
+        resolve_stage_factory_args(stage, config)
+
+
+def test_a_non_gpu_stage_may_use_a_factory_with_no_gpu_id_parameter() -> None:
+    stage = _stage(factory_path=_FACTORY_WITHOUT_GPU_ID, gpu=None)
+    config = PipelineConfig(model_path="dummy-model", stages=[stage])
+
+    args = resolve_stage_factory_args(stage, config)
+
+    assert "gpu_id" not in args
+
+
 def test_free_form_keys_reach_a_factory_that_takes_kwargs() -> None:
-    stage = _stage(factory_path=_OPEN_FACTORY, factory={"lookahead": 9})
+    stage = _stage(factory_path=_OPEN_FACTORY, factory={"lookahead": 9}, gpu=None)
     config = PipelineConfig(model_path="dummy-model", stages=[stage])
 
     args = resolve_stage_factory_args(stage, config)
@@ -174,3 +194,17 @@ def test_a_plain_stage_carries_no_server_args() -> None:
     args = resolve_stage_factory_args(stage, config)
 
     assert "server_args_overrides" not in args
+
+
+def test_kv_cache_bytes_never_reaches_server_args_overrides() -> None:
+    """The byte budget rides the worker spec, not ServerArgs."""
+    from sglang_omni.config import EngineArgs
+    from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+
+    stage = _stage(engine=EngineArgs(kv_cache_bytes="2GiB", max_running_requests=8))
+
+    kwargs = resolve_stage_typed_kwargs(stage)
+
+    overrides = kwargs["server_args_overrides"]
+    assert overrides["max_running_requests"] == 8
+    assert "kv_cache_bytes" not in overrides

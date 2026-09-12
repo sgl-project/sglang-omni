@@ -240,6 +240,21 @@ def test_native_attention_preserves_checkpoint_state_dict_keys() -> None:
     assert not any(".backend." in key for key in keys)
 
 
+def test_auto_attention_backend_accepts_the_platform_fallback(monkeypatch) -> None:
+    from sglang.multimodal_gen.runtime.layers.attention import selector
+    from sglang.multimodal_gen.runtime.layers.attention.backends.sdpa import SDPABackend
+
+    monkeypatch.setattr(selector, "_cached_get_attn_backend", lambda *_: SDPABackend)
+    with torch.device("meta"):
+        model = MiniMaxMusic3DIT(
+            compute_dtype=torch.float32,
+            attention_backend="auto",
+        )
+
+    attention = model.diffusion_transformer.transformer.layers[0].self_attn
+    assert attention.backend.backend is AttentionBackendEnum.TORCH_SDPA
+
+
 def test_dav_weight_norm_folding_preserves_output() -> None:
     torch.manual_seed(31)
     convolution = torch.nn.utils.weight_norm(

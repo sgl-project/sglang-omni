@@ -157,7 +157,7 @@ for segment in payload.get("segments", []):
     )
 ```
 
-When a request omits `max_new_tokens`, the server sizes the output budget from the audio duration. The default is `max(5120, 10 tokens per audio second)`, so a 60 minute recording gets a 36000 token budget without any client changes. Operators can pin a fixed `max_new_tokens` in the stage config, which disables duration scaling for requests that omit the field. An explicit `max_new_tokens` in the request always wins over both defaults. The scheduler clamps the final value to the context remaining after the audio prompt, so large explicit values are safe to send. Set the field explicitly when you want a hard cap or a larger budget than the default, as in this example with a clip from the repo that has two speakers:
+When a request omits `max_new_tokens`, the server sizes the output budget from the audio duration in both directions: `max(512, 10 tokens per audio second)` with the stock config, so a 60 minute recording gets a 36000 token budget without any client changes, while a 6 second clip is bounded at 512 tokens instead of inheriting the old fixed 5120 default — this keeps greedy decoding from looping for thousands of tokens on short non-speech audio (#975) without truncating dense, timestamped multi-speaker transcripts. A zero-duration input uses a tighter 128-token fallback because it has no legitimate transcript to preserve. Neither bound exceeds an operator-pinned smaller default. The form also accepts `repetition_penalty` (0 < x <= 2, default 1.0 = off) to damp repetition loops on noisy audio without touching the greedy default. Operators can pin a fixed `max_new_tokens` in the stage config, which disables duration scaling for requests that omit the field. An explicit `max_new_tokens` in the request always wins over both defaults. The scheduler clamps the final value to the context remaining after the audio prompt, so large explicit values are safe to send. Set the field explicitly when you want a hard cap or a larger budget than the default, as in this example with a clip from the repo that has two speakers:
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
@@ -176,7 +176,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `language` | string | unset | Optional language hint |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | model default (`0.0`) | Sampling temperature |
-| `max_new_tokens` | int | duration scaled | Max generated tokens. Omitted requests default to `max(5120, 10 * audio seconds)`, or to the fixed stage value when the operator configured one. Explicit values always win and are clamped to the remaining model context |
+| `max_new_tokens` | int | duration scaled | Max generated tokens. With the stock config, omitted requests use `max(512, 10 * audio seconds)`; empty audio uses a 128-token fallback. A fixed stage value disables duration scaling. Explicit values always win and are clamped to the remaining model context |
 | `prompt` | string | unset | Optional instruction override; omit to use the built-in transcribe+diarize prompt |
 
 `verbose_json` parses the model markup into OpenAI-style `segments` with

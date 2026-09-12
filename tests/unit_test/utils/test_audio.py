@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import io
 import struct
+import sys
 import wave
+from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pybase64
@@ -44,8 +47,8 @@ def test_load_audio_raises_typed_error_for_undecodable_bytes(
 ) -> None:
     monkeypatch.setattr(
         audio,
-        "_ensure_torchaudio_decoder_ready",
-        lambda: None,
+        "check_torchcodec_ready",
+        lambda: True,
         raising=False,
     )
     monkeypatch.setattr(
@@ -69,32 +72,32 @@ def test_load_audio_raises_typed_error_for_undecodable_bytes(
         load_audio(b"not-audio", source_name="Qwen3-ASR")
 
 
-def test_load_audio_preserves_decoder_backend_failure(monkeypatch) -> None:
-    backend_error = RuntimeError("TorchCodec backend is unavailable")
+def test_check_torchcodec_ready_probes_decoder_and_warns_once(
+    monkeypatch, caplog
+) -> None:
+    fake_torchcodec = ModuleType("torchcodec")
+    monkeypatch.setitem(sys.modules, "torchcodec", fake_torchcodec)
+    monkeypatch.delitem(sys.modules, "torchcodec.decoders", raising=False)
+    monkeypatch.setattr(audio, "_TORCHCODEC_USABLE", None)
 
-    def raise_backend_error():
-        raise backend_error
+    with caplog.at_level("WARNING", logger=audio.__name__):
+        assert audio.check_torchcodec_ready() is False
+        assert audio.check_torchcodec_ready() is False
 
-    def unexpected_decoder(source):
-        del source
-        pytest.fail("decoder should not run without its backend")
+    fallback_records = [
+        record
+        for record in caplog.records
+        if "falling back to soundfile" in record.getMessage()
+    ]
+    assert len(fallback_records) == 1
 
-    monkeypatch.setattr(
-        audio,
-        "_ensure_torchaudio_decoder_ready",
-        raise_backend_error,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        audio.torchaudio,
-        "load",
-        unexpected_decoder,
-    )
 
-    with pytest.raises(RuntimeError) as exc_info:
-        load_audio(b"encoded-audio")
+def test_load_audio_falls_back_when_torchcodec_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: False)
 
-    assert exc_info.value is backend_error
+    samples = load_audio(_wav_bytes(), mono=False)
+
+    assert samples.shape == (1, 1600)
 
 
 def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
@@ -107,7 +110,7 @@ def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
         except audio.torch.OutOfMemoryError as exc:
             raise RuntimeError("decoder failed") from exc
 
-    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(
         audio,
         "_is_invalid_audio_source",
@@ -130,7 +133,7 @@ def test_load_audio_classifies_corrupt_local_path(monkeypatch, tmp_path) -> None
         assert source == str(corrupt_path)
         raise RuntimeError("invalid audio data")
 
-    monkeypatch.setattr(audio, "_ensure_torchaudio_decoder_ready", lambda: None)
+    monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(audio.torchaudio, "load", raise_decode_error)
 
     with pytest.raises(AudioDecodeError, match="Could not decode Test"):
@@ -260,7 +263,7 @@ def test_load_audio_fast_path_matches_torchaudio(monkeypatch, sample_rate) -> No
 
     fast = load_audio(wav)
 
-    monkeypatch.setattr(audio, "_is_riff_wav", lambda data: False)
+    monkeypatch.setattr(audio, "is_riff_wav", lambda data: False)
     slow = load_audio(wav)
 
     assert fast.dtype == slow.dtype == np.float32
@@ -273,7 +276,7 @@ def test_load_audio_fast_path_matches_torchaudio_stereo(monkeypatch) -> None:
 
     fast = load_audio(wav)
 
-    monkeypatch.setattr(audio, "_is_riff_wav", lambda data: False)
+    monkeypatch.setattr(audio, "is_riff_wav", lambda data: False)
     slow = load_audio(wav)
 
     np.testing.assert_allclose(fast, slow, atol=1e-6)
@@ -362,4 +365,21 @@ def test_load_audio_falls_back_for_24bit_pcm() -> None:
 
 def test_load_audio_falls_back_for_non_wav_bytes() -> None:
     assert audio._try_fast_wav_decode(b"\xffnot a wav" * 10, 16000) is None
-    assert not audio._is_riff_wav(b"ID3\x04" + b"\x00" * 20)
+    assert not audio.is_riff_wav(b"ID3\x04" + b"\x00" * 20)
+
+
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+
+def test_load_audio_decodes_the_8khz_telephony_fixtures() -> None:
+    from sglang_omni.utils.g711 import wrap_g711_as_wav
+
+    original = load_audio((_DATA_DIR / "query_to_draw.wav").read_bytes())
+    raw = (_DATA_DIR / "query_to_draw_8k.ulaw").read_bytes()
+    from_raw = load_audio(wrap_g711_as_wav(raw, "mulaw"))
+    from_wav = load_audio((_DATA_DIR / "query_to_draw_8k_ulaw.wav").read_bytes())
+
+    assert from_raw.shape == from_wav.shape == original.shape
+    np.testing.assert_array_equal(from_raw, from_wav)
+    correlation = np.corrcoef(from_raw, original)[0, 1]
+    assert correlation > 0.98

@@ -34,17 +34,6 @@ def _sampling_request(repetition_penalty: float) -> types.SimpleNamespace:
     )
 
 
-def test_qwen3_tts_leaves_repetition_penalty_to_sglang() -> None:
-    runner = _runner(vocab_size=128, codec_eos_token_id=127)
-    logits = torch.randn(2, 128)
-    original = logits.clone()
-    logits_output = types.SimpleNamespace(next_token_logits=logits)
-
-    runner._apply_repetition_penalty(logits_output, [object(), object()])
-
-    assert torch.equal(logits_output.next_token_logits, original)
-
-
 def test_qwen3_tts_public_penalty_disables_async_lookahead() -> None:
     runner = _runner(vocab_size=128, codec_eos_token_id=127)
 

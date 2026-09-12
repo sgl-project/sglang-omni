@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 import torch
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.moss_tts_local import config as config_module
 
 
@@ -53,16 +55,16 @@ def test_rocm_wsl_dxg_default_disables_vocoder_graph_before_factory(
     monkeypatch.setattr(config_module, "_uses_rocm_wsl_dxg", lambda: True)
     config = config_module.MossTTSLocalPipelineConfig(model_path="x")
 
-    assert config.cuda_graph is None
-    assert config.stage_factory_kwargs("vocoder")["cuda_graph"] is False
+    assert config.vocoder_cuda_graph is None
+    assert config.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
 
 
 def test_non_dxg_default_keeps_vocoder_graph_enabled(monkeypatch) -> None:
     monkeypatch.setattr(config_module, "_uses_rocm_wsl_dxg", lambda: False)
     config = config_module.MossTTSLocalPipelineConfig(model_path="x")
 
-    assert config.cuda_graph is None
-    assert config.stage_factory_kwargs("vocoder")["cuda_graph"] is True
+    assert config.vocoder_cuda_graph is None
+    assert config.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is True
 
 
 def test_rocm_wsl_dxg_explicit_vocoder_graph_contract(monkeypatch) -> None:
@@ -70,11 +72,13 @@ def test_rocm_wsl_dxg_explicit_vocoder_graph_contract(monkeypatch) -> None:
     monkeypatch.setattr(config_module, "_uses_rocm_wsl_dxg", lambda: True)
 
     disabled = config_module.MossTTSLocalPipelineConfig(
-        model_path="x", cuda_graph=False
+        model_path="x", vocoder_cuda_graph=False
     )
-    assert disabled.stage_factory_kwargs("vocoder")["cuda_graph"] is False
+    assert disabled.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
     with pytest.raises(ValueError, match="cannot be enabled on ROCm WSL/DXG"):
-        config_module.MossTTSLocalPipelineConfig(model_path="x", cuda_graph=True)
+        config_module.MossTTSLocalPipelineConfig(
+            model_path="x", vocoder_cuda_graph=True
+        )
 
 
 @pytest.mark.parametrize("configured", [False, True])
@@ -84,10 +88,10 @@ def test_non_dxg_preserves_explicit_vocoder_graph_override(
     monkeypatch.setattr(config_module, "_uses_rocm_wsl_dxg", lambda: False)
 
     config = config_module.MossTTSLocalPipelineConfig(
-        model_path="x", cuda_graph=configured
+        model_path="x", vocoder_cuda_graph=configured
     )
 
-    assert config.stage_factory_kwargs("vocoder")["cuda_graph"] is configured
+    assert config.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is configured
 
 
 def test_unset_vocoder_graph_survives_config_rebuild(monkeypatch) -> None:
@@ -97,5 +101,43 @@ def test_unset_vocoder_graph_survives_config_rebuild(monkeypatch) -> None:
 
     rebuilt = type(config)(**config.model_dump())
 
-    assert rebuilt.cuda_graph is None
-    assert rebuilt.stage_factory_kwargs("vocoder")["cuda_graph"] is False
+    assert rebuilt.vocoder_cuda_graph is None
+    assert rebuilt.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
+
+
+def test_vocoder_graph_yaml_and_cli_do_not_change_ar_settings(monkeypatch) -> None:
+    monkeypatch.setattr(config_module, "_uses_rocm_wsl_dxg", lambda: False)
+    example = (
+        Path(__file__).resolve().parents[3]
+        / "examples/configs/moss_tts_local_non_streaming.yaml"
+    )
+    manager = ConfigManager.from_file(str(example))
+    config = manager.config
+    default = config_module.MossTTSLocalPipelineConfig(model_path=config.model_path)
+    assert config.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
+
+    overridden = manager.merge_config(
+        manager.parse_extra_args(
+            [
+                "--vocoder_cuda_graph",
+                "true",
+                "--vocoder_cuda_graph_frames",
+                "[5, 25]",
+                "--vocoder_cuda_graph_min_free_gb",
+                "4.5",
+            ]
+        )
+    )
+    assert overridden.stage_factory_kwargs("vocoder") == {
+        "vocoder_cuda_graph": True,
+        "vocoder_cuda_graph_frames": [5, 25],
+        "vocoder_cuda_graph_min_free_gb": 4.5,
+    }
+    for candidate in (config, overridden):
+        assert (
+            candidate.stage_named("tts_engine").model_dump()
+            == default.stage_named("tts_engine").model_dump()
+        )
+        assert candidate.stage_factory_kwargs(
+            "tts_engine"
+        ) == default.stage_factory_kwargs("tts_engine")

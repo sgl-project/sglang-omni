@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.runtime_context import get_context, get_serving
 
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -108,7 +109,7 @@ def test_model_worker_update_weights_from_disk_publishes_the_weight_version() ->
         assert get_context().overrides_log() == [
             ("sglang-omni-weight-update-disk", {"weight_version": "v2"})
         ]
-        assert published.weight_version == "old"
+        assert resolution_result(published, "weight_version") == "old"
 
 
 def test_model_worker_update_weights_from_disk_without_a_version_leaves_the_bags() -> (
@@ -289,7 +290,7 @@ def test_model_worker_update_weights_from_distributed_passes_positional_args() -
         assert get_context().overrides_log() == [
             ("sglang-omni-weight-update-distributed", {"weight_version": "v2"})
         ]
-        assert published.weight_version == "old"
+        assert resolution_result(published, "weight_version") == "old"
 
 
 def test_model_worker_update_weights_from_distributed_requires_names() -> None:

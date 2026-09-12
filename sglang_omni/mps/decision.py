@@ -23,7 +23,7 @@ class MpsProcessFact:
     contains_tp: bool
 
 
-def _process_gpu_ids(process_spec) -> set[int]:
+def process_gpu_ids(process_spec) -> set[int]:
     return {
         int(gpu_id)
         for stage_spec in process_spec.stage_specs
@@ -87,7 +87,7 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
             placement_by_process[name] = set()
             explicit_by_process[name] = set()
             contains_tp[name] = False
-        placement_by_process[name].update(_process_gpu_ids(process_spec))
+        placement_by_process[name].update(process_gpu_ids(process_spec))
         contains_tp[name] = contains_tp[name] or any(
             stage_spec.tp_size > 1 for stage_spec in process_spec.stage_specs
         )

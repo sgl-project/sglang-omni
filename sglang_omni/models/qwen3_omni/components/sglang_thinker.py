@@ -57,6 +57,9 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
+        # sglang v0.5.19's default deepstack order regresses omni visual accuracy;
+        # remove this override once the upstream default passes omni's visual checks.
+        self.model.use_hf_deepstack_order = True
         if getattr(self.config, "tie_word_embeddings", False):
             self.lm_head = self.model.embed_tokens
         else:

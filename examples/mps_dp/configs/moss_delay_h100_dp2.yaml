@@ -3,7 +3,9 @@
 # shared weights. Unshared DP2 does not fit at these budgets; sharing is what
 # makes the second replica's KV pool profile to the common cap.
 
-config_cls: MossTTSPipelineConfig
+# The validated budgets below describe the single-process layout, so this recipe
+# pins it rather than following the default vocoder-process topology.
+config_cls: MossTTSSingleProcessPipelineConfig
 name: mossd
 model_path: OpenMOSS-Team/MOSS-TTS-v1.5
 

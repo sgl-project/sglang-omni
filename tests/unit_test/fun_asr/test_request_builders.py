@@ -380,6 +380,54 @@ def test_fun_asr_request_builder_wraps_string_hotword_as_single_entry(
     assert "热词列表：[人工智能]" in captured["prompt_text"]
 
 
+def _capture_prompt_text(monkeypatch, params):
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    captured = {}
+
+    class _CapturingTokenizer(_FakeTokenizer):
+        def __call__(self, text: str, *, add_special_tokens: bool = False):
+            captured["prompt_text"] = text
+            return super().__call__(text, add_special_tokens=add_special_tokens)
+
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_CapturingTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=_feature_extractor(11),
+    )
+    request_builder(
+        StagePayload(
+            request_id="req-fun-asr-prompt",
+            request=OmniRequest(inputs={"audio_path": "x.wav"}, params=params),
+            data={},
+        )
+    )
+    return captured["prompt_text"]
+
+
+def test_fun_asr_prompt_field_feeds_the_hotword_list(monkeypatch) -> None:
+    """The endpoint sends vocabulary hints as ``prompt``, not ``hotwords``.
+
+    Without the fallback the hint is silently dropped and biasing is
+    unreachable over HTTP.
+    """
+    text = _capture_prompt_text(monkeypatch, {"prompt": "PyTorch, nginx, Kubernetes"})
+
+    assert "热词列表：[PyTorch, nginx, Kubernetes]" in text
+
+
+def test_fun_asr_explicit_hotwords_take_precedence_over_prompt(monkeypatch) -> None:
+    text = _capture_prompt_text(
+        monkeypatch, {"hotwords": ["人工智能"], "prompt": "PyTorch"}
+    )
+
+    assert "热词列表：[人工智能]" in text
+    assert "PyTorch" not in text
+
+
 def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
     monkeypatch,
 ) -> None:

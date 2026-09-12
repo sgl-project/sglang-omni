@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.tts_serving.audio_validation import validate_audio_response
-from benchmarks.tts_serving.error_contract import is_openai_error_response
 from benchmarks.tts_serving.http_contracts import (
     MAX_HTTP_RESPONSE_BYTES,
     UNSUPPORTED_HTTP_STATUSES,
+    is_valid_error_response,
     mark_unexpected_success,
 )
 from benchmarks.tts_serving.metrics import ScenarioResult, finish_timing
@@ -208,18 +208,12 @@ def _classify_sdk_status_error(
         and scenario.expected_status_class == "client_error"
     ):
         expected_status = scenario.expected_http_status or 400
-        if status_code != expected_status:
-            result.status = "invalid_error_response"
-            result.capability = "fail"
-            result.error_class = "protocol_error"
-            result.error = (
-                "OpenAI SDK expected-error scenario returned wrong HTTP status "
-                f"(expected={expected_status}, observed={status_code}): {result.error}"
-            )
-            return
-        if not _is_openai_error_body(
+        if not is_valid_error_response(
+            status_code,
             body,
             expected_status=expected_status,
+            expected_error_type=scenario.expected_error_type,
+            alternate_error_signatures=scenario.alternate_error_signatures,
         ):
             result.status = "invalid_error_response"
             result.capability = "fail"
@@ -247,11 +241,3 @@ def _sdk_error_body(exc: Any) -> str:
     if isinstance(parsed_body, dict):
         return json.dumps(parsed_body, ensure_ascii=False)
     return ""
-
-
-def _is_openai_error_body(
-    body: str,
-    *,
-    expected_status: int,
-) -> bool:
-    return is_openai_error_response(body, expected_status=expected_status)

@@ -8,15 +8,21 @@
 FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
-ARG SGLANG_XPU_BRANCH=v0.5.18
+ARG SGLANG_XPU_BRANCH=v0.5.19
 # SGLang's XPU manifest requires sgl-kernel-xpu with no revision, so pinning SGLang
 # alone leaves the SYCL kernels floating. Pinned to the last sgl-kernel-xpu revision
-# at the v0.5.18 tag boundary; override only to move deliberately.
-ARG SGL_KERNEL_XPU_REF=c1b7e00ff8a07f0ebcd922045e117d83a87e0112
+# at the v0.5.19 tag boundary; override only to move deliberately.
+ARG SGL_KERNEL_XPU_REF=3f3c73216dc978eeda689c5960c61a549fc309c2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple
 ENV TORCH_XPU_INDEX=https://download.pytorch.org/whl/xpu
+# files.pythonhosted.org occasionally throttles large wheels below pip's
+# default 15s socket-read window; raise the timeout and retry budget so
+# builds ride through transient CDN slowdowns instead of failing. 60s x
+# 5 retries caps worst-case wait at 5 min per stalled file.
+ENV PIP_DEFAULT_TIMEOUT=60
+ENV PIP_RETRIES=5
 
 # Level-Zero UMD + IGC, mirroring SGLang's image, which pins them because the rolling
 # PPA once faulted libze on B580 (sgl-kernel-xpu#296). Keep in lockstep with the host
@@ -28,8 +34,19 @@ ARG GMM_VERSION=22.10.0
 WORKDIR /workspace
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ffmpeg libsndfile1 sox software-properties-common curl ca-certificates \
-    && add-apt-repository -y ppa:kobuk-team/intel-graphics \
+        git ffmpeg libsndfile1 sox python3-dev build-essential python3.12-venv \
+        software-properties-common curl ca-certificates
+
+ARG RENDER_GID=110
+RUN getent group render >/dev/null \
+    || groupadd --system --gid ${RENDER_GID} render \
+    || groupadd --system render
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+RUN add-apt-repository -y ppa:kobuk-team/intel-graphics \
     && apt-get update \
     # Loader + media/metrics from the PPA; the GPU driver itself is pinned below.
     && apt-get install -y \

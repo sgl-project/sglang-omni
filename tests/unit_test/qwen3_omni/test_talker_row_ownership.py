@@ -47,6 +47,7 @@ def _data(
     return SimpleNamespace(
         pending_feedback_queue=deque([feedback]) if feedback is not None else deque(),
         pending_text_queue=deque([text]) if text is not None else deque(),
+        decode_input_embeds=[],
         thinker_chunks_done=thinker_done,
         tts_pad_embed=pad,
         stage_payload=stage_payload,

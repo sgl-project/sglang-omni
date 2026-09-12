@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from sglang.srt.runtime_context import get_exec, get_schedule
+
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_max_bs
 
 logger = logging.getLogger(__name__)
@@ -265,22 +267,22 @@ def read_model_buffer_capacity(model: object) -> tuple[int | None, str]:
     return smallest, source
 
 
-def attest_prefill_cuda_graphs(model_runner: Any, server_args: Any) -> None:
+def attest_prefill_cuda_graphs(model_runner: Any, *, operator_selected: bool) -> None:
     """Assert captured prefill graphs match an explicit or realized policy.
 
-    An operator-locked backend must materialize or fail startup. An unlocked
-    model default retains SGLang's auto-selection semantics and may fall back
-    to eager at capture-time safety gates such as insufficient free memory.
+    An operator-selected backend must materialize or fail startup. A model
+    default keeps SGLang's auto-selection semantics and may fall back to eager
+    at capture-time safety gates such as insufficient free memory.
     """
     from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
         PrefillCudaGraphRunner,
     )
 
-    prefill_cfg = server_args.cuda_graph_config.prefill
+    prefill_cfg = get_exec().graph.cuda_graph_config.prefill
     # init_cuda_graphs always assigns this before attestation runs.
     runner = model_runner.prefill_cuda_graph_runner
     if not isinstance(runner, PrefillCudaGraphRunner):
-        if ("prefill", "backend") not in server_args._cuda_graph_config_locked:
+        if not operator_selected:
             logger.warning(
                 "auto-selected prefill CUDA graph backend %r did not capture; "
                 "using SGLang's eager prefill fallback",
@@ -325,9 +327,8 @@ def validate_stage(
     buffer_capacity: int | None = None,
 ) -> CudaGraphBatchReport:
     """Validate one SGLang-backed stage's batch sizing from its live runner."""
-    server_args = model_runner.server_args
-    max_running_requests = server_args.max_running_requests
-    cuda_graph_max_bs = get_decode_cuda_graph_max_bs(server_args)
+    max_running_requests = get_schedule().max_running_requests
+    cuda_graph_max_bs = get_decode_cuda_graph_max_bs(model_runner.server_args)
 
     try:
         model = model_runner.model
@@ -335,7 +336,7 @@ def validate_stage(
         model = None
     model_cls = type(model).__name__ if model is not None else "unknown-model"
 
-    if bool(server_args.disable_cuda_graph):
+    if bool(get_exec().graph.disable_cuda_graph):
         return CudaGraphBatchReport(
             stage=f"{stage_name} ({model_cls})",
             max_running_requests=max_running_requests,

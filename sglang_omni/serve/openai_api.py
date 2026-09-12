@@ -57,7 +57,12 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
-from sglang_omni.config import ResolvedAudioChunking
+from sglang_omni.config import (
+    CustomVoiceConfig,
+    RealtimeTranscriptionConfig,
+    ResolvedAudioChunking,
+)
+from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS
 from sglang_omni.http.admin_auth import (
     make_admin_auth_dependency,
     resolve_admin_api_key,
@@ -102,7 +107,6 @@ from sglang_omni.serve.protocol import (
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
-    internal_error,
     openai_error_payload,
     speech_error_response,
     speech_generation_error,
@@ -178,13 +182,16 @@ def create_app(
     model_name: str | None = None,
     requires_uploaded_voice_for_named_voice: bool = False,
     supports_uploaded_voice_references: bool = True,
+    custom_voice_config: CustomVoiceConfig | None = None,
     supports_audio_translation: bool = False,
     required_speech_reference_count: int | None = None,
     speech_reference_text_required: bool = False,
     speech_reference_text_excludes_instructions: bool = False,
     additional_speech_languages: frozenset[str] = frozenset(),
+    max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
     enable_realtime: bool = False,
     supports_realtime_audio_output: bool = False,
+    realtime_transcription: RealtimeTranscriptionConfig | None = None,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     admin_api_key: str | None = None,
@@ -201,6 +208,8 @@ def create_app(
             names must resolve to uploaded voices before reaching the model.
         supports_uploaded_voice_references: Whether uploaded voice names can be
             lowered into backend reference-audio requests.
+        custom_voice_config: Checkpoint speaker names and task type for CustomVoice.
+            When present, reference inputs and uploaded-voice resolution are disabled.
         supports_audio_translation: Whether the configured pipeline supports
             ``/v1/audio/translations``.
         required_speech_reference_count: Exact reference count required before
@@ -210,10 +219,13 @@ def create_app(
         speech_reference_text_excludes_instructions: Whether a reference
             transcript and style instructions are mutually exclusive.
         additional_speech_languages: Pipeline-specific accepted languages.
+        max_speech_input_chars: Maximum accepted input characters, or ``None``
+            to defer length validation to model-specific context checks.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
         supports_realtime_audio_output: Whether the mounted realtime endpoint
             can request streamed audio from the configured pipeline.
+        realtime_transcription: Pipeline-owned live-ASR strategy declaration.
         allowed_local_media_path: Directory allowed for ``file://`` TTS
             reference audio.
         allowed_media_domains: Domains allowed for remote TTS reference audio.
@@ -248,9 +260,11 @@ def create_app(
     app.state.audio_chunking = audio_chunking or ResolvedAudioChunking.disabled()
     app.state.realtime_enabled = enable_realtime
     app.state.supports_realtime_audio_output = supports_realtime_audio_output
+    app.state.realtime_transcription = realtime_transcription
     app.state.speaker_sample_store = SpeakerSampleStore()
     app.state.speech_service = SpeechRequestValidator(
         default_model=app.state.model_name,
+        custom_voice_config=custom_voice_config,
         requires_uploaded_voice_for_named_voice=(
             requires_uploaded_voice_for_named_voice
         ),
@@ -261,6 +275,7 @@ def create_app(
             speech_reference_text_excludes_instructions
         ),
         additional_speech_languages=additional_speech_languages,
+        max_speech_input_chars=max_speech_input_chars,
         allowed_local_media_path=allowed_local_media_path,
         allowed_media_domains=allowed_media_domains,
         voice_store=app.state.speaker_sample_store,
@@ -296,7 +311,13 @@ def _register_voices(app: FastAPI) -> None:
             return JSONResponse(
                 content={"uploaded_voice_names": voice_store.uploaded_voice_names()}
             )
-        response = VoiceListResponse.model_validate(voice_store.list_response())
+        voice_list = voice_store.list_response()
+        custom_voice_config = app.state.speech_service.custom_voice_config
+        if custom_voice_config is not None:
+            voices = {name.casefold(): name for name in custom_voice_config.speakers}
+            voices["default"] = "default"
+            voice_list["voices"] = sorted(voices.values(), key=str.casefold)
+        response = VoiceListResponse.model_validate(voice_list)
         return JSONResponse(content=response.model_dump(exclude_none=True))
 
     @app.post("/v1/audio/voices")
@@ -1184,20 +1205,49 @@ def _build_generate_response(
 def _register_realtime(app: FastAPI) -> None:
     """Mount the OpenAI-compatible WebSocket Realtime endpoint."""
     from sglang_omni.serve.realtime import RealtimeSessionManager
+    from sglang_omni.serve.realtime.smart_turn import load_smart_turn
 
     client: Client = app.state.client
     model_name: str = app.state.model_name
+    try:
+        smart_turn_model = load_smart_turn()
+    except Exception:
+        logger.warning(
+            "Smart Turn model could not be loaded; semantic VAD will fall back "
+            "to server VAD",
+            exc_info=True,
+        )
+        smart_turn_model = None
     manager = RealtimeSessionManager(
         client=client,
         model_name=model_name,
         supports_audio_output=app.state.supports_realtime_audio_output,
+        transcription_config=app.state.realtime_transcription,
+        smart_turn_model=smart_turn_model,
     )
     app.state.realtime_manager = manager
 
     @app.websocket("/v1/realtime")
     async def realtime(websocket: WebSocket) -> None:
         await websocket.accept()
-        session = manager.open(websocket)
+        try:
+            session = manager.open(
+                websocket,
+                intent=websocket.query_params.get("intent", "conversation"),
+            )
+        except ValueError as exc:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "unsupported_realtime_intent",
+                        "message": str(exc),
+                    },
+                }
+            )
+            await websocket.close(code=1008)
+            return
         try:
             await session.run()
         finally:
@@ -1211,16 +1261,16 @@ def _speech_generation_failure_response(
     unexpected_message: str | None = None,
 ) -> JSONResponse:
     mapped = speech_generation_error(exc)
-    if mapped.status_code == 503:
+    if mapped.status_code not in (400, 503):
+        logger.exception(
+            unexpected_message or "Error generating speech for request %s",
+            request_id,
+        )
+    else:
         logger.warning(
             "Rejecting speech request %s: %s",
             request_id,
             mapped.message,
-        )
-    else:
-        logger.exception(
-            unexpected_message or "Error generating speech for request %s",
-            request_id,
         )
     return speech_error_response(mapped)
 
@@ -1334,8 +1384,18 @@ def _register_speech_batch(app: FastAPI) -> None:
         except SpeechAPIError as exc:
             return speech_error_response(exc)
         except Exception as exc:
-            logger.exception("Error generating speech batch for request %s", request_id)
-            return speech_error_response(internal_error(str(exc)))
+            mapped = speech_generation_error(exc)
+            if mapped.status_code not in (400, 503):
+                logger.exception(
+                    "Error generating speech batch for request %s", request_id
+                )
+            else:
+                logger.warning(
+                    "Rejecting speech batch request %s: %s",
+                    request_id,
+                    mapped.message,
+                )
+            return speech_error_response(mapped)
 
         response = SpeechBatchResponse.model_validate(response)
         return JSONResponse(content=response.model_dump(exclude_none=True))

@@ -85,7 +85,7 @@ import json
 import logging
 import math
 import os
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +128,50 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTS_BENCHMARK_CONCURRENCY = int(os.getenv("TTS_BENCHMARK_CONCURRENCY", "16"))
 
 
+@dataclass(frozen=True)
+class _ModelBenchmarkProfile:
+    """Per-checkpoint CLI defaults and managed-server knobs."""
+
+    argument_defaults: dict[str, Any] = field(default_factory=dict)
+    forward_sglang_engine: bool = True
+
+
+_AUK_BENCHMARK_PROFILE = _ModelBenchmarkProfile(
+    argument_defaults={
+        "output_dir": "results/auk_seedtts",
+        "concurrency": 1,
+        "warmup": 1,
+        "seed": 1234,
+    },
+    forward_sglang_engine=False,
+)
+_MODEL_BENCHMARK_PROFILES: dict[str, _ModelBenchmarkProfile] = {
+    "auk": _AUK_BENCHMARK_PROFILE,
+    "auk-flash": _AUK_BENCHMARK_PROFILE,
+}
+
+
+def _model_checkpoint_name(model: str) -> str:
+    return Path(model.split("@", 1)[0]).name.lower()
+
+
+def _profile_for_model(model: str) -> _ModelBenchmarkProfile:
+    return _MODEL_BENCHMARK_PROFILES.get(
+        _model_checkpoint_name(model), _ModelBenchmarkProfile()
+    )
+
+
+def _parse_args(
+    parser: argparse.ArgumentParser,
+) -> tuple[argparse.Namespace, _ModelBenchmarkProfile]:
+    args = parser.parse_args()
+    profile = _profile_for_model(args.model)
+    if not profile.argument_defaults:
+        return args, profile
+    parser.set_defaults(**profile.argument_defaults)
+    return parser.parse_args(), profile
+
+
 @dataclass
 class TtsSeedttsBenchmarkConfig:
     model: str
@@ -135,23 +179,11 @@ class TtsSeedttsBenchmarkConfig:
     base_url: str | None = None
     host: str = "localhost"
     port: int = 8000
-    # Optional speaker-preset name forwarded to the server as payload["voice"].
-    # Voxtral-4B-TTS-2603 uses it to pick a built-in speaker (defaults to
-    # "cheerful_female" server-side); voice-cloning models such as S2-Pro
-    # ignore it and take the speaker from ref_audio/ref_text instead.
     voice: str | None = None
     task_type: str | None = None
     instructions: str | None = None
-    # Default is voice-clone ON — S2-Pro's canonical flow uses the
-    # seed-tts-eval reference audio.  The ``--no-ref-audio`` CLI flag flips
-    # this to False for plain TTS models that do not accept ref audio.
     voice_clone: bool = True
-    # Reference payload shape for voice cloning. The default keeps the original
-    # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
-    # Keeps ref_audio but drops ref_text/references[].text — for cross-lingual
-    # runs where the reference speaker is cloned but no reference transcript is
-    # sent. Only meaningful when voice_clone=True; ignored otherwise.
     no_ref_text: bool = False
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
@@ -182,15 +214,11 @@ class TtsSeedttsBenchmarkConfig:
     overshoot_duration_s: float = 10.0
     cuda_graph_max_bs: int = 64
     # note (luojiaxuan): optional sglang-omni pipeline config yaml forwarded
-    # to the managed TTS server as ``--config`` (e.g.
+    # to the managed TTS server as --config e.g.
     # examples/configs/dots_tts.yaml to run the canonical optimized
-    # deployment).
+    # deployment.
     server_config: str | None = None
-    # SGLang quantization mode (e.g. fp8) forwarded to the TTS generation
-    # stage; recorded as run provenance so bf16 vs fp8 archives are
-    # distinguishable. None = bf16.
     quantization: str | None = None
-    # Transcribe phase
     lang: str = "en"
     device: str = "cuda:0"
     similarity_checkpoint: str | None = None
@@ -388,12 +416,7 @@ def run_tts_seedtts_transcribe(
     *,
     asr_router_port: int | None = None,
 ) -> dict:
-    """Transcribe saved audio and compute WER + ASR speed metrics.
-
-    Server need not be running.
-
-    Returns a dict with keys: wer_summary, asr_speed, per_sample.
-    """
+    """Transcribe saved audio and compute WER + ASR speed metrics."""
     generation_mode = "streaming-audio" if config.stream else "non-streaming"
     wer_config = {
         "model": config.model,
@@ -426,8 +449,6 @@ def run_tts_seedtts_transcribe(
 
 
 def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
-    # ``--no-ref-audio`` is preserved as a legacy CLI flag; it flips the
-    # dataclass default (``voice_clone=True``) to False for plain TTS.
     voice_clone = not args.no_ref_audio
     response_format = "pcm" if args.stream else args.response_format
     return TtsSeedttsBenchmarkConfig(
@@ -525,7 +546,7 @@ def plan_sustained_overshoot(
     request_rate: float | None = None,
     overshoot_factor: float = 2.0,
 ) -> SustainedOvershootPlan:
-    """Open-loop arrivals above ``running + queued`` for ``duration_s``."""
+    """Open-loop arrivals above running + queued for duration_s."""
     if max_running_requests < 1 or max_queued_requests < 1:
         raise ValueError("max_running_requests and max_queued_requests must be >= 1")
     if duration_s <= 0 or overshoot_factor <= 1:
@@ -1063,7 +1084,7 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 
 def main() -> None:
     parser = _build_arg_parser()
-    args = parser.parse_args()
+    args, profile = _parse_args(parser)
     _validate_args(parser, args)
     config = _config_from_args(args)
     wait_for_gpu_release = not args.skip_gpu_cleanup
@@ -1105,15 +1126,22 @@ def main() -> None:
     if args.use_existing_server:
         asyncio.run(_run_generate())
     else:
+        engine_overrides = (
+            dict(
+                max_running_requests=config.max_running_requests,
+                max_queued_requests=config.max_queued_requests,
+                cuda_graph_max_bs=config.cuda_graph_max_bs,
+                quantization=config.quantization,
+            )
+            if profile.forward_sglang_engine
+            else {}
+        )
         with managed_omni_server(
             model_path=config.model,
             port=config.port,
             host=config.host,
             server_config=config.server_config,
-            max_running_requests=config.max_running_requests,
-            max_queued_requests=config.max_queued_requests,
-            cuda_graph_max_bs=config.cuda_graph_max_bs,
-            quantization=config.quantization,
+            **engine_overrides,
             log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
             timeout=args.server_timeout,
             wait_for_gpu_release=wait_for_gpu_release,

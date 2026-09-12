@@ -73,6 +73,7 @@ class ScenarioResult:
     ws_active_sample_rate: int | None = None
     ws_active_sentence_bytes: int = 0
     ws_completed_sentences: int = 0
+    ws_close_code: int | None = None
     ws_close_reason: str | None = None
     was_cancelled: bool = False
 

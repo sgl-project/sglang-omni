@@ -6,7 +6,7 @@ import asyncio
 import signal
 from pathlib import Path
 from types import FrameType, SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -14,7 +14,12 @@ from fastapi.testclient import TestClient
 
 import sglang_omni.pipeline.mp_runner as mp_runner
 import sglang_omni.pipeline.runtime_config as runtime_config
-from sglang_omni.config.schema import EndpointsConfig, PipelineConfig, StageConfig
+from sglang_omni.config.schema import (
+    CustomVoiceConfig,
+    EndpointsConfig,
+    PipelineConfig,
+    StageConfig,
+)
 from sglang_omni.profiler.event_recorder import get_recorder
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext, FakeRelay
 
@@ -456,13 +461,61 @@ async def _run_launcher_with_fake_runner(
     monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
     monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
     monkeypatch.setattr(launcher, "ProfilerControlClient", FakeProfilerControl)
-    monkeypatch.setattr(launcher, "create_app", lambda *a, **k: app)
+
+    def fake_create_app(*args, **kwargs):
+        del args
+        app.state.create_app_kwargs = kwargs
+        return app
+
+    monkeypatch.setattr(launcher, "create_app", fake_create_app)
     if serve_mock is not None:
         monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
 
     await launcher._run_server(config, port=8000)
     assert runner_ref is not None
     return runner_ref, app, profiler_calls
+
+
+@pytest.mark.asyncio
+async def test_launcher_passes_one_resolved_custom_voice_config(
+    tmp_path, monkeypatch
+) -> None:
+    config = _make_config(tmp_path)
+    custom_voice_config = CustomVoiceConfig(
+        speakers=("speaker",), task_type="CustomVoice"
+    )
+    resolve = Mock(return_value=custom_voice_config)
+    monkeypatch.setattr(PipelineConfig, "resolve_custom_voice_config", resolve)
+    _, app, _ = await _run_launcher_with_fake_runner(
+        config=config,
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+    )
+    resolve.assert_called_once_with()
+    kwargs = app.state.create_app_kwargs
+    assert kwargs["custom_voice_config"] is custom_voice_config
+    assert kwargs["requires_uploaded_voice_for_named_voice"] is False
+    assert kwargs["supports_uploaded_voice_references"] is False
+
+
+@pytest.mark.asyncio
+async def test_launcher_passes_moss_tts_speech_input_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_tts.config import MossTTSPipelineConfig
+
+    config = MossTTSPipelineConfig(
+        model_path="OpenMOSS-Team/MOSS-TTS-v1.5",
+        endpoints=EndpointsConfig(base_path=str(tmp_path)),
+    )
+    _, app, _ = await _run_launcher_with_fake_runner(
+        config=config,
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+    )
+
+    assert app.state.create_app_kwargs["max_speech_input_chars"] is None
 
 
 @pytest.mark.asyncio

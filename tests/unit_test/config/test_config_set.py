@@ -469,3 +469,25 @@ class TestPerStageTypedGroup:
             [("vocoder.factory.stream_slots", "8")]
         )
         assert merged.stage_named("vocoder").factory.stream_slots == 8
+
+
+def test_placement_owned_factory_keys_are_rejected_at_config_validation():
+    """factory.gpu_id would silently override the planner's placement; the
+    final config (initial construction and every patch rebuild) refuses it."""
+    import pytest
+
+    from sglang_omni.config.schema import PipelineConfig, StageConfig
+
+    with pytest.raises(ValueError, match="owned by placement"):
+        PipelineConfig(
+            model_path="dummy-model",
+            stages=[
+                StageConfig(
+                    name="s",
+                    factory_path="tests.unit_test.fixtures.pipeline_fakes.runtime_factory",
+                    factory={"gpu_id": 4},
+                    gpu=0,
+                    terminal=True,
+                )
+            ],
+        )

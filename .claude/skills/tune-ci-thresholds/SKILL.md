@@ -253,9 +253,9 @@ know which lane it drew — the runner injects the env. Calibration **does**,
 because it chooses the GPUs: `tune.py` looks up `TUNE_GPU_INCLUDE` in the host
 profile's `gpu_group_cpusets` table and exports the matching `OMNI_CI_CPUSET`.
 
-| GPU pair | CPU cores (32 logical) |
+| GPU pair | CPU cores |
 |---|---|
-| `0,1` | `0-15,64-79` |
+| `0,1` | `2-15,66-79` |
 | `2,3` | `16-31,80-95` |
 | `4,5` | `48-63,112-127` |
 | `6,7` | `32-47,96-111` |

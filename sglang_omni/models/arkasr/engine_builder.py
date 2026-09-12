@@ -15,6 +15,7 @@ from sglang_omni.models.arkasr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 class ArkasrEngineBuilder(AsrEngineBuilder):
     model_name = "ARK-ASR"
     model_arch_override = "ArkasrForConditionalGeneration"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,
@@ -49,6 +51,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         pre_lm_max_batch_wait_ms: int = 0,
         pre_lm_max_pending: int = 32,
         enable_encoder_cuda_graph: bool = False,
+        stream_emit_interval_s: float = 0.05,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -86,6 +89,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
         self.pre_lm_max_batch_wait_ms = pre_lm_max_batch_wait_ms
         self.pre_lm_max_pending = pre_lm_max_pending
         self.enable_encoder_cuda_graph = enable_encoder_cuda_graph
+        self.stream_emit_interval_s = stream_emit_interval_s
         self.tokenizer: Any = None
         self.feature_extractor: Any = None
         self.merge_factor = 4
@@ -117,6 +121,7 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             "chunked_prefill_size": 4096,
             "sampling_backend": "pytorch",
             "dtype": dtype,
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
@@ -195,6 +200,10 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
+            "stream_output_builder": request_builders.make_arkasr_stream_output_builder(
+                tokenizer=self.tokenizer,
+                min_emit_interval_s=self.stream_emit_interval_s,
+            ),
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,

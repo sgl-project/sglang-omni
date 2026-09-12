@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use crate::error::RouterError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum State {
+pub(crate) enum State {
     Starting,
     Serving,
     Draining,
@@ -11,7 +11,7 @@ enum State {
     Failed,
 }
 
-/// Authoritative legal process-state transitions shared with local health.
+/// Authoritative legal process-state transitions shared with local serving.
 pub(crate) struct Lifecycle {
     state: Mutex<State>,
 }
@@ -60,6 +60,19 @@ impl Lifecycle {
             .is_ok_and(|state| matches!(*state, State::Serving | State::Draining))
     }
 
+    pub(crate) fn is_serving(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| matches!(*state, State::Serving))
+    }
+
+    pub(crate) fn snapshot(&self) -> Result<State, RouterError> {
+        self.state
+            .lock()
+            .map(|state| *state)
+            .map_err(|_| RouterError::Lifecycle)
+    }
+
     fn transition(&self, from: State, to: State) -> Result<(), RouterError> {
         let mut state = self.state.lock().map_err(|_| RouterError::Lifecycle)?;
         if *state != from {
@@ -67,6 +80,26 @@ impl Lifecycle {
         }
         *state = to;
         Ok(())
+    }
+}
+
+impl State {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Starting,
+        Self::Serving,
+        Self::Draining,
+        Self::Stopped,
+        Self::Failed,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Serving => "serving",
+            Self::Draining => "draining",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
     }
 }
 

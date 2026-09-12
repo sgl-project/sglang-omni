@@ -3,10 +3,128 @@
 
 from __future__ import annotations
 
+import copy
 import json
-from collections.abc import Iterator
+import math
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from numbers import Integral, Real
 from typing import Any
+
+from sglang.srt.utils.hf_transformers import (
+    CONTEXT_LENGTH_KEYS,
+    get_config,
+    get_context_length,
+    get_hf_text_config,
+)
+
+MOSS_TTS_DEFAULT_CONTEXT_LENGTH = 8192
+
+
+def _validate_context_length_metadata(text_config: Any) -> bool:
+    context_value = None
+    for key in CONTEXT_LENGTH_KEYS:
+        value = getattr(text_config, key, None)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(
+                f"MOSS-TTS context metadata {key} must be an integer, got {value!r}"
+            )
+        context_value = int(value)
+        if context_value <= 0:
+            raise ValueError(
+                f"MOSS-TTS context metadata {key} must be a positive integer, "
+                f"got {value!r}"
+            )
+        break
+    if context_value is None:
+        return False
+    rope_scaling = getattr(text_config, "rope_scaling", None)
+    if not rope_scaling:
+        return True
+    if not isinstance(rope_scaling, Mapping):
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling must be a mapping, "
+            f"got {rope_scaling!r}"
+        )
+    if (
+        "original_max_position_embeddings" in rope_scaling
+        or rope_scaling.get("rope_type") == "llama3"
+    ):
+        return True
+    factor = rope_scaling.get("factor", 1)
+    if isinstance(factor, bool) or not isinstance(factor, Real):
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling.factor must be a finite "
+            f"number, got {factor!r}"
+        )
+    try:
+        factor_is_finite = math.isfinite(float(factor))
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling.factor must be a finite "
+            f"number, got {factor!r}"
+        ) from exc
+    if not factor_is_finite:
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling.factor must be a finite "
+            f"number, got {factor!r}"
+        )
+    try:
+        scaled_value = factor * context_value
+        scaled_integer = int(scaled_value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling.factor produces an "
+            f"invalid context length: {factor!r} * {context_value!r}"
+        ) from exc
+    if scaled_value != scaled_integer:
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling.factor must produce an "
+            f"integer context length, got {factor!r} * {context_value!r}"
+        )
+    if scaled_integer <= 0:
+        raise ValueError(
+            "MOSS-TTS context metadata rope_scaling.factor must produce a "
+            f"positive context length, got {factor!r} * {context_value!r}"
+        )
+    return True
+
+
+def resolve_moss_tts_context_length(
+    checkpoint_dir: str,
+    *,
+    server_args_overrides: Mapping[str, Any] | None = None,
+) -> int:
+    """Resolve MOSS-TTS text context from the runtime model settings."""
+    overrides = server_args_overrides or {}
+    raw_model_override_args = overrides.get("json_model_override_args", "{}")
+    try:
+        model_override_args = json.loads(raw_model_override_args)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "json_model_override_args must be a valid JSON object string"
+        ) from exc
+    if not isinstance(model_override_args, Mapping):
+        raise ValueError("json_model_override_args must decode to a JSON object")
+
+    config_kwargs: dict[str, Any] = {
+        "trust_remote_code": overrides.get("trust_remote_code", True),
+        "model_config_parser": overrides.get("model_config_parser", "auto"),
+        "model_override_args": dict(model_override_args),
+    }
+    config_file = overrides.get("decrypted_config_file")
+    if config_file and config_file.strip():
+        config_kwargs["_configuration_file"] = config_file.strip()
+    config = copy.deepcopy(get_config(checkpoint_dir, **config_kwargs))
+    text_config = get_hf_text_config(config)
+    if not _validate_context_length_metadata(text_config):
+        return MOSS_TTS_DEFAULT_CONTEXT_LENGTH
+    try:
+        return int(get_context_length(text_config))
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("MOSS-TTS context metadata is invalid") from exc
 
 
 @contextmanager

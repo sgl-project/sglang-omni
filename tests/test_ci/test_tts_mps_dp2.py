@@ -47,7 +47,10 @@ from tests.test_ci.tts_mps_ci_config import (
     check_mps_performance,
 )
 from tests.test_model.omni_router_utils import (
+    CiRouterTopology,
+    ManagedRouterHandle,
     _find_available_port_range,
+    assert_router_healthy,
     assert_workers_served_requests_since,
     launch_managed_router,
     router_get_json,
@@ -289,16 +292,16 @@ def _mps_replicas(
 
 def _run_canonical_generation(
     *,
-    router_port: int,
+    router: ManagedRouterHandle,
     model: str,
     dataset_repo: str,
     canonical_dir: Path,
     output_root: Path,
     summary_path: Path,
 ) -> tuple[dict, MetricCheckCollector]:
-    before_workers = router_get_json(router_port, "/workers")
+    before_workers = router_get_json(router.port, "/diagnostics")
     speed_results = _run_benchmark(
-        router_port, dataset_repo, str(canonical_dir), concurrency=CONCURRENCY
+        router.port, dataset_repo, str(canonical_dir), concurrency=CONCURRENCY
     )
     performance = check_mps_performance(
         model=model, concurrency=CONCURRENCY, summary=speed_results["summary"]
@@ -320,8 +323,8 @@ def _run_canonical_generation(
         label="TTS MPS non-stream c16",
         collector=checks,
     )
-    assert_workers_served_requests_since(
-        port=router_port,
+    router_delta = assert_workers_served_requests_since(
+        handle=router,
         before_snapshot=before_workers,
         label="TTS MPS canonical generation",
         min_total_requests=SEEDTTS_EN_FULLSET_SAMPLES,
@@ -331,6 +334,7 @@ def _run_canonical_generation(
         runtime={
             "performance": performance,
             "router_workers_before": before_workers,
+            "router_worker_delta": router_delta,
         },
     )
     # The benchmark produced a complete result set, so the observation stands
@@ -396,6 +400,7 @@ def _evaluate_quality(
         model_path=QWEN3_ASR_WER_MODEL_PATH,
         model_name=QWEN3_ASR_WER_MODEL_PATH,
         worker_extra_args="",
+        router_topology=CiRouterTopology.ASR,
         wait_timeout=QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
         log_prefix="tts_mps_asr_router_logs",
     ) as asr_router:
@@ -462,12 +467,13 @@ def _run_mps_session(
             model_path=TTS_MODEL_PATH,
             model_name=TTS_MODEL_PATH,
             worker_extra_args="",
+            router_topology=CiRouterTopology.TTS,
             external_worker_urls=list(spec.worker_urls),
             wait_timeout=_PRESET.startup_timeout,
             log_prefix="tts_mps_router_logs",
         ) as router:
             speed_results, canonical_checks = _run_canonical_generation(
-                router_port=router.port,
+                router=router,
                 model=model,
                 dataset_repo=dataset_repo,
                 canonical_dir=canonical_dir,
@@ -486,7 +492,7 @@ def _run_mps_session(
                 summary_path,
                 runtime={
                     "overlap": overlap,
-                    "router_workers_after": router_get_json(router.port, "/workers"),
+                    "router_diagnostics": assert_router_healthy(router),
                 },
             )
     return speed_results, overlap, canonical_checks

@@ -29,6 +29,7 @@ from benchmarks.metrics.wer import print_asr_speed_summary, print_asr_wer_summar
 from benchmarks.tasks.asr import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
 from tests.test_model.asr_ci_config import select_asr_ci_preset
 from tests.test_model.omni_router_utils import (
+    CiRouterTopology,
     ManagedRouterHandle,
     launch_managed_router,
     router_worker_traffic_guard,
@@ -85,6 +86,7 @@ def asr_router_server(
         model_path=_PRESET.resolved_model_path(),
         model_name=_PRESET.model_path,
         worker_extra_args="",
+        router_topology=CiRouterTopology.ASR,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="asr_seedtts_router_logs",
     ) as router:

@@ -9,7 +9,6 @@ inputs:
     description: Prepare or refresh the requested virtualenv before running tests.
     required: false
     default: "false"
-
 runs:
   using: composite
   steps:
@@ -23,6 +22,10 @@ runs:
         echo "HOME=/github/home" >> "${GITHUB_ENV}"
         echo "HF_HOME=/github/home/.cache/huggingface" >> "${GITHUB_ENV}"
         echo "XDG_CACHE_HOME=${OMNI_CI_HOME}/.cache" >> "${GITHUB_ENV}"
+        # SGLang builds DeepGEMM, Triton and its own JIT kernels under this
+        # directory at first use. Share it across PRs like the wheel cache, so
+        # a new pin is built once per host and every later job starts warm.
+        echo "SGLANG_CACHE_DIR=/data/omni-ci/sglang-cache" >> "${GITHUB_ENV}"
         # The CI venv inherits the image's Python/Torch/FlashInfer environment,
         # so it can safely reuse the architecture-specific prewarmed cache.
         echo "FLASHINFER_WORKSPACE_BASE=/root" >> "${GITHUB_ENV}"
@@ -73,6 +76,12 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"
+
+    - name: Export Rust router paths
+      shell: bash
+      run: |
+        binary="$(bash .github/scripts/prepare_rust_router.sh path)"
+        echo "SGLANG_OMNI_ROUTER_BIN=${binary}" >> "${GITHUB_ENV}"
 
     - name: Kill GPU processes
       shell: bash

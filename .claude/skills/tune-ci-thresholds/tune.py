@@ -80,41 +80,6 @@ _CRASH_SIGS = (
 )
 
 
-def _flashinfer_cache_dirs(env: dict[str, str] | None = None) -> list[Path]:
-    env = env or os.environ
-    candidates = [
-        Path(env.get("XDG_CACHE_HOME", "")) / "flashinfer"
-        if env.get("XDG_CACHE_HOME")
-        else None,
-        Path(env.get("HOME", "")) / ".cache" / "flashinfer"
-        if env.get("HOME")
-        else None,
-        _CI_HOME / ".cache" / "flashinfer",
-    ]
-    seen: set[Path] = set()
-    paths: list[Path] = []
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        path = candidate.expanduser()
-        if path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
-    return paths
-
-
-def _cleanup_flashinfer_cache(env: dict[str, str] | None = None) -> None:
-    # Wipe only this job's FlashInfer JIT dir so kernels recompile cleanly.
-    # Concurrent calibration groups must use distinct XDG_CACHE_HOME / HOME
-    # partitions; never delete every candidate path (that races live workers).
-    env = env or os.environ
-    cache_dirs = _flashinfer_cache_dirs(env)
-    if not cache_dirs:
-        return
-    shutil.rmtree(cache_dirs[0], ignore_errors=True)
-
-
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
 # assume the metric is read from the result JSON in its native unit
@@ -536,7 +501,7 @@ def precheck_cpuset_gate(host: dict | None) -> tuple[list[str], list[str], dict]
     if not pinned and not explicit:
         errs.append(
             "TUNE_GPU_INCLUDE and OMNI_CI_CPUSET are both unset — calibration "
-            "must name the GPU lane so it can bind the matching 32-core cpuset"
+            "must name the GPU lane so it can bind the matching NUMA-local cpuset"
         )
         detail["status"] = "missing_gpu_group"
         return errs, warns, detail
@@ -670,7 +635,7 @@ def read_pins():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     pins = {}
     for dep in data["project"]["dependencies"]:
-        m = re.match(r'^\s*"?([A-Za-z0-9_\-]+)"?\s*==\s*([^\s,"]+)', dep)
+        m = re.match(r'^\s*"?([A-Za-z0-9_\-]+)"?\s*==\s*([^;\s,"]+)', dep)
         if m: pins[m.group(1).lower()] = m.group(2)
     return pins
 
@@ -707,6 +672,31 @@ def venv_version(py, mod):
     return r.stdout.strip()
 
 
+def rust_router_info() -> tuple[dict | None, str | None]:
+    configured = os.environ.get("SGLANG_OMNI_ROUTER_BIN", "").strip()
+    if not configured:
+        return None, "SGLANG_OMNI_ROUTER_BIN is not set"
+    binary = Path(configured).expanduser()
+    if not binary.is_file():
+        return None, f"Rust router binary not found: {binary}"
+    if not os.access(binary, os.X_OK):
+        return None, f"Rust router binary is not executable: {binary}"
+    try:
+        result = subprocess.run(
+            [str(binary), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"Rust router version check failed: {exc}"
+    version = result.stdout.strip()
+    if result.returncode != 0 or not version.startswith("sgl-omni-router "):
+        detail = result.stderr.strip() or version or f"exit {result.returncode}"
+        return None, f"Rust router version check failed: {detail}"
+    return {"path": str(binary.resolve()), "version": version}, None
+
+
 def git_info():
     q = lambda c: subprocess.run(c, cwd=REPO_ROOT, capture_output=True,
                                   text=True, check=False).stdout.strip()
@@ -734,10 +724,11 @@ def environment_fingerprint(py: str, cfg: dict, versions: dict) -> dict:
     topology = _command_output(["nvidia-smi", "topo", "-m"])
     env_keys = (
         "HOME", "OMNI_CI_HOME", "HF_HOME", "HF_HUB_DISABLE_XET",
-        "XDG_CACHE_HOME", "HF_ENDPOINT", "TORCHINDUCTOR_CACHE_DIR",
+        "XDG_CACHE_HOME", "SGLANG_CACHE_DIR", "HF_ENDPOINT",
+        "TORCHINDUCTOR_CACHE_DIR", "FLASHINFER_WORKSPACE_BASE",
         "FLASHINFER_DISABLE_VERSION_CHECK", "SEEDTTS_SIM_CACHE_DIR",
         "TUNE_GPU_INCLUDE", "TUNE_GPU_EXCLUDE", "LD_LIBRARY_PATH",
-        "OMNI_CI_CPUSET", "PYTORCH_ALLOC_CONF",
+        "OMNI_CI_CPUSET", "PYTORCH_ALLOC_CONF", "SGLANG_OMNI_ROUTER_BIN",
     )
     image_digest = (
         os.environ.get("OMNI_CI_IMAGE_DIGEST")
@@ -1778,6 +1769,11 @@ def precheck(
         return _summary(errs, warns)
     gi = git_info()
     print(f"git: {gi['branch']} @ {gi['sha'][:8]}{' (dirty)' if gi['dirty'] else ''}")
+    router, router_error = rust_router_info()
+    if router_error:
+        errs.append(router_error)
+    else:
+        print(f"  Rust router: {router['version']} ({router['path']})")
     if not Path(py).exists():
         if src == "default" and tried and len(tried) > 1:
             errs.append(
@@ -1954,6 +1950,7 @@ def precheck(
             timestamp=now_iso(), model=cfg["name"],
             venv_python=py, venv_source=src, versions=versions,
             pins={"sglang": pins.get("sglang"), "torch": pins.get("torch")},
+            rust_router=router,
             git=gi, nvidia_smi_L=smi, gpu_summary=gpu_summary(smi),
             cpuset=cpuset_detail,
             environment_fingerprint="environment-fingerprint.json",
@@ -3386,6 +3383,9 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     # extra_env is derived from test filename at discover — all stages
     # sharing a test file have identical extra_env; just use the first.
     env = os.environ.copy()
+    # Keep worker and router output in the one pytest log followed by Tab B,
+    # even when the calibration shell inherits GitHub Actions variables.
+    env["OMNI_CI_STREAM_SERVER_LOGS"] = "1"
     # Never inherit a shell-level CUDA_VISIBLE_DEVICES — CI gets a fresh
     # container per stage; tune.py picks GPUs after cleanup instead.
     env.pop("CUDA_VISIBLE_DEVICES", None)
@@ -3449,7 +3449,6 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
                   f"(calibration continues)")
             time.sleep(_GPU_WAIT_POLL_S)
             continue
-        _cleanup_flashinfer_cache(env)
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
         picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label, host)

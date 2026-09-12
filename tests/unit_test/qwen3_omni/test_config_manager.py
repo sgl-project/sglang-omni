@@ -7,9 +7,11 @@ import pytest
 
 from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory_args
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.models.qwen3_omni import config as qwen3_omni_config
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
+    Qwen3OmniSpeechPipelineConfig,
 )
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
@@ -247,3 +249,94 @@ def test_qwen3_omni_h100_bf16_config_enables_speech_prefill_graph() -> None:
     assert overrides["cuda_graph_backend_prefill"] == "breakable"
     assert "cuda_graph_bs_prefill" not in overrides
     assert overrides["cuda_graph_max_bs_prefill"] == 2048
+
+
+def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
+    config_path = (
+        _REPO_ROOT / "examples" / "configs" / "qwen3_omni_colocated_gfx950_bf16.yaml"
+    )
+
+    config = ConfigManager.from_file(str(config_path)).config
+    plan = build_stage_placement_plan(config)
+    overrides = _stage(config, "thinker").engine.overrides()
+
+    assert isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig)
+    assert config.name == "qwen3-omni-colocated-gfx950-bf16"
+    assert "prefill_attention_backend" not in overrides
+    assert overrides["cuda_graph_backend_prefill"] == "disabled"
+    assert plan.gpus[0].total_gpu_memory_fraction == pytest.approx(0.94)
+    assert {
+        name: _stage(config, name).gpu_memory_fraction
+        for name in (
+            "image_encoder",
+            "audio_encoder",
+            "thinker",
+            "talker_ar",
+            "code2wav",
+        )
+    } == {
+        "image_encoder": pytest.approx(0.02),
+        "audio_encoder": pytest.approx(0.02),
+        "thinker": pytest.approx(0.78),
+        "talker_ar": pytest.approx(0.10),
+        "code2wav": pytest.approx(0.02),
+    }
+
+
+@pytest.mark.parametrize(
+    ("is_rocm", "expected_env"),
+    [
+        (True, {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
+        (False, {}),
+    ],
+)
+def test_qwen3_omni_talker_stage_keeps_greedy_selection_off_aiter_on_rocm(
+    monkeypatch: pytest.MonkeyPatch,
+    is_rocm: bool,
+    expected_env: dict[str, str],
+) -> None:
+    """aiter's greedy_sample is wrong below 16384 vocab entries; the Talker
+    codec head has 3072, so the ROCm Talker process falls back to torch.argmax."""
+    monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
+
+    for config_cls in (
+        Qwen3OmniSpeechPipelineConfig,
+        Qwen3OmniSpeechColocatedPipelineConfig,
+    ):
+        config = config_cls(model_path="dummy")
+
+        assert _stage(config, "talker_ar").env == expected_env
+        assert _stage(config, "thinker").env == {}
+
+
+def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:
+    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_speech_xpu_b60.yaml"
+
+    manager = ConfigManager.from_file(str(config_path))
+    config = manager.config
+    plan = build_stage_placement_plan(config)
+    topology = build_compiled_process_topology(config)
+
+    assert isinstance(config, Qwen3OmniSpeechPipelineConfig)
+    assert config.name == "qwen3-omni-speech-xpu-b60"
+    assert [group.name for group in topology.groups] == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "decode",
+        "talker_ar",
+        "code2wav",
+    ]
+
+    thinker = _stage(config, "thinker")
+    assert thinker.tp_size == 8
+    assert thinker.gpu == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert thinker.engine.mem_fraction_static == pytest.approx(0.55)
+    assert _stage(config, "talker_ar").engine.mem_fraction_static == pytest.approx(0.35)
+
+    assert _stage(config, "talker_ar").gpu == 6
+    assert _stage(config, "code2wav").gpu == 7
+    assert _stage(config, "code2wav").gpu_memory_fraction == pytest.approx(0.05)
+    assert plan.stages["thinker"].gpu_ids == tuple(range(8))
+    assert plan.stages["talker_ar"].gpu_ids == (6,)
+    assert plan.stages["code2wav"].gpu_ids == (7,)

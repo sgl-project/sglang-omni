@@ -136,7 +136,6 @@ def test_record_rollout_logprobs_requires_return_flag() -> None:
 
 def test_sample_next_token_ids_requires_sampler_logprobs_when_requested() -> None:
     runner = object.__new__(ModelRunner)
-    runner._apply_repetition_penalty = lambda *args: None
     runner._apply_codec_suppress_tokens = lambda *args: None
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(

@@ -25,7 +25,10 @@ def configure_talker_server_args(
     after the model worker is constructed.
     """
 
-    want_cuda_graph = not bool(server_args.disable_cuda_graph)
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+
+    cfg = resolved_view(server_args)
+    want_cuda_graph = not bool(cfg.disable_cuda_graph)
     overrides = {
         "disable_radix_cache": True,
         "chunked_prefill_size": 0,
@@ -129,7 +132,7 @@ class QwenTalkerScheduler(OmniScheduler):
             batch.out_cache_loc = None
         for req in batch.reqs:
             req.decode_batch_idx -= 1
-            req.kv_committed_len -= 1
+            req.kv.kv_committed_len -= 1
             req.kv.kv_allocated_len -= 1
         batch.seq_lens.sub_(1)
         batch.seq_lens_cpu.sub_(1)

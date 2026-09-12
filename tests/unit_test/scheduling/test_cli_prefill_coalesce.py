@@ -29,6 +29,7 @@ from sglang_omni.models.moss_transcribe_diarize.config import (
 from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniPipelineConfig
+from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.utils.imports import import_string
 
 
@@ -56,6 +57,7 @@ def _ar_stage_args(config: PipelineConfig, stage_name: str) -> dict[str, object]
     [
         (HiggsTtsPipelineConfig, "tts_engine"),
         (MossTTSLocalPipelineConfig, "tts_engine"),
+        (Qwen3TTSPipelineConfig, "tts_engine"),
         (MossTranscribeDiarizePipelineConfig, "asr"),
         (FunASRPipelineConfig, "asr"),
         (Qwen3ASRPipelineConfig, "asr"),

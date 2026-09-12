@@ -59,6 +59,15 @@ Start replicas one after another and give each an explicit memory budget
 reasons described under the script recipe below. Route traffic with the
 [Omni Router](omni_router.md).
 
+Process-level replicas can size their pools in bytes instead, with
+`engine.kv_cache_bytes` per stage and `total_reserve_bytes` for the replica's
+full footprint. The budgets are then checked against the card before any
+replica is spawned: colocation requires a declared footprint, the summed
+reserves and fractions must fit the card, and the summed KV pools alone must
+too. `engine.kv_cache_bytes` and `engine.max_total_tokens` are mutually
+exclusive on one stage, since the lower token cap would silently shrink the
+byte-derived pool.
+
 The runtime owns the full lifecycle. Every managed process is verified against
 the daemon's client list before serving starts, because a process that misses
 the pipe directory silently falls back to time slicing. A watchdog fails the
@@ -95,8 +104,10 @@ The state root is created with mode `0700`; an existing root must already be a
 non-symlink directory owned by the current user with that mode. Native MPS
 rejects `CUDA_MPS_PIPE_DIRECTORY` in the parent, pipeline, or stage environment
 instead of overwriting or joining an external daemon. It likewise rejects
-`SGLANG_OMNI_WEIGHT_SHARE` in those locations: CUDA IPC weight sharing remains
-the one deployment shape that still uses `examples/mps_dp/launch.sh` below.
+`SGLANG_OMNI_WEIGHT_SHARE` in those locations: inside one pipeline, CUDA IPC
+weight sharing is requested with `--weight-share on` and the runtime assigns
+replica roles itself, while the `examples/mps_dp/launch.sh` recipe below sets
+that variable for its own separate serve processes.
 
 ## Deploy
 
@@ -135,7 +146,12 @@ Identical `--mem-fraction-static` flags do **not** mean identical KV capacity. `
 
 ![What same-GPU DP spends in VRAM and what it reclaims](../_static/image/same-gpu-dp-vram.svg)
 
-Memory profiling does not coordinate KV allocation across independent replica processes. For `N > 1`, the launcher therefore requires one common `max_total_tokens` value, either from the pipeline config or from `MAX_TOTAL_TOKENS`. SGLang treats this value as an upper bound; the launcher rejects startup unless every replica resolves exactly that capacity. The cap applies independently to each replica; it is not divided across the pool. It is also independent of the request-level `max_new_tokens` limit and does not distribute requests between replicas.
+Memory profiling does not coordinate KV allocation across independent replica processes. For `N > 1`, every replica must resolve the same KV capacity, which can come from either sizing knob but never both:
+
+* `engine.kv_cache_bytes` in the pipeline config sizes every replica's pool deterministically; the launcher verifies all replicas resolved the same capacity and rejects a simultaneous `MAX_TOTAL_TOKENS`, since a lower token cap would silently shrink the byte-derived pool.
+* Without a byte budget, the launcher requires one common `max_total_tokens` value, from the pipeline config or from `MAX_TOTAL_TOKENS`, and rejects startup unless every replica resolves exactly that capacity.
+
+Either cap applies independently to each replica; it is not divided across the pool. It is also independent of the request-level `max_new_tokens` limit and does not distribute requests between replicas.
 
 The H100 Higgs DP3 profile uses `100000` tokens per replica. The H200 Higgs DP8 profile uses `30000` tokens per replica, preserving GPU memory headroom for non-KV runtime allocations, including the colocated audio encoder and vocoder. These values are specific to their configurations, not universal hardware defaults. Recalculate the cap after changing the model, GPU, runtime, replica count, memory settings, or CUDA-graph settings. If a replica cannot allocate the common cap, lower it or reduce the replica count.
 
@@ -178,6 +194,8 @@ The throughput results in the table and H100 case study are from an 80 GB H100 w
 ## Shared weights across replicas (opt-in, default off)
 
 By default every replica loads its own full copy of the AR backbone (7.60 GiB for Higgs 3-4B — about a third of a DP3 footprint). Since all replicas run the same read-only weights on the same GPU, the launcher can instead share **one** copy over CUDA IPC:
+
+> If your replicas live inside one pipeline (`processes.<name>.num_replicas` with a repeated `replica_devices` entry), prefer `sgl-omni serve --weight-share on`: the runtime assigns leader and follower roles, orders startup and shutdown around them, and needs no environment variable. See [Process Topology, Replicas, and GPU Sharing](process_topology.md). The `WEIGHT_SHARE=1` recipe below covers the other shape, several independent `serve` processes supervised by the script; the architecture support table applies to both.
 
 **Scope and contract.** This is opt-in (`WEIGHT_SHARE=1`, default off) and gated to **validated architectures with tp=pp=1**; anything else is rejected before any resource is created, because a model that writes per-request state into a shared parameter would corrupt co-located replicas. An architecture audit alone does not enable sharing: a model is supported only after the documented launcher command passed end-to-end validation (shared N=2 boot under MPS, health, attach verification, concurrent-request correctness, clean teardown) at the current revision. `WEIGHT_SHARE=1` requires `CONFIG`, so the supported-config check runs in preflight, before the MPS daemon, state directory, or any replica exists. Each supported architecture carries a share policy: registered tensors the model writes at serving time (per-step decode staging scratch) are classified **replica-private** — every replica keeps its own storage for them and only the immutable weights alias one storage. Leader and follower derive the classification from the same policy and fail closed on any disagreement (it is part of the manifest). Sharing is a whole-group lifecycle: the leader must outlive followers, restart the whole run together (never a single replica), online weight updates are refused while sharing is active, and each follower requires an explicit `MAX_TOTAL_TOKENS` (its dummy weights are freed before KV profiling, so KV sizing must be pinned). `autodp.sh` sizes a **maximum *estimated*** DP (boot-validated), not an absolute safe maximum; because its sizing assumes sharing, it defaults `WEIGHT_SHARE=1`, while `launch.sh` itself defaults off.
 

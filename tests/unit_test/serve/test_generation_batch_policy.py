@@ -12,6 +12,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     get_decode_cuda_graph_bs,
     get_decode_cuda_graph_max_bs,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 
@@ -205,3 +206,31 @@ def test_build_generation_batch_overrides_rebinds_default_caps_when_max_changes(
     assert overrides["cuda_graph_max_bs"] == 32
     assert overrides["torch_compile_max_bs"] == 32
     assert overrides["cuda_graph_bs"] == [1, 2, 4, 8, 12, 16, 24, 32]
+
+
+def test_a_null_flat_prefill_backend_override_is_not_a_selection() -> None:
+    """SGLang skips a None flat selector, so no backend lock exists for the
+    attestation to enforce.
+    """
+    assert not operator_selected_prefill_backend(None)
+    assert not operator_selected_prefill_backend({})
+    assert not operator_selected_prefill_backend({"cuda_graph_backend_prefill": None})
+    assert not operator_selected_prefill_backend({"cuda_graph_bs_prefill": []})
+
+
+def test_a_named_prefill_backend_override_is_a_selection() -> None:
+    assert operator_selected_prefill_backend(
+        {"cuda_graph_backend_prefill": "breakable"}
+    )
+    assert operator_selected_prefill_backend({"cuda_graph_backend_prefill": "disabled"})
+
+
+def test_a_nested_prefill_backend_key_is_a_selection_at_any_value() -> None:
+    """SGLang locks every key present in the nested JSON form."""
+    for backend in ("breakable", None):
+        overrides = {"cuda_graph_config": {"prefill": {"backend": backend}}}
+        assert operator_selected_prefill_backend(overrides)
+
+    assert not operator_selected_prefill_backend(
+        {"cuda_graph_config": {"prefill": {"bs": [4, 8]}}}
+    )

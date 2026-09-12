@@ -44,7 +44,6 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
             name=IMAGE_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_image_encoder_executor",
-            factory=FactoryArgs(device="cuda"),
             gpu=0,
             next=THINKER_STAGE,
         ),

@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
 from sglang_omni.client.audio import audio_encoding_unavailable_reason
+from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS, CustomVoiceConfig
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
@@ -36,9 +37,9 @@ from sglang_omni.serve.protocol import (
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
     bad_request,
-    internal_error,
     openai_error_payload,
     service_unavailable,
+    speech_generation_error,
 )
 from sglang_omni.serve.speech_limits import MAX_REFERENCE_AUDIO_BYTES
 
@@ -55,7 +56,6 @@ _TTS_TASK_TYPE_ALIASES = {
     task_type.replace("_", "").replace("-", "").lower(): task_type
     for task_type in SUPPORTED_TTS_TASK_TYPES
 }
-MAX_SPEECH_INPUT_CHARS = 4096
 _REFERENCE_AUDIO_FIELDS = ("audio_path", "ref_audio", "audio")
 _ReferenceCacheKey = tuple[Any, ...]
 
@@ -83,10 +83,12 @@ class SpeechRequestValidator:
         default_model: str,
         requires_uploaded_voice_for_named_voice: bool = False,
         supports_uploaded_voice_references: bool = True,
+        custom_voice_config: CustomVoiceConfig | None = None,
         required_speech_reference_count: int | None = None,
         speech_reference_text_required: bool = False,
         speech_reference_text_excludes_instructions: bool = False,
         additional_speech_languages: frozenset[str] = frozenset(),
+        max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
         allowed_local_media_path: str | Path | None = None,
         allowed_media_domains: list[str] | None = None,
         voice_store: "SpeakerSampleStore | None" = None,
@@ -99,6 +101,14 @@ class SpeechRequestValidator:
             and required_speech_reference_count < 1
         ):
             raise ValueError("required_speech_reference_count must be greater than 0")
+        if max_speech_input_chars is not None and (
+            isinstance(max_speech_input_chars, bool)
+            or not isinstance(max_speech_input_chars, int)
+            or max_speech_input_chars < 1
+        ):
+            raise ValueError(
+                "max_speech_input_chars must be a positive integer or None"
+            )
         self.default_model = default_model
         self.requires_uploaded_voice_for_named_voice = (
             requires_uploaded_voice_for_named_voice
@@ -107,8 +117,20 @@ class SpeechRequestValidator:
             supports_uploaded_voice_references
             or requires_uploaded_voice_for_named_voice
         )
+        self.custom_voice_config = custom_voice_config
+        if custom_voice_config is not None:
+            # Note(yzxiao): Checkpoint speakers take precedence over uploaded
+            # names, including when a stage overrides a Base model_path.
+            self.requires_uploaded_voice_for_named_voice = False
+            self.supports_uploaded_voice_references = False
+        self._speaker_keys = (
+            frozenset(name.casefold() for name in custom_voice_config.speakers)
+            if custom_voice_config is not None
+            else frozenset()
+        )
         self.required_speech_reference_count = required_speech_reference_count
         self.speech_reference_text_required = speech_reference_text_required
+        self.max_speech_input_chars = max_speech_input_chars
         self.speech_reference_text_excludes_instructions = (
             speech_reference_text_excludes_instructions
         )
@@ -210,9 +232,10 @@ class SpeechRequestValidator:
     def validate_input_text(self, input_text: str) -> None:
         if not isinstance(input_text, str) or not input_text.strip():
             raise bad_request("input must be a non-empty string", param="input")
-        if len(input_text) > MAX_SPEECH_INPUT_CHARS:
+        limit = self.max_speech_input_chars
+        if limit is not None and len(input_text) > limit:
             raise bad_request(
-                f"input must be at most {MAX_SPEECH_INPUT_CHARS} characters",
+                f"input must be at most {limit} characters",
                 param="input",
             )
 
@@ -239,6 +262,7 @@ class SpeechRequestValidator:
 
         if request.task_type is not None:
             updates["task_type"] = _normalize_task_type(request.task_type)
+        self._validate_custom_voice_request(request, task_type=updates.get("task_type"))
         if request.language is not None:
             updates["language"] = self._normalize_language(request.language)
 
@@ -251,6 +275,37 @@ class SpeechRequestValidator:
         )
         _validate_non_negative_int(request.seed, param="seed")
         return updates
+
+    def _validate_custom_voice_request(
+        self,
+        request: CreateSpeechRequest | CreateSpeechBatchRequest,
+        *,
+        task_type: str | None,
+    ) -> None:
+        config = self.custom_voice_config
+        if config is None:
+            return
+        if task_type is not None and task_type != config.task_type:
+            raise bad_request(
+                f"task_type must be one of: {config.task_type}", param="task_type"
+            )
+        for field in ("ref_audio", "ref_text", "x_vector_only_mode"):
+            if getattr(request, field) is not None:
+                raise bad_request(
+                    f"{field} is not supported by this model", param=field
+                )
+        if request.references:
+            raise bad_request(
+                "references are not supported by this model", param="references"
+            )
+        name = request.voice.strip().casefold()
+        if name in {"", "default"} or name in self._speaker_keys:
+            return
+        supported = ", ".join(("default", *config.speakers))
+        raise bad_request(
+            f"Unknown voice '{request.voice}'. Supported voices: {supported}",
+            param="voice",
+        )
 
     def _normalize_language(self, value: str) -> str:
         normalized = self._tts_language_aliases.get(value.strip().lower())
@@ -427,7 +482,10 @@ class SpeechRequestValidator:
                     )
                 else:
                     results[index] = _batch_error_result(
-                        index, internal_error(str(task_result))
+                        index,
+                        _batch_item_error(
+                            speech_generation_error(task_result), index=index
+                        ),
                     )
 
         final_results = [result for result in results if result is not None]
@@ -473,7 +531,7 @@ class SpeechRequestValidator:
                 allow_format_fallback=False,
             )
         except ClientError as exc:
-            raise internal_error(str(exc)) from exc
+            raise speech_generation_error(exc) from exc
         return SpeechBatchResult(
             index=index,
             status="success",
@@ -568,6 +626,7 @@ class SpeechRequestValidator:
             if batch.task_type is not None
             else None
         )
+        self._validate_custom_voice_request(batch, task_type=task_type)
         if batch.language is not None:
             self._normalize_language(batch.language)
         _validate_positive_int(batch.max_new_tokens, param="max_new_tokens")
@@ -673,7 +732,12 @@ class SpeechRequestValidator:
                     raise bad_request(
                         f"{field_name} must be a number", param=field_name
                     )
-        for field_name in ("stream", "x_vector_only_mode"):
+        for field_name in (
+            "stream",
+            "x_vector_only_mode",
+            "stream_codec_output",
+            "suppress_bootstrap_silence",
+        ):
             if field_name in payload and payload[field_name] is not None:
                 if not isinstance(payload[field_name], bool):
                     raise bad_request(
@@ -787,6 +851,10 @@ def _build_tts_params(
         tts_params["uploaded_voice_created_at"] = uploaded_voice.voice.created_at
     if request.x_vector_only_mode is not None:
         tts_params["x_vector_only_mode"] = request.x_vector_only_mode
+    if request.stream_codec_output is not None:
+        tts_params["stream_codec_output"] = request.stream_codec_output
+    if request.suppress_bootstrap_silence is not None:
+        tts_params["suppress_bootstrap_silence"] = request.suppress_bootstrap_silence
     if request.initial_codec_chunk_frames is not None:
         tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
             request.initial_codec_chunk_frames

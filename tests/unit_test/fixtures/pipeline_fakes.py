@@ -262,6 +262,10 @@ def runtime_factory_without_total_budget(
     }
 
 
+def runtime_factory_without_gpu_id(*, model_path: str) -> dict[str, Any]:
+    return {"model_path": model_path}
+
+
 def runtime_factory_with_device(
     *, model_path: str, device: Any = "cuda:0"
 ) -> dict[str, Any]:
@@ -568,3 +572,12 @@ def make_noop_projector(marker: str) -> Callable[[StagePayload], StagePayload]:
         )
 
     return _project
+
+
+def make_scheduler_consuming_kv_budget(**kwargs: Any) -> FakeScheduler:
+    from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+
+    scheduler = FakeScheduler()
+    scheduler.consumed_kv_cache_bytes = consume_stage_kv_cache_bytes()
+    scheduler.factory_kwargs = kwargs
+    return scheduler

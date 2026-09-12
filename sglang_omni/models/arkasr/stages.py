@@ -9,7 +9,8 @@ from typing import Any
 def create_sglang_arkasr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
     encoder_max_batch_size: int = 8,
@@ -33,6 +34,7 @@ def create_sglang_arkasr_executor(
     pre_lm_max_batch_wait_ms: int = 0,
     pre_lm_max_pending: int = 32,
     enable_encoder_cuda_graph: bool = False,
+    stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
 ):
     from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
@@ -62,9 +64,11 @@ def create_sglang_arkasr_executor(
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         pre_lm_max_pending=pre_lm_max_pending,
         enable_encoder_cuda_graph=enable_encoder_cuda_graph,
+        stream_emit_interval_s=stream_emit_interval_s,
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,
     )

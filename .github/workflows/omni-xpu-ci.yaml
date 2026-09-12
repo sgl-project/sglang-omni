@@ -1,0 +1,286 @@
+name: XPU CI
+
+# Per-PR XPU CI for sglang-omni.
+#
+# DAG:
+#   check-changes -> preflight -> xpu-ci
+#
+# check-changes (ubuntu-latest) runs dorny/paths-filter and emits two
+# booleans: `xpu` gates the whole pipeline so PRs that touch no XPU path
+# skip cleanly (skip = pass, so this workflow can safely become a required
+# status check), and `image` distinguishes source-only PRs from PRs that
+# change image inputs (docker/xpu.Dockerfile or pyproject_xpu.toml).
+#
+# preflight (ubuntu-latest) enforces the PR gate: fetches live label/draft
+# state, blocks draft PRs, requires the `run-ci` label, and runs
+# .github/scripts/pr_ci_gate.py for lint + mergeability. It pins the exact
+# SHA that xpu-ci checks out, so a force-push mid-run cannot split
+# preflight and test across two commits.
+#
+# xpu-ci (self-hosted intel-omni-bmg) sudo-cleans the workspace first to
+# reap root-owned droppings from prior bind-mount runs that would otherwise
+# fail actions/checkout, then builds locally when image inputs changed,
+# otherwise pulls intel/sglang-omni-xpu-dev:img-<fp>, where <fp> is a
+# 12-char sha256 of docker/xpu.Dockerfile + pyproject_xpu.toml -- so the
+# pulled image is content-bound to the PR's own inputs and cannot drift
+# from a stale :latest. Falls back to a local build if the fingerprint is
+# not yet published (registry outage, or a source-only PR racing ahead of
+# the release workflow after an image-input merge). It bind-mounts the
+# PR source at /workspace/sglang-omni-pr
+# and refreshes the editable install so tests always exercise PR code, runs
+# the container with ZE_AFFINITY_MASK resolved from the runner-scoped env
+# $XPU_CI_MASK (defaults to "6,7" if unset), then runs the XPU unit tests
+# and unconditionally removes the container and the run-owned image tag on completion.
+# Baking a distinct $XPU_CI_MASK into each runner process on a multi-card
+# host lets several runners share the machine and claim disjoint L0 card
+# pairs, so multiple PRs can run in parallel there; hosts that share cards
+# with other workloads (like the intel-omni-bmg node that leaves 0-5 free
+# for co-tenants) simply omit the env and inherit the "6,7" default. The
+# image consumed on the pull path is published by omni-xpu-docker-release.yaml on
+# merges that change the same image inputs.
+#
+# Runtime prerequisites (fleet-side, not enforced by this workflow):
+#   * self-hosted runner labeled [self-hosted, intel-omni-bmg] with /dev/dri
+#     exposed, docker daemon reachable to the runner user, and the runner
+#     user in the render/video groups;
+#   * (optional) $XPU_CI_MASK in the runner process's env-file set to the
+#     L0 card pair that runner should claim (e.g. "0,1"); unset -> "6,7";
+#   * intel/sglang-omni-xpu-dev:img-<fp> published on Docker Hub for the
+#     current main's <fp> (or the pull path falls back to a local build --
+#     see omni-xpu-docker-release.yaml).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: xpu-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  check-changes:
+    name: xpu-ci-changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      xpu: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.xpu }}
+      image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            xpu:
+              - 'sglang_omni/**'
+              - 'tests/unit_test/xpu/**'
+              - 'pyproject_xpu.toml'
+              - 'scripts/xpu/**'
+              - 'docker/xpu.Dockerfile'
+              - '.github/workflows/omni-xpu-ci.yaml'
+            image:
+              - 'docker/xpu.Dockerfile'
+              - 'pyproject_xpu.toml'
+
+  preflight:
+    name: xpu-ci-gate
+    needs: check-changes
+    if: needs.check-changes.outputs.xpu == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      labels: ${{ steps.pr.outputs.labels || '[]' }}
+      exact_sha: ${{ steps.meta.outputs.exact_sha }}
+    steps:
+      - name: Fetch latest PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            core.setOutput("draft", pr.data.draft ? "true" : "false");
+
+      - name: Log PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          echo "PR labels: ${{ steps.pr.outputs.labels }}"
+          echo "PR draft: ${{ steps.pr.outputs.draft }}"
+
+      - name: Block draft PR
+        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        run: |
+          echo "PR is draft. Blocking XPU CI."
+          exit 1
+
+      - name: Require run-ci label
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
+            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into XPU CI."
+            exit 1
+          fi
+
+      - name: Checkout workflow scripts
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Checkout workflow scripts for manual dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+
+      - name: Resolve exact SHA
+        id: meta
+        shell: bash
+        env:
+          EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          echo "exact_sha=${EXACT_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+      - name: Manual dispatch preflight
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
+
+  xpu-ci:
+    name: xpu-ci (device_layer)
+    needs: [check-changes, preflight]
+    if: needs.check-changes.outputs.xpu == 'true' && needs.preflight.result == 'success'
+    runs-on: [self-hosted, intel-omni-bmg]
+    timeout-minutes: 120
+    env:
+      IMAGE_TAG: sglang-omni-xpu-ci:${{ github.event.pull_request.number || github.run_id }}-${{ needs.preflight.outputs.exact_sha }}
+      CONTAINER_NAME: ci_omni_xpu_${{ github.event.pull_request.number || github.run_id }}_${{ github.run_attempt }}
+      PUBLISHED_IMAGE_REPO: intel/sglang-omni-xpu-dev
+    steps:
+      - name: Force-clean workspace (root-owned files from prior runs)
+        shell: bash
+        run: sudo rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.[!.]* 2>/dev/null || true
+
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.exact_sha }}
+          fetch-depth: 0
+
+      - name: Build XPU docker image
+        if: needs.check-changes.outputs.image == 'true'
+        timeout-minutes: 90
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker build -f docker/xpu.Dockerfile -t "${IMAGE_TAG}" .
+
+      - name: Compute image fingerprint
+        if: needs.check-changes.outputs.image != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          fp=$(sha256sum docker/xpu.Dockerfile pyproject_xpu.toml | sha256sum | cut -c1-12)
+          echo "PUBLISHED_IMAGE=${PUBLISHED_IMAGE_REPO}:img-${fp}" >> "$GITHUB_ENV"
+
+      - name: Pull XPU docker image
+        id: pull
+        if: needs.check-changes.outputs.image != 'true'
+        continue-on-error: true
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker pull "${PUBLISHED_IMAGE}"
+          docker tag "${PUBLISHED_IMAGE}" "${IMAGE_TAG}"
+
+      - name: Fallback local build (pull failed or timed out)
+        if: needs.check-changes.outputs.image != 'true' && steps.pull.outcome == 'failure'
+        timeout-minutes: 90
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker build -f docker/xpu.Dockerfile -t "${IMAGE_TAG}" .
+
+      - name: Resolve XPU affinity mask
+        shell: bash
+        run: echo "ZE_AFFINITY_MASK=${XPU_CI_MASK:-6,7}" >> "$GITHUB_ENV"
+
+      - name: Start CI container
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+          docker run -dt \
+            --name "${CONTAINER_NAME}" \
+            --device /dev/dri \
+            --group-add video \
+            --group-add render \
+            --shm-size 32g \
+            -v "${GITHUB_WORKSPACE}:/workspace/sglang-omni-pr" \
+            -e ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK}" \
+            "${IMAGE_TAG}" \
+            sleep infinity
+
+      - name: Refresh sglang-omni editable install from PR source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
+            bash -c "cp pyproject_xpu.toml pyproject.toml && pip install --no-cache-dir --no-deps --no-build-isolation -e ."
+
+      - name: Verify XPU state
+        shell: bash
+        run: |
+          docker exec "${CONTAINER_NAME}" python -c "
+          import sys, torch
+          ok = hasattr(torch, 'xpu') and torch.xpu.is_available()
+          print(f'torch {torch.__version__} xpu avail: {ok}')
+          sys.exit(0 if ok else 1)
+          "
+          docker exec "${CONTAINER_NAME}" bash -c "command -v sycl-ls >/dev/null && sycl-ls || true"
+
+      - name: Run Unit Test
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
+            pip install --no-cache-dir pytest pytest-asyncio
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
+            pytest tests/unit_test/xpu/test_device_layer.py -v -x
+
+      - name: Cleanup container and image
+        if: always()
+        shell: bash
+        run: |
+          set -eux
+          if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER_NAME}"; then
+            docker exec "${CONTAINER_NAME}" bash -c '
+              pkill -TERM -f "[s]glang|[r]un_suite|[p]ython3.*[t]est_" 2>/dev/null || true
+              for _ in $(seq 1 30); do
+                pgrep -f "[s]glang::|[s]glang.launch_server" >/dev/null || break
+                sleep 1
+              done
+              pkill -KILL -f "[s]glang|[r]un_suite" 2>/dev/null || true
+            ' || true
+          fi
+          docker rm -f "${CONTAINER_NAME}" || true
+          docker rmi -f "${IMAGE_TAG}" || true
