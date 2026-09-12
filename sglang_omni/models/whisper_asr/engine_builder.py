@@ -11,6 +11,7 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -212,6 +213,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.context_length = 0
         self.decoder_context_len = 0
         self.audio_encoder_service: Any | None = None
+        # Assigned by AsrEngineBuilder.build before generation_defaults runs.
+        self.device: str | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -275,6 +278,12 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
     def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
         del server_args
+        if self._uses_mlx():
+            # The pre-LM service caches Torch encoder states and drives encoder
+            # CUDA graphs. On MLX the runner owns encoding, and its output goes
+            # straight into the per-request cross-attention cache.
+            self.audio_encoder_service = None
+            return
         if not self.enable_pre_lm_encoder:
             return
 
@@ -306,6 +315,41 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             service.pin_host_memory,
         )
 
+    @staticmethod
+    def _uses_mlx() -> bool:
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        return bool(use_mlx())
+
+    def _uses_torch_mps(self) -> bool:
+        """True when this stage runs Torch on Metal, without the MLX runner.
+
+        Keyed off the resolved device rather than ``current_platform``, which is
+        a process-wide singleton: on macOS arm64 it reports MPS even for a stage
+        explicitly placed on CPU, which would then inherit the Metal-only
+        profile. Matches the Qwen3-ASR builder.
+        """
+        import torch
+
+        return (
+            not self._uses_mlx()
+            and self.device is not None
+            and torch.device(self.device).type == "mps"
+        )
+
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        """Reject Apple settings the runners cannot honor, before startup.
+
+        Concurrency is clamped in adjust_overrides rather than rejected here,
+        since the stage's own EngineArgs carry the CUDA value and a hard failure
+        would make the default launch unusable.
+        """
+        # The Apple check runs first so the error names the setting to change,
+        # where the shared batch policy would report a generic mismatch.
+        if self._uses_mlx() and getattr(server_args, "mlx_enable_sampling", False):
+            raise ValueError("Whisper MLX currently requires mlx_enable_sampling=False")
+        super().validate_before_infrastructure(server_args)
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
@@ -315,7 +359,30 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["chunked_prefill_size"] = 0
         # Note (Akazaakane): Timestamped Whisper requests install an internal
         # per-request processor; this flag permits SGLang to execute it.
-        overrides["enable_custom_logit_processor"] = True
+        # The MLX path decodes greedily and rejects logit editing in
+        # prefill_start, so leave the flag off rather than advertising support.
+        overrides["enable_custom_logit_processor"] = not self._uses_mlx()
+        if self._uses_mlx() or self._uses_torch_mps():
+            # Both Apple paths decode one request at a time. This has to
+            # happen here rather than in generation_defaults, because the
+            # stage's own EngineArgs take precedence over those defaults and
+            # would restore the CUDA value.
+            requested = overrides.get("max_running_requests")
+            if requested is not None and int(requested) != 1:
+                logger.warning(
+                    "Whisper %s decodes one request at a time; overriding "
+                    "max_running_requests=%s with 1",
+                    "MLX" if self._uses_mlx() else "Torch MPS",
+                    requested,
+                )
+            overrides["max_running_requests"] = 1
+            # Metal has no CUDA graphs, so the prefill ladder below would
+            # be dead configuration. build_generation_batch_overrides only
+            # forces cuda_graph_backend_prefill=DISABLED when the deployment
+            # passes disable_cuda_graph itself, so the Apple default set in
+            # generation_defaults does not reach that check.
+            return
+
         if (
             overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.DISABLED
             or "cuda_graph_bs_prefill" in overrides
@@ -332,6 +399,56 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        if self._uses_mlx():
+            if not current_platform.is_mps():
+                raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+            # The encoder output lives in the MLX prefill's cross-attention
+            # cache rather than in the KV pool, so token-only radix reuse and
+            # split prefill would drop it.
+            return {
+                # Clamped again in adjust_overrides, which runs after the
+                # stage's own EngineArgs and is what actually decides.
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": self.mem_fraction_static,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": 0,
+                # Without this the backend defaults to flashinfer, and the
+                # scheduler's KV-index writer then takes its Triton path:
+                # write_req_to_token_pool_triton[grid](...) raises
+                # "'function' object is not subscriptable" against the Triton
+                # stub on Apple. torch_native selects the Python fallback.
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "dtype": dtype,
+            }
+        if self._uses_torch_mps():
+            # Metal has no CUDA graph or Triton lifecycle, and the flashinfer
+            # default is absent too: it fails at import with "name
+            # 'BatchPrefillWithRaggedKVCacheWrapper' is not defined".
+            #
+            # max_total_tokens matters as much as the backend. Unified memory
+            # reports far more free memory than the machine can back, and
+            # PyTorch MPS lets allocations run past physical RAM, so the pool
+            # sizer walks up until Metal refuses. Bounding the KV budget to this
+            # model's own context keeps it honest.
+            return {
+                "max_running_requests": 1,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": self.mem_fraction_static,
+                "max_total_tokens": self.context_length,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": 0,
+                "attention_backend": "torch_native",
+                "mm_attention_backend": "sdpa",
+                "dtype": dtype,
+            }
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -344,6 +461,15 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             "dtype": dtype,
             "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
         }
+
+    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        if self._uses_mlx():
+            from sglang_omni.model_runner.mlx_model_worker import (
+                MlxSchedulerModelRunner,
+            )
+
+            return MlxSchedulerModelRunner(model_worker, output_proc)
+        return super().make_model_runner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model

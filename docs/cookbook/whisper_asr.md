@@ -10,6 +10,78 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download openai/whisper-large-v3
 ```
 
+### Apple Silicon (MLX)
+
+macOS arm64 runs Whisper through SGLang's native MLX runner. Install with the
+Apple installer, which builds an isolated environment and pins the Darwin
+dependencies:
+
+```bash
+./install.sh
+source .venv-apple/bin/activate
+```
+
+See [Installation](../get_started/installation.md#macos-apple-silicon) for what
+the script does. Audio decoding needs Homebrew's versioned FFmpeg 7, and because
+`ffmpeg@7` is keg-only its library directory has to be on `DYLD_LIBRARY_PATH`
+whenever the server starts:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Verify Metal and FFmpeg loading before downloading a checkpoint:
+
+```bash
+SGLANG_USE_MLX=1 python - <<'PY'
+import mlx.core as mx
+from torchcodec.decoders import AudioDecoder
+
+assert mx.metal.is_available()
+print("MLX Metal and TorchCodec FFmpeg loading are available")
+PY
+```
+
+The MLX path loads the **official** checkpoint; no converted or quantized MLX
+artifact is required. Opt into the MLX runner with `SGLANG_USE_MLX=1`:
+
+```bash
+export SGLANG_USE_MLX=1
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --model-name openai/whisper-large-v3 \
+  --asr.engine.max_running_requests 1 \
+  --port 8000
+```
+
+The HTTP and SSE transcription interfaces below are the same as on CUDA. The
+initial profile is one active request and greedy decoding; radix caching,
+chunked prefill, CUDA graphs, the pre-LM encoder service, and custom logit
+processors are all unused on this path, and the encoder output is held in each
+decoder layer's cross-attention cache rather than in the KV pool.
+
+### Apple Silicon (Torch/MPS)
+
+Leaving `SGLANG_USE_MLX` unset runs the same Torch model definition as CUDA on
+Apple's Metal backend, which needs no MLX implementation per model but is
+slower. The FFmpeg 7 requirement above still applies:
+
+```bash
+unset SGLANG_USE_MLX
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --model-name openai/whisper-large-v3 \
+  --port 8000
+```
+
+This path serves one active request with greedy decoding, uses the eager
+`torch_native`/`sdpa` profile, and bounds its KV pool to the model's context
+length. See [Known Limitations](#known-limitations) for why those bounds exist.
+
 ## Server Configuration
 
 Whisper ASR runs a single ASR stage on one GPU.
@@ -312,6 +384,32 @@ The async-decode comparison used the 128-sample SeedTTS EN subset on the same H2
 
 All 4,608 measured requests across both modes completed successfully, and all 2,304 paired transcripts matched exactly. Batch size 1 uses the synchronous fast path, so its 1.6% difference is run-to-run noise rather than async work. At concurrency 32, request-stage profiling measured 614.3 ms synchronous versus 585.5 ms asynchronous P95 from prefill completion to request completion. A separate async-only `openai/whisper-base` budget comparison showed why 6,144 is the default: relative to 4,096, scheduler queue P95 fell from 92.2 ms to 52.2 ms and throughput rose from 134.83 to 166.69 req/s.
 
+### Apple Silicon (MLX)
+
+Measured on a MacBook Pro with an Apple M4 Pro (8 performance + 4 efficiency
+cores), 24 GB unified memory, macOS 26.3.1, torch 2.11.0, and SGLang 0.5.18
+built by `./install.sh`. The official `openai/whisper-large-v3` checkpoint was
+served on both paths at one active request, greedy decoding, over HTTP. Accuracy used the 1,000-utterance
+[`pipecat-ai/stt-benchmark-data`](https://huggingface.co/datasets/pipecat-ai/stt-benchmark-data)
+corpus (160 minutes of English audio) scored with Whisper's own
+`EnglishTextNormalizer`, after two discarded warmups.
+
+| Path | Scored | Failures | Corpus WER | Mean (s) | p50 (s) | p95 (s) |
+|---|---:|---:|---:|---:|---:|---:|
+| MLX | 999 | 0 | 0.0366 | 1.286 | 1.381 | 1.596 |
+| Torch/MPS | 999 | 0 | 0.0366 | 4.578 | 4.804 | 8.323 |
+
+The two paths agree on accuracy to within two edits: MLX recorded 356
+substitutions, 217 deletions, and 299 insertions against Torch/MPS's 355, 218,
+and 301, on an identical 23,278 hits. MLX is about 3.5x faster on the mean and
+5.2x on p95.
+
+Neither path drifted over its run. The MLX running median was 1.442 s at 100
+requests, 1.425 s at 500, and 1.381 s at 1,000; Torch/MPS went 5.385 s, 4.824 s,
+4.804 s across the same points. All 1,000 requests completed on both and the
+server stayed healthy, so neither accumulates under sustained single-request
+load.
+
 ## Known Limitations
 
 - Whisper ASR remains experimental. Validate checkpoint-specific accuracy and
@@ -337,6 +435,18 @@ All 4,608 measured requests across both modes completed successfully, and all 2,
 - Chunked prefill stays disabled because the Whisper encoder prefix must be
   admitted atomically. Requests that exceed the current prefill budget wait
   for the next batch instead of splitting the encoder prefix.
+- On Apple Silicon both paths run one active request with greedy decoding. On
+  the MLX path, timestamps, custom logit processors, and sampling penalties are
+  rejected.
+- The Torch/MPS path bounds its KV pool to the model's own context length,
+  because unified memory reports far more free memory than the machine can back
+  and the pool sizer would otherwise walk past physical RAM until Metal
+  refuses. It also pins `attention_backend=torch_native`, since the flashinfer
+  default is absent on Metal.
+- MPS allocations do not appear in process RSS, so RSS-based memory monitoring
+  will not reflect what this path actually holds. Use
+  `torch.mps.current_allocated_memory()` and
+  `torch.mps.driver_allocated_memory()` instead.
 - First startup can take several minutes.
 - The endpoint accepts one uploaded file per request.
 - Audio is resampled to 16 kHz before transcription.

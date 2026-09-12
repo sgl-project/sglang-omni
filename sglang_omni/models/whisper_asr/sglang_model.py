@@ -541,7 +541,28 @@ class WhisperForConditionalGeneration(nn.Module):
         **kwargs: Any,
     ) -> Any:
         del kwargs
+        # Omni's scheduler loops do not carry SGLang's @DynamicGradMode(), so
+        # grad is still enabled by the time a forward runs. Without this guard
+        # every request retains its autograd graph: on Apple Metal that is
+        # ~4.6 GB of live tensors per request for large-v3, which exhausts the
+        # MPS watermark after five requests. Qwen3-ASR does not hit this because
+        # its Torch/MPS runner wraps its own forwards; this path has no runner
+        # of its own.
+        #
+        # no_grad rather than inference_mode: inference_mode taints the tensors
+        # it produces, and the sampler updates these logits outside this scope
+        # ("Inplace update to inference tensor outside InferenceMode is not
+        # allowed"). Qwen3-ASR can use the stricter guard because its runner
+        # wraps the whole step, sampling included.
+        with torch.no_grad():
+            return self._forward(input_ids, positions, forward_batch)
 
+    def _forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: ForwardBatch,
+    ) -> Any:
         cross_attention_states = self._batch_precomputed_encoder_states(forward_batch)
         if cross_attention_states is None:
             audio_features, encoder_lens = self._batch_audio_inputs(forward_batch)
