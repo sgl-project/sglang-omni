@@ -190,6 +190,19 @@ def assert_per_request_fields(
     _assert_metric_collector_if_local(collector, checks)
 
 
+def readable_upper_gate(reference: float, slack: float, digits: int) -> float:
+    """Round an upper-bound gate for readability without tightening it.
+
+    Rounding to a fixed number of decimals can land below the value the slack
+    asked for, and for a sub-second reference it can land below the reference
+    itself, which fails a run that matched the calibration. Round only when
+    rounding goes up; otherwise keep the slacked value.
+    """
+    gate = reference * slack
+    coarse = round(gate, digits)
+    return coarse if coarse >= gate else gate
+
+
 def apply_slack(
     p95: dict[int, dict[str, float]],
     slack_higher: float = 0.875,
@@ -198,13 +211,15 @@ def apply_slack(
     """Derive CI thresholds from P95 references with uniform slack.
 
     Higher-is-better metrics (throughput, output tok/req-s when present): threshold = P95 x slack_higher
-    Lower-is-better metrics (latency, rtf):            threshold = P95 x slack_lower
+    Lower-is-better metrics (latency, rtf):            threshold >= P95 x slack_lower
     """
     result: dict[int, dict[str, float]] = {}
     for conc, m in p95.items():
         thresholds = {
             "throughput_qps_min": round(m["throughput_qps"] * slack_higher, 2),
-            "latency_mean_s_max": round(m["latency_mean_s"] * slack_lower, 1),
+            "latency_mean_s_max": readable_upper_gate(
+                m["latency_mean_s"], slack_lower, 1
+            ),
         }
         if "output_tok_per_req_s" in m:
             thresholds["output_tok_per_req_s_min"] = round(
@@ -212,7 +227,9 @@ def apply_slack(
                 1,
             )
         if "rtf_mean" in m:
-            thresholds["rtf_mean_max"] = round(m["rtf_mean"] * slack_lower, 2)
+            thresholds["rtf_mean_max"] = readable_upper_gate(
+                m["rtf_mean"], slack_lower, 2
+            )
         result[conc] = thresholds
     return result
 
