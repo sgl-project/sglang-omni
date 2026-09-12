@@ -169,12 +169,15 @@ def _install_audio_encoder_fakes(
     monkeypatch.setattr(higgs_stages, "SimpleScheduler", lambda *a, **k: "scheduler")
 
 
-def test_audio_encoder_keeps_acoustic_encoder_eager_on_npu(monkeypatch) -> None:
+@pytest.mark.parametrize("device", ["npu", "mps"])
+def test_audio_encoder_keeps_acoustic_encoder_eager(monkeypatch, device) -> None:
     codec = _fake_encoder_codec()
     original = codec.model.acoustic_encoder
-    _install_audio_encoder_fakes(monkeypatch, _FakePlatform("npu", npu=True), codec)
+    _install_audio_encoder_fakes(
+        monkeypatch, _FakePlatform(device, npu=device == "npu"), codec
+    )
 
-    result = higgs_stages.create_audio_encoder_executor("model", device="npu:0")
+    result = higgs_stages.create_audio_encoder_executor("model", device=f"{device}:0")
 
     assert result == "scheduler"
     assert codec.model.acoustic_encoder is original
@@ -217,14 +220,19 @@ def _install_vocoder_fakes(
     )
 
 
-def test_vocoder_compile_decode_falls_back_to_eager_on_npu(monkeypatch, caplog) -> None:
+@pytest.mark.parametrize("device", ["npu", "mps"])
+def test_vocoder_compile_decode_falls_back_to_eager(
+    monkeypatch, caplog, device
+) -> None:
     codec = _fake_vocoder_codec()
     original = codec.model.decode
-    _install_vocoder_fakes(monkeypatch, _FakePlatform("npu", npu=True), codec)
+    _install_vocoder_fakes(
+        monkeypatch, _FakePlatform(device, npu=device == "npu"), codec
+    )
 
     with caplog.at_level(logging.WARNING, logger="sglang_omni.models.higgs_tts.stages"):
         result = higgs_stages.create_vocoder_executor(
-            "model", device="npu:0", compile_decode=True
+            "model", device=f"{device}:0", compile_decode=True
         )
 
     assert result == "scheduler"

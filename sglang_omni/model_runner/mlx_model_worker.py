@@ -4,9 +4,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from importlib import import_module
+from typing import Any, Callable
 
 from sglang_omni.model_runner.base import ModelRunner
+
+_MLX_RUNNER_FACTORIES = {
+    "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.mlx.runner:make_qwen3_asr_mlx_runner_class",
+    "HiggsTTSModel": "sglang_omni.models.higgs_tts.mlx.runner:make_higgs_mlx_runner_class",
+}
+
+
+def register_mlx_runner_factory(model_arch: str, factory_path: str) -> None:
+    """Register a lazy module:attribute factory without importing MLX."""
+    _MLX_RUNNER_FACTORIES[model_arch] = factory_path
+
+
+def resolve_mlx_runner_factory(model_arch: str | None) -> Callable[[], type]:
+    path = _MLX_RUNNER_FACTORIES.get(model_arch)
+    if path is None:
+        raise NotImplementedError(
+            f"Omni's MLX worker has no runner for architecture {model_arch!r}; "
+            f"supported architectures: {', '.join(sorted(_MLX_RUNNER_FACTORIES))}"
+        )
+    module, _, attribute = path.partition(":")
+    return getattr(import_module(module), attribute)
 
 
 @dataclass(slots=True)
@@ -169,11 +191,7 @@ def create_mlx_model_worker(
     tp_rank: int = 0,
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
-    if config.model_arch_override != "Qwen3ASRForConditionalGeneration":
-        raise NotImplementedError(
-            "Omni's MLX worker currently supports only "
-            "Qwen3ASRForConditionalGeneration"
-        )
+    make_runner_class = resolve_mlx_runner_factory(config.model_arch_override)
 
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
@@ -190,16 +208,14 @@ def create_mlx_model_worker(
     )
     from sglang.srt.server_args import PortArgs
 
-    from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
-
-    class OmniQwen3ASRMlxWorker(MlxTpModelWorker):
+    class OmniMlxWorker(MlxTpModelWorker):
         @property
         def tp_rank(self) -> int:
             return self.ps.tp_rank
 
         def _init_model_runner(self):
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
-            runner_class = make_qwen3_asr_mlx_runner_class()
+            runner_class = make_runner_class()
             init_kwargs = {
                 "model_path": get_model().model_path,
                 "trust_remote_code": get_model().trust_remote_code,
@@ -229,6 +245,8 @@ def create_mlx_model_worker(
                 memory_pool_config=self.memory_pool_config,
                 mlx_pool_size=self._mlx_runner.pool_size,
             )
+            if hasattr(self._mlx_runner, "scheduler_model"):
+                self._model_runner.model = self._mlx_runner.scheduler_model
             self._mlx_active_rids = set()
             self._mlx_pool_initialized = False
 
@@ -275,7 +293,7 @@ def create_mlx_model_worker(
     nccl_port = config.nccl_port
     if nccl_port is None:
         nccl_port = PortArgs.init_new(server_args).nccl_port
-    return OmniQwen3ASRMlxWorker(
+    return OmniMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,
         ps=ps,

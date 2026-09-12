@@ -13,7 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.higgs_tts.reset_kernels import reset_sampler_row
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
@@ -28,6 +27,21 @@ STOP_CODE = -1
 
 # CG-baked top-k upper bound = full codec vocab, so the default value is a no-op filter.
 K_MAX = 1026
+
+
+def multinomial_with_seed(
+    logprobs: torch.Tensor, seeds: torch.Tensor, positions: torch.Tensor
+) -> torch.Tensor:
+    """Keep MPS draws off the Triton/float64 accelerator sampling path."""
+    if logprobs.device.type == "mps":
+        from sglang_omni.models.higgs_tts.apple_sampling import (
+            multinomial_with_seed_cpu,
+        )
+
+        return multinomial_with_seed_cpu(logprobs, seeds, positions)
+    from sglang.srt.layers.sampler import multinomial_with_seed as upstream_sample
+
+    return upstream_sample(logprobs, seeds, positions)
 
 
 def _resolve_renorm_kernels():

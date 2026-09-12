@@ -399,7 +399,7 @@ def create_audio_encoder_executor(
     adapter = HiggsTokenizerAdapter(tokenizer)
 
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
-    if not current_platform.is_npu():
+    if not current_platform.is_npu() and torch.device(device).type != "mps":
         # NPU's torch.compile backend cannot compile this codec model
         # (crashes on dynamic shapes, verified on Atlas 910B).
         codec.model.acoustic_encoder = torch.compile(
@@ -549,7 +549,7 @@ def create_vocoder_executor(
     checkpoint_dir = resolve_checkpoint(model_path)
     codec = get_or_load_codec(checkpoint_dir, device, dtype)
     if compile_decode:
-        if current_platform.is_npu():
+        if current_platform.is_npu() or torch.device(device).type == "mps":
             logger.warning(
                 "compile_decode=True was requested but torch.compile on %s "
                 "cannot compile this codec's dynamic-shape graph; falling "

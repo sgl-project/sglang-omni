@@ -6,7 +6,7 @@ The dedicated ``--decode-mode`` flag is gone: the knobs live in the stage's
 the same dotted spelling (``--tts_engine.factory.enable_async_decode``)
 or under the stage's ``stages:`` entry in YAML, and reach the factory only
 if its signature accepts them. Higgs TTS defaults to async decode for
-throughput; these tests pin the default and the dotted override.
+throughput except on MPS; these tests pin the default and the dotted override.
 """
 
 from __future__ import annotations
@@ -15,15 +15,18 @@ import pytest
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
+from sglang_omni.platforms import current_platform
 
 
 def _scheduler(config, stage_name: str):
     return config.stage_named(stage_name).factory
 
 
-def test_decode_mode_default_config_is_async():
+def test_decode_mode_default_follows_platform():
     config = HiggsTtsPipelineConfig(model_path="dummy")
-    assert _scheduler(config, "tts_engine").enable_async_decode is True
+    assert _scheduler(config, "tts_engine").enable_async_decode is (
+        current_platform.device_type != "mps"
+    )
 
 
 def test_dotted_flag_can_force_sync_and_async():
@@ -46,7 +49,7 @@ def test_async_lookahead_min_batch_size_applies_without_mode_toggle():
         [("tts_engine.factory.async_decode_min_batch_size", "4")]
     )
     scheduler = _scheduler(resolved, "tts_engine")
-    assert scheduler.enable_async_decode is True
+    assert scheduler.enable_async_decode is (current_platform.device_type != "mps")
     assert scheduler.async_decode_min_batch_size == 4
 
 
