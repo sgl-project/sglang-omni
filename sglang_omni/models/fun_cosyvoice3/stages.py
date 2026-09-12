@@ -831,15 +831,41 @@ class _PreparedFlowRequest:
 def adaptive_flow_grouping(
     requests: Sequence[_PreparedFlowRequest],
     *,
-    merge_max_gap_frames: int,
-    merge_pad_budget_percent: float,
-) -> Iterator[list[_PreparedFlowRequest]]:
-    ordered = sorted(requests, key=lambda request: request.total_mel_frames)
-    current_max_group_gap_frames = 0
-    current_group = []
-    for request in ordered:
-        if current_group and request.total_mel_frames - current_group[-1].total_mel_frames > merge_max_gap_frames:
-            yield current_group
+    flow_merge_max_gap_frames: int,
+    flow_merge_pad_budget_percent: float,
+) -> list[list[_PreparedFlowRequest]]:
+    """Adaptive flow grouping to merge requests with similar padding waste.
+    
+    Note (chenyang):
+    detailed discussion in https://github.com/sgl-project/sglang-omni/pull/1899
+    """
+    ordered_requests = sorted(requests, key=lambda request: (request.total_mel_frames, request.index))
+    if not ordered_requests:
+        return []
+
+    baseline_flow_workload = sum(request.total_mel_frames for request in ordered_requests)
+    request_num = len(ordered_requests)
+
+
+    @lru_cache(maxsize=None)
+    def compute_optimal_suffix_partition(
+        suffix_start: int,
+        remaining_group_count: int,
+        current_max_group_gap_frames: int,
+    ) -> tuple[int, int, tuple[int, ...]]:
+        if remaining_group_count == 0:
+            if suffix_start == request_num:
+                return (0, current_max_group_gap_frames, ())
+            else:
+                return None
+        if request_num - suffix_start <= remaining_group_count:
+            return None
+
+        
+        optimal_suffix_plan = None
+        shortest_frames = ordered[suffix_start].total_mel_frames
+        last_group_end = request_num - remaining_group_count + 1
+
 
 def _group_by_padding_waste(
     items: Sequence[tuple[Any, torch.Tensor]],
