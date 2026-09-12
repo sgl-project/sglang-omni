@@ -392,7 +392,7 @@ class CoordinatorControlPlane:
         self,
         stage_name: str,
         stage_endpoint: str,
-        msg: SubmitMessage | AdminMessage | ShutdownMessage,
+        msg: SubmitMessage | AdminMessage | ShutdownMessage | DataReadyMessage,
     ) -> None:
         """Submit a request to a stage."""
         if stage_name not in self._stage_sockets:
@@ -401,6 +401,16 @@ class CoordinatorControlPlane:
             self._stage_sockets[stage_name] = sock
 
         await self._stage_sockets[stage_name].send(msg)
+
+    async def send_input_stream_event(
+        self,
+        stage_name: str,
+        stage_endpoint: str,
+        msg: DataReadyMessage,
+    ) -> None:
+        """Send one externally supplied input chunk or done signal."""
+        # Reuse the submit socket so ZeroMQ preserves start -> chunk* -> done order.
+        await self.submit_to_stage(stage_name, stage_endpoint, msg)
 
     async def recv_event(self) -> CompleteMessage | StreamMessage | AdminResultMessage:
         """Receive completion or stream event from a stage."""

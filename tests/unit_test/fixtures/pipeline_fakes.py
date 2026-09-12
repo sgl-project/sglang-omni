@@ -188,6 +188,7 @@ class RecordingCoordinatorControlPlane:
     def __init__(self):
         self.events: asyncio.Queue[Any] = asyncio.Queue()
         self.submitted: list[tuple[str, str, Any]] = []
+        self.input_stream_events: list[tuple[str, str, Any]] = []
         self.aborts: list[Any] = []
         self.shutdowns: list[tuple[str, str]] = []
         self.started = False
@@ -201,6 +202,11 @@ class RecordingCoordinatorControlPlane:
 
     async def broadcast_abort(self, msg: Any) -> None:
         self.aborts.append(msg)
+
+    async def send_input_stream_event(
+        self, stage: str, endpoint: str, msg: Any
+    ) -> None:
+        self.input_stream_events.append((stage, endpoint, msg))
 
     async def send_shutdown(self, stage: str, endpoint: str) -> None:
         self.shutdowns.append((stage, endpoint))
