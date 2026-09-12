@@ -1684,13 +1684,6 @@ def create_vocoder_executor(
 
     max_batch_size = 16 if max_batch_size is None else int(max_batch_size)
     dtype = dtype or "bfloat16"
-    if enable_flow_estimator_trt and enable_dit_torch_compile:
-        raise ValueError(
-            "enable_flow_estimator_trt and enable_dit_torch_compile both "
-            "target flow.decoder.estimator; enable only one"
-        )
-    if enable_dit_torch_compile is None:
-        enable_dit_torch_compile = not enable_flow_estimator_trt
     checkpoint_dir = resolve_checkpoint(model_path)
     if dtype not in _AUTOCAST_DTYPES:
         raise ValueError(
