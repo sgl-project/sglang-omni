@@ -382,10 +382,10 @@ class FlowCudaGraphRunner:
                     ),
                 ):
                     static_output = solve_flow_euler(self.flow.decoder, *static_inputs)
-                graphs[(batch_size, mel_frame)] = CaptureedFlowCudaGraph(
+                graphs[(batch_size, mel_frame)] = CapturedFlowCudaGraph(
                     graph=graph,
                     static_inputs=static_inputs,
-                    static_outputs=static_output,
+                    static_output=static_output,
                 )
         current_stream.wait_stream(stream)
         torch.cuda.empty_cache()
@@ -584,7 +584,7 @@ def generate_flow(
         else:
             time_span = unit_span
 
-        if flow.cuda_graph_runner is None:
+        if streaming or not finalize or flow.cuda_graph_runner is None:
             return solve_flow_euler(
                 decoder,
                 noisy_mel,
@@ -615,7 +615,7 @@ def generate_flow(
                     mel_mask,
                     speaker_embedding,
                     prompt_mel,
-                    streaming=streaming,
+                    streaming=False,
                 )
 
 
