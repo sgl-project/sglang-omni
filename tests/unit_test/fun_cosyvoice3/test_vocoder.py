@@ -414,7 +414,10 @@ def test_vocoder_autocast_uses_the_flow_device(monkeypatch) -> None:
 
     asyncio.run(vocoder.decode_batch([(_state(), torch.tensor([1, 2]))]))
 
-    assert observed == [("cpu", torch.float16, True), ("mps", None, False)]
+    assert observed == [
+        ("cpu", torch.float16, True),
+        (stages.current_platform.device_type, None, False),
+    ]
 
 
 def _state(
