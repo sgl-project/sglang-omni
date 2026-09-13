@@ -96,7 +96,9 @@ def test_coalesce_disabled_emits_one_message_per_frame() -> None:
 )
 def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type):
     config = pipeline_type(model_path="dummy")
-    factory = next(stage.factory for stage in config.stages if stage.name == "talker_ar")
+    factory = next(
+        stage.factory for stage in config.stages if stage.name == "talker_ar"
+    )
     runner = _runner(_fake_model(1, 4, 2), coalesce=factory.codec_coalesce_frames)
     runner._codec_coalesce_early_frames = factory.codec_coalesce_early_frames
     runner._codec_coalesce_first_frames = factory.codec_coalesce_first_frames
@@ -141,9 +143,7 @@ def test_early_frames_preserve_code2wav_window_cadence() -> None:
 
 
 @pytest.mark.parametrize("early_frames", [10, 12])
-@pytest.mark.parametrize(
-    "steps", [9, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33]
-)
+@pytest.mark.parametrize("steps", [9, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33])
 @pytest.mark.parametrize("finish_reason", ["length", "stop"])
 def test_early_frames_preserve_order_and_final_tail(early_frames, steps, finish_reason):
     """The early single-frame prefix and coalesced tail emit each non-EOS row once."""
