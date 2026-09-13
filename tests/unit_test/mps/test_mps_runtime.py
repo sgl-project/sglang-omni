@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import stat
 import sys
 import tempfile
@@ -106,9 +105,8 @@ class FakeDeviceInfo:
 
 @pytest.fixture
 def short_root():
-    root = Path(tempfile.mkdtemp(prefix="mpsr-", dir="/tmp"))
-    yield root
-    shutil.rmtree(root, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="mpsr-", dir="/tmp") as root:
+        yield Path(root)
 
 
 def colocated():
@@ -243,99 +241,49 @@ async def test_logical_gpu_aliases_coalesce_by_physical_uuid(short_root):
 
 
 @pytest.mark.parametrize("mode", ["auto", "on"])
-def test_one_process_cannot_resolve_to_multiple_physical_gpus(
-    short_root,
-    mode,
+@pytest.mark.parametrize(
+    "extra_processes,device_options,unresolved_ordinals",
+    [
+        pytest.param([], {}, [], id="multiple-physical-gpus"),
+        pytest.param(
+            [],
+            {"unsupported": {1: "NVML capability query failed"}},
+            [],
+            id="nvml-failure",
+        ),
+        pytest.param(
+            [proc("multi", 9)],
+            {"resolution_errors": {9: "CUDA_ERROR_INVALID_DEVICE"}},
+            [9],
+            id="same-process-resolution-failure",
+        ),
+        pytest.param(
+            [proc("broken", 9)],
+            {"resolution_errors": {9: "CUDA_ERROR_INVALID_DEVICE"}},
+            [],
+            id="unrelated-process-resolution-failure",
+        ),
+    ],
+)
+def test_multi_physical_process_rejected_before_device_errors(
+    short_root, mode, extra_processes, device_options, unresolved_ordinals
 ):
     client = FakeControlClient()
     with pytest.raises(MpsError) as exc_info:
         create(
             short_root,
             mode=mode,
-            procs=[proc("duplicate", 0), proc("duplicate", 1)],
+            procs=[proc("multi", 0), proc("multi", 1), *extra_processes],
             client=client,
-        )
-
-    message = str(exc_info.value)
-    assert "process 'duplicate'" in message
-    assert f"0: '{gpu_uuid(0)}'" in message
-    assert f"1: '{gpu_uuid(1)}'" in message
-    assert "Use mps=off" in message
-    assert list(short_root.iterdir()) == []
-    assert client.daemons == {}
-
-
-@pytest.mark.parametrize("mode", ["auto", "on"])
-def test_nvml_failure_does_not_hide_driver_proven_multi_physical_process(
-    short_root,
-    mode,
-):
-    client = FakeControlClient()
-
-    with pytest.raises(MpsError) as exc_info:
-        create(
-            short_root,
-            mode=mode,
-            procs=[proc("multi", 0), proc("multi", 1)],
-            unsupported={1: "NVML capability query failed"},
-            client=client,
-        )
-
-    message = str(exc_info.value)
-    assert "process 'multi'" in message
-    assert f"0: '{gpu_uuid(0)}'" in message
-    assert f"1: '{gpu_uuid(1)}'" in message
-    assert "Use mps=off" in message
-    assert list(short_root.iterdir()) == []
-    assert client.daemons == {}
-
-
-@pytest.mark.parametrize("mode", ["auto", "on"])
-def test_known_multi_physical_subset_precedes_driver_resolution_error(
-    short_root,
-    mode,
-):
-    client = FakeControlClient()
-
-    with pytest.raises(MpsError) as exc_info:
-        create(
-            short_root,
-            mode=mode,
-            procs=[proc("multi", 0), proc("multi", 1), proc("multi", 9)],
-            resolution_errors={9: "CUDA_ERROR_INVALID_DEVICE"},
-            client=client,
+            **device_options,
         )
 
     message = str(exc_info.value)
     assert "process 'multi'" in message
     assert f"0: '{gpu_uuid(0)}'" in message
     assert f"1: '{gpu_uuid(1)}'" in message
-    assert "unresolved CUDA ordinals: [9]" in message
-    assert "Use mps=off" in message
-    assert list(short_root.iterdir()) == []
-    assert client.daemons == {}
-
-
-@pytest.mark.parametrize("mode", ["auto", "on"])
-def test_unrelated_resolution_error_does_not_hide_multi_physical_process(
-    short_root,
-    mode,
-):
-    client = FakeControlClient()
-
-    with pytest.raises(MpsError) as exc_info:
-        create(
-            short_root,
-            mode=mode,
-            procs=[proc("multi", 0), proc("multi", 1), proc("broken", 9)],
-            resolution_errors={9: "CUDA_ERROR_INVALID_DEVICE"},
-            client=client,
-        )
-
-    message = str(exc_info.value)
-    assert "process 'multi'" in message
-    assert f"0: '{gpu_uuid(0)}'" in message
-    assert f"1: '{gpu_uuid(1)}'" in message
+    if unresolved_ordinals:
+        assert f"unresolved CUDA ordinals: {unresolved_ordinals}" in message
     assert "Use mps=off" in message
     assert list(short_root.iterdir()) == []
     assert client.daemons == {}
@@ -707,7 +655,6 @@ async def test_multi_gpu_close_persists_dirty_gpu_and_releases_clean_gpu(short_r
     assert dirty_manager.paths.state_dir.is_dir()
     assert owner_marker(dirty_manager).read_text() == "retained\n"
     assert not clean_manager.paths.state_dir.exists()
-    assert client.unsafe_daemon_signals == []
 
 
 @pytest.mark.asyncio
@@ -785,5 +732,4 @@ async def test_preverify_clients_are_preserved_without_guessing_ownership(short_
     assert not runtime.has_leases
     assert "terminate_client 7000 200" in message
     assert "terminate_client 8000 909" not in message
-    assert client.unsafe_daemon_signals == []
     assert owner_marker(manager).read_text() == "retained\n"

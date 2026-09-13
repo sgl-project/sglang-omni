@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -55,9 +54,8 @@ def _no_gpu_compat_probe(monkeypatch):
 
 @pytest.fixture
 def short_root():
-    root = Path(tempfile.mkdtemp(prefix="mpsenv-", dir="/tmp"))
-    yield root
-    shutil.rmtree(root, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="mpsenv-", dir="/tmp") as root:
+        yield Path(root)
 
 
 def test_mps_overlay_is_visible_only_during_spawn(monkeypatch):

@@ -49,18 +49,15 @@ def _fake_pynvml(failed_uuids: set[str] | None = None):
     class NvmlNotSupported(NvmlError):
         pass
 
-    handles: list[str] = []
     failures = failed_uuids or set()
 
     def by_uuid(raw_uuid):
         gpu_uuid = raw_uuid.decode()
         if gpu_uuid in failures:
             raise NvmlError(f"cannot inspect {gpu_uuid}")
-        handles.append(gpu_uuid)
         return gpu_uuid
 
     return SimpleNamespace(
-        handles=handles,
         NVMLError=NvmlError,
         NVMLError_NotSupported=NvmlNotSupported,
         NVML_DEVICE_MIG_ENABLE=1,

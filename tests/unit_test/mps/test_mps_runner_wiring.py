@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -42,9 +41,8 @@ _MPS_FLAG = ConfigSource(SourceKind.CLI_FLAG, "--mps")
 
 @pytest.fixture
 def short_base():
-    path = Path(tempfile.mkdtemp(prefix="runner-", dir="/tmp"))
-    yield path
-    shutil.rmtree(path, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="runner-", dir="/tmp") as root:
+        yield Path(root)
 
 
 def noop_factory():  # pragma: no cover - never constructed in these tests
@@ -187,19 +185,15 @@ class _FakeMps:
         events: list[str],
         *,
         close_error: BaseException | None = None,
-        spawn_env: dict[str, str] | None = None,
         probe_result: dict[str, str] | None = None,
         probe_gate: asyncio.Event | None = None,
     ) -> None:
         self.events = events
         self.close_error = close_error
-        self.spawn_env = spawn_env or {"CUDA_MPS_PIPE_DIRECTORY": "/tmp/mps-pipe"}
         self.probe_result = probe_result or {}
         self.probe_gate = probe_gate
         self.started = False
-        self.verified = False
         self.close_process_start_attempts: set[str] | None = None
-        self.retired: list[str] = []
 
     @property
     def has_leases(self) -> bool:
@@ -212,14 +206,12 @@ class _FakeMps:
     def env_for_process(self, process_name: str) -> dict[str, str]:
         if process_name != "pipeline":
             return {}
-        return dict(self.spawn_env)
+        return {"CUDA_MPS_PIPE_DIRECTORY": "/tmp/mps-pipe"}
 
     async def verify(self) -> None:
         self.events.append("MPS verify")
-        self.verified = True
 
     async def retire_process_clients(self, process_name: str) -> set:
-        self.retired.append(process_name)
         self.events.append(f"MPS retire {process_name}")
         return {process_name}
 
@@ -365,7 +357,6 @@ async def test_mps_hooks_follow_resolved_spawn_lifecycle(short_base, monkeypatch
     assert events.index("spawn") < events.index("ready")
     assert events.index("ready") < events.index("MPS verify")
     assert group.spawn_env == {"pipeline": {"CUDA_MPS_PIPE_DIRECTORY": "/tmp/mps-pipe"}}
-    assert fake_mps.verified
     assert coordinator.registered == {"preprocessing": "ipc://preprocessing"}
 
     await runner.stop()
@@ -375,41 +366,21 @@ async def test_mps_hooks_follow_resolved_spawn_lifecycle(short_base, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_mps_startup_error_cleans_children_before_close(short_base, monkeypatch):
-    events: list[str] = []
-    group = _FakeGroup(
-        events,
-        ready_error=RuntimeError("ready failed"),
-        direct_process=True,
-    )
-    fake_mps = _FakeMps(events)
-    _patch_runner(monkeypatch, events, group, fake_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
-
-    with pytest.raises(RuntimeError, match="ready failed"):
-        await runner.start()
-
-    assert events.index("stage terminate") < events.index("MPS close")
-    assert not fake_mps.has_leases
-    assert fake_mps.close_process_start_attempts == {"pipeline"}
-
-
-@pytest.mark.asyncio
-async def test_mps_startup_cancellation_cleans_children_before_close(
-    short_base,
-    monkeypatch,
+@pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
+async def test_mps_startup_error_cleans_children_before_close(
+    short_base, monkeypatch, error_type
 ):
     events: list[str] = []
     group = _FakeGroup(
         events,
-        ready_error=asyncio.CancelledError(),
+        ready_error=error_type("ready failed"),
         direct_process=True,
     )
     fake_mps = _FakeMps(events)
     _patch_runner(monkeypatch, events, group, fake_mps)
     runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(error_type, match="ready failed"):
         await runner.start()
 
     assert events.index("stage terminate") < events.index("MPS close")

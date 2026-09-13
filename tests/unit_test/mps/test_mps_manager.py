@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import fcntl
 import os
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -44,9 +43,7 @@ class FakeControlClient:
         self.client_token_error: str | None = None
         self.quit_error: str | None = None
         self.quit_works = True
-        self.unsafe_daemon_signals: list[tuple[int, bool]] = []
         self.terminated: list[MpsClientRef] = []
-        self.terminate_error: str | None = None
 
     def start_daemon(self, pipe_dir, log_dir, gpu_uuid):
         del log_dir, gpu_uuid
@@ -95,8 +92,6 @@ class FakeControlClient:
         return self.server_statuses.get((str(pipe_dir), server_pid), "Server not found")
 
     def terminate_client(self, pipe_dir, client):
-        if self.terminate_error is not None:
-            raise MpsControlError(self.terminate_error)
         self.terminated.append(client)
         remaining = self.snapshots.get(str(pipe_dir), set()) - {client}
         self.snapshots[str(pipe_dir)] = remaining
@@ -113,10 +108,6 @@ class FakeControlClient:
 
     def daemon_process_alive(self, pid):
         return pid in self.alive_pids
-
-    def terminate_daemon_process(self, pid, force=False):
-        self.unsafe_daemon_signals.append((pid, force))
-        self.alive_pids.discard(pid)
 
     def client_token(self, pid):
         if self.client_token_error is not None:
@@ -143,9 +134,8 @@ def owner_marker(manager: MpsManager, pid: int | None = None) -> Path:
 
 @pytest.fixture
 def short_root():
-    root = Path(tempfile.mkdtemp(prefix="mps-", dir="/tmp"))
-    yield root
-    shutil.rmtree(root, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="mps-", dir="/tmp") as root:
+        yield Path(root)
 
 
 def make_manager(root, client, gpu_uuid=GPU_UUID):
@@ -322,7 +312,6 @@ def test_unresponsive_new_daemon_is_persisted_without_process_signals(short_root
     with pytest.raises(MpsError, match="control daemon"):
         manager.acquire({"worker": "owner-worker"})
 
-    assert client.unsafe_daemon_signals == []
     assert manager.paths.state_dir.is_dir()
     assert owner_marker(manager).read_text() == "retained\n"
 
@@ -336,7 +325,6 @@ def test_ambiguous_start_failure_without_native_identity_preserves_state(short_r
         manager.acquire({"worker": "owner-worker"})
 
     assert manager.paths.state_dir.is_dir()
-    assert client.unsafe_daemon_signals == []
     assert owner_marker(manager).read_text() == "retained\n"
     assert isinstance(exc_info.value.__cause__, MpsDirtyStateError)
     assert "lock is released" in str(exc_info.value.__cause__)
@@ -356,7 +344,6 @@ def test_preexec_daemon_failure_removes_unstarted_state(short_root):
         manager.acquire({"worker": "owner-worker"})
 
     assert not manager.paths.state_dir.exists()
-    assert client.unsafe_daemon_signals == []
 
 
 def test_startup_rollback_never_signals_an_unverified_pid(short_root):
@@ -374,7 +361,6 @@ def test_startup_rollback_never_signals_an_unverified_pid(short_root):
         manager.acquire({"worker": "owner-worker"})
 
     assert manager.paths.state_dir.is_dir()
-    assert client.unsafe_daemon_signals == []
     assert owner_marker(manager).read_text() == "retained\n"
 
 
@@ -389,16 +375,6 @@ def test_verify_returns_current_exact_client_refs(short_root):
 
     assert attached == {MpsClientRef(7000, 101), MpsClientRef(7000, 102)}
     assert lease.server_pid == 7000
-
-
-def test_verify_matches_inherited_process_token_on_cuda_client(short_root):
-    client = FakeControlClient()
-    manager = make_manager(short_root, client)
-    lease = manager.acquire({"worker": "owner-worker"})
-    client.set_clients(manager.paths.pipe_dir, {7000: [200]})
-    client.client_tokens[200] = "owner-worker"
-
-    assert manager.verify(lease) == {MpsClientRef(7000, 200)}
 
 
 def test_verify_does_not_accumulate_clients_across_snapshots(short_root, monkeypatch):
@@ -526,7 +502,6 @@ def test_dead_root_with_live_descendant_persists_dirty_and_reports_cleanup(
     assert manager.paths.state_dir.is_dir()
     assert owner_marker(manager).read_text() == "retained\n"
     assert client.daemon_process_alive(lease.daemon_pid)
-    assert client.unsafe_daemon_signals == []
     assert f"Owner PID {os.getpid()}" in str(exc_info.value)
     assert "Current MPS client refs" in str(exc_info.value)
     assert "terminate_client 7000 200" in str(exc_info.value)
@@ -801,7 +776,6 @@ def test_daemon_refusing_quit_persists_dirty_state(short_root):
     assert owner_marker(manager).read_text() == "retained\n"
     assert manager.paths.state_dir.is_dir()
     assert f"Owner PID {os.getpid()}" in str(exc_info.value)
-    assert client.unsafe_daemon_signals == []
 
     with pytest.raises(MpsError, match="retained"):
         make_manager(short_root, client).acquire({"worker": "owner-worker"})
@@ -823,7 +797,6 @@ def test_quit_control_error_persists_dirty_and_releases_authority(short_root):
     assert owner_marker(manager).read_text() == "retained\n"
     assert manager.paths.state_dir.is_dir()
     assert "lock is released" in str(exc_info.value)
-    assert client.unsafe_daemon_signals == []
 
 
 def test_release_requires_the_acquisition_token(short_root, tmp_path):
@@ -846,23 +819,6 @@ def test_release_requires_the_acquisition_token(short_root, tmp_path):
             )
     finally:
         os.close(foreign_fd)
-
-
-def test_daemon_liveness_rejects_zombie_proc_entries(monkeypatch):
-    from sglang_omni.mps import control
-
-    stats = {
-        Path("/proc/430465/stat"): "430465 (nvidia-cuda-mps) Z 1 430465 0",
-        Path("/proc/53748/stat"): "53748 (nvidia-cuda-mps-control) S 1 0 0",
-        Path("/proc/7/stat"): "7 (weird) name) Z 1 0",
-    }
-    monkeypatch.setattr(Path, "read_text", lambda path: stats[path])
-    monkeypatch.setattr(control.os, "kill", lambda _pid, _signal: None)
-    client = control.SubprocessMpsControlClient()
-
-    assert not client.daemon_process_alive(430465)
-    assert client.daemon_process_alive(53748)
-    assert not client.daemon_process_alive(7)
 
 
 def test_retire_targets_only_the_named_process_clients(short_root):

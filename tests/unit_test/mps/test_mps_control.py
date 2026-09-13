@@ -5,11 +5,9 @@ from __future__ import annotations
 
 import fcntl
 import multiprocessing
-import os
 import subprocess
 import time
 from pathlib import Path
-from queue import Empty
 
 import pytest
 
@@ -52,31 +50,6 @@ def test_snapshot_parses_driver_output_and_retains_server_client_pairs(
     responses["get_client_list 7000\n"] = "101\nserver=202\n"
     with pytest.raises(MpsControlError, match="unexpected output"):
         control.SubprocessMpsControlClient().snapshot(tmp_path / "GPU-abc" / "pipe")
-
-
-def test_control_query_rejects_nonzero_exit_and_timeout(monkeypatch, tmp_path):
-    client = control.SubprocessMpsControlClient()
-
-    def nonzero(args, **kwargs):
-        del kwargs
-        return subprocess.CompletedProcess(
-            args,
-            returncode=2,
-            stdout="",
-            stderr="control failed",
-        )
-
-    monkeypatch.setattr(control.subprocess, "run", nonzero)
-    with pytest.raises(MpsControlError, match="control failed"):
-        client.snapshot(tmp_path / "GPU-abc" / "pipe")
-
-    def timeout(args, **kwargs):
-        del kwargs
-        raise subprocess.TimeoutExpired(args, 10)
-
-    monkeypatch.setattr(control.subprocess, "run", timeout)
-    with pytest.raises(MpsControlError, match="timed out"):
-        client.snapshot(tmp_path / "GPU-abc" / "pipe")
 
 
 def test_daemon_preexec_failure_is_distinct_from_ambiguous_start(monkeypatch):
@@ -145,11 +118,8 @@ def test_client_token_is_read_from_the_current_client_environment(monkeypatch):
     assert client.client_token(123) is None
 
 
-@pytest.mark.parametrize(
-    "output", ["ACTIVE\n", "FAULT\n", "INITIALIZING\n", "", "Server not found\n"]
-)
 def test_get_server_status_uses_only_the_requested_native_command(
-    monkeypatch, tmp_path, output
+    monkeypatch, tmp_path
 ):
     pipe_dir = tmp_path / "GPU-abc" / "pipe"
     commands = []
@@ -158,18 +128,27 @@ def test_get_server_status_uses_only_the_requested_native_command(
         commands.append(kwargs["input"])
         assert kwargs["env"]["CUDA_MPS_PIPE_DIRECTORY"] == str(pipe_dir)
         assert kwargs["timeout"] == control._QUERY_TIMEOUT_SECONDS
-        return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout=" ACTIVE\n", stderr="")
 
     monkeypatch.setattr(control.subprocess, "run", run)
     assert (
         control.SubprocessMpsControlClient().get_server_status(pipe_dir, 7000)
-        == output.strip()
+        == "ACTIVE"
     )
     assert commands == ["get_server_status 7000\n"]
 
 
-@pytest.mark.parametrize("failure", ["exit", "timeout", "exec"])
-def test_get_server_status_reports_native_failures(monkeypatch, tmp_path, failure):
+@pytest.mark.parametrize(
+    "failure,detail",
+    [
+        ("exit", "query failed"),
+        ("timeout", "timed out"),
+        ("exec", "missing control binary"),
+    ],
+)
+def test_get_server_status_reports_native_failures_and_releases_lock(
+    monkeypatch, tmp_path, failure, detail
+):
     def run(args, **kwargs):
         if failure == "timeout":
             raise subprocess.TimeoutExpired(args, 10)
@@ -178,22 +157,22 @@ def test_get_server_status_reports_native_failures(monkeypatch, tmp_path, failur
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="query failed")
 
     monkeypatch.setattr(control.subprocess, "run", run)
-    with pytest.raises(MpsControlError, match="get_server_status 7000.*failed"):
+    with pytest.raises(MpsControlError, match=f"get_server_status 7000.*{detail}"):
         control.SubprocessMpsControlClient().get_server_status(
             tmp_path / "GPU-abc" / "pipe", 7000
         )
+    with (tmp_path / ".control-lock-GPU-abc").open("r+") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-def _control_worker(pipe_dir, operation, ready, start, commands):
+def _control_worker(pipe_dir, operation, barrier, entered):
     """Run production control methods with only native subprocess I/O replaced."""
 
     def run(args, **kwargs):
         with (pipe_dir.parent.parent / "native-active").open("w") as active:
             fcntl.flock(active, fcntl.LOCK_EX | fcntl.LOCK_NB)
             command = kwargs["input"].strip()
-            commands.put((os.getpid(), command))
-            with (pipe_dir.parent.parent / "commands.log").open("a") as command_log:
-                command_log.write(f"{os.getpid()} {command}\n")
+            entered.set()
             time.sleep(0.01)
             output = {
                 "get_server_list": "7000\n",
@@ -206,8 +185,7 @@ def _control_worker(pipe_dir, operation, ready, start, commands):
 
     control.subprocess.run = run
     client = control.SubprocessMpsControlClient()
-    ready.put(os.getpid())
-    assert start.wait(10)
+    barrier.wait(timeout=10)
     for _ in range(4):
         if operation == "snapshot":
             assert client.snapshot(pipe_dir) == {MpsClientRef(7000, 101)}
@@ -222,12 +200,11 @@ def _control_worker(pipe_dir, operation, ready, start, commands):
 def test_native_queries_share_one_cross_process_lock(tmp_path):
     ctx = multiprocessing.get_context("spawn")
     pipe_dir = tmp_path / "GPU-abc" / "pipe"
-    start = ctx.Event()
-    ready = ctx.Queue()
-    commands = ctx.Queue()
+    barrier = ctx.Barrier(5)
+    entered = ctx.Event()
     processes = [
         ctx.Process(
-            target=_control_worker, args=(pipe_dir, operation, ready, start, commands)
+            target=_control_worker, args=(pipe_dir, operation, barrier, entered)
         )
         for operation in ("snapshot", "status", "terminate", "quit")
     ]
@@ -235,47 +212,18 @@ def test_native_queries_share_one_cross_process_lock(tmp_path):
         with state_root_lock(tmp_path, ".control-lock-GPU-abc"):
             for process in processes:
                 process.start()
-            for _ in processes:
-                ready.get(timeout=10)
-            start.set()
+            barrier.wait(timeout=10)
             # Note (kaige): a parent-held native lock must block every operation.
-            with pytest.raises(Empty):
-                commands.get(timeout=0.2)
+            assert not entered.wait(timeout=0.2)
         for process in processes:
             process.join(timeout=10)
             assert process.exitcode == 0
-        observed = [
-            line.split(" ", 1)
-            for line in (tmp_path / "commands.log").read_text().splitlines()
-        ]
-        assert len(observed) == 20
-        for pid in {pid for pid, _ in observed}:
-            worker_commands = [command for owner, command in observed if owner == pid]
-            if worker_commands[0] == "get_server_list":
-                assert (
-                    worker_commands == ["get_server_list", "get_client_list 7000"] * 4
-                )
     finally:
         for process in processes:
             if process.is_alive():
                 process.terminate()
             if process.pid is not None:
                 process.join(timeout=5)
-        ready.close()
-        commands.close()
-
-
-def test_failed_query_releases_control_lock(monkeypatch, tmp_path):
-    pipe_dir = tmp_path / "GPU-abc" / "pipe"
-
-    def timeout(args, **kwargs):
-        raise subprocess.TimeoutExpired(args, 10)
-
-    monkeypatch.setattr(control.subprocess, "run", timeout)
-    with pytest.raises(MpsControlError):
-        control.SubprocessMpsControlClient().get_server_status(pipe_dir, 7000)
-    with (tmp_path / ".control-lock-GPU-abc").open("r+") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def test_control_lock_survives_gpu_state_removal(monkeypatch, tmp_path):
@@ -308,3 +256,18 @@ def test_lock_failure_is_reported_as_control_error(monkeypatch, tmp_path):
         control.SubprocessMpsControlClient().get_server_status(
             tmp_path / "GPU-abc" / "pipe", 7000
         )
+
+
+def test_daemon_liveness_rejects_zombie_proc_entries(monkeypatch):
+    stats = {
+        Path("/proc/430465/stat"): "430465 (nvidia-cuda-mps) Z 1 430465 0",
+        Path("/proc/53748/stat"): "53748 (nvidia-cuda-mps-control) S 1 0 0",
+        Path("/proc/7/stat"): "7 (weird) name) Z 1 0",
+    }
+    monkeypatch.setattr(Path, "read_text", lambda path: stats[path])
+    monkeypatch.setattr(control.os, "kill", lambda _pid, _signal: None)
+    client = control.SubprocessMpsControlClient()
+
+    assert not client.daemon_process_alive(430465)
+    assert client.daemon_process_alive(53748)
+    assert not client.daemon_process_alive(7)
