@@ -148,24 +148,17 @@ def _resolve_physical_plans(
     logical_ids_by_uuid: dict[str, set[int]] = {}
     blocked: dict[str, list[str]] = {}
 
-    def block(gpu_uuids: set[str], reason: str) -> None:
-        for gpu_uuid in gpu_uuids:
-            blocked.setdefault(gpu_uuid, []).append(reason)
-
     for fact in potential_clients:
         placement_uuids = {uuid_for[gpu_id] for gpu_id in fact.placement_gpu_ids}
         (placement_uuid,) = placement_uuids
-        names = clients_by_uuid.setdefault(placement_uuid, [])
-        if fact.process_name not in names:
-            names.append(fact.process_name)
+        clients_by_uuid.setdefault(placement_uuid, []).append(fact.process_name)
         logical_ids_by_uuid.setdefault(placement_uuid, set()).update(
             fact.placement_gpu_ids
         )
 
         nonzero_explicit = set(fact.explicit_cuda_gpu_ids) - {0}
         if nonzero_explicit:
-            block(
-                {placement_uuid},
+            blocked.setdefault(placement_uuid, []).append(
                 f"process {fact.process_name!r} contains explicit CUDA "
                 f"ordinal(s) {sorted(nonzero_explicit)} that would be invalid "
                 "after single-device MPS normalization; use cuda:0 for the "
@@ -191,7 +184,7 @@ def _resolve_physical_plans(
         )
         raise MpsError(f"mps=on but a physical GPU does not support MPS: {detail}")
     for gpu_uuid, reasons in unsupported_candidates.items():
-        block({gpu_uuid}, "; ".join(reasons))
+        blocked.setdefault(gpu_uuid, []).append("; ".join(reasons))
 
     physical_plans: dict[str, _PhysicalMpsPlan] = {}
     for gpu_uuid, process_names in sorted(clients_by_uuid.items()):
@@ -319,7 +312,6 @@ class MpsPipelineRuntime:
                     state_root=root,
                     gpu_uuid=gpu_uuid,
                 ),
-                gpu_uuid=gpu_uuid,
                 client=client,
             )
             for gpu_uuid in physical_plans
@@ -347,12 +339,15 @@ class MpsPipelineRuntime:
 
         if self._leases:
             raise MpsError("MPS pipeline runtime is already acquired")
-        acquired: list[str] = []
         try:
             for gpu_uuid, manager in self.managers.items():
-                lease = manager.acquire(self._tokens_on(gpu_uuid))
+                lease = manager.acquire(
+                    {
+                        name: self._client_tokens[name]
+                        for name in self._plans[gpu_uuid].client_process_names
+                    }
+                )
                 self._leases[gpu_uuid] = lease
-                acquired.append(gpu_uuid)
                 logger.info(
                     "MPS daemon ready on physical GPU %s (logical GPUs %s, pipe "
                     "dir %s)",
@@ -362,7 +357,7 @@ class MpsPipelineRuntime:
                 )
         except BaseException as startup_error:
             rollback_errors: list[tuple[str, MpsError]] = []
-            for gpu_uuid in reversed(acquired):
+            for gpu_uuid in reversed(list(self._leases)):
                 error = self._release_one(
                     gpu_uuid,
                     suppress_errors=True,
@@ -396,19 +391,11 @@ class MpsPipelineRuntime:
                 gpu_uuid: {
                     "logical_gpus": list(self._plans[gpu_uuid].logical_gpu_ids),
                     "daemon_pid": self._leases[gpu_uuid].daemon_pid,
-                    "clients": sorted(self._names_on(gpu_uuid)),
+                    "clients": sorted(self._plans[gpu_uuid].client_process_names),
                 }
                 for gpu_uuid in self._leases
             },
         )
-
-    def _names_on(self, gpu_uuid: str) -> list[str]:
-        return [
-            name for name, physical in self._client_uuid.items() if physical == gpu_uuid
-        ]
-
-    def _tokens_on(self, gpu_uuid: str) -> dict[str, str]:
-        return {name: self._client_tokens[name] for name in self._names_on(gpu_uuid)}
 
     def env_for_process(self, process_name: str) -> dict[str, str]:
         gpu_uuid = self._client_uuid.get(process_name)
@@ -479,7 +466,9 @@ class MpsPipelineRuntime:
         for gpu_uuid in reversed(list(self._leases)):
             clients_could_have_attached = (
                 process_start_attempts is None
-                or not process_start_attempts.isdisjoint(self._names_on(gpu_uuid))
+                or not process_start_attempts.isdisjoint(
+                    self._plans[gpu_uuid].client_process_names
+                )
             )
             error = self._release_one(
                 gpu_uuid,

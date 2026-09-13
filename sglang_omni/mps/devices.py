@@ -26,15 +26,13 @@ def _check_cuda(status: Any, operation: str) -> None:
 
 def _resolve_cuda_device_uuids(
     gpu_ids: Iterable[int],
-    driver=None,
 ) -> tuple[dict[int, str], dict[int, str]]:
     """Resolve parent-visible CUDA ordinals without creating a context."""
 
     ordinals = tuple(sorted(set(gpu_ids)))
     if any(ordinal < 0 for ordinal in ordinals):
         raise ValueError(f"CUDA device ordinals must be non-negative: {ordinals}")
-    if driver is None:
-        from cuda.bindings import driver
+    from cuda.bindings import driver
 
     (status,) = driver.cuInit(0)
     _check_cuda(status, "cuInit")

@@ -613,24 +613,36 @@ def test_parent_mps_conflict_is_reported_before_state_creation(
 
 
 @pytest.mark.asyncio
-async def test_multi_gpu_start_rolls_back_only_successful_acquisitions(short_root):
+async def test_multi_gpu_start_rolls_back_only_successful_acquisitions(
+    short_root, monkeypatch
+):
     client = FakeControlClient()
     runtime = create(
         short_root,
         mode="on",
-        procs=[proc("a", 0), proc("b", 1)],
+        procs=[proc("a", 0), proc("b", 1), proc("c", 2)],
         client=client,
     )
-    assert list(runtime.managers) == [gpu_uuid(0), gpu_uuid(1)]
-    dirty = manager_on(runtime, 1).paths
+    assert list(runtime.managers) == [gpu_uuid(0), gpu_uuid(1), gpu_uuid(2)]
+    dirty = manager_on(runtime, 2).paths
     dirty.pipe_dir.mkdir(parents=True)
     dirty.log_dir.mkdir()
     dirty.owners_dir.mkdir()
     (dirty.owners_dir / "777").write_text("")
 
+    quit_order = []
+    quit_daemon = client.quit_daemon
+
+    def record_quit(pipe_dir):
+        quit_order.append(pipe_dir.parent.name)
+        quit_daemon(pipe_dir)
+
+    monkeypatch.setattr(client, "quit_daemon", record_quit)
     with pytest.raises(MpsError, match="dirty state"):
         await runtime.start()
 
+    assert quit_order == [gpu_uuid(1), gpu_uuid(0)]
+    assert not manager_on(runtime, 1).paths.state_dir.exists()
     assert not runtime.has_leases
     assert not manager_on(runtime, 0).paths.state_dir.exists()
     assert (dirty.owners_dir / "777").exists()
@@ -725,7 +737,7 @@ async def test_start_attempts_are_classified_per_physical_gpu(short_root):
         client.held_owner_pids.add(owner_pid)
         client.set_clients(paths.pipe_dir, {7000 + index: [200 + index]})
         client.client_tokens[200 + index] = f"foreign-owner-{index}"
-        foreign_clients[manager.gpu_uuid] = client.snapshot(paths.pipe_dir)
+        foreign_clients[manager.paths.gpu_uuid] = client.snapshot(paths.pipe_dir)
 
     await runtime.start()
 
@@ -740,7 +752,8 @@ async def test_start_attempts_are_classified_per_physical_gpu(short_root):
             "active\n"
         )
         assert (
-            client.snapshot(manager.paths.pipe_dir) == foreign_clients[manager.gpu_uuid]
+            client.snapshot(manager.paths.pipe_dir)
+            == foreign_clients[manager.paths.gpu_uuid]
         )
         assert client.daemon_process_alive(9000 + index)
 

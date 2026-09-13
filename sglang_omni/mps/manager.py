@@ -100,7 +100,6 @@ class _ExistingState:
 @dataclass
 class MpsManager:
     paths: MpsGpuPaths
-    gpu_uuid: str
     client: MpsControlClient
     poll_interval: float = 0.2
     start_timeout: float = 5.0
@@ -122,7 +121,7 @@ class MpsManager:
             )
         validate_control_socket(self.paths.control_socket)
         try:
-            with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
+            with state_root_lock(self.paths.state_root, f".lock-{self.paths.gpu_uuid}"):
                 if not self.paths.state_dir.exists():
                     return self._create_locked(tokens)
                 return self._join_locked(tokens)
@@ -130,7 +129,7 @@ class MpsManager:
             raise
         except Exception as exc:
             raise MpsError(
-                f"failed to acquire MPS on {self.gpu_uuid}: {exc}. State dir "
+                f"failed to acquire MPS on {self.paths.gpu_uuid}: {exc}. State dir "
                 f"preserved for inspection: {self.paths.state_dir}"
             ) from exc
 
@@ -143,7 +142,7 @@ class MpsManager:
         startup_error: BaseException | None = None
         try:
             self.client.start_daemon(
-                self.paths.pipe_dir, self.paths.log_dir, self.gpu_uuid
+                self.paths.pipe_dir, self.paths.log_dir, self.paths.gpu_uuid
             )
         except MpsDaemonNotStartedError as exc:
             try:
@@ -206,7 +205,7 @@ class MpsManager:
             logger.info(
                 "Joining shared MPS daemon pid %d on %s (owners: %s)",
                 state.daemon_pid,
-                self.gpu_uuid,
+                self.paths.gpu_uuid,
                 sorted(state.owners),
             )
             return MpsLease(
@@ -403,7 +402,7 @@ class MpsManager:
         return {
             "CUDA_MPS_PIPE_DIRECTORY": str(self.paths.pipe_dir),
             "CUDA_MPS_LOG_DIRECTORY": str(self.paths.log_dir),
-            "CUDA_VISIBLE_DEVICES": self.gpu_uuid,
+            "CUDA_VISIBLE_DEVICES": self.paths.gpu_uuid,
         }
 
     def verify(self, lease: MpsLease) -> set[MpsClientRef]:
@@ -505,7 +504,7 @@ class MpsManager:
 
         self._require_live_lease(lease)
         try:
-            with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
+            with state_root_lock(self.paths.state_root, f".lock-{self.paths.gpu_uuid}"):
                 try:
                     self._release_locked(
                         lease,
@@ -515,8 +514,6 @@ class MpsManager:
                     if lease.owner_fd >= 0:
                         raise self._persist_dirty_locked(lease, exc) from exc
                     raise
-        except MpsDirtyStateError:
-            raise
         except MpsError:
             raise
         except Exception as exc:
@@ -525,7 +522,7 @@ class MpsManager:
                 self._abandon_owner(lease)
                 raise MpsDirtyStateError(
                     f"MPS cleanup could not persist a retained status under the "
-                    f"GPU lock for {self.gpu_uuid}: {exc}. Owner PID {owner_pid} "
+                    f"GPU lock for {self.paths.gpu_uuid}: {exc}. Owner PID {owner_pid} "
                     f"marker {self._owner_file} was left in place with an "
                     f"unconfirmed status and its lock is released; state "
                     f"directory {self.paths.state_dir} is preserved. "
@@ -545,11 +542,8 @@ class MpsManager:
         if clients_could_have_attached:
             self._wait_for_owned_clients_to_detach(lease)
 
-        try:
-            daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
-            snapshot = self.client.snapshot(self.paths.pipe_dir)
-        except MpsControlError:
-            raise
+        daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
+        snapshot = self.client.snapshot(self.paths.pipe_dir)
         if daemon_pid != lease.daemon_pid:
             raise MpsError(
                 f"MPS daemon identity changed from {lease.daemon_pid} to {daemon_pid}; "
@@ -584,7 +578,7 @@ class MpsManager:
             self._drop_owner(lease)
             logger.info(
                 "Leaving shared MPS daemon on %s to owner markers %s",
-                self.gpu_uuid,
+                self.paths.gpu_uuid,
                 sorted(remaining_owner_pids),
             )
             return
@@ -619,8 +613,6 @@ class MpsManager:
         self,
         lease: MpsLease,
         error: BaseException,
-        *,
-        clients: set[MpsClientRef] | None = None,
     ) -> MpsDirtyStateError:
         owner_pid = os.getpid()
         status_error: BaseException | None = None
@@ -630,12 +622,12 @@ class MpsManager:
             status_error = exc
 
         observed_daemon_pid: int | None = None
+        clients: set[MpsClientRef] | None = None
         owned_clients: set[MpsClientRef] | None = None
         query_error: MpsControlError | None = None
         try:
             observed_daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
-            if clients is None:
-                clients = self.client.snapshot(self.paths.pipe_dir)
+            clients = self.client.snapshot(self.paths.pipe_dir)
             owned_clients, _, _ = self._classify_clients(clients, lease)
         except MpsControlError as exc:
             query_error = exc
@@ -657,7 +649,7 @@ class MpsManager:
         )
         snapshot = "unavailable" if clients is None else repr(sorted(clients))
         return MpsDirtyStateError(
-            f"MPS cleanup persisted dirty state for GPU {self.gpu_uuid}: {error}. "
+            f"MPS cleanup persisted dirty state for GPU {self.paths.gpu_uuid}: {error}. "
             f"Owner PID {owner_pid} marker {self._owner_file} is {status} and its "
             f"lock is released; state directory {self.paths.state_dir} is preserved. "
             f"Expected daemon PID {lease.daemon_pid}; observed daemon PID {observed}; "
@@ -678,7 +670,7 @@ class MpsManager:
             else f"unconfirmed because the retained-status write failed: {status_error}"
         )
         return MpsDirtyStateError(
-            f"MPS startup persisted dirty state for GPU {self.gpu_uuid}: {error}. "
+            f"MPS startup persisted dirty state for GPU {self.paths.gpu_uuid}: {error}. "
             f"Owner PID {owner_pid} marker {self._owner_file} is {status} and its "
             f"lock is released; state directory {self.paths.state_dir} is preserved. "
             "Daemon identity and client snapshot are unavailable. "

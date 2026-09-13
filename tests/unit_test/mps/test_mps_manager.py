@@ -151,7 +151,6 @@ def short_root():
 def make_manager(root, client, gpu_uuid=GPU_UUID):
     return MpsManager(
         paths=MpsGpuPaths(state_root=root, gpu_uuid=gpu_uuid),
-        gpu_uuid=gpu_uuid,
         client=client,
         poll_interval=0.0,
         start_timeout=0.02,

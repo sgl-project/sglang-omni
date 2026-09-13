@@ -59,3 +59,15 @@ def test_extracts_resolved_process_facts_without_deciding_physical_identity():
     assert facts[0].explicit_cuda_gpu_ids == (1, 2, 4)
     assert not facts[0].contains_tp
     assert facts[1].contains_tp
+
+
+def test_duplicate_process_specs_preserve_first_seen_order_and_merge_gpu_facts():
+    first = proc("b", 1)
+    first.stage_specs[0].factory_kwargs = {"device": "cuda:1"}
+    later = proc("b", 2)
+    later.stage_specs[0].factory_kwargs = {"device": "cuda:2"}
+    facts = collect_mps_facts(spec for spec in (first, proc("a", 0), later))
+
+    assert [fact.process_name for fact in facts] == ["b", "a"]
+    assert facts[0].placement_gpu_ids == (1, 2)
+    assert facts[0].explicit_cuda_gpu_ids == (1, 2)

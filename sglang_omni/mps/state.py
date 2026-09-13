@@ -3,17 +3,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-
-try:
-    import fcntl
-except ImportError:  # non-POSIX unit-test hosts
-    fcntl = None
 
 # AF_UNIX sun_path is 108 bytes including the terminator on Linux.
 _SUN_PATH_LIMIT = 107
@@ -99,17 +95,8 @@ def _ensure_private_state_root(root: Path) -> None:
 
 @contextmanager
 def state_root_lock(root: Path, lock_name: str = ".lock"):
-    """Serialize operations across processes using a persistent named lock file.
-
-    No-op where flock is unavailable (non-POSIX unit-test hosts).
-    """
+    """Serialize operations across processes using a persistent named lock file."""
     _ensure_private_state_root(root)
-    if fcntl is None:
-        yield
-        return
     with open(root / lock_name, "w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
+        yield
