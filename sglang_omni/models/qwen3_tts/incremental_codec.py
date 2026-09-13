@@ -673,30 +673,23 @@ class Qwen3TTSIncrementalDecoder:
         ).clamp(min=-1, max=1)
 
     def precompile(
-        self, batch_size: int, fresh_frames: int, *, num_quantizers: int
+        self, codes: torch.Tensor, state: Qwen3TTSIncrementalCodecState
     ) -> None:
-        """Compile the tensor-only step for one static shape.
+        """Trace the tensor-only step on these inputs and admit their shape.
 
         ``decode`` routes a shape through the compiled kernel only after it was
         precompiled here, so an unforeseen shape at serving time takes the eager
         path instead of a multi-second compile on a request's critical path.
+
+        Pass the codes and state of a real decode, in its grad-disabling
+        context: Dynamo guards on both, and the step advances the state.
         """
         if self._compiled_kernel is None:
             self._compiled_kernel = torch.compile(
                 self._decode_tensors, dynamic=False, fullgraph=True
             )
-        shape = (int(batch_size), int(fresh_frames))
+        shape = (int(codes.shape[0]), int(codes.shape[-1]))
         if shape in self._compiled_shapes:
             return
-        parameter = next(self._decoder.parameters())
-        codes = torch.zeros(
-            (shape[0], int(num_quantizers), shape[1]),
-            dtype=torch.long,
-            device=parameter.device,
-        )
-        state = self.init_state(
-            shape[0], device=parameter.device, dtype=parameter.dtype
-        )
-        with torch.inference_mode():
-            self._compiled_kernel(codes, state)
+        self._compiled_kernel(codes, state)
         self._compiled_shapes.add(shape)

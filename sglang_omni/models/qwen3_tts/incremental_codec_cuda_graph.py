@@ -9,7 +9,7 @@ import math
 import os
 import threading
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -51,6 +51,19 @@ class _CaptureFailure(RuntimeError):
     pass
 
 
+def split_frames_by_width(
+    total_frames: int, widths: Iterable[int]
+) -> tuple[int, ...] | None:
+    """Split total_frames into the widths, largest first; None if it does not divide."""
+    remaining = int(total_frames)
+    split: list[int] = []
+    for width in sorted(widths, reverse=True):
+        while remaining >= width:
+            split.append(width)
+            remaining -= width
+    return tuple(split) if remaining == 0 else None
+
+
 class Qwen3TTSIncrementalCodecCudaGraphRunner:
     """Fixed-shape CUDA Graph runner for incremental Codec decoding.
 
@@ -61,7 +74,9 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
 
     COLD and WARM use separate instances because the initial and follow-up
     workers run on different CUDA streams; each mutable buffer set must be
-    replayed serially by only one worker.
+    replayed serially by only one worker. WINDOW is a second instance on the
+    initial worker's stream holding the widths a wider decode is split into,
+    so a failed capture there leaves the COLD shapes in place.
     """
 
     _WARMUP_ITERATIONS = 3
@@ -73,7 +88,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         device: torch.device,
         dtype: torch.dtype,
         num_quantizers: int,
-        mode: Literal["cold", "warm"],
+        mode: Literal["cold", "warm", "window"],
         fresh_frames: tuple[int, ...],
         batch_sizes: tuple[int, ...] = (1, 2, 4, 8),
         min_free_gb: float = 3.0,
@@ -96,8 +111,10 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self._dtype = dtype
         self._num_quantizers = int(num_quantizers)
         self._mode = str(mode).strip().lower()
-        if self._mode not in {"cold", "warm"}:
-            raise ValueError("incremental Codec graph mode must be 'cold' or 'warm'")
+        if self._mode not in {"cold", "warm", "window"}:
+            raise ValueError(
+                "incremental Codec graph mode must be 'cold', 'warm' or 'window'"
+            )
         self._fresh_frames = tuple(
             sorted({int(frames) for frames in fresh_frames if int(frames) > 0})
         )
@@ -311,24 +328,23 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         """Run eager decodes that settle one shape before graph capture."""
 
         capture_stream = resources.stream
-        if key.fresh_frames in self._compile_fresh_frames:
-            self._decoder.precompile(
-                key.batch_bucket,
-                key.fresh_frames,
-                num_quantizers=self._num_quantizers,
-            )
+        compiled = key.fresh_frames in self._compile_fresh_frames
         capture_stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(capture_stream), torch.inference_mode():
+            if compiled:
+                # note(ratish): trace on the tensors the warmups and the capture
+                # use; Dynamo guards on inference tensors and would trace again.
+                trace_state = self._arena.gather_by_index(
+                    self._scratch_index(key.batch_bucket)
+                )
+                resources.keepalives.append(trace_state)
+                self._decoder.precompile(static_codes, trace_state)
             for _ in range(self._WARMUP_ITERATIONS):
                 warmup_state = self._arena.gather_by_index(
                     self._scratch_index(key.batch_bucket)
                 )
                 resources.keepalives.append(warmup_state)
-                self._decoder.decode(
-                    static_codes,
-                    warmup_state,
-                    compiled=key.fresh_frames in self._compile_fresh_frames,
-                )
+                self._decoder.decode(static_codes, warmup_state, compiled=compiled)
         capture_stream.synchronize()
         del resources.keepalives[1:]
 
@@ -434,6 +450,21 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 reverse=True,
             )
         )
+
+    def split_frames(self, total_frames: int) -> tuple[int, ...] | None:
+        """Split total_frames into captured widths; None while disabled."""
+        if not self._enabled:
+            return None
+        with self._graphs_lock:
+            widths = {key.fresh_frames for key in self._graphs}
+        return split_frames_by_width(total_frames, widths)
+
+    def largest_batch_bucket(self) -> int:
+        """The widest cohort one replay takes at any captured width; 0 while disabled."""
+        if not self._enabled:
+            return 0
+        with self._graphs_lock:
+            return max((key.batch_bucket for key in self._graphs), default=0)
 
     def _scratch_index(self, bucket: int) -> torch.Tensor:
         return torch.full(
@@ -575,4 +606,5 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
 __all__ = [
     "IncrementalCodecGraphKey",
     "Qwen3TTSIncrementalCodecCudaGraphRunner",
+    "split_frames_by_width",
 ]
