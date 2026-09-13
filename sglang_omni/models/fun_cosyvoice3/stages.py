@@ -460,28 +460,20 @@ class FlowCudaGraphRunner:
             ):
                 return None
             else:
-                try:
-                    with (
-                        torch.cuda.device(self.device),
-                        torch.autocast(
-                            device_type=self.device.type,
-                            dtype=self.autocast_dtype,
-                            enabled=self.autocast_dtype is not None,
-                        ),
+                with (
+                    torch.cuda.device(self.device),
+                    torch.autocast(
+                        device_type=self.device.type,
+                        dtype=self.autocast_dtype,
+                        enabled=self.autocast_dtype is not None,
+                    ),
+                ):
+                    for static, value in zip(
+                        captured.static_inputs, inputs, strict=True
                     ):
-                        for static, value in zip(
-                            captured.static_inputs, inputs, strict=True
-                        ):
-                            static.copy_(value)
-                        captured.graph.replay()
-                        return captured.static_output[..., :actual_mel_frame].clone()
-                except Exception:
-                    self.graphs.clear()
-                    logger.exception(
-                        "Fun-CosyVoice3 Flow CUDA graph replay failed; "
-                        "disabling resident graphs"
-                    )
-                    raise
+                        static.copy_(value)
+                    captured.graph.replay()
+                    return captured.static_output[..., :actual_mel_frame].clone()
 
 
 @torch.inference_mode()
@@ -1444,22 +1436,13 @@ def create_vocoder_executor(
         capture_shapes = verify_flow_cuda_graph_capture_shapes(
             flow_cuda_graph_capture_shapes,
         )
-        try:
-            runner = FlowCudaGraphRunner(
-                flow,
-                device=device_obj,
-                autocast_dtype=autocast_dtype,
-            )
-            runner.capture(capture_shapes)
-        except Exception as exc:
-            logger.warning(
-                "Fun-CosyVoice3 Flow CUDA graph startup failed "
-                "(%s: %s); using the normal solver",
-                type(exc).__name__,
-                exc,
-            )
-        else:
-            flow.attach_cuda_graph_runner(runner)
+        runner = FlowCudaGraphRunner(
+            flow,
+            device=device_obj,
+            autocast_dtype=autocast_dtype,
+        )
+        runner.capture(capture_shapes)
+        flow.attach_cuda_graph_runner(runner)
 
     vocoder = CosyVoice3Vocoder(
         flow,

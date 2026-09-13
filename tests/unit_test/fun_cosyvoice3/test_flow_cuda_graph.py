@@ -104,18 +104,18 @@ def test_verify_capture_shapes_rejects_unaligned_frames() -> None:
 
 
 def test_capture_constructs_captured_graph_record(monkeypatch) -> None:
-    class _Stream:
+    class FakeStream:
         def wait_stream(self, stream) -> None:
             del stream
 
-    class _Graph:
+    class FakeGraph:
         pass
 
-    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: _Stream())
-    monkeypatch.setattr(torch.cuda, "Stream", lambda device: _Stream())
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: FakeStream())
+    monkeypatch.setattr(torch.cuda, "Stream", lambda device: FakeStream())
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: contextlib.nullcontext())
     monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: object())
-    monkeypatch.setattr(torch.cuda, "CUDAGraph", _Graph)
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", FakeGraph)
     monkeypatch.setattr(
         torch.cuda,
         "graph",
@@ -152,7 +152,7 @@ def test_causal_flow_never_replays_buffered_cuda_graph(monkeypatch) -> None:
 
     monkeypatch.setattr(stages, "solve_flow_euler", _solve_flow_euler)
 
-    class _FailingRunner:
+    class FailingRunner:
         def __init__(self) -> None:
             self.calls = 0
 
@@ -161,7 +161,7 @@ def test_causal_flow_never_replays_buffered_cuda_graph(monkeypatch) -> None:
             self.calls += 1
             raise AssertionError("causal Flow must not replay a buffered graph")
 
-    runner = _FailingRunner()
+    runner = FailingRunner()
     flow = _flow(max_frames=64)
     flow.cuda_graph_runner = runner
 
