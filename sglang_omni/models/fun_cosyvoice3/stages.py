@@ -9,16 +9,16 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from cosyvoice.flow.DiT import dit as cosyvoice_dit
-from cosyvoice.flow.flow import CausalMaskedDiffWithDiT
-from cosyvoice.flow.flow_matching import ConditionalCFM
-from cosyvoice.utils.mask import add_optional_chunk_mask as cosyvoice_chunk_mask
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
+
+if TYPE_CHECKING:
+    from cosyvoice.flow.flow import CausalMaskedDiffWithDiT
+    from cosyvoice.flow.flow_matching import ConditionalCFM
 
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
@@ -1860,6 +1860,13 @@ def create_vocoder_executor(
         enable_flow_cuda_graph = False
 
     if enable_flow_cuda_graph:
+        try:
+            from cosyvoice.flow.DiT import dit as cosyvoice_dit
+            from cosyvoice.utils.mask import (
+                add_optional_chunk_mask as cosyvoice_chunk_mask,
+            )
+        except ImportError as exc:
+            raise RuntimeError(COSYVOICE_INSTALL_HINT) from exc
 
         def _chunk_mask(
             xs: torch.Tensor,
