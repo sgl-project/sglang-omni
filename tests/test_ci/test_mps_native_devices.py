@@ -80,7 +80,7 @@ async def test_multiple_gpu_workers_share_one_server_with_correct_local_cuda_zer
                 _WORKER,
                 env={
                     **os.environ,
-                    **runtime.env_for_process(name),
+                    **runtime.worker_env,
                     "CUDA_VISIBLE_DEVICES": gpu_uuid,
                 },
                 stdin=asyncio.subprocess.PIPE,
@@ -91,7 +91,7 @@ async def test_multiple_gpu_workers_share_one_server_with_correct_local_cuda_zer
             assert line, f"{name} exited before CUDA initialization"
             observed = json.loads(line)
             assert observed == {"uuid": devices[name], "count": 1}
-        await runtime.verify()
+        await runtime.verify(worker.pid for worker in workers.values())
         refs = runtime.client.snapshot(runtime.pipe_dir)
         assert {ref.server_pid for ref in refs} == {runtime.server_pid}
         assert {ref.client_pid for ref in refs} == {
@@ -105,7 +105,7 @@ async def test_multiple_gpu_workers_share_one_server_with_correct_local_cuda_zer
                 try:
                     await asyncio.wait_for(worker.wait(), 10)
                 except asyncio.TimeoutError:
-                    await runtime.retire_process_clients(name)
+                    await runtime.retire_process_clients(worker.pid)
                     worker.kill()
                     await asyncio.wait_for(worker.wait(), 10)
         await runtime.close()

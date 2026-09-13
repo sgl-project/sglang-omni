@@ -607,7 +607,7 @@ class MultiProcessPipelineRunner:
                 await self._mps.start(worker_devices.values())
                 env_by_process = {
                     name: {
-                        **self._mps.env_for_process(name),
+                        **self._mps.worker_env,
                         "CUDA_VISIBLE_DEVICES": gpu_uuid,
                         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
                     }
@@ -644,7 +644,12 @@ class MultiProcessPipelineRunner:
                         )
 
             if self._mps is not None:
-                await self._mps.verify()
+                await self._mps.verify(
+                    p.pid
+                    for group in self._groups
+                    for spec, p in zip(group.process_specs, group.processes)
+                    if spec.process_name in worker_devices
+                )
 
             for group in self._groups:
                 for stage_name, endpoint in group.stage_control_endpoints.items():
@@ -838,10 +843,10 @@ class MultiProcessPipelineRunner:
     async def _cleanup_on_failure(self) -> None:
         """Best-effort cleanup after a failed start()."""
         for group in [g for wave in self._shutdown_waves() for g in wave]:
-            for spec, p in zip(group.process_specs, group.processes):
+            for p in group.processes:
                 if p.is_alive():
                     if self._mps is not None:
-                        await self._mps.retire_process_clients(spec.process_name)
+                        await self._mps.retire_process_clients(p.pid)
                     p.terminate()
             for spec, p in zip(group.process_specs, group.processes):
                 p.join(timeout=5)

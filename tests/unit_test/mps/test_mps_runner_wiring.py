@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.config import EndpointsConfig, PipelineConfig, StageConfig
-from sglang_omni.mps.control import MPS_CLIENT_TOKEN_ENV, MpsDirtyStateError
+from sglang_omni.mps.control import MpsDirtyStateError
 from sglang_omni.mps.runtime import MpsPipelineRuntime
 from sglang_omni.pipeline import mp_runner
 from sglang_omni.pipeline.stage_workers import (
@@ -76,6 +76,8 @@ class _FakeCoordinator:
 
 
 class _FakeProcess:
+    pid = 101
+
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self._alive = True
@@ -183,16 +185,15 @@ class _FakeMps:
         self.events.append("MPS start")
         self.started = True
 
-    def env_for_process(self, process_name: str) -> dict[str, str]:
-        if process_name != "pipeline":
-            return {}
+    @property
+    def worker_env(self) -> dict[str, str]:
         return {"CUDA_MPS_PIPE_DIRECTORY": "/tmp/mps-pipe"}
 
-    async def verify(self) -> None:
+    async def verify(self, worker_pids) -> None:
         self.events.append("MPS verify")
 
-    async def retire_process_clients(self, process_name: str) -> None:
-        self.events.append(f"MPS retire {process_name}")
+    async def retire_process_clients(self, worker_pid: int) -> None:
+        self.events.append(f"MPS retire {worker_pid}")
 
     async def probe(self) -> str | None:
         if self.probe_gate is not None:
@@ -284,7 +285,7 @@ def _real_mps_group() -> StageGroup:
 
 def _private_mps_runtime(root):
     client = FakeControlClient()
-    runtime = MpsPipelineRuntime(client, ["pipeline"], root)
+    runtime = MpsPipelineRuntime(client, root)
     runtime.poll_interval = 0
     runtime.verify_timeout = 0.02
     runtime.stop_timeout = 0.02
@@ -394,13 +395,12 @@ async def test_server_fault_reaches_runner_watchdog_and_cleans_private_daemon(
     short_base, monkeypatch
 ):
     events = []
-    group = _FakeGroup(events)
+    group = _FakeGroup(events, direct_process=True)
     runtime, client = _private_mps_runtime(short_base)
     _patch_runner(monkeypatch, events, group, runtime)
 
     async def wait_ready(timeout):
         client.set_clients(runtime.pipe_dir, {8000: [101]})
-        client.client_tokens[101] = group.spawn_env["pipeline"][MPS_CLIENT_TOKEN_ENV]
 
     async def shutdown(before_signal=None):
         client.set_clients(runtime.pipe_dir, {})
@@ -579,13 +579,13 @@ async def test_stuck_process_is_retired_from_mps_before_any_signal():
     group = _real_mps_group()
     group._processes = [_StuckProcess(events)]
 
-    async def before_signal(process_name: str) -> None:
-        events.append(f"retire {process_name}")
+    async def before_signal(worker_pid: int) -> None:
+        events.append(f"retire {worker_pid}")
 
     await group.shutdown(join_timeout=0, before_signal=before_signal)
 
     assert "SIGTERM" in events
-    assert events.index("retire pipeline") < events.index("SIGTERM")
+    assert events.index("retire 4321") < events.index("SIGTERM")
 
 
 @pytest.mark.asyncio
@@ -617,6 +617,72 @@ async def test_cancelling_startup_cleanup_still_closes_mps(short_base, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client_pids", [[101, 102], [101]])
+async def test_runner_verifies_only_mps_worker_pids(
+    short_base, monkeypatch, client_pids
+):
+    events = []
+    groups = [
+        StageGroup(
+            name,
+            [
+                StageWorkerProcessSpec(
+                    process_name=name,
+                    stage_specs=[
+                        StageLaunchConfig(
+                            stage_name=name,
+                            factory=f"{__name__}.noop_factory",
+                            gpu_id=gpu_id,
+                            placement_gpu_id=gpu_id,
+                            tp_size=tp_size,
+                        )
+                    ],
+                )
+            ],
+        )
+        for name, gpu_id, tp_size in [
+            ("a", 0, 1),
+            ("b", 0, 1),
+            ("cpu", None, 1),
+            ("tp", 1, 2),
+        ]
+    ]
+    runtime, client = _private_mps_runtime(short_base)
+    _patch_runner(monkeypatch, events, groups[0], runtime)
+    monkeypatch.setattr(
+        mp_runner, "_build_stage_groups", lambda *args, **kwargs: groups
+    )
+    monkeypatch.setattr(
+        mp_runner,
+        "create_for_pipeline",
+        lambda mode, specs: (runtime, {"a": FAKE_GPU_UUID, "b": FAKE_GPU_UUID}),
+    )
+    pids = iter(range(101, 105))
+
+    def spawn(group, ctx, process_env_overrides=None):
+        assert set(process_env_overrides) == {"a", "b"}
+        worker = _StuckProcess(events)
+        worker.pid = next(pids)
+        group._processes.append(worker)
+
+    async def wait_ready(group, timeout):
+        client.set_clients(runtime.pipe_dir, {7000: client_pids})
+
+    monkeypatch.setattr(StageGroup, "spawn", spawn)
+    monkeypatch.setattr(StageGroup, "wait_ready", wait_ready)
+    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    if client_pids == [101]:
+        with pytest.raises(RuntimeError, match=r"102.*never attached"):
+            await runner.start()
+    else:
+        await runner.start()
+        assert runtime.server_pid == 7000
+        await runner.stop()
+    assert not runtime.has_resources
+    assert not client.alive_pids
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("startup_failure", [False, True])
 @pytest.mark.parametrize("failure", ["snapshot", "terminate_client"])
 async def test_retirement_failure_still_closes_worker_pipeline_and_mps(
@@ -636,10 +702,7 @@ async def test_retirement_failure_still_closes_worker_pipeline_and_mps(
 
     def spawn(ctx, process_env_overrides=None):
         group._processes.append(worker)
-        client.set_clients(runtime.pipe_dir, {7000: [101]})
-        client.client_tokens[101] = process_env_overrides["pipeline"][
-            MPS_CLIENT_TOKEN_ENV
-        ]
+        client.set_clients(runtime.pipe_dir, {7000: [worker.pid]})
 
     async def wait_ready(timeout):
         if startup_failure:

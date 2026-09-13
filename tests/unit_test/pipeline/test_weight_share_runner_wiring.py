@@ -306,16 +306,17 @@ async def test_mps_environment_survives_the_weight_share_merge(
         async def start(self, gpu_uuids) -> None:
             events.append("MPS acquire")
 
-        def env_for_process(self, process_name: str) -> dict[str, str]:
-            return {"CUDA_MPS_PIPE_DIRECTORY": f"/tmp/pipe/{process_name}"}
+        @property
+        def worker_env(self) -> dict[str, str]:
+            return {"CUDA_MPS_PIPE_DIRECTORY": "/tmp/pipe"}
 
-        async def verify(self) -> None:
+        async def verify(self, worker_pids) -> None:
             events.append("MPS verify")
 
         async def probe(self) -> str | None:
             return None
 
-        async def retire_process_clients(self, process_name: str) -> None:
+        async def retire_process_clients(self, worker_pid: int) -> None:
             pass
 
         async def close(self) -> None:
@@ -333,7 +334,7 @@ async def test_mps_environment_survives_the_weight_share_merge(
     await runner.start(timeout=5.0)
     try:
         env = leader.spawn_env
-        assert env["gen@r0"]["CUDA_MPS_PIPE_DIRECTORY"] == "/tmp/pipe/gen@r0"
+        assert env["gen@r0"]["CUDA_MPS_PIPE_DIRECTORY"] == "/tmp/pipe"
         assert env["gen@r0"][ENV_WEIGHT_SHARE].startswith("leader:")
         assert env["gen@r0"][ENV_WEIGHT_SHARE_COMPAT] == "1"
     finally:

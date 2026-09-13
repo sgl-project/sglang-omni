@@ -7,7 +7,6 @@ import asyncio
 import getpass
 import logging
 import os
-import secrets
 import shutil
 import sys
 import tempfile
@@ -17,7 +16,6 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from sglang_omni.mps.control import (
-    MPS_CLIENT_TOKEN_ENV,
     MpsControlClient,
     MpsControlError,
     MpsDaemonNotStartedError,
@@ -209,12 +207,10 @@ class MpsPipelineRuntime:
     def __init__(
         self,
         client: MpsControlClient,
-        process_names: Iterable[str],
         state_root: Path,
     ):
         self.client = client
         self._state_root = state_root
-        self._client_tokens = {name: secrets.token_hex(16) for name in process_names}
         self._operation_lock = asyncio.Lock()
         self.run_dir: Path | None = None
         self.daemon_pid: int | None = None
@@ -254,8 +250,8 @@ class MpsPipelineRuntime:
                 raise
 
     def _start(self, gpu_uuids: tuple[str, ...]) -> None:
-        if not gpu_uuids or not self._client_tokens:
-            raise MpsError("MPS startup requires GPUs and managed processes")
+        if not gpu_uuids:
+            raise MpsError("MPS startup requires GPUs")
         ensure_private_state_root(self._state_root)
         run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=self._state_root))
         try:
@@ -306,34 +302,29 @@ class MpsPipelineRuntime:
             )
         self.daemon_pid = pid
 
-    def env_for_process(self, process_name: str) -> dict[str, str]:
-        token = self._client_tokens.get(process_name)
-        if token is None:
-            return {}
+    @property
+    def worker_env(self) -> dict[str, str]:
         return {
             "CUDA_MPS_PIPE_DIRECTORY": str(self.pipe_dir),
             "CUDA_MPS_LOG_DIRECTORY": str(self.log_dir),
-            MPS_CLIENT_TOKEN_ENV: token,
         }
 
-    async def verify(self) -> None:
+    async def verify(self, worker_pids: Iterable[int]) -> None:
         async with self._operation_lock:
-            await self._run_blocking(self._verify)
+            await self._run_blocking(self._verify, set(worker_pids))
 
-    def _verify(self) -> None:
-        expected = {token: name for name, token in self._client_tokens.items()}
+    def _verify(self, expected: set[int]) -> None:
         deadline = time.monotonic() + self.verify_timeout
         while True:
-            observed: set[str] = set()
+            observed: set[int] = set()
             servers: set[int] = set()
             last_error = None
             try:
                 for ref in self.client.snapshot(self.pipe_dir):
-                    token = self.client.client_token(ref.client_pid)
-                    if token in expected:
-                        observed.add(token)
+                    if ref.client_pid in expected:
+                        observed.add(ref.client_pid)
                         servers.add(ref.server_pid)
-                if observed == expected.keys():
+                if observed == expected:
                     if len(servers) != 1:
                         raise MpsError(
                             f"managed MPS clients must share one server, got {sorted(servers)}"
@@ -343,35 +334,32 @@ class MpsPipelineRuntime:
             except MpsControlError as exc:
                 last_error = exc
             if time.monotonic() >= deadline:
-                missing = sorted(
-                    expected[token] for token in expected.keys() - observed
-                )
+                missing = sorted(expected - observed)
                 raise MpsError(
-                    f"stage process(es) {missing} never attached to the MPS server (pipe dir {self.pipe_dir}); last control error: {last_error}"
+                    f"worker PID(s) {missing} never attached to the MPS server (pipe dir {self.pipe_dir}); last control error: {last_error}"
                 )
             time.sleep(self.poll_interval)
 
-    async def retire_process_clients(self, process_name: str) -> None:
+    async def retire_process_clients(self, worker_pid: int) -> None:
         """Best-effort CUDA context termination before worker shutdown."""
 
         async with self._operation_lock:
             try:
-                await self._run_blocking(self._retire_process_clients, process_name)
+                await self._run_blocking(self._retire_process_clients, worker_pid)
             except MpsControlError as exc:
                 logger.warning(
-                    "Could not query MPS clients for %s; continuing worker shutdown: %s",
-                    process_name,
+                    "Could not query MPS clients for PID %s; continuing worker shutdown: %s",
+                    worker_pid,
                     exc,
                 )
 
-    def _retire_process_clients(self, process_name: str) -> None:
-        token = self._client_tokens.get(process_name)
-        if token is None or not self.has_resources:
+    def _retire_process_clients(self, worker_pid: int) -> None:
+        if not self.has_resources:
             return
         self._check_daemon_identity()
         for ref in sorted(self.client.snapshot(self.pipe_dir)):
             try:
-                if self.client.client_token(ref.client_pid) == token:
+                if ref.client_pid == worker_pid:
                     self.client.terminate_client(self.pipe_dir, ref)
             except MpsControlError as exc:
                 logger.warning(
@@ -518,4 +506,4 @@ def create_for_pipeline(
         return None, {}
     root = state_root if state_root is not None else _default_state_root()
     control = SubprocessMpsControlClient() if client is None else client
-    return MpsPipelineRuntime(control, worker_devices, root), worker_devices
+    return MpsPipelineRuntime(control, root), worker_devices

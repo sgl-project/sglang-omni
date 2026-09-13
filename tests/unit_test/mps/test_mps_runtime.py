@@ -15,7 +15,6 @@ from unittest.mock import patch
 import pytest
 
 from sglang_omni.mps.control import (
-    MPS_CLIENT_TOKEN_ENV,
     MpsClientRef,
     MpsControlError,
     MpsDaemonNotStartedError,
@@ -56,7 +55,6 @@ class FakeControlClient:
         self.daemons = {}
         self.alive_pids = set()
         self.snapshots = {}
-        self.client_tokens = {}
         self.server_statuses = {}
         self.calls = []
 
@@ -88,9 +86,6 @@ class FakeControlClient:
         }
         for server in clients:
             self.server_statuses.setdefault((str(pipe_dir), server), "ACTIVE")
-
-    def client_token(self, pid):
-        return self.client_tokens.get(pid)
 
     def get_server_status(self, pipe_dir, server_pid):
         self.calls.append(("status", pipe_dir, server_pid))
@@ -287,8 +282,7 @@ def test_tp_ranks_do_not_block_an_eligible_group_on_another_gpu(short_root):
     runtime, devices = create(short_root, procs=processes)
 
     assert sorted(set(devices.values())) == [gpu_uuid(2)]
-    assert runtime.env_for_process("thinker_tp0") == {}
-    assert runtime.env_for_process("thinker_tp1") == {}
+    assert set(devices) == {"a", "b"}
 
 
 def test_unsupported_gpu_under_auto_downgrades_to_off(short_root):
@@ -363,19 +357,12 @@ async def test_one_private_daemon_for_multiple_gpus_and_workers(short_root):
         for p in [run_dir, runtime.pipe_dir, runtime.log_dir]
     )
     assert runtime.server_pid is None
-    for name in devices:
-        assert runtime.env_for_process(name)["CUDA_MPS_PIPE_DIRECTORY"] == str(
-            runtime.pipe_dir
-        )
-    assert runtime.env_for_process("cpu") == {}
+    assert runtime.worker_env == {
+        "CUDA_MPS_PIPE_DIRECTORY": str(runtime.pipe_dir),
+        "CUDA_MPS_LOG_DIRECTORY": str(runtime.log_dir),
+    }
     client.set_clients(runtime.pipe_dir, {7000: [101, 102, 103]})
-    client.client_tokens.update(
-        {
-            pid: runtime.env_for_process(name)[MPS_CLIENT_TOKEN_ENV]
-            for pid, name in zip([101, 102, 103], devices)
-        }
-    )
-    await runtime.verify()
+    await runtime.verify([101, 102, 103])
     assert runtime.server_pid == 7000
     client.set_clients(runtime.pipe_dir, {})
     await runtime.close()
@@ -407,92 +394,49 @@ async def test_two_serves_never_join_or_clean_each_others_run(short_root):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "clients,tokens,match",
+    "clients,match",
     [
-        ({}, {}, "never attached"),
-        ({7000: [101, 102]}, {101: "a", 102: "a"}, "'b'"),
-        ({7000: [101], 8000: [102]}, {101: "a", 102: "b"}, "share one server"),
-        ({7000: [101, 102]}, {101: "a"}, "'b'"),
+        ({}, "never attached"),
+        ({7000: [101, 103]}, "102"),
+        ({7000: [101], 8000: [102]}, "share one server"),
     ],
 )
-async def test_verify_requires_all_worker_tokens_on_one_server(
-    short_root, clients, tokens, match
+async def test_verify_requires_all_worker_pids_on_one_server(
+    short_root, clients, match
 ):
     client = FakeControlClient()
     runtime, devices = create(short_root, client=client)
     await runtime.start(devices.values())
     client.set_clients(runtime.pipe_dir, clients)
-    client.client_tokens.update(
-        {
-            pid: runtime.env_for_process(name)[MPS_CLIENT_TOKEN_ENV]
-            for pid, name in tokens.items()
-        }
-    )
     with pytest.raises(MpsError, match=match):
-        await runtime.verify()
+        await runtime.verify([101, 102])
     assert runtime.server_pid is None
-    client.set_clients(runtime.pipe_dir, {})
     await runtime.close()
 
 
 @pytest.mark.asyncio
-async def test_verify_accepts_cuda_descendants_but_does_not_accumulate_snapshots(
+async def test_verify_does_not_accumulate_snapshots_and_retirement_matches_pid(
     short_root, monkeypatch
 ):
     client = FakeControlClient()
     runtime, devices = create(short_root, client=client)
     await runtime.start(devices.values())
-    client.client_tokens.update(
-        {
-            101: runtime.env_for_process("a")[MPS_CLIENT_TOKEN_ENV],
-            102: runtime.env_for_process("b")[MPS_CLIENT_TOKEN_ENV],
-        }
-    )
     snapshots = iter([{MpsClientRef(7000, 101)}, {MpsClientRef(7000, 102)}])
     with monkeypatch.context() as patch:
         patch.setattr(
             client, "snapshot", lambda _: next(snapshots, {MpsClientRef(7000, 102)})
         )
-        with pytest.raises(MpsError, match="'a'"):
-            await runtime.verify()
+        with pytest.raises(MpsError, match="101"):
+            await runtime.verify([101, 102])
     client.set_clients(runtime.pipe_dir, {7000: [101, 102, 103]})
-    client.client_tokens[103] = runtime.env_for_process("a")[MPS_CLIENT_TOKEN_ENV]
-    await runtime.verify()
+    await runtime.verify([101, 102])
     assert runtime.server_pid == 7000
-    await runtime.retire_process_clients("a")
-    assert client.snapshot(runtime.pipe_dir) == {MpsClientRef(7000, 102)}
-    client.set_clients(runtime.pipe_dir, {})
-    await runtime.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["client_token", "terminate_client"])
-async def test_retirement_continues_after_one_client_fails(
-    short_root, monkeypatch, failure
-):
-    client = FakeControlClient()
-    runtime, devices = create(short_root, client=client)
-    await runtime.start(devices.values())
-    client.set_clients(runtime.pipe_dir, {7000: [101, 102, 103]})
-    for pid, name in [(101, "a"), (102, "a"), (103, "b")]:
-        client.client_tokens[pid] = runtime.env_for_process(name)[MPS_CLIENT_TOKEN_ENV]
-    original = getattr(client, failure)
-
-    def fail_first(*args):
-        pid = args[0] if failure == "client_token" else args[1].client_pid
-        if pid == 101:
-            raise MpsControlError("client unavailable")
-        return original(*args)
-
-    monkeypatch.setattr(client, failure, fail_first)
-    await runtime.retire_process_clients("a")
+    await runtime.retire_process_clients(101)
     assert client.snapshot(runtime.pipe_dir) == {
-        MpsClientRef(7000, 101),
+        MpsClientRef(7000, 102),
         MpsClientRef(7000, 103),
     }
     await runtime.close()
-    assert not runtime.has_resources
-    assert not client.alive_pids
 
 
 @pytest.mark.asyncio
@@ -508,9 +452,7 @@ async def test_watchdog_only_queries_verified_server_even_after_clients_exit(
     await runtime.start(devices.values())
     assert "not verified" in await runtime.probe()
     client.set_clients(runtime.pipe_dir, {7000: [101, 102]})
-    for pid, name in [(101, "a"), (102, "b")]:
-        client.client_tokens[pid] = runtime.env_for_process(name)[MPS_CLIENT_TOKEN_ENV]
-    await runtime.verify()
+    await runtime.verify([101, 102])
     client.set_clients(runtime.pipe_dir, {8000: [101, 102]})
     if isinstance(status, MpsControlError):
 
@@ -665,9 +607,7 @@ async def test_cancelled_probe_finishes_before_concurrent_close(
     runtime, devices = create(short_root, client=client)
     await runtime.start(devices.values())
     client.set_clients(runtime.pipe_dir, {7000: [101, 102]})
-    for pid, name in [(101, "a"), (102, "b")]:
-        client.client_tokens[pid] = runtime.env_for_process(name)[MPS_CLIENT_TOKEN_ENV]
-    await runtime.verify()
+    await runtime.verify([101, 102])
     entered, release = threading.Event(), threading.Event()
 
     def blocked(*args):

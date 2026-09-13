@@ -26,9 +26,6 @@ class MpsDaemonNotStartedError(MpsControlError):
     """The control binary was not executed, so it cannot have created a daemon."""
 
 
-MPS_CLIENT_TOKEN_ENV = "SGLANG_OMNI_MPS_CLIENT_TOKEN"
-
-
 @dataclass(frozen=True, order=True)
 class MpsClientRef:
     """One CUDA client as identified by the MPS server that owns it."""
@@ -55,8 +52,6 @@ class MpsControlClient(Protocol):
     def quit_daemon(self, pipe_dir: Path) -> None: ...
 
     def daemon_process_alive(self, pid: int) -> bool: ...
-
-    def client_token(self, pid: int) -> str | None: ...
 
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
@@ -204,25 +199,3 @@ class SubprocessMpsControlClient:
             return False
         except (OSError, IndexError) as exc:
             raise MpsControlError(f"cannot inspect daemon pid {pid}: {exc}") from exc
-
-    def client_token(self, pid: int) -> str | None:
-        try:
-            entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            raise MpsControlError(f"cannot inspect client pid {pid}: {exc}") from exc
-        prefix = f"{MPS_CLIENT_TOKEN_ENV}=".encode()
-        values = [entry[len(prefix) :] for entry in entries if entry.startswith(prefix)]
-        if not values:
-            return None
-        if len(values) != 1 or not values[0]:
-            raise MpsControlError(
-                f"client pid {pid} has malformed {MPS_CLIENT_TOKEN_ENV}"
-            )
-        try:
-            return values[0].decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise MpsControlError(
-                f"client pid {pid} has non-ASCII {MPS_CLIENT_TOKEN_ENV}"
-            ) from exc

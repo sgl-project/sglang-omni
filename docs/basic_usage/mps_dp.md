@@ -63,10 +63,10 @@ too. `engine.kv_cache_bytes` and `engine.max_total_tokens` are mutually
 exclusive on one stage, since the lower token cap would silently shrink the
 byte-derived pool.
 
-Before serving starts, the runtime verifies that every expected worker token
-appears in the current MPS client list, including CUDA clients spawned as worker
-descendants. These clients must share one server. The watchdog then queries only
-`get_server_status` for that verified PID, failing the serve on query errors or
+Before serving starts, the runtime verifies that every MPS-enabled worker PID
+appears in the current MPS client list. These clients must share one server.
+Workers construct their CUDA models in the worker process itself. The watchdog
+queries only `get_server_status` for that verified PID, failing the serve on query errors or
 any status other than `ACTIVE`. It does not adopt a replacement server.
 
 Only the parent runtime issues control commands. One asynchronous operation lock
@@ -74,8 +74,8 @@ serializes them through completion, including when a waiting coroutine is
 cancelled. No cross-serve control or lifecycle lock is needed for private pipes.
 
 The runner retains its worker shutdown order. Before forcibly signalling a stuck
-worker, it asks MPS to terminate only the CUDA clients bearing that worker's
-token. This is a best-effort attempt: command responses do not gate shutdown,
+worker, it asks MPS to terminate only the CUDA client matching that worker's
+PID. This is a best-effort attempt: command responses do not gate shutdown,
 and control errors are logged while worker and pipeline shutdown continue. It
 never signals an arbitrary PID from an MPS snapshot. After workers exit, the
 runtime quits its private daemon without waiting for an empty client list,

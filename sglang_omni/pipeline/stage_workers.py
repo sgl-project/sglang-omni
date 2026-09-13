@@ -372,7 +372,7 @@ class StageGroup:
     async def shutdown(
         self,
         join_timeout: float = 30.0,
-        before_signal: Callable[[str], Awaitable[None]] | None = None,
+        before_signal: Callable[[int], Awaitable[None]] | None = None,
     ) -> None:
         try:
             for spec, p in zip(self.process_specs, self._processes):
@@ -384,7 +384,7 @@ class StageGroup:
                         p.pid,
                     )
                     if before_signal is not None:
-                        await before_signal(spec.process_name)
+                        await before_signal(p.pid)
                     p.terminate()
                     p.join(timeout=5)
                     if p.is_alive():

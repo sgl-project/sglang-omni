@@ -101,21 +101,6 @@ def test_daemon_identity_requires_exact_binary_and_pipe_environment(monkeypatch)
         client.read_daemon_identity(pipe_dir)
 
 
-def test_client_token_is_read_from_the_current_client_environment(monkeypatch):
-    client = control.SubprocessMpsControlClient()
-    environ = (
-        b"PATH=/usr/bin\0"
-        + f"{control.MPS_CLIENT_TOKEN_ENV}=owner-worker".encode()
-        + b"\0"
-    )
-
-    monkeypatch.setattr(Path, "read_bytes", lambda _path: environ)
-    assert client.client_token(123) == "owner-worker"
-
-    monkeypatch.setattr(Path, "read_bytes", lambda _path: b"PATH=/usr/bin\0")
-    assert client.client_token(123) is None
-
-
 def test_get_server_status_uses_only_the_requested_native_command(
     monkeypatch, tmp_path
 ):
