@@ -297,6 +297,43 @@ the text is prefilled with every request.
 `verbose_json` uses the model adapter's verbose response schema and includes
 duration-based usage (rounded-up audio seconds) when duration probing succeeds.
 
+### Worked Example: Domain Jargon Biasing
+
+The table above notes that a short, relevant term list works best. The
+following single-sample measurement shows what that means in practice.
+A 109-second Mandarin investment-meeting recording (synthesized from a
+fixed script for reproducibility) was transcribed on Apple Silicon
+(M4 Pro, 24 GB) with the MLX backend:
+
+- Checkpoint: `mlx-community/Qwen3-ASR-0.6B-4bit`
+- Launch flags: `SGLANG_USE_MLX=1 sgl-omni serve --model-path
+  mlx-community/Qwen3-ASR-0.6B-4bit --asr.engine.max_running_requests 1`
+  (chunking at the 30-second default)
+- Measurement: character-level diff between the fixed script and the
+  transcript, with punctuation stripped
+
+Without `prompt`, the errors were all domain jargon converted to
+homophones: six mistranscribed terms, nine characters out of 398.
+Passing the nine finance terms that appear in
+the script — `A轮融资、投前估值、代持、反稀释、棘轮、竞业限制、回购权、尽职调查、
+交割条件` — via the `prompt` field corrected three of the six:
+
+| Term in audio | Without `prompt` | With `prompt` |
+|---|---|---|
+| 代持 (nominee shareholding) | 贷池 | 代持 |
+| 反稀释 (anti-dilution) | 范希是 | 反稀释 |
+| 棘轮 (ratchet) | 及轮 | 棘轮 |
+
+Character errors dropped from 9 of 398 to 3 of 398. The remaining
+differences (`A轮→二轮`, `投前→头前`, `竞业→敬业`) occurred on terms
+that were present in the prompt, consistent with the note above that
+biasing raises preference without forcing insertion.
+
+This is one illustrative sample, not a benchmark. Real conversational
+audio (accents, crosstalk, background noise) has a different error
+profile, so measure on your own domain corpus before relying on a
+specific improvement figure.
+
 ### Language Hints
 
 When `language` is omitted, Qwen3-ASR detects the spoken language before
