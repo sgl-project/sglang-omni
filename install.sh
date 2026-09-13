@@ -225,7 +225,9 @@ fetch_checkout_ref() {
       # Full object IDs must keep their meaning even if a tag has the same name.
       if [[ ! "$ref" =~ ^[[:xdigit:]]{40}$ && ! "$ref" =~ ^[[:xdigit:]]{64}$ ]]; then
         tag_ref="refs/tags/$ref"
-        remote_tag="$(git -C "$destination" ls-remote --refs origin "$tag_ref")"
+        # ls-remote also matches ref-name suffixes; require the exact tag ref.
+        remote_tag="$(git -C "$destination" ls-remote --refs origin "$tag_ref" \
+          | awk -v ref="$tag_ref" '$2 == ref { print $2 }')"
         if [[ -n "$remote_tag" ]]; then
           fetch_spec="$tag_ref:$tag_ref"
         fi

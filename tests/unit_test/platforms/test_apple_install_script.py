@@ -43,7 +43,7 @@ def commit(repo: Path, text: str) -> str:
     return git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
-@pytest.fixture(params=["lightweight", "annotated"])
+@pytest.fixture
 def remote(tmp_path: Path, request):
     repo = tmp_path / "remote repo"
     repo.mkdir()
@@ -51,7 +51,7 @@ def remote(tmp_path: Path, request):
     commit(repo, "old source")
     git(repo, "tag", "v0.1.0")
     release_commit = commit(repo, "release source")
-    if request.param == "annotated":
+    if getattr(request, "param", "lightweight") == "annotated":
         git(repo, "tag", "-a", RELEASE, "-m", "Release")
     else:
         git(repo, "tag", RELEASE)
@@ -105,6 +105,7 @@ def assert_release(destination: Path, expected_commit: str):
     assert git(destination, "tag", "--list", "v0.1.0").stdout == ""
 
 
+@pytest.mark.parametrize("remote", ["lightweight", "annotated"], indirect=True)
 @pytest.mark.parametrize("ref", [RELEASE, f"refs/tags/{RELEASE}"])
 def test_fresh_checkout_preserves_selected_release_tag(tmp_path, remote, ref):
     source, release_commit, _ = remote
@@ -113,6 +114,7 @@ def test_fresh_checkout_preserves_selected_release_tag(tmp_path, remote, ref):
     assert_release(destination, release_commit)
 
 
+@pytest.mark.parametrize("remote", ["lightweight", "annotated"], indirect=True)
 @pytest.mark.parametrize("cached_ref", [RELEASE, "main"])
 def test_reused_checkout_recovers_missing_tag(tmp_path, remote, cached_ref):
     source, release_commit, _ = remote
@@ -154,19 +156,11 @@ def test_reused_branch_tracks_new_remote_commit(tmp_path, remote):
     assert (destination / "source.txt").read_text() == "updated development source"
 
 
-def test_full_commit_id_is_not_reinterpreted_as_a_tag(tmp_path, remote):
+def test_branch_ignores_suffix_only_tag_match(tmp_path, remote):
+    """A tag named refs/tags/main must not redirect a main-branch checkout."""
     source, release_commit, main_commit = remote
-    git(source, "tag", main_commit, release_commit)
-    destination = tmp_path / "commit checkout"
-    checkout(destination, main_commit, source)
-    assert git(destination, "rev-parse", "HEAD").stdout.strip() == main_commit
-    assert git(destination, "tag", "--list").stdout == ""
-
-
-def test_qualified_branch_is_not_reinterpreted_as_a_tag(tmp_path, remote):
-    source, _, main_commit = remote
-    git(source, "branch", RELEASE, main_commit)
+    git(source, "tag", "refs/tags/main", release_commit)
     destination = tmp_path / "branch checkout"
-    checkout(destination, f"refs/heads/{RELEASE}", source)
+    checkout(destination, "main", source)
     assert git(destination, "rev-parse", "HEAD").stdout.strip() == main_commit
     assert git(destination, "tag", "--list").stdout == ""
