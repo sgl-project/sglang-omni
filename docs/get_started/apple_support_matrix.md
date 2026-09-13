@@ -184,8 +184,9 @@ across hosts and no combined statistic is derived from them.
 
 Weight-load and RSS figures from the original reports are not repeated here. This
 page already notes that the internal weight-loading logs do not share a boundary
-across backends, and the reports do not state which processes their RSS values
-cover. Both remain readable at the source links.
+across backends. The M4 report states that its RSS covers the whole
+`sgl-omni serve` process tree; the M1 Pro report does not state a scope, so the two
+are not one comparable metric. Both remain readable at the source links.
 
 Torch/MPS used a 2048-token budget in all three reports on this page. The MLX
 figures are the allocations each host reported at startup. These are scheduler
@@ -201,7 +202,8 @@ Reported environment: Apple M1 Pro, 32 GB, macOS 15.3, installed through
 `./install.sh`, sglang-omni `b2cc93b`, Python 3.12.13, torch 2.13.0 and MLX 0.32.2.
 The report does not state a SGLang version.
 
-Reported protocol: official `Qwen/Qwen3-ASR-0.6B` on both backends,
+Reported protocol: official `Qwen/Qwen3-ASR-0.6B`, revision
+`5eb144179a02acc5e5ba31e748d22b0cf3e303b0`, on both backends,
 `--asr.engine.max_running_requests 1` and
 `--asr.factory.enable_async_decode false`, two warm-ups and ten measured requests
 on an ffmpeg@7 M4A conversion of `tests/data/query_to_cars.wav`. Both backends
@@ -223,12 +225,15 @@ Reported environment: Apple M4, 16 GB, macOS 15.7.3, installed through
 `./install.sh`, sglang-omni `b2cc93b`, Python 3.12.12, torch 2.13.0, MLX 0.32.2 and
 SGLang v0.5.19 built from source with `[all_mps]`.
 
-Reported protocol: official `Qwen/Qwen3-ASR-0.6B` on both backends, one active
-request, asynchronous decode disabled, two warm-ups and ten measured requests on an
+Reported protocol: official `Qwen/Qwen3-ASR-0.6B`, revision
+`5eb144179a02acc5e5ba31e748d22b0cf3e303b0`, on both backends, one active request,
+asynchronous decode disabled, two warm-ups and ten measured requests on an
 ffmpeg@7 M4A conversion of `tests/data/query_to_cars.wav`. Both backends returned
 `How many cars are there in the picture?`.
 
-Latencies were reported in milliseconds and are shown here in seconds.
+Latencies were reported in milliseconds and are shown here in seconds. The reporter
+re-ran both backends on the same checkout and reproduced the warm p50 within about
+one percent.
 
 | | MLX | Torch/MPS |
 | --- | --- | --- |
