@@ -49,7 +49,7 @@ sgl-omni serve \
 
 ## Apple Silicon
 
-The CUDA setup above is unchanged. On Apple Silicon, install the optional
+On Apple Silicon, install the optional
 Fun-CosyVoice3 extra with the repository installer, then expose Homebrew's
 keg-only FFmpeg libraries to TorchCodec:
 
