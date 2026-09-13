@@ -49,7 +49,7 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
     if use_mlx():
-        # note (yexiaodong): The MLX stub has no Torch graph lifecycle because
+        # Note (yexiaodong): The MLX stub has no Torch graph lifecycle because
         # native MLX lazy evaluation owns graph execution.
         return
     if not model_worker.enable_prefill_input_embeds:
@@ -115,6 +115,8 @@ def create_sglang_infrastructure(
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
     before_memory_pool: Callable[[Any], None] | None = None,
+    mlx_model_path: str | None = None,
+    mlx_model_revision: str | None = None,
 ):
     """Create SGLang worker, memory pools, and tree cache.
 
@@ -150,6 +152,8 @@ def create_sglang_infrastructure(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         kv_cache_bytes=kv_cache_bytes,
         enable_prefill_input_embeds=enable_prefill_input_embeds,
+        mlx_model_path=mlx_model_path,
+        mlx_model_revision=mlx_model_revision,
     )
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 

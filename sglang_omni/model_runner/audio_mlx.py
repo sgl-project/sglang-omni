@@ -119,7 +119,7 @@ class AudioMlxModelRunner:
         _input_ids, input_embeddings = self._audio_prefill_inputs(req, new_token_ids)
         cache = self._acquire_cache()
         logits = self.model._forward_last_logits(input_embeddings, cache=cache)
-        # note (yexiaodong): Chunked prefill is disabled for this audio path, so
+        # Note (yexiaodong): Chunked prefill is disabled for this audio path, so
         # needs_logits is always true; retain the argument for the SGLang API.
         del needs_logits
         lazy_token = mx.argmax(logits[:, -1, :], axis=-1)
@@ -127,7 +127,7 @@ class AudioMlxModelRunner:
             lazy_token=lazy_token,
             cache=cache,
             req_id=req_id,
-            # note (yexiaodong): Later decode bookkeeping requires real model
+            # Note (yexiaodong): Later decode bookkeeping requires real model
             # token IDs instead of Omni's out-of-vocabulary audio placeholder.
             full_token_ids=self._normalize_audio_token_ids(req, full_token_ids),
             req_pool_idx=req_pool_idx,
