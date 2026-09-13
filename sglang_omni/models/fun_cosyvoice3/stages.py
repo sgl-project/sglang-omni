@@ -8,14 +8,10 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn.functional as F
-from cosyvoice.flow.DiT import dit as cosyvoice_dit
-from cosyvoice.flow.flow import CausalMaskedDiffWithDiT
-from cosyvoice.flow.flow_matching import ConditionalCFM
-from cosyvoice.utils.mask import add_optional_chunk_mask as cosyvoice_chunk_mask
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
@@ -43,6 +39,10 @@ from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
+
+if TYPE_CHECKING:
+    from cosyvoice.flow.flow import CausalMaskedDiffWithDiT
+    from cosyvoice.flow.flow_matching import ConditionalCFM
 
 # Note (xinran): This is an admission budget, not a maximum supported request
 # length. The scheduler admits a request that exceeds it as a singleton Flow
@@ -1401,6 +1401,8 @@ def create_vocoder_executor(
         enable_flow_cuda_graph = False
 
     if enable_flow_cuda_graph:
+        from cosyvoice.flow.DiT import dit as cosyvoice_dit
+        from cosyvoice.utils.mask import add_optional_chunk_mask as cosyvoice_chunk_mask
 
         def _chunk_mask(
             xs: torch.Tensor,
