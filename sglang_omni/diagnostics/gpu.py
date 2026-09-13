@@ -11,13 +11,8 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from sglang_omni.utils.gpu_memory import (
-    _decode_nvml_string,
-    _shutdown_nvml,
-    _try_import_pynvml,
-    format_bytes_gib,
-    parse_cuda_visible_devices,
-)
+from sglang_omni.utils.gpu_memory import format_bytes_gib, parse_cuda_visible_devices
+from sglang_omni.utils.nvml import decode_nvml_string, nvml_session, try_import_pynvml
 
 _BACKENDS = (
     ("attention", "flash-attn-4", "flash_attn.cute"),
@@ -157,86 +152,89 @@ def _nvml_inventory(
         return inventory, system, warnings
 
     try:
-        pynvml.nvmlInit()
+        with nvml_session(pynvml):
+            try:
+                system["driver_version"] = decode_nvml_string(
+                    pynvml.nvmlSystemGetDriverVersion()
+                )
+            except Exception as exc:
+                warnings.append(f"NVML driver query failed: {exc}")
+            try:
+                system["cuda_driver_api_version"] = _cuda_version(
+                    int(pynvml.nvmlSystemGetCudaDriverVersion_v2())
+                )
+            except Exception as exc:
+                warnings.append(f"NVML CUDA driver query failed: {exc}")
+
+            try:
+                count = int(pynvml.nvmlDeviceGetCount())
+            except Exception as exc:
+                warnings.append(f"NVML device count query failed: {exc}")
+                return inventory, system, warnings
+
+            for physical_index in range(count):
+                try:
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(physical_index)
+                except Exception as exc:
+                    warnings.append(
+                        f"NVML device handle query failed for physical_index="
+                        f"{physical_index}: {exc}"
+                    )
+                    continue
+
+                device = {
+                    "physical_index": physical_index,
+                    "uuid": None,
+                    "pci_bus_id": None,
+                    "name": None,
+                    "compute_capability": None,
+                    "total_memory_bytes": None,
+                    "free_memory_bytes": None,
+                }
+                try:
+                    memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    device["total_memory_bytes"] = int(memory.total)
+                    device["free_memory_bytes"] = int(memory.free)
+                except Exception as exc:
+                    warnings.append(
+                        f"NVML memory query failed for physical_index="
+                        f"{physical_index}: {exc}"
+                    )
+                try:
+                    pci = pynvml.nvmlDeviceGetPciInfo(handle)
+                    device["pci_bus_id"] = decode_nvml_string(pci.busId)
+                except Exception as exc:
+                    warnings.append(
+                        f"NVML PCI query failed for physical_index={physical_index}: {exc}"
+                    )
+                try:
+                    major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+                    device["compute_capability"] = f"{int(major)}.{int(minor)}"
+                except Exception as exc:
+                    warnings.append(
+                        f"NVML compute capability query failed for physical_index="
+                        f"{physical_index}: {exc}"
+                    )
+                try:
+                    device["uuid"] = decode_nvml_string(
+                        pynvml.nvmlDeviceGetUUID(handle)
+                    )
+                except Exception as exc:
+                    warnings.append(
+                        f"NVML UUID query failed for physical_index={physical_index}: {exc}"
+                    )
+                try:
+                    device["name"] = decode_nvml_string(
+                        pynvml.nvmlDeviceGetName(handle)
+                    )
+                except Exception as exc:
+                    warnings.append(
+                        f"NVML name query failed for physical_index={physical_index}: {exc}"
+                    )
+                inventory.append(device)
+            return inventory, system, warnings
     except Exception as exc:
         return inventory, system, [f"NVML initialization failed: {exc}"]
-
-    try:
-        system["driver_version"] = _decode_nvml_string(
-            pynvml.nvmlSystemGetDriverVersion()
-        )
-    except Exception as exc:
-        warnings.append(f"NVML driver query failed: {exc}")
-    try:
-        system["cuda_driver_api_version"] = _cuda_version(
-            int(pynvml.nvmlSystemGetCudaDriverVersion_v2())
-        )
-    except Exception as exc:
-        warnings.append(f"NVML CUDA driver query failed: {exc}")
-
-    try:
-        count = int(pynvml.nvmlDeviceGetCount())
-    except Exception as exc:
-        warnings.append(f"NVML device count query failed: {exc}")
-        return inventory, system, warnings
-
-    for physical_index in range(count):
-        try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(physical_index)
-        except Exception as exc:
-            warnings.append(
-                f"NVML device handle query failed for physical_index="
-                f"{physical_index}: {exc}"
-            )
-            continue
-
-        device = {
-            "physical_index": physical_index,
-            "uuid": None,
-            "pci_bus_id": None,
-            "name": None,
-            "compute_capability": None,
-            "total_memory_bytes": None,
-            "free_memory_bytes": None,
-        }
-        try:
-            memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            device["total_memory_bytes"] = int(memory.total)
-            device["free_memory_bytes"] = int(memory.free)
-        except Exception as exc:
-            warnings.append(
-                f"NVML memory query failed for physical_index="
-                f"{physical_index}: {exc}"
-            )
-        try:
-            pci = pynvml.nvmlDeviceGetPciInfo(handle)
-            device["pci_bus_id"] = _decode_nvml_string(pci.busId)
-        except Exception as exc:
-            warnings.append(
-                f"NVML PCI query failed for physical_index={physical_index}: {exc}"
-            )
-        try:
-            major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-            device["compute_capability"] = f"{int(major)}.{int(minor)}"
-        except Exception as exc:
-            warnings.append(
-                f"NVML compute capability query failed for physical_index="
-                f"{physical_index}: {exc}"
-            )
-        try:
-            device["uuid"] = _decode_nvml_string(pynvml.nvmlDeviceGetUUID(handle))
-        except Exception as exc:
-            warnings.append(
-                f"NVML UUID query failed for physical_index={physical_index}: {exc}"
-            )
-        try:
-            device["name"] = _decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
-        except Exception as exc:
-            warnings.append(
-                f"NVML name query failed for physical_index={physical_index}: {exc}"
-            )
-        inventory.append(device)
-    return inventory, system, warnings
 
 
 def _physical_device(
@@ -332,14 +330,10 @@ def collect_gpu_diagnostics(
     visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
     visible_devices = parse_cuda_visible_devices(visible_value)
     torch = torch_module or importlib.import_module("torch")
-    pynvml = pynvml_module if pynvml_module is not None else _try_import_pynvml()
+    pynvml = pynvml_module if pynvml_module is not None else try_import_pynvml()
 
     inventory, system, warnings = _nvml_inventory(pynvml)
-    try:
-        devices = _logical_devices(torch, visible_devices, inventory, warnings)
-    finally:
-        if pynvml is not None:
-            _shutdown_nvml(pynvml)
+    devices = _logical_devices(torch, visible_devices, inventory, warnings)
 
     backends = _backend_inventory()
     warnings.extend(

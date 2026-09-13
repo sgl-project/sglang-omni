@@ -8,6 +8,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from sglang_omni.utils.nvml import decode_nvml_string, get_device_handle, nvml_session
+
 
 @dataclass(frozen=True)
 class MpsPhysicalDevice:
@@ -98,7 +100,40 @@ class NvmlDeviceInfo:
             return devices
 
         try:
-            pynvml.nvmlInit()
+            with nvml_session(pynvml):
+                for ordinal, gpu_uuid in uuid_by_ordinal.items():
+                    try:
+                        handle = get_device_handle(pynvml, gpu_uuid)
+                        physical_uuid = decode_nvml_string(
+                            pynvml.nvmlDeviceGetUUID(handle)
+                        )
+                        if physical_uuid.startswith("MIG-"):
+                            devices[ordinal] = MpsPhysicalDevice(
+                                gpu_uuid,
+                                "MIG devices are not validated for native MPS in "
+                                "SGLang Omni",
+                            )
+                            continue
+                        try:
+                            mig_current, _ = pynvml.nvmlDeviceGetMigMode(handle)
+                            if mig_current == pynvml.NVML_DEVICE_MIG_ENABLE:
+                                devices[ordinal] = MpsPhysicalDevice(
+                                    gpu_uuid,
+                                    (
+                                        "MIG mode is enabled; native MPS is not "
+                                        "validated for MIG deployments in SGLang "
+                                        "Omni, run with mps=off"
+                                    ),
+                                )
+                                continue
+                        except pynvml.NVMLError_NotSupported:
+                            pass
+                        devices[ordinal] = MpsPhysicalDevice(gpu_uuid)
+                    except (pynvml.NVMLError, OSError, ValueError) as exc:
+                        devices[ordinal] = MpsPhysicalDevice(
+                            gpu_uuid,
+                            f"NVML query failed: {exc}",
+                        )
         except (pynvml.NVMLError, OSError) as exc:
             devices.update(
                 {
@@ -111,38 +146,4 @@ class NvmlDeviceInfo:
             )
             return devices
 
-        for ordinal, gpu_uuid in uuid_by_ordinal.items():
-            try:
-                handle = pynvml.nvmlDeviceGetHandleByUUID(gpu_uuid.encode())
-                nvml_uuid = pynvml.nvmlDeviceGetUUID(handle)
-                physical_uuid = (
-                    nvml_uuid.decode() if isinstance(nvml_uuid, bytes) else nvml_uuid
-                )
-                if physical_uuid.startswith("MIG-"):
-                    devices[ordinal] = MpsPhysicalDevice(
-                        gpu_uuid,
-                        "MIG devices are not validated for native MPS in "
-                        "SGLang Omni",
-                    )
-                    continue
-                try:
-                    mig_current, _ = pynvml.nvmlDeviceGetMigMode(handle)
-                    if mig_current == pynvml.NVML_DEVICE_MIG_ENABLE:
-                        devices[ordinal] = MpsPhysicalDevice(
-                            gpu_uuid,
-                            (
-                                "MIG mode is enabled; native MPS is not "
-                                "validated for MIG deployments in SGLang "
-                                "Omni, run with mps=off"
-                            ),
-                        )
-                        continue
-                except pynvml.NVMLError_NotSupported:
-                    pass
-                devices[ordinal] = MpsPhysicalDevice(gpu_uuid)
-            except (pynvml.NVMLError, OSError, ValueError) as exc:
-                devices[ordinal] = MpsPhysicalDevice(
-                    gpu_uuid,
-                    f"NVML query failed: {exc}",
-                )
         return devices
