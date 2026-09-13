@@ -5,23 +5,15 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
-from pathlib import Path
 
 import pytest
 
-from sglang_omni.config import EndpointsConfig, PipelineConfig, StageConfig
-from sglang_omni.mps.manager import MpsError
-from sglang_omni.mps.runtime import MpsPipelineRuntime
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
-from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.pipeline.stage_workers import (
     StageLaunchConfig,
     StageWorkerProcessSpec,
     _patched_spawn_env,
     _prepare_accelerator_environment,
 )
-from tests.unit_test.mps.test_mps_manager import FakeControlClient
 
 _FACTORY = f"{__name__}.unused_factory"
 
@@ -52,12 +44,6 @@ def _no_gpu_compat_probe(monkeypatch):
     monkeypatch.setattr(stage_workers, "get_gpu_compat_env_defaults", lambda _env: {})
 
 
-@pytest.fixture
-def short_root():
-    with tempfile.TemporaryDirectory(prefix="mpsenv-", dir="/tmp") as root:
-        yield Path(root)
-
-
 def test_mps_overlay_is_visible_only_during_spawn(monkeypatch):
     spec = _process_spec(_launch_stage())
     monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
@@ -85,84 +71,6 @@ def test_no_mps_overlay_keeps_existing_stage_default_behavior(monkeypatch):
         assert os.environ["WORKER_DEFAULT"] == "stage-value"
 
     assert "WORKER_DEFAULT" not in os.environ
-
-
-def _resolved_config_process(*, pipeline_env: dict, stage_env: dict):
-    with tempfile.TemporaryDirectory(prefix="mps-env-", dir="/tmp") as base_path:
-        config = PipelineConfig(
-            model_path="model",
-            name="mps-env",
-            entry_stage="worker",
-            endpoints=EndpointsConfig(base_path=base_path),
-            env_defaults=pipeline_env,
-            stages=[
-                StageConfig(
-                    name="worker",
-                    process="pipeline",
-                    factory_path=f"{__name__}.unused_factory",
-                    gpu=0,
-                    terminal=True,
-                    env=stage_env,
-                )
-            ],
-        )
-        prep = prepare_pipeline_runtime(config)
-        try:
-            return _build_stage_groups(
-                config,
-                stages_cfg=prep.stages_cfg,
-                endpoints=prep.endpoints,
-                placement_plan=prep.placement_plan,
-                process_plan=prep.process_plan,
-                replica_topology=prep.replica_topology,
-            )[0].process_specs[0]
-        finally:
-            prep.runtime_dir.close()
-
-
-class _DeviceInfoMustNotRun:
-    def inspect(self, _gpu_ids):  # pragma: no cover - contract assertion
-        raise AssertionError("process env conflicts must fail before device inspection")
-
-
-@pytest.mark.parametrize("mode", ["auto", "on"])
-@pytest.mark.parametrize("source", ["pipeline", "stage"])
-@pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("CUDA_VISIBLE_DEVICES", "1"),
-        ("CUDA_DEVICE_ORDER", "PCI_BUS_ID"),
-        ("CUDA_MPS_PIPE_DIRECTORY", "/external/mps"),
-        ("SGLANG_OMNI_WEIGHT_SHARE", "leader:/tmp/weights"),
-    ],
-)
-def test_mps_rejects_worker_gpu_environment_overrides_before_acquire(
-    short_root,
-    mode,
-    source,
-    name,
-    value,
-):
-    process_spec = _resolved_config_process(
-        pipeline_env={name: value} if source == "pipeline" else {},
-        stage_env={name: value} if source == "stage" else {},
-    )
-
-    with pytest.raises(MpsError) as exc_info:
-        MpsPipelineRuntime.create(
-            mode=mode,
-            process_specs=[process_spec],
-            device_info=_DeviceInfoMustNotRun(),
-            client=FakeControlClient(),
-            state_root=short_root,
-        )
-
-    message = str(exc_info.value)
-    assert "process 'pipeline'" in message
-    assert "stage 'worker'" in message
-    assert f"{name}={value!r}" in message
-    assert "mps=off" in message
-    assert list(short_root.iterdir()) == []
 
 
 def test_cpu_stage_keeps_none_gpu_id_under_single_device_marker(monkeypatch):

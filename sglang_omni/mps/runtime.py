@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Transactional pipeline ownership of one MPS lease per eligible GPU."""
+"""Serve-local MPS lifecycle and placement eligibility."""
 
 from __future__ import annotations
 
@@ -11,11 +11,19 @@ import secrets
 import shutil
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from sglang_omni.mps.control import (
+    MPS_CLIENT_TOKEN_ENV,
+    MpsControlClient,
+    MpsControlError,
+    MpsDaemonNotStartedError,
+    MpsDirtyStateError,
+    MpsError,
+)
 from sglang_omni.mps.decision import (
     MPS_MODES,
     MpsDecisionError,
@@ -23,28 +31,13 @@ from sglang_omni.mps.decision import (
     collect_mps_facts,
 )
 from sglang_omni.mps.devices import MpsPhysicalDevice
-from sglang_omni.mps.manager import (
-    MPS_CLIENT_TOKEN_ENV,
-    MpsClientRef,
-    MpsControlClient,
-    MpsDirtyStateError,
-    MpsError,
-    MpsLease,
-    MpsManager,
-)
-from sglang_omni.mps.state import MpsGpuPaths
+from sglang_omni.mps.state import ensure_private_state_root, validate_control_socket
 
 logger = logging.getLogger(__name__)
 
 
 class _MpsDeviceInfo(Protocol):
     def inspect(self, gpu_ids: Iterable[int]) -> dict[int, MpsPhysicalDevice]: ...
-
-
-@dataclass(frozen=True)
-class _PhysicalMpsPlan:
-    logical_gpu_ids: tuple[int, ...]
-    client_process_names: tuple[str, ...]
 
 
 def _default_state_root() -> Path:
@@ -55,12 +48,12 @@ def _default_state_root() -> Path:
     return Path(tempfile.gettempdir()) / f"sglang-omni-mps-{getpass.getuser()}"
 
 
-def _resolve_physical_plans(
+def _resolve_worker_devices(
     *,
     mode: str,
     process_facts: tuple[MpsProcessFact, ...],
     device_info: _MpsDeviceInfo,
-) -> dict[str, _PhysicalMpsPlan]:
+) -> dict[str, str]:
     """Resolve physical identity before applying any MPS-specific gate."""
 
     potential_clients = [
@@ -76,17 +69,9 @@ def _resolve_physical_plans(
             )
         return {}
 
-    placement_ordinals_by_process: dict[str, set[int]] = {
-        fact.process_name: set(fact.placement_gpu_ids) for fact in potential_clients
-    }
-
     gpu_ids = tuple(
         sorted(
-            {
-                gpu_id
-                for process_gpu_ids in placement_ordinals_by_process.values()
-                for gpu_id in process_gpu_ids
-            }
+            {gpu_id for fact in potential_clients for gpu_id in fact.placement_gpu_ids}
         )
     )
     try:
@@ -113,20 +98,20 @@ def _resolve_physical_plans(
         for gpu_id, device in devices.items()
         if device.gpu_uuid is not None
     }
-    for process_name, process_gpu_ids in placement_ordinals_by_process.items():
+    for fact in potential_clients:
         resolved = {
             gpu_id: uuid_for[gpu_id]
-            for gpu_id in sorted(process_gpu_ids)
+            for gpu_id in fact.placement_gpu_ids
             if gpu_id in uuid_for
         }
         physical_uuids = set(resolved.values())
         if len(physical_uuids) > 1:
-            unresolved = sorted(process_gpu_ids - resolved.keys())
+            unresolved = sorted(set(fact.placement_gpu_ids) - resolved.keys())
             unresolved_detail = (
                 f"; unresolved CUDA ordinals: {unresolved}" if unresolved else ""
             )
             raise MpsError(
-                f"process {process_name!r} resolves CUDA ordinals to multiple "
+                f"process {fact.process_name!r} resolves CUDA ordinals to multiple "
                 f"physical GPUs: {resolved}{unresolved_detail}; native MPS "
                 "requires one physical "
                 "GPU per process. Use mps=off for this placement."
@@ -186,7 +171,7 @@ def _resolve_physical_plans(
     for gpu_uuid, reasons in unsupported_candidates.items():
         blocked.setdefault(gpu_uuid, []).append("; ".join(reasons))
 
-    physical_plans: dict[str, _PhysicalMpsPlan] = {}
+    worker_devices: dict[str, str] = {}
     for gpu_uuid, process_names in sorted(clients_by_uuid.items()):
         reasons = blocked.get(gpu_uuid, ())
         logical_gpu_ids = tuple(sorted(logical_ids_by_uuid[gpu_uuid]))
@@ -207,12 +192,9 @@ def _resolve_physical_plans(
                 list(logical_gpu_ids),
             )
             continue
-        physical_plans[gpu_uuid] = _PhysicalMpsPlan(
-            logical_gpu_ids=logical_gpu_ids,
-            client_process_names=tuple(process_names),
-        )
+        worker_devices.update((name, gpu_uuid) for name in process_names)
 
-    if mode == "on" and not physical_plans:
+    if mode == "on" and not worker_devices:
         reasons = sorted(
             {reason for gpu_reasons in blocked.values() for reason in gpu_reasons}
         )
@@ -220,277 +202,233 @@ def _resolve_physical_plans(
         raise MpsDecisionError(
             "mps=on but no physical GPU is eligible for MPS" + detail
         )
-    return physical_plans
-
-
-_UNSUPPORTED_PROCESS_ENV = (
-    "CUDA_VISIBLE_DEVICES",
-    "CUDA_DEVICE_ORDER",
-    "CUDA_MPS_PIPE_DIRECTORY",
-    "SGLANG_OMNI_WEIGHT_SHARE",
-)
-
-
-def _reject_process_env_overrides(process_specs) -> None:
-    conflicts: list[str] = []
-    for process_spec in process_specs:
-        for stage_spec in process_spec.stage_specs:
-            env_defaults = getattr(stage_spec, "env_defaults", {})
-            for name in _UNSUPPORTED_PROCESS_ENV:
-                if name in env_defaults:
-                    conflicts.append(
-                        f"process {process_spec.process_name!r}, stage "
-                        f"{stage_spec.stage_name!r} sets "
-                        f"{name}={env_defaults[name]!r}"
-                    )
-    if conflicts:
-        raise MpsError(
-            "native MPS does not support per-worker CUDA visibility, device "
-            "ordering, external MPS, or CUDA IPC weight-sharing overrides: "
-            f"{'; '.join(conflicts)}. Configure CUDA visibility and device "
-            "order in the parent environment, request weight sharing with "
-            "weight_share=on instead of an environment variable, or use "
-            "mps=off."
-        )
+    return worker_devices
 
 
 class MpsPipelineRuntime:
     def __init__(
         self,
-        managers: dict[str, MpsManager],
-        plans: dict[str, _PhysicalMpsPlan],
-        mode: str = "auto",
+        client: MpsControlClient,
+        process_names: Iterable[str],
+        state_root: Path,
     ):
-        self.managers = managers
-        self._plans = plans
-        self._mode = mode
-        self._leases: dict[str, MpsLease] = {}
+        self.client = client
+        self._state_root = state_root
+        self._client_tokens = {name: secrets.token_hex(16) for name in process_names}
         self._operation_lock = asyncio.Lock()
-        self._client_uuid: dict[str, str] = {
-            name: gpu_uuid
-            for gpu_uuid, plan in plans.items()
-            for name in plan.client_process_names
-        }
-        self._client_tokens = {
-            process_name: secrets.token_hex(16) for process_name in self._client_uuid
-        }
+        self.run_dir: Path | None = None
+        self.daemon_pid: int | None = None
+        self.server_pid: int | None = None
+        self.poll_interval = 0.2
+        self.start_timeout = 5.0
+        self.verify_timeout = 30.0
+        self.stop_timeout = 10.0
 
     @property
-    def has_leases(self) -> bool:
-        return bool(self._leases)
+    def pipe_dir(self) -> Path:
+        if self.run_dir is None:
+            raise MpsError("MPS runtime has not started")
+        return self.run_dir / "pipe"
 
-    @classmethod
-    def create(
-        cls,
-        *,
-        mode: str,
-        process_specs,
-        device_info: _MpsDeviceInfo,
-        client: MpsControlClient,
-        state_root: Path | None = None,
-    ) -> MpsPipelineRuntime | None:
-        if mode not in MPS_MODES:
-            raise MpsDecisionError(f"invalid mps mode {mode!r}; expected {MPS_MODES}")
-        if mode == "off":
-            return None
-        process_specs = list(process_specs)
-        _reject_process_env_overrides(process_specs)
-        process_facts = collect_mps_facts(process_specs)
-        physical_plans = _resolve_physical_plans(
-            mode=mode,
-            process_facts=process_facts,
-            device_info=device_info,
-        )
+    @property
+    def log_dir(self) -> Path:
+        if self.run_dir is None:
+            raise MpsError("MPS runtime has not started")
+        return self.run_dir / "log"
 
-        if not physical_plans:
-            return None
+    @property
+    def has_resources(self) -> bool:
+        return self.run_dir is not None
 
-        root = state_root if state_root is not None else _default_state_root()
-        managers = {
-            gpu_uuid: MpsManager(
-                paths=MpsGpuPaths(
-                    state_root=root,
-                    gpu_uuid=gpu_uuid,
-                ),
-                client=client,
-            )
-            for gpu_uuid in physical_plans
-        }
-        return cls(managers, physical_plans, mode=mode)
-
-    async def start(self) -> None:
+    async def start(self, gpu_uuids: Iterable[str]) -> None:
         async with self._operation_lock:
+            if self.has_resources:
+                raise MpsError("MPS runtime is already started")
             try:
-                await self._run_blocking(self._start)
-            except asyncio.CancelledError as cancellation:
+                await self._run_blocking(self._start, tuple(sorted(set(gpu_uuids))))
+            except BaseException as startup_error:
                 try:
-                    await self._run_blocking(
-                        self._close,
-                        frozenset(),
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except BaseException as rollback_error:
-                    raise cancellation from rollback_error
+                    await self._run_blocking(self._close)
+                except BaseException as cleanup_error:
+                    raise startup_error from cleanup_error
                 raise
 
-    def _start(self) -> None:
-        """Acquire every GPU transactionally, rolling back in reverse order."""
-
-        if self._leases:
-            raise MpsError("MPS pipeline runtime is already acquired")
+    def _start(self, gpu_uuids: tuple[str, ...]) -> None:
+        if not gpu_uuids or not self._client_tokens:
+            raise MpsError("MPS startup requires GPUs and managed processes")
+        ensure_private_state_root(self._state_root)
+        run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=self._state_root))
         try:
-            for gpu_uuid, manager in self.managers.items():
-                lease = manager.acquire(
-                    {
-                        name: self._client_tokens[name]
-                        for name in self._plans[gpu_uuid].client_process_names
-                    }
-                )
-                self._leases[gpu_uuid] = lease
-                logger.info(
-                    "MPS daemon ready on physical GPU %s (logical GPUs %s, pipe "
-                    "dir %s)",
-                    gpu_uuid,
-                    list(self._plans[gpu_uuid].logical_gpu_ids),
-                    manager.paths.pipe_dir,
-                )
-        except BaseException as startup_error:
-            rollback_errors: list[tuple[str, MpsError]] = []
-            for gpu_uuid in reversed(list(self._leases)):
-                error = self._release_one(
-                    gpu_uuid,
-                    suppress_errors=True,
-                    clients_could_have_attached=False,
-                )
-                if error is not None:
-                    rollback_errors.append((gpu_uuid, error))
-            if rollback_errors:
-                details = "; ".join(
-                    f"physical GPU {gpu_uuid}: {error}"
-                    for gpu_uuid, error in rollback_errors
-                )
-                error_type = (
-                    MpsDirtyStateError
-                    if any(
-                        isinstance(error, MpsDirtyStateError)
-                        for _, error in rollback_errors
-                    )
-                    else MpsError
-                )
-                rollback_error = error_type(details)
-                prior_cause = startup_error.__cause__ or startup_error.__context__
-                if prior_cause is not None:
-                    rollback_error.__cause__ = prior_cause
-                raise startup_error from rollback_error
+            validate_control_socket(run_dir / "pipe" / "control")
+            (run_dir / "pipe").mkdir(mode=0o700)
+            (run_dir / "log").mkdir(mode=0o700)
+        except BaseException:
+            shutil.rmtree(run_dir)
             raise
+        self.run_dir = run_dir
+        startup_error: MpsControlError | None = None
+        try:
+            self.client.start_daemon(self.pipe_dir, self.log_dir, gpu_uuids)
+        except MpsDaemonNotStartedError:
+            shutil.rmtree(run_dir)
+            self.run_dir = None
+            raise
+        except MpsControlError as exc:
+            startup_error = exc
+        deadline = time.monotonic() + self.start_timeout
+        while True:
+            try:
+                self._check_daemon_identity()
+                self.client.snapshot(self.pipe_dir)
+                break
+            except MpsControlError as exc:
+                if time.monotonic() >= deadline:
+                    if startup_error is not None:
+                        raise startup_error from exc
+                    raise MpsError(
+                        f"MPS control daemon did not become ready: {exc}"
+                    ) from exc
+                time.sleep(self.poll_interval)
+        if startup_error is not None:
+            raise startup_error
         logger.info(
-            "MPS summary: mode=%s %s",
-            self._mode,
-            {
-                gpu_uuid: {
-                    "logical_gpus": list(self._plans[gpu_uuid].logical_gpu_ids),
-                    "daemon_pid": self._leases[gpu_uuid].daemon_pid,
-                    "clients": sorted(self._plans[gpu_uuid].client_process_names),
-                }
-                for gpu_uuid in self._leases
-            },
+            "MPS daemon %s ready on GPUs %s (run dir %s)",
+            self.daemon_pid,
+            gpu_uuids,
+            run_dir,
         )
 
+    def _check_daemon_identity(self) -> None:
+        pid = self.client.read_daemon_identity(self.pipe_dir)
+        if self.daemon_pid is not None and pid != self.daemon_pid:
+            raise MpsControlError(
+                f"MPS daemon identity changed from {self.daemon_pid} to {pid}"
+            )
+        self.daemon_pid = pid
+
     def env_for_process(self, process_name: str) -> dict[str, str]:
-        gpu_uuid = self._client_uuid.get(process_name)
-        if gpu_uuid is None:
+        token = self._client_tokens.get(process_name)
+        if token is None:
             return {}
-        env = self.managers[gpu_uuid].env_for_stage()
-        # UUID visibility makes the physical device local ordinal zero.
-        env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "true"
-        env[MPS_CLIENT_TOKEN_ENV] = self._client_tokens[process_name]
-        return env
+        return {
+            "CUDA_MPS_PIPE_DIRECTORY": str(self.pipe_dir),
+            "CUDA_MPS_LOG_DIRECTORY": str(self.log_dir),
+            MPS_CLIENT_TOKEN_ENV: token,
+        }
 
     async def verify(self) -> None:
         async with self._operation_lock:
             await self._run_blocking(self._verify)
 
     def _verify(self) -> None:
-        for gpu_uuid, lease in self._leases.items():
-            self.managers[gpu_uuid].verify(lease)
-
-    async def retire_process_clients(self, process_name: str) -> set[MpsClientRef]:
-        """Retire one process's MPS clients before the runner signals it."""
-
-        async with self._operation_lock:
-            return await self._run_blocking(
-                self._retire_process_clients,
-                process_name,
-            )
-
-    def _retire_process_clients(self, process_name: str) -> set[MpsClientRef]:
-        gpu_uuid = self._client_uuid.get(process_name)
-        lease = self._leases.get(gpu_uuid) if gpu_uuid is not None else None
-        if lease is None:
-            return set()
-        return self.managers[gpu_uuid].retire_clients_for(lease, process_name)
-
-    async def probe_failures(self) -> dict[str, str]:
-        async with self._operation_lock:
-            return await self._run_blocking(self._probe_failures)
-
-    def _probe_failures(self) -> dict[str, str]:
-        failures: dict[str, str] = {}
-        for gpu_uuid, lease in self._leases.items():
-            reason = self.managers[gpu_uuid].probe(lease)
-            if reason is not None:
-                failures[gpu_uuid] = reason
-        return failures
-
-    async def close(
-        self,
-        *,
-        process_start_attempts: set[str] | None = None,
-    ) -> None:
-        """Close leases, preserving ambiguity per physical GPU after spawn."""
-
-        attempts = (
-            None
-            if process_start_attempts is None
-            else frozenset(process_start_attempts)
-        )
-        async with self._operation_lock:
-            await self._run_blocking(
-                self._close,
-                attempts,
-            )
-
-    def _close(self, process_start_attempts: frozenset[str] | None) -> None:
-        errors: list[tuple[str, MpsError]] = []
-        for gpu_uuid in reversed(list(self._leases)):
-            clients_could_have_attached = (
-                process_start_attempts is None
-                or not process_start_attempts.isdisjoint(
-                    self._plans[gpu_uuid].client_process_names
+        expected = {token: name for name, token in self._client_tokens.items()}
+        deadline = time.monotonic() + self.verify_timeout
+        while True:
+            observed: set[str] = set()
+            servers: set[int] = set()
+            last_error = None
+            try:
+                for ref in self.client.snapshot(self.pipe_dir):
+                    token = self.client.client_token(ref.client_pid)
+                    if token in expected:
+                        observed.add(token)
+                        servers.add(ref.server_pid)
+                if observed == expected.keys():
+                    if len(servers) != 1:
+                        raise MpsError(
+                            f"managed MPS clients must share one server, got {sorted(servers)}"
+                        )
+                    (self.server_pid,) = servers
+                    return
+            except MpsControlError as exc:
+                last_error = exc
+            if time.monotonic() >= deadline:
+                missing = sorted(
+                    expected[token] for token in expected.keys() - observed
                 )
-            )
-            error = self._release_one(
-                gpu_uuid,
-                suppress_errors=False,
-                clients_could_have_attached=clients_could_have_attached,
-            )
-            if error is not None:
-                errors.append((gpu_uuid, error))
-        if errors:
-            details = "; ".join(
-                f"physical GPU {gpu_uuid}: {error}" for gpu_uuid, error in errors
-            )
-            error_type = (
-                MpsDirtyStateError
-                if any(isinstance(error, MpsDirtyStateError) for _, error in errors)
-                else MpsError
-            )
-            raise error_type(details)
+                raise MpsError(
+                    f"stage process(es) {missing} never attached to the MPS server (pipe dir {self.pipe_dir}); last control error: {last_error}"
+                )
+            time.sleep(self.poll_interval)
+
+    async def retire_process_clients(self, process_name: str) -> None:
+        """Best-effort CUDA context termination before worker shutdown."""
+
+        async with self._operation_lock:
+            try:
+                await self._run_blocking(self._retire_process_clients, process_name)
+            except MpsControlError as exc:
+                logger.warning(
+                    "Could not query MPS clients for %s; continuing worker shutdown: %s",
+                    process_name,
+                    exc,
+                )
+
+    def _retire_process_clients(self, process_name: str) -> None:
+        token = self._client_tokens.get(process_name)
+        if token is None or not self.has_resources:
+            return
+        self._check_daemon_identity()
+        for ref in sorted(self.client.snapshot(self.pipe_dir)):
+            try:
+                if self.client.client_token(ref.client_pid) == token:
+                    self.client.terminate_client(self.pipe_dir, ref)
+            except MpsControlError as exc:
+                logger.warning(
+                    "Could not retire MPS client %s; continuing worker shutdown: %s",
+                    ref,
+                    exc,
+                )
+
+    async def probe(self) -> str | None:
+        async with self._operation_lock:
+            return await self._run_blocking(self._probe)
+
+    def _probe(self) -> str | None:
+        if self.server_pid is None:
+            return "MPS server attachment is not verified"
+        try:
+            status = self.client.get_server_status(self.pipe_dir, self.server_pid)
+        except MpsControlError as exc:
+            return f"server {self.server_pid} status query failed: {exc}"
+        if status != "ACTIVE":
+            return f"server {self.server_pid} is not ACTIVE: {status!r}"
+        return None
+
+    async def close(self) -> None:
+        async with self._operation_lock:
+            await self._run_blocking(self._close)
+
+    def _close(self) -> None:
+        if self.run_dir is None:
+            return
+        try:
+            self._check_daemon_identity()
+            assert self.daemon_pid is not None
+            try:
+                self.client.quit_daemon(self.pipe_dir)
+            except MpsControlError:
+                if self.client.daemon_process_alive(self.daemon_pid):
+                    raise
+            deadline = time.monotonic() + self.stop_timeout
+            while self.client.daemon_process_alive(self.daemon_pid):
+                if time.monotonic() >= deadline:
+                    raise MpsError(
+                        f"MPS daemon {self.daemon_pid} did not exit after quit"
+                    )
+                time.sleep(self.poll_interval)
+            shutil.rmtree(self.run_dir)
+        except Exception as exc:
+            raise MpsDirtyStateError(
+                f"MPS cleanup incomplete: {exc}. Run directory preserved: {self.run_dir}"
+            ) from exc
+        self.run_dir = None
+        self.daemon_pid = None
+        self.server_pid = None
 
     @staticmethod
     async def _run_blocking(call: Callable[..., Any], *args: Any) -> Any:
-        """Finish an ownership-changing call before propagating cancellation."""
+        """Finish the native operation before propagating cancellation."""
 
         task = asyncio.create_task(asyncio.to_thread(call, *args))
         cancelled: asyncio.CancelledError | None = None
@@ -499,8 +437,6 @@ class MpsPipelineRuntime:
                 await asyncio.shield(task)
             except asyncio.CancelledError as exc:
                 cancelled = cancelled or exc
-                if task.done():
-                    break
             except BaseException:
                 break
 
@@ -516,42 +452,21 @@ class MpsPipelineRuntime:
             raise cancelled
         return result
 
-    def _release_one(
-        self,
-        gpu_uuid: str,
-        *,
-        suppress_errors: bool,
-        clients_could_have_attached: bool = True,
-    ) -> MpsError | None:
-        lease = self._leases[gpu_uuid]
-        error: MpsError | None = None
-        try:
-            self.managers[gpu_uuid].release(
-                lease,
-                clients_could_have_attached=clients_could_have_attached,
-            )
-        except MpsError as exc:
-            error = exc
-            if suppress_errors:
-                logger.error("MPS rollback incomplete on GPU %s: %s", gpu_uuid, exc)
-        finally:
-            # A released owner fd means the token no longer carries cleanup
-            # authority, even when later daemon cleanup failed.
-            if lease.owner_fd < 0:
-                self._leases.pop(gpu_uuid, None)
-        return error
-
 
 def create_for_pipeline(
     mode: str,
     process_specs,
-) -> MpsPipelineRuntime | None:
-    """Build the orchestrator with production device inspection and control I/O."""
+    *,
+    device_info: _MpsDeviceInfo | None = None,
+    client: MpsControlClient | None = None,
+    state_root: Path | None = None,
+) -> tuple[MpsPipelineRuntime | None, dict[str, str]]:
+    """Resolve eligible workers and build their serve-local MPS runtime."""
 
+    if mode not in MPS_MODES:
+        raise MpsDecisionError(f"invalid mps mode {mode!r}; expected {MPS_MODES}")
     if mode == "off":
-        return None
-    process_specs = list(process_specs)
-    _reject_process_env_overrides(process_specs)
+        return None, {}
     if "CUDA_MPS_PIPE_DIRECTORY" in os.environ:
         raise MpsError(
             "native MPS cannot join CUDA_MPS_PIPE_DIRECTORY="
@@ -574,7 +489,7 @@ def create_for_pipeline(
         if mode == "on":
             raise MpsError("mps=on requires an NVIDIA CUDA platform")
         logger.warning("MPS auto: platform is not NVIDIA CUDA; running without MPS")
-        return None
+        return None, {}
 
     if shutil.which("nvidia-cuda-mps-control") is None:
         if mode == "on":
@@ -582,7 +497,7 @@ def create_for_pipeline(
         logger.warning(
             "MPS auto: nvidia-cuda-mps-control not found; running without MPS"
         )
-        return None
+        return None, {}
 
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_initialized():
@@ -594,9 +509,13 @@ def create_for_pipeline(
     from sglang_omni.mps.control import SubprocessMpsControlClient
     from sglang_omni.mps.devices import NvmlDeviceInfo
 
-    return MpsPipelineRuntime.create(
+    worker_devices = _resolve_worker_devices(
         mode=mode,
-        process_specs=process_specs,
-        device_info=NvmlDeviceInfo(),
-        client=SubprocessMpsControlClient(),
+        process_facts=collect_mps_facts(process_specs),
+        device_info=NvmlDeviceInfo() if device_info is None else device_info,
     )
+    if not worker_devices:
+        return None, {}
+    root = state_root if state_root is not None else _default_state_root()
+    control = SubprocessMpsControlClient() if client is None else client
+    return MpsPipelineRuntime(control, worker_devices, root), worker_devices

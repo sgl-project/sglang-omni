@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Filesystem layouts and locking primitives for CUDA MPS runtimes."""
+"""Private directory validation for CUDA MPS runtimes."""
 
 from __future__ import annotations
 
-import fcntl
 import os
-import re
 import stat
-from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 # AF_UNIX sun_path is 108 bytes including the terminator on Linux.
@@ -27,46 +23,7 @@ def validate_control_socket(control_socket: Path) -> None:
         )
 
 
-_GPU_DIR_PATTERN = re.compile(r"(GPU|MIG)-[0-9a-fA-F-]+")
-
-
-@dataclass(frozen=True)
-class MpsGpuPaths:
-    """Layout of the shared per-physical-GPU MPS state directory.
-
-    One daemon serves every pipeline that colocates work on this GPU, so the
-    directory is keyed by the immutable device UUID, not by run or ordinal.
-    """
-
-    state_root: Path
-    gpu_uuid: str
-
-    def __post_init__(self) -> None:
-        if not _GPU_DIR_PATTERN.fullmatch(self.gpu_uuid):
-            raise ValueError(f"unexpected GPU uuid {self.gpu_uuid!r}")
-
-    @property
-    def state_dir(self) -> Path:
-        return self.state_root / self.gpu_uuid
-
-    @property
-    def pipe_dir(self) -> Path:
-        return self.state_dir / "pipe"
-
-    @property
-    def log_dir(self) -> Path:
-        return self.state_dir / "log"
-
-    @property
-    def owners_dir(self) -> Path:
-        return self.state_dir / "owners"
-
-    @property
-    def control_socket(self) -> Path:
-        return self.pipe_dir / "control"
-
-
-def _ensure_private_state_root(root: Path) -> None:
+def ensure_private_state_root(root: Path) -> None:
     """Create a private state root, or validate an existing caller path."""
 
     try:
@@ -91,12 +48,3 @@ def _ensure_private_state_root(root: Path) -> None:
         # mkdir honors umask. Tightening a directory created by this call is
         # safe; caller-provided paths are never mutated.
         root.chmod(0o700)
-
-
-@contextmanager
-def state_root_lock(root: Path, lock_name: str = ".lock"):
-    """Serialize operations across processes using a persistent named lock file."""
-    _ensure_private_state_root(root)
-    with open(root / lock_name, "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        yield

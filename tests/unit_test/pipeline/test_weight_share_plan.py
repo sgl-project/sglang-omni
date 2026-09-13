@@ -88,7 +88,6 @@ def _spec(
     stage_name: str,
     gpu_id: int | None,
     tp_size: int = 1,
-    env_defaults: dict[str, str] | None = None,
 ) -> StageWorkerProcessSpec:
     return StageWorkerProcessSpec(
         process_name=process_name,
@@ -99,7 +98,6 @@ def _spec(
                 placement_gpu_id=gpu_id,
                 gpu_id=gpu_id,
                 tp_size=tp_size,
-                env_defaults=dict(env_defaults or {}),
             )
         ],
     )
@@ -366,26 +364,6 @@ def test_externally_assigned_roles_are_rejected(tmp_path, monkeypatch) -> None:
     ]
 
     with pytest.raises(WeightShareError, match="parent environment"):
-        _plan(config, specs, tmp_path)
-
-
-def test_a_stage_env_default_cannot_assign_a_role(tmp_path) -> None:
-    config = _make_config(
-        tmp_path,
-        stages=[_engine_stage()],
-        processes={"gen": ProcessConfig(num_replicas=2, replica_devices=[0, 0])},
-    )
-    specs = [
-        _spec(
-            "gen@r0",
-            stage_name="engine@r0",
-            gpu_id=0,
-            env_defaults={ENV_WEIGHT_SHARE: "leader:/tmp/elsewhere"},
-        ),
-        _spec("gen@r1", stage_name="engine@r1", gpu_id=0),
-    ]
-
-    with pytest.raises(WeightShareError, match="environment defaults"):
         _plan(config, specs, tmp_path)
 
 

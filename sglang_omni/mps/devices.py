@@ -8,8 +8,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-_MIN_COMPUTE_CAPABILITY = (7, 0)
-
 
 @dataclass(frozen=True)
 class MpsPhysicalDevice:
@@ -125,16 +123,6 @@ class NvmlDeviceInfo:
                         gpu_uuid,
                         "MIG devices are not validated for native MPS in "
                         "SGLang Omni",
-                    )
-                    continue
-                major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-                if (major, minor) < _MIN_COMPUTE_CAPABILITY:
-                    devices[ordinal] = MpsPhysicalDevice(
-                        gpu_uuid,
-                        (
-                            f"compute capability {major}.{minor} is pre-Volta; "
-                            "per-client isolation requires Volta or newer"
-                        ),
                     )
                     continue
                 try:

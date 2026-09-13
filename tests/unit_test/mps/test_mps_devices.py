@@ -33,8 +33,6 @@ class _FakeDriver:
         return (self.init_status,)
 
     def cuDeviceGet(self, ordinal):
-        if ordinal not in self.uuids:
-            return _CudaStatus.INVALID_DEVICE, None
         return _CudaStatus.SUCCESS, ordinal
 
     def cuDeviceGetUuid(self, device):
@@ -64,7 +62,6 @@ def _fake_pynvml(failed_uuids: set[str] | None = None):
         nvmlInit=lambda: None,
         nvmlDeviceGetHandleByUUID=by_uuid,
         nvmlDeviceGetUUID=lambda handle: handle,
-        nvmlDeviceGetCudaComputeCapability=lambda _handle: (9, 0),
         nvmlDeviceGetMigMode=lambda _handle: (0, 0),
     )
 

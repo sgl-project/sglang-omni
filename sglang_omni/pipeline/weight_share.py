@@ -84,7 +84,13 @@ def plan_weight_share(
             "flock leases and owner-only directory permissions"
         )
 
-    _reject_external_env(process_specs)
+    external = (os.environ.get(ENV_WEIGHT_SHARE) or "").strip()
+    if external:
+        raise WeightShareError(
+            f"weight_share=on but the parent environment already sets "
+            f"{ENV_WEIGHT_SHARE}={external!r}; the runtime assigns roles itself, "
+            "so unset it or use weight_share=off with the external supervisor"
+        )
 
     gpu_ids_by_process = {
         spec.process_name: process_gpu_ids(spec) for spec in process_specs
@@ -147,26 +153,6 @@ def plan_weight_share(
             follower for group in groups for follower in group.followers
         ),
     )
-
-
-def _reject_external_env(process_specs) -> None:
-    """Refuse to plan on top of a supervisor that already assigned roles."""
-
-    external = (os.environ.get(ENV_WEIGHT_SHARE) or "").strip()
-    if external:
-        raise WeightShareError(
-            f"weight_share=on but the parent environment already sets "
-            f"{ENV_WEIGHT_SHARE}={external!r}; the runtime assigns roles itself, "
-            "so unset it or use weight_share=off with the external supervisor"
-        )
-    for spec in process_specs:
-        for stage_spec in spec.stage_specs:
-            if (stage_spec.env_defaults or {}).get(ENV_WEIGHT_SHARE):
-                raise WeightShareError(
-                    f"stage {stage_spec.stage_name!r} sets {ENV_WEIGHT_SHARE} in "
-                    "its environment defaults; the runtime assigns weight-share "
-                    "roles itself, so remove it"
-                )
 
 
 def _collect_candidate_groups(
