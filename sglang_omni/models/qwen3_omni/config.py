@@ -224,11 +224,10 @@ def _talker_stage(
             max_seq_len=32768,
             enable_partial_start=enable_partial_start,
             partial_start_min_chunks=5,
-            # Note (wenyao): With a 2-frame Code2Wav startup window, an uncoalesced
-            # 12-frame prefix lets the first two windows become ready without
-            # waiting for a full 10-row message plus the EOS lookbehind.
+            # Note (wenyao): Match the default serial Code2Wav window so later
+            # 10-row messages keep the captured 10/20/30/35-frame graph shapes.
             codec_coalesce_frames=10,
-            codec_coalesce_early_frames=12,
+            codec_coalesce_early_frames=10,
             codec_coalesce_first_frames=0,
         ),
         gpu=gpu,
