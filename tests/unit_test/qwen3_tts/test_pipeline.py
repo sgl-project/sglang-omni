@@ -31,7 +31,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecStateSpec,
 )
 from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
-    plan_decode_windows,
+    split_frames_by_width,
 )
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.models.qwen3_tts.request_builders import (
@@ -2313,8 +2313,8 @@ class _FakeWindowRunner:
         self._miss_on_call = miss_on_call
         self.calls: list[tuple[tuple[int, ...], list[int]]] = []
 
-    def plan_windows(self, total_frames: int) -> tuple[int, ...] | None:
-        return plan_decode_windows(total_frames, self._widths)
+    def split_frames(self, total_frames: int) -> tuple[int, ...] | None:
+        return split_frames_by_width(total_frames, self._widths)
 
     def largest_batch_bucket(self) -> int:
         return self._bucket

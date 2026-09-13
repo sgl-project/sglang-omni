@@ -47,8 +47,8 @@ DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 DEFAULT_QWEN3_TTS_STREAM_CHUNK_RAMP = (1, 2, 4)
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS = 64
-# Powers of two split any bootstrap width into few windows. 64 is the measured
-# knee: above it a replay's per frame cost outweighs the floors it saves.
+# note(ratish): powers of two so any width splits into few windows. 64 is the
+# measured cap; wider replays cost more per frame than the floors they save.
 DEFAULT_QWEN3_TTS_INCREMENTAL_WINDOW_FRAMES = (1, 2, 4, 8, 16, 32, 64)
 _CODEC_STATS_LOG_INTERVAL_S = 60.0
 _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES = (1, 2, 4, 8)
@@ -956,8 +956,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             arena=self._codec_arena,
             stream_priority=graph_priority,
         )
-        # A reference prefixed bootstrap is wider than any cold shape; the
-        # initial worker replays it as a sequence of these widths instead.
+        # note(ratish): a reference prefixed bootstrap is wider than any cold
+        # shape; the initial worker replays it as a sequence of these widths.
         window = (
             Qwen3TTSIncrementalCodecCudaGraphRunner(
                 self._incremental_decoder,
@@ -969,8 +969,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                 batch_sizes=graph_batch_sizes,
                 min_free_gb=min_free_gb,
                 enabled=graph_enabled,
-                # The warm runners compile the steady stride; a window of that
-                # width shares the compiled step, every other width stays eager.
+                # note(ratish): the warm runners compile the steady stride; a
+                # window of that width shares it, every other width stays eager.
                 compile_fresh_frames=(
                     (self._stream_followup_stride,) if compile_steady else ()
                 ),
@@ -1765,12 +1765,12 @@ class Qwen3TTSStreamingVocoderScheduler(
         captured = runner is not None and bool(runner.available_batch_sizes(width))
         if stream is self._decode_stream and not captured:
             window_runner = self._initial_window_decode_graphs
-            windows = (
-                window_runner.plan_windows(width) if window_runner is not None else None
+            split = (
+                window_runner.split_frames(width) if window_runner is not None else None
             )
-            if windows is not None:
+            if split is not None:
                 return self._decode_incremental_windows(
-                    gpu_input, plans, incremental, window_runner, windows
+                    gpu_input, plans, incremental, window_runner, split
                 )
         waveform = (
             runner.decode_slots(gpu_input, incremental.slots)
@@ -1795,7 +1795,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         plans: list[_IncrementalDecodePlan],
         incremental: _IncrementalDecodeBatch,
         runner: Qwen3TTSIncrementalCodecCudaGraphRunner,
-        windows: tuple[int, ...],
+        split: tuple[int, ...],
     ) -> tuple[list[torch.Tensor], torch.Tensor]:
         """Replay the cohort one window at a time against the same slots.
 
@@ -1809,14 +1809,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             device=gpu_input.device,
         )
         offset = 0
-        for width in windows:
+        for width in split:
             end = offset + width
             replay = runner.decode_slots(gpu_input[:, :, offset:end], incremental.slots)
             if replay is None:
                 raise RuntimeError(
-                    "Qwen3-TTS incremental Codec graph missed a planned window"
+                    "Qwen3-TTS incremental Codec graph missed a captured window"
                 )
-            # The graph rewrites its output on the next replay of this width.
+            # note(ratish): the graph rewrites this output on its next replay.
             waveform[:, offset * samples_per_frame : end * samples_per_frame].copy_(
                 replay.reshape(len(plans), -1)
             )
@@ -2441,7 +2441,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         if runner is not None:
             largest = max(runner.available_batch_sizes(width), default=0)
         if not largest and window_runner is not None:
-            if window_runner.plan_windows(width) is not None:
+            if window_runner.split_frames(width) is not None:
                 largest = window_runner.largest_batch_bucket()
         if not largest:
             return [group]

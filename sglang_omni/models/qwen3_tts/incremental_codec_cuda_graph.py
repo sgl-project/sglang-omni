@@ -51,17 +51,17 @@ class _CaptureFailure(RuntimeError):
     pass
 
 
-def plan_decode_windows(
+def split_frames_by_width(
     total_frames: int, widths: Iterable[int]
 ) -> tuple[int, ...] | None:
-    """Greedy cover of total_frames by the widths, largest first; None if inexact."""
+    """Split total_frames into the widths, largest first; None if it does not divide."""
     remaining = int(total_frames)
-    windows: list[int] = []
+    split: list[int] = []
     for width in sorted(widths, reverse=True):
         while remaining >= width:
-            windows.append(width)
+            split.append(width)
             remaining -= width
-    return tuple(windows) if remaining == 0 else None
+    return tuple(split) if remaining == 0 else None
 
 
 class Qwen3TTSIncrementalCodecCudaGraphRunner:
@@ -332,8 +332,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         capture_stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(capture_stream), torch.inference_mode():
             if compiled:
-                # Trace on the tensors the warmups and the capture use; Dynamo
-                # guards on inference tensors and would recompile a plain trace.
+                # note(ratish): trace on the tensors the warmups and the capture
+                # use; Dynamo guards on inference tensors and would trace again.
                 trace_state = self._arena.gather_by_index(
                     self._scratch_index(key.batch_bucket)
                 )
@@ -451,13 +451,13 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             )
         )
 
-    def plan_windows(self, total_frames: int) -> tuple[int, ...] | None:
-        """Captured widths covering total_frames in sequence; None while disabled."""
+    def split_frames(self, total_frames: int) -> tuple[int, ...] | None:
+        """Split total_frames into captured widths; None while disabled."""
         if not self._enabled:
             return None
         with self._graphs_lock:
             widths = {key.fresh_frames for key in self._graphs}
-        return plan_decode_windows(total_frames, widths)
+        return split_frames_by_width(total_frames, widths)
 
     def largest_batch_bucket(self) -> int:
         """The widest cohort one replay takes at any captured width; 0 while disabled."""
@@ -606,5 +606,5 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
 __all__ = [
     "IncrementalCodecGraphKey",
     "Qwen3TTSIncrementalCodecCudaGraphRunner",
-    "plan_decode_windows",
+    "split_frames_by_width",
 ]

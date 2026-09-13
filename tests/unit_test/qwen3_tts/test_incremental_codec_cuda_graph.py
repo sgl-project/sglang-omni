@@ -11,7 +11,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     IncrementalCodecGraphKey,
     Qwen3TTSIncrementalCodecCudaGraphRunner,
     _CaptureResourceSet,
-    plan_decode_windows,
+    split_frames_by_width,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     Qwen3TTSStreamingVocoderScheduler,
@@ -216,10 +216,10 @@ def test_incremental_codec_graph_misses_uncaptured_frame_count() -> None:
         (0, (1, 2), ()),
     ],
 )
-def test_plan_decode_windows_covers_the_count_largest_first(
+def test_split_frames_by_width_takes_the_largest_width_first(
     total: int, widths: tuple[int, ...], expected: tuple[int, ...] | None
 ) -> None:
-    assert plan_decode_windows(total, widths) == expected
+    assert split_frames_by_width(total, widths) == expected
 
 
 def test_incremental_codec_graph_accepts_the_window_mode() -> None:
@@ -238,7 +238,7 @@ def test_incremental_codec_graph_accepts_the_window_mode() -> None:
     assert runner.stats()["graph_contract"]["fresh_frames"] == [2, 4, 8]
 
 
-def test_incremental_codec_graph_plans_windows_from_captured_keys_only() -> None:
+def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None:
     runner = _runner(batch_sizes=(1, 4))
     runner._graphs = {
         IncrementalCodecGraphKey(8, 1): _entry(1),
@@ -247,13 +247,13 @@ def test_incremental_codec_graph_plans_windows_from_captured_keys_only() -> None
         IncrementalCodecGraphKey(4, 4): _entry(4),
     }
 
-    assert runner.plan_windows(20) == (8, 8, 4)
-    assert runner.plan_windows(8) == (8,)
-    assert runner.plan_windows(6) is None
+    assert runner.split_frames(20) == (8, 8, 4)
+    assert runner.split_frames(8) == (8,)
+    assert runner.split_frames(6) is None
     assert runner.largest_batch_bucket() == 4
 
     runner._enabled = False
-    assert runner.plan_windows(8) is None
+    assert runner.split_frames(8) is None
     assert runner.largest_batch_bucket() == 0
 
 
