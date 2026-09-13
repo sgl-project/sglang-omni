@@ -413,7 +413,7 @@ class FlowCudaGraphRunner:
                 graph = torch.cuda.CUDAGraph()
                 with (
                     torch.cuda.graph(
-                        graph=graph,
+                        cuda_graph=graph,
                         pool=self.pool,
                         stream=stream,
                         capture_error_mode="thread_local",
