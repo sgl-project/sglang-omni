@@ -14,6 +14,7 @@ from sglang_omni.mps.manager import (
     MpsControlError,
     MpsDaemonNotStartedError,
 )
+from sglang_omni.mps.state import state_root_lock
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
 _QUERY_TIMEOUT_SECONDS = 10
@@ -43,14 +44,19 @@ class SubprocessMpsControlClient:
 
     def _query(self, pipe_dir: Path, command: str) -> str:
         try:
-            result = subprocess.run(
-                [_CONTROL_BINARY],
-                input=command + "\n",
-                capture_output=True,
-                text=True,
-                timeout=_QUERY_TIMEOUT_SECONDS,
-                env=self._control_env(pipe_dir),
-            )
+            # Note (kaige): serialize commands across serves without nesting the
+            # lifecycle lock; the lock file outlives the removable GPU state dir.
+            with state_root_lock(
+                pipe_dir.parent.parent, f".control-lock-{pipe_dir.parent.name}"
+            ):
+                result = subprocess.run(
+                    [_CONTROL_BINARY],
+                    input=command + "\n",
+                    capture_output=True,
+                    text=True,
+                    timeout=_QUERY_TIMEOUT_SECONDS,
+                    env=self._control_env(pipe_dir),
+                )
         except (OSError, subprocess.SubprocessError) as exc:
             raise MpsControlError(
                 f"{_CONTROL_BINARY} {command!r} failed: {exc}"
@@ -132,6 +138,11 @@ class SubprocessMpsControlClient:
             for client_pid in client_pids:
                 clients.add(MpsClientRef(server_pid, client_pid))
         return clients
+
+    def get_server_status(self, pipe_dir: Path, server_pid: int) -> str:
+        """Query the native status of a previously verified MPS server."""
+
+        return self._query(pipe_dir, f"get_server_status {server_pid}").strip()
 
     def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None:
         command = f"terminate_client {client.server_pid} {client.client_pid}"

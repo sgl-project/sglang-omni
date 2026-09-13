@@ -99,7 +99,7 @@ def _ensure_private_state_root(root: Path) -> None:
 
 @contextmanager
 def state_root_lock(root: Path, lock_name: str = ".lock"):
-    """Serialize daemon create/join/leave for one GPU across processes.
+    """Serialize operations across processes using a persistent named lock file.
 
     No-op where flock is unavailable (non-POSIX unit-test hosts).
     """

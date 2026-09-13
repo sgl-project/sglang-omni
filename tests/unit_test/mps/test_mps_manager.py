@@ -37,6 +37,9 @@ class FakeControlClient:
         self.snapshots: dict[str, set[MpsClientRef]] = {}
         self.start_fails = False
         self.snapshot_error: str | None = None
+        self.server_status_error: str | None = None
+        self.server_statuses: dict[tuple[str, int], str] = {}
+        self.status_queries: list[tuple[str, int]] = []
         self.identity_error: str | None = None
         self.client_token_error: str | None = None
         self.quit_error: str | None = None
@@ -77,11 +80,19 @@ class FakeControlClient:
         return set(self.snapshots.get(str(pipe_dir), set()))
 
     def set_clients(self, pipe_dir, clients: dict[int, list[int]]) -> None:
+        for server_pid in clients:
+            self.server_statuses.setdefault((str(pipe_dir), server_pid), "ACTIVE")
         self.snapshots[str(pipe_dir)] = {
             MpsClientRef(server_pid, client_pid)
             for server_pid, client_pids in clients.items()
             for client_pid in client_pids
         }
+
+    def get_server_status(self, pipe_dir, server_pid):
+        self.status_queries.append((str(pipe_dir), server_pid))
+        if self.server_status_error is not None:
+            raise MpsControlError(self.server_status_error)
+        return self.server_statuses.get((str(pipe_dir), server_pid), "Server not found")
 
     def terminate_client(self, pipe_dir, client):
         if self.terminate_error is not None:
@@ -378,6 +389,7 @@ def test_verify_returns_current_exact_client_refs(short_root):
     attached = manager.verify(lease)
 
     assert attached == {MpsClientRef(7000, 101), MpsClientRef(7000, 102)}
+    assert lease.server_pid == 7000
 
 
 def test_verify_matches_inherited_process_token_on_cuda_client(short_root):
@@ -419,30 +431,83 @@ def test_probe_allows_a_verified_client_to_exit(short_root):
     assert manager.probe(lease) is None
 
 
-def test_probe_distinguishes_identity_and_snapshot_failures(short_root):
+def test_probe_only_queries_verified_server_status(short_root):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
 
     client.identity_error = "native PID unavailable"
-    assert manager.probe(lease) == (
-        "daemon identity query failed: native PID unavailable"
-    )
-
-    client.identity_error = None
-    replacement_pid = lease.daemon_pid + 1
-    client.daemons[str(manager.paths.pipe_dir)] = replacement_pid
-    client.alive_pids.add(replacement_pid)
-    daemon_pid_file(manager.paths).write_text(str(replacement_pid))
-    assert manager.probe(lease) == (
-        f"daemon identity changed from {lease.daemon_pid} to {replacement_pid}"
-    )
-
-    client.daemons[str(manager.paths.pipe_dir)] = lease.daemon_pid
-    daemon_pid_file(manager.paths).write_text(str(lease.daemon_pid))
     client.snapshot_error = "control socket unavailable"
+    client.client_token_error = "client environment unavailable"
+    assert manager.probe(lease) is None
+    assert client.status_queries == [(str(manager.paths.pipe_dir), 7000)]
+
+
+@pytest.mark.parametrize(
+    "status", ["FAULT", "INITIALIZING", "Server not found", "", "0"]
+)
+def test_probe_rejects_non_active_server(short_root, status):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    client.server_statuses[(str(manager.paths.pipe_dir), 7000)] = status
+
+    assert manager.probe(lease) == f"server 7000 is not ACTIVE: {status!r}"
+
+
+def test_probe_reports_status_query_failure(short_root):
+    client = FakeControlClient()
+    manager, lease = start_serving(short_root, client)
+    client.server_status_error = "control socket unavailable"
     assert manager.probe(lease) == (
-        "client snapshot query failed: control socket unavailable"
+        "server 7000 status query failed: control socket unavailable"
     )
+
+
+def test_probe_ignores_foreign_servers_without_adopting_replacement(short_root):
+    client = FakeControlClient()
+    manager = make_manager(short_root, client)
+    lease = manager.acquire({"a": "owner-a", "b": "owner-b"})
+    client.set_clients(manager.paths.pipe_dir, {7000: [101, 102], 9000: [103]})
+    client.client_tokens.update({101: "owner-a", 102: "owner-b", 103: "foreign"})
+    manager.verify(lease)
+
+    assert manager.probe(lease) is None
+    assert client.status_queries == [(str(manager.paths.pipe_dir), 7000)]
+    del client.server_statuses[(str(manager.paths.pipe_dir), 7000)]
+    client.set_clients(manager.paths.pipe_dir, {7001: [101, 102], 9000: [103]})
+    assert manager.probe(lease) == "server 7000 is not ACTIVE: 'Server not found'"
+
+
+def test_verify_rejects_multiple_owned_servers_and_retains_unverified_owner(short_root):
+    client = FakeControlClient()
+    paths = seed_shared_dir(
+        short_root, client, daemon_pid=999, owners={888: True}, clients={9000: [103]}
+    )
+    client.client_tokens.update({101: "owner-a", 102: "owner-b", 103: "foreign"})
+    manager = make_manager(short_root, client)
+    lease = manager.acquire({"a": "owner-a", "b": "owner-b"})
+    client.set_clients(paths.pipe_dir, {7000: [101], 8000: [102], 9000: [103]})
+
+    with pytest.raises(MpsError, match=r"must share one server, got \[7000, 8000\]"):
+        manager.verify(lease)
+
+    assert lease.server_pid is None
+    assert manager.probe(lease) == "MPS server attachment is not verified"
+    assert client.status_queries == []
+    client.set_clients(paths.pipe_dir, {9000: [103]})
+    with pytest.raises(MpsDirtyStateError, match="ownership is incomplete"):
+        manager.release(lease)
+    assert owner_marker(manager).read_text() == "retained\n"
+    assert client.snapshot(paths.pipe_dir) == {MpsClientRef(9000, 103)}
+    assert client.daemon_process_alive(999)
+
+
+def test_probe_rejects_unverified_attachment(short_root):
+    client = FakeControlClient()
+    manager = make_manager(short_root, client)
+    lease = manager.acquire({"worker": "owner-worker"})
+
+    assert manager.probe(lease) == "MPS server attachment is not verified"
+    assert client.status_queries == []
 
 
 def test_dead_root_with_live_descendant_persists_dirty_and_reports_cleanup(

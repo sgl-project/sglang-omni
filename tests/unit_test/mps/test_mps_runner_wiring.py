@@ -20,7 +20,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.mps.devices import MpsPhysicalDevice
-from sglang_omni.mps.manager import MpsDirtyStateError, MpsError
+from sglang_omni.mps.manager import MPS_CLIENT_TOKEN_ENV, MpsDirtyStateError, MpsError
 from sglang_omni.mps.runtime import MpsPipelineRuntime
 from sglang_omni.mps.state import MpsGpuPaths
 from sglang_omni.pipeline import mp_runner
@@ -500,6 +500,43 @@ async def test_attempted_mps_process_start_keeps_fail_closed_cleanup(
     assert client.daemon_process_alive(999)
     with pytest.raises(MpsError, match="retained"):
         make_manager(short_base, client).acquire({"later": "later-owner"})
+
+
+@pytest.mark.asyncio
+async def test_server_fault_reaches_runner_watchdog_and_preserves_coowner(
+    short_base,
+    monkeypatch,
+):
+    events: list[str] = []
+    group = _FakeGroup(events)
+    runtime, client, paths = _shared_mps_runtime(short_base, group)
+    foreign_clients = client.snapshot(paths.pipe_dir)
+    _patch_runner(monkeypatch, events, group, runtime)
+
+    async def wait_ready(timeout):
+        client.set_clients(paths.pipe_dir, {8000: [101, 202]})
+        client.client_tokens[101] = group.spawn_env["pipeline"][MPS_CLIENT_TOKEN_ENV]
+
+    async def shutdown(before_signal=None):
+        client.set_clients(paths.pipe_dir, {8000: [202]})
+
+    monkeypatch.setattr(group, "wait_ready", wait_ready)
+    monkeypatch.setattr(group, "shutdown", shutdown)
+    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base, mps="on"))
+    await runner.start()
+    client.server_statuses[(str(paths.pipe_dir), 8000)] = "FAULT"
+
+    try:
+        with pytest.raises(RuntimeError, match="server 8000 is not ACTIVE: 'FAULT'"):
+            await asyncio.wait_for(runner.wait_failed(), timeout=2)
+    finally:
+        await runner.stop()
+
+    assert client.status_queries == [(str(paths.pipe_dir), 8000)]
+    assert not runtime.has_leases
+    assert client.snapshot(paths.pipe_dir) == foreign_clients
+    assert client.daemon_process_alive(999)
+    assert (paths.owners_dir / "888").read_text() == "active\n"
 
 
 @pytest.mark.asyncio

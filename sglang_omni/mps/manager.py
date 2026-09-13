@@ -63,7 +63,7 @@ class MpsLease:
     daemon_pid: int
     owner_fd: int
     client_tokens: dict[str, str]
-    attachment_verified: bool = False
+    server_pid: int | None = None
 
 
 class MpsControlClient(Protocol):
@@ -74,6 +74,8 @@ class MpsControlClient(Protocol):
     def read_daemon_identity(self, pipe_dir: Path) -> int: ...
 
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]: ...
+
+    def get_server_status(self, pipe_dir: Path, server_pid: int) -> str: ...
 
     def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None: ...
 
@@ -427,7 +429,13 @@ class MpsManager:
                 }
                 last_error = None
                 if not missing:
-                    lease.attachment_verified = True
+                    server_pids = {client.server_pid for client in attached}
+                    if len(server_pids) != 1:
+                        raise MpsError(
+                            f"managed MPS clients must share one server, got "
+                            f"{sorted(server_pids)} (pipe dir {self.paths.pipe_dir})"
+                        )
+                    (lease.server_pid,) = server_pids
                     return attached
             except MpsControlError as exc:
                 last_error = exc
@@ -467,21 +475,19 @@ class MpsManager:
         return targets
 
     def probe(self, lease: MpsLease) -> str | None:
-        """Return the first failed health proof, or ``None`` when healthy."""
+        """Check only the native status of the startup-verified MPS server."""
 
         self._require_live_lease(lease)
+        if lease.server_pid is None:
+            return "MPS server attachment is not verified"
         try:
-            daemon_pid = self.client.read_daemon_identity(self.paths.pipe_dir)
-        except MpsControlError as exc:
-            return f"daemon identity query failed: {exc}"
-        if daemon_pid != lease.daemon_pid:
-            return (
-                f"daemon identity changed from {lease.daemon_pid} " f"to {daemon_pid}"
+            status = self.client.get_server_status(
+                self.paths.pipe_dir, lease.server_pid
             )
-        try:
-            self.client.snapshot(self.paths.pipe_dir)
         except MpsControlError as exc:
-            return f"client snapshot query failed: {exc}"
+            return f"server {lease.server_pid} status query failed: {exc}"
+        if status != "ACTIVE":
+            return f"server {lease.server_pid} is not ACTIVE: {status!r}"
         return None
 
     def release(
@@ -568,11 +574,7 @@ class MpsManager:
         }
 
         if remaining_owner_pids:
-            if (
-                snapshot
-                and clients_could_have_attached
-                and not lease.attachment_verified
-            ):
+            if snapshot and clients_could_have_attached and lease.server_pid is None:
                 raise MpsError(
                     "MPS client ownership is incomplete at shutdown; refusing "
                     "to release this owner while a shared daemon still has "

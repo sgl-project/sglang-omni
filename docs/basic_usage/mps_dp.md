@@ -70,10 +70,15 @@ byte-derived pool.
 
 The runtime owns the full lifecycle. Every managed process is verified against
 the daemon's client list before serving starts, because a process that misses
-the pipe directory silently falls back to time slicing. A watchdog fails the
-pipeline if daemon identity or control access is lost mid-serving. Shutdown
-re-evaluates the current client list, drains this serve's clients, and quits the
-daemon only when no other serve still owns it.
+the pipe directory silently falls back to time slicing. A watchdog queries only
+`get_server_status` for the single server identified during startup verification
+and fails the pipeline if the query fails or the server is no longer `ACTIVE`.
+Startup rejects managed clients attached to different servers. Native control
+commands share a per-GPU cross-process `flock` for each complete
+request/response so independent serve processes cannot overlap queries on the
+same control endpoint. Daemon startup remains protected by the lifecycle lock.
+Shutdown re-evaluates the current client list, drains this serve's clients, and
+quits the daemon only when no other serve still owns it.
 
 If a managed worker does not exit before the shutdown timeout, the runtime
 terminates that directly owned child process and reaps it before the launcher
