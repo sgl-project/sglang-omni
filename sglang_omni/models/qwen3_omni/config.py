@@ -182,13 +182,19 @@ def _decode_stage(*, process: str) -> StageConfig:
     )
 
 
+# Note (wenyao): SGLang reserves min(max_new_tokens, this) KV per running request;
+# the 4096 default admitted ~13 of 64 Talker requests at once. 256 is ~20 s at 12.5 Hz.
+TALKER_MAX_NEW_TOKENS_ESTIMATION = "256"
+
+
 def _talker_stage_env() -> dict[str, str]:
-    if not current_platform.is_rocm():
-        return {}
-    # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
-    # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
-    # greedy Talker request would corrupt its first codec token.
-    return {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}
+    env = {"SGLANG_CLIP_MAX_NEW_TOKENS_ESTIMATION": TALKER_MAX_NEW_TOKENS_ESTIMATION}
+    if current_platform.is_rocm():
+        # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
+        # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
+        # greedy Talker request would corrupt its first codec token.
+        env["SGLANG_DISABLE_AITER_GREEDY_SAMPLE"] = "1"
+    return env
 
 
 def _talker_stage(
