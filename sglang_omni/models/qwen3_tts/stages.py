@@ -263,6 +263,7 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph: bool | None = None,
     incremental_codec_compile: bool | None = None,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
+    incremental_codec_cuda_graph_window_frames: Sequence[int] | None = None,
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
@@ -310,6 +311,9 @@ def create_vocoder_executor(
         incremental_codec_compile=incremental_codec_compile,
         incremental_codec_cuda_graph_cold_frames=(
             incremental_codec_cuda_graph_cold_frames
+        ),
+        incremental_codec_cuda_graph_window_frames=(
+            incremental_codec_cuda_graph_window_frames
         ),
         incremental_codec_cuda_graph_min_free_gb=(
             incremental_codec_cuda_graph_min_free_gb
