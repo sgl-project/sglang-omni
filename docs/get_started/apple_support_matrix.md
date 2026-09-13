@@ -196,7 +196,8 @@ remains a separate question for dedicated long-audio validation.
 #### M1 Pro, 32 GB
 
 Reported by [@fengxiaohu](https://github.com/fengxiaohu) in
-[#1967](https://github.com/sgl-project/sglang-omni/issues/1967#issuecomment-5638459674).
+[#1967](https://github.com/sgl-project/sglang-omni/issues/1967#issuecomment-5638459674), with
+[confirmation and additional details in #1992](https://github.com/sgl-project/sglang-omni/pull/1992#issuecomment-5652295348).
 
 Reported environment: Apple M1 Pro, 32 GB, macOS 15.3, installed through
 `./install.sh`, sglang-omni `b2cc93b`, Python 3.12.13, torch 2.13.0 and MLX 0.32.2.
@@ -219,7 +220,8 @@ returned `How many cars are there in the picture?`.
 #### M4, 16 GB
 
 Reported by [@Mimosa-Lin](https://github.com/Mimosa-Lin) in
-[#1967](https://github.com/sgl-project/sglang-omni/issues/1967#issuecomment-5644015949).
+[#1967](https://github.com/sgl-project/sglang-omni/issues/1967#issuecomment-5644015949), with
+[confirmation and additional details in #1992](https://github.com/sgl-project/sglang-omni/pull/1992#issuecomment-5654103194).
 
 Reported environment: Apple M4, 16 GB, macOS 15.7.3, installed through
 `./install.sh`, sglang-omni `b2cc93b`, Python 3.12.12, torch 2.13.0, MLX 0.32.2 and
