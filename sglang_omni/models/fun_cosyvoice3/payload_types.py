@@ -23,6 +23,7 @@ class FunCosyVoice3State(DeclarativeStateBase):
     stream: bool = wire(False, codec="bool")
     speed: float = wire(1.0, codec="float")
     seed: int | None = None
+    ar_observed_peer: bool | None = None
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
     flow_embedding: Any | None = wire(None, codec="tensor_list")
     flow_prompt_speech_token: Any | None = wire(None, codec="tensor_list")

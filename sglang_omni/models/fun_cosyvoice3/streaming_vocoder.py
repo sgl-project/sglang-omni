@@ -83,6 +83,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         *,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
+        skip_unobserved_peer_wait: bool = False,
         sample_rate: int = SAMPLE_RATE,
         request_cost_fn: Callable[[Any], int] | None = None,
         max_batch_cost: int | None = None,
@@ -103,6 +104,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         self._token_max_hop_len = max_hop
         self._disable_hop_growth = bool(disable_hop_growth)
         self._vocoder = vocoder
+        self._skip_unobserved_peer_wait = skip_unobserved_peer_wait
         super().__init__(
             self._vocode_payload,
             batch_compute_fn=self._vocode_payloads,
@@ -112,6 +114,14 @@ class FunCosyVoice3StreamingVocoderScheduler(
             max_batch_wait_ms=max_batch_wait_ms,
             request_cost_fn=request_cost_fn,
             max_batch_cost=max_batch_cost,
+        )
+
+    def _wait_for_batch_peer(self, first_msg: IncomingMessage) -> bool:
+        data = first_msg.data.data
+        return not (
+            self._skip_unobserved_peer_wait
+            and isinstance(data, dict)
+            and data.get("ar_observed_peer") is False
         )
 
     async def _vocode_payload(self, payload: StagePayload) -> StagePayload:

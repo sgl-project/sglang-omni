@@ -164,6 +164,7 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     output_codes: list[torch.Tensor] = None
     prompt_input_embeds: torch.Tensor | None = None
     engine_start_s: float = 0.0
+    ar_observed_peer: bool | None = None
     stream_metadata: dict[str, Any] | None = None
     stream_code_buffer: list[torch.Tensor] = field(default_factory=list)
     stream_code_seen: int = 0
@@ -842,6 +843,7 @@ def apply_sglang_cosyvoice3_result(
     state.completion_tokens = len(data.output_codes)
     state.engine_time_s = time.perf_counter() - data.engine_start_s
     state.sample_rate = _SAMPLE_RATE
+    state.ar_observed_peer = data.ar_observed_peer
 
     return StagePayload(
         request_id=payload.request_id,

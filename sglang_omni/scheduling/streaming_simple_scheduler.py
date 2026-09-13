@@ -246,6 +246,10 @@ class StreamingSimpleScheduler:
             return 0
         return max(int(self._request_cost_fn(msg.data)), 0)
 
+    def _wait_for_batch_peer(self, first_msg: IncomingMessage) -> bool:
+        """Whether a singleton should wait for an additional request."""
+        return True
+
     def _collect_new_request_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
@@ -258,11 +262,17 @@ class StreamingSimpleScheduler:
             return batch
 
         batch_cost = self._message_cost(first_msg)
-        deadline = time.monotonic() + self._max_batch_wait_s
+        deadline = (
+            time.monotonic() + self._max_batch_wait_s
+            if self._wait_for_batch_peer(first_msg)
+            else None
+        )
         while len(batch) < self._max_batch_size:
             try:
                 msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
+                if deadline is None:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -305,6 +315,8 @@ class StreamingSimpleScheduler:
                     break
                 batch_cost += msg_cost
             batch.append(msg)
+            if deadline is None:
+                deadline = time.monotonic() + self._max_batch_wait_s
         return batch
 
     def _collect_stream_chunk_batch(

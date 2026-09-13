@@ -228,6 +228,11 @@ Vocoder configuration controls batching, precision, and acceleration. The schedu
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 
+For buffered C1 latency, `--vocoder.factory.skip_unobserved_peer_wait true` skips
+initial batching wait for requests that never observed an AR batch peer. Queued
+peers restore the normal wait. This option is off by default: the observation is
+not a global upstream-idle signal, so measure throughput before enabling it for Cn.
+
 ### torch.compile for the DiT backbone
 
 `torch.compile` is off by default. Enable it when you want the lowest DiT kernel-launch overhead. The first startup with an empty Inductor cache takes about 100 s and builds one symbolic (`dynamic=True`) graph for every utterance length; later starts reuse that cache. Keep the cache so you do not pay the compile cost again (`~/.cache/torch/inductor`, or `TORCHINDUCTOR_CACHE_DIR`).

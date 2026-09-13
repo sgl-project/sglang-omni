@@ -95,6 +95,56 @@ def test_streaming_simple_scheduler_batches_non_streaming_requests() -> None:
     assert [msg.request_id for msg in _drain_results(scheduler)] == ["a", "b", "c"]
 
 
+class _RecordingQueue(queue.Queue):
+    def __init__(self):
+        super().__init__()
+        self.waits = []
+
+    def get(self, block=True, timeout=None):
+        if block and timeout is not None and timeout > 0:
+            self.waits.append(timeout)
+            raise queue.Empty
+        return super().get(block=block, timeout=timeout)
+
+
+def test_singleton_wait_and_queued_peer() -> None:
+    scheduler = _TestStreamingScheduler(max_batch_wait_ms=30)
+    scheduler.inbox = _RecordingQueue()
+    first = IncomingMessage("a", "new_request", _payload("a"))
+    assert scheduler._collect_new_request_batch(first) == [first]
+    assert len(scheduler.inbox.waits) == 1
+
+    scheduler._wait_for_batch_peer = lambda msg: False
+    scheduler.inbox.waits.clear()
+    assert scheduler._collect_new_request_batch(first) == [first]
+    assert not scheduler.inbox.waits
+
+    peer = IncomingMessage("b", "new_request", _payload("b"))
+    scheduler.inbox.put(peer)
+    assert scheduler._collect_new_request_batch(first) == [first, peer]
+    assert len(scheduler.inbox.waits) == 1
+
+
+def test_no_wait_preserves_message_boundaries() -> None:
+    for kind in ("stream_chunk", "streaming_request", "over_budget"):
+        scheduler = _TestStreamingScheduler(max_batch_wait_ms=30)
+        scheduler._wait_for_batch_peer = lambda msg: False
+        scheduler._request_cost_fn = lambda payload: 1
+        scheduler._max_batch_cost = 1
+        first = IncomingMessage("a", "new_request", _payload("a"))
+        boundary = IncomingMessage(
+            "b",
+            "stream_chunk" if kind == "stream_chunk" else "new_request",
+            _payload("b", stream=kind == "streaming_request"),
+        )
+        later = IncomingMessage("c", "new_request", _payload("c"))
+        scheduler.inbox.put(boundary)
+        scheduler.inbox.put(later)
+        assert scheduler._collect_new_request_batch(first) == [first]
+        assert scheduler._next_message() is boundary
+        assert scheduler._next_message() is later
+
+
 def test_non_streaming_batch_skips_done_before_later_payloads() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=3)
     first = IncomingMessage("a", "new_request", _payload("a"))

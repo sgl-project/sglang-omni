@@ -32,6 +32,32 @@ def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
     assert requests[0].data.output_codes == []
     assert [code.item() for code in requests[1].data.output_codes] == [13]
     assert requests[1].data.output_codes[0].dtype == torch.long
+    assert all(req.data.ar_observed_peer is True for req in requests)
+
+
+def test_ar_peer_observation_is_sticky_after_batch_shrinks() -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner._outbox = None
+    first = SimpleNamespace(data=CosyVoice3SGLangRequestData())
+    peer = SimpleNamespace(data=CosyVoice3SGLangRequestData())
+    assert first.data.ar_observed_peer is None
+    runner._collect_tokens(
+        SimpleNamespace(next_token_ids=torch.tensor([11])), None, None, [first]
+    )
+    assert first.data.ar_observed_peer is False
+    runner._collect_tokens(
+        SimpleNamespace(next_token_ids=torch.tensor([12, EOS_ID])),
+        None,
+        None,
+        [first, peer],
+    )
+    runner._collect_tokens(
+        SimpleNamespace(next_token_ids=torch.tensor([EOS_ID])), None, None, [first]
+    )
+    assert first.data.ar_observed_peer is True
+    assert peer.data.ar_observed_peer is True
+    assert [code.item() for code in first.data.output_codes] == [11, 12]
+    assert peer.data.output_codes == []
 
 
 def test_cosyvoice3_runner_skips_all_control_tokens() -> None:

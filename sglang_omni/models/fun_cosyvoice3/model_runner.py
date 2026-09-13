@@ -100,6 +100,12 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
+        for sched_req in requests:
+            data = sched_req.data
+            if len(requests) > 1:
+                data.ar_observed_peer = True
+            elif data.ar_observed_peer is None:
+                data.ar_observed_peer = False
         if result.next_token_ids is None:
             return
         token_ids = result.next_token_ids
