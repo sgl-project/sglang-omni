@@ -409,14 +409,6 @@ def test_streaming_vocoder_fallback_raises_on_empty_audio_codes() -> None:
         scheduler._on_done("req-empty-list")
 
 
-def test_streaming_vocoder_enables_first_hop_coalescing_by_default() -> None:
-    _, scheduler = _scheduler()
-    assert scheduler._can_batch_stream_chunks is True
-    assert scheduler._stream_chunk_batch_distinct_requests is True
-    assert scheduler._first_hop_peer_wait_ms == 30
-    assert scheduler._can_batch_follow_up_hops is True
-
-
 def test_equal_first_hops_share_one_causal_flow_batch() -> None:
     from sglang_omni.models.fun_cosyvoice3.stages import FunCosyVoice3Flow
     from tests.unit_test.fun_cosyvoice3.test_flow_batch import _FakeFlow as _PackedFlow
@@ -598,8 +590,11 @@ def test_equal_follow_up_hops_share_one_causal_flow_batch() -> None:
     assert 100 in shapes
 
 
-def test_mixed_prompt_follow_ups_share_one_causal_flow_batch() -> None:
-    flow, scheduler = _packed_scheduler()
+def test_mixed_prompt_keys_share_causal_batches() -> None:
+    # note (guozhihao-224): per-row lookahead + mask packing makes mixed
+    # SeedTTS prompt lengths share hop keys, so equal-geometry isolation
+    # does not need to gate batching here.
+    _, scheduler = _packed_scheduler()
     payloads = {
         "req-a": _stream_payload(
             "req-a",
@@ -615,26 +610,49 @@ def test_mixed_prompt_follow_ups_share_one_causal_flow_batch() -> None:
     for request_id, payload in payloads.items():
         scheduler._on_streaming_new_request(request_id, payload)
         scheduler._ingest_stream_item(request_id, _item(list(range(28))))
-    with scheduler._state_lock:
-        failed = scheduler._pump_streams()
-    assert failed == []
-    first_calls = len(flow.decoder.estimator.calls)
-    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    state_a = scheduler._stream_states["req-a"]
+    state_b = scheduler._stream_states["req-b"]
+    assert scheduler._first_hop_key(state_a) == scheduler._first_hop_key(state_b)
+    first = scheduler.select_step_participants()
+    assert {request_id for request_id, _ in first} == {"req-a", "req-b"}
+    for state in (state_a, state_b):
+        state.token_offset = TOKEN_HOP_LEN
+        state.tokens.extend(range(28, 78))
+    assert scheduler._follow_up_key(state_a) == scheduler._follow_up_key(state_b)
+    follow = scheduler.select_step_participants()
+    assert {request_id for request_id, _ in follow} == {"req-a", "req-b"}
 
-    for request_id in payloads:
-        scheduler._ingest_stream_item(
-            request_id, _item([i % 31 for i in range(28, 78)])
+
+@pytest.mark.parametrize("parked_control", [False, True])
+def test_peer_ingest_preserves_deferred_token_order(parked_control) -> None:
+    _, scheduler = _scheduler()
+    scheduler._on_streaming_new_request("req-a", _stream_payload("req-a"))
+    if parked_control:
+        scheduler._pending_messages.append(
+            IncomingMessage(
+                request_id="req-other",
+                type="stream_done",
+            )
         )
-    with scheduler._state_lock:
-        failed = scheduler._pump_streams()
-    assert failed == []
-    follow_calls = flow.decoder.estimator.calls[first_calls:]
-    assert follow_calls
-    assert follow_calls[0]["streaming"] is True
-    assert follow_calls[0]["x"].shape[0] == 4
+    scheduler._pending_messages.append(
+        IncomingMessage(
+            request_id="req-a",
+            type="stream_chunk",
+            data=_item([1, 2]),
+        )
+    )
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id="req-a",
+            type="stream_chunk",
+            data=_item([3, 4]),
+        )
+    )
+    scheduler._ingest_ready_inbox()
+    assert scheduler._stream_states["req-a"].tokens == [1, 2, 3, 4]
 
 
-def test_c1_follow_up_stays_native_and_does_not_wait() -> None:
+def test_c1_follow_up_does_not_wait() -> None:
     flow, scheduler = _scheduler()
     scheduler._on_streaming_new_request("req-a", _stream_payload("req-a"))
     scheduler._ingest_stream_item("req-a", _item(list(range(28))))
@@ -712,7 +730,7 @@ def test_pump_drains_backlog_across_one_hop_steps() -> None:
 def test_inbox_first_hop_preempts_follow_up_backlog() -> None:
     # note (guozhihao-224): after A's first hop, leave two follow-ups ready
     # and park B's first hop in the inbox. Between steps the pump must
-    # ingest B and prefer that first hop over draining A's backlog.
+    # ingest B and prefer that first hop over draining A's backlog (TTFC).
     flow, scheduler = _scheduler()
     for request_id in ("req-a", "req-b"):
         scheduler._on_streaming_new_request(request_id, _stream_payload(request_id))

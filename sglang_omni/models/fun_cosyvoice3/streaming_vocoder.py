@@ -67,14 +67,11 @@ class FunCosyVoice3StreamingVocoderScheduler(
 
     _can_batch_stream_chunks = True
     _stream_chunk_batch_distinct_requests = True
-    # note (guozhihao-224): follow-up hops are a separate knife from
-    # first-hop coalescing. Keep this on once equal-shape causal batch
-    # is the default; A/B turns it off to isolate ITL/C50.
     _can_batch_follow_up_hops = True
-    # note (guozhihao-224): c=1 has no joinable peer so this is a no-op.
-    # c=16 holds a singleton first hop or follow-up hop up to this
-    # window while equal-shape peers arrive, otherwise the vocoder
-    # decodes B=1 forever.
+    # note (guozhihao-224): wait up to this long for a same-key peer before
+    # decoding a singleton hop; c=1 has no peer so this is a no-op there.
+    # Longer waits raise TTFC when nothing joins; shorter waits miss peers
+    # under c16 contention.
     _first_hop_peer_wait_ms = 30
 
     def __init__(
@@ -357,9 +354,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             remaining = deadline - time.monotonic()
             try:
                 if remaining <= 0:
-                    msg = self.inbox.get_nowait()
+                    msg = self._pop_ready_or_inbox_message()
                 else:
-                    msg = self.inbox.get(timeout=remaining)
+                    msg = self._pop_ready_or_inbox_message(timeout=remaining)
             except _queue_mod.Empty:
                 if remaining <= 0:
                     return
@@ -368,9 +365,10 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 return
 
     def _follow_up_key(self, state: _CosyVoice3StreamState) -> tuple[int, int]:
-        # note (guozhihao-224): drop prompt_len so SeedTTS mixed prompts
-        # with the same hop/offset share one causal Flow call.
-        return int(state.hop_len), int(state.token_offset)
+        # note (guozhihao-224): hop+offset only. Mixed prompt lengths are fine
+        # here — packing left-aligns, masks, and applies per-row lookahead, so
+        # they can share one packed causal DiT call.
+        return state.hop_len, state.token_offset
 
     def _follow_up_group_size(self) -> int:
         groups: dict[tuple[int, int], int] = {}
@@ -423,9 +421,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             remaining = deadline - time.monotonic()
             try:
                 if remaining <= 0:
-                    msg = self.inbox.get_nowait()
+                    msg = self._pop_ready_or_inbox_message()
                 else:
-                    msg = self.inbox.get(timeout=remaining)
+                    msg = self._pop_ready_or_inbox_message(timeout=remaining)
             except _queue_mod.Empty:
                 if remaining <= 0:
                     return
@@ -433,20 +431,36 @@ class FunCosyVoice3StreamingVocoderScheduler(
             if not self._ingest_peer_message(msg):
                 return
 
+    def _pop_ready_or_inbox_message(
+        self, timeout: float | None = None
+    ) -> IncomingMessage:
+        if self._pending_messages:
+            return self._pending_messages.popleft()
+        if timeout is None or timeout <= 0:
+            return self.inbox.get_nowait()
+        return self.inbox.get(timeout=timeout)
+
     def _ingest_ready_inbox(self) -> None:
         """Pull already-queued peers between hops without blocking.
 
         The base pump drains every ready hop before returning to the
         serving loop. CosyVoice first hops must be able to join after a
         follow-up step, otherwise a backlogged request monopolizes the GPU.
+
+        Control / non-streaming messages stay FIFO for the serving loop:
+        park them aside while draining peer tokens, then restore order.
         """
+        deferred_controls: list[IncomingMessage] = []
         while True:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._pop_ready_or_inbox_message()
             except _queue_mod.Empty:
-                return
-            if not self._ingest_peer_message(msg):
-                return
+                break
+            if self._ingest_peer_message(msg):
+                continue
+            deferred_controls.append(self._pending_messages.popleft())
+        for msg in reversed(deferred_controls):
+            self._pending_messages.appendleft(msg)
 
     def _pump_one_step(self) -> list[str] | None:
         participants = self.select_step_participants()
@@ -468,8 +482,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
         # note (guozhihao-224): one hop per step. Keep looping while work
         # remains so a lone request is not stalled until the next inbox
         # message, but ingest between steps so a new first hop can preempt
-        # a follow-up backlog. 30ms peer wait stays at pump start and when
-        # a singleton first hop appears after ingest.
+        # a follow-up backlog (TTFC). 30ms peer wait stays at pump start and
+        # when a singleton first hop appears after ingest.
         first = True
         while True:
             if self._can_batch_stream_chunks:
@@ -564,6 +578,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
         return len(state.tokens) >= needed
 
     def _first_hop_key(self, state: _CosyVoice3StreamState) -> int:
+        # note (guozhihao-224): hop size only, matching _follow_up_key; see
+        # that comment for why packed causal DiT accepts mixed prompt geometry.
         hop = stream_hop_len(0, hop_len=state.hop_len, prompt_pad=state.prompt_pad)
         return hop + PRE_LOOKAHEAD_LEN
 
@@ -625,6 +641,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         # note (guozhihao-224): B>1 uses packed inference_causal; B=1 keeps
         # native CosyVoice Flow.inference. Packed singleton-vs-row tests
         # cover the batch adapter; native hops stay on the official signature.
+        # Forcing singleton through packed path regresses c16 TTFC.
         if plan.batched:
             return self._run_causal_hop_batch(participants, plan)
         request_id, state = participants[0]
