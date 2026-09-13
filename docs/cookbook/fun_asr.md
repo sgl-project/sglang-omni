@@ -39,8 +39,6 @@ SGLANG_USE_MLX=0 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
 ```
 
-See [the Torch/MPS PR](https://github.com/sgl-project/sglang-omni/pull/1982) for hardware validation and benchmark results.
-
 ## Server Configuration
 
 Fun-ASR-Nano runs a single ASR stage on one GPU.
