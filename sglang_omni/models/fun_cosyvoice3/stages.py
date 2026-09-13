@@ -6,8 +6,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, cast
@@ -849,7 +848,7 @@ def _load_cosyvoice3_flow_hift_lightweight(
     try:
         from hyperpyyaml import load_hyperpyyaml
     except ImportError as exc:
-        raise RuntimeError(_COSYVOICE_INSTALL_HINT) from exc
+        raise RuntimeError(COSYVOICE_INSTALL_HINT) from exc
 
     config_path = os.path.join(checkpoint_dir, "cosyvoice3.yaml")
     flow_path = os.path.join(checkpoint_dir, "flow.pt")
@@ -1158,30 +1157,6 @@ def adaptive_flow_requests_grouping(
     raise AssertionError("valid Flow requests must have a feasible partition")
 
 
-def _group_by_padding_waste(
-    items: Sequence[tuple[Any, torch.Tensor]],
-    *,
-    max_waste: float,
-) -> Iterator[list[tuple[Any, torch.Tensor]]]:
-    ordered = sorted(items, key=lambda pair: int(pair[1].shape[-1]))
-    group: list[tuple[Any, torch.Tensor]] = []
-    total = 0
-    longest = 0
-    for pair in ordered:
-        length = int(pair[1].shape[-1])
-        candidate_longest = max(longest, length)
-        candidate_total = total + length
-        if group and candidate_longest * (len(group) + 1) > max_waste * candidate_total:
-            yield group
-            group, total, longest = [], 0, 0
-            candidate_longest = length
-            candidate_total = length
-        group.append(pair)
-        total, longest = candidate_total, candidate_longest
-    if group:
-        yield group
-
-
 class CosyVoice3Vocoder(BatchVocoderBase):
     def __init__(
         self,
@@ -1256,9 +1231,10 @@ class CosyVoice3Vocoder(BatchVocoderBase):
             flow_merge_max_gap_frames=self.flow_merge_max_gap_frames,
             flow_merge_pad_budget_percent=self.flow_merge_pad_budget_percent,
         )
+        flow_device = next(self.flow.parameters()).device
         for flow_group in flow_groups:
             with torch.autocast(
-                device_type=current_platform.device_type,
+                device_type=flow_device.type,
                 dtype=self.autocast_dtype,
                 enabled=self.autocast_dtype is not None,
             ):
@@ -1518,7 +1494,7 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
     def prepare_item(
         self, payload: StagePayload
     ) -> tuple[FunCosyVoice3State, torch.Tensor]:
-        state = load_state(payload)
+        state = load_pipeline_state(payload, FunCosyVoice3State)
         if state.audio_codes is None:
             raise RuntimeError(
                 "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
@@ -1619,7 +1595,7 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
         state.audio_samples = None
         state.sample_rate = int(sample_rate)
         state.audio_codes = None
-        payload = store_state(payload, state)
+        payload = store_pipeline_state(payload, state)
         payload.data.update(audio_waveform_payload(wav, source_hint="Fun-CosyVoice3"))
         payload.data["sample_rate"] = state.sample_rate
         payload.data["modality"] = "audio"

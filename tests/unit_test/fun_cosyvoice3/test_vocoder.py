@@ -406,10 +406,10 @@ def test_vocoder_autocast_uses_the_flow_device(monkeypatch) -> None:
         or nullcontext(),
     )
     _install_fake_batch_adapter(monkeypatch, [])
-    vocoder = stages._CosyVoice3Vocoder(
+    vocoder = stages.CosyVoice3Vocoder(
         _BatchCapableFakeFlow(),
         _FakeHiFT(),
-        compute_dtype=torch.float16,
+        autocast_dtype=torch.float16,
     )
 
     asyncio.run(vocoder.decode_batch([(_state(), torch.tensor([1, 2]))]))
