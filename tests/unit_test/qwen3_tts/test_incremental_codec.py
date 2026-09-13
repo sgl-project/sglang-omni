@@ -765,6 +765,12 @@ def test_arena_reports_exhaustion_and_retirement() -> None:
     assert arena.describe()["bytes_per_slot"] == arena.bytes_per_slot
 
 
+def _fresh_state(rows: int) -> Qwen3TTSIncrementalCodecState:
+    state = Qwen3TTSIncrementalCodecState()
+    state.frame_positions = torch.zeros(rows, dtype=torch.long)
+    return state
+
+
 def test_incremental_decoder_routes_only_precompiled_shapes_to_the_kernel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -781,8 +787,11 @@ def test_incremental_decoder_routes_only_precompiled_shapes_to_the_kernel(
         return wrapped
 
     monkeypatch.setattr(torch, "compile", fake_compile)
-    incremental.precompile(2, 3, num_quantizers=2)
-    assert calls == [(2, 3)], "precompile traces the requested shape once"
+    trace_codes = torch.randint(0, 16, (2, 2, 3))
+    with torch.inference_mode():
+        incremental.precompile(trace_codes, _fresh_state(2))
+        incremental.precompile(trace_codes, _fresh_state(2))
+    assert calls == [(2, 3)], "precompile traces a shape once, on the given tensors"
 
     codes = torch.randint(0, 16, (2, 2, 9))
     expected = decoder(codes)

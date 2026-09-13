@@ -10,6 +10,8 @@ from sglang_omni.models.qwen3_tts.incremental_codec import Qwen3TTSIncrementalCo
 from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     IncrementalCodecGraphKey,
     Qwen3TTSIncrementalCodecCudaGraphRunner,
+    _CaptureResourceSet,
+    plan_decode_windows,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     Qwen3TTSStreamingVocoderScheduler,
@@ -104,12 +106,13 @@ def _async_incremental_scheduler(
     scheduler._decode_stream = torch.cuda.Stream(device=device)
     scheduler._followup_decode_stream = torch.cuda.Stream(device=device)
     scheduler._followup_decode_streams = (scheduler._followup_decode_stream,)
+    scheduler._initial_window_decode_graphs = None
     scheduler._worker_ctx = SimpleNamespace(graphs=None)
     return scheduler
 
 
 def test_incremental_codec_graph_rejects_unknown_mode() -> None:
-    with pytest.raises(ValueError, match="mode must be 'cold' or 'warm'"):
+    with pytest.raises(ValueError, match="mode must be 'cold', 'warm' or 'window'"):
         Qwen3TTSIncrementalCodecCudaGraphRunner(
             SimpleNamespace(),
             device=torch.device("cpu"),
@@ -199,6 +202,59 @@ def test_incremental_codec_graph_misses_uncaptured_frame_count() -> None:
     assert runner.stats()["runtime"]["fallback_counts"] == {
         "uncaptured_fresh_frames": 1
     }
+
+
+@pytest.mark.parametrize(
+    ("total", "widths", "expected"),
+    [
+        (7, (1, 2, 4), (4, 2, 1)),
+        (8, (1, 2, 4), (4, 4)),
+        (4, (1, 2, 4), (4,)),
+        (37, (1, 2, 4, 8, 16, 32), (32, 4, 1)),
+        (5, (2, 4), None),
+        (3, (4,), None),
+        (0, (1, 2), ()),
+    ],
+)
+def test_plan_decode_windows_covers_the_count_largest_first(
+    total: int, widths: tuple[int, ...], expected: tuple[int, ...] | None
+) -> None:
+    assert plan_decode_windows(total, widths) == expected
+
+
+def test_incremental_codec_graph_accepts_the_window_mode() -> None:
+    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
+        SimpleNamespace(),
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        num_quantizers=2,
+        mode="window",
+        fresh_frames=(8, 2, 4),
+        enabled=False,
+        arena=_FakeArena(),
+    )
+
+    assert runner.stats()["binding"]["mode"] == "window"
+    assert runner.stats()["graph_contract"]["fresh_frames"] == [2, 4, 8]
+
+
+def test_incremental_codec_graph_plans_windows_from_captured_keys_only() -> None:
+    runner = _runner(batch_sizes=(1, 4))
+    runner._graphs = {
+        IncrementalCodecGraphKey(8, 1): _entry(1),
+        IncrementalCodecGraphKey(8, 4): _entry(4),
+        IncrementalCodecGraphKey(4, 1): _entry(1),
+        IncrementalCodecGraphKey(4, 4): _entry(4),
+    }
+
+    assert runner.plan_windows(20) == (8, 8, 4)
+    assert runner.plan_windows(8) == (8,)
+    assert runner.plan_windows(6) is None
+    assert runner.largest_batch_bucket() == 4
+
+    runner._enabled = False
+    assert runner.plan_windows(8) is None
+    assert runner.largest_batch_bucket() == 0
 
 
 def test_incremental_codec_graph_replay_failure_disables_runner(
@@ -308,6 +364,7 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     scheduler._initial_decode_graphs = graph_holder("whole-sequence-initial")
     scheduler._followup_graph_holders = (graph_holder("whole-sequence-followup"),)
     scheduler._initial_incremental_decode_graphs = graph_holder("cold")
+    scheduler._initial_window_decode_graphs = graph_holder("window")
     scheduler._followup_incremental_graph_holders = (graph_holder("warm"),)
 
     scheduler.warmup_now()
@@ -317,7 +374,79 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
         "whole-sequence-followup",
         "warm",
         "cold",
+        "window",
     ]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -> None:
+    device = torch.device("cuda", torch.cuda.current_device())
+    traces: list[tuple] = []
+    decodes: list[tuple] = []
+
+    class Decoder:
+        def precompile(self, codes, state):
+            traces.append(
+                (
+                    codes,
+                    state,
+                    torch.is_inference_mode_enabled(),
+                    torch.is_grad_enabled(),
+                )
+            )
+
+        def decode(self, codes, state, *, compiled=False):
+            decodes.append((codes, state, compiled))
+            return torch.zeros(1, 1, 4, device=device)
+
+    class Arena:
+        scratch_slot = 3
+
+        def gather_by_index(self, index):
+            return SimpleNamespace(
+                index=index,
+                frame_positions=torch.zeros(int(index.shape[0]), device=device),
+            )
+
+    def runner(compile_fresh_frames):
+        return Qwen3TTSIncrementalCodecCudaGraphRunner(
+            Decoder(),
+            device=device,
+            dtype=torch.float32,
+            num_quantizers=2,
+            mode="cold",
+            fresh_frames=(4,),
+            batch_sizes=(1,),
+            compile_fresh_frames=compile_fresh_frames,
+            arena=Arena(),
+            enabled=False,
+        )
+
+    static_codes = torch.zeros(1, 2, 4, dtype=torch.long, device=device)
+    key = IncrementalCodecGraphKey(fresh_frames=4, batch_bucket=1)
+    resources = _CaptureResourceSet(
+        pool=None, stream=torch.cuda.Stream(device=device), keepalives=[static_codes]
+    )
+
+    runner((4,))._warmup_capture_shape(key, static_codes, resources)
+
+    assert len(traces) == 1
+    codes, state, inference, grad = traces[0]
+    assert codes is static_codes
+    assert state.frame_positions.is_inference()
+    assert state.index.tolist() == [Arena.scratch_slot]
+    assert inference is True and grad is False
+    assert [entry[2] for entry in decodes] == [True, True, True]
+    assert all(entry[0] is static_codes for entry in decodes)
+    assert resources.keepalives == [static_codes]
+
+    traces.clear()
+    decodes.clear()
+    runner(())._warmup_capture_shape(key, static_codes, resources)
+
+    assert traces == []
+    assert [entry[2] for entry in decodes] == [False, False, False]
 
 
 @pytest.mark.accelerator
@@ -330,6 +459,9 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
 
     class GraphRunner:
         calls = 0
+
+        def available_batch_sizes(self, fresh_frames):
+            return (1,) if fresh_frames == 2 else ()
 
         def decode_slots(self, codes, slots):
             self.calls += 1
@@ -392,6 +524,9 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
 
     class GraphRunner:
         calls = 0
+
+        def available_batch_sizes(self, fresh_frames):
+            return ()
 
         def decode_slots(self, codes, slots):
             self.calls += 1
