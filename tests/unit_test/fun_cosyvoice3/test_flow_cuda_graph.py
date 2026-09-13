@@ -103,7 +103,6 @@ def test_verify_capture_shapes_rejects_unaligned_frames() -> None:
         stages.verify_flow_cuda_graph_capture_shapes(((1, 495),))
 
 
-
 def test_resident_replay_crops_to_actual_frames() -> None:
     runner = _runner()
     _install(runner, (2, 496))
