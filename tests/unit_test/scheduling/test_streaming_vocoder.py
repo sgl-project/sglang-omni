@@ -298,6 +298,8 @@ def test_registry_lifecycle_and_hook_call_order() -> None:
 
     scheduler.calls.clear()
     scheduler._on_done("r")
+    assert scheduler.calls == []
+    assert _drain(scheduler) == []
     scheduler._on_streaming_new_request("r", _payload())
     messages = _drain(scheduler)
     assert scheduler.calls == [
@@ -346,6 +348,43 @@ def test_stream_done_before_payload_is_buffered() -> None:
     assert [m.type for m in messages] == ["stream", "result"]
     np.testing.assert_array_equal(_waveform(messages[0].data), [7.0])
     assert scheduler._stream_states == {}
+    assert scheduler._emitted_stream_ids == set()
+    assert "r" not in scheduler._pending_done
+
+
+def test_stream_done_before_payload_can_opt_in_to_early_tail() -> None:
+    class EarlyTailVocoder(_FakeStreamingVocoder):
+        def on_stream_done_before_payload(self, request_id):
+            state = self._stream_states[request_id]
+            waveform = self.decode_delta(request_id, state, is_final=True)
+            if waveform is None:
+                return []
+            self._mark_stream_emitted(request_id)
+            return [self._stream_chunk_message(request_id, waveform)]
+
+    scheduler = EarlyTailVocoder(threshold=10)
+    scheduler._on_chunk("r", _item([7]))
+    scheduler._on_done("r")
+    assert "r" in scheduler._pending_done
+    messages = _drain(scheduler)
+    assert [message.type for message in messages] == ["stream"]
+    np.testing.assert_array_equal(_waveform(messages[0].data), [7.0])
+    assert "final:r" not in scheduler.calls
+    scheduler._on_done("r")
+    assert _drain(scheduler) == []
+
+    scheduler._on_streaming_new_request("r", _payload())
+    messages = _drain(scheduler)
+    assert [message.type for message in messages] == ["result"]
+    assert messages[0].data.data == {
+        "modality": "audio",
+        "sample_rate": SAMPLE_RATE,
+        "frames": 1,
+    }
+    assert "fallback:r" not in scheduler.calls
+    assert scheduler._stream_states == {}
+    assert scheduler._emitted_stream_ids == set()
+    assert "r" not in scheduler._pending_done
 
 
 def test_nothing_emitted_fallback_decodes_whole_utterance() -> None:

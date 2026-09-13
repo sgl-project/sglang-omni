@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavStreamState,
     _batched_graph_keys,
     _serial_threshold_graph_keys,
+    _serial_window_frames,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.scheduling.messages import IncomingMessage
@@ -587,6 +588,10 @@ def test_batch_events_emitted(monkeypatch) -> None:
     ]
     start_meta = batch_events[0][1]
     end_meta = batch_events[1][1]
+    assert start_meta["batch_id"] == end_meta["batch_id"]
+    assert start_meta["participant_request_ids"] == ["req-a", "req-b"]
+    assert end_meta["participant_request_ids"] == ["req-a", "req-b"]
+    assert start_meta["first_audio_request_ids"] == []
     assert start_meta["fire_reason"] == "floor"
     assert start_meta["batch_size"] == 2
     assert start_meta["subbatch_decomposition"] == [2]
@@ -602,6 +607,92 @@ def test_batch_events_emitted(monkeypatch) -> None:
             "fallback_reason": None,
         }
     ]
+
+
+def test_first_window_ingest_events_are_bounded_and_exclude_eos(monkeypatch) -> None:
+    events = []
+    recorder = SimpleNamespace(is_active=lambda: True, active_run_id=lambda: "run-a")
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.components.code2wav_scheduler"
+        "._get_event_recorder",
+        lambda: recorder,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.components.code2wav_scheduler._emit_event",
+        lambda **kw: events.append(kw),
+    )
+    scheduler = _make_batching_scheduler(initial_codec_chunk_frames=2)
+    state = Code2WavStreamState()
+    for code in (2150, 1, 2, 3, 4):
+        scheduler.ingest("req-a", state, torch.tensor([code, code * 10]))
+
+    assert [event["event_name"] for event in events] == [
+        "code2wav_first_ingest",
+        "code2wav_first_window_ready",
+    ]
+    first, ready = events
+    assert first["request_id"] == ready["request_id"] == "req-a"
+    assert first["timestamp_ns"] > 0
+    assert first["metadata"]["accepted_frames"] == 0
+    assert ready["metadata"]["messages"] == 3
+    assert ready["metadata"]["accepted_frames"] == 2
+    assert ready["metadata"]["ready_frames"] == 2
+    assert ready["metadata"]["threshold_frames"] == 2
+    assert ready["metadata"]["eos_checks"] == 3
+    assert ready["metadata"]["eos_check_host_ns"] >= 0
+    assert ready["metadata"]["ingest_host_ns"] >= ready["metadata"]["eos_check_host_ns"]
+    assert [row[0].item() for row in state.chunks] == [1, 2, 3, 4]
+
+
+def test_coalesced_first_window_profile_resets_on_new_run(monkeypatch) -> None:
+    events = []
+    current = SimpleNamespace(run_id="run-a")
+    recorder = SimpleNamespace(
+        is_active=lambda: True, active_run_id=lambda: current.run_id
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.components.code2wav_scheduler"
+        "._get_event_recorder",
+        lambda: recorder,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.components.code2wav_scheduler._emit_event",
+        lambda **kw: events.append(kw),
+    )
+    scheduler = _make_batching_scheduler(initial_codec_chunk_frames=2)
+    state = Code2WavStreamState()
+    scheduler.ingest("req-a", state, torch.tensor([[1, 10], [2, 20]]))
+    assert events[-1]["metadata"]["messages"] == 1
+    assert events[-1]["metadata"]["accepted_frames"] == 2
+    assert events[-1]["metadata"]["eos_checks"] == 0
+
+    current.run_id = "run-b"
+    scheduler.ingest("req-a", state, torch.tensor([[3, 30]]))
+    assert len(events) == 4
+    assert events[-1]["metadata"]["started_with_frames"] == 2
+    assert events[-1]["metadata"]["messages"] == 1
+    assert state.checked == 3
+
+
+def test_ingest_without_recorder_does_not_read_profile_clocks(monkeypatch) -> None:
+    def unexpected():
+        raise AssertionError("inactive profiling must not read a profile clock")
+
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.components.code2wav_scheduler"
+        "._get_event_recorder",
+        lambda: SimpleNamespace(is_active=lambda: False),
+    )
+    scheduler = _make_batching_scheduler()
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.components.code2wav_scheduler.time",
+        SimpleNamespace(time_ns=unexpected, perf_counter_ns=unexpected),
+    )
+    state = Code2WavStreamState()
+    scheduler.ingest("req-a", state, torch.tensor([1, 10]))
+    scheduler.ingest("req-a", state, torch.tensor([2150, 0]))
+    assert len(state.chunks) == 1
+    assert state._critical_ingest_profile is None
 
 
 def test_batching_and_cuda_graph_coexist() -> None:
@@ -662,6 +753,81 @@ def test_chunk_aligned_buckets_merge_mixed_backlogs() -> None:
         (True, "cuda_graph"),
         (True, "cuda_graph"),
     ]
+
+
+def test_serial_graph_keys_follow_initial_chunk_offset() -> None:
+    assert _serial_window_frames(10, 25) == (10, 20, 30, 35)
+    assert _serial_window_frames(10, 25, 2) == (2, 12, 22, 32, 35)
+    assert {key.frames for key in _batched_graph_keys(10, 25, 8, 2)} == {
+        2,
+        12,
+        22,
+        32,
+        35,
+    }
+
+
+def test_large_batch_classes_stay_on_the_early_windows() -> None:
+    by_frames: dict[int, set[int]] = {}
+    for key in _batched_graph_keys(10, 25, 16, 2):
+        by_frames.setdefault(key.frames, set()).add(key.batch_size)
+    assert by_frames[2] == {1, 2, 4, 8, 16}
+    assert by_frames[12] == {1, 2, 4, 8, 16}
+    assert by_frames[22] == {1, 2, 4, 8}
+    assert by_frames[35] == {1, 2, 4, 8}
+    assert {key.batch_size for key in _batched_graph_keys(10, 25, 8, 2)} == {1, 2, 4, 8}
+
+
+def test_pinned_slot_pool_covers_a_coalesced_step() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        stream_chunk_size=10,
+        left_context_size=25,
+        sample_rate=24000,
+        enable_batching=True,
+        batch_ceiling=16,
+    )
+    assert scheduler._max_pinned_slots == scheduler._MAX_PINNED_SLOTS + 16
+
+
+def test_bucket_batch_ceiling_is_per_window() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        stream_chunk_size=10,
+        left_context_size=25,
+        sample_rate=24000,
+        enable_batching=True,
+        enable_cuda_graph=True,
+        initial_codec_chunk_frames=2,
+        batch_ceiling=16,
+        _cuda_graph_runner=_FakeGraphRunner(model, _batched_graph_keys(10, 25, 16, 2)),
+    )
+    assert scheduler._bucket_batch_ceiling(2) == 16
+    assert scheduler._bucket_batch_ceiling(12) == 16
+    assert scheduler._bucket_batch_ceiling(35) == 8
+    assert scheduler._bucket_batch_ceiling(7) == 8
+
+
+def test_bucket_batch_ceiling_honours_a_lower_configured_ceiling() -> None:
+    model = FakeCode2WavModel(total_upsample=2)
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        stream_chunk_size=10,
+        left_context_size=25,
+        sample_rate=24000,
+        enable_batching=True,
+        enable_cuda_graph=True,
+        initial_codec_chunk_frames=2,
+        batch_ceiling=4,
+        _cuda_graph_runner=_FakeGraphRunner(model, _batched_graph_keys(10, 25, 4, 2)),
+    )
+    assert scheduler._bucket_batch_ceiling(2) == 4
+    assert scheduler._bucket_batch_ceiling(35) == 4
 
 
 def test_batched_graph_keys_cover_decompose_sizes() -> None:
