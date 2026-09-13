@@ -103,6 +103,75 @@ def test_verify_capture_shapes_rejects_unaligned_frames() -> None:
         stages.verify_flow_cuda_graph_capture_shapes(((1, 495),))
 
 
+def test_capture_constructs_captured_graph_record(monkeypatch) -> None:
+    class _Stream:
+        def wait_stream(self, stream) -> None:
+            del stream
+
+    class _Graph:
+        pass
+
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: _Stream())
+    monkeypatch.setattr(torch.cuda, "Stream", lambda device: _Stream())
+    monkeypatch.setattr(torch.cuda, "stream", lambda stream: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: object())
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", _Graph)
+    monkeypatch.setattr(
+        torch.cuda,
+        "graph",
+        lambda **kwargs: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+    solver_outputs: list[torch.Tensor] = []
+
+    def _solve_flow_euler(*args, **kwargs) -> torch.Tensor:
+        del kwargs
+        output = args[1].clone()
+        solver_outputs.append(output)
+        return output
+
+    monkeypatch.setattr(stages, "solve_flow_euler", _solve_flow_euler)
+
+    runner = _runner()
+    runner.capture(((1, 16),))
+
+    assert (1, 16) in runner.graphs
+    captured = runner.graphs[(1, 16)]
+    assert isinstance(captured, stages.CapturedFlowCudaGraph)
+    assert captured.static_output is solver_outputs[-1]
+
+
+def test_causal_flow_never_replays_buffered_cuda_graph(monkeypatch) -> None:
+    eager_calls: list[dict[str, object]] = []
+
+    def _solve_flow_euler(*args, **kwargs) -> torch.Tensor:
+        del args
+        eager_calls.append(kwargs)
+        return torch.zeros(1, 4, 14)
+
+    monkeypatch.setattr(stages, "solve_flow_euler", _solve_flow_euler)
+
+    class _FailingRunner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run(self, *args, **kwargs):
+            del args, kwargs
+            self.calls += 1
+            raise AssertionError("causal Flow must not replay a buffered graph")
+
+    runner = _FailingRunner()
+    flow = _flow(max_frames=64)
+    flow.cuda_graph_runner = runner
+
+    stages.generate_flow(flow, _packed_tokens(), streaming=True, finalize=False)
+
+    assert runner.calls == 0
+    assert len(eager_calls) == 1
+    assert eager_calls[0]["streaming"] is True
+
+
 def test_resident_replay_crops_to_actual_frames() -> None:
     runner = _runner()
     _install(runner, (2, 496))
