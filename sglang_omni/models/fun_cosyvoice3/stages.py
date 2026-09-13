@@ -382,10 +382,10 @@ class FlowCudaGraphRunner:
                     ),
                 ):
                     static_output = solve_flow_euler(self.flow.decoder, *static_inputs)
-                graphs[(batch_size, mel_frame)] = CaptureedFlowCudaGraph(
+                graphs[(batch_size, mel_frame)] = CapturedFlowCudaGraph(
                     graph=graph,
                     static_inputs=static_inputs,
-                    static_outputs=static_output,
+                    static_output=static_output,
                 )
         current_stream.wait_stream(stream)
         torch.cuda.empty_cache()
@@ -460,20 +460,28 @@ class FlowCudaGraphRunner:
             ):
                 return None
             else:
-                with (
-                    torch.cuda.device(self.device),
-                    torch.autocast(
-                        device_type=self.device.type,
-                        dtype=self.autocast_dtype,
-                        enabled=self.autocast_dtype is not None,
-                    ),
-                ):
-                    for static, value in zip(
-                        captured.static_inputs, inputs, strict=True
+                try:
+                    with (
+                        torch.cuda.device(self.device),
+                        torch.autocast(
+                            device_type=self.device.type,
+                            dtype=self.autocast_dtype,
+                            enabled=self.autocast_dtype is not None,
+                        ),
                     ):
-                        static.copy_(value)
-                    captured.graph.replay()
-                    return captured.static_output[..., :actual_mel_frame].clone()
+                        for static, value in zip(
+                            captured.static_inputs, inputs, strict=True
+                        ):
+                            static.copy_(value)
+                        captured.graph.replay()
+                        return captured.static_output[..., :actual_mel_frame].clone()
+                except Exception:
+                    self.graphs.clear()
+                    logger.exception(
+                        "Fun-CosyVoice3 Flow CUDA graph replay failed; "
+                        "disabling resident graphs"
+                    )
+                    raise
 
 
 @torch.inference_mode()
@@ -584,7 +592,7 @@ def generate_flow(
         else:
             time_span = unit_span
 
-        if flow.cuda_graph_runner is None:
+        if streaming or not finalize or flow.cuda_graph_runner is None:
             return solve_flow_euler(
                 decoder,
                 noisy_mel,
@@ -615,7 +623,7 @@ def generate_flow(
                     mel_mask,
                     speaker_embedding,
                     prompt_mel,
-                    streaming=streaming,
+                    streaming=False,
                 )
 
 
@@ -1436,13 +1444,22 @@ def create_vocoder_executor(
         capture_shapes = verify_flow_cuda_graph_capture_shapes(
             flow_cuda_graph_capture_shapes,
         )
-        runner = FlowCudaGraphRunner(
-            flow,
-            device=device_obj,
-            autocast_dtype=autocast_dtype,
-        )
-        runner.capture(capture_shapes)
-        flow.attach_cuda_graph_runner(runner)
+        try:
+            runner = FlowCudaGraphRunner(
+                flow,
+                device=device_obj,
+                autocast_dtype=autocast_dtype,
+            )
+            runner.capture(capture_shapes)
+        except Exception as exc:
+            logger.warning(
+                "Fun-CosyVoice3 Flow CUDA graph startup failed "
+                "(%s: %s); using the normal solver",
+                type(exc).__name__,
+                exc,
+            )
+        else:
+            flow.attach_cuda_graph_runner(runner)
 
     vocoder = CosyVoice3Vocoder(
         flow,
