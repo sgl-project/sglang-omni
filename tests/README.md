@@ -17,7 +17,6 @@ tests/
     ├── benchmarks/
     │   ├── test_dataset_regressions.py
     │   └── test_runtime_metrics.py
-    ├── test_tune_ci_thresholds.py
     ├── ci/
     │   ├── test_cpu_contention.py
     │   ├── test_cpuset_pinning.py
@@ -334,15 +333,16 @@ Relevant model CI ownership:
   `moss_transcribe_diarize_aishell4_long_results.json`,
   `moss_transcribe_diarize_aishell4_long90_results.json`, and
   `moss_transcribe_diarize_googletime_results.json`, and enforces calibrated
-  accuracy/speed thresholds generated from `tune-ci-thresholds`.
+  accuracy/speed thresholds generated with the private maintainer
+  [`calibrate-h100-ci` skill](https://github.com/zhaochenyang20/sglang-omni-calibration/tree/main/skills/calibrate-h100-ci).
 - `test_asr_ci_seedtts.py`: SeedTTS ASR correctness + speed via SGLang Omni
   router (`/v1/audio/transcriptions`) for the model preset selected through
   `ASR_CI_MODEL` (or `--asr-ci-model`; presets and thresholds live in
   `asr_ci_config.py`). Gates the full 1088-sample
   English and 2020-sample Chinese SeedTTS splits. It writes
   `asr_seedtts_en_results.json` and `asr_seedtts_zh_results.json` for
-  threshold calibration (`asr` in `tune-ci-thresholds`). Its stdout uses the
-  same boxed summary style as the other benchmark stages:
+  threshold calibration (`asr` in the external `calibrate-h100-ci` skill).
+  Its stdout uses the same boxed summary style as the other benchmark stages:
   `ASR WER Benchmark Result` followed by `ASR Speed Benchmark Result`.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
@@ -484,17 +484,6 @@ that happened to contain an older version of the test.
     definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
     traces (first-partial refresh-point lookup, partial gaps, committed→final,
     protocol invariant violations, percentile summaries). No GPU or server.
-- `unit_test/test_tune_ci_thresholds.py`: Unit tests for
-  `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
-  discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
-  scoping for concurrent calibration groups, metric dispersion/outlier reporting,
-  Wilson accuracy intervals, and `merge-runs` validation for disjoint strict-ready
-  partitions. Run with the rest of the fast suite:
-
-  ```bash
-  pytest tests/unit_test/test_tune_ci_thresholds.py -q
-  ```
-
 - `unit_test/utils/`: Shared utility tests:
   - audio loading helpers for data URIs, file URIs, HTTP URLs, timeout fallback,
     and mono/channel preservation, plus the 8 kHz telephony fixtures under

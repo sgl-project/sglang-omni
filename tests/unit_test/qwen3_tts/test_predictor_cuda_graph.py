@@ -11,6 +11,7 @@ bucket-exact batch sizes, and the dispatch/replay path must never host-sync.
 from __future__ import annotations
 
 import ast
+import copy
 import gc
 import weakref
 from collections.abc import Iterator
@@ -356,6 +357,167 @@ def test_eager_predictor_leaves_the_talker_hidden_untouched_for_an_identity_proj
     _run_eager(talker, layer0, hidden, positions)
 
     assert torch.equal(hidden, hidden_before)
+
+
+def _with_predictor_layers(talker: Qwen3TTSTalker, num_layers: int) -> Qwen3TTSTalker:
+    """Deep copy the fixture layer so the predictor has num_layers of them."""
+    model = talker.code_predictor.model
+    first = model.layers[0]
+    model.layers = [first] + [copy.deepcopy(first) for _ in range(num_layers - 1)]
+    cache = talker._predictor_k_cache
+    talker._predictor_k_cache = torch.zeros(
+        num_layers, *cache.shape[1:], device=cache.device, dtype=cache.dtype
+    )
+    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
+    return talker
+
+
+def _predictor_one_token_out_of_place(
+    talker: Qwen3TTSTalker, token_embeds: torch.Tensor, *, cache_len: int
+) -> torch.Tensor:
+    """The predictor layer stack in the residual form without aliasing.
+
+    Same calls as the talker's forward. The three calls that overwrite an
+    operand, the fused add and norm, the o_proj epilogue and the final fused
+    norm, get clones, so no tensor is ever read after it was overwritten."""
+    batch_size, _, hidden_size = token_embeds.shape
+    positions = talker._predictor_position_rows[cache_len, :batch_size]
+    residual = token_embeds
+    mlp_out = None
+    for layer_idx, layer in enumerate(talker.code_predictor.model.layers):
+        if mlp_out is None:
+            normed = layer.input_layernorm(residual.reshape(-1, hidden_size))
+        else:
+            normed, residual = layer.input_layernorm(
+                mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
+            )
+            residual = residual.reshape(batch_size, 1, hidden_size)
+        attn_input = talker._predictor_cached_self_attention(
+            layer_idx=layer_idx,
+            attn=layer.self_attn,
+            hidden_states=normed.reshape(batch_size, 1, hidden_size),
+            positions=positions,
+            batch_size=batch_size,
+            cache_len=cache_len,
+        )
+        residual = talker._predictor_o_proj_add_residual(
+            layer.self_attn.o_proj, attn_input, residual.clone()
+        )
+        normed = layer.post_attention_layernorm(residual.reshape(-1, hidden_size))
+        mlp_out = layer.mlp(normed)
+    normed, _ = talker.code_predictor.model.norm(
+        mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
+    )
+    return normed.reshape(batch_size, 1, hidden_size)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("num_layers, batch_size", [(1, 1), (3, 2), (3, 16)])
+def test_eager_predictor_in_place_residual_norms_match_the_out_of_place_form(
+    num_layers: int, batch_size: int
+):
+    device = torch.device("cuda")
+    in_place = _with_predictor_layers(_build_talker(device), num_layers)
+    reference = _with_predictor_layers(_build_talker(device), num_layers)
+    generator = torch.Generator(device="cpu").manual_seed(num_layers * 100 + batch_size)
+    embeds = torch.randn(
+        batch_size, 1, HIDDEN, generator=generator, dtype=torch.float32
+    ).to(device, DTYPE)
+
+    with torch.no_grad():
+        expected = _predictor_one_token_out_of_place(
+            reference, embeds.clone(), cache_len=0
+        )
+        actual = in_place._predictor_forward_one_token(
+            token_embeds=embeds.clone(), batch_size=batch_size, cache_len=0
+        )
+
+    assert actual.shape == (batch_size, 1, HIDDEN)
+    assert actual.dtype == DTYPE
+    assert torch.equal(actual, expected)
+    assert torch.equal(in_place._predictor_k_cache, reference._predictor_k_cache)
+    assert torch.equal(in_place._predictor_v_cache, reference._predictor_v_cache)
+
+
+@pytest.mark.accelerator
+def test_eager_predictor_adds_each_residual_inside_the_norm_that_follows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    device = torch.device("cuda")
+    talker = _with_predictor_layers(_build_talker(device), 3)
+    layers = talker.code_predictor.model.layers
+    hidden_norms = {
+        id(module)
+        for layer in layers
+        for module in (layer.input_layernorm, layer.post_attention_layernorm)
+    } | {id(talker.code_predictor.model.norm)}
+    calls: list[tuple[int, bool]] = []
+    original_forward = RMSNorm.forward
+
+    def recording_forward(self, x, residual=None, *args, **kwargs):
+        if id(self) in hidden_norms:
+            calls.append((x.dim(), residual is not None))
+        return original_forward(self, x, residual, *args, **kwargs)
+
+    monkeypatch.setattr(RMSNorm, "forward", recording_forward)
+    embeds = torch.randn(2, 1, HIDDEN, device=device, dtype=DTYPE)
+    with torch.no_grad():
+        talker._predictor_forward_one_token(
+            token_embeds=embeds, batch_size=2, cache_len=0
+        )
+
+    assert all(dim == 2 for dim, _ in calls)
+    fused_calls = [fused for _, fused in calls]
+    assert fused_calls == [False, False] + [True, False] * (len(layers) - 1) + [True]
+
+
+@pytest.mark.accelerator
+def test_eager_predictor_output_survives_the_next_token():
+    device = torch.device("cuda")
+    talker = _with_predictor_layers(_build_talker(device), 2)
+    generator = torch.Generator(device="cpu").manual_seed(5)
+    embeds = [
+        torch.randn(2, 1, HIDDEN, generator=generator, dtype=torch.float32).to(
+            device, DTYPE
+        )
+        for _ in range(2)
+    ]
+
+    with torch.no_grad():
+        first = talker._predictor_forward_one_token(
+            token_embeds=embeds[0], batch_size=2, cache_len=0
+        )
+        snapshot = first.clone()
+        second = talker._predictor_forward_one_token(
+            token_embeds=embeds[1], batch_size=2, cache_len=1
+        )
+
+    assert torch.equal(first, snapshot)
+    assert second.data_ptr() != first.data_ptr()
+    assert not torch.equal(second, first)
+
+
+@pytest.mark.accelerator
+def test_eager_predictor_accepts_a_strided_input_and_leaves_its_neighbours():
+    device = torch.device("cuda")
+    strided_talker = _with_predictor_layers(_build_talker(device), 2)
+    contiguous_talker = _with_predictor_layers(_build_talker(device), 2)
+    wide = torch.randn(2, 1, 2 * HIDDEN, device=device, dtype=DTYPE)
+    strided = wide[:, :, :HIDDEN]
+    assert not strided.is_contiguous()
+    neighbours_before = wide[:, :, HIDDEN:].clone()
+    contiguous = strided.clone()
+
+    with torch.no_grad():
+        from_strided = strided_talker._predictor_forward_one_token(
+            token_embeds=strided, batch_size=2, cache_len=0
+        )
+        from_contiguous = contiguous_talker._predictor_forward_one_token(
+            token_embeds=contiguous, batch_size=2, cache_len=0
+        )
+
+    torch.testing.assert_close(from_strided, from_contiguous)
+    assert torch.equal(wide[:, :, HIDDEN:], neighbours_before)
 
 
 @pytest.mark.accelerator

@@ -18,14 +18,24 @@ REPLICA_SEPARATOR = "@r"
 
 @dataclass(frozen=True, slots=True)
 class RealtimeTranscriptionConfig:
-    """Pipeline-owned declaration for live ASR over ``/v1/realtime``."""
+    """Pipeline-owned declaration for live ASR over /v1/realtime."""
 
     strategy_cls: type[StreamingASRStrategy]
     decode_interval_ms: int = 2000
+    # Whether the model accepts server-VAD segmentation. When False the
+    # session never runs a VAD, and a client asking for turn_detection
+    # server_vad gets an error.
+    server_vad: bool = False
+    # Longest audio one segment may span before a forced split. None
+    # means the session never splits on length.
+    max_segment_s: float | None = None
 
     def __post_init__(self) -> None:
         if self.decode_interval_ms <= 0:
             raise ValueError("realtime transcription decode interval must be positive")
+
+        if self.max_segment_s is not None and self.max_segment_s <= 0:
+            raise ValueError("realtime transcription max_segment_s must be positive")
 
 
 def replica_instance_name(logical_name: str, replica_id: int) -> str:

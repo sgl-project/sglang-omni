@@ -5,7 +5,7 @@ import logging
 from fastapi import WebSocket
 
 from sglang_omni.client import Client
-from sglang_omni.config import AudioChunkingConfig, RealtimeTranscriptionConfig
+from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel
 from sglang_omni.serve.realtime.session import RealtimeSession
 from sglang_omni.serve.realtime.transcription_session import (
@@ -21,7 +21,6 @@ class RealtimeSessionManager:
         *,
         client: Client,
         model_name: str,
-        audio_chunking: AudioChunkingConfig,
         supports_audio_output: bool = False,
         transcription_config: RealtimeTranscriptionConfig | None = None,
         smart_turn_model: SemanticEOUModel | None = None,
@@ -30,7 +29,6 @@ class RealtimeSessionManager:
         self.model_name = model_name
         self.supports_audio_output = supports_audio_output
         self.transcription_config = transcription_config
-        self.audio_chunking = audio_chunking
         self.smart_turn_model = smart_turn_model
         self.sessions: dict[str, RealtimeSession | RealtimeTranscriptionSession] = {}
 
@@ -55,8 +53,7 @@ class RealtimeSessionManager:
                 websocket,
                 client=self.client,
                 model_name=self.model_name,
-                capability=self.transcription_config,
-                audio_chunking=self.audio_chunking,
+                transcription_config=self.transcription_config,
                 strategy=self.transcription_config.strategy_cls(),
             )
         else:

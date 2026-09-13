@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections.abc import Iterator
@@ -214,18 +215,27 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(Qwen3ASRPreLMEncoderService)
-    service._stream = object()
+    service._stream = SimpleNamespace(device=torch.device("cuda", 0))
 
-    def fail_stream(_stream):  # noqa: ANN001, ANN202
-        raise RuntimeError("stream context failed")
+    class _FakeDeviceModule:
+        def __init__(self) -> None:
+            self.stream_calls: list[object] = []
 
-    monkeypatch.setattr(torch.cuda, "stream", fail_stream)
+        @contextlib.contextmanager
+        def stream(self, stream):  # noqa: ANN001, ANN202
+            self.stream_calls.append(stream)
+            raise RuntimeError("stream context failed")
+            yield
+
+    device_module = _FakeDeviceModule()
+    monkeypatch.setattr(torch, "get_device_module", lambda _device=None: device_module)
 
     assert not torch.is_inference_mode_enabled()
     with pytest.raises(RuntimeError, match="stream context failed"):
         with service._batch_context():
             pass
     assert not torch.is_inference_mode_enabled()
+    assert device_module.stream_calls == [service._stream]
 
 
 def test_cache_hit_skips_reencode() -> None:

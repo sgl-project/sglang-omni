@@ -49,13 +49,17 @@ def _make_inputs(estimator, t: int) -> tuple[torch.Tensor, ...]:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_compile_dit_backbone_dynamic_shapes_match_eager() -> None:
-    import sglang_omni.models.fun_cosyvoice3.stages as stages
+    pass
 
     estimator = _TinyDiT().cuda().eval()
     original_forward = estimator.forward
     param_names = set(dict(estimator.named_parameters()))
 
-    stages._configure_dit_torch_compile()
+    torch._inductor.config.fx_graph_cache = True
+    if hasattr(torch._dynamo.config, "cache_size_limit"):
+        torch._dynamo.config.cache_size_limit = 1024
+    if hasattr(torch._dynamo.config, "accumulated_cache_size_limit"):
+        torch._dynamo.config.accumulated_cache_size_limit = 1024
     estimator.forward = torch.compile(estimator.forward, dynamic=True)
 
     with torch.no_grad():
