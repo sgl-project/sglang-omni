@@ -887,3 +887,107 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
     assert single is not None and single.shape[0] == 1
     torch.cuda.synchronize()
     assert arena.gather(slots).frame_positions.tolist() == [8, 6]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
+    """A bootstrap split across captured windows, with one window replayed twice, leaves
+    the waveform and every arena row where a single eager decode of the width would."""
+    from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
+        Qwen3TTSIncrementalCodecCudaGraphRunner,
+    )
+    from sglang_omni.models.qwen3_tts.streaming_vocoder import (
+        Qwen3TTSStreamingVocoderScheduler,
+        _IncrementalDecodeBatch,
+        _IncrementalDecodePlan,
+    )
+
+    torch.manual_seed(23)
+    device = torch.device("cuda", torch.cuda.current_device())
+    decoder = _Decoder().to(device).eval()
+    incremental = Qwen3TTSIncrementalDecoder(decoder)
+    arena = Qwen3TTSCodecStateArena(
+        incremental, num_slots=4, device=device, dtype=torch.float32
+    )
+    slots = [arena.acquire(), arena.acquire()]
+    bystander = arena.acquire()
+    warm_state = arena.gather(slots[1:])
+    incremental.decode(torch.randint(0, 16, (1, 2, 3), device=device), warm_state)
+    arena.scatter(slots[1:], warm_state)
+
+    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
+        incremental,
+        device=device,
+        dtype=torch.float32,
+        num_quantizers=2,
+        mode="window",
+        fresh_frames=(1, 2, 4, 8),
+        batch_sizes=(1, 2),
+        min_free_gb=0.0,
+        arena=arena,
+    )
+    runner.capture()
+    assert len(runner.stats()["build"]["captured_keys"]) == 8
+
+    width = 21
+    split = runner.split_frames(width)
+    assert split == (8, 8, 4, 1)
+    codes = torch.randint(0, 16, (2, 2, width), device=device)
+    eager_state = arena.gather(slots)
+    eager_waveform = incremental.decode(codes, eager_state)
+
+    scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
+        Qwen3TTSStreamingVocoderScheduler
+    )
+    scheduler._samples_per_frame = decoder.total_upsample
+    plans = [
+        _IncrementalDecodePlan(
+            decoder_input=codes[0:1],
+            slot=slots[0],
+            fresh_frames=width,
+            reference_trim_frames=9,
+            generated_frames=12,
+            emitted_generated_frames=0,
+        ),
+        _IncrementalDecodePlan(
+            decoder_input=codes[1:2],
+            slot=slots[1],
+            fresh_frames=width,
+            reference_trim_frames=15,
+            generated_frames=6,
+            emitted_generated_frames=0,
+        ),
+    ]
+    batch = _IncrementalDecodeBatch(decoder=incremental, arena=arena, slots=slots)
+    deltas, waveform = scheduler._decode_incremental_windows(
+        codes, plans, batch, runner, split
+    )
+    torch.cuda.synchronize(device)
+
+    assert runner.stats()["runtime"]["replays"] == 4
+    torch.testing.assert_close(waveform, eager_waveform[:, 0], rtol=2e-4, atol=2e-5)
+    samples = decoder.total_upsample
+    for plan, delta, row in zip(plans, deltas, eager_waveform[:, 0]):
+        start = plan.reference_trim_frames * samples
+        end = start + plan.generated_frames * samples
+        torch.testing.assert_close(delta, row[start:end], rtol=2e-4, atol=2e-5)
+        assert (
+            delta.untyped_storage().data_ptr() == waveform.untyped_storage().data_ptr()
+        )
+
+    graph_state = arena.gather(slots)
+    assert graph_state.frame_positions.tolist() == [width, 3 + width]
+    torch.testing.assert_close(graph_state.frame_positions, eager_state.frame_positions)
+    for graph_mapping, eager_mapping in (
+        (graph_state.transformer_keys, eager_state.transformer_keys),
+        (graph_state.transformer_values, eager_state.transformer_values),
+        (graph_state.conv_histories, eager_state.conv_histories),
+        (graph_state.transconv_overlaps, eager_state.transconv_overlaps),
+    ):
+        assert graph_mapping.keys() == eager_mapping.keys()
+        for key in graph_mapping:
+            torch.testing.assert_close(
+                graph_mapping[key], eager_mapping[key], rtol=2e-4, atol=2e-5
+            )
+    assert arena.gather([bystander]).frame_positions.tolist() == [0]
