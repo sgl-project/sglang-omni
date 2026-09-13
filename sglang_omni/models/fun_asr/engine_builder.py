@@ -141,7 +141,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 )
             if getattr(server_args, "mlx_enable_sampling", False):
                 raise ValueError(
-                    "Fun-ASR MLX currently requires mlx_enable_sampling=False"
+                    "Fun-ASR Apple currently requires mlx_enable_sampling=False"
                 )
             if server_args.quantization is not None:
                 raise ValueError(

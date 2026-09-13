@@ -78,9 +78,7 @@ def _decode_with_soundfile(
     try:
         data, sample_rate = sf.read(decoder_source, dtype="float32", always_2d=True)
     except Exception as exc:
-        # Message must match the "Could not decode .+ audio input" bad-request
-        # pattern in openai_errors.py, or invalid uploads 500 instead of 400
-        # (this fallback is what most Apple/no-TorchCodec setups actually hit).
+        # openai_errors.py regex-matches this message to return 400, not 500.
         raise AudioDecodeError(f"Could not decode {source_name} audio input") from exc
     return torch.from_numpy(np.ascontiguousarray(data.T)), int(sample_rate)
 
