@@ -144,7 +144,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         if use_mlx():
             if not current_platform.is_mps():
                 raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
-            # note (yexiaodong): Audio embeddings exist only inside the native
+            # Note (yexiaodong): Audio embeddings exist only inside the native
             # MLX prefill, so token-only radix reuse and split prefill are unsafe.
             return {
                 "max_running_requests": self.max_running_requests,
@@ -158,7 +158,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 "dtype": dtype,
             }
         if self._uses_torch_mps():
-            # note (yexiaodong): MPS has no CUDA graph or Triton lifecycle, and
+            # Note (yexiaodong): MPS has no CUDA graph or Triton lifecycle, and
             # the audio embedding sidecar makes split prefill unsafe initially.
             return {
                 "max_running_requests": 1,
@@ -306,7 +306,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
         if use_mlx() or self._uses_torch_mps():
-            # note (yexiaodong): Typed pipeline engine defaults are merged after
+            # Note (yexiaodong): Typed pipeline engine defaults are merged after
             # the backend profile and otherwise re-enable Torch compilation.
             overrides["enable_torch_compile"] = False
 
@@ -323,11 +323,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
-            # note (yexiaodong): Native MLX prefill owns audio encoding, so the
+            # Note (yexiaodong): Native MLX prefill owns audio encoding, so the
             # Torch pre-LM service and its CUDA graphs must remain uninitialized.
             return
         if self._uses_torch_mps():
-            # note (yexiaodong): Torch MPS encodes audio inside model prefill,
+            # Note (yexiaodong): Torch MPS encodes audio inside model prefill,
             # while the pre-LM service owns CUDA-only streams and graphs. The
             # shared multimodal routine still requires its cache singleton.
             init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
