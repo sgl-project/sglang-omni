@@ -51,6 +51,26 @@ def test_plan_invariants(total, windows):
     assert r._plan(r._buckets[-1] + 1, 1) is None
 
 
+def test_capture_all_is_not_limited_by_npu_graph_cap():
+    captured = []
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = False
+    runner._buckets = (1, 2, 3)
+    runner._graphs = {}
+    runner._failed = set()
+    runner._max_graphs = 1
+
+    def capture(bucket_size):
+        captured.append(bucket_size)
+        return object()
+
+    runner._capture = capture
+    runner.capture_all()
+
+    assert captured == [1, 2, 3]
+    assert tuple(runner._graphs) == runner._buckets
+
+
 def test_get_audio_feature_routing(monkeypatch):
     monkeypatch.setattr(sglang_model, "eager_preamble", lambda *a: torch.zeros(65, 4))
     tower = torch.nn.Linear(4, 4)

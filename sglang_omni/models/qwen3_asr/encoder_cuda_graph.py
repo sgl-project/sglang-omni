@@ -124,13 +124,6 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         for bucket_size in self._buckets:
             if bucket_size in self._graphs or bucket_size in self._failed:
                 continue
-            if len(self._graphs) >= self._max_graphs:
-                logger.warning(
-                    "[qwen3-asr] encoder graph capacity reached (%d); "
-                    "remaining buckets stay eager",
-                    self._max_graphs,
-                )
-                break
             try:
                 self._graphs[bucket_size] = self._capture(bucket_size)
             except Exception as exc:  # noqa: BLE001 - backend capture failures
@@ -289,7 +282,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
 
         entry = self._graphs.get(graph_key)
         if entry is None:
-            if len(self._graphs) >= self._max_graphs:
+            if self._is_npu and len(self._graphs) >= self._max_graphs:
                 logger.warning(
                     "[qwen3-asr] encoder graph capacity reached (%d); "
                     "bucket=%d window layout stays eager",
