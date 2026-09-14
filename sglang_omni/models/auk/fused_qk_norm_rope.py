@@ -31,6 +31,7 @@ def _norm_rope_kernel(
     CS: tl.constexpr,
     CD: tl.constexpr,
     HEADS: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
     SEQ,
     EPS: tl.constexpr,
     ROUND_NORM: tl.constexpr,
@@ -41,7 +42,7 @@ def _norm_rope_kernel(
     row = (batch * HEADS + head) * SEQ + position
     q_start = batch * QB + head * QH + position * QS
     k_start = batch * KB + head * KH + position * KS
-    lane = tl.arange(0, 16)
+    lane = tl.arange(0, HEAD_DIM // 4)
 
     # Match CUDA RMSNorm's four consecutive values per lane before its
     # shuffle reduction. A flat tl.sum changes rounding and the DiT trajectory.
@@ -55,10 +56,10 @@ def _norm_rope_kernel(
     kd = tl.load(K + k_start + (lane * 4 + 3) * KD).to(tl.float32)
     q_sum = ((qa * qa + qb * qb) + qc * qc) + qd * qd
     k_sum = ((ka * ka + kb * kb) + kc * kc) + kd * kd
-    q_scale = tl.rsqrt(tl.sum(q_sum, 0) / 64 + EPS)
-    k_scale = tl.rsqrt(tl.sum(k_sum, 0) / 64 + EPS)
+    q_scale = tl.rsqrt(tl.sum(q_sum, 0) / HEAD_DIM + EPS)
+    k_scale = tl.rsqrt(tl.sum(k_sum, 0) / HEAD_DIM + EPS)
 
-    dim = tl.arange(0, 64)
+    dim = tl.arange(0, HEAD_DIM)
     partner = dim ^ 1
     sign = tl.where(dim % 2 == 0, -1.0, 1.0)
     q = tl.load(Q + q_start + dim * QD).to(tl.float32)
@@ -77,8 +78,8 @@ def _norm_rope_kernel(
     table_offset = batch * CB + position * CS + dim * CD
     cosine = tl.load(COS + table_offset).to(tl.float32)
     sine = tl.load(SIN + table_offset).to(tl.float32)
-    tl.store(Q_OUT + row * 64 + dim, q * cosine + q_pair * sine)
-    tl.store(K_OUT + row * 64 + dim, k * cosine + k_pair * sine)
+    tl.store(Q_OUT + row * HEAD_DIM + dim, q * cosine + q_pair * sine)
+    tl.store(K_OUT + row * HEAD_DIM + dim, k * cosine + k_pair * sine)
 
 
 class QKFusion:
@@ -125,6 +126,7 @@ class QKFusion:
             *k.stride(),
             *strides,
             HEADS=q.shape[1],
+            HEAD_DIM=q.shape[3],
             SEQ=q.shape[2],
             EPS=epsilon,
             ROUND_NORM=output_dtype != torch.float32,

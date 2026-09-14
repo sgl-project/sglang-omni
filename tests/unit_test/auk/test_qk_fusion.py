@@ -59,6 +59,7 @@ def test_request_lengths_do_not_specialize_the_kernel():
     from sglang_omni.models.auk.fused_qk_norm_rope import _norm_rope_kernel
 
     parameters = {parameter.name: parameter for parameter in _norm_rope_kernel.params}
+    assert parameters["HEAD_DIM"].is_constexpr
     for name in ("SEQ", "QB", "KB", "CB"):
         parameter = parameters[name]
         assert not parameter.is_constexpr
