@@ -21,8 +21,6 @@ DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES = (32, 48, 64, 96, 128, 192, 2
 
 def move_conv_padding_to_host(encoder: torch.nn.Module) -> int:
     """Put every conv's padding integers on the CPU; returns the conv count."""
-    # note(ratish): on the device the padding arithmetic before each conv is six
-    # launches and a host read, and a host read cannot be captured.
     count = 0
     for module in encoder.modules():
         if isinstance(module, MimiConv1d):
