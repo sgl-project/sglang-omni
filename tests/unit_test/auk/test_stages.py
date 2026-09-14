@@ -151,6 +151,18 @@ def test_unknown_dtype_names_are_rejected_before_the_checkpoint_is_resolved(fiel
         create_auk_engine_executor("stub", device="cpu", **{field: "bf16"})
 
 
+def test_packed_requires_cuda_bf16_before_resolving_checkpoint(monkeypatch):
+    from sglang_omni.models.auk import stages
+
+    resolve = Mock(side_effect=AssertionError("must validate before downloading"))
+    monkeypatch.setattr(stages, "resolve_checkpoint", resolve)
+    with pytest.raises(ValueError, match="CUDA and weight_dtype=bfloat16"):
+        create_auk_engine_executor(
+            "stub", device="cpu", weight_dtype="bfloat16", enable_packed_dit=True
+        )
+    resolve.assert_not_called()
+
+
 def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
     """A later executor must not inherit an earlier one's cast backbone."""
     requested = []

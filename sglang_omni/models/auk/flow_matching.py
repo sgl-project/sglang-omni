@@ -97,6 +97,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        enable_packed_dit: bool = False,
     ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -172,6 +173,21 @@ class AuKFlowMatching(nn.Module):
                 dim=1,
             )
 
+        packed_layout = None
+        if enable_packed_dit and len(items) > 1:
+            from sglang_omni.models.auk.packed import PackedLayout
+
+            if not self.transformer.attn_mask_enabled:
+                raise ValueError("Packed AuK DiT requires attn_mask_enabled")
+            audio_mask = torch.cat((ref_mask, mask), dim=1)
+            packed_text_mask = text_mask
+            if cfg_strength >= 1e-5:
+                audio_mask = audio_mask.repeat(2, 1)
+                packed_text_mask = text_mask.repeat(2, 1)
+            packed_layout = PackedLayout.build(
+                audio_mask, packed_text_mask, ref.shape[1], y0.shape[1]
+            )
+
         def fn(t, x):
             kwargs = dict(
                 x=x.to(weight_dtype),
@@ -185,6 +201,8 @@ class AuKFlowMatching(nn.Module):
                 audio_positions=audio_positions,
                 joint_positions=joint_positions,
             )
+            if packed_layout is not None:
+                kwargs["packed_layout"] = packed_layout
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False
