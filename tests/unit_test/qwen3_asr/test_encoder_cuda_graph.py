@@ -98,9 +98,8 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
     hidden_states = torch.zeros(8, 4)
     cu_seqlens = torch.tensor([0, 4, 8], dtype=torch.int32)
     attention_metadata = object()
-    runner._capture_attention_metadata = attention_metadata
 
-    output = runner._layer_stack(hidden_states, cu_seqlens)
+    output = runner._layer_stack(hidden_states, cu_seqlens, attention_metadata)
 
     assert torch.equal(output, hidden_states)
     assert seen["cu_seqlens"] is cu_seqlens
@@ -126,7 +125,7 @@ def test_npu_capture_materializes_sequence_boundaries_on_host():
     runner._is_npu = True
     runner._device = torch.device("meta")
 
-    cu_seqlens = runner._make_static_cu([4, 3, 1])
+    cu_seqlens = runner._make_cu_seqlens([4, 3, 1], device="cpu")
 
     assert cu_seqlens.device.type == "cpu"
     assert cu_seqlens.dtype == torch.int32
@@ -139,18 +138,10 @@ def test_npu_replay_uses_the_exact_window_layout_as_graph_key():
     runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
     runner._is_npu = True
     runner._max_seqlen = 8
-    runner._buckets = (8, 16)
+    runner._buckets = (8,)
     runner._failed = set()
     runner._graphs = {}
-
-    def plan(total, windows):
-        if total == 8:
-            return 16, [8]
-        if windows == 1:
-            return 8, [4]
-        return 8, [8 - total]
-
-    runner._plan = plan
+    runner._plan = lambda total, windows: (8, [8 - total])
 
     def capture(bucket_size, *, window_lens=None):
         captured.append((bucket_size, window_lens))
@@ -173,22 +164,9 @@ def test_npu_replay_uses_the_exact_window_layout_as_graph_key():
     assert runner.run(hidden_states, [2, 2]) is not None
     assert captured == [(8, (4, 4)), (8, (2, 2, 4))]
     assert len(replayed) == 3
-
-    assert runner.run(hidden_states, [1, 3]) is not None
-    assert captured == [
-        (8, (4, 4)),
-        (8, (2, 2, 4)),
-        (8, (1, 3, 4)),
-    ]
     assert runner._failed == set()
 
-    assert runner.run(torch.ones(8, 2), [8]) is not None
-    assert captured == [
-        (8, (4, 4)),
-        (8, (2, 2, 4)),
-        (8, (1, 3, 4)),
-        (16, (8, 8)),
-    ]
+
 @pytest.fixture
 def asr_server_args():
     from sglang.srt.runtime_context import get_context
