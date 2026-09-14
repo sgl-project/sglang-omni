@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 from transformers import MimiConfig, MimiModel
-from transformers.models.mimi.modeling_mimi import MimiConv1d
+from transformers.models.mimi.modeling_mimi import MimiConv1d, MimiEuclideanCodebook
 
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
@@ -106,7 +106,11 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
     torch.manual_seed(11)
     device = torch.device("cuda", torch.cuda.current_device())
     config = _small_mimi_config()
-    model = MimiModel(config).to(device).eval()
+    model = MimiModel(config)
+    for module in model.modules():
+        if isinstance(module, MimiEuclideanCodebook):
+            module.embed_sum.normal_()
+    model = model.to(device).eval()
     move_conv_padding_to_host(model)
     hop = HOP
     quantizers = 2
@@ -120,10 +124,11 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
 
     short = torch.randn(3 * hop + 5, device=device)
     long = torch.randn(7 * hop, device=device)
+    long_other = torch.randn(6 * hop + 9, device=device)
     with torch.inference_mode(), torch.cuda.stream(stream):
         first = runner.encode(short)
         second = runner.encode(long)
-        third = runner.encode(short)
+        third = runner.encode(long_other)
         too_long = runner.encode(torch.randn(9 * hop, device=device))
     torch.cuda.synchronize(device)
 
@@ -132,16 +137,21 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
     assert runner.stats()["misses"] == 1
     assert first.shape == (4, quantizers)
     assert second.shape == (7, quantizers)
-    assert torch.equal(first, third)
+    assert third.shape == (7, quantizers)
+    eager = []
     with torch.inference_mode():
-        for waveform, codes, bucket in ((short, first, 4), (long, second, 8)):
+        for waveform, bucket in ((short, 4), (long, 8), (long_other, 8)):
             values = torch.zeros((1, 1, bucket * hop), device=device)
             values[0, 0, : waveform.numel()].copy_(waveform)
-            eager = model.encode(
+            codes = model.encode(
                 values, num_quantizers=quantizers, return_dict=True
             ).audio_codes
             frames = -(-waveform.numel() // hop)
-            assert torch.equal(codes, eager[0, :, :frames].transpose(0, 1))
+            eager.append(codes[0, :, :frames].transpose(0, 1))
+    assert not torch.equal(eager[1], eager[2])
+    assert torch.equal(first, eager[0])
+    assert torch.equal(second, eager[1])
+    assert torch.equal(third, eager[2])
 
 
 @pytest.mark.accelerator
