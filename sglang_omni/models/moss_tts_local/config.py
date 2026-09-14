@@ -44,27 +44,26 @@ def _uses_rocm_wsl_dxg() -> bool:
     )
 
 
-def resolve_vocoder_cuda_graph(cuda_graph: bool | None) -> bool:
+def resolve_vocoder_cuda_graph(vocoder_cuda_graph: bool | None) -> bool:
     """Resolve the platform default and reject an unsafe DXG opt-in."""
     if not _uses_rocm_wsl_dxg():
-        return True if cuda_graph is None else cuda_graph
-    if cuda_graph is True:
+        return True if vocoder_cuda_graph is None else vocoder_cuda_graph
+    if vocoder_cuda_graph is True:
         raise ValueError(
             "MOSS-TTS Local vocoder CUDA graphs cannot be enabled on ROCm "
             "WSL/DXG because HIP graph capture can abort the process; omit "
-            "cuda_graph or set it to false"
+            "vocoder_cuda_graph or set it to false"
         )
     return False
 
 
-def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
+def _stages(*, codec_gpu: int, colocated: bool) -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
             factory=FactoryArgs(
-                device=codec_device,
                 compute_dtype="bfloat16",
                 attention_backend="auto",
                 max_concurrency=_PREPROCESSING_MAX_CONCURRENCY,
@@ -92,10 +91,9 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
         ),
         StageConfig(
             name="vocoder",
-            process="vocoder" if colocated else "pipeline",
+            process="vocoder",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             factory=FactoryArgs(
-                device=codec_device,
                 dtype="float32",
                 compute_dtype="bfloat16",
                 attention_backend="auto",
@@ -103,7 +101,7 @@ def _stages(*, codec_device: str, colocated: bool) -> list[StageConfig]:
             gpu_memory_fraction=(
                 _COLOCATED_VOCODER_GPU_MEMORY_FRACTION if colocated else None
             ),
-            gpu=0,
+            gpu=codec_gpu,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
@@ -115,6 +113,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTTSLocalModel"
     requires_model_capabilities: ClassVar[bool] = True
+    max_speech_input_chars: ClassVar[int | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "MossTTSLocal",
         "MossTTSLocalForConditionalGeneration",
@@ -156,14 +155,16 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         return frozenset({("preprocessing", "tts_engine")})
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
+        default_factory=lambda: _stages(codec_gpu=0, colocated=True)
     )
 
+    # note (Zhang Yiyang): These options only control streaming vocoder graphs;
+    # AR engine graph settings are scoped to tts_engine.engine.
     # None preserves whether the user supplied an override. The resolved
     # default is on except on ROCm WSL/DXG, where capture can abort in C++.
-    cuda_graph: bool | None = None
-    cuda_graph_frames: list[int] | None = None
-    cuda_graph_min_free_gb: float = 3.0
+    vocoder_cuda_graph: bool | None = None
+    vocoder_cuda_graph_frames: list[int] | None = None
+    vocoder_cuda_graph_min_free_gb: float = 3.0
     ref_audio_cache: bool = True
     ref_audio_cache_max_items: int = _REF_AUDIO_CACHE_MAX_ITEMS
     ref_audio_cache_max_bytes: int = _REF_AUDIO_CACHE_MAX_BYTES
@@ -184,9 +185,11 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
             return {}
         if stage_name == "vocoder":
             return {
-                "cuda_graph": resolve_vocoder_cuda_graph(self.cuda_graph),
-                "cuda_graph_frames": self.cuda_graph_frames,
-                "cuda_graph_min_free_gb": self.cuda_graph_min_free_gb,
+                "vocoder_cuda_graph": resolve_vocoder_cuda_graph(
+                    self.vocoder_cuda_graph
+                ),
+                "vocoder_cuda_graph_frames": self.vocoder_cuda_graph_frames,
+                "vocoder_cuda_graph_min_free_gb": self.vocoder_cuda_graph_min_free_gb,
             }
         return {}
 
@@ -223,7 +226,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
-        resolve_vocoder_cuda_graph(self.cuda_graph)
+        resolve_vocoder_cuda_graph(self.vocoder_cuda_graph)
         if self.ref_audio_cache_max_items < 1:
             raise ValueError(
                 "ref_audio_cache_max_items must be >= 1; got "
@@ -234,21 +237,24 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                 "ref_audio_cache_max_bytes must be >= 1; got "
                 f"{self.ref_audio_cache_max_bytes}"
             )
-        if self.cuda_graph_min_free_gb < 0:
+        if self.vocoder_cuda_graph_min_free_gb < 0:
             raise ValueError(
-                "cuda_graph_min_free_gb must be >= 0 (0 disables the VRAM headroom "
-                f"guard); got {self.cuda_graph_min_free_gb}"
+                "vocoder_cuda_graph_min_free_gb must be >= 0 "
+                "(0 disables the VRAM headroom guard); "
+                f"got {self.vocoder_cuda_graph_min_free_gb}"
             )
-        if self.cuda_graph_frames is not None:
-            if not self.cuda_graph_frames:
+        if self.vocoder_cuda_graph_frames is not None:
+            if not self.vocoder_cuda_graph_frames:
                 raise ValueError(
-                    "cuda_graph_frames must be non-empty; set `cuda_graph: false` to "
-                    "disable graphs, or leave it null to use the default capture set"
+                    "vocoder_cuda_graph_frames must be non-empty; set "
+                    "`vocoder_cuda_graph: false` to disable vocoder graphs, "
+                    "or leave it null to use the default capture set"
                 )
-            invalid = [t for t in self.cuda_graph_frames if t < 1]
+            invalid = [t for t in self.vocoder_cuda_graph_frames if t < 1]
             if invalid:
                 raise ValueError(
-                    f"cuda_graph_frames entries must be positive ints (>= 1); got {invalid}"
+                    "vocoder_cuda_graph_frames entries must be positive ints "
+                    f"(>= 1); got {invalid}"
                 )
 
     def supports_uploaded_voice_references(self) -> bool:
@@ -259,22 +265,15 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
     """Backward-compatible alias for the default single-GPU pipeline."""
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_device="cuda:0", colocated=True)
+        default_factory=lambda: _stages(codec_gpu=0, colocated=True)
     )
 
 
 class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
     """Two-GPU variant that places codec work on the second visible GPU."""
 
-    @classmethod
-    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (Akazaakane): split mode declares gpu=0 for placement while running the
-        # codec on cuda:1, so the colocated fractions do not describe this topology.
-        # Splitting stays unsupported here until the split variant declares its own.
-        return frozenset({("preprocessing", "tts_engine"), ("tts_engine", "vocoder")})
-
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_device="cuda:1", colocated=False)
+        default_factory=lambda: _stages(codec_gpu=1, colocated=False)
     )
 
 

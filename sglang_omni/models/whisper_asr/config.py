@@ -40,12 +40,11 @@ class WhisperASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Whisper checkpoints."""
 
     architecture: ClassVar[str] = "WhisperForConditionalGeneration"
-    audio_chunking: ClassVar[AudioChunkingConfig] = AudioChunkingConfig(
-        allow_audio_chunking=True,
+    allow_audio_chunking: ClassVar[bool] = True
+    max_native_clip_s: ClassVar[float] = float(WHISPER_MAX_INPUT_SECONDS)
+    min_tail_s: ClassVar[float] = 1.0
+    audio_chunking: AudioChunkingConfig = AudioChunkingConfig(
         max_audio_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
-        max_native_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
-        min_tail_s=1.0,
-        condition_on_previous_text=False,
     )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -65,7 +64,6 @@ class WhisperASRPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_sglang_whisper_asr_executor",
             engine=EngineArgs(max_running_requests=64),
             factory=WhisperASRFactoryArgs(
-                device="cuda:0",
                 # The encoder CUDA-graph replay is a documented tuning knob for
                 # this pipeline; disable it when profiling eager encoder
                 # execution.

@@ -165,10 +165,11 @@ topology.
 - The endpoint accepts one uploaded file per request.
 - Each uploaded audio segment must be 30 seconds or shorter, matching the
   official Fun-ASR VAD segment limit. Split longer recordings before upload.
-- `itn` and `hotwords` are supported by the model request builder but not
-  exposed as form fields on the public transcription endpoint.
-- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but
-  Fun-ASR-Nano currently ignores it (use `hotwords` inside the builder for
-  context biasing instead).
+- `prompt` carries context biasing: a comma-separated list of terms likely to
+  appear in the audio (names, jargon). Each term becomes a hotword in the
+  model's prompt. Biasing raises the model's preference for the supplied
+  terms; it does not force them, and an irrelevant list can hurt accuracy.
+- `itn` and explicit `hotwords` remain available to in-process callers of the
+  request builder; explicit `hotwords` take precedence over `prompt`.
 - Audio is resampled to 16 kHz before transcription.
 - bf16 is strongly recommended; fp16 can overflow to NaN in the adaptor path.

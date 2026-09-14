@@ -19,7 +19,15 @@ from sglang_omni.platforms import current_platform
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 THINKER_STAGE = "thinker"
+# Note (wenyao): Config and pre-boot gates preserve the legacy three-chunk floor;
+# TALKER_START_MIN_CHUNKS reflects the prompt topology's one-chunk minimum.
 MIN_PARTIAL_START_CHUNKS = 3
+
+# Note (wenyao): vLLM-Omni qwen3_omni.py::_get_talker_assistant_parts needs one chunk
+# for a 9-row tail (3 template + 4 pad + BOS + text); later chunks feed decode.
+TALKER_START_MIN_CHUNKS = 1
+
+ENABLE_TALKER_START_TOPOLOGY = False
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -182,6 +190,15 @@ def _decode_stage(*, process: str) -> StageConfig:
     )
 
 
+def _talker_stage_env() -> dict[str, str]:
+    if not current_platform.is_rocm():
+        return {}
+    # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
+    # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
+    # greedy Talker request would corrupt its first codec token.
+    return {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}
+
+
 def _talker_stage(
     *,
     gpu: int,
@@ -191,6 +208,7 @@ def _talker_stage(
     return EngineStageConfig(
         name="talker_ar",
         process=process,
+        env=_talker_stage_env(),
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.request_builders.merge_for_talker",
@@ -206,6 +224,11 @@ def _talker_stage(
             max_seq_len=32768,
             enable_partial_start=enable_partial_start,
             partial_start_min_chunks=5,
+            # Note (wenyao): Match the default serial Code2Wav window so later
+            # 10-row messages keep the captured 10/20/30/35-frame graph shapes.
+            codec_coalesce_frames=10,
+            codec_coalesce_early_frames=10,
+            codec_coalesce_first_frames=0,
         ),
         gpu=gpu,
         next="code2wav",

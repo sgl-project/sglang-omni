@@ -1,266 +1,326 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CUDA-graph runner for the MOSS streaming codec decode: one graph per T (B fixed at slot width), captured once at warmup. Adapted from the Higgs vocoder graph; bit-identity gated by the test."""
+"""CUDA-graph replay for the native MOSS streaming decoder.
+
+The repository-owned codec keeps decoder state in a persistent slot pool.  A
+graph captures one batch bucket while replay supplies the real state slot ids
+for the live rows.  Scratch rows provide batch padding.
+"""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from types import MethodType
-from typing import NamedTuple
+from dataclasses import dataclass
 
 import torch
 
 logger = logging.getLogger(__name__)
 
-_ATTN_ORIGINAL_UPDATE_CACHE_ATTR = "_sglang_omni_original_update_streaming_cache"
 
-
-class _CapturedVocoderGraph(NamedTuple):
-    """One captured per-T graph and its static replay buffers (named to avoid positional unpack)."""
-
+@dataclass
+class _CapturedVocoderGraph:
     graph: torch.cuda.CUDAGraph
     static_codes: torch.Tensor
     static_lengths: torch.Tensor
+    static_state_slot_ids: torch.Tensor
+    capture_state_slot_ids: torch.Tensor
+    static_valid_rows: torch.Tensor
     static_audio: torch.Tensor
     static_audio_lengths: torch.Tensor
 
 
-def _decoder_attention_modules(codec) -> list:
-    """Decoder attention modules whose streaming KV cache must be made graph-stable."""
-    modules_by_id: dict[int, object] = {}
-    decoder = getattr(codec, "decoder", ())
-    for decoder_module in decoder:
-        modules = decoder_module.modules() if hasattr(decoder_module, "modules") else ()
-        for module in modules:
-            if hasattr(module, "attention_implementation"):
-                modules_by_id.setdefault(id(module), module)
-    return list(modules_by_id.values())
-
-
-def _cuda_graph_update_streaming_cache(
-    self, state, cached_k, cached_v, cached_pos, k_all, v_all, pos_k
-) -> None:
-    context = getattr(self, "context", None)
-    original = getattr(self, _ATTN_ORIGINAL_UPDATE_CACHE_ATTR, None)
-    if context is None:
-        if callable(original):
-            return original(state, cached_k, cached_v, cached_pos, k_all, v_all, pos_k)
-        raise RuntimeError("CUDA graph codec attention requires finite context")
-    state_cached_keys = getattr(state, "cached_keys", None)
-    state_cached_values = getattr(state, "cached_values", None)
-    state_cached_positions = getattr(state, "cached_positions", None)
-    if (
-        state_cached_keys is None
-        or state_cached_values is None
-        or state_cached_positions is None
-    ):
-        if callable(original):
-            return original(state, cached_k, cached_v, cached_pos, k_all, v_all, pos_k)
-        raise RuntimeError("CUDA graph codec attention cache is not initialized")
-    exec_mask = state.exec_mask.view(-1, 1, 1, 1)
-    exec_mask_pos = state.exec_mask.view(-1, 1)
-    new_cached_k = k_all[:, :, -int(context) :, :].contiguous()
-    new_cached_v = v_all[:, :, -int(context) :, :].contiguous()
-    new_cached_pos = pos_k[:, -int(context) :].contiguous()
-    state_cached_keys.copy_(torch.where(exec_mask, new_cached_k, cached_k))
-    state_cached_values.copy_(torch.where(exec_mask, new_cached_v, cached_v))
-    state_cached_positions.copy_(torch.where(exec_mask_pos, new_cached_pos, cached_pos))
-
-
-def patch_codec_attention_cache_for_cuda_graph(codec) -> None:
-    """Rebind the decoder streaming attention cache update to an in-place write (stable address,
-    value-identical to eager) so a CUDA graph can capture it."""
-    for module in _decoder_attention_modules(codec):
-        update_cache = getattr(module, "_update_streaming_cache", None)
-        if not callable(update_cache):
-            continue
-        if hasattr(module, _ATTN_ORIGINAL_UPDATE_CACHE_ATTR):
-            continue
-        setattr(module, _ATTN_ORIGINAL_UPDATE_CACHE_ATTR, update_cache)
-        module._update_streaming_cache = MethodType(
-            _cuda_graph_update_streaming_cache, module
-        )
-
-
 class MossVocoderCudaGraphRunner:
-    """Warmup-captured, sealed replay of exact-T CUDA graphs for the MOSS codec decode (B fixed)."""
+    """Replay native streaming decode graphs keyed by ``(B, T)``.
+
+    ``B`` is the smallest graph bucket covering the active rows, and batch
+    padding uses scratch state slots.  ``T`` is always exact because frame
+    padding would advance causal decoder state and change the waveform.
+    """
 
     def __init__(
         self,
         codec,
         *,
-        batch_size: int,
-        n_vq: int,
-        max_frames: int = 128,
-        max_graphs: int = 160,
+        real_state_capacity: int,
+        scratch_capacity: int,
+        batch_sizes: Iterable[int],
+        frame_sizes: Iterable[int],
+        num_quantizers: int,
         warmup_iters: int = 3,
         min_free_gb: float = 3.0,
     ) -> None:
         self._codec = codec
-        self._batch_size = int(batch_size)
-        self._n_vq = int(n_vq)
+        self._real_state_capacity = int(real_state_capacity)
+        self._scratch_capacity = int(scratch_capacity)
         self._device = next(codec.parameters()).device
-        self._max_frames = int(max_frames)
-        self._max_graphs = int(max_graphs)
-        self._warmup_iters = int(warmup_iters)
-        # Min free VRAM to attempt a capture (each graph is multi-GB); below it we skip -> eager,
-        # so a VRAM-tight box degrades gracefully instead of OOM-ing.
+        self._num_quantizers = int(num_quantizers)
+        self._warmup_iters = max(int(warmup_iters), 1)
         self._min_free_bytes = int(float(min_free_gb) * (1024**3))
-        self._graphs: dict[int, _CapturedVocoderGraph] = {}
+        self._batch_sizes = sorted(
+            {
+                int(size)
+                for size in batch_sizes
+                if 0 < int(size) <= self._real_state_capacity
+            }
+        )
+        self._frame_sizes = sorted({int(size) for size in frame_sizes if int(size) > 0})
+        self._graphs: dict[tuple[int, int], _CapturedVocoderGraph] = {}
         self._pool = None
         self._sealed = False
-        # Reused all-active mask for the warmup-only state reset (avoid re-allocating it per captured T).
-        self._reset_mask = torch.ones(
-            self._batch_size, dtype=torch.bool, device=self._device
-        )
 
-    def _is_supported_frame_count(self, frame_count: int) -> bool:
-        return 1 <= frame_count <= self._max_frames
+        if self._real_state_capacity <= 0:
+            raise ValueError("real_state_capacity must be positive")
+        if self._scratch_capacity < max(self._batch_sizes, default=0):
+            raise ValueError(
+                "scratch_capacity must cover the largest compact graph bucket; "
+                f"got scratch_capacity={self._scratch_capacity}, "
+                f"largest_bucket={max(self._batch_sizes, default=0)}"
+            )
+        if self._num_quantizers <= 0:
+            raise ValueError("num_quantizers must be positive")
+
+    @property
+    def is_ready(self) -> bool:
+        return bool(self._graphs)
+
+    @property
+    def capture_sizes(self) -> list[tuple[int, int]]:
+        return sorted(self._graphs)
+
+    @property
+    def batch_sizes(self) -> list[int]:
+        return list(self._batch_sizes)
+
+    @property
+    def frame_sizes(self) -> list[int]:
+        return list(self._frame_sizes)
+
+    @property
+    def scratch_capacity(self) -> int:
+        return self._scratch_capacity
+
+    def _capture_state_slots(
+        self, batch_size: int, *, device: torch.device
+    ) -> torch.Tensor:
+        return self._real_state_capacity + torch.arange(
+            batch_size,
+            dtype=torch.long,
+            device=device,
+        )
 
     def _enough_free_vram(self) -> tuple[bool, int]:
         free, _ = torch.cuda.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
-    @torch.no_grad()
-    def _reset_state(self) -> None:
-        """Reset every streaming module's offset/positions to 0 in-place (warmup-only, between
-        captures; the full state.reset is a one-time startup cost, not per-step)."""
-
-        def _r(module) -> None:
-            state = getattr(module, "_streaming_state", None)
-            if state is not None:
-                state.reset(self._reset_mask.to(state.device))
-
-        self._codec.apply(_r)
+    def _has_unbounded_attention_context(self) -> bool:
+        decoder = getattr(self._codec, "decoder", None)
+        if decoder is None or not callable(getattr(decoder, "modules", None)):
+            return False
+        return any(
+            hasattr(module, "context") and getattr(module, "context") is None
+            for module in decoder.modules()
+        )
 
     @torch.no_grad()
-    def _capture_frame_count(self, frame_count: int) -> None:
-        b, n = self._batch_size, self._n_vq
+    def _capture(self, batch_size: int, frame_size: int) -> None:
         device = self._device
-        static_codes = torch.zeros(n, b, frame_count, dtype=torch.long, device=device)
-        # Capture all-active; the live exec_mask at replay decides which slots advance.
-        static_lengths = torch.full((b,), frame_count, dtype=torch.long, device=device)
-        exec_mask = torch.ones(b, dtype=torch.bool, device=device)
-        self._codec._set_streaming_exec_mask(exec_mask)
-        # Note: (Jiaxin Deng) side-stream warmup forces lazy allocs (conv algo / workspaces) out of the capture.
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
+        codes = torch.zeros(
+            self._num_quantizers,
+            batch_size,
+            frame_size,
+            dtype=torch.long,
+            device=device,
+        )
+        lengths = torch.zeros(batch_size, dtype=torch.long, device=device)
+        state_slot_ids = self._capture_state_slots(batch_size, device=device)
+        valid_rows = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+        # Note (Zhang Yiyang): Warm up outside capture so lazy workspaces and the
+        # first decoder cache initialization do not become capture failures.
+        stream = torch.cuda.Stream(device=device)
+        stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(stream):
             for _ in range(self._warmup_iters):
-                self._codec._decode_frame(static_codes, static_lengths)
-        torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
-        # Note: (Jiaxin Deng) reset to offset 0 AFTER warmup, BEFORE capture -- capturing at the
-        # warmup-advanced offset bakes a wrong start state (~0.4 PCM error). reset re-activates all slots.
-        self._reset_state()
-        self._codec._set_streaming_exec_mask(exec_mask)
-        # Shared mempool across the T graphs to bound memory (large B=16 intermediates); capture order in warmup.
+                self._codec.decode_streaming_tensors(
+                    codes,
+                    lengths,
+                    state_slot_ids,
+                    valid_rows,
+                )
+        torch.cuda.current_stream(device).wait_stream(stream)
+        torch.cuda.synchronize(device)
+        self._codec.reset_decoder_state_slots(state_slot_ids)
+
         if self._pool is None:
             self._pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(
-            graph, pool=self._pool, capture_error_mode="thread_local"
+            graph,
+            pool=self._pool,
+            capture_error_mode="thread_local",
         ):
-            result = self._codec._decode_frame(static_codes, static_lengths)
-            static_audio = result.audio
-            static_audio_lengths = result.audio_lengths
-        self._graphs[frame_count] = _CapturedVocoderGraph(
+            static_audio, static_audio_lengths = self._codec.decode_streaming_tensors(
+                codes,
+                lengths,
+                state_slot_ids,
+                valid_rows,
+            )
+        self._graphs[(batch_size, frame_size)] = _CapturedVocoderGraph(
             graph=graph,
-            static_codes=static_codes,
-            static_lengths=static_lengths,
+            static_codes=codes,
+            static_lengths=lengths,
+            static_state_slot_ids=state_slot_ids,
+            capture_state_slot_ids=state_slot_ids.clone(),
+            static_valid_rows=valid_rows,
             static_audio=static_audio,
             static_audio_lengths=static_audio_lengths,
         )
-        logger.info(
-            "Captured MOSS vocoder CUDA graph T=%d (B=%d) -> audio %s (%d cached)",
-            frame_count,
-            b,
-            tuple(static_audio.shape),
-            len(self._graphs),
-        )
 
     @torch.no_grad()
-    def warmup(self, frames: Iterable[int]) -> None:
-        """Capture one graph per T, once, then seal (startup, GPU quiescent). Caller MUST reset all
-        slots after this returns (warmup advances per-slot state)."""
+    def warmup(self, frames: Iterable[int] | None = None) -> list[tuple[int, int]]:
+        """Capture configured ``(batch_bucket, exact_frame_count)`` graphs.
+
+        Capture is best effort.  A low-VRAM device or an individual capture
+        error leaves that key on eager execution; other keys may still be
+        captured.  The runner is sealed after one attempt to prevent capture
+        work from happening on the serving hot path.
+        """
         if self._sealed:
-            logger.warning(
-                "MossVocoderCudaGraphRunner.warmup called after seal; ignoring"
+            return self.capture_sizes
+        self._sealed = True
+        if self._device.type != "cuda" or not torch.cuda.is_available():
+            return []
+        if self._has_unbounded_attention_context():
+            logger.info(
+                "MOSS-Audio-Tokenizer vocoder CUDA graphs require finite attention context; "
+                "using eager streaming decode"
             )
-            return
-        # Bind capture to the codec's device: the stream/pool/graph use the current device, and
-        # factory-time capture can precede the stage device switch (split puts the codec off cuda:0).
+            return []
+        frame_sizes = (
+            self._frame_sizes
+            if frames is None
+            else sorted({int(frame) for frame in frames if int(frame) > 0})
+        )
+        if not self._batch_sizes or not frame_sizes:
+            return []
+
+        # Note (Zhang Yiyang): Capture largest allocations first when sharing a
+        # graph pool.
+        keys = sorted(
+            (
+                (batch_size, frame_size)
+                for batch_size in self._batch_sizes
+                for frame_size in frame_sizes
+            ),
+            reverse=True,
+        )
         with torch.cuda.device(self._device):
-            # Note: (Jiaxin Deng) capture LARGEST T first -- the graphs share one mempool; capturing a larger
-            # graph after a smaller one grows the pool and invalidates earlier graphs' addresses (replay segfaults).
-            for t in sorted(dict.fromkeys(int(x) for x in frames), reverse=True):
-                if t in self._graphs:
-                    continue
-                if not self._is_supported_frame_count(t):
-                    logger.warning(
-                        "skip MOSS vocoder CG T=%d: outside [1, %d]",
-                        t,
-                        self._max_frames,
-                    )
-                    continue
-                if len(self._graphs) >= self._max_graphs:
-                    logger.warning(
-                        "MOSS vocoder CG cap %d reached; skipping rest",
-                        self._max_graphs,
-                    )
-                    break
-                # Note: (Jiaxin Deng) VRAM headroom guard -- skip capture (-> eager) rather than risk OOM on
-                # a tight box. Checked per-T because each capture allocates; free only drops through the loop.
+            for batch_size, frame_size in keys:
+                key = (batch_size, frame_size)
                 enough, free = self._enough_free_vram()
                 if not enough:
                     logger.warning(
-                        "MOSS vocoder CG: free VRAM %.1fGB < %.1fGB headroom; skipping T=%d+ (eager)",
+                        "MOSS-Audio-Tokenizer vocoder CUDA graphs: free VRAM %.1fGB < %.1fGB; "
+                        "skipping remaining captures",
                         free / 1024**3,
                         self._min_free_bytes / 1024**3,
-                        t,
                     )
                     break
-                # best-effort: an uncaptured T falls back to eager
                 try:
-                    self._capture_frame_count(t)
-                except Exception as exc:
-                    self._graphs.pop(t, None)
+                    self._capture(batch_size, frame_size)
+                except Exception:
+                    self._graphs.pop(key, None)
+                    # Note (Zhang Yiyang): Reset scratch state after a failed
+                    # capture so eager execution remains available.
+                    try:
+                        self._codec.reset_decoder_state_slots(
+                            self._capture_state_slots(
+                                batch_size,
+                                device=self._device,
+                            )
+                        )
+                    except Exception:
+                        logger.exception(
+                            "failed to reset vocoder graph state slots after "
+                            "capture failure for (B,T)=%s",
+                            key,
+                        )
                     logger.warning(
-                        "MOSS vocoder CG capture failed for T=%d: %s; will use eager",
-                        t,
-                        exc,
+                        "MOSS-Audio-Tokenizer vocoder CUDA graph capture failed for (B,T)=%s; "
+                        "using eager",
+                        key,
+                        exc_info=True,
                     )
-        self._sealed = True
         logger.info(
-            "MOSS vocoder CUDA graphs sealed: %d T captured %s",
+            "MOSS-Audio-Tokenizer vocoder CUDA graphs sealed: %d/%d captured %s",
             len(self._graphs),
-            sorted(self._graphs.keys()),
+            len(keys),
+            self.capture_sizes,
         )
+        return self.capture_sizes
 
     def captured_frames(self) -> list[int]:
-        return sorted(self._graphs.keys())
+        return sorted({frame_size for _, frame_size in self._graphs})
 
     @torch.no_grad()
     def decode_step(
         self,
-        codes_step: torch.Tensor,
-        exec_mask: torch.Tensor,
+        codes: torch.Tensor,
+        state_slot_ids: torch.Tensor,
+        valid_rows: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor] | None:
-        """Replay the captured graph for ``[n_vq, B_full, T]`` codes (set live exec_mask, copy codes, replay), else None. Returns the static buffers directly; caller consumes before the next replay.
-
-        Per-slot lengths are not needed: every captured graph decodes the full T for all slots and
-        ``exec_mask`` gates which outputs are valid (the eager fallback still uses lengths).
-        """
-        if not codes_step.is_cuda:
+        """Replay a captured native decode shape, or return ``None`` for eager."""
+        if not codes.is_cuda or torch.cuda.is_current_stream_capturing():
             return None
-        n, b, t = codes_step.shape
-        if b != self._batch_size or n != self._n_vq:
+        if codes.ndim != 3 or state_slot_ids.ndim != 1:
             return None
-        entry = self._graphs.get(int(t))
+        num_quantizers, actual_batch_size, frame_size = map(int, codes.shape)
+        if (
+            num_quantizers != self._num_quantizers
+            or int(state_slot_ids.shape[0]) != actual_batch_size
+            or actual_batch_size <= 0
+        ):
+            return None
+        if valid_rows is None:
+            valid_rows = torch.ones(
+                actual_batch_size,
+                dtype=torch.bool,
+                device=codes.device,
+            )
+        if (
+            valid_rows.shape != (actual_batch_size,)
+            or valid_rows.dtype != torch.bool
+            or valid_rows.device != codes.device
+        ):
+            return None
+        batch_size = next(
+            (size for size in self._batch_sizes if size >= actual_batch_size),
+            None,
+        )
+        if batch_size is None:
+            return None
+        entry = self._graphs.get((batch_size, frame_size))
         if entry is None:
             return None
-        # Replicate eager inputs exactly (codes + live exec_mask) so replay is bit-for-bit identical.
-        self._codec._set_streaming_exec_mask(exec_mask)
-        entry.static_codes.copy_(codes_step)
+
+        entry.static_codes.zero_()
+        entry.static_codes[:, :actual_batch_size, :].copy_(codes, non_blocking=True)
+        entry.static_lengths.zero_()
+        entry.static_lengths[:actual_batch_size].copy_(
+            valid_rows.to(dtype=torch.long) * frame_size
+        )
+        entry.static_state_slot_ids.copy_(entry.capture_state_slot_ids)
+        entry.static_state_slot_ids[:actual_batch_size].copy_(
+            state_slot_ids,
+            non_blocking=True,
+        )
+        entry.static_valid_rows.zero_()
+        entry.static_valid_rows[:actual_batch_size].copy_(
+            valid_rows,
+            non_blocking=True,
+        )
         entry.graph.replay()
         return entry.static_audio, entry.static_audio_lengths
+
+
+__all__ = ["MossVocoderCudaGraphRunner"]

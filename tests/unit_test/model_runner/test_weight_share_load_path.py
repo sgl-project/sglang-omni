@@ -12,6 +12,7 @@ Requires sglang to be importable.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
@@ -31,6 +32,15 @@ from sglang_omni.utils import ipc_weights  # noqa: E402
 SGLModelRunner = sglang_model_runner.SGLModelRunner
 
 
+@pytest.fixture(autouse=True)
+def _parallel_bag(monkeypatch):
+    monkeypatch.setattr(
+        sglang_model_runner,
+        "get_parallel",
+        lambda: SimpleNamespace(tp_size=1, pp_size=1),
+    )
+
+
 class SmallModel(nn.Module):
     def __init__(self, fill: float):
         super().__init__()
@@ -45,8 +55,6 @@ def _bare_runner(load_format="auto"):
     runner.server_args = SimpleNamespace(
         load_format=load_format,
         max_total_tokens=1000,
-        tp_size=1,
-        pp_size=1,
         model_path="m",
         revision="r",
         enable_torch_compile=False,
@@ -133,6 +141,30 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     assert runner._weight_update_blocked_reason() is not None
 
 
+def test_follower_runs_post_attach_hook_after_aliasing(tmp_path, monkeypatch):
+    seen = []
+
+    class HookModel(SmallModel):
+        def on_weight_share_attached(self):
+            seen.append(float(self.linear.weight[0, 0]))
+
+    ipc_weights.export_weights(
+        HookModel(fill=7.0), str(tmp_path / "HookModel.weights-ipc")
+    )
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"follower:{tmp_path}")
+
+    def fake_load(self):
+        self.model = HookModel(fill=0.0)
+
+    with mock.patch.object(ModelRunner, "load_model", fake_load):
+        runner = _bare_runner()
+        runner.load_model()
+    runner._weight_ipc_leader_monitor.stop()
+
+    # Called once, and only after the follower aliased the leader's storage.
+    assert seen == [7.0]
+
+
 def test_follower_verifies_attachment_before_graph_capture(tmp_path, monkeypatch):
     ipc_weights.export_weights(
         SmallModel(fill=7.0), str(tmp_path / "SmallModel.weights-ipc")
@@ -181,6 +213,59 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
         runner.init_cuda_graphs()
 
     assert calls == ["capture", "resize"]
+
+
+def test_graph_capture_pins_sdpa_around_the_upstream_capture():
+    from sglang_omni.platforms import current_platform
+
+    runner = _bare_runner()
+    calls = []
+
+    @contextmanager
+    def fake_pin():
+        calls.append("pin_enter")
+        try:
+            yield
+        finally:
+            calls.append("pin_exit")
+
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(current_platform, "is_xpu", lambda: True),
+        mock.patch.object(current_platform, "graph_capture_attention", fake_pin),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    assert calls == ["pin_enter", "capture", "pin_exit"]
+
+
+def test_a_non_xpu_platform_captures_unwrapped():
+    from sglang_omni.platforms import current_platform
+
+    runner = _bare_runner()
+    calls = []
+
+    def fail_if_entered():
+        raise AssertionError("the pin must not be built off XPU")
+
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(current_platform, "is_xpu", lambda: False),
+        mock.patch.object(current_platform, "graph_capture_attention", fail_if_entered),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    assert calls == ["capture"]
 
 
 def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():

@@ -7,7 +7,7 @@ using its own internal LLM + CFM + DiT + AudioVAE pipeline.
 
 The talker is a self-contained TTS system that:
 1. Tokenizes input text with its own tokenizer
-2. Runs its own Qwen2 LLM with StaticCache + CUDA graphs
+2. Runs its own Qwen2 LLM with StaticCache + device graphs
 3. Uses CFM (Conditional Flow Matching) + DiT for diffusion-based audio synthesis
 4. Decodes audio latents to waveform via AudioVAE
 """
@@ -86,6 +86,8 @@ class MingTalkerExecutor:
         # 1. Load config from checkpoint
         t0 = time.time()
         config = MingOmniTalkerConfig.from_pretrained_dir(self._talker_model_path)
+        if torch.device(self._device).type == "npu":
+            config.use_torch_attention()
 
         # 2. Create model (no weights yet)
         self._talker = MingOmniTalker(config)
@@ -167,11 +169,11 @@ class MingTalkerExecutor:
         except Exception as e:
             logger.warning("[TALKER] Could not load thinker tokenizer: %s", e)
 
-        # 10. Initialize CUDA graphs
-        logger.info("[TALKER] Initializing CUDA graphs...")
+        # 10. Initialize device graphs
+        logger.info("[TALKER] Initializing device graphs...")
         t0g = time.time()
         self._talker.initial_graph()
-        logger.info("[TALKER] CUDA graphs initialized in %.1fs", time.time() - t0g)
+        logger.info("[TALKER] Device graphs initialized in %.1fs", time.time() - t0g)
 
     async def add_request(self, payload: StagePayload) -> None:
         """Process a TTS request."""

@@ -23,9 +23,11 @@ AUDIO_DECODE_STAGE = "audio_decode"
 
 MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE = 1
 MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS = 0
+MING_TTS_DEFAULT_STREAM_SLOTS = 1
 MING_TTS_DEFAULT_MAX_DECODE_STEPS_CAP = 256
 MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES = 2
 MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES = 4
+MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH = False
 
 
 def _validate_ming_tts_pipeline_contract(
@@ -115,7 +117,7 @@ def validate_ming_tts_audio_decode_batch_config(
     *,
     max_batch_size: int,
     max_batch_wait_ms: int,
-) -> tuple[int, int]:
+) -> None:
     if (
         isinstance(max_batch_size, bool)
         or not isinstance(max_batch_size, int)
@@ -124,8 +126,8 @@ def validate_ming_tts_audio_decode_batch_config(
         raise ValueError(
             "Ming-Omni-TTS audio_decode currently supports "
             f"max_batch_size={MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE} only; "
-            "cross-request AudioVAE batching is not implemented yet, got "
-            f"{max_batch_size!r}"
+            "cross-request non-streaming AudioVAE batching is not implemented, "
+            f"got {max_batch_size!r}"
         )
     if (
         isinstance(max_batch_wait_ms, bool)
@@ -134,11 +136,22 @@ def validate_ming_tts_audio_decode_batch_config(
     ):
         raise ValueError(
             "Ming-Omni-TTS audio_decode currently supports "
-            f"max_batch_wait_ms={MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS} only "
-            "while cross-request AudioVAE batching is disabled, got "
+            f"max_batch_wait_ms={MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS} only; "
+            "cross-request non-streaming AudioVAE batching is not implemented, got "
             f"{max_batch_wait_ms!r}"
         )
-    return max_batch_size, max_batch_wait_ms
+
+
+def validate_ming_tts_audio_decode_stream_slots(stream_slots: int) -> None:
+    if (
+        isinstance(stream_slots, bool)
+        or not isinstance(stream_slots, int)
+        or stream_slots <= 0
+    ):
+        raise ValueError(
+            "Ming-Omni-TTS audio_decode stream_slots must be a positive integer, "
+            f"got {stream_slots!r}"
+        )
 
 
 def validate_ming_tts_audio_decode_cadence_config(
@@ -165,9 +178,7 @@ def validate_ming_tts_audio_decode_cadence_config(
 
 
 class MingTTSPreprocessingFactoryArgs(FactoryArgs):
-    """Preprocessing constructor knobs, typed like the shared ones."""
-
-    max_decode_steps_cap: int | None = Field(default=None, gt=0)
+    max_decode_steps_cap: int | None = Field(default=None, gt=0, strict=True)
 
 
 class MingTTSPreprocessingStageConfig(StageConfig):
@@ -177,10 +188,30 @@ class MingTTSPreprocessingStageConfig(StageConfig):
 
 
 class MingTTSAudioDecodeFactoryArgs(FactoryArgs):
-    """Audio-decode cadence knobs, typed like the shared ones."""
-
-    initial_chunk_patches: int | None = Field(default=None, gt=0)
-    steady_chunk_patches: int | None = Field(default=None, gt=0)
+    streaming_cuda_graph: bool | None = Field(default=None, strict=True)
+    initial_chunk_patches: int | None = Field(default=None, gt=0, strict=True)
+    steady_chunk_patches: int | None = Field(default=None, gt=0, strict=True)
+    stream_slots: int | None = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description=(
+            "Concurrent streaming AudioVAE state slots, fixed transition width, "
+            "and nonblocking stream-chunk collector cap"
+        ),
+    )
+    max_batch_size: int | None = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description="Cross-request non-streaming AudioVAE batch size; currently 1",
+    )
+    max_batch_wait_ms: int | None = Field(
+        default=None,
+        ge=0,
+        strict=True,
+        description="Cross-request non-streaming AudioVAE batch wait; currently 0",
+    )
 
 
 class MingTTSAudioDecodeStageConfig(StageConfig):
@@ -205,17 +236,6 @@ class MingTTSPipelineConfig(PipelineConfig):
         TTS_ENGINE_STAGE: EngineStageConfig,
         AUDIO_DECODE_STAGE: MingTTSAudioDecodeStageConfig,
     }
-
-    @classmethod
-    def process_local_edges(cls) -> frozenset[tuple[str, str]]:
-        # Note (kaige): both payloads are transport-complete, but preserve the
-        # previous process-split allowlist in this PR and relax it separately.
-        return frozenset(
-            {
-                (PREPROCESSING_STAGE, REFERENCE_ENCODE_STAGE),
-                (REFERENCE_ENCODE_STAGE, TTS_ENGINE_STAGE),
-            }
-        )
 
     entry_stage: str = PREPROCESSING_STAGE
     stages: list[StageConfig] = [
@@ -253,6 +273,8 @@ class MingTTSPipelineConfig(PipelineConfig):
                 dtype="bfloat16",
                 initial_chunk_patches=MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
                 steady_chunk_patches=MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
+                streaming_cuda_graph=MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH,
+                stream_slots=MING_TTS_DEFAULT_STREAM_SLOTS,
                 max_batch_size=MING_TTS_AUDIO_DECODE_MAX_BATCH_SIZE,
                 max_batch_wait_ms=MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS,
             ),
@@ -282,10 +304,10 @@ class MingTTSPipelineConfig(PipelineConfig):
         max_batch_wait_ms = audio_decode.factory.max_batch_wait_ms
         if max_batch_wait_ms is None:
             max_batch_wait_ms = MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS
-        elif float(max_batch_wait_ms).is_integer():
-            # The factory group declares the wait as a float; the batch
-            # contract below is written against whole milliseconds.
-            max_batch_wait_ms = int(max_batch_wait_ms)
+        stream_slots = audio_decode.factory.stream_slots
+        if stream_slots is None:
+            stream_slots = MING_TTS_DEFAULT_STREAM_SLOTS
+        validate_ming_tts_audio_decode_stream_slots(stream_slots)
         validate_ming_tts_audio_decode_batch_config(
             max_batch_size=(
                 audio_decode.factory.max_batch_size

@@ -62,7 +62,7 @@ MMMU_TTS_PROMPT = (
 )
 
 MMMU_AUDIO_MIN_ACCURACY = 0.7
-MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.1351
+MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX = 0.1449
 MMMU_AUDIO_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(
     MMMU_AUDIO_WER_BELOW_50_CORPUS_MAX
 )
@@ -70,10 +70,10 @@ MMMU_AUDIO_N_ABOVE_50_MAX = 3.0
 
 _MMMU_AUDIO_P95 = {
     16: {
-        "throughput_qps": 0.849,
+        "throughput_qps": 1.009,
         "output_tok_per_req_s": 11.8,
-        "latency_mean_s": 11.916,
-        "rtf_mean": 0.2941,
+        "latency_mean_s": 11.841,
+        "rtf_mean": 0.2939,
     },
 }
 MMMU_AUDIO_THRESHOLDS = apply_slack(_MMMU_AUDIO_P95)

@@ -13,6 +13,8 @@ from sglang_omni.models.ming_tts.config import (
     AUDIO_DECODE_STAGE,
     MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
     MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
+    MING_TTS_DEFAULT_STREAM_SLOTS,
+    MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH,
     TTS_ENGINE_STAGE,
     MingTTSPipelineConfig,
 )
@@ -48,6 +50,8 @@ def test_ming_tts_audio_decode_defaults_are_full_sequence_and_serial() -> None:
     assert "decode_mode" not in factory
     assert factory["initial_chunk_patches"] == MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES
     assert factory["steady_chunk_patches"] == MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES
+    assert factory["streaming_cuda_graph"] is MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH
+    assert factory["stream_slots"] == MING_TTS_DEFAULT_STREAM_SLOTS
     assert factory["max_batch_size"] == 1
     assert factory["max_batch_wait_ms"] == 0
 
@@ -64,11 +68,13 @@ def test_ming_tts_example_config_uses_supported_audio_decode_contract() -> None:
     assert "decode_mode" not in (factory.model_extra or {})
     assert factory.initial_chunk_patches == MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES
     assert factory.steady_chunk_patches == MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES
+    assert factory.streaming_cuda_graph is True
+    assert factory.stream_slots == 8
     assert factory.max_batch_size == 1
     assert factory.max_batch_wait_ms == 0
 
 
-def test_ming_tts_missing_initial_cadence_uses_default() -> None:
+def test_ming_tts_missing_initial_cadence_remains_unset() -> None:
     raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
     _audio_decode_stage(raw)["factory"].pop("initial_chunk_patches")
 
@@ -76,11 +82,10 @@ def test_ming_tts_missing_initial_cadence_uses_default() -> None:
     factory = config.stage_named(AUDIO_DECODE_STAGE).factory
 
     assert factory.initial_chunk_patches is None
-    # None means unset: the default applies at the consumer.
 
 
 @pytest.mark.parametrize("field", ["initial_chunk_patches", "steady_chunk_patches"])
-@pytest.mark.parametrize("value", [1.5, 0, -1])
+@pytest.mark.parametrize("value", [True, 1.5, "2", 0, -1])
 def test_ming_tts_rejects_invalid_cadence(field: str, value: Any) -> None:
     """The positive-integer rule is a static declaration on the typed group."""
     raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
@@ -125,22 +130,35 @@ def test_ming_tts_rejects_legacy_audio_decode_mode() -> None:
         MingTTSPipelineConfig.model_validate(raw)
 
 
-@pytest.mark.parametrize(
-    ("field", "value", "error"),
-    [
-        ("max_batch_size", 2, "max_batch_size=1 only"),
-        ("max_batch_wait_ms", 1, "max_batch_wait_ms=0 only"),
-    ],
-)
-def test_ming_tts_rejects_unsupported_audio_decode_batch_config(
-    field: str,
-    value: int,
-    error: str,
-) -> None:
+def test_ming_tts_accepts_positive_audio_decode_stream_slots() -> None:
     raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
-    _audio_decode_stage(raw)["factory"][field] = value
+    _audio_decode_stage(raw)["factory"]["stream_slots"] = 2
 
-    with pytest.raises(ValueError, match=error):
+    MingTTSPipelineConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "2", 0, -1])
+def test_ming_tts_rejects_invalid_audio_decode_stream_slots(value: Any) -> None:
+    raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
+    _audio_decode_stage(raw)["factory"]["stream_slots"] = value
+
+    with pytest.raises(ValueError, match="stream_slots"):
+        MingTTSPipelineConfig.model_validate(raw)
+
+
+def test_ming_tts_rejects_cross_request_audio_decode_batching() -> None:
+    raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
+    _audio_decode_stage(raw)["factory"]["max_batch_size"] = 2
+
+    with pytest.raises(ValueError, match="max_batch_size=1 only"):
+        MingTTSPipelineConfig.model_validate(raw)
+
+
+def test_ming_tts_rejects_nonzero_audio_decode_batch_wait() -> None:
+    raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
+    _audio_decode_stage(raw)["factory"]["max_batch_wait_ms"] = 1
+
+    with pytest.raises(ValueError, match="max_batch_wait_ms=0 only"):
         MingTTSPipelineConfig.model_validate(raw)
 
 

@@ -14,11 +14,11 @@
 
 ## Accuracy Test
 
-<!-- If this PR affects model-side code (e.g., kernels, model architecture), please provide accuracy test results. Ref: https://docs.sglang.ai/references/accuracy_evaluation.html -->
+<!-- If this PR affects model-side code (e.g., kernels, model architecture), please provide accuracy test results. Ref: https://docs.sglang.io/docs/developer_guide/evaluating_new_models -->
 
 ## Benchmark & Profiling
 
-<!-- If this PR is expected to impact performance, please provide benchmark and profiling results. Ref: https://docs.sglang.ai/references/benchmark_and_profiling.html -->
+<!-- If this PR is expected to impact performance, please provide benchmark and profiling results. Ref: https://docs.sglang.io/docs/developer_guide/benchmark_and_profiling -->
 
 ## Checklist
 

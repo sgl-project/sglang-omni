@@ -13,11 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from sgl_kernel import top_k_renorm_prob as _fused_top_k_renorm
-from sgl_kernel import top_p_renorm_prob as _fused_top_p_renorm
 from sglang.srt.layers.sampler import multinomial_with_seed
 
+from sglang_omni.models.higgs_tts.reset_kernels import reset_sampler_row
 from sglang_omni.models.higgs_tts.utils import BOC_ID, EOC_ID
+from sglang_omni.platforms import current_platform
 
 # Sentinel seed for rows with no user seed: keeps the legacy unseeded
 # torch.multinomial path, so unseeded decode is byte-identical to before.
@@ -28,6 +28,29 @@ STOP_CODE = -1
 
 # CG-baked top-k upper bound = full codec vocab, so the default value is a no-op filter.
 K_MAX = 1026
+
+
+def _resolve_renorm_kernels():
+    """Return ``(top_k_renorm, top_p_renorm)`` callables for this platform.
+
+    CUDA uses the fused ``sgl_kernel`` kernels to avoid a full-vocab
+    ``torch.sort`` in decode. Ascend NPU has no fused renorm kernels so it
+    falls back to the pure-torch implementations in ``npu_fallback.py``;
+    the same fallback serves any other platform without ``sgl_kernel``.
+    """
+    if current_platform.device_type == "cuda":
+        from sgl_kernel import top_k_renorm_prob, top_p_renorm_prob
+
+        return top_k_renorm_prob, top_p_renorm_prob
+    from sglang_omni.models.higgs_tts.npu_fallback import (
+        top_k_renorm_prob,
+        top_p_renorm_prob,
+    )
+
+    return top_k_renorm_prob, top_p_renorm_prob
+
+
+_fused_top_k_renorm, _fused_top_p_renorm = _resolve_renorm_kernels()
 
 
 @dataclass
@@ -59,10 +82,12 @@ class HiggsBatchedSamplerState:
         self,
         max_batch_size: int,
         num_codebooks: int,
-        device: torch.device | str = "cuda",
+        device: torch.device | str | None = None,
     ) -> None:
         self.max_batch_size = int(max_batch_size)
         self.num_codebooks = int(num_codebooks)
+        if device is None:
+            device = current_platform.device_type
         self.device = torch.device(device)
         self.delay_count = torch.zeros(
             self.max_batch_size, dtype=torch.int32, device=self.device
@@ -87,9 +112,24 @@ class HiggsBatchedSamplerState:
         self.step_count = torch.zeros(
             self.max_batch_size, dtype=torch.long, device=self.device
         )
+        # note (Dayuxiaoshui): the fused reset is JIT-compiled on first use
+        # (~0.5 s). Row 0 is already clean, so this call only moves that
+        # compile from the first request to pool construction.
+        self.reset_row(0)
 
     def reset_row(self, row: int) -> None:
         """Wipe row ``row`` so the next owner can't read stale state."""
+        if reset_sampler_row(
+            self.delay_count,
+            self.eoc_countdown,
+            self.generation_done,
+            self.last_codes,
+            self.seeds,
+            self.step_count,
+            row,
+            NO_SEED,
+        ):
+            return
         self.delay_count[row] = 0
         self.eoc_countdown[row] = -1
         self.generation_done[row] = False

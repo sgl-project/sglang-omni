@@ -193,9 +193,13 @@ def test_speech_seed_is_rejected_until_request_rng_is_supported() -> None:
 def test_zonos2_engine_builder_disables_chunked_prefill() -> None:
     """The per-frame feedback/EOS state machine has no rollback, so the builder
     must disable chunked prefill regardless of the ServerArgs default."""
-    server_args = SimpleNamespace(chunked_prefill_size=8192)
+    from sglang.srt.arg_groups.overrides import resolution_result
+    from sglang.srt.server_args import ServerArgs
+
+    server_args = ServerArgs(model_path="dummy", chunked_prefill_size=8192)
+    server_args.resolve_once()
     Zonos2EngineBuilder().customize_server_args(server_args)
-    assert server_args.chunked_prefill_size == 0
+    assert resolution_result(server_args, "chunked_prefill_size") == 0
 
 
 def test_zonos2_engine_builder_declares_model_arch_override() -> None:
@@ -220,3 +224,20 @@ def test_zonos2_engine_builder_keeps_power_of_two_cuda_graph_buckets() -> None:
     overrides = {"cuda_graph_max_bs": 16}
     Zonos2EngineBuilder(cuda_graph_max_bs=16).adjust_overrides(overrides)
     assert overrides["cuda_graph_bs"] == [1, 2, 4, 8, 16]
+
+
+def test_zonos2_factories_reject_unknown_config_options() -> None:
+    """A catch-all **kwargs here once made the config validator accept options
+    the factory silently discarded (e.g. factory.max_new_tokens)."""
+    import pytest
+
+    from sglang_omni.config.runtime import apply_typed_stage_kwargs
+    from sglang_omni.models.zonos2 import stages
+
+    with pytest.raises(ValueError, match="max_new_tokens"):
+        apply_typed_stage_kwargs(
+            stages.create_sglang_omni_tts_engine_executor,
+            {},
+            {"max_new_tokens": 100},
+            stage_name="tts_engine",
+        )

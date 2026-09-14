@@ -31,6 +31,7 @@ def _runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner.model = model
     runner._feedback_enabled = True
     runner._code2wav_target = "code2wav"
+    runner._codec_coalesce_frames = 0
     runner._outbox = SimpleNamespace(sent=[])
     runner._outbox.put = runner._outbox.sent.append
     return runner
@@ -47,6 +48,7 @@ def _data(
     return SimpleNamespace(
         pending_feedback_queue=deque([feedback]) if feedback is not None else deque(),
         pending_text_queue=deque([text]) if text is not None else deque(),
+        decode_input_embeds=[],
         thinker_chunks_done=thinker_done,
         tts_pad_embed=pad,
         stage_payload=stage_payload,

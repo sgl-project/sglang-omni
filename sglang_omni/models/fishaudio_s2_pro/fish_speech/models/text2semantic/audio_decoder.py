@@ -81,6 +81,89 @@ def _flashinfer_kvcache_attention(
     return torch.stack(outputs, dim=0)
 
 
+def _npu_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_position: int,
+) -> torch.Tensor:
+    """Run single-token Fast-AR attention with the Ascend fused kernel."""
+    if k is None or v is None:
+        raise ValueError("NPU Fast-AR attention requires k and v")
+    if q.shape[0] != k.shape[0] or q.shape[0] != v.shape[0]:
+        raise ValueError("Fast-AR q, k, and v batch sizes must match")
+    if cache_position < 0:
+        raise ValueError("NPU Fast-AR attention requires cache_position")
+    if q.shape[1] != 1 or k.shape[1] != 1 or v.shape[1] != 1:
+        raise ValueError("NPU Fast-AR attention requires a single-token query/KV")
+
+    try:
+        fused_attention = torch.ops.npu.npu_fused_infer_attention_score
+    except AttributeError as exc:
+        raise RuntimeError(
+            "FishAudio S2-Pro on NPU requires "
+            "torch.ops.npu.npu_fused_infer_attention_score"
+        ) from exc
+
+    cache_end = cache_position + int(k.shape[1])
+    k_cache[:, cache_position:cache_end].copy_(k)
+    v_cache[:, cache_position:cache_end].copy_(v)
+
+    out, _ = fused_attention(
+        q.contiguous(),
+        k_cache[:, :cache_end].contiguous(),
+        v_cache[:, :cache_end].contiguous(),
+        num_heads=q.shape[2],
+        num_key_value_heads=k_cache.shape[2],
+        input_layout="BSND",
+        scale=1.0 / math.sqrt(q.shape[-1]),
+    )
+    return out
+
+
+def _cuda_kvcache_attention(
+    *,
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None,
+    v: torch.Tensor | None,
+    cache_seqlens: torch.Tensor | None,
+    causal: bool,
+    num_splits: int,
+    cache_position: int,
+) -> torch.Tensor:
+    """Dispatch Fast-AR attention to the validated CUDA backend."""
+    device_index = q.device.index
+    if device_index is None:
+        raise RuntimeError("FishAudio S2-Pro Fast-AR requires an indexed CUDA device")
+    if _fast_ar_uses_fa3(device_index):
+        from sgl_kernel.flash_attn import flash_attn_with_kvcache
+
+        return flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=cache_seqlens,
+            causal=causal,
+            num_splits=num_splits,
+        )
+    return _flashinfer_kvcache_attention(
+        q=q,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        k=k,
+        v=v,
+        causal=causal,
+        cache_position=cache_position,
+    )
+
+
 @torch.library.custom_op(
     "mylib::flash_attn_kvcache", mutates_args=("k_cache", "v_cache")
 )
@@ -95,12 +178,18 @@ def flash_attn_kvcache_op(
     num_splits: int = 0,
     cache_position: int = -1,
 ) -> torch.Tensor:
-    if q.device.type != "cuda" or q.device.index is None:
-        raise RuntimeError("FishAudio S2-Pro Fast-AR attention requires CUDA")
-    if _fast_ar_uses_fa3(q.device.index):
-        from sgl_kernel.flash_attn import flash_attn_with_kvcache
-
-        return flash_attn_with_kvcache(
+    device_type = q.device.type
+    if device_type == "npu":
+        output = _npu_kvcache_attention(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_position=cache_position,
+        )
+    elif device_type == "cuda":
+        output = _cuda_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -111,16 +200,14 @@ def flash_attn_kvcache_op(
             ),
             causal=causal,
             num_splits=num_splits,
+            cache_position=cache_position,
         )
-    return _flashinfer_kvcache_attention(
-        q=q,
-        k_cache=k_cache,
-        v_cache=v_cache,
-        k=k,
-        v=v,
-        causal=causal,
-        cache_position=cache_position,
-    )
+    else:
+        raise RuntimeError(
+            "FishAudio S2-Pro Fast-AR attention supports CUDA and NPU, "
+            f"but got device type {device_type!r}"
+        )
+    return output
 
 
 @flash_attn_kvcache_op.register_fake

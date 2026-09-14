@@ -5,7 +5,7 @@ Usage:
     pytest tests/test_model/test_qwen3_omni_videoamme_ci.py -s -x
 
 Author:
-    Ratish P https://github.com/Ratish21
+    Ratish P https://github.com/Ratish1
 """
 
 from __future__ import annotations
@@ -31,13 +31,13 @@ from tests.utils import MetricCheckCollector, apply_slack, assert_speed_threshol
 CONCURRENCY = 16
 MAX_SAMPLES = 50
 
-VIDEOAMME_MIN_ACCURACY = 0.62
+VIDEOAMME_MIN_ACCURACY = 0.68
 
 _VIDEOAMME_P95 = {
     16: {
-        "throughput_qps": 1.658,
-        "output_tok_per_req_s": 5.8,
-        "latency_mean_s": 8.28,
+        "throughput_qps": 1.739,
+        "output_tok_per_req_s": 6.1,
+        "latency_mean_s": 7.928,
     },
 }
 VIDEOAMME_THRESHOLDS = apply_slack(_VIDEOAMME_P95)

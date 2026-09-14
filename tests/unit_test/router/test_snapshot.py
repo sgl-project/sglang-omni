@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from sglang_omni_router.snapshot import (
+from sglang_omni_router.python.snapshot import (
     SNAPSHOT_SCHEMA_VERSION,
     SnapshotReader,
     SnapshotWorker,
@@ -145,7 +145,7 @@ def test_writer_cleans_its_temp_file_when_the_replace_fails(
     def _boom(src, dst):
         raise OSError("replace failed")
 
-    monkeypatch.setattr("sglang_omni_router.snapshot.os.replace", _boom)
+    monkeypatch.setattr("sglang_omni_router.python.snapshot.os.replace", _boom)
     try:
         writer.publish(_workers())
     except OSError:

@@ -32,6 +32,7 @@ from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.sglang_backend import (
@@ -802,14 +803,13 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     max_seq_len: int | None = None,
+    max_concurrency: int = 1,
     video_fps: float | None = None,
     video_max_frames: int | None = None,
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
 ):
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
@@ -823,10 +823,26 @@ def create_preprocessing_executor(
     async def _preprocess(payload: StagePayload) -> StagePayload:
         return await preprocessor(payload)
 
-    return SimpleScheduler(_preprocess)
+    # Note (wenyao): threaded dispatch deepens thinker batches, and greedy bf16 MoE
+    # answers shift with batch composition (Video-MME CI flipped); serial by default.
+    if max_concurrency <= 1:
+        from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+
+        return SimpleScheduler(_preprocess)
+
+    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+
+    return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
 
 
-def create_aggregate_executor():
+def create_aggregate_executor(
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+):
+    # note (lennox): identity stage placed on GPU for colocation only;
+    # it does not touch the device.
+    del device, gpu_id
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     def _identity(payload: StagePayload) -> StagePayload:
@@ -839,12 +855,13 @@ def create_image_encoder_executor(
     model_path: str,
     *,
     device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str | None = None,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_device_spec
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = resolve_device_spec(device)
+    device = str(resolve_concrete_device(device, gpu_id))
     model = Qwen3OmniImageEncoder(model_path=model_path, device=device, dtype=dtype)
     cache = StageOutputCache(
         max_size=QWEN3_ENCODER_CACHE_MAX_ENTRIES,
@@ -913,13 +930,14 @@ def create_audio_encoder_executor(
     model_path: str,
     *,
     device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
 ):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.utils.device import resolve_device_spec
+    from sglang_omni.utils.device import resolve_concrete_device
 
-    device = resolve_device_spec(device)
+    device = str(resolve_concrete_device(device, gpu_id))
     model = Qwen3OmniAudioEncoder(
         model_path=model_path,
         device=device,
@@ -998,7 +1016,8 @@ def create_decode_executor(model_path: str):
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
@@ -1014,6 +1033,11 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_when_idle: bool = False,
 ):
     """Returns OmniScheduler for thinker."""
+    from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    gpu_id = concrete_device.index or 0
     # note (luojiaxuan):
     # The thinker runs prefill XOR decode per scheduler step, so under
     # concurrent streaming a large fraction of steps are prefill-only while
@@ -1035,6 +1059,10 @@ def create_sglang_thinker_executor_from_config(
         sampling_backend="pytorch",
     )
     overrides["tp_size"] = tp_size
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.enable_thinker_decode_graph():
+        overrides.setdefault("disable_decode_cuda_graph", True)
     has_explicit_colocated_mem_fraction = (
         total_gpu_memory_fraction is not None
         and overrides.get("mem_fraction_static") is not None
@@ -1051,6 +1079,7 @@ def create_sglang_thinker_executor_from_config(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         encoder_mem_reserve=colocated_encoder_mem_reserve,
     )
+    pin_resolved_device_type(overrides, concrete_device.type)
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,
@@ -1061,13 +1090,24 @@ def create_sglang_thinker_executor_from_config(
         server_args=server_args,
     )
     if total_gpu_memory_fraction is None:
-        encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
-            server_args,
-            has_explicit_mem_fraction_static=(
-                memory_contract.mem_fraction_static_pinned
-            ),
-            encoder_mem_reserve=encoder_mem_reserve,
-        )
+        from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
+
+        # Note (Jiaxin Deng): under a byte budget the KV configurator ignores
+        # mem_fraction_static, so an encoder reserve would be a silent no-op.
+        if peek_stage_kv_cache_bytes() is not None:
+            logger.info(
+                "thinker declares engine.kv_cache_bytes; skipping the "
+                f"encoder_mem_reserve={encoder_mem_reserve} fraction adjustment"
+            )
+            encoder_reserve_applied = False
+        else:
+            encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
+                server_args,
+                has_explicit_mem_fraction_static=(
+                    memory_contract.mem_fraction_static_pinned
+                ),
+                encoder_mem_reserve=encoder_mem_reserve,
+            )
         effective_total_gpu_memory_fraction = total_gpu_memory_fraction
         applied_encoder_reserve = (
             encoder_mem_reserve if encoder_reserve_applied else 0.0
@@ -1078,6 +1118,9 @@ def create_sglang_thinker_executor_from_config(
         )
         applied_encoder_reserve = memory_contract.applied_encoder_mem_reserve
 
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+
+    cfg = resolved_view(server_args)
     pre_load_avail_mem = avail_gpu_mem(gpu_id)
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
@@ -1085,7 +1128,7 @@ def create_sglang_thinker_executor_from_config(
         f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
-        f"mem_fraction_static={server_args.mem_fraction_static} "
+        f"mem_fraction_static={cfg.mem_fraction_static} "
         f"encoder_mem_reserve={applied_encoder_reserve} "
         f"pre_load_avail_mem={pre_load_avail_mem} "
         f"pid={os.getpid()} "
@@ -1103,14 +1146,19 @@ def create_sglang_thinker_executor_from_config(
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        operator_selected_prefill_backend=operator_selected_prefill_backend(
+            server_args_overrides
+        ),
     )
+    from sglang.srt.runtime_context import get_schedule
+
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_started stage=thinker gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
         f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
         f"effective_total_gpu_memory_fraction={effective_total_gpu_memory_fraction} "
-        f"mem_fraction_static={server_args.mem_fraction_static} "
+        f"mem_fraction_static={get_schedule().mem_fraction_static} "
         f"pre_load_avail_mem={pre_load_avail_mem} "
         f"post_load_avail_mem={avail_gpu_mem(gpu_id)} "
         f"pid={os.getpid()} "
@@ -1123,7 +1171,8 @@ def create_sglang_thinker_executor_from_config(
 def create_talker_ar_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
@@ -1135,9 +1184,18 @@ def create_talker_ar_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
+    enable_talker_start_topology: bool = False,
+    codec_coalesce_frames: int = 0,
+    codec_coalesce_first_frames: int = 0,
+    codec_coalesce_early_frames: int = 0,
 ):
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
+    from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    gpu_id = concrete_device.index or 0
 
     # Note (Xuesong, Chenyang): cuda_graph defaults to ON for the talker
     # after #384, which routed talker MoE through `self.experts` (FusedMoE)
@@ -1153,12 +1211,19 @@ def create_talker_ar_executor_from_config(
         disable_cuda_graph=False,
         sampling_backend="pytorch",
     )
+    from sglang_omni.platforms import current_platform
+
+    # A platform may decline the default above; the caller's setting still wins.
+    stated_disable = "disable_cuda_graph" in (server_args_overrides or {})
+    if not stated_disable and not current_platform.enable_talker_graph():
+        overrides["disable_cuda_graph"] = True
     overrides["tp_size"] = tp_size
     _apply_colocated_ar_memory_contract(
         overrides,
         stage_name="talker_ar",
         total_gpu_memory_fraction=total_gpu_memory_fraction,
     )
+    pin_resolved_device_type(overrides, concrete_device.type)
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,
@@ -1168,13 +1233,16 @@ def create_talker_ar_executor_from_config(
         model_name="Qwen3-Omni talker_ar",
         server_args=server_args,
     )
+    from sglang.srt.arg_groups.model_override_base import resolved_view
+
+    cfg = resolved_view(server_args)
     pre_load_avail_mem = avail_gpu_mem(gpu_id)
     pre_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_startup stage=talker_ar gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
         f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
-        f"mem_fraction_static={server_args.mem_fraction_static} "
+        f"mem_fraction_static={cfg.mem_fraction_static} "
         f"pre_load_avail_mem={pre_load_avail_mem} "
         f"pid={os.getpid()} "
         f"pre_load_process_mem={format_bytes_gib(pre_load_process_mem)}"
@@ -1190,13 +1258,19 @@ def create_talker_ar_executor_from_config(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
+        enable_talker_start_topology=enable_talker_start_topology,
+        codec_coalesce_frames=codec_coalesce_frames,
+        codec_coalesce_first_frames=codec_coalesce_first_frames,
+        codec_coalesce_early_frames=codec_coalesce_early_frames,
     )
+    from sglang.srt.runtime_context import get_schedule
+
     post_load_process_mem = get_process_gpu_memory_bytes(gpu_id)
     logger.info(
         f"sglang_ar_started stage=talker_ar gpu_id={gpu_id} tp_rank={tp_rank}/{tp_size} "
         f"context_length={max_seq_len} "
         f"total_gpu_memory_fraction={total_gpu_memory_fraction} "
-        f"mem_fraction_static={server_args.mem_fraction_static} "
+        f"mem_fraction_static={get_schedule().mem_fraction_static} "
         f"pre_load_avail_mem={pre_load_avail_mem} "
         f"post_load_avail_mem={avail_gpu_mem(gpu_id)} "
         f"pid={os.getpid()} "

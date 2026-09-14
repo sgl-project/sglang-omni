@@ -25,16 +25,12 @@ config_cls: Qwen3OmniSpeechPipelineConfig
 name: qwen3-omni-speech-replica2
 model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
 
-stage_overrides:
+stages:
   talker_ar:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.123
+    gpu_memory_fraction: 0.123
 
   code2wav:
-    runtime:
-      resources:
-        total_gpu_memory_fraction: 0.014
+    gpu_memory_fraction: 0.014
 
 processes:
   talker_ar:

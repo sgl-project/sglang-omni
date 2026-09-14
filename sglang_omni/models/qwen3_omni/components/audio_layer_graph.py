@@ -28,12 +28,16 @@ class _Captured:
 _HOPPER = 9
 
 
-def _packed_attention_backend(capability: tuple[int, int]) -> str:
-    """FA3 on Hopper, Triton on every other CUDA device.
+def _packed_attention_backend(capability: tuple[int, int], *, is_hip: bool) -> str:
+    """FA3 on NVIDIA Hopper, Triton on every other supported device.
 
     sglang's VisionAttention rule also picks FA4 on Blackwell. Omni validates
     Hopper only, and Triton is the arm sglang itself uses on the other parts.
     """
+    if is_hip:
+        # Note (zijiecode): HIP reports gfx950 as (9, 5), which the Hopper check
+        # would send to FA3; FA3 does not exist on HIP.
+        return "triton_attn"
     major, _ = capability
     return "fa3" if major == _HOPPER else "triton_attn"
 
@@ -42,7 +46,10 @@ def _resolve_packed_attention(device: torch.device) -> tuple[nn.Module, str]:
     # Local import: only a process that requests the graphs loads sglang's kernels.
     from sglang.srt.layers.attention import vision
 
-    backend = _packed_attention_backend(torch.cuda.get_device_capability(device))
+    backend = _packed_attention_backend(
+        torch.cuda.get_device_capability(device),
+        is_hip=torch.version.hip is not None,
+    )
     if backend == "fa3":
         impl_class = vision.VisionFlash3Attention
     else:

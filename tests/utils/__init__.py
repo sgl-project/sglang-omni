@@ -93,7 +93,10 @@ def qwen3_asr_wer_router(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator["ManagedRouterHandle"]:
     """Launch Qwen3-ASR router for WER after upstream servers release GPU."""
-    from tests.test_model.omni_router_utils import launch_managed_router
+    from tests.test_model.omni_router_utils import (
+        CiRouterTopology,
+        launch_managed_router,
+    )
 
     wait_for_gpu_memory_release()
     with launch_managed_router(
@@ -101,6 +104,7 @@ def qwen3_asr_wer_router(
         model_path=QWEN3_ASR_WER_MODEL_PATH,
         model_name=QWEN3_ASR_WER_MODEL_PATH,
         worker_extra_args="",
+        router_topology=CiRouterTopology.ASR,
         wait_timeout=QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
         log_prefix="asr_wer_router_logs",
     ) as router:

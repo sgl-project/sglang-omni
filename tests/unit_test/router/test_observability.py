@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sglang_omni_router.observability import (
+from sglang_omni_router.python.observability import (
     CounterReport,
     DataPlaneCounterLedger,
     StaleCounterGenerationError,

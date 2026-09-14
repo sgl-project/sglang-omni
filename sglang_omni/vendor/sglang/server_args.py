@@ -15,10 +15,11 @@ def get_global_server_args():
 def override_server_args(server_args: Any, source: str, **fields: Any) -> None:
     """Apply an audited ServerArgs mutation at the right lifecycle stage.
 
-    A record that is not published yet is resolved in place through
-    declare_late_resolution, so every holder of the instance sees the value.
-    The published record is read-only and its resolved values live on the
-    config bags, so the mutation goes to get_context().override.
+    A record that is not published yet takes the change as a late declaration
+    through declare_late_resolution: the field keeps the caller's input, and the
+    declaration is what resolution_result, the resolved view and the bags
+    projected at publish answer with. The published record is read-only and its
+    values live on the config bags, so the mutation goes to get_context().override.
     """
     from sglang.srt.runtime_context import get_context
 

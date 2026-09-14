@@ -87,6 +87,34 @@ def test_fun_asr_weight_loader_loads_current_audio_prefixes() -> None:
     assert torch.equal(model.audio_tower.layer_norm.weight, expected)
 
 
+def test_fun_asr_weight_loader_maps_new_checkpoint_names() -> None:
+    model = _weight_loader_target()
+    model.audio_tower.stem = nn.Module()
+    model.audio_tower.stem.fsmn = nn.Module()
+    model.audio_tower.stem.fsmn.conv = nn.Conv1d(2, 2, 1, bias=False)
+    model.multi_modal_projector.blocks = nn.ModuleList([nn.Module()])
+    model.multi_modal_projector.blocks[0].fc1 = nn.Linear(2, 2, bias=False)
+    expected_fsmn = torch.full_like(model.audio_tower.stem.fsmn.conv.weight, 2.0)
+    expected_adaptor = torch.full_like(
+        model.multi_modal_projector.blocks[0].fc1.weight, 3.0
+    )
+
+    model.load_weights(
+        [
+            (
+                "model.audio_tower.stem.feedforward_sequential_memory.conv.weight",
+                expected_fsmn,
+            ),
+            ("model.audio_adaptor.blocks.0.fc1.weight", expected_adaptor),
+        ]
+    )
+
+    assert torch.equal(model.audio_tower.stem.fsmn.conv.weight, expected_fsmn)
+    assert torch.equal(
+        model.multi_modal_projector.blocks[0].fc1.weight, expected_adaptor
+    )
+
+
 def test_fun_asr_weight_loader_rejects_unknown_audio_weights() -> None:
     model = _weight_loader_target()
 

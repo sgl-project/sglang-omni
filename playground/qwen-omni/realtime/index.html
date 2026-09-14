@@ -65,6 +65,23 @@
         </label>
 
         <label class="field">
+          <span class="field-label">Turn Detection</span>
+          <select id="turn-detection">
+            <option value="semantic_vad">Smart Turn v3</option>
+            <option value="server_vad" selected>Fixed silence</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Semantic Eagerness</span>
+          <select id="eagerness" disabled>
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+
+        <label class="field">
           <span class="field-label">Instructions to the Engine</span>
           <textarea id="instructions" rows="4">You are a helpful realtime voice assistant. Respond conversationally to the user's spoken question.</textarea>
         </label>
@@ -145,6 +162,6 @@
   </footer>
 
   <script src="playback.js?v=response-aware-v1"></script>
-  <script src="app.js?v=session-interrupt-response-v2"></script>
+  <script src="app.js?v=semantic-vad-barge-in-v4"></script>
 </body>
 </html>

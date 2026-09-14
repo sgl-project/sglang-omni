@@ -42,8 +42,9 @@ sgl-omni serve \
   --port 8000
 ```
 
-The provided configuration enables the AR and acoustic-tail CUDA graphs. AudioVAE decode remains
-eager, and requests are non-streaming unless `stream` is set.
+The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA
+graph for streaming AudioVAE transitions. Non-streaming full-sequence AudioVAE decode remains
+compact eager, and requests are non-streaming unless `stream` is set.
 
 For non-streaming requests, `audio_decode` sends the complete generated latent sequence through
 one full-sequence AudioVAE decode. Streaming requests use the separate incremental AudioVAE path
@@ -54,10 +55,9 @@ set `tts_engine.stream_to` to `[audio_decode]` to declare the latent stream edge
 `audio_decode.can_accept_stream_before_payload` to `true` so the consumer accepts latents that
 arrive while generation is still running. The provided YAML already carries all three.
 
-Cross-request AudioVAE batching is not implemented yet. The only supported audio-decode batch
-configuration is `max_batch_size: 1` with `max_batch_wait_ms: 0`, as shown in the provided YAML;
-other values are rejected before the server starts. A future batching change can expand this
-configuration only after it implements and validates a real multi-request AudioVAE decode.
+Cross-request non-streaming AudioVAE batching is not implemented yet. The only supported non-streaming batch configuration is `max_batch_size: 1` with `max_batch_wait_ms: 0`, as shown in the provided YAML; other values are rejected before the server starts.
+
+`stream_slots` is the maximum number of streaming requests that the AudioVAE decoder can keep active at the same time. Each active stream uses one slot to preserve its decoding progress between audio chunks. If all slots are occupied, additional streams wait until a slot is released. The provided configuration uses `stream_slots: 8` to match its concurrency-8 workload. Increasing it supports more simultaneous streams but uses more GPU memory and fixed-graph work; reducing it lowers those costs but also lowers streaming concurrency. It does not change non-streaming batching.
 
 ## Synthesizing Speech
 
@@ -220,44 +220,38 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 
 ### Recommended Single-H200 TP1
 
-The recommended TP1 configuration was evaluated on **1× H200 141 GB** with concurrency 8,
-eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial
-patches and four steady patches. AR and acoustic-tail CUDA graphs were enabled, while AudioVAE
-decode remained eager.
+The recommended TP1 configuration was evaluated on **1× H200 141 GB** with concurrency 8, eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial patches followed by four-patch steady groups, with the AR, acoustic-tail, and streaming AudioVAE CUDA graphs enabled. Non-streaming requests continued to use compact full-sequence AudioVAE eager decode.
 
 Streaming:
 
-| Slice | Lang | Samples | Failed | Corpus WER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
+| Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | First Audio Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.90% | 0.2686 | 1.236 | 0.6208 | 6.462 | 30.617 |
-| text-only | ZH | 2020 | 0 | 0.71% | 0.2592 | 1.278 | 0.6131 | 6.253 | 31.417 |
-| reference | EN | 1088 | 0 | 1.09% | 0.3107 | 1.358 | 0.7471 | 5.883 | 26.622 |
-| reference | ZH | 2020 | 0 | 0.75% | 0.2670 | 1.507 | 0.7326 | 5.303 | 30.377 |
+| text-only | EN | 1088 | 0 | 0.92% | 0.2023 | 0.955 | 0.4036 | 8.354 | 39.471 |
+| text-only | ZH | 2020 | 0 | 0.67% | 0.2002 | 1.001 | 0.4040 | 7.985 | 39.991 |
+| reference | EN | 1088 | 0 | 1.13% | 0.2369 | 1.053 | 0.5297 | 7.576 | 34.168 |
+| reference | ZH | 2020 | 0 | 0.65% | 0.1997 | 1.146 | 0.4823 | 6.968 | 40.089 |
 
 Non-streaming:
 
-| Slice | Lang | Samples | Failed | Corpus WER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
+| Slice | Lang | Samples | Failed | Corpus WER/CER | RTF Mean | Latency Mean (s) | Throughput (qps) | Audio s/s |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.91% | 0.2035 | 0.959 | 8.328 | 39.369 |
-| text-only | ZH | 2020 | 0 | 0.69% | 0.1965 | 0.983 | 8.134 | 40.790 |
-| reference | EN | 1088 | 0 | 1.07% | 0.2308 | 1.031 | 7.742 | 35.021 |
-| reference | ZH | 2020 | 0 | 0.71% | 0.1966 | 1.125 | 7.103 | 40.737 |
+| text-only | EN | 1088 | 0 | 0.90% | 0.1824 | 0.859 | 9.284 | 44.000 |
+| text-only | ZH | 2020 | 0 | 0.71% | 0.1737 | 0.864 | 9.244 | 46.169 |
+| reference | EN | 1088 | 0 | 1.21% | 0.2045 | 0.907 | 8.802 | 39.709 |
+| reference | ZH | 2020 | 0 | 0.64% | 0.1657 | 0.948 | 8.425 | 48.396 |
 
-All 12,432 requests completed successfully. Streaming returned its first audio payload in
-0.61-0.75 seconds, while non-streaming retained higher complete-response throughput.
-The worst corpus WER was 1.09%.
+All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.40-0.53 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.21%, and the worst corpus CER was 0.71%.
 
 Streaming playback continuity:
 
 | Slice | Lang | Scored | N/A | Underrun P95 (s) | Underrun P99 (s) | C50 | C100 | C200 |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| text-only | EN | 1088 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
+| text-only | EN | 1087 | 1 | 0.0000 | 0.0000 | 99.91% | 99.91% | 100.00% |
 | text-only | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
-| reference | EN | 1071 | 17 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
+| reference | EN | 1072 | 16 | 0.0000 | 0.0000 | 99.81% | 99.91% | 100.00% |
 | reference | ZH | 2020 | 0 | 0.0000 | 0.0000 | 100.00% | 100.00% | 100.00% |
 
-`N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score.
-All 11,641 later seams had zero measured playback underrun.
+`N/A` means that a request returned one PCM payload, so it had no inter-payload seam to score. Every scored slice has zero P95 and P99 measured playback underrun.
 
 ## Known Limitations
 

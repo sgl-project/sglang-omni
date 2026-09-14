@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
@@ -39,3 +41,15 @@ def test_dots_engine_rejects_unsupported_generation_modes(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         DotsTTSEngineBuilder().adjust_overrides(overrides)
+
+
+def test_extra_scheduler_callbacks_wire_tail_shutdown_logging() -> None:
+    builder = DotsTTSEngineBuilder()
+    assert builder.extra_scheduler_callbacks() == {}
+
+    calls: list[int] = []
+    builder._acoustic_tail = SimpleNamespace(log_graph_counters=lambda: calls.append(1))
+    callback = builder.extra_scheduler_callbacks()["shutdown_callback"]
+    callback()
+
+    assert calls == [1]

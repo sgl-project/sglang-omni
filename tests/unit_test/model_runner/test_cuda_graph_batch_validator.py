@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import sglang_omni.utils.cuda_graph_batch_validator as cgv
 from sglang_omni.utils.cuda_graph_batch_validator import (
     evaluate_cuda_graph_batch_sizing,
@@ -12,6 +14,16 @@ from sglang_omni.utils.cuda_graph_batch_validator import (
     read_model_buffer_capacity,
     validate_stage,
 )
+
+_BAGS = SimpleNamespace(schedule=SimpleNamespace(), graph=SimpleNamespace())
+
+
+@pytest.fixture(autouse=True)
+def _published_bags(monkeypatch):
+    _BAGS.schedule = SimpleNamespace(max_running_requests=64)
+    _BAGS.graph = SimpleNamespace(disable_cuda_graph=False, cuda_graph_config=None)
+    monkeypatch.setattr(cgv, "get_schedule", lambda: _BAGS.schedule)
+    monkeypatch.setattr(cgv, "get_exec", lambda: SimpleNamespace(graph=_BAGS.graph))
 
 
 class _FakeTensor:
@@ -34,13 +46,13 @@ def _fake_runner(
     decode_cuda_graph_runner = (
         SimpleNamespace(capture_bs=capture_bs) if has_decode_cuda_graph_runner else None
     )
+    _BAGS.schedule.max_running_requests = max_running_requests
+    _BAGS.graph.disable_cuda_graph = disable_cuda_graph
     return SimpleNamespace(
         server_args=SimpleNamespace(
-            max_running_requests=max_running_requests,
             cuda_graph_config=SimpleNamespace(
                 decode=SimpleNamespace(max_bs=cuda_graph_max_bs)
             ),
-            disable_cuda_graph=disable_cuda_graph,
         ),
         req_to_token_pool=SimpleNamespace(size=request_slots),
         decode_cuda_graph_runner=decode_cuda_graph_runner,
@@ -359,76 +371,65 @@ def _real_prefill_runner(
     return runner
 
 
-def _attest_server_args(
+def _declare_prefill_graphs(
     *,
     backend: str = "breakable",
     bs: tuple[int, ...] = (128, 256),
-    backend_locked: bool = True,
-):
-    return SimpleNamespace(
-        cuda_graph_config=SimpleNamespace(
-            prefill=SimpleNamespace(backend=backend, bs=list(bs))
-        ),
-        _cuda_graph_config_locked=(
-            {("prefill", "backend")} if backend_locked else set()
-        ),
+) -> None:
+    _BAGS.graph.cuda_graph_config = SimpleNamespace(
+        prefill=SimpleNamespace(backend=backend, bs=list(bs))
     )
 
 
 def test_attest_prefill_graphs_accepts_matching_capture():
     model_runner = SimpleNamespace(prefill_cuda_graph_runner=_real_prefill_runner())
+    _declare_prefill_graphs()
 
-    cgv.attest_prefill_cuda_graphs(model_runner, _attest_server_args())
+    cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
 
 
 def test_attest_prefill_graphs_rejects_missing_runner():
-    import pytest
-
     model_runner = SimpleNamespace(prefill_cuda_graph_runner=SimpleNamespace())
+    _declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="did not construct"):
-        cgv.attest_prefill_cuda_graphs(model_runner, _attest_server_args())
+        cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
 
 
 def test_attest_prefill_graphs_allows_auto_backend_to_fall_back(caplog):
     model_runner = SimpleNamespace(prefill_cuda_graph_runner=SimpleNamespace())
+    _declare_prefill_graphs()
 
-    cgv.attest_prefill_cuda_graphs(
-        model_runner,
-        _attest_server_args(backend_locked=False),
-    )
+    cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=False)
 
     assert "eager prefill fallback" in caplog.text
 
 
 def test_attest_prefill_graphs_rejects_backend_mismatch():
-    import pytest
-
     model_runner = SimpleNamespace(
         prefill_cuda_graph_runner=_real_prefill_runner(backend="full")
     )
+    _declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="backend mismatch"):
-        cgv.attest_prefill_cuda_graphs(model_runner, _attest_server_args())
+        cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
 
 
 def test_attest_prefill_graphs_rejects_bucket_mismatch():
-    import pytest
-
     model_runner = SimpleNamespace(
         prefill_cuda_graph_runner=_real_prefill_runner(buckets=(128,))
     )
+    _declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="capture shapes differ"):
-        cgv.attest_prefill_cuda_graphs(model_runner, _attest_server_args())
+        cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)
 
 
 def test_attest_prefill_graphs_rejects_missing_embeds_slot():
-    import pytest
-
     model_runner = SimpleNamespace(
         prefill_cuda_graph_runner=_real_prefill_runner(has_slot=False)
     )
+    _declare_prefill_graphs()
 
     with pytest.raises(RuntimeError, match="input_embeds slot"):
-        cgv.attest_prefill_cuda_graphs(model_runner, _attest_server_args())
+        cgv.attest_prefill_cuda_graphs(model_runner, operator_selected=True)

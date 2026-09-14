@@ -52,6 +52,7 @@ from tests.test_model.conftest import (
     TTS_STAGE_STREAM,
 )
 from tests.test_model.omni_router_utils import (
+    CiRouterTopology,
     ManagedRouterHandle,
     assert_workers_served_requests_since,
     launch_managed_router,
@@ -422,6 +423,10 @@ def _assert_tts_audio_result_integrity(
             f"{label}: summary failed_requests={failed_requests}, "
             f"per_request failures={len(failed_rows)}",
         )
+        collector.check(
+            failed_requests == 0,
+            f"{label}: failed_requests={failed_requests}, expected 0",
+        )
     if isinstance(failed_requests, int) and isinstance(completed_requests, int):
         collector.check(
             completed_requests + failed_requests == len(per_request),
@@ -528,7 +533,7 @@ def _assert_stage_used_all_router_workers(
     collector: MetricCheckCollector | None = None,
 ) -> None:
     kwargs = {
-        "port": router_server.port,
+        "handle": router_server,
         "before_snapshot": before_workers,
         "label": label,
         "min_total_requests": results["summary"]["completed_requests"],
@@ -717,6 +722,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         model_path=TTS_MODEL_PATH,
         model_name=TTS_MODEL_PATH,
         worker_extra_args=f"{TTS_WORKER_EXTRA_ARGS} {_PRESET.worker_extra_args}".strip(),
+        router_topology=CiRouterTopology.TTS,
         num_gpus_per_worker=_PRESET.num_gpus_per_worker,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
@@ -776,7 +782,7 @@ def test_voice_cloning_non_streaming(
     for concurrency in selected_tts_concurrencies:
         _print_stage("TTS speed", "non-streaming", concurrency, "generate WAVs for WER")
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_nonstream_c{concurrency}")
-        before_workers = router_get_json(router_server.port, "/workers")
+        before_workers = router_get_json(router_server.port, "/diagnostics")
         try:
             results = _run_benchmark(
                 router_server.port,
@@ -827,7 +833,7 @@ def test_voice_cloning_streaming(
             "generate WAVs for WER",
         )
         output_dir = _resolve_stage_output_dir(tmp_path, f"vc_stream_c{concurrency}")
-        before_workers = router_get_json(router_server.port, "/workers")
+        before_workers = router_get_json(router_server.port, "/diagnostics")
         try:
             results = _run_benchmark(
                 router_server.port,

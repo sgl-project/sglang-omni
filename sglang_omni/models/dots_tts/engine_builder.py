@@ -33,6 +33,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
         self._model_runner: Any | None = None
+        self._acoustic_tail: Any | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -41,11 +42,14 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         register_dots_tts_hf_config()
 
     def customize_server_args(self, server_args: Any) -> None:
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+
+        cfg = resolved_view(server_args)
         # The compiled DiT path only serves max_running_requests=1; the batched
         # tail is eager, so skip the process-global compile policy otherwise.
         # The policy must exist before SGLang builds the model; applying it in
         # setup_model nests Dynamo under FX.
-        if self.optimize and int(server_args.max_running_requests) == 1:
+        if self.optimize and int(cfg.max_running_requests) == 1:
             from sglang_omni.models.dots_tts.stages import _configure_optimized_kernels
 
             _configure_optimized_kernels()
@@ -94,9 +98,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del checkpoint_dir, device, gpu_id
+        from sglang.srt.runtime_context import get_exec, get_schedule
+
         model = model_worker.model_runner.model
-        max_running_requests = int(server_args.max_running_requests)
-        if not bool(server_args.disable_cuda_graph):
+        max_running_requests = int(get_schedule().max_running_requests)
+        if not bool(get_exec().graph.disable_cuda_graph):
             from sglang_omni.scheduling.generation_batch_policy import (
                 get_decode_cuda_graph_max_bs,
             )
@@ -121,6 +127,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
             )
+            self._acoustic_tail = model.flow.batched_tail
         if max_running_requests == 1:
             tail_backend = (
                 "compiled single-request DiT/semantic encoder"
@@ -128,7 +135,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 else "eager single-request DiT/semantic encoder"
             )
         else:
-            tail_backend = model.flow._tail.backend
+            tail_backend = model.flow.batched_tail.backend
         logger.info(
             "dots.tts latent engine backend: %s (optimize=%s, "
             "max_running_requests=%d, num_steps=%d)",
@@ -141,7 +148,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             "dots.tts backbone decode: %s",
             (
                 "SGLang CUDA graph with model-owned feedback buffer"
-                if not bool(server_args.disable_cuda_graph)
+                if not bool(get_exec().graph.disable_cuda_graph)
                 else "eager"
             ),
         )
@@ -173,6 +180,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def make_abort_callback(self) -> Any | None:
         assert self._model_runner is not None
         return self._model_runner.reset_request
+
+    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+        if self._acoustic_tail is None:
+            return {}
+        return {"shutdown_callback": self._acoustic_tail.log_graph_counters}
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         from sglang_omni.models.dots_tts.request_builders import build_stream_output

@@ -9,6 +9,7 @@ from typing import Any
 
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -23,6 +24,10 @@ _VALIDATED_AUTO_ATTENTION_BACKENDS = {
 
 
 def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
+    if current_platform.is_npu():
+        # Ascend NPU uses the built-in "ascend" attention backend.
+        return "ascend"
+
     sm_version = get_visible_gpu_sm_version(gpu_id)
     if sm_version is None:
         raise RuntimeError(
@@ -75,6 +80,21 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         del dtype
+        if current_platform.is_npu():
+            # NPU graph decode avoids the ascend backend's eager concurrent-
+            # decode content corruption. Limit concurrency to the validated NPU
+            # level and lower mem_fraction for prefill headroom.
+            return {
+                "max_running_requests": 16,
+                "disable_cuda_graph": False,
+                "cuda_graph_backend_decode": "full",
+                "mem_fraction_static": 0.75,
+                "chunked_prefill_size": 8192,
+                "dtype": "bfloat16",
+                "enable_torch_compile": False,
+                "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
+            }
+
         sm_version = get_visible_gpu_sm_version(self.gpu_id)
         return {
             "max_running_requests": 64,
@@ -92,6 +112,10 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         fast_ar_backend = _resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
         if overrides.get("attention_backend") is None:
             overrides["attention_backend"] = fast_ar_backend
+        if current_platform.is_npu():
+            # Bound decode graph buckets to avoid OOM on 64 GB cards.
+            overrides["cuda_graph_bs"] = [1, 2, 4, 8, 16]
+            overrides["cuda_graph_max_bs"] = 16
 
     def customize_server_args(self, server_args: Any) -> None:
         updates: dict[str, Any] = {"disable_overlap_schedule": True}
@@ -111,6 +135,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del gpu_id
+        from sglang.srt.runtime_context import get_schedule
+
         from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
         from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
@@ -130,7 +156,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             semantic_begin_id=self.adapter.semantic_begin_id,
             semantic_end_id=self.adapter.semantic_end_id,
             im_end_token_id=self.adapter.eos_token_ids[0],
-            max_batch_size=server_args.max_running_requests,
+            max_batch_size=get_schedule().max_running_requests,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             ras_window=self.ras_window,
@@ -140,10 +166,12 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         return fish_stages._resolve_s2pro_model_buffer_bs(model)
 
     def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(server_args.enable_torch_compile):
+        from sglang.srt.runtime_context import get_exec
+
+        if bool(get_exec().graph.enable_torch_compile):
             fish_stages._compile_s2pro_codebook_decoder(
                 model,
-                max_batch_size=server_args.torch_compile_max_bs,
+                max_batch_size=get_exec().graph.torch_compile_max_bs,
             )
             override_server_args(
                 server_args,
@@ -165,6 +193,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
                 tokenizer=self.tokenizer,
                 max_new_tokens_cap=self.max_new_tokens,
                 context_length=self.context_length,
+                im_end_token_id=self.adapter.eos_token_ids[0],
             )
         )
         return request_builder, result_adapter

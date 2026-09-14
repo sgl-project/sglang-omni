@@ -116,6 +116,31 @@ resp.raise_for_status()
 print(resp.json()["text"])
 ```
 
+## Stream Transcription
+
+Set the multipart `stream` field to `true` and keep `response_format` as
+`json` or `text` to receive Server-Sent Events (SSE):
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=AutoArk-AI/ARK-ASR-3B \
+  -F file=@tests/data/query_to_cars.wav \
+  -F language=en \
+  -F response_format=json \
+  -F stream=true
+```
+
+The response contains zero or more `transcript.text.delta` events, followed
+by one `transcript.text.done` event with the complete post-processed
+transcript, then `data: [DONE]`. Streaming primarily reduces time to first
+text; it does not change the final transcript.
+
+Treat `transcript.text.done` as the authoritative transcript: it is the same
+post-processed string as the non-stream `text` field. Incremental
+`transcript.text.delta` events are a live preview. Concatenating them may
+differ from `done` by leading or trailing whitespace (the final adapter
+`.strip()`s the full decode). Persist `done.text`, not `"".join(deltas)`.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
@@ -124,6 +149,7 @@ print(resp.json()["text"])
 | `model` | string | server default | Model identifier |
 | `language` | string | `en` | Language hint recorded on the request. The transcription instruction is a fixed English prompt (`Please transcribe this audio.`); ARK-ASR auto-detects the spoken language, so this field does not switch prompt templates. |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
+| `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
 | `temperature` | float | `0` (greedy) | Sampling temperature. When unset or `0`, SGLang's sampling normalization selects greedy decoding (`top_k=1`); no non-zero temperature is substituted. |
 
 ### Response Formats
@@ -261,12 +287,26 @@ SeedTTS reference audio through `/v1/audio/transcriptions`. Pass
 `benchmarks.tasks.asr`.
 
 ```bash
+# Download the test set once:
+python -m benchmarks.dataset.prepare --dataset seedtts
+
+# Launch ARK-ASR:
 sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B --port 8000
 
 # Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
   --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+
+# Quick smoke on a 20-sample subset:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
+  --max-samples 20 --concurrencies 2 --repeats 1
+
+# Measure text TTFT and inter-chunk latency through the SSE endpoint:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
+  --max-samples 20 --concurrencies 2 --repeats 1 --stream
 ```
 
 The script reports corpus WER, throughput, and latency per concurrency level.

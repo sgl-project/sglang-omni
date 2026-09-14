@@ -218,3 +218,78 @@ def test_tp_process_names_must_be_unique_across_tp_stages() -> None:
                 _stage("b", gpu=[2, 3], tp_size=2, process="model", terminal=True),
             ],
         )
+
+
+def _byte_budget_stage(
+    name: str,
+    *,
+    process: str,
+    kv_cache_bytes: int | None,
+    total_reserve_bytes: int | None,
+    next_stage: str | None = None,
+    terminal: bool = False,
+) -> StageConfig:
+    from sglang_omni.config import EngineArgs, EngineStageConfig
+
+    return EngineStageConfig(
+        name=name,
+        factory_path=_FACTORY,
+        gpu=0,
+        process=process,
+        total_reserve_bytes=total_reserve_bytes,
+        engine=EngineArgs(kv_cache_bytes=kv_cache_bytes),
+        next=next_stage,
+        terminal=terminal,
+    )
+
+
+def test_colocation_accepts_byte_budgeted_stages_with_total_reserve() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _byte_budget_stage(
+                "a",
+                process="p1",
+                kv_cache_bytes=1024**3,
+                total_reserve_bytes=4 * 1024**3,
+                next_stage="b",
+            ),
+            _byte_budget_stage(
+                "b",
+                process="p2",
+                kv_cache_bytes=1024**3,
+                total_reserve_bytes=4 * 1024**3,
+                terminal=True,
+            ),
+        ],
+    )
+
+    _topology(config)
+
+
+def test_colocation_rejects_kv_only_stage_without_total_reserve() -> None:
+    """kv_cache_bytes covers the KV pool alone; sharing a GPU requires the
+    stage's total footprint, so a byte-budgeted colocated stage must also
+    declare total_reserve_bytes."""
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _byte_budget_stage(
+                "a",
+                process="p1",
+                kv_cache_bytes=1024**3,
+                total_reserve_bytes=None,
+                next_stage="b",
+            ),
+            _byte_budget_stage(
+                "b",
+                process="p2",
+                kv_cache_bytes=1024**3,
+                total_reserve_bytes=4 * 1024**3,
+                terminal=True,
+            ),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="declared total footprint"):
+        _topology(config)

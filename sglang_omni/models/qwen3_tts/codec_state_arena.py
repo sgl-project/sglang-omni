@@ -1,0 +1,270 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Slot-indexed storage for Qwen3-TTS incremental Codec decoder state."""
+
+from __future__ import annotations
+
+import threading
+from collections.abc import Sequence
+from typing import Any
+
+import torch
+
+from sglang_omni.models.qwen3_tts.incremental_codec import (
+    Qwen3TTSIncrementalCodecState,
+    Qwen3TTSIncrementalDecoder,
+)
+
+
+class Qwen3TTSCodecStateArena:
+    """Bounded, reusable storage for per-stream incremental Codec state.
+
+    Every buffer from ``Qwen3TTSIncrementalDecoder.state_spec`` carries a
+    leading slot dimension, so the arena is exactly the state a decode of
+    ``num_slots`` rows would use: ``gather`` selects a cohort's rows into a
+    contiguous state and ``scatter`` writes the advanced state back.
+
+    Note (Qihao Liu): ``acquire`` zeroes a slot before handing it out, so a
+    reused slot is provably a cold start; ``release`` therefore returns a slot
+    without clearing it.
+    """
+
+    def __init__(
+        self,
+        decoder: Qwen3TTSIncrementalDecoder,
+        *,
+        num_slots: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        if num_slots <= 0:
+            raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
+        self._decoder = decoder
+        self._device = torch.device(device)
+        self._dtype = dtype
+        self._num_slots = int(num_slots)
+        # note (luojiaxuan): one extra row past the last slot is the scratch
+        # row. A captured graph gathers a fixed batch bucket, so the rows a
+        # smaller cohort leaves unused point here and their scatter lands
+        # here, never in a live slot.
+        self.scratch_slot = self._num_slots
+        self._storage = decoder.init_state(
+            self._num_slots + 1, device=self._device, dtype=dtype
+        )
+        self._lock = threading.Lock()
+        # note (luojiaxuan): cohort indices reach the device through per-thread
+        # pinned staging with non_blocking copies. Building them with
+        # ``torch.as_tensor(list, device=cuda)`` issues a pageable H2D copy,
+        # which blocks the host until every kernel already queued on the
+        # stream (the decode just launched) has finished: an implicit
+        # resolve() on every gather and scatter.
+        self._staging = threading.local()
+        # note (luojiaxuan): a slot's last owner may still have its zeroing or
+        # scatter queued on another stream when the slot is released, so the
+        # release records where that stream is and the next owner waits on it
+        # before touching the rows.
+        self._release_events: dict[int, torch.cuda.Event] = {}
+        self._free: list[int] = list(reversed(range(self._num_slots)))
+        self._retired: set[int] = set()
+        self._exhausted_count = 0
+        spec = decoder.state_spec()
+        self._bytes_per_slot = spec.bytes_per_stream(dtype)
+
+    @property
+    def num_slots(self) -> int:
+        return self._num_slots
+
+    @property
+    def bytes_per_slot(self) -> int:
+        return self._bytes_per_slot
+
+    @property
+    def total_bytes(self) -> int:
+        return self._bytes_per_slot * self._num_slots
+
+    @property
+    def exhausted_count(self) -> int:
+        return self._exhausted_count
+
+    def active_slots(self) -> int:
+        with self._lock:
+            return self._num_slots - len(self._free) - len(self._retired)
+
+    def acquire(self) -> int | None:
+        """Take a zeroed slot, or ``None`` when the arena is full."""
+        with self._lock:
+            if not self._free:
+                self._exhausted_count += 1
+                return None
+            slot = self._free.pop()
+            released = self._release_events.pop(slot, None)
+        if released is not None:
+            torch.cuda.current_stream(self._device).wait_event(released)
+        self._zero_slot(slot)
+        return slot
+
+    def release(self, slot: int) -> None:
+        released = None
+        if self._device.type == "cuda":
+            released = torch.cuda.Event()
+            released.record(torch.cuda.current_stream(self._device))
+        with self._lock:
+            if slot in self._retired:
+                return
+            if slot in self._free:
+                raise RuntimeError(
+                    f"Qwen3-TTS codec state slot {slot} was released twice"
+                )
+            if released is not None:
+                self._release_events[slot] = released
+            self._free.append(slot)
+
+    def retire(self, slot: int) -> None:
+        """Withdraw a slot for the life of the process.
+
+        Note (Qihao Liu): used when a decode that touched the slot could not be
+        proven complete, so its memory must never be handed to later work.
+        """
+        with self._lock:
+            self._retired.add(slot)
+            self._release_events.pop(slot, None)
+            if slot in self._free:
+                self._free.remove(slot)
+
+    def _buffers(self, state: Qwen3TTSIncrementalCodecState) -> list[torch.Tensor]:
+        return [
+            *state.conv_histories.values(),
+            *state.transconv_overlaps.values(),
+            *state.transformer_keys.values(),
+            *state.transformer_values.values(),
+        ]
+
+    def _zero_slot(self, slot: int) -> None:
+        for buffer in self._buffers(self._storage):
+            buffer[slot].zero_()
+        self._storage.frame_positions[slot] = 0
+
+    _STAGING_RING = 4
+
+    def _staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
+        if self._device.type != "cuda":
+            return torch.as_tensor(list(values), dtype=torch.long)
+        count = len(values)
+        if count == 0:
+            raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
+        # note (luojiaxuan): a follow-up worker keeps one cohort in flight while
+        # staging the next, so a single pinned buffer would be overwritten
+        # before its pending copy ran and the earlier cohort would decode the
+        # later cohort's slots. Each call takes the next pair of a small ring;
+        # a thread never has more than two cohorts between launch and resolve.
+        ring = getattr(self._staging, f"{name}_ring", None)
+        if ring is None:
+            ring = [
+                (
+                    torch.empty(self._num_slots + 1, dtype=torch.long).pin_memory(),
+                    torch.empty(
+                        self._num_slots + 1, dtype=torch.long, device=self._device
+                    ),
+                )
+                for _ in range(self._STAGING_RING)
+            ]
+            setattr(self._staging, f"{name}_ring", ring)
+            setattr(self._staging, f"{name}_turn", 0)
+        turn = (getattr(self._staging, f"{name}_turn") + 1) % self._STAGING_RING
+        setattr(self._staging, f"{name}_turn", turn)
+        host, device = ring[turn]
+        host[:count].copy_(torch.as_tensor(list(values), dtype=torch.long))
+        device[:count].copy_(host[:count], non_blocking=True)
+        return device[:count]
+
+    def stage_index(self, slots: Sequence[int]) -> torch.Tensor:
+        """Stage a cohort's slot ids on the device without a host sync."""
+        return self._staged("index", slots)
+
+    def gather(self, slots: Sequence[int]) -> Qwen3TTSIncrementalCodecState:
+        """Select a cohort's rows into one contiguous state."""
+        return self.gather_by_index(self.stage_index(slots))
+
+    def gather_by_index(self, index: torch.Tensor) -> Qwen3TTSIncrementalCodecState:
+        """Select the rows named by a device index tensor.
+
+        Capturable: with a static index this is the gather half of a graph
+        that reads the arena directly.
+        """
+        storage = self._storage
+        state = Qwen3TTSIncrementalCodecState(
+            transformer_context_length=storage.transformer_context_length,
+            frame_positions=storage.frame_positions.index_select(0, index),
+        )
+        for key, buffer in storage.conv_histories.items():
+            state.conv_histories[key] = buffer.index_select(0, index)
+        for key, buffer in storage.transconv_overlaps.items():
+            state.transconv_overlaps[key] = buffer.index_select(0, index)
+        for layer_index, buffer in storage.transformer_keys.items():
+            state.transformer_keys[layer_index] = buffer.index_select(0, index)
+        for layer_index, buffer in storage.transformer_values.items():
+            state.transformer_values[layer_index] = buffer.index_select(0, index)
+        return state
+
+    def scatter(
+        self, slots: Sequence[int], state: Qwen3TTSIncrementalCodecState
+    ) -> None:
+        """Write an advanced cohort state back into its slots."""
+        self.scatter_by_index(self.stage_index(slots), state)
+
+    def scatter_by_index(
+        self, index: torch.Tensor, state: Qwen3TTSIncrementalCodecState
+    ) -> None:
+        """Write a cohort state into the rows named by a device index tensor."""
+        storage = self._storage
+        if state.frame_positions is None:
+            raise RuntimeError(
+                "Qwen3-TTS codec state arena requires per-row frame positions"
+            )
+        self._copy_rows(storage.frame_positions, index, state.frame_positions)
+        for key, buffer in storage.conv_histories.items():
+            self._copy_rows(buffer, index, state.conv_histories[key], key)
+        for key, buffer in storage.transconv_overlaps.items():
+            self._copy_rows(buffer, index, state.transconv_overlaps[key], key)
+        for layer_index, buffer in storage.transformer_keys.items():
+            self._copy_rows(
+                buffer, index, state.transformer_keys[layer_index], f"key.{layer_index}"
+            )
+        for layer_index, buffer in storage.transformer_values.items():
+            self._copy_rows(
+                buffer,
+                index,
+                state.transformer_values[layer_index],
+                f"value.{layer_index}",
+            )
+
+    @staticmethod
+    def _copy_rows(
+        buffer: torch.Tensor,
+        index: torch.Tensor,
+        rows: torch.Tensor,
+        key: str = "frame_positions",
+    ) -> None:
+        expected = (int(index.shape[0]), *buffer.shape[1:])
+        if tuple(rows.shape) != expected:
+            raise RuntimeError(
+                f"Qwen3-TTS codec state arena expected {expected} for {key}, "
+                f"got {tuple(rows.shape)}"
+            )
+        if rows.dtype != buffer.dtype:
+            raise RuntimeError(
+                f"Qwen3-TTS codec state arena expected {buffer.dtype} for {key}, "
+                f"got {rows.dtype}"
+            )
+        buffer.index_copy_(0, index, rows.contiguous())
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "slots": self._num_slots,
+            "active_slots": self.active_slots(),
+            "bytes_per_slot": self._bytes_per_slot,
+            "total_bytes": self.total_bytes,
+            "exhausted": self._exhausted_count,
+        }
+
+
+__all__ = ["Qwen3TTSCodecStateArena"]

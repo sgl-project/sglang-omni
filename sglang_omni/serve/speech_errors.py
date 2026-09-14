@@ -9,6 +9,7 @@ from typing import Any
 from fastapi.responses import JSONResponse
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
 @dataclass
@@ -120,7 +121,11 @@ def service_unavailable(message: str, *, param: str | None = None) -> SpeechAPIE
 
 
 def speech_generation_error(exc: BaseException) -> SpeechAPIError:
-    """Map pipeline failures to speech HTTP errors (queue-full → 503)."""
+    """Map pipeline failures to the shared speech API error contract."""
+    if isinstance(exc, SpeechAPIError):
+        return exc
     if QueueFullError.matches(exc):
         return service_unavailable(QueueFullError.MESSAGE)
+    if is_bad_request_error(exc):
+        return bad_request(str(exc))
     return internal_error(str(exc))

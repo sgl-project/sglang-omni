@@ -12,9 +12,11 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.types import SpeechResult
+from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
 from sglang_omni.serve.protocol import SpeechStreamSessionConfig
+from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import (
     MAX_SPEECH_INPUT_CHARS,
     SpeechRequestValidator,
@@ -23,6 +25,10 @@ from sglang_omni.serve.speech_ws import (
     MAX_BUFFERED_RECEIVE_MESSAGES_DURING_GENERATION,
     MAX_TEXT_MESSAGE_BYTES,
     SpeechWebSocketSession,
+)
+
+CONTEXT_LENGTH_ERROR = (
+    "Requested token count exceeds the model's maximum context length"
 )
 
 
@@ -184,6 +190,19 @@ class InvalidAudioStreamingSpeechClient:
             audio_data=object(),
             sample_rate=24000,
         )
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+class ContextRejectingStreamingSpeechClient:
+    def __init__(self) -> None:
+        self.aborted: list[str] = []
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request, request_id
+        raise RuntimeError(CONTEXT_LENGTH_ERROR)
+        yield
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -363,6 +382,36 @@ def test_speech_websocket_commit_flushes_segments_without_closing() -> None:
         assert session_done["total_sentences"] == 2
 
     assert client_impl.generated_prompts == ["First segment.", "Second segment"]
+
+
+@pytest.mark.asyncio
+async def test_custom_voice_websocket_uses_shared_config() -> None:
+    config = CustomVoiceConfig(speakers=("speaker",), task_type="CustomVoice")
+    service = SpeechRequestValidator(default_model="tts", custom_voice_config=config)
+    client = StreamingSpeechClient()
+    session = SpeechWebSocketSession(
+        RecordingWebSocket(), client=client, speech_service=service
+    )
+    with pytest.raises(SpeechAPIError) as exc:
+        await session._parse_config(
+            {
+                "type": "session.config",
+                "response_format": "pcm",
+                "voice": "missing",
+            }
+        )
+    assert exc.value.param == "voice"
+    config = await session._parse_config(
+        {
+            "type": "session.config",
+            "response_format": "pcm",
+            "speaker": "SPEAKER",
+        }
+    )
+    assert config.voice == "SPEAKER"
+    assert config.task_type is None
+    assert session.config_prepared_request.reference_descriptors == []
+    assert not client.generated_prompts and not client.speech_prompts
 
 
 def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
@@ -800,6 +849,31 @@ def test_speech_websocket_stream_exception_aborts_active_request() -> None:
         assert websocket.sent_text[-1]["type"] == "audio.done"
         assert websocket.sent_text[-1]["error"] is True
         assert session.active_request_id is None
+
+    asyncio.run(run())
+
+
+def test_speech_websocket_context_rejection_is_bad_request() -> None:
+    async def run() -> None:
+        client_impl = ContextRejectingStreamingSpeechClient()
+        websocket = RecordingWebSocket()
+        session = SpeechWebSocketSession(
+            websocket,
+            client=client_impl,
+            speech_service=SpeechRequestValidator(default_model="tts"),
+        )
+        session.config = SpeechStreamSessionConfig(stream_audio=True)
+
+        await session._generate_sentence("Hello.")
+
+        error = websocket.sent_text[-2]
+        assert error == {
+            "type": "error",
+            "message": CONTEXT_LENGTH_ERROR,
+            "error_type": "BadRequestError",
+            "code": 400,
+        }
+        assert client_impl.aborted == [f"{session.session_id}-0"]
 
     asyncio.run(run())
 

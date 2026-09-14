@@ -13,9 +13,16 @@ import sglang_omni.models.whisper_asr.stages as whisper_asr_stages
 import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
+import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.models.whisper_asr import engine_builder as whisper_asr_builder
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+    build_generation_batch_overrides,
+)
 
 
 def _encoder_graph_builder(**kwargs):
@@ -60,7 +67,9 @@ def test_whisper_stage_defaults() -> None:
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
 
 
-def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -> None:
+def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs(
+    monkeypatch,
+) -> None:
     calls: list[tuple[list[int], int]] = []
     builder = _encoder_graph_builder(max_running_requests=4)
     assert builder.encoder_graph_batch_buckets == (1, 2, 4, 8, 12, 16)
@@ -69,23 +78,29 @@ def test_whisper_encoder_cuda_graph_setup_is_ordered_after_generation_graphs() -
             (list(buckets), feature_len)
         )
     )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+    )
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
     assert calls == [([1, 2, 4], 3000)]
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(max_prefill_tokens=4096, max_running_requests=4),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=False,
     )
     assert calls == [([1, 2, 4], 3000)]
 
 
-def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -> None:
+def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm(
+    monkeypatch,
+) -> None:
     calls: list[list[int]] = []
     builder = _encoder_graph_builder(
         enable_pre_lm_encoder=False,
@@ -94,13 +109,14 @@ def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
     )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(max_prefill_tokens=6144, max_running_requests=32),
+    )
 
     builder.setup_model_resources(
         model,
-        server_args=SimpleNamespace(
-            max_prefill_tokens=6144,
-            max_running_requests=32,
-        ),
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
 
@@ -116,6 +132,7 @@ def test_whisper_default_encoder_graph_buckets_follow_prefill_without_pre_lm() -
     ids=["pre_lm", "prefill_without_pre_lm"],
 )
 def test_whisper_encoder_cuda_graph_buckets_are_filtered(
+    monkeypatch,
     builder_kwargs: dict[str, object],
     max_prefill_tokens: int,
     expected: list[int],
@@ -128,13 +145,17 @@ def test_whisper_encoder_cuda_graph_buckets_are_filtered(
     model = SimpleNamespace(
         init_encoder_graphs=lambda buckets, feature_len: calls.append(list(buckets))
     )
-
-    builder.setup_model_resources(
-        model,
-        server_args=SimpleNamespace(
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(
             max_prefill_tokens=max_prefill_tokens,
             max_running_requests=16,
         ),
+    )
+
+    builder.setup_model_resources(
+        model,
+        server_args=SimpleNamespace(),
         generation_cuda_graph_enabled=True,
     )
 
@@ -161,6 +182,55 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
 
     with pytest.raises(ValueError, match="encoder prefix must be admitted atomically"):
         builder.adjust_overrides({"chunked_prefill_size": 4096})
+
+
+def test_whisper_breakable_prefill_graph_policy() -> None:
+    builder = whisper_asr_builder.WhisperASREngineBuilder(
+        max_running_requests=4,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    )
+    builder.encoder_token_count = 1500
+    merged = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="float16"),
+    )
+
+    builder.adjust_overrides(merged)
+
+    assert builder.supports_breakable_prefill_cuda_graph
+    assert merged["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
+    max_prefill_tokens = merged["max_prefill_tokens"]
+    encoder_tokens, decoder_tokens_per_request = 1500, 224 + 8
+    admitted_requests = max_prefill_tokens // (
+        encoder_tokens + decoder_tokens_per_request
+    )
+    assert admitted_requests == 3
+    expected_cap = admitted_requests * decoder_tokens_per_request
+    assert expected_cap == 696
+    assert merged["cuda_graph_max_bs_prefill"] == expected_cap
+    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
+        expected_cap
+    )
+
+
+def test_whisper_prefill_graph_cap_covers_shorter_request_batches() -> None:
+    builder = whisper_asr_builder.WhisperASREngineBuilder(
+        max_running_requests=3,
+        max_new_tokens=256,
+        mem_fraction_static=0.2,
+    )
+    builder.encoder_token_count = 1500
+    merged = build_generation_batch_overrides(
+        **builder.generation_defaults(dtype="float16"),
+        server_args_overrides={"max_prefill_tokens": 5120},
+    )
+
+    builder.adjust_overrides(merged)
+
+    assert merged["cuda_graph_max_bs_prefill"] == 620
+    assert 3 * 192 <= merged["cuda_graph_max_bs_prefill"]
+    assert 3 * 192 in merged["cuda_graph_bs_prefill"]
+    assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(620)
 
 
 def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
@@ -215,7 +285,8 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert stage.factory_path.endswith("create_sglang_whisper_asr_executor")
     assert stage.engine.max_running_requests == 64
     factory = stage.factory
-    assert factory.device == "cuda:0"
+    assert factory.device is None
+    assert stage.gpu == 0
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True
@@ -262,6 +333,8 @@ def test_whisper_async_decode_dotted_overrides() -> None:
 def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     build_kwargs: dict[str, object] = {}
     scheduler_kwargs: dict[str, object] = {}
+    graph_init_calls: list[object] = []
+    attest_calls: list[tuple[object, object]] = []
     fake_processor = SimpleNamespace(
         tokenizer=object(),
         feature_extractor=SimpleNamespace(nb_max_frames=3000),
@@ -309,18 +382,39 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         build_kwargs["context_length"] = context_length
         build_kwargs.update(overrides)
         server_args = SimpleNamespace(**overrides)
+        for name, default in (
+            ("attn_cp_size", 1),
+            ("dcp_size", 1),
+            ("lora_paths", None),
+            ("enable_lora", None),
+            ("moe_a2a_backend", "none"),
+        ):
+            if not hasattr(server_args, name):
+                setattr(server_args, name, default)
         server_args.cuda_graph_config = SimpleNamespace(
             decode=SimpleNamespace(
                 max_bs=overrides["cuda_graph_max_bs"],
                 bs=overrides["cuda_graph_bs"],
             ),
-            prefill=SimpleNamespace(backend="disabled", bs=None, max_bs=None),
+            prefill=SimpleNamespace(
+                backend=overrides.get("cuda_graph_backend_prefill", "disabled"),
+                bs=overrides.get("cuda_graph_bs_prefill"),
+                max_bs=overrides.get("cuda_graph_max_bs_prefill"),
+            ),
         )
+        server_args._cuda_graph_config_locked = {
+            ("prefill", field)
+            for field, key in (
+                ("backend", "cuda_graph_backend_prefill"),
+                ("bs", "cuda_graph_bs_prefill"),
+            )
+            if key in overrides
+        }
         return server_args
 
     def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
         model_worker = SimpleNamespace(model_runner=SimpleNamespace(model=object()))
-        return False, (
+        return True, (
             model_worker,
             object(),
             object(),
@@ -337,6 +431,18 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
         bootstrap,
         "create_sglang_infrastructure_defer_cuda_graph",
         _fake_create_infrastructure,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "init_sglang_cuda_graphs",
+        lambda model_worker: graph_init_calls.append(model_worker),
+    )
+    monkeypatch.setattr(
+        cuda_graph_batch_validator,
+        "attest_prefill_cuda_graphs",
+        lambda model_runner, *, operator_selected: attest_calls.append(
+            (model_runner, operator_selected)
+        ),
     )
 
     whisper_asr_stages.create_sglang_whisper_asr_executor(
@@ -355,3 +461,14 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(monkeypatch) -> None:
     assert build_kwargs["max_prefill_tokens"] == 6144
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4
+    assert build_kwargs["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
+    admitted_requests = build_kwargs["max_prefill_tokens"] // (1500 + (224 + 8))
+    assert admitted_requests == 3
+    expected_cap = admitted_requests * (224 + 8)
+    assert expected_cap == 696
+    assert build_kwargs["cuda_graph_max_bs_prefill"] == expected_cap
+    assert build_kwargs["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(
+        expected_cap
+    )
+    assert len(graph_init_calls) == 1
+    assert len(attest_calls) == 1

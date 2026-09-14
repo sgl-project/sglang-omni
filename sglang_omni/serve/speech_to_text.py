@@ -40,6 +40,7 @@ from sglang_omni.serve.streaming import (
 from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 from sglang_omni.serve.transcription_adapters import resolve_adapter
 from sglang_omni.serve.transcription_adapters.base import TranscriptionAdapter
+from sglang_omni.utils.g711 import resolve_g711_encoding, wrap_g711_as_wav
 
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
@@ -59,6 +60,7 @@ class SpeechToTextForm:
     prompt: str | None
     response_format: str
     temperature: float | None
+    repetition_penalty: float | None
     max_new_tokens: int | None
     stream: bool
 
@@ -70,6 +72,7 @@ async def parse_speech_to_text_form(
     prompt: str | None = Form(default=None),
     response_format: str = Form(default="json"),
     temperature: float | None = Form(default=None),
+    repetition_penalty: float | None = Form(default=None, gt=0.0, le=2.0),
     max_new_tokens: int | None = Form(default=None, ge=1),
     stream: bool = Form(default=False),
 ) -> SpeechToTextForm:
@@ -80,16 +83,21 @@ async def parse_speech_to_text_form(
         prompt=prompt,
         response_format=response_format,
         temperature=temperature,
+        repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
         stream=stream,
     )
 
 
 async def read_and_validate_speech_to_text_audio(file: UploadFile) -> bytes:
-    """Reject empty uploads before dispatch can consume backend resources."""
+    """Reject empty uploads, then give headerless uploads a container."""
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Uploaded audio file is empty")
+
+    g711_encoding = resolve_g711_encoding(file.content_type, file.filename)
+    if g711_encoding is not None:
+        audio_bytes = wrap_g711_as_wav(audio_bytes, g711_encoding)
     return audio_bytes
 
 
@@ -130,6 +138,7 @@ def build_speech_to_text_generate_request(
     language: str | None,
     prompt: str | None,
     temperature: float | None,
+    repetition_penalty: float | None = None,
     max_new_tokens: int | None = None,
     stream: bool = False,
     task: str = "transcribe",
@@ -148,6 +157,8 @@ def build_speech_to_text_generate_request(
         params["prompt"] = prompt
     if temperature is not None:
         explicit_fields.append("temperature")
+    if repetition_penalty is not None:
+        explicit_fields.append("repetition_penalty")
     if max_new_tokens is not None:
         explicit_fields.append("max_new_tokens")
     if segment_timestamps:
@@ -155,6 +166,9 @@ def build_speech_to_text_generate_request(
     record_explicit_generation_params(metadata, sorted(explicit_fields))
     sampling = SamplingParams(
         temperature=temperature if temperature is not None else 0.0,
+        repetition_penalty=(
+            repetition_penalty if repetition_penalty is not None else 1.0
+        ),
         max_new_tokens=max_new_tokens,
     )
 
@@ -243,7 +257,17 @@ def resolve_speech_to_text_adapter(
 # MPEG_LAYER_III, legal inside RIFF/WAVE, where libsndfile extrapolates
 # from early-frame bitrate and mismeasures VBR streams severalfold.
 _EXACT_LENGTH_SUBTYPES = frozenset(
-    {"PCM_S8", "PCM_U8", "PCM_16", "PCM_24", "PCM_32", "FLOAT", "DOUBLE"}
+    {
+        "PCM_S8",
+        "PCM_U8",
+        "PCM_16",
+        "PCM_24",
+        "PCM_32",
+        "FLOAT",
+        "DOUBLE",
+        "ULAW",
+        "ALAW",
+    }
 )
 
 # libsndfile reports this sentinel when the header omits the count, e.g. a

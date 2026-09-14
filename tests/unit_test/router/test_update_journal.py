@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni_router.update_journal import (
+from sglang_omni_router.python.update_journal import (
     STATE_DIR_ENV,
     JournalUnreadableError,
     JournalUnwritableError,

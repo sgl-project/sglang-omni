@@ -80,11 +80,10 @@ def _fused_apply_qk_norm_rope(
 def _prefill_graph_enabled() -> bool:
     """Whether prefill runs under a graph that would freeze a Python decision."""
     from sglang.srt.model_executor.cuda_graph_config import Backend
-
-    from sglang_omni.vendor.sglang.server_args import get_global_server_args
+    from sglang.srt.runtime_context import get_exec
 
     try:
-        prefill = get_global_server_args().cuda_graph_config.prefill
+        prefill = get_exec().graph.cuda_graph_config.prefill
     except ValueError:
         return True
     return prefill.backend != Backend.DISABLED

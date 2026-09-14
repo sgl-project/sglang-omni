@@ -143,7 +143,13 @@ def test_disabled_runner_declines_even_with_graphs() -> None:
 def test_packed_attention_backend_follows_the_device_capability(
     capability: tuple[int, int], backend: str
 ) -> None:
-    assert _packed_attention_backend(capability) == backend
+    assert _packed_attention_backend(capability, is_hip=False) == backend
+
+
+def test_packed_attention_backend_keeps_hip_off_fa3() -> None:
+    """PyTorch HIP reports gfx950 as (9, 5); that is not NVIDIA Hopper."""
+    assert _packed_attention_backend((9, 5), is_hip=True) == "triton_attn"
+    assert _packed_attention_backend((9, 0), is_hip=True) == "triton_attn"
 
 
 def test_an_unresolvable_kernel_stack_stays_eager_with_a_reason(

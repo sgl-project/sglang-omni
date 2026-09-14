@@ -96,14 +96,19 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
         "sglang.srt.runtime_context.get_serving",
         lambda: SimpleNamespace(weight_version=None),
     )
-    worker.server_args = SimpleNamespace(
-        tp_size=1,
-        cuda_graph_config=SimpleNamespace(
-            prefill=SimpleNamespace(
-                backend="breakable",
-                bs=[16, 32],
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_exec",
+        lambda: SimpleNamespace(
+            graph=SimpleNamespace(
+                cuda_graph_config=SimpleNamespace(
+                    prefill=SimpleNamespace(backend="breakable", bs=[16, 32])
+                )
             )
         ),
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: SimpleNamespace(tp_size=1),
     )
     worker.tp_rank = 0
     worker.model_arch_override = None

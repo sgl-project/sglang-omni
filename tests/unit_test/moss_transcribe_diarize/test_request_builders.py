@@ -488,6 +488,120 @@ def test_request_builder_operator_default_disables_duration_budget() -> None:
     assert data.req.sampling_params.max_new_tokens == 32
 
 
+def test_request_builder_caps_default_output_budget_for_short_audio() -> None:
+    # Regression test for #975: with a production sized default (5120), a
+    # short non-speech clip must not inherit the full fixed budget, or
+    # greedy decoding can loop on it for thousands of tokens.
+    processor = FakeProcessor()
+    request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
+        processor=processor,
+        tokenizer=processor.tokenizer,
+        max_new_tokens=5120,
+        context_length=TEST_CONTEXT_LENGTH,
+    )
+
+    data = request_builder(
+        _payload_with_inputs({"audios": [_wav_bytes(num_samples=16000 * 6)]})
+    )
+
+    assert (
+        data.req.sampling_params.max_new_tokens
+        == request_builders._MIN_SCALED_OUTPUT_TOKENS
+    )
+
+
+def test_request_builder_scaled_budget_applies_below_fixed_default() -> None:
+    processor = FakeProcessor()
+    request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
+        processor=processor,
+        tokenizer=processor.tokenizer,
+        max_new_tokens=5120,
+        context_length=TEST_CONTEXT_LENGTH,
+    )
+
+    data = request_builder(
+        _payload_with_inputs({"audios": [_wav_bytes(num_samples=16000 * 60)]})
+    )
+
+    expected = 60 * request_builders._OUTPUT_TOKENS_PER_AUDIO_SECOND
+    assert data.req.sampling_params.max_new_tokens == expected
+
+
+def test_request_builder_repetition_penalty_passthrough() -> None:
+    request_builder = _request_builder()
+
+    data = request_builder(
+        _payload(
+            params={"repetition_penalty": 1.3},
+            metadata={
+                "model": "moss-transcribe-diarize",
+                EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"],
+            },
+        )
+    )
+
+    assert data.repetition_penalty == 1.3
+    assert data.req.sampling_params.repetition_penalty == 1.3
+
+
+def test_request_builder_rejects_out_of_range_repetition_penalty() -> None:
+    request_builder = _request_builder()
+
+    with pytest.raises(ValueError, match="repetition_penalty"):
+        request_builder(
+            _payload(
+                params={"repetition_penalty": 2.5},
+                metadata={
+                    "model": "moss-transcribe-diarize",
+                    EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"],
+                },
+            )
+        )
+
+
+def test_request_builder_scaled_budget_floor_boundary() -> None:
+    # 51.2s * 10 tokens/s lands exactly on the 512 floor; 52s clears it.
+    processor = FakeProcessor()
+    request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
+        processor=processor,
+        tokenizer=processor.tokenizer,
+        max_new_tokens=5120,
+        context_length=TEST_CONTEXT_LENGTH,
+    )
+
+    at_floor = request_builder(
+        _payload_with_inputs({"audios": [_wav_bytes(num_samples=int(16000 * 51.2))]})
+    )
+    above_floor = request_builder(
+        _payload_with_inputs({"audios": [_wav_bytes(num_samples=16000 * 52)]})
+    )
+
+    assert at_floor.req.sampling_params.max_new_tokens == 512
+    assert above_floor.req.sampling_params.max_new_tokens == 520
+
+
+def test_request_builder_empty_audio_budget_keeps_floor(monkeypatch) -> None:
+    import dataclasses
+
+    real_prepare = request_builders.prepare_audio
+
+    def zero_duration(*args, **kwargs):
+        return dataclasses.replace(real_prepare(*args, **kwargs), duration_s=0.0)
+
+    monkeypatch.setattr(request_builders, "prepare_audio", zero_duration)
+    processor = FakeProcessor()
+    request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
+        processor=processor,
+        tokenizer=processor.tokenizer,
+        max_new_tokens=5120,
+        context_length=TEST_CONTEXT_LENGTH,
+    )
+
+    data = request_builder(_payload())
+
+    assert data.req.sampling_params.max_new_tokens == 128
+
+
 def test_request_builder_uses_moss_sampling_defaults() -> None:
     request_builder = _request_builder()
 
@@ -497,6 +611,8 @@ def test_request_builder_uses_moss_sampling_defaults() -> None:
     assert data.temperature == DEFAULT_TEMPERATURE
     assert data.top_p == DEFAULT_TOP_P
     assert data.top_k == DEFAULT_TOP_K
+    assert data.repetition_penalty == 1.0
+    assert sampling_params.repetition_penalty == 1.0
     if DEFAULT_TEMPERATURE == 0.0:
         # SGLang encodes greedy sampling as temperature=1.0 with top_k=1.
         assert sampling_params.temperature == 1.0

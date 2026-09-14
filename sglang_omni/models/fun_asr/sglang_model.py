@@ -22,6 +22,7 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+from sglang.srt.models.utils import WeightsMapper
 from sglang.srt.utils import add_prefix
 from transformers.activations import ACT2FN
 
@@ -29,6 +30,17 @@ from .configuration_fun_asr import FunAsrNanoConfig
 from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 
 logger = logging.getLogger(__name__)
+
+# Note (Akazaakane): Normalize the September 2026 HF key renames while keeping
+# the existing module names compatible with the pinned earlier checkpoint.
+FUN_ASR_HF_TO_SGLANG_MAPPER = WeightsMapper(
+    orig_to_new_substr={
+        ".feedforward_sequential_memory.": ".fsmn.",
+    },
+    orig_to_new_prefix={
+        "model.audio_adaptor.": "model.multi_modal_projector.",
+    },
+)
 
 
 def _sanm_mask_from_lengths(
@@ -540,6 +552,8 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
         return hidden_states
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        weights = FUN_ASR_HF_TO_SGLANG_MAPPER.apply(weights)
+
         # Qwen3 LLM: q/k/v → qkv_proj, gate/up → gate_up_proj (sglang stacked).
         llm_stacked_params = [
             ("qkv_proj", "q_proj", "q"),

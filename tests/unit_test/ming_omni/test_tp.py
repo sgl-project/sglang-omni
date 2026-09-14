@@ -392,6 +392,9 @@ def test_ming_speech_allows_talker_outside_explicit_thinker_tp_gpus() -> None:
 def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     monkeypatch,
 ) -> None:
+    from sglang.srt.arg_groups.overrides import resolution_result
+    from sglang.srt.server_args import ServerArgs
+
     captured: dict[str, object] = {}
 
     common_module = ModuleType("sglang_omni.models.ming_omni.components.common")
@@ -434,7 +437,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
         nccl_port,
         model_arch_override,
     ):
-        captured["server_args_tp_size"] = server_args.tp_size
+        captured["server_args_tp_size"] = resolution_result(server_args, "tp_size")
         captured["gpu_id"] = gpu_id
         captured["tp_rank"] = tp_rank
         captured["nccl_port"] = nccl_port
@@ -487,7 +490,8 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     )
 
     bootstrap = importlib.import_module("sglang_omni.models.ming_omni.bootstrap")
-    server_args = SimpleNamespace(tp_size=1)
+    server_args = ServerArgs(model_path="dummy")
+    server_args.resolve_once()
 
     scheduler = bootstrap.create_thinker_scheduler(
         server_args,
@@ -499,7 +503,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     )
 
     assert captured["server_args_tp_size"] == 2
-    assert server_args.tp_size == 2
+    assert resolution_result(server_args, "tp_size") == 2
     assert captured["gpu_id"] == 1
     assert captured["tp_rank"] == 1
     assert captured["nccl_port"] == 29500

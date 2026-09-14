@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from sglang.srt.layers.attention.vision import VisionAttentionMetadata
 
 from sglang_omni.platforms import current_platform
+
+if TYPE_CHECKING:
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
 
 @dataclass
 class _CapturedGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: Any  # the accelerator's graph type, named per backend
     hidden_states: torch.Tensor  # [bucket, hidden] static input
     cu_seqlens: torch.Tensor  # [max_windows + 1] static window boundaries
     attention_metadata: VisionAttentionMetadata | None
@@ -76,11 +79,14 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         *,
         buckets: tuple[int, ...],
         max_batch_size: int,
+        graph_backend: DeviceGraphBackend,
     ) -> None:
         self._tower = audio_tower
+        self._graph_backend = graph_backend
         param = next(audio_tower.parameters())
         self._device = param.device
         self._dtype = param.dtype
+        self._device_module = torch.get_device_module(self._device)
         cfg = audio_tower.config
 
         chunk_tokens = _get_feat_extract_output_lengths_int(cfg.n_window * 2)
@@ -170,16 +176,19 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             with torch.no_grad():
                 return self._layer_stack(static_hs, static_cu)
 
-        side = torch.cuda.Stream(device)
-        side.wait_stream(torch.cuda.current_stream(device))
-        with torch.cuda.stream(side):
+        device_module = self._device_module
+        side = device_module.Stream(device)
+        side.wait_stream(device_module.current_stream(device))
+        with device_module.stream(side):
             for _ in range(3):
                 run_once()
-        torch.cuda.current_stream(device).wait_stream(side)
-        torch.cuda.synchronize(device)
+        device_module.current_stream(device).wait_stream(side)
+        device_module.synchronize(device)
 
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+        # Note (siju): each bucket keeps its own pool. Sharing one is only safe
+        # for graphs replayed in capture order, and a request picks its bucket
+        # from the clip length, so any order is possible.
+        with self._graph_backend.capture(thread_local_errors=True) as graph:
             static_out = run_once()
         logger.info(
             "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",

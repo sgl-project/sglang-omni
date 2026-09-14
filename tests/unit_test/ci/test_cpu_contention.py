@@ -74,6 +74,40 @@ def test_sampler_smoke_produces_summary():
     assert "[cpuset-contention]" in sampler.summary()
 
 
+def _sampler_with(samples: list[float]) -> ContentionSampler:
+    sampler = ContentionSampler({0})
+    sampler._samples = list(samples)
+    return sampler
+
+
+def test_summary_statistics_over_recorded_windows():
+    sampler = _sampler_with([0.0, 1.0, 2.0])
+    assert sampler.window_count() == 3
+    assert sampler.mean_foreign_cores() == pytest.approx(1.0)
+    assert sampler.peak_foreign_cores() == 2.0
+
+
+def test_no_windows_reports_zero_rather_than_raising():
+    sampler = _sampler_with([])
+    assert sampler.window_count() == 0
+    assert sampler.mean_foreign_cores() == 0.0
+    assert sampler.peak_foreign_cores() == 0.0
+
+
+@pytest.mark.parametrize(
+    "samples, sustained",
+    [
+        pytest.param([0.1, 2.5, 0.1, 0.1], False, id="lone-spike"),
+        pytest.param([2.5, 2.5], False, id="too-few-windows-to-judge"),
+        pytest.param([0.1, 2.1, 2.2, 2.3], True, id="three-crossings-in-a-row"),
+        pytest.param([2.1, 2.2, 2.3, 0.1], False, id="lane-since-recovered"),
+        pytest.param([2.0, 2.0, 2.0], False, id="exactly-at-the-threshold"),
+    ],
+)
+def test_sustained_foreign_cores_reads_the_tail(samples, sustained):
+    assert _sampler_with(samples).sustained_foreign_cores(3, 2.0) is sustained
+
+
 def _spin(core: int) -> subprocess.Popen:
     return subprocess.Popen(
         [

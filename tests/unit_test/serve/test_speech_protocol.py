@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 import ipaddress
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
 
 from sglang_omni.client import audio as client_audio
+from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.serve import speech_service
 from sglang_omni.serve.protocol import CreateSpeechRequest
@@ -49,6 +51,133 @@ def test_speech_generation_uses_served_model_and_default_voice() -> None:
     assert prepared.request.voice == "default"
     assert generate_request.model == "tts"
     assert generate_request.metadata["tts_params"]["voice"] == "default"
+
+
+@pytest.mark.parametrize(
+    ("options", "required", "supports"),
+    [
+        ({}, False, True),
+        (
+            {
+                "requires_uploaded_voice_for_named_voice": False,
+                "supports_uploaded_voice_references": False,
+            },
+            False,
+            False,
+        ),
+        (
+            {
+                "requires_uploaded_voice_for_named_voice": False,
+                "supports_uploaded_voice_references": True,
+            },
+            False,
+            True,
+        ),
+        (
+            {
+                "requires_uploaded_voice_for_named_voice": True,
+                "supports_uploaded_voice_references": False,
+            },
+            True,
+            True,
+        ),
+        (
+            {
+                "requires_uploaded_voice_for_named_voice": True,
+                "supports_uploaded_voice_references": True,
+            },
+            True,
+            True,
+        ),
+    ],
+)
+def test_speech_uploaded_voice_options_preserve_behavior(
+    options, required, supports
+) -> None:
+    store = Mock(spec=["get", "resolve_reference"])
+    store.resolve_reference.return_value = None
+    service = SpeechRequestValidator(default_model="tts", voice_store=store, **options)
+    assert service.requires_uploaded_voice_for_named_voice is required
+    assert service.supports_uploaded_voice_references is supports
+    if required:
+        with pytest.raises(SpeechAPIError) as exc:
+            service.parse_request({"input": "hello", "voice": "missing"})
+        assert exc.value.param == "voice"
+    else:
+        request = service.parse_request({"input": "hello", "voice": "missing"})
+        assert request.voice == "missing"
+    assert store.resolve_reference.call_count == int(supports)
+    store.get.assert_not_called()
+
+
+@pytest.mark.parametrize("voice", ["default", "ViViAn"])
+@pytest.mark.parametrize("requires_uploaded_voice", [False, True])
+def test_custom_voice_config_preserves_model_owned_defaults(
+    voice, requires_uploaded_voice
+) -> None:
+    config = CustomVoiceConfig(speakers=("vivian", "ryan"), task_type="CustomVoice")
+    store = Mock(spec=["get", "resolve_reference"])
+    service = SpeechRequestValidator(
+        default_model="tts",
+        custom_voice_config=config,
+        requires_uploaded_voice_for_named_voice=requires_uploaded_voice,
+        voice_store=store,
+    )
+    prepared = service.parse_generation_request(
+        {
+            "input": "hello",
+            "speaker": voice,
+            "instructions": "Calm and clear.",
+            "references": [],
+        }
+    )
+    generated = service.build_generate_request(
+        prepared.request,
+        validate=False,
+        reference_descriptors=prepared.reference_descriptors,
+    )
+    params = generated.metadata["tts_params"]
+    assert service.custom_voice_config is config
+    assert service.requires_uploaded_voice_for_named_voice is False
+    assert service.supports_uploaded_voice_references is False
+    assert params["voice"] == voice
+    assert params["instructions"] == "Calm and clear."
+    assert "task_type" not in params and "language" not in params
+    assert params.get("explicit_generation_params", []) == []
+    assert generated.prompt == "hello"
+    assert prepared.reference_descriptors == []
+    assert store.mock_calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("voice", "missing"),
+        ("task_type", "Base"),
+        ("ref_audio", "https://example.com/reference.wav"),
+        ("ref_text", ""),
+        ("x_vector_only_mode", False),
+        ("references", [{"audio": "https://example.com/reference.wav"}]),
+    ],
+)
+def test_custom_voice_config_rejects_invalid_inputs_before_io(
+    monkeypatch, field, value
+) -> None:
+    config = CustomVoiceConfig(speakers=("speaker",), task_type="CustomVoice")
+    store = Mock(spec=["get", "resolve_reference"])
+    service = SpeechRequestValidator(
+        default_model="tts", custom_voice_config=config, voice_store=store
+    )
+    load = Mock(side_effect=AssertionError("Reference I/O must not run"))
+    monkeypatch.setattr(service.reference_connector, "load_resource", load)
+    payload = {"input": "hello"}
+    payload[field] = value
+    with pytest.raises(SpeechAPIError) as exc:
+        service.parse_generation_request(payload)
+    assert exc.value.status_code == 400
+    assert exc.value.param == field
+    load.assert_not_called()
+    assert store.mock_calls == []
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -662,17 +791,55 @@ def test_reference_audio_rejects_oversized_data_url(
     assert exc_info.value.param == "ref_audio"
 
 
-def test_speech_service_rejects_oversized_input(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = SpeechRequestValidator(default_model="tts")
-    monkeypatch.setattr(speech_service, "MAX_SPEECH_INPUT_CHARS", 5)
+def test_speech_service_rejects_oversized_input() -> None:
+    service = SpeechRequestValidator(default_model="tts", max_speech_input_chars=5)
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello world"})
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "input"
+
+
+def test_speech_service_keeps_default_input_limit() -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {"input": "x" * (speech_service.MAX_SPEECH_INPUT_CHARS + 1)}
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "input"
+
+
+def test_speech_input_default_is_shared_with_pipeline_schema() -> None:
+    from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS, PipelineConfig
+
+    assert speech_service.MAX_SPEECH_INPUT_CHARS == MAX_SPEECH_INPUT_CHARS
+    assert PipelineConfig.max_speech_input_chars == MAX_SPEECH_INPUT_CHARS
+
+
+@pytest.mark.parametrize("max_speech_input_chars", [0, -1, True, 1.5])
+def test_speech_service_rejects_invalid_input_limit(
+    max_speech_input_chars: object,
+) -> None:
+    with pytest.raises(ValueError, match="positive integer or None"):
+        SpeechRequestValidator(
+            default_model="tts",
+            max_speech_input_chars=max_speech_input_chars,
+        )
+
+
+def test_speech_service_can_defer_input_length_to_model_context() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts",
+        max_speech_input_chars=None,
+    )
+
+    request = service.parse_request({"input": "x" * 5000})
+
+    assert len(request.input) == 5000
 
 
 def test_reference_list_accepts_raw_local_path(tmp_path: Path) -> None:

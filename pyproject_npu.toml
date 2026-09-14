@@ -1,0 +1,155 @@
+[build-system]
+# >=77 for the PEP 639 license fields below, which 76.1 and older reject; this also
+# covers the PEP 660 build_editable hook used by editable installs.
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+# Ascend NPU variant of pyproject.toml (see docs/get_started/installation_npu.md).
+# Mirrors upstream SGLang's pyproject_npu.toml where srt_npu = [] — torch,
+# torch_npu, triton-ascend, and memfabric are NOT pinned here and must be
+# installed manually before pip-installing sglang-omni.
+#
+# CUDA-only wheels (flashinfer, nixl-cu13, mooncake, flash-attn-4, cache-dit …)
+# are dropped; sglang is verified against v0.5.18 but cannot be pinned here --
+# every published wheel pulls CUDA torch.
+
+[project]
+name = "sglang-omni"
+dynamic = ["version"]
+description = "Multi-stage pipeline framework for omni models (Ascend NPU build)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # --- Core framework (device-agnostic) ----------------------------------
+    "pyzmq>=25.0.0",
+    "msgpack>=1.0.0",
+    "msgspec",
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "PyYAML>=6.0",
+    "httpx",
+    "xxhash>=3.0.0",
+    "pybase64>=1.4.0",       # fast base64 decode for inline media (utils/audio.py)
+    "tabulate",
+    "pandas",
+    "typer>=0.9.0",
+
+    # --- PyTorch + torch_npu (Ascend CANN) ---------------------------------
+    # NOTE: torch, torch_npu, triton-ascend, and memfabric are intentionally
+    # NOT pinned here, matching upstream SGLang's pyproject_npu.toml where
+    # srt_npu = [].  These packages must be installed manually before
+    # pip-installing sglang-omni, because:
+    #   1. torch_npu wheels are arch-specific (aarch64/x86) and often hosted
+    #      in Ascend repositories rather than PyPI;
+    #   2. triton-ascend requires an Ascend package index;
+    #   3. versions are tightly coupled to the host CANN toolkit release.
+    #
+    # Refer to the SGLang Ascend NPU install guide for the component version
+    # mapping (CANN / torch / torch_npu / triton-ascend / memfabric):
+    #   https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu
+    #
+    # Select a mutually compatible stack from the official Ascend for PyTorch page:
+    #   https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download
+
+    # --- Model loading / HF -------------------------------------------------
+    "accelerate>=0.27.0",
+    "transformers==5.12.1",        # Match the pinned SGLang stack
+    "safetensors>=0.4.3",
+    "pillow>=10.0.0",
+    "huggingface-hub[hf_xet]>=0.36.0",
+    "datasets>=2.14.0",
+
+    # NOTE: sglang is intentionally NOT pinned here (see the header).
+
+    # --- API server ---------------------------------------------------------
+    "fastapi>=0.110.0",
+    "uvicorn>=0.23.0",
+    "websockets>=12.0",
+    "openai==2.6.1",
+    "openai-harmony==0.0.4",
+    # /v1/realtime — server-side VAD
+    "silero-vad>=5.1",
+    "onnxruntime>=1.17",
+
+    # --- Multimodal preprocessing (needed by Qwen3-Omni/ASR/TTS) ------------
+    "qwen-vl-utils==0.0.11",
+    "sox>=1.4.1",
+    "librosa>=0.11.0",
+    "av>=16.1.0",
+    "soundfile>=0.12.0",
+    "scipy>=1.10.0",
+]
+
+[project.optional-dependencies]
+# SeedTTS speaker-sim / WER eval + tests (device-agnostic).
+eval = [
+    "s3prl>=0.4.18",
+    "jiwer",
+    "openai-whisper==20250625",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+# `all` aliases `eval`.
+all = [
+    "s3prl>=0.4.18", "jiwer", "openai-whisper==20250625",
+    "pytest>=7.0.0", "pytest-asyncio>=0.21.0",
+]
+fun-cosyvoice3 = [
+    "conformer==0.3.2",
+    "HyperPyYAML==1.2.3",
+    "pyworld==0.3.4",
+    "wetext==0.0.4",
+    "inflect==7.3.1",
+    "gdown==5.1.0",
+    "lightning==2.6.5",
+    "matplotlib==3.11.1",
+    "omegaconf",
+    "hydra-core",
+    "wget",
+    "x_transformers",
+]
+
+[project.scripts]
+sgl-omni = "sglang_omni.cli:app"
+sgl-omni-router-py = "sglang_omni_router.python.serve:main"
+
+[project.entry-points."sglang.serve_backends"]
+omni = "sglang_omni.cli.sglang_backend:create_backend"
+
+[project.urls]
+Documentation = "https://sgl-project.github.io/sglang-omni/"
+Issues = "https://github.com/sgl-project/sglang-omni/issues"
+Repository = "https://github.com/sgl-project/sglang-omni"
+
+[tool.uv]
+override-dependencies = [
+    "protobuf>=6.31.1,<7.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "benchmark: performance benchmark tests (may require GPU and long runtime)",
+    "tts_stage(name): select an in-file TTS benchmark CI stage",
+    "gpu: requires an accelerator device (auto-skipped without one)",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "sglang_omni",
+    "sglang_omni.*",
+    "sglang_omni_router.python",
+    "sglang_omni_router.python.*",
+]
+namespaces = true
+
+[tool.setuptools.dynamic]
+version = {attr = "sglang_omni.__version__"}
+
+[tool.setuptools.package-data]
+"sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
+"sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

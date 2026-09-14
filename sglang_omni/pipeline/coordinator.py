@@ -174,9 +174,12 @@ class Coordinator:
         self._requests.clear()
         self._partial_results.clear()
 
-    async def shutdown_stages(self) -> None:
-        """Send shutdown signal to all registered stages."""
+    async def shutdown_stages(self, stage_names: Sequence[str] | None = None) -> None:
+        """Send shutdown to registered stages, or only to *stage_names*."""
+        selected = None if stage_names is None else set(stage_names)
         for name, info in self._stages.items():
+            if selected is not None and name not in selected:
+                continue
             try:
                 await self.control_plane.send_shutdown(name, info.control_endpoint)
                 logger.info("Sent shutdown to stage: %s", name)

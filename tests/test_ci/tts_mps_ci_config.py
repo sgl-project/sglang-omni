@@ -2,7 +2,7 @@
 """Performance policy for the TTS MPS DP2 validation stage.
 
 References are raw worst-of-five observations from a CI-comparable H100, held
-pre-slack exactly as `.claude/skills/tune-ci-thresholds` writes them. CI
+pre-slack exactly as the external `calibrate-h100-ci` skill writes them. CI
 assertion slack is derived here, never baked into the stored reference, so a
 recalibration only ever rewrites the `_REF` literals.
 
@@ -26,22 +26,22 @@ MPS_SLACK_LOWER = 1.25
 
 MPS_CONCURRENCY = 16
 
-MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 15.253
-MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 120.1
-MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 1.041
-MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2495
+MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 15.194
+MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 119.5
+MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 1.046
+MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2502
 
-MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 15.387
-MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 66.1
-MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 1.034
-MPS_MOSS_RTF_MEAN_REF: float | None = 0.2388
+MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 16.242
+MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 69.7
+MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.98
+MPS_MOSS_RTF_MEAN_REF: float | None = 0.226
 
 # Speaker similarity gets its own MPS baseline. The canonical reference is
 # calibrated under ordinary DP2, and under a shared card the observed spread
 # straddles it (65.90 to 67.31 against a 66.07 line), so reusing it would make
 # the stage fail about half the time without any measured MPS penalty.
-MPS_HIGGS_SIMILARITY_MEAN_MIN: float | None = 65.89809127807617
-MPS_MOSS_SIMILARITY_MEAN_MIN: float | None = 63.076084213256834
+MPS_HIGGS_SIMILARITY_MEAN_MIN: float | None = 65.24086631774902
+MPS_MOSS_SIMILARITY_MEAN_MIN: float | None = 63.4059351348877
 
 MPS_SIMILARITY_MEAN_MIN = {
     "higgs": MPS_HIGGS_SIMILARITY_MEAN_MIN,
@@ -148,7 +148,7 @@ def check_mps_performance(
         failed.append(
             "uncalibrated performance references: "
             + ", ".join(sorted(uncalibrated))
-            + "; run .claude/skills/tune-ci-thresholds with 5 repeats"
+            + "; run calibrate-h100-ci from sglang-omni-calibration with 5 repeats"
         )
     return {
         "status": "pass" if not failed else "fail",
