@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in wiring and request-local fused RoPE cache lifecycle."""
+"""Default Q/K fusion wiring and request-local RoPE cache lifecycle."""
 
 from unittest.mock import Mock
 
@@ -91,9 +91,7 @@ def test_qk_fusion_is_shared_by_attention_blocks_and_cleared(monkeypatch):
     monkeypatch.setattr(stages, "_scheduler", Mock())
 
     assert dit.qk_fusion is None
-    stages.create_auk_engine_executor(
-        "stub", device="cuda", enable_dit_fused_qk_norm_rope=True
-    )
+    stages.create_auk_engine_executor("stub", device="cuda", dtype="float32")
     assert dit.qk_fusion is not None
     assert all(
         block.attn.qk_fusion is dit.qk_fusion
@@ -106,32 +104,52 @@ def test_qk_fusion_is_shared_by_attention_blocks_and_cleared(monkeypatch):
     assert dit.text_cond is None and dit.text_uncond is None
 
 
-def test_qk_fusion_rejects_unsupported_compute_mode(monkeypatch):
+def test_qk_fusion_can_be_disabled(monkeypatch):
+    pytest.importorskip("triton")
+    dit = AuKDit(
+        dim=64,
+        heads=1,
+        dim_head=64,
+        text_hidden_dim=64,
+        num_layers=1,
+        num_single_layers=1,
+    )
+    flow = AuKFlowMatching(dit, num_llm_layers=2)
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
     monkeypatch.setattr(
         stages,
         "make_runtime_config",
         lambda path: AuKRuntimeConfig(model_path=path, name="AuK"),
     )
-    monkeypatch.setattr(stages, "_load_flow", Mock())
-    with pytest.raises(ValueError, match="CUDA with bfloat16"):
-        stages.create_auk_engine_executor(
-            "stub", device="cpu", enable_dit_fused_qk_norm_rope=True
-        )
+    monkeypatch.setattr(stages, "_load_flow", lambda *args: flow)
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, index: torch.device(device)
+    )
+    monkeypatch.setattr(stages, "_scheduler", Mock())
+
+    stages.create_auk_engine_executor(
+        "stub", device="cuda", enable_dit_fused_qk_norm_rope=False
+    )
+
+    assert dit.qk_fusion is None
+    assert all(
+        block.attn.qk_fusion is None
+        for block in (*dit.transformer_blocks, *dit.single_transformer_blocks)
+    )
 
 
-def test_qk_fusion_rejects_flash_checkpoint(monkeypatch):
+@pytest.mark.parametrize("device,name", [("cpu", "AuK"), ("cuda", "AuK-Flash")])
+def test_qk_fusion_falls_back_to_native(monkeypatch, device, name):
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
     monkeypatch.setattr(
         stages,
         "make_runtime_config",
-        lambda path: AuKRuntimeConfig(model_path=path, name="AuK-Flash"),
+        lambda path: AuKRuntimeConfig(model_path=path, name=name),
     )
     monkeypatch.setattr(stages, "_load_flow", Mock())
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, index: torch.device(device)
     )
-    with pytest.raises(ValueError, match="does not support AuK-Flash"):
-        stages.create_auk_engine_executor(
-            "stub", device="cuda", enable_dit_fused_qk_norm_rope=True
-        )
+    monkeypatch.setattr(stages, "_scheduler", Mock())
+
+    stages.create_auk_engine_executor("stub", device=device)

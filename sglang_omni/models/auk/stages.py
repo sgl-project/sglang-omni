@@ -244,7 +244,7 @@ def create_auk_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     nfe: int = C.DEFAULT_NFE,
-    enable_dit_fused_qk_norm_rope: bool = False,
+    enable_dit_fused_qk_norm_rope: bool = True,
     cfg_strength: float = C.DEFAULT_CFG_STRENGTH,
     sway_sampling_coef: float | None = C.DEFAULT_SWAY_SAMPLING_COEF,
     max_seconds: float = C.MAX_SECONDS,
@@ -274,11 +274,7 @@ def create_auk_engine_executor(
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
     )
-    if enable_dit_fused_qk_norm_rope:
-        if config.is_flash:
-            raise ValueError("AuK Q/K fusion does not support AuK-Flash")
-        if device.type != "cuda" or dtype != "bfloat16":
-            raise ValueError("AuK Q/K fusion requires CUDA with bfloat16 compute")
+    if enable_dit_fused_qk_norm_rope and device.type == "cuda" and not config.is_flash:
         from sglang_omni.models.auk.fused_qk_norm_rope import QKFusion
 
         fusion = QKFusion()
@@ -287,8 +283,6 @@ def create_auk_engine_executor(
             *flow.transformer.transformer_blocks,
             *flow.transformer.single_transformer_blocks,
         ):
-            if block.attn.q_norm.normalized_shape != (64,):
-                raise ValueError("AuK Q/K fusion requires head dimension 64")
             block.attn.qk_fusion = fusion
     return _scheduler(
         lambda payloads: _sample_batch(

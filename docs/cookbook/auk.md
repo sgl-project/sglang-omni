@@ -92,19 +92,21 @@ The DiT stores its weights in BF16 and runs without autocast by default (`--auk_
 
 Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
-## Optional DiT Q/K fusion
+## DiT Q/K fusion
 
-On CUDA with BF16 compute, the DiT's per-head RMSNorm and interleaved rotary
-embedding can use an opt-in Triton kernel:
+On CUDA, the DiT uses a Triton kernel that fuses per-head RMSNorm with
+interleaved rotary embedding. Disable it to use the native PyTorch path:
 
 ```bash
 python -m sglang_omni.cli serve --model-path tencent/AuK \
-  --auk_engine.factory.enable_dit_fused_qk_norm_rope true
+  --auk_engine.factory.enable_dit_fused_qk_norm_rope false
 ```
 
-This requires head dimension 64 and leaves the conditioner, VAE, and sampling
-recipe unchanged. It is disabled by default, is not supported for AuK-Flash,
-and has been validated with the 32-step AuK checkpoint on H100.
+The kernel derives the head dimension and output dtype from the model. It
+leaves the conditioner, VAE, and sampling recipe unchanged. Non-CUDA devices
+and AuK-Flash use the native path. The first request may include Triton JIT
+compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
+weights under BF16 autocast and with native BF16 weights.
 
 ## SeedTTS Evaluation
 
