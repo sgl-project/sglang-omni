@@ -105,6 +105,8 @@ class _FakeHiFT(torch.nn.Module):
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.zeros(1))
         self.calls: list[tuple] = []
+        self.upsample_rates = [8, 5, 3]
+        self.istft_params = {"n_fft": 16, "hop_len": 4}
 
     def inference(self, *, speech_feat, finalize):
         self.calls.append((speech_feat, finalize))
@@ -131,7 +133,7 @@ def _scheduler(
 ) -> tuple[_FakeFlow, FunCosyVoice3StreamingVocoderScheduler]:
     flow = _FakeFlow()
     return flow, FunCosyVoice3StreamingVocoderScheduler(
-        stages._CosyVoice3Vocoder(flow, _FakeHiFT()),
+        stages.CosyVoice3Vocoder(flow, _FakeHiFT()),
         **scheduler_kwargs,
     )
 
@@ -424,7 +426,7 @@ def test_equal_first_hops_share_one_causal_flow_batch() -> None:
     flow = _PackedFlow(channels=80, max_frames=128)
     flow.spk_embed_affine_layer = torch.nn.Linear(192, 80, bias=False)
     scheduler = FunCosyVoice3StreamingVocoderScheduler(
-        stages._CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
+        stages.CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
         max_batch_size=8,
     )
     scheduler._can_batch_stream_chunks = True
@@ -477,7 +479,7 @@ def test_late_payloads_share_one_causal_flow_batch() -> None:
     flow = _PackedFlow(channels=80, max_frames=128)
     flow.spk_embed_affine_layer = torch.nn.Linear(192, 80, bias=False)
     scheduler = FunCosyVoice3StreamingVocoderScheduler(
-        stages._CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
+        stages.CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
         max_batch_size=8,
     )
     scheduler._can_batch_stream_chunks = True
@@ -523,7 +525,7 @@ def test_queued_peer_chunk_joins_first_hop_batch_during_wait() -> None:
     flow = _PackedFlow(channels=80, max_frames=128)
     flow.spk_embed_affine_layer = torch.nn.Linear(192, 80, bias=False)
     scheduler = FunCosyVoice3StreamingVocoderScheduler(
-        stages._CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
+        stages.CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
         max_batch_size=8,
     )
     prompt_len = TOKEN_HOP_LEN
@@ -556,7 +558,7 @@ def _packed_scheduler(*, max_batch_size: int = 8):
     flow = _PackedFlow(channels=80, max_frames=512)
     flow.spk_embed_affine_layer = torch.nn.Linear(192, 80, bias=False)
     scheduler = FunCosyVoice3StreamingVocoderScheduler(
-        stages._CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
+        stages.CosyVoice3Vocoder(FunCosyVoice3Flow(flow), _FakeHiFT()),
         max_batch_size=max_batch_size,
     )
     return flow, scheduler

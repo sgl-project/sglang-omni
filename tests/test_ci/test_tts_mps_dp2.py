@@ -439,7 +439,7 @@ def _evaluate_quality(
     if similarity_min is None:
         quality.fail(
             "uncalibrated MPS speaker-similarity baseline; run "
-            ".claude/skills/tune-ci-thresholds with 5 repeats"
+            "calibrate-h100-ci from sglang-omni-calibration with 5 repeats"
         )
     else:
         _assert_similarity_results(

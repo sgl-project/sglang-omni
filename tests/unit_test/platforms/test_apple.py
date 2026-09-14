@@ -35,6 +35,10 @@ def test_apple_device_binding_is_single_device() -> None:
         apple.set_device(torch.device("cpu"))
 
 
+def test_apple_platform_does_not_claim_float64_support() -> None:
+    assert AppleOmniPlatform.is_float64_supported() is False
+
+
 def test_apple_device_total_memory_uses_torch_without_mlx(monkeypatch) -> None:
     import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 

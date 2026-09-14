@@ -8,10 +8,11 @@ preset per run through the ASR_CI_MODEL environment variable (or the
 model-agnostic and reads everything model-specific from the selected preset.
 
 Threshold constants live here (not in the test file) so that the
-tune-ci-thresholds skill can read and rewrite them; the skill locates this
+calibrate-h100-ci skill can read and rewrite them; the skill locates this
 file through the `threshold_file` key in
-.claude/skills/tune-ci-thresholds/models/asr/config.yaml and claims each
-preset's constants by name prefix (e.g. ^FUN_ASR_).
+skills/calibrate-h100-ci/calibration/models/asr/config.yaml in the private
+sglang-omni-calibration repository and claims each preset's constants by
+name prefix (e.g. ^FUN_ASR_).
 """
 
 from __future__ import annotations

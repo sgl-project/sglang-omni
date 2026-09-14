@@ -75,6 +75,10 @@ def _activate_event_capture(monkeypatch) -> list[dict]:
         def is_active() -> bool:
             return True
 
+        @staticmethod
+        def active_run_id() -> str:
+            return "test-run"
+
     monkeypatch.setattr(
         code2wav_scheduler, "_get_event_recorder", lambda: _ActiveRecorder()
     )

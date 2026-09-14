@@ -86,6 +86,30 @@ def _new_stage_payload(request_id: str) -> StagePayload:
     )
 
 
+def _make_abortable_req(request_id: str, **attributes):
+    values = {
+        "rid": request_id,
+        "to_finish": None,
+        "finished_reason": None,
+        "is_retracted": False,
+        "_omni_terminal_claimed": False,
+        "return_logprob": False,
+        "grammar": None,
+    }
+    values.update(attributes)
+    req = SimpleNamespace(**values)
+    req.finished = lambda: req.finished_reason is not None
+
+    def update_finish_state() -> None:
+        if req.finished() or req.to_finish is None:
+            return
+        req.finished_reason = req.to_finish
+        req.to_finish = None
+
+    req.update_finish_state = update_finish_state
+    return req
+
+
 @pytest.mark.parametrize("tp_size,is_entry_rank", [(1, True), (2, True), (2, False)])
 @pytest.mark.parametrize(
     "pending_queue", ["_pending_request_builds", "_pending_request_admissions"]
@@ -352,14 +376,14 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
 
     batch = SimpleNamespace(
         reqs=[
-            SimpleNamespace(
-                rid="req-1",
+            _make_abortable_req(
+                "req-1",
                 _omni_data=SimpleNamespace(),
                 kv=ReqKvInfo(req_pool_idx=1),
                 inflight_middle_chunks=0,
             ),
-            SimpleNamespace(
-                rid="req-2",
+            _make_abortable_req(
+                "req-2",
                 _omni_data=SimpleNamespace(),
                 kv=ReqKvInfo(req_pool_idx=2),
                 inflight_middle_chunks=0,
@@ -385,7 +409,8 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     assert all(isinstance(output.data, RuntimeError) for output in outputs)
     assert all("cuda out of memory" in str(output.data) for output in outputs)
     assert scheduler._aborted_request_ids == {"req-1", "req-2"}
-    assert batch.reqs == []
+    assert batch.reqs == failed_reqs
+    assert all(req.finished() for req in failed_reqs)
     assert all(req._omni_data is None for req in failed_reqs)
     assert release_calls == [("req-1", tree_cache), ("req-2", tree_cache)]
     assert scheduler._pending_stream_ingress == {}
@@ -962,6 +987,47 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
     assert "keep_indices" not in captured
 
 
+def test_immediate_finish_keeps_async_snapshot_aligned_until_resolve() -> None:
+    reqs = [
+        _make_abortable_req(
+            f"req-{index}",
+        )
+        for index in range(2)
+    ]
+    live_batch = SimpleNamespace(reqs=list(reqs))
+    snapshot = SimpleNamespace(reqs=list(reqs))
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.running_batch = live_batch
+    scheduler.cur_batch = live_batch
+    scheduler.last_batch = None
+    scheduler._async_pending = (snapshot, object(), object())
+    captured = {}
+
+    def resolve(batch, _sched_output, _pending_step, *, skip_rids):
+        assert batch.reqs == reqs
+        captured["skip_rids"] = skip_rids
+        return SimpleNamespace(next_token_ids=torch.tensor([10, 20]))
+
+    def process(batch, result):
+        captured["reqs"] = list(batch.reqs)
+        captured["tokens"] = result.next_token_ids.tolist()
+
+    scheduler._run_batch_resolve = resolve
+    scheduler.process_batch_result = process
+
+    matches = scheduler._mark_request_finished_immediately("req-0")
+
+    assert matches == [reqs[0]]
+    assert live_batch.reqs == reqs
+    assert snapshot.reqs == reqs
+
+    scheduler._resolve_and_process(snapshot, object(), object())
+
+    assert captured["skip_rids"] == {"req-0"}
+    assert captured["reqs"] == [reqs[1]]
+    assert captured["tokens"] == [20]
+
+
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     monkeypatch,
 ) -> None:
@@ -985,8 +1051,8 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     scheduler.waiting_queue = []
     scheduler.tree_cache = object()
 
-    req = SimpleNamespace(
-        rid="req-fail",
+    req = _make_abortable_req(
+        "req-fail",
         _omni_data=SimpleNamespace(),
         kv=ReqKvInfo(req_pool_idx=1),
     )
@@ -1000,6 +1066,7 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
         scheduler.abort("req-fail", defer_running_cleanup=False)
 
     assert batch.reqs == [req]
+    assert req.finished_reason.to_json()["type"] == "abort"
 
 
 def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> None:
@@ -1122,18 +1189,20 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
     scheduler.inbox = Queue()
     scheduler.tree_cache = None
 
-    req = SimpleNamespace(
-        rid="req-retracted",
+    req = _make_abortable_req(
+        "req-retracted",
         is_retracted=True,
-        finished=lambda: False,
-        to_finish=None,
-        finished_reason=None,
         kv=ReqKvInfo(),
-        _omni_terminal_claimed=False,
     )
     request_data = SimpleNamespace(req=req)
     req._omni_data = request_data
-    stale_batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    other_req = SimpleNamespace(rid="req-other")
+    stale_batch = SimpleNamespace(
+        reqs=[req, other_req],
+        req_pool_indices=torch.tensor([10, 11]),
+        input_ids=torch.tensor([20, 21]),
+        batch_is_full=True,
+    )
     scheduler.waiting_queue = [req]
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
@@ -1143,7 +1212,10 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
     scheduler.abort("req-retracted")
 
     assert scheduler.waiting_queue == []
-    assert stale_batch.reqs == []
+    assert stale_batch.reqs == [req, other_req]
+    assert stale_batch.req_pool_indices.tolist() == [10, 11]
+    assert stale_batch.input_ids.tolist() == [20, 21]
+    assert req.finished_reason.to_json()["type"] == "abort"
     assert req.to_finish is None
     assert req._omni_data is None
     assert request_data.req is req
@@ -1324,10 +1396,10 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
     assert data.req is req
 
 
-def test_stream_output_drains_runner_before_terminal_payload() -> None:
+def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() -> None:
     """The runner hook must fire on a non-abort finish, and strictly before the
     terminal payload lands on the shared outbox."""
-    calls: list[tuple[str, object, int]] = []
+    calls: list[tuple[str, object, str | None, int]] = []
     scheduler = object.__new__(OmniScheduler)
     _init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
@@ -1340,13 +1412,14 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
     scheduler._model_runner = SimpleNamespace(
         on_request_finished=lambda rid, req_data: calls.append(
-            (rid, req_data, scheduler.outbox.qsize())
+            (rid, req_data, req_data.finish_reason, scheduler.outbox.qsize())
         )
     )
+    finished_reason = SimpleNamespace(to_json=lambda: {"type": "stop"})
     req = SimpleNamespace(
         rid="req-1",
         finished=lambda: True,
-        finished_reason=None,
+        finished_reason=finished_reason,
         output_ids=[7],
         _omni_data=data,
         _omni_terminal_claimed=False,
@@ -1356,7 +1429,7 @@ def test_stream_output_drains_runner_before_terminal_payload() -> None:
     scheduler.stream_output([req])
 
     # qsize 0 at call time proves the flush is ordered ahead of the result.
-    assert calls == [("req-1", data, 0)]
+    assert calls == [("req-1", data, "stop", 0)]
     assert scheduler.outbox.qsize() == 1
     assert scheduler.outbox.get().type == "result"
     assert req._omni_data is None
@@ -1572,10 +1645,11 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
     _init_sync_request_build_state(scheduler)
 
     data = SimpleNamespace()
-    req = SimpleNamespace(
-        rid="req-abort-after-close",
+    req = _make_abortable_req(
+        "req-abort-after-close",
         _omni_data=data,
         _omni_terminal_claimed=True,
+        finished_reason=object(),
         kv=ReqKvInfo(),
     )
     data.req = req
@@ -1591,7 +1665,7 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
     scheduler.abort(req.rid)
 
     assert cleaned == [req.rid]
-    assert batch.reqs == []
+    assert batch.reqs == [req]
 
 
 def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
