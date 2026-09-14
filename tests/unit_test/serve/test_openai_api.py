@@ -1666,9 +1666,9 @@ async def _post_transcription(client, upload: bytes, name: str = "long.wav"):
 def test_long_audio_past_the_admission_cap_is_rejected_before_decoding(
     monkeypatch,
 ) -> None:
-    # One admitted upload holds the only slot; the next long upload must get
-    # 503 without ever decoding (the slot is what bounds resident waveforms),
-    # and short uploads must not be gated at all.
+    # Note (Jeffro): One admitted upload holds the only slot; the next long
+    # upload must get 503 without ever decoding (the slot is what bounds
+    # resident waveforms), and short uploads must not be gated at all.
     from sglang_omni.serve import transcriptions
 
     decodes: list[int] = []

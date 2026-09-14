@@ -209,8 +209,8 @@ async def _plan_admitted_upload(
     audio_bytes: bytes, chunking: ResolvedAudioChunking
 ) -> ChunkPlan | None:
     """Decode and split an admitted long upload; None when it fits one chunk."""
-    # Decode + split in a worker thread: decoding a long file is pure
-    # CPU and would stall the event loop.
+    # Note (Jeffro): Decode + split in a worker thread: decoding a long file
+    # is pure CPU and would stall the event loop.
     plan = await asyncio.to_thread(plan_audio_chunks, audio_bytes, chunking)
     if plan is not None:
         try:
