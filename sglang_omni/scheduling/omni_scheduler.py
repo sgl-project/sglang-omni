@@ -1380,6 +1380,21 @@ class OmniScheduler:
         self.running_batch = plan.running_batch
         return plan.batch_to_run
 
+    @staticmethod
+    def waiting_requests_allow_after_build_drain_hold(waiting: list[Any]) -> bool:
+        saw_explicit_hint = False
+        for req in waiting:
+            hint = getattr(
+                getattr(req, "_omni_data", None),
+                "prefill_coalesce_after_build_drain_hint",
+                None,
+            )
+            if hint is True:
+                return True
+            if hint is False:
+                saw_explicit_hint = True
+        return not saw_explicit_hint
+
     def get_new_batch_prefill(self, running_batch):
         # Note: (maydomine) batch prefill admissions to amortize the fixed step
         # cost; the oldest-request deadline survives partial admission and aborts.
@@ -1391,6 +1406,9 @@ class OmniScheduler:
         decode_is_idle = running_batch is None or running_batch.is_empty()
         if not self.prefill_coalesce_when_idle and decode_is_idle:
             return _Upstream.get_new_batch_prefill(self, running_batch)
+        waiting = self.waiting_queue
+        if not waiting or len(waiting) >= self.prefill_coalesce_requests:
+            return _Upstream.get_new_batch_prefill(self, running_batch)
         if self.prefill_coalesce_requires_pending_builds:
             with self._request_admission_lock:
                 build_work_pending = bool(
@@ -1398,13 +1416,13 @@ class OmniScheduler:
                     or self._pending_request_admissions
                     or self._backlogged_request_build_payloads
                 )
-            if not build_work_pending and not (
-                self.prefill_coalesce_after_builds_during_decode and not decode_is_idle
-            ):
+            hold_after_builds = (
+                self.prefill_coalesce_after_builds_during_decode
+                and not decode_is_idle
+                and self.waiting_requests_allow_after_build_drain_hold(waiting)
+            )
+            if not build_work_pending and not hold_after_builds:
                 return _Upstream.get_new_batch_prefill(self, running_batch)
-        waiting = self.waiting_queue
-        if not waiting or len(waiting) >= self.prefill_coalesce_requests:
-            return _Upstream.get_new_batch_prefill(self, running_batch)
         now = time.perf_counter()
         oldest = now
         for req in waiting:
@@ -1593,7 +1611,7 @@ class OmniScheduler:
         Paired with ``scheduler_prefill_start`` this frames the request's
         first model forward — for multimodal models that is encoder plus
         prefill — for streaming and non-streaming requests alike. The
-        metadata carries the realized batch size (issue #1324 Q-PR2).
+        metadata carries the realized batch size.
         """
         # note (luojiaxuan): steady-state decode reaches here after every
         # step. _prefill_end_done only ever holds rids present in

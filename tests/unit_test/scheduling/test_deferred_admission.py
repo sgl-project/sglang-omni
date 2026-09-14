@@ -89,6 +89,21 @@ def test_failed_dependency_emits_error_without_admission() -> None:
     assert "r1" in scheduler._aborted_request_ids
 
 
+def test_already_failed_dependency_emits_error_without_admission() -> None:
+    scheduler = _StubScheduler()
+    payload, _, future, deferred = _deferred("r1")
+    future.set_exception(RuntimeError("cached attachment failed"))
+
+    scheduler.admit_or_defer_built_request(payload, False, deferred)
+    scheduler.drain_request_admission_results()
+
+    assert scheduler.admitted == []
+    assert len(scheduler.errors) == 1
+    assert scheduler.errors[0][0] == "r1"
+    assert "cached attachment failed" in str(scheduler.errors[0][1])
+    assert "r1" in scheduler._aborted_request_ids
+
+
 class _WaitPolicyScheduler:
     request_build_queue_fits_workers = OmniScheduler.request_build_queue_fits_workers
 
