@@ -460,7 +460,7 @@ def _write_router_config(
     worker_urls: list[str],
     model_name: str,
     generation_streaming: bool = True,
-    named_voice: bool,
+    named_voice: bool = False,
 ) -> Path:
     config_path = tmp_path_factory.mktemp("omni_router_config") / "router.toml"
     config_path.write_text(

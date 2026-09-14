@@ -486,12 +486,15 @@ def _store_consistency_inputs(
             f"TTS {mode} c{concurrency}: expected positive output_tokens_mean, "
             f"got {output_tokens_mean}",
         )
-        prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
-        checks.check(
-            prompt_tokens_mean > 0,
-            f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
-            f"got {prompt_tokens_mean}",
-        )
+        # note (luojiaxuan): prompt_tokens counts the reference codes, so a
+        # named-voice request has none to report.
+        if _PRESET.voice_clone:
+            prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+            checks.check(
+                prompt_tokens_mean > 0,
+                f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
+                f"got {prompt_tokens_mean}",
+            )
         for request in per_request:
             request_id = request.get("id", "<missing id>")
             if request.get("is_success") is not True:
@@ -499,7 +502,8 @@ def _store_consistency_inputs(
             prompt_tokens = request.get("prompt_tokens")
             completion_tokens = request.get("completion_tokens")
             checks.check(
-                prompt_tokens is not None and prompt_tokens > 0,
+                not _PRESET.voice_clone
+                or (prompt_tokens is not None and prompt_tokens > 0),
                 f"TTS {mode} c{concurrency}: request {request_id} "
                 f"prompt_tokens={prompt_tokens}, expected > 0",
             )
