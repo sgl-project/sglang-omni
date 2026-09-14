@@ -244,6 +244,7 @@ def create_auk_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     nfe: int = C.DEFAULT_NFE,
+    enable_dit_fused_qk_norm_rope: bool = True,
     cfg_strength: float = C.DEFAULT_CFG_STRENGTH,
     sway_sampling_coef: float | None = C.DEFAULT_SWAY_SAMPLING_COEF,
     max_seconds: float = C.MAX_SECONDS,
@@ -273,6 +274,16 @@ def create_auk_engine_executor(
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
     )
+    if enable_dit_fused_qk_norm_rope and device.type == "cuda" and not config.is_flash:
+        from sglang_omni.models.auk.fused_qk_norm_rope import QKFusion
+
+        fusion = QKFusion()
+        flow.transformer.qk_fusion = fusion
+        for block in (
+            *flow.transformer.transformer_blocks,
+            *flow.transformer.single_transformer_blocks,
+        ):
+            block.attn.qk_fusion = fusion
     return _scheduler(
         lambda payloads: _sample_batch(
             payloads,
