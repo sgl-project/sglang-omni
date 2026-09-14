@@ -15,6 +15,10 @@ import torch
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
+from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
+    DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+    move_conv_padding_to_host,
+)
 from sglang_omni.models.qwen3_tts.request_builders import (
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
@@ -83,6 +87,7 @@ def _load_qwen3_tts_tokenizer(
             f"Loading Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
         )
         tokenizer = Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
+        move_conv_padding_to_host(tokenizer.model.encoder)
         _SPEECH_TOKENIZERS[key] = tokenizer
         return tokenizer
 
@@ -215,6 +220,9 @@ def create_sglang_tts_engine_executor(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     server_args_overrides: dict[str, Any] | None = None,
+    reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
+        DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
+    ),
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
@@ -222,6 +230,9 @@ def create_sglang_tts_engine_executor(
         attn_implementation=attn_implementation,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        reference_encoder_cuda_graph_bucket_frames=(
+            reference_encoder_cuda_graph_bucket_frames
+        ),
     ).build(
         model_path,
         device=device,
