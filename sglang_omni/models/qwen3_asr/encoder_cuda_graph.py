@@ -113,9 +113,6 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self._graph_pool: Any | None = None
         self._capture_failed = False
 
-        # Ascend attention consumes the boundaries as host-side operator
-        # parameters, so each exact effective window layout needs its own graph.
-
     @property
     def tokens_per_window(self) -> int:
         return self._max_seqlen
@@ -282,6 +279,8 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             return None
         bucket_size, dummy_sizes = plan
         effective_window_lens = tuple(window_lens + dummy_sizes)
+        # Ascend attention consumes the boundaries as host-side operator
+        # parameters, so each exact effective window layout needs its own graph.
         graph_key: _GraphKey = (
             (bucket_size, effective_window_lens) if self._is_npu else bucket_size
         )
