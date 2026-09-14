@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared managed-router helpers for Omni model CI tests."""
+"""Shared managed Rust-router helpers for Omni model CI tests."""
 
 from __future__ import annotations
 
@@ -7,19 +7,21 @@ import os
 import signal
 import socket
 import subprocess
-import sys
 import time
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import requests
-import yaml
 
 from sglang_omni.utils import find_available_port
+from sglang_omni_router.python.launcher.config import LocalLauncherConfig
+from sglang_omni_router.python.launcher.local import LocalLauncher
+from tests.test_model.rust_router_config import CiRouterTopology, render_router_config
 from tests.utils import (
     disable_proxy,
     server_log_file,
@@ -27,22 +29,22 @@ from tests.utils import (
     stop_server,
 )
 
+RUST_ROUTER_BINARY_ENV = "SGLANG_OMNI_ROUTER_BIN"
 REQUEST_TIMEOUT = 20
 LOG_TAIL_LINES = 120
-ROUTER_POLICY = "least_request"
-ROUTER_CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
 
 
 @dataclass
 class ManagedRouterHandle:
-    """Running managed-router topology exposed to benchmark clients."""
+    """Running router topology exposed to benchmark clients."""
 
     proc: subprocess.Popen
     port: int
     worker_ports: list[int]
     log_file: Path | None
-    launcher_config: Path | None = None
+    router_config: Path | None = None
     cleanup_manifest: Path | None = None
+    worker_launcher: LocalLauncher | None = None
     is_router: bool = True
     router_ready_s: float | None = None
     stopped: bool = False
@@ -53,18 +55,22 @@ class ManagedRouterHandle:
         try:
             stop_server(self.proc)
         finally:
-            if self.cleanup_manifest is not None:
-                cleanup_process_groups_from_manifest(self.cleanup_manifest)
-            self.stopped = True
+            try:
+                if self.worker_launcher is not None:
+                    self.worker_launcher.shutdown()
+            finally:
+                if self.cleanup_manifest is not None:
+                    cleanup_process_groups_from_manifest(self.cleanup_manifest)
+                self.stopped = True
 
 
 @dataclass
 class RouterWorkerTrafficGuard:
-    """Router worker counter snapshot for one benchmark run."""
+    """Router worker dispatch snapshot for one benchmark run."""
 
     handle: ManagedRouterHandle
     label: str
-    before_snapshot: dict
+    before_snapshot: dict | None
 
     def assert_served(
         self,
@@ -74,9 +80,10 @@ class RouterWorkerTrafficGuard:
     ) -> None:
         if not self.handle.is_router:
             return
+        assert self.before_snapshot is not None
         try:
             assert_workers_served_requests_since(
-                port=self.handle.port,
+                handle=self.handle,
                 before_snapshot=self.before_snapshot,
                 label=self.label,
                 min_total_requests=min_total_requests,
@@ -94,6 +101,7 @@ def launch_managed_router(
     model_path: str,
     model_name: str,
     worker_extra_args: str,
+    router_topology: CiRouterTopology,
     num_workers: int = 2,
     num_gpus_per_worker: int = 1,
     wait_timeout: int = 900,
@@ -101,20 +109,31 @@ def launch_managed_router(
     log_prefix: str = "omni_router_logs",
     force_log: bool = False,
     external_worker_urls: list[str] | None = None,
-    process_env: dict[str, str] | None = None,
+    worker_env: dict[str, str] | None = None,
 ) -> Iterator[ManagedRouterHandle]:
+    """Launch a Rust router over local or externally owned workers."""
+    router_binary = _rust_router_binary()
+    cleanup_manifest = (
+        tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
+    )
+    worker_launcher: LocalLauncher | None = None
+
     if external_worker_urls is None:
         worker_base_port = _find_available_port_range(num_workers)
         worker_ports = [worker_base_port + offset for offset in range(num_workers)]
-        launcher_config = _write_launcher_config(
-            tmp_path_factory,
-            model_path=model_path,
-            model_name=model_name,
-            num_workers=num_workers,
-            num_gpus_per_worker=num_gpus_per_worker,
-            worker_base_port=worker_base_port,
-            worker_extra_args=worker_extra_args,
-            wait_timeout=wait_timeout,
+        worker_urls = [f"http://127.0.0.1:{port}" for port in worker_ports]
+        worker_launcher = LocalLauncher(
+            LocalLauncherConfig(
+                model_path=model_path,
+                model_name=model_name,
+                num_workers=num_workers,
+                num_gpus_per_worker=num_gpus_per_worker,
+                worker_host="127.0.0.1",
+                worker_base_port=worker_base_port,
+                worker_extra_args=worker_extra_args,
+                wait_timeout=wait_timeout,
+            ),
+            worker_env=worker_env,
         )
     else:
         if len(external_worker_urls) != num_workers:
@@ -122,11 +141,16 @@ def launch_managed_router(
                 f"expected {num_workers} external workers, got "
                 f"{len(external_worker_urls)}"
             )
-        worker_ports = [int(url.rsplit(":", 1)[-1]) for url in external_worker_urls]
-        launcher_config = None
+        worker_urls = list(external_worker_urls)
+        worker_ports = [_worker_port(url) for url in worker_urls]
+
     router_port = _find_available_port_excluding(worker_ports)
-    cleanup_manifest = (
-        tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
+    router_config = _write_router_config(
+        tmp_path_factory,
+        topology=router_topology,
+        router_port=router_port,
+        worker_urls=worker_urls,
+        model_name=model_name,
     )
     router_log = (
         tmp_path_factory.mktemp(log_prefix) / "server.log"
@@ -138,51 +162,24 @@ def launch_managed_router(
 
     try:
         startup_t0 = time.perf_counter()
-        router_cmd = [
-            sys.executable,
-            "-m",
-            "sglang_omni_router.python.serve",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(router_port),
-        ]
-        if external_worker_urls is None:
-            router_cmd.extend(["--launcher-config", str(launcher_config)])
-        else:
-            router_cmd.extend(
-                ["--worker-urls", *external_worker_urls, "--model", model_name]
-            )
-        router_cmd.extend(
-            [
-                "--policy",
-                ROUTER_POLICY,
-                "--health-success-threshold",
-                "1",
-                "--health-failure-threshold",
-                "2",
-                "--health-check-interval-secs",
-                "2",
-                "--log-level",
-                "info",
-            ]
-        )
         router_proc = start_server_from_cmd(
-            router_cmd,
+            [str(router_binary), "--config", str(router_config)],
             router_log,
             router_port,
-            timeout=(
-                wait_timeout
-                if external_worker_urls is not None
-                else startup_timeout or wait_timeout + 60
-            ),
-            env={
-                **(process_env or {}),
-                ROUTER_CLEANUP_MANIFEST_ENV: str(cleanup_manifest),
-            },
+            timeout=startup_timeout or wait_timeout,
             tee=force_log,
+            strip_proxy=True,
+            health_path="/live",
+            health_body_contains=None,
         )
         _record_process_group(cleanup_manifest, os.getpgid(router_proc.pid))
+
+        if worker_launcher is not None:
+            worker_launcher.launch()
+            for worker in worker_launcher.workers:
+                _record_process_group(cleanup_manifest, worker.process_group_id)
+            worker_launcher.wait_ready()
+
         wait_for_all_router_workers(
             router_port,
             expected_workers=num_workers,
@@ -192,24 +189,28 @@ def launch_managed_router(
         print(
             "[Omni Router CI] topology "
             f"router_port={router_port} worker_ports={worker_ports} "
-            f"launcher_config={launcher_config} policy={ROUTER_POLICY}"
+            f"topology={router_topology.value} binary={router_binary}"
         )
         handle = ManagedRouterHandle(
             proc=router_proc,
             port=router_port,
             worker_ports=worker_ports,
             log_file=router_log,
-            launcher_config=launcher_config,
+            router_config=router_config,
             cleanup_manifest=cleanup_manifest,
+            worker_launcher=worker_launcher,
             router_ready_s=router_ready_s,
         )
         yield handle
     finally:
         if handle is not None:
             handle.stop()
-        elif router_proc is not None:
-            stop_server(router_proc)
-        cleanup_process_groups_from_manifest(cleanup_manifest)
+        else:
+            if router_proc is not None:
+                stop_server(router_proc)
+            if worker_launcher is not None:
+                worker_launcher.shutdown()
+            cleanup_process_groups_from_manifest(cleanup_manifest)
 
 
 @contextmanager
@@ -219,7 +220,7 @@ def router_worker_traffic_guard(
     label: str,
 ) -> Iterator[RouterWorkerTrafficGuard]:
     before_snapshot = (
-        router_get_json(handle.port, "/workers") if handle.is_router else {}
+        router_get_json(handle.port, "/diagnostics") if handle.is_router else None
     )
     guard = RouterWorkerTrafficGuard(
         handle=handle,
@@ -240,7 +241,10 @@ def router_get_json(port: int, path: str) -> dict:
             timeout=REQUEST_TIMEOUT,
         )
     response.raise_for_status()
-    return response.json()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise TypeError(f"expected JSON object from router {path}")
+    return payload
 
 
 def wait_for_all_router_workers(
@@ -252,35 +256,86 @@ def wait_for_all_router_workers(
     deadline = time.monotonic() + timeout
     last_payload: dict | None = None
     while time.monotonic() < deadline:
-        last_payload = router_get_json(port, "/workers")
+        try:
+            last_payload = router_get_json(port, "/diagnostics")
+        except (requests.RequestException, ValueError, TypeError):
+            time.sleep(1)
+            continue
+        workers = last_payload.get("workers", [])
         if (
-            last_payload["total_workers"] == expected_workers
-            and last_payload["healthy_workers"] == expected_workers
-            and last_payload["routable_workers"] == expected_workers
+            last_payload.get("lifecycle") == "serving"
+            and last_payload.get("ready") is True
+            and len(workers) == expected_workers
+            and all(worker.get("routable") is True for worker in workers)
         ):
             return
         time.sleep(1)
     raise TimeoutError(f"router workers did not become fully routable: {last_payload}")
 
 
-def print_worker_snapshot(label: str, snapshot: dict) -> None:
+def assert_router_healthy(handle: ManagedRouterHandle) -> dict:
+    return wait_for_router_quiescence(
+        handle.port,
+        expected_workers=len(handle.worker_ports),
+    )
+
+
+def wait_for_router_quiescence(
+    port: int,
+    *,
+    expected_workers: int,
+    timeout: int = REQUEST_TIMEOUT,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    diagnostics: dict | None = None
+    while time.monotonic() < deadline:
+        diagnostics = router_get_json(port, "/diagnostics")
+        if _router_is_quiescent(diagnostics, expected_workers=expected_workers):
+            return diagnostics
+        time.sleep(0.1)
+    raise TimeoutError(f"router did not become healthy and quiescent: {diagnostics}")
+
+
+def _router_is_quiescent(diagnostics: dict, *, expected_workers: int) -> bool:
+    workers = diagnostics.get("workers", [])
+    resources = diagnostics.get("resources", {})
+    return (
+        diagnostics.get("lifecycle") == "serving"
+        and diagnostics.get("ready") is True
+        and len(workers) == expected_workers
+        and all(worker.get("routable") is True for worker in workers)
+        and all(worker.get("active_requests") == 0 for worker in workers)
+        and all(
+            capacity.get("in_flight") == 0
+            for worker in workers
+            for capacity in worker.get("capacity", [])
+        )
+        and all(
+            admission.get("in_flight") == 0
+            for admission in diagnostics.get("admission", [])
+        )
+        and resources.get("buffered_request_bytes", {}).get("in_use") == 0
+        and resources.get("classification_slots", {}).get("in_use") == 0
+        and resources.get("websocket_sessions_registered") == 0
+    )
+
+
+def print_router_snapshot(label: str, snapshot: dict) -> None:
     worker_states = [
         (
-            worker["display_id"],
-            worker["health_state"],
-            worker["active_requests"],
-            worker.get("routed_requests", 0),
-            worker.get("successful_requests", 0),
-            worker.get("failed_requests", 0),
-            worker["routable"],
+            worker.get("worker_id"),
+            worker.get("health"),
+            worker.get("active_requests"),
+            sum(_dispatch_counts(worker).values()),
+            worker.get("routable"),
+            worker.get("voice_owner"),
         )
-        for worker in snapshot["workers"]
+        for worker in snapshot.get("workers", [])
     ]
     print(
-        f"[Omni Router CI] {label} "
-        f"healthy={snapshot['healthy_workers']} "
-        f"routable={snapshot['routable_workers']} "
-        f"workers=(id, state, active, routed, successful, failed, routable) "
+        f"[Omni Router CI] {label} lifecycle={snapshot.get('lifecycle')} "
+        f"ready={snapshot.get('ready')} "
+        "workers=(id, health, active, dispatches, routable, voice_owner) "
         f"{worker_states}"
     )
 
@@ -300,13 +355,14 @@ def print_log_tail(label: str, log_file: Path | None) -> None:
 
 
 def print_router_diagnostics(handle: ManagedRouterHandle) -> None:
-    try:
-        print_worker_snapshot(
-            "failure /workers snapshot",
-            router_get_json(handle.port, "/workers"),
-        )
-    except Exception as exc:  # pragma: no cover - diagnostic path
-        print(f"[Omni Router CI] failed to fetch /workers during diagnostics: {exc}")
+    if handle.is_router:
+        try:
+            print_router_snapshot(
+                "failure /diagnostics snapshot",
+                router_get_json(handle.port, "/diagnostics"),
+            )
+        except Exception as exc:  # pragma: no cover - diagnostic path
+            print(f"[Omni Router CI] failed to fetch /diagnostics: {exc}")
     print_log_tail("router", handle.log_file)
 
 
@@ -319,10 +375,6 @@ def assert_workers_served_requests(
 ) -> None:
     workers = snapshot["workers"]
     routed_counts = [int(worker.get("routed_requests", 0)) for worker in workers]
-    successful_counts = [
-        int(worker.get("successful_requests", 0)) for worker in workers
-    ]
-    failed_counts = [int(worker.get("failed_requests", 0)) for worker in workers]
     total_routed = sum(routed_counts)
     min_expected = max(1, int(total_routed * min_worker_share))
 
@@ -336,31 +388,25 @@ def assert_workers_served_requests(
         f"All router workers must serve traffic. routed={routed_counts}, "
         f"minimum_per_worker={min_expected}"
     )
-    assert sum(successful_counts) == total_routed, (
-        f"All routed requests should succeed. successful={successful_counts}, "
-        f"routed={routed_counts}"
-    )
-    assert sum(failed_counts) == 0, f"Router recorded request failures: {failed_counts}"
 
 
 def assert_workers_served_requests_since(
     *,
-    port: int,
+    handle: ManagedRouterHandle,
     before_snapshot: dict,
     label: str,
     min_total_requests: int | None = None,
     min_worker_share: float = 0.10,
-) -> None:
-    delta_snapshot = _worker_request_delta(
-        before_snapshot,
-        router_get_json(port, "/workers"),
-    )
-    print_worker_snapshot(f"{label} /workers delta", delta_snapshot)
+) -> dict:
+    after_snapshot = assert_router_healthy(handle)
+    delta_snapshot = worker_request_delta(before_snapshot, after_snapshot)
+    print_router_snapshot(f"{label} /diagnostics delta", delta_snapshot)
     assert_workers_served_requests(
         delta_snapshot,
         min_total_requests=min_total_requests,
         min_worker_share=min_worker_share,
     )
+    return delta_snapshot
 
 
 def cleanup_process_groups_from_manifest(manifest: Path) -> None:
@@ -390,34 +436,33 @@ def cleanup_process_groups_from_manifest(manifest: Path) -> None:
         }
 
 
-def _write_launcher_config(
+def _rust_router_binary() -> Path:
+    configured = os.environ.get(RUST_ROUTER_BINARY_ENV, "").strip()
+    if not configured:
+        raise RuntimeError(
+            f"{RUST_ROUTER_BINARY_ENV} must name the prepared Rust router executable"
+        )
+    resolved = Path(configured).expanduser().resolve()
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise RuntimeError(f"Rust router binary is not executable: {resolved}")
+    return resolved
+
+
+def _write_router_config(
     tmp_path_factory: pytest.TempPathFactory,
     *,
-    model_path: str,
+    topology: CiRouterTopology,
+    router_port: int,
+    worker_urls: list[str],
     model_name: str,
-    num_workers: int,
-    num_gpus_per_worker: int,
-    worker_base_port: int,
-    worker_extra_args: str,
-    wait_timeout: int,
 ) -> Path:
-    config_path = tmp_path_factory.mktemp("omni_router_launcher") / "launcher.yaml"
+    config_path = tmp_path_factory.mktemp("omni_router_config") / "router.toml"
     config_path.write_text(
-        yaml.safe_dump(
-            {
-                "launcher": {
-                    "backend": "local",
-                    "model_path": model_path,
-                    "model_name": model_name,
-                    "num_workers": num_workers,
-                    "num_gpus_per_worker": num_gpus_per_worker,
-                    "worker_host": "127.0.0.1",
-                    "worker_base_port": worker_base_port,
-                    "worker_extra_args": worker_extra_args,
-                    "wait_timeout": wait_timeout,
-                }
-            },
-            sort_keys=False,
+        render_router_config(
+            topology=topology,
+            router_port=router_port,
+            worker_urls=worker_urls,
+            model_name=model_name,
         ),
         encoding="utf-8",
     )
@@ -464,15 +509,38 @@ def _port_is_available(port: int) -> bool:
     return True
 
 
-def _worker_request_delta(before: dict, after: dict) -> dict:
-    before_workers = {worker["display_id"]: worker for worker in before["workers"]}
+def _worker_port(url: str) -> int:
+    port = urlsplit(url).port
+    if port is None:
+        raise ValueError(f"worker URL has no explicit port: {url}")
+    return port
+
+
+def _dispatch_counts(worker: dict) -> dict[str, int]:
+    return {
+        str(entry["class"]): int(entry["requests"])
+        for entry in worker.get("dispatches", [])
+    }
+
+
+def worker_request_delta(before: dict, after: dict) -> dict:
+    before_workers = {worker["worker_id"]: worker for worker in before["workers"]}
     delta_workers = []
     for worker in after["workers"]:
-        previous = before_workers.get(worker["display_id"], {})
-        delta_worker = dict(worker)
-        for field in ("routed_requests", "successful_requests", "failed_requests"):
-            delta_worker[field] = int(worker.get(field, 0)) - int(
-                previous.get(field, 0)
-            )
-        delta_workers.append(delta_worker)
+        previous_counts = _dispatch_counts(before_workers.get(worker["worker_id"], {}))
+        class_counts = {
+            service_class: count - previous_counts.get(service_class, 0)
+            for service_class, count in _dispatch_counts(worker).items()
+        }
+        delta_workers.append(
+            {
+                **worker,
+                "dispatches": [
+                    {"class": service_class, "requests": count}
+                    for service_class, count in class_counts.items()
+                ],
+                "routed_requests": sum(class_counts.values()),
+                "routed_requests_by_class": class_counts,
+            }
+        )
     return {**after, "workers": delta_workers}

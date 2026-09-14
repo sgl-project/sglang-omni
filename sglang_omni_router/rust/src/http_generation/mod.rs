@@ -12,6 +12,7 @@ use crate::error::{HttpFault, RouterError};
 use crate::http_relay::{
     HttpRelay, OutgoingRequest, map_admission, map_dispatch, sanitize_response_headers,
 };
+use crate::metrics::ClassificationKind;
 use crate::request_id::CanonicalRequestId;
 use crate::worker_pool::{CapacityClass, TrustDomain, WorkerPool};
 
@@ -131,7 +132,7 @@ async fn handle(
     let classify_trust = generation.trust.clone();
     let (upload, classified) = generation
         .relay
-        .classify(deadline, move || {
+        .classify(ClassificationKind::Chat, deadline, move || {
             let classified = classify(&upload.bytes, &classify_trust)?;
             Ok((upload, classified))
         })

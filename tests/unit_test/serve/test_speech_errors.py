@@ -56,3 +56,41 @@ def test_speech_generation_error_does_not_match_unrelated_token_message() -> Non
 
     assert err.status_code == 500
     assert err.error_type == "server_error"
+
+
+@pytest.mark.parametrize("params", [{}, {"nfe": 1}, {"gen_seconds": -1}])
+def test_auk_validation_reaches_http_as_bad_request(params, caplog):
+    from fastapi.testclient import TestClient
+
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import ClientError
+    from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
+    from sglang_omni.models.auk.request_builders import build_auk_state
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.serve import create_app
+
+    class PreprocessingClient:
+        async def speech(self, request, *, request_id, **kwargs):
+            payload = StagePayload(
+                request_id=request_id,
+                request=Client._build_omni_request(request),
+                data={},
+            )
+            try:
+                build_auk_state(payload, AuKRuntimeConfig(model_path="unused"))
+            except ValueError as error:
+                raise ClientError(str(error)) from error
+            raise AssertionError("invalid request reached generation")
+
+    client = TestClient(create_app(PreprocessingClient(), model_name="tencent/AuK"))
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "Hello.",
+            "stage_params": {"auk_engine": params},
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "BadRequestError"
+    assert "AuK" in response.json()["error"]["message"]
+    assert not any(record.exc_info for record in caplog.records)

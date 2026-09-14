@@ -182,6 +182,11 @@ validation split as everywhere else: static `Field` constraints for ranges
 Do **not** re-check these rules downstream. The planner and topology walker
 trust a validated config; a constraint has exactly one site.
 
+`device` and `gpu_id` are the special case of this rule: placement owns
+`gpu_id`, a factory may only receive a device *type*, and the factory resolves
+the pair through one shared helper. See "Device and GPU placement contract" in
+[config.md](config.md) before touching either.
+
 ## Case 5: a pipeline-level setting
 
 Whole-pipeline values (`model_path`, `name`, `placement.*`) are top-level

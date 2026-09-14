@@ -250,3 +250,56 @@ def test_hf_weight_sanitize_keeps_untied_lm_head() -> None:
     )
 
     assert "lm_head.weight" in sanitized
+
+
+def test_shared_mlx_runner_honors_subclass_audio_item_hook() -> None:
+    from sglang_omni.model_runner.audio_mlx import AudioMlxModelRunner
+
+    class OtherAudioRunner(AudioMlxModelRunner):
+        model_name = "Other ASR"
+
+        @classmethod
+        def _audio_item(cls, req):
+            return req.audio_item
+
+    req = SimpleNamespace(
+        multimodal_inputs=SimpleNamespace(audio_token_id=10),
+        audio_item=SimpleNamespace(pad_value=999),
+    )
+    assert OtherAudioRunner._normalize_audio_token_ids(req, [1, 999, 2]) == [1, 10, 2]
+    req.audio_item.pad_value = None
+    with pytest.raises(
+        ValueError, match="Other ASR MLX prefill has incomplete audio token metadata"
+    ):
+        OtherAudioRunner._normalize_audio_token_ids(req, [1, 999, 2])
+
+
+def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
+    runner = object.__new__(Qwen3ASRMlxModelRunner)
+    runner.model = _tiny_model()
+    runner.disable_radix_cache = True
+    runner._acquire_cache = runner.model.make_cache
+    req = SimpleNamespace(
+        multimodal_inputs=SimpleNamespace(
+            audio_token_id=10,
+            mm_items=[
+                SimpleNamespace(
+                    feature=torch.zeros((1, 8, 20)),
+                    feature_attention_mask=torch.ones((1, 20)),
+                    pad_value=999,
+                )
+            ],
+        )
+    )
+    token_ids = [1, 999, 999, 999, 999, 2]
+    pending = runner.prefill_start(
+        "audio", token_ids, token_ids, [], list(range(6)), 0, req=req
+    )
+    ids, embeddings = runner._audio_prefill_inputs(req, token_ids)
+    expected = runner.model._forward_last_logits(
+        embeddings, cache=runner.model.make_cache()
+    )
+    assert pending.lazy_token.tolist() == mx.argmax(expected[:, -1], axis=-1).tolist()
+    assert pending.full_token_ids == ids[0].tolist()
+    assert pending.req_id == "audio"
+    assert pending.cache[0].offset == len(token_ids)

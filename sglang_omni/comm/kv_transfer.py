@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 import torch
 
@@ -36,8 +36,7 @@ class KVBufferRegion:
             byte_view = self.tensor.view(torch.uint8).view(-1)
         except RuntimeError as error:
             raise ValueError(
-                f"KV buffer {self.name!r} must expose a flattenable aliasing "
-                "byte view"
+                f"KV buffer {self.name!r} must expose a flattenable aliasing byte view"
             ) from error
         object.__setattr__(self, "_byte_view", byte_view)
 
@@ -128,3 +127,17 @@ class KVPageLease(Protocol):
     """Pins source pages until the receiver acknowledges the transfer."""
 
     def release(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class KVPageTransfer:
+    """One scheduler-requested page transfer handled by its owning stage."""
+
+    request_id: str
+    transfer_id: str
+    source_pool_id: str
+    target_pool_id: str
+    source_page_indices: tuple[int, ...]
+    to_stage: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    lease: KVPageLease | None = None

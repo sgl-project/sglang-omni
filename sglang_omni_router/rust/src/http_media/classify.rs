@@ -394,18 +394,27 @@ impl<'de> Visitor<'de> for RootVisitor {
         }
         match self.0 {
             RootMode::Speech => Ok((fields, Vec::new())),
-            RootMode::Batch => Ok((
-                fields,
-                items.ok_or_else(|| de::Error::missing_field("items"))?,
-            )),
+            RootMode::Batch => match items {
+                Some(ItemsFact::Valid(items)) => Ok((fields, items)),
+                Some(ItemsFact::Invalid) => Err(de::Error::invalid_type(
+                    de::Unexpected::Other("invalid batch items"),
+                    &"a speech batch item array",
+                )),
+                None => Err(de::Error::missing_field("items")),
+            },
         }
     }
+}
+
+enum ItemsFact {
+    Valid(Vec<BatchSpeechFields>),
+    Invalid,
 }
 
 struct ItemsSeed;
 
 impl<'de> DeserializeSeed<'de> for ItemsSeed {
-    type Value = Vec<BatchSpeechFields>;
+    type Value = ItemsFact;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
@@ -413,32 +422,76 @@ impl<'de> DeserializeSeed<'de> for ItemsSeed {
     {
         struct ItemsVisitor;
         impl<'de> Visitor<'de> for ItemsVisitor {
-            type Value = Vec<BatchSpeechFields>;
+            type Value = ItemsFact;
+
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a speech batch item array")
+                formatter.write_str("a speech batch item array or worker-owned value")
             }
+
             fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
             where
                 A: SeqAccess<'de>,
             {
                 let mut result = Vec::new();
+                let mut valid = true;
                 while let Some(item) = sequence.next_element_seed(ItemSeed)? {
-                    result.push(item);
-                    if result.len() > usize::from(u16::MAX) {
-                        return Err(de::Error::custom("too many batch items"));
+                    if let Some(item) = item {
+                        if result.len() < usize::from(u16::MAX) {
+                            result.push(item);
+                        } else {
+                            valid = false;
+                        }
+                    } else {
+                        valid = false;
                     }
                 }
-                Ok(result)
+                Ok(if valid {
+                    ItemsFact::Valid(result)
+                } else {
+                    ItemsFact::Invalid
+                })
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(ItemsFact::Invalid)
+            }
+
+            fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+                Ok(ItemsFact::Invalid)
+            }
+
+            fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+                Ok(ItemsFact::Invalid)
+            }
+
+            fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+                Ok(ItemsFact::Invalid)
+            }
+
+            fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+                Ok(ItemsFact::Invalid)
+            }
+
+            fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+                Ok(ItemsFact::Invalid)
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(ItemsFact::Invalid)
             }
         }
-        deserializer.deserialize_seq(ItemsVisitor)
+        deserializer.deserialize_any(ItemsVisitor)
     }
 }
 
 struct ItemSeed;
 
 impl<'de> DeserializeSeed<'de> for ItemSeed {
-    type Value = BatchSpeechFields;
+    type Value = Option<BatchSpeechFields>;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
@@ -446,10 +499,12 @@ impl<'de> DeserializeSeed<'de> for ItemSeed {
     {
         struct ItemVisitor;
         impl<'de> Visitor<'de> for ItemVisitor {
-            type Value = BatchSpeechFields;
+            type Value = Option<BatchSpeechFields>;
+
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a speech batch item object")
+                formatter.write_str("a speech batch item object or worker-owned value")
             }
+
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
                 A: MapAccess<'de>,
@@ -460,10 +515,42 @@ impl<'de> DeserializeSeed<'de> for ItemSeed {
                         let _ignored = map.next_value::<IgnoredAny>()?;
                     }
                 }
-                Ok(fields)
+                Ok(Some(fields))
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(None)
             }
         }
-        deserializer.deserialize_map(ItemVisitor)
+        deserializer.deserialize_any(ItemVisitor)
     }
 }
 
@@ -571,7 +658,8 @@ stream_modes = ["non_streaming", "streaming"]
         fs::write(&path, config).expect("write classifier config");
         let parsed = Config::load(&path).expect("load classifier config");
         let _removed = fs::remove_file(path);
-        WorkerPool::build(&parsed).expect("build classifier pool")
+        WorkerPool::build(&parsed, crate::metrics::RouterMetrics::new())
+            .expect("build classifier pool")
     }
 
     #[test]
@@ -701,6 +789,38 @@ stream_modes = ["non_streaming", "streaming"]
     }
 
     #[test]
+    fn speech_facts_are_tolerant_last_wins_and_payload_bounded() {
+        let pool = pool();
+        let trust = TrustDomain::new(String::from("local"));
+        let audio = "A".repeat(7 * 1_024 * 1_024);
+        let body = format!(
+            r#"{{"model":7,"model":"tts","response_format":"pcm","stream":{{}},"stream":"true","ref_audio":5,"ref_audio":"{audio}","input":"x"}}"#
+        );
+        let classified = speech(body.as_bytes(), &pool, &trust)
+            .expect("final valid routing facts replace malformed earlier values");
+        let ProfileRequirement::SpeechHttp {
+            model,
+            stream_mode,
+            reference_forms,
+            ..
+        } = classified.requirement.profile()
+        else {
+            panic!("speech requirement")
+        };
+        assert!(matches!(model, ModelSelection::Explicit(_)));
+        assert_eq!(*stream_mode, StreamMode::Streaming);
+        assert_eq!(reference_forms, &[ReferenceForm::Direct]);
+
+        let final_invalid = speech(br#"{"model":"tts","model":7,"input":"x"}"#, &pool, &trust)
+            .expect("invalid final worker-owned value becomes an absent routing fact");
+        let ProfileRequirement::SpeechHttp { model, .. } = final_invalid.requirement.profile()
+        else {
+            panic!("speech requirement")
+        };
+        assert!(matches!(model, ModelSelection::UnresolvedDefault));
+    }
+
+    #[test]
     fn top_level_routing_fields_use_the_final_json_occurrence() {
         let pool = pool();
         let trust = TrustDomain::new(String::from("local"));
@@ -735,14 +855,6 @@ stream_modes = ["non_streaming", "streaming"]
         assert_eq!(*stream_mode, StreamMode::Streaming);
         assert_eq!(*task, Some(SpeechTask::VoiceClone));
         assert!(*named_voice);
-
-        let final_invalid = speech(br#"{"model":"tts","model":7,"input":"x"}"#, &pool, &trust)
-            .expect("invalid final worker-owned value becomes an absent routing fact");
-        let ProfileRequirement::SpeechHttp { model, .. } = final_invalid.requirement.profile()
-        else {
-            panic!("speech requirement")
-        };
-        assert!(matches!(model, ModelSelection::UnresolvedDefault));
 
         let batch = batch(
             br#"{
@@ -1009,6 +1121,37 @@ stream_modes = ["non_streaming", "streaming"]
             &[SpeechResponseFormat::Wav, SpeechResponseFormat::Pcm]
         );
         assert_eq!(reference_forms, &[ReferenceForm::None]);
+    }
+
+    #[test]
+    fn batch_items_use_the_final_json_occurrence() {
+        let pool = pool();
+        let trust = TrustDomain::new(String::from("local"));
+        for earlier in ["7", r#"[7]"#, r#"[{"model":"other"},{"model":"other"}]"#] {
+            let body = format!(r#"{{"model":"tts","items":{earlier},"items":[{{"input":"x"}}]}}"#);
+            let classified = batch(body.as_bytes(), &pool, &trust)
+                .expect("a valid final items array replaces an earlier occurrence");
+            let ProfileRequirement::SpeechBatch {
+                models, batch_size, ..
+            } = classified.requirement.profile()
+            else {
+                panic!("batch requirement")
+            };
+            assert_eq!(*batch_size, 1);
+            assert_eq!(classified.credits, 1);
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0].expected_model_id(), Some("tts"));
+        }
+
+        for final_items in ["7", r#"[7]"#] {
+            let body =
+                format!(r#"{{"model":"tts","items":[{{"input":"x"}}],"items":{final_items}}}"#);
+            assert_eq!(
+                batch(body.as_bytes(), &pool, &trust).err(),
+                Some(HttpFault::MalformedRequest),
+                "an invalid final items occurrence controls worker-facing semantics"
+            );
+        }
     }
 
     #[test]

@@ -114,7 +114,9 @@ class Attention(nn.Module):
         selected_backend = resolved_backend or AttentionBackendEnum.FA
         supported_backends = None if resolved_backend is None else {resolved_backend}
         with component_attn_backend_context_manager(
-            selected_backend, component_name="minimax_music3_dit"
+            selected_backend,
+            component_name="minimax_music3_dit",
+            require_backend_selection=resolved_backend is not None,
         ):
             self.backend = LocalAttention(
                 num_heads=self.num_heads,

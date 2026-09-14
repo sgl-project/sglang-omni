@@ -7,6 +7,7 @@ import json
 import pytest
 import torch
 from safetensors.torch import save_file
+from torch.nn.utils.parametrize import is_parametrized
 
 from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioEncoder,
@@ -95,6 +96,19 @@ def _tiny_moss_audio_tokenizer_v1_config() -> dict:
     config.pop("enable_channel_interleave")
     config.pop("compute_dtype")
     return config
+
+
+def _assert_quantizer_weights_match(expected, actual) -> None:
+    for name, expected_module in expected.named_modules():
+        if not isinstance(expected_module, torch.nn.Conv1d):
+            continue
+        actual_module = actual.get_submodule(name)
+        torch.testing.assert_close(actual_module.weight, expected_module.weight)
+        if expected_module.bias is not None:
+            torch.testing.assert_close(actual_module.bias, expected_module.bias)
+    for name, expected_parameter in expected.named_parameters():
+        if "parametrizations." not in name:
+            torch.testing.assert_close(actual.get_parameter(name), expected_parameter)
 
 
 def test_repository_encoder_cpu_fallback_preserves_batch_lengths() -> None:
@@ -215,11 +229,22 @@ def test_repository_encoder_loads_local_weights_without_remote_code(tmp_path) ->
         device="cpu",
     ).model
 
-    expected = expected_model.state_dict()
-    actual = loaded.state_dict()
-    assert actual.keys() == expected.keys()
-    for name in expected:
-        torch.testing.assert_close(actual[name], expected[name])
+    expected_encoder = expected_model.encoder.state_dict()
+    actual_encoder = loaded.encoder.state_dict()
+    assert actual_encoder.keys() == expected_encoder.keys()
+    for name in expected_encoder:
+        torch.testing.assert_close(
+            actual_encoder[name], expected_encoder[name], rtol=0, atol=0
+        )
+    _assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
+    assert any(
+        is_parametrized(module, "weight")
+        for module in expected_model.quantizer.modules()
+    )
+    assert all(
+        not is_parametrized(module, "weight") for module in loaded.quantizer.modules()
+    )
+    assert all("parametrizations" not in name for name in loaded.quantizer.state_dict())
 
 
 def test_repository_encoder_strict_flash_fails_before_loading_weights(
@@ -376,16 +401,40 @@ def test_repository_vocoder_loads_only_local_quantizer_and_decoder(
     ).model
 
     assert isinstance(loaded.decoder, MossAudioTokenizerVocoderDecoder)
-    expected_quantizer = expected_model.quantizer.state_dict()
-    actual_quantizer = loaded.quantizer.state_dict()
-    assert actual_quantizer.keys() == expected_quantizer.keys()
-    for name in expected_quantizer:
-        torch.testing.assert_close(actual_quantizer[name], expected_quantizer[name])
+    assert loaded.quantizer._decode_cache is not None
+    _assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
+    assert all(
+        not is_parametrized(module, "weight") for module in loaded.quantizer.modules()
+    )
     expected_decoder = expected_model.decoder.state_dict()
     actual_decoder = loaded.decoder.state_dict()
     assert actual_decoder.keys() == expected_decoder.keys()
     for name in expected_decoder:
         torch.testing.assert_close(actual_decoder[name], expected_decoder[name])
+
+
+def test_vocoder_streaming_rope_budget_tracks_decoder_stage_rates() -> None:
+    config = _tiny_config()
+    config.update(sampling_rate=50, downsample_rate=4)
+    transformer = config["decoder_kwargs"][0]
+    config["decoder_kwargs"] = [
+        dict(transformer),
+        {"module_type": "PatchedPretransform", "patch_size": 2},
+        dict(transformer, input_dimension=2, output_dimension=2),
+        {"module_type": "PatchedPretransform", "patch_size": 2},
+        dict(transformer, input_dimension=1, output_dimension=1),
+    ]
+    model = MossAudioTokenizerVocoder(config, parameter_device="cpu")
+    decoder_view = MossAudioTokenizerVocoderDecoder.from_module(model.decoder)
+
+    # note (Zhang Yiyang): Thirty minutes at 12.5, 25 and 50 frames/second.
+    for decoder in (model.decoder, decoder_view):
+        budgets = [
+            stage.transformer._packed_rope_cache.streaming_max_positions
+            for stage in decoder
+            if stage.module_type == "Transformer"
+        ]
+        assert budgets == [22_500, 45_000, 90_000]
 
 
 def test_repository_vocoder_materializes_compute_dtype_at_load(tmp_path) -> None:

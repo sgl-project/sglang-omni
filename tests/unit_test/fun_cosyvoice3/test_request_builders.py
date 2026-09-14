@@ -309,7 +309,7 @@ def test_generation_kwargs_omit_implicit_sampling_defaults_but_keep_explicit_val
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
-        "repetition_penalty": 1.1,
+        "repetition_penalty": 1.21,
         "do_sample": False,
         "max_new_tokens": 12,
     }
@@ -363,8 +363,10 @@ class _FakeModel(torch.nn.Module):
         )
 
 
+@pytest.mark.parametrize("repetition_penalty", [None, 1.1, 1.21])
 def test_preprocess_and_build_request_share_prepared_state(
     monkeypatch: pytest.MonkeyPatch,
+    repetition_penalty: float | None,
 ) -> None:
     monkeypatch.setattr(
         request_builders,
@@ -390,7 +392,21 @@ def test_preprocess_and_build_request_share_prepared_state(
     )
     payload = _payload(
         {"text": "hello", "ref_audio": "reference.wav"},
-        params={"max_new_tokens": 5, "do_sample": False, "seed": 7},
+        params={
+            "max_new_tokens": 5,
+            "do_sample": False,
+            "seed": 7,
+            **(
+                {}
+                if repetition_penalty is None
+                else {"repetition_penalty": repetition_penalty}
+            ),
+        },
+        tts_params=(
+            {}
+            if repetition_penalty is None
+            else {"explicit_generation_params": ["repetition_penalty"]}
+        ),
     )
 
     prepared_payload = preprocess_cosyvoice3_payload(payload)
@@ -413,6 +429,9 @@ def test_preprocess_and_build_request_share_prepared_state(
     request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
     assert request_data.max_new_tokens == 5
     assert request_data.temperature == 0.0
+    assert request_data.req.sampling_params.repetition_penalty == (
+        1.21 if repetition_penalty is None else repetition_penalty
+    )
     assert request_data.req.sampling_params.sampling_seed == 7
     # Stop on the full 200-id control range, not only EOS_ID.
     assert request_data.req.sampling_params.stop_token_ids == set(
@@ -422,8 +441,64 @@ def test_preprocess_and_build_request_share_prepared_state(
     # the explicit max_new_tokens=5.
     assert request_data.req.sampling_params.min_new_tokens == 4
     assert request_data.req._input_embeds_are_projected is True
+    assert request_data.stream_metadata is None
+    assert request_data.flow_prompt_speech_token.tolist() == [[40]]
     with pytest.raises(RuntimeError, match="state is missing"):
         build_sglang_cosyvoice3_request(prepared_payload, model=model)
+
+
+def test_mlx_preprocessing_uses_token_metadata_without_torch_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: torch.zeros(1600).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: torch.zeros(2400).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 4, 80),
+    )
+    set_cosyvoice3_preprocessing_context(
+        model=None,
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_FakeSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+        use_mlx=True,
+        model_revision="mlx-test",
+    )
+    payload = _payload(
+        {
+            "text": "hello",
+            "ref_audio": "reference.wav",
+            "ref_text": "reference",
+        },
+        params={"do_sample": False},
+        request_id="req-mlx",
+    )
+
+    prepared_payload = preprocess_cosyvoice3_payload(payload)
+    prepared = pop_prepared_cosyvoice3_request(prepared_payload)
+
+    assert prepared is not None
+    assert prepared.prompt_input_embeds is None
+    assert prepared.input_ids_list == [0] * 9
+    assert prepared.input_ids.tolist() == [0] * 9
+    assert prepared.text_token_ids == [3, 4, 5, 1, 2]
+    assert prepared.llm_prompt_speech_token_ids == [40, 41]
+
+    request_builders._PREPARED_REQUESTS["req-mlx"] = prepared
+    request_data = build_sglang_cosyvoice3_request(prepared_payload, model=None)
+
+    assert request_data.prompt_input_embeds is None
+    assert request_data.req._cosyvoice3_text_token_ids == [3, 4, 5, 1, 2]
+    assert request_data.req._cosyvoice3_prompt_speech_token_ids == [40, 41]
 
 
 def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
@@ -562,6 +637,45 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
         for request_id in request_ids:
             cleanup_prepared_cosyvoice3_request(request_id)
         assert not scheduler_thread.is_alive()
+
+
+def test_build_request_attaches_stream_metadata_when_stream_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio",
+        lambda source: torch.zeros(1600).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "_load_prompt_audio_24k",
+        lambda source: torch.zeros(2400).numpy(),
+    )
+    monkeypatch.setattr(
+        request_builders,
+        "extract_prompt_speech_feat",
+        lambda audio, sample_rate: torch.ones(1, 2, 80),
+    )
+    model = _FakeModel()
+    set_cosyvoice3_preprocessing_context(
+        model=model,
+        tokenizer=_FakeTokenizer(),
+        speech_tokenizer=_FakeSpeechTokenizer(),
+        speaker_encoder=_FakeSpeakerEncoder(),
+    )
+    payload = _payload(
+        {"text": "hello", "ref_audio": "reference.wav"},
+        params={"stream": True, "max_new_tokens": 8},
+    )
+    prepared_payload = preprocess_cosyvoice3_payload(payload)
+    request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
+
+    assert request_data.stream_metadata == {
+        "modality": "audio_codes",
+        "stream": True,
+    }
+    assert request_data.flow_embedding.tolist() == [[2.0] * 192]
 
 
 def test_build_request_derives_generation_length_contract_when_unset(
@@ -735,6 +849,77 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
     assert restored.completion_tokens == 2
     assert restored.sample_rate == 24000
     assert restored.engine_time_s == pytest.approx(0.5)
+
+
+def test_result_adapter_filters_silent_runs_without_mutating_ar_history() -> None:
+    state = FunCosyVoice3State(text="hello")
+    payload = StagePayload(
+        request_id="req-silent-result",
+        request=OmniRequest(inputs="hello"),
+        data=state.to_dict(),
+    )
+    generated_token_ids = [1, 2, 28, 29, 55, 248, 99, 494, 2241, 2242, 2322, 2323, 1]
+    output_codes = [torch.tensor([token_id]) for token_id in generated_token_ids]
+    output_ids = list(generated_token_ids)
+    data = CosyVoice3SGLangRequestData(
+        output_codes=output_codes,
+        output_ids=output_ids,
+        stage_payload=payload,
+    )
+
+    result = apply_sglang_cosyvoice3_result(payload, data)
+    restored = FunCosyVoice3State.from_dict(result.data)
+
+    assert restored.audio_codes == [
+        [1],
+        [2],
+        [28],
+        [29],
+        [55],
+        [99],
+        [494],
+        [2241],
+        [2242],
+        [2322],
+        [2323],
+    ]
+    assert restored.completion_tokens == len(generated_token_ids)
+    assert data.output_ids == generated_token_ids
+    assert [int(code.item()) for code in data.output_codes] == generated_token_ids
+
+
+def test_filter_silent_runs_preserves_shape_dtype_and_resets_on_speech() -> None:
+    codes = torch.tensor(
+        [[1], [2], [28], [29], [55], [248], [7], [2322], [2323], [1]],
+        dtype=torch.int32,
+    )
+
+    filtered = request_builders._filter_cosyvoice3_silent_runs(codes)
+
+    assert filtered.tolist() == [[1], [2], [28], [29], [55], [7], [2322], [2323], [1]]
+    assert filtered.shape == (9, 1)
+    assert filtered.dtype == torch.int32
+    assert codes.tolist() == [
+        [1],
+        [2],
+        [28],
+        [29],
+        [55],
+        [248],
+        [7],
+        [2322],
+        [2323],
+        [1],
+    ]
+
+
+def test_filter_silent_runs_preserves_empty_shape_and_dtype() -> None:
+    codes = torch.empty((0, 1), dtype=torch.int16)
+
+    filtered = request_builders._filter_cosyvoice3_silent_runs(codes)
+
+    assert filtered.shape == (0, 1)
+    assert filtered.dtype == torch.int16
 
 
 def test_result_adapter_serializes_empty_generation_without_losing_state(

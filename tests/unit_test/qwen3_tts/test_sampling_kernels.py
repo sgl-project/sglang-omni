@@ -203,13 +203,16 @@ def _build_sampling_talker(
     """Build only the fields used by the production sampled-token reference."""
     talker = object.__new__(Qwen3TTSTalker)
     talker.config = SimpleNamespace(num_code_groups=16)
-    talker._sub_temperature_tensor = temperatures
+    talker._sub_temperature_tensor = temperatures.clamp_min(1e-5)
     talker._sub_top_k_tensor = top_ks
     talker._sub_top_p_tensor = top_ps
     talker._sub_sampling_seed_tensor = seeds
     talker._sub_sampled_max_top_k = max_top_k
     talker._sub_sampled_has_top_p = bool(((top_ps > 0.0) & (top_ps < 1.0)).any().item())
     talker._sub_sampled_has_unbounded_top_k = False
+    talker._sub_seed_offsets = torch.arange(
+        1, talker.config.num_code_groups, device=temperatures.device, dtype=torch.long
+    )
     return talker
 
 
@@ -220,12 +223,9 @@ def _production_seeded_tokens(
     layer_idx: int,
     semantic_positions: torch.Tensor,
 ) -> torch.Tensor:
-    rows = torch.arange(logits.shape[0], device=logits.device, dtype=torch.long)
     return talker._sample_subtalker_token_seeded(
         logits,
-        layer_idx,
-        row_indices=rows,
-        semantic_positions=semantic_positions,
+        sub_positions=talker._sub_seed_positions(semantic_positions)[layer_idx],
     )
 
 
@@ -263,7 +263,7 @@ def _fused_seeded_tokens(
     )
     sampled = sample_from_logits_with_seed_top_k_top_p(
         logits,
-        talker._sub_temperature_tensor.clamp_min(1e-5),
+        talker._sub_temperature_tensor,
         talker._sub_top_k_tensor,
         talker._sub_top_p_tensor,
         talker._sub_sampling_seed_tensor,

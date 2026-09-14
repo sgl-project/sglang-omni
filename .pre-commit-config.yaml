@@ -1,6 +1,6 @@
 default_stages: [pre-commit, pre-push, manual]
 
-exclude: \.txt$
+exclude: \.(txt|ulaw)$
 
 repos:
   - repo: https://github.com/PyCQA/autoflake

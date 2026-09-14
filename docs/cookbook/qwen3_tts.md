@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.18 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.19 stack remains
 in place:
 
 ```bash
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.18
+applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.19
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
@@ -387,6 +387,29 @@ explicit value to trade continuity against time-to-first-audio.
 Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
 
+#### Codec decoding defaults
+
+Streaming decodes run on the stateful incremental codec by default: each
+follow-up chunk decodes only its fresh frames against per-stream state held in
+a preallocated arena, steady-state cohorts replay CUDA graphs whose decode step
+is `torch.compile`d, and the follow-up workers collect for 4 ms. Startup spends
+about a minute compiling the steady shapes. The left-context decoder remains
+available as a rollback:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      enable_stateful_codec_decoder: false
+```
+
+`incremental_codec_cuda_graph`, `incremental_codec_compile` and
+`followup_batch_wait_ms` are the individual switches. Measured on one H100
+80GB at 20 requests per second, three client seeds of roughly 1200 requests
+each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
+for the left-context decoder, with first playable audio at 55 to 58 ms
+against 82 to 89 ms.
+
 #### First-audio chunk ramp
 
 For latency-sensitive deployments the whole early chunk schedule can be
@@ -449,7 +472,50 @@ only the first chunk.
 Both expose an identical request API. The 1.7B model has higher capacity (typically better
 quality) at a larger memory and latency cost; the 0.6B model is lighter and faster.
 
+## CustomVoice Checkpoints
+
+CustomVoice generates speech with built-in speakers through the same pipeline. Use it without reference audio; omit `ref_audio`, `ref_text`, `references`, and `x_vector_only_mode`. Omit `task_type` or set it to `CustomVoice`.
+
+| Checkpoint | Config | Instruction guidance |
+|---|---|---|
+| `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Accepted for backward compatibility, but not recommended |
+| `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Supported |
+
+Both released checkpoints provide `Serena`, `Vivian`, `Uncle_Fu`, `Ryan`, `Aiden`, `Ono_Anna`, `Sohee`, `Eric`, and `Dylan`. Speaker matching is case-insensitive; an omitted or `default` voice selects `Vivian`. `GET /v1/audio/voices` lists `default` and the served checkpoint's speakers. Unknown speakers or supplied cloning fields return HTTP 400; uploaded reference voices are not used for CustomVoice synthesis.
+
+Both sizes support buffered speech, batch requests, incremental HTTP PCM output, and WebSocket audio output. HTTP streaming requires `stream=true` with `response_format="pcm"`; WebSocket sessions use `stream_audio=true` with `response_format="pcm"`.
+
+**0.6B instruction compatibility:** SGLang-Omni continues to pass optional `instructions` into the 0.6B prompt, preserving existing behavior. The released 0.6B model does not provide reliable instruction control; omit this field or use 1.7B when style control is needed.
+
+**Eric/Dylan language behavior:** For both sizes, `language: Auto` selects Eric's Sichuan dialect token or Dylan's Beijing dialect token. An explicit language takes precedence: `language: Chinese` keeps the Chinese language token. This preserves existing SGLang-Omni behavior and differs from the QwenLM/Qwen3-TTS Python wrapper (`qwen-tts` 0.1.1), which also selects dialect tokens for `Chinese`. This is a conditioning choice, not a guarantee that the speaker's accent disappears.
+
+Start the 1.7B checkpoint with its matching config:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
+  --port 8000
+```
+
+Then select a built-in speaker in the request. For 0.6B, use its model/config pair from the table and omit `instructions`.
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "input": "SGLang-Omni serves Qwen CustomVoice.",
+    "voice": "Ryan",
+    "language": "English",
+    "instructions": "Speak clearly and calmly."
+  }' \
+  --output custom-voice.wav
+```
+
 ## Benchmark Results
+
+### 0.6B Base
 
 Qwen3-TTS-12Hz-0.6B-Base on Seed-TTS EN (1088 utterances, reference voice cloning from each
 prompt), concurrency 16, WER scored with HF Whisper-large-v3. Hardware: 1× H200 SXM.
@@ -470,6 +536,28 @@ repetition loop and generated ~164 s of looping audio up to `max_new_tokens`, wh
 the raw micro-average to 18.29%; excluding those, corpus WER is 1.07%. RTF > 1 reflects the
 0.6B codec pipeline at concurrency 16, not single-stream latency. The 1.7B checkpoint trades
 latency for quality.
+
+### 1.7B CustomVoice
+
+Qwen3-TTS-12Hz-1.7B-CustomVoice on the full Seed-TTS-Eval EN and ZH splits, concurrency 16, with 16 warmup requests per language/mode and `max_new_tokens=2048`. EN used Ryan/English and ZH used Vivian/Chinese, without reference audio or instructions. WER/CER was scored with Qwen3-ASR-1.7B at concurrency 32. Hardware: 1× H200 141 GB, BF16, TP1. Sampling overrides and seed were unset.
+
+The server used `--tts_engine.engine.max_running_requests 64`, `--tts_engine.engine.cuda_graph_max_bs 64`, `--tts_engine.engine.torch_compile_max_bs 64`, `--vocoder.process vocoder`, `--tts_engine.gpu_memory_fraction 0.85`, and `--vocoder.gpu_memory_fraction 0.10`; `torch.compile` remained disabled. Streaming used the default `1 -> 2 -> 4` chunk ramp without a request-level override. Each language/mode was measured once, in non-streaming EN/ZH then streaming EN/ZH order on the same warmed server. The target GPU had no external GPU process during timed windows; host CPU, memory, and I/O were shared with another profiling task.
+
+| Metric | Non-streaming EN | Non-streaming ZH | Streaming EN | Streaming ZH |
+|---|---:|---:|---:|---:|
+| Samples | 1088 | 2020 | 1088 | 2020 |
+| Corpus WER/CER | 1.608% | 0.984% | 2.085% | 0.927% |
+| Corpus WER/CER (excl. >50% outliers) | 1.359% | 0.984% | 1.454% | 0.927% |
+| Samples above 50% WER/CER | 3 | 0 | 4 | 0 |
+| UTMOS | 4.1723 | 3.1824 | 4.1500 | 3.1789 |
+| QPS | 14.788 | 13.307 | 10.098 | 8.333 |
+| Latency mean (s) | 1.075 | 1.198 | 1.573 | 1.915 |
+| RTF mean | 0.2335 | 0.2079 | 0.3380 | 0.3332 |
+| TTFA mean (s) | N/A | N/A | 0.1213 | 0.1047 |
+
+Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference words / characters and includes every sample. The filtered row excludes samples whose own WER/CER exceeds 50% and recomputes the corpus rate. UTMOS is the mean predicted audio-quality score, not a listening-test score. These independently sampled runs are not a paired comparison of streaming and non-streaming quality; the Base result also uses different conditioning and a different ASR evaluator.
+
+TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see [First-audio chunk ramp](#first-audio-chunk-ramp) for the buffering tradeoff.
 
 ## Known Limitations
 

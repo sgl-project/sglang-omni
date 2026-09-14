@@ -43,6 +43,12 @@ SPEED_BOUNDARY_VALUES = (0.25, 1.0, 4.0)
 WEBSOCKET_SPLIT_GRANULARITIES = ("sentence", "clause")
 BATCH_SIZES = (1, 2, 8, 32)
 BATCH_OVERSIZED_SIZE = 33
+RUST_MALFORMED_REQUEST = (400, "invalid_request_error", "malformed_request")
+RUST_NO_COMPATIBLE_WORKER = (
+    422,
+    "invalid_request_error",
+    "no_compatible_worker",
+)
 VOICE_UPLOAD_SUCCESS_FORMATS = (
     ("wav", "audio/wav"),
     ("mp3", "audio/mpeg"),
@@ -201,7 +207,12 @@ REFERENCE_FAILURES = (
         "resolve/main/en/prompt-wavs/does-not-exist.wav",
     ),
     ("html_url", "https://example.com/"),
-    ("wrong_content_type", "https://www.iana.org/_img/2013.1/iana-logo-header.svg"),
+    (
+        "wrong_content_type",
+        "https://raw.githubusercontent.com/sgl-project/sglang-omni/"
+        "3153edb19750767d2388cc8bb00fd30c809271d6/"
+        "docs/_static/image/sgl-omni-logo.svg",
+    ),
     ("unreachable_url", "http://192.0.2.1/seedtts/unreachable.wav"),
     ("disallowed_file", "file:///etc/passwd"),
 )
@@ -235,6 +246,8 @@ class Scenario:
     expected_status_class: str = "success"
     expected_http_status: int | None = None
     expected_error_type: str | None = None
+    alternate_error_signatures: tuple[tuple[int, str, int | str], ...] = ()
+    alternate_ws_close: tuple[int, str] | None = None
     description: str = ""
     body_type: str = "json"
     form_fields: dict[str, str] = field(default_factory=dict)
@@ -762,6 +775,7 @@ def _required_stage_scenarios(
                 expected_status_class="client_error",
                 expected_http_status=400,
                 expected_error_type="BadRequestError",
+                alternate_error_signatures=(RUST_NO_COMPATIBLE_WORKER,),
             )
         )
         next_index += 1
@@ -1424,6 +1438,7 @@ def _speech_stream_non_pcm_error(
         expected_status_class="client_error",
         expected_http_status=400,
         expected_error_type="BadRequestError",
+        alternate_error_signatures=(RUST_MALFORMED_REQUEST,),
         description="raw PCM streaming request with invalid non-PCM response format",
         planned_metadata={"stream_error_case": "stream_non_pcm"},
     )
@@ -1568,6 +1583,11 @@ def _speech_malformed(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scen
         raise RuntimeError("malformed scenario names drifted from coverage contract")
     malformed_case, payload = candidates[index % len(candidates)]
     expect_success = payload.get("input") in ADVERSARIAL_TEXTS
+    alternate_error_signatures = (
+        (RUST_MALFORMED_REQUEST,)
+        if malformed_case in {"bad_response_format", "bad_task_type", "stream_non_pcm"}
+        else ()
+    )
     return Scenario(
         id=_scenario_id(stage, "speech_malformed", index),
         endpoint="speech",
@@ -1579,6 +1599,7 @@ def _speech_malformed(index: int, spec: BenchmarkSpec, stage: LoadStage) -> Scen
         expected_status_class="success" if expect_success else "client_error",
         expected_http_status=None if expect_success else 400,
         expected_error_type=None if expect_success else "BadRequestError",
+        alternate_error_signatures=alternate_error_signatures,
         description="malformed or adversarial request should not crash server",
         planned_metadata={"malformed_case": malformed_case},
     )
@@ -1595,6 +1616,7 @@ def _batch_request(
     expected_status_class: str = "success",
     expected_http_status: int | None = None,
     expected_error_type: str | None = None,
+    alternate_error_signatures: tuple[tuple[int, str, int | str], ...] = (),
 ) -> Scenario:
     items: list[dict[str, Any]] = []
     for item_index in range(batch_size):
@@ -1627,6 +1649,7 @@ def _batch_request(
         expected_status_class=expected_status_class,
         expected_http_status=expected_http_status,
         expected_error_type=expected_error_type,
+        alternate_error_signatures=alternate_error_signatures,
         description=f"batch speech request with {batch_size} items",
         planned_metadata={
             "batch_size": batch_size,
@@ -2475,6 +2498,7 @@ def _websocket_malformed_json(
         path="/v1/audio/speech/stream",
         expect_success=False,
         expected_status_class="client_error",
+        alternate_ws_close=(1008, "invalid session.config"),
         script=[
             {"action": "send_text", "text": "{not-json"},
             {"action": "expect", "event": "error"},

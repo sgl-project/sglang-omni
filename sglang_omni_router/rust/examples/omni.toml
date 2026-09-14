@@ -13,7 +13,7 @@ format = "json"
 filter = "info"
 
 [router]
-strategy = "round_robin"
+strategy = "least_requests"
 
 [admission]
 global = 128

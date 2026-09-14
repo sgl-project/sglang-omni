@@ -160,6 +160,8 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
+        from sglang.srt.runtime_context import get_exec, get_memory
+
         from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 
         self._model_worker = model_worker
@@ -176,9 +178,9 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             self.tp_rank,
             self.tp_size,
             self.total_gpu_memory_fraction,
-            bool(server_args.disable_cuda_graph),
+            bool(get_exec().graph.disable_cuda_graph),
             get_decode_cuda_graph_bs(server_args),
-            not bool(server_args.disable_radix_cache),
+            not bool(get_memory().disable_radix_cache),
             self.nccl_port,
         )
 

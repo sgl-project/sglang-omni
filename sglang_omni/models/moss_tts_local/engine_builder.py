@@ -108,6 +108,9 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             self.profile_total_gpu_memory_fraction = None
 
     def customize_server_args(self, server_args: Any) -> None:
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+
+        cfg = resolved_view(server_args)
         moss_local_stages.logger.info(
             f"MOSS-TTS Local SGLang startup: gpu_id={self.gpu_id} "
             f"total_gpu_memory_fraction={self.total_gpu_memory_fraction} "
@@ -116,7 +119,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             f"process_total_gpu_memory_fraction="
             f"{self.process_total_gpu_memory_fraction} "
             f"codec_mem_reserve={self.memory_budget.applied_codec_mem_reserve:.3f} "
-            f"mem_fraction_static={server_args.mem_fraction_static} "
+            f"mem_fraction_static={cfg.mem_fraction_static} "
             f"profile_total_gpu_memory_fraction="
             f"{self.profile_total_gpu_memory_fraction}"
         )

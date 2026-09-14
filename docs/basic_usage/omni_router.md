@@ -138,11 +138,11 @@ The top-level sections are:
 | `http` | Shared upstream connection pool and aggregate buffering budget |
 | `http_generation` | Chat trust domain, request limits, and deadline |
 | `http_media` | Enabled media routes, trust domain, request limits, and deadline |
-| `websocket` | Speech and realtime routes with setup, connection, and close bounds |
-| `workers` | Worker identity, endpoint, health path, and service profiles |
+| `websocket` | Speech and realtime routes with setup and close bounds |
+| `workers` | Worker identity, endpoint, health path, session capacity, and service profiles |
 
 Each worker has a stable ID, base URL, trust domain, optional default model,
-health path and one or more correlated service profiles.
+health path, session capacity, and one or more correlated service profiles.
 A profile row describes a combination the worker supports; the router never
 combines independent fields from different rows.
 
@@ -165,7 +165,7 @@ limits, and timeouts from the expected workload and worker topology.
 | `POST` | `/v1/audio/transcriptions` | Multipart transcription |
 | `POST` | `/v1/audio/translations` | Multipart translation |
 | `GET` | `/v1/audio/speech/stream` | Speech WebSocket |
-| `GET` | `/v1/realtime?model=<id>` | OpenAI-compatible realtime WebSocket |
+| `GET` | `/v1/realtime[?model=<id>]` | OpenAI-compatible realtime WebSocket |
 | `GET`, `POST` | `/v1/audio/voices` | List or upload worker-local voices |
 | `DELETE` | `/v1/audio/voices/{name}` | Delete a worker-local voice |
 | `GET` | `/v1/models` | Static model inventory |
@@ -260,14 +260,21 @@ transcode, or regenerate audio.
 
 Speech and realtime WebSockets terminate both handshakes and pin one worker for
 the complete session. Each frame awaits its destination send, preserving frame
-type and order without relay tasks or application queues. Setup, connection,
-initial speech configuration, and close convergence use explicit bounds.
-Application-level idle behavior remains worker-owned.
+type and order without relay tasks or application queues. Both links use a 16
+MiB message bound. Speech configuration, upstream transport setup, the first
+worker event, and close convergence use separate deadlines. Application-level
+idle behavior remains worker-owned. A realtime `model` query requires a worker
+with the matching default; an omitted model can use any compatible worker in
+the trust domain. `worker_setup_timeout_ms` is an operator safety bound on the
+initial worker application event; it does not limit session lifetime or mark a
+worker unhealthy when it expires.
+Speech configuration is replayed byte-for-byte; the router extracts routing
+facts while the worker owns protocol-value validation.
 
 Uploaded voices have one explicit owner configured by
-`router.voice_owner_worker_id`. Voice CRUD and requests that depend on a stored
-voice are pinned to that worker. Stateless speech continues to use normal
-worker selection. The router does not store, replicate, or reconcile
+`router.voice_owner_worker_id`. Voice CRUD and uploaded-name requests are
+pinned to that worker. Preset names and explicit references continue to use
+normal worker selection. The router does not store, replicate, or reconcile
 worker-local voice data. `voice_name_policy = "preset"` declares names provided
 by the serving model. `voice_name_policy = "uploaded"` declares names resolved
 from worker-local voice state; hybrid pipelines should use `uploaded` so named
@@ -292,15 +299,38 @@ compatible. Current worker load does not change readiness.
 
 `/v1/models` returns a sorted, deduplicated inventory built from worker defaults
 and correlated profile model IDs. `/metrics` exposes Prometheus lifecycle,
-readiness, health, admission, and worker-load gauges. `/diagnostics` returns
-bounded deterministic JSON for lifecycle, readiness, admission, and configured
-workers.
+readiness, health, admission, worker-load, listener, buffered-byte,
+classification-slot, and WebSocket-session gauges. It also exposes cumulative
+request and response-header counts, router-generated faults, saturation
+rejections, worker probe outcomes, classification outcomes, WebSocket
+termination reasons, and committed HTTP response-body outcomes.
+
+The response-header histogram measures from router boundary entry until an HTTP
+response is available. It does not measure response-body completion, streaming
+TTFT, or WebSocket-session duration. Requests cancelled before that boundary
+are counted separately. Classification histograms separate slot wait,
+blocking-executor wait, and execution for each request kind. Blocking work that
+outlives a caller timeout or cancellation records its phase durations when that
+work starts or finishes, without changing the caller's terminal outcome.
+WebSocket termination counters distinguish setup from active relay and record
+one bounded terminal cause per upgraded session. They do not measure completion
+of the bounded close handshake. HTTP response-body counters distinguish
+complete bodies, upstream body errors, and bodies dropped before completion.
+The post-commit relay-failure counter is the upstream-error subset.
+`/diagnostics` returns bounded deterministic JSON for the same router-local
+state and marks the configured voice owner. Each diagnostic worker includes
+cumulative dispatch counts for the fixed service classes and voice-control
+operations. A speech batch contributes one dispatch while active worker load
+remains item-weighted. Workers also include their latest probe result, HTTP
+status when present, observation time, transition streaks, and cumulative
+outcomes.
 
 Operations responses snapshot router-local state and never contact workers.
 Admission values come from the semaphores that enforce router limits. Worker
 load comes from the same counters used by `least_requests`. Metric labels use
 fixed vocabularies instead of worker IDs, model IDs, request IDs, paths, or
-client input.
+client input. Listener usage includes the slot reserved by the pending accept.
+registered WebSocket sessions represent callbacks retained for shutdown.
 
 Structured logging covers lifecycle events, health transitions, and exceptional
 conditions. `logging.filter` accepts a tracing filter expression, and

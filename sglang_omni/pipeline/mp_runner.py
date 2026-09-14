@@ -97,6 +97,8 @@ def _build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
+    # note (Dayuxiaoshui): stage processes log at the level the CLI set here.
+    log_level = logging.getLogger().getEffectiveLevel()
     if replica_topology is None:
         replica_topology = ReplicaTopology()
 
@@ -202,6 +204,7 @@ def _build_stage_groups(
                         spec.tp_rank
                     ],
                     stage_specs=[spec],
+                    log_level=log_level,
                 )
                 for spec in specs
             ]
@@ -219,6 +222,7 @@ def _build_stage_groups(
                             single_stage_specs[stage_name]
                             for stage_name in group.stage_names
                         ],
+                        log_level=log_level,
                     )
                 ],
             )

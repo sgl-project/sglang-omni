@@ -90,6 +90,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del checkpoint_dir, device, gpu_id
+        from sglang.srt.runtime_context import get_exec, get_schedule
+
         from sglang_omni.scheduling.generation_batch_policy import (
             get_decode_cuda_graph_max_bs,
         )
@@ -99,11 +101,11 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         assert self._checkpoint_root is not None
         model = model_worker.model_runner.model
         attach_minimax_modules(model, self._checkpoint_root)
-        if not bool(server_args.disable_cuda_graph):
+        if not bool(get_exec().graph.disable_cuda_graph):
             enable_graph_feedback(
                 model,
                 max(
-                    int(server_args.max_running_requests),
+                    int(get_schedule().max_running_requests),
                     int(get_decode_cuda_graph_max_bs(server_args) or 0),
                 ),
             )

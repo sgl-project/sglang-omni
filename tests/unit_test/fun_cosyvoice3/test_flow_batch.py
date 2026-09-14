@@ -8,7 +8,7 @@ import torch
 from sglang_omni.models.fun_cosyvoice3.stages import (
     FlowBatchInput,
     FunCosyVoice3Flow,
-    _pack_flow_inputs,
+    pack_flow_inputs,
 )
 
 
@@ -37,6 +37,33 @@ class _RecordingEstimator(torch.nn.Module):
                 "spks": spks.detach().clone(),
                 "cond": cond.detach().clone(),
                 "streaming": streaming,
+            }
+        )
+        return (0.1 * x + mu + spks.unsqueeze(-1) + cond) * mask
+
+
+class _RecordingTRTEstimator:
+    def __init__(self, max_batch: int = 16) -> None:
+        self.max_batch = max_batch
+        self.calls: list[dict[str, torch.Tensor]] = []
+
+    def execute(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+    ) -> torch.Tensor:
+        self.calls.append(
+            {
+                "x": x.detach().clone(),
+                "mask": mask.detach().clone(),
+                "mu": mu.detach().clone(),
+                "t": t.detach().clone(),
+                "spks": spks.detach().clone(),
+                "cond": cond.detach().clone(),
             }
         )
         return (0.1 * x + mu + spks.unsqueeze(-1) + cond) * mask
@@ -88,7 +115,8 @@ class _FakeFlow(torch.nn.Module):
         self.token_mel_ratio = token_mel_ratio
         self.input_embedding = torch.nn.Embedding(32, channels)
         self.spk_embed_affine_layer = torch.nn.Linear(3, channels, bias=False)
-        self.pre_lookahead_layer = torch.nn.Identity()
+        self.pre_lookahead_layer = lambda x, context=None: x
+        self.pre_lookahead_len = 3
         self.decoder = _FakeDecoder(
             channels, max_frames=max_frames, estimator=estimator
         )
@@ -131,7 +159,7 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
         _input([0], prompt_token=[5, 6, 7]),
     ]
 
-    packed = _pack_flow_inputs(flow, items)
+    packed = pack_flow_inputs(flow, items)
 
     assert packed.token.dtype == torch.int32
     assert packed.token.tolist() == [[4, 0, 8, 0], [5, 6, 7, 0]]
@@ -146,7 +174,7 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
 
 
 def test_pack_flow_inputs_builds_variable_length_token_masks() -> None:
-    packed = _pack_flow_inputs(
+    packed = pack_flow_inputs(
         _FakeFlow(),
         [
             _input([0], prompt_token=[]),
@@ -197,7 +225,9 @@ def test_flow_batch_cfg_uses_two_times_request_batch() -> None:
         assert call["x"].shape[0] == 6
         assert call["mask"].shape[0] == 6
         assert call["mu"].shape[0] == 6
-        assert call["t"].shape[0] == 6
+        # The ODE time is a scalar shared by the batch and by both CFG halves,
+        # so only one row is materialised; the DiT broadcasts it.
+        assert call["t"].shape[0] == 1
         assert call["spks"].shape[0] == 6
         assert call["cond"].shape[0] == 6
         assert call["streaming"] is False
@@ -282,3 +312,82 @@ def test_flow_batch_rejects_prompt_alignment_mismatch() -> None:
 
     with pytest.raises(ValueError, match="prompt feature length"):
         _infer_flow(_FakeFlow(), [item])
+
+
+def test_flow_batch_tensorrt_estimator_keeps_cfg_layout() -> None:
+    estimator = _RecordingTRTEstimator(max_batch=16)
+    _infer_flow(
+        _FakeFlow(estimator=estimator),
+        [_input([1]), _input([2]), _input([3])],
+    )
+
+    assert estimator.calls
+    for call in estimator.calls:
+        assert call["x"].shape[0] == 6
+
+
+def test_flow_batch_tensorrt_chunks_cfg_pairs_when_engine_batch_is_2() -> None:
+    estimator = _RecordingTRTEstimator(max_batch=2)
+    items = [_input([1]), _input([2]), _input([3])]
+    _infer_flow(_FakeFlow(estimator=estimator), items)
+
+    assert estimator.calls
+    assert all(call["x"].shape[0] == 2 for call in estimator.calls)
+    # note (guozhihao-224): 10 Euler steps times 3 request-wise CFG pairs.
+    assert len(estimator.calls) == 30
+
+
+def test_flow_batch_tensorrt_matches_pytorch_serial() -> None:
+    items = [
+        _input([1, 0], prompt_token=[2], prompt_value=0.5),
+        _input([3], prompt_token=[4, 5], prompt_value=1.5),
+    ]
+    serial = [_infer_flow(_FakeFlow(), [item])[0] for item in items]
+    batched = _infer_flow(
+        _FakeFlow(estimator=_RecordingTRTEstimator(max_batch=2)), items
+    )
+    for actual, expected in zip(batched, serial, strict=True):
+        torch.testing.assert_close(actual, expected)
+
+
+def test_flow_causal_batch_uses_streaming_mask_and_strips_lookahead() -> None:
+    flow = _FakeFlow(max_frames=128)
+    items = [
+        _input([1] * 28),
+        _input([2] * 28),
+    ]
+    mels = FunCosyVoice3Flow(flow).inference_causal(items)
+    assert all(call["streaming"] is True for call in flow.decoder.estimator.calls)
+    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    assert mels[0].shape == (1, 4, 50)
+    assert mels[1].shape == (1, 4, 50)
+
+
+def test_flow_causal_batch_follow_up_equal_lengths_strip_lookahead() -> None:
+    flow = _FakeFlow(max_frames=256)
+    items = [
+        _input([1] * 78, prompt_token=[3] * 25),
+        _input([2] * 78, prompt_token=[4] * 25),
+    ]
+    mels = FunCosyVoice3Flow(flow).inference_causal(items)
+    assert all(call["streaming"] is True for call in flow.decoder.estimator.calls)
+    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    # 78 generated tokens minus lookahead 3 = 75; 75 * 2 mel frames
+    assert mels[0].shape == (1, 4, 150)
+    assert mels[1].shape == (1, 4, 150)
+
+
+def test_flow_causal_batch_mixed_prompt_matches_serial() -> None:
+    items = [
+        _input([1] * 78, prompt_token=[3] * 25),
+        _input([2] * 78, prompt_token=[4] * 50),
+    ]
+    serial = [
+        FunCosyVoice3Flow(_FakeFlow(max_frames=512)).inference_causal([item])[0]
+        for item in items
+    ]
+    batched = FunCosyVoice3Flow(_FakeFlow(max_frames=512)).inference_causal(items)
+    assert batched[0].shape == serial[0].shape
+    assert batched[1].shape == serial[1].shape
+    for actual, expected in zip(batched, serial, strict=True):
+        torch.testing.assert_close(actual, expected)

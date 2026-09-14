@@ -176,7 +176,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `language` | string | unset | Optional language hint |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | model default (`0.0`) | Sampling temperature |
-| `max_new_tokens` | int | duration scaled | Max generated tokens. Omitted requests default to `max(5120, 10 * audio seconds)`, or to the fixed stage value when the operator configured one. Explicit values always win and are clamped to the remaining model context |
+| `max_new_tokens` | int | duration scaled | Max generated tokens. With the stock config, omitted requests use `max(512, 10 * audio seconds)`; empty audio uses a 128-token fallback. A fixed stage value disables duration scaling. Explicit values always win and are clamped to the remaining model context |
 | `prompt` | string | unset | Optional instruction override; omit to use the built-in transcribe+diarize prompt |
 
 `verbose_json` parses the model markup into OpenAI-style `segments` with

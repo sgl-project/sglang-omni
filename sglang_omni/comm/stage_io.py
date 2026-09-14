@@ -121,6 +121,23 @@ def restore_tensors(obj: Any, tensors: dict[str, torch.Tensor]) -> Any:
     return obj
 
 
+def strip_process_local_metadata(
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Drop values that only mean something inside the sending process.
+
+    A CUDA event orders a same-process consumer after the producer's stream;
+    across a process boundary the transport establishes readiness itself.
+    """
+    if metadata is None:
+        return None
+    return {
+        key: value
+        for key, value in metadata.items()
+        if not isinstance(value, torch.cuda.Event)
+    }
+
+
 def should_use_direct_cuda_ipc_stream_chunk(
     data: Any, metadata: dict[str, Any] | None
 ) -> bool:

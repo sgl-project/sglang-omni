@@ -88,17 +88,17 @@ def test_eviction_trace_matches_stock():
 
 
 def test_factory_selects_evict_heap_only_for_lru():
-    from types import SimpleNamespace
+    from sglang.srt.runtime_context import get_context
 
     from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 
     def build(policy):
-        args = SimpleNamespace(
+        with get_context().override_server_args(
             disable_radix_cache=False,
             chunked_prefill_size=None,
             radix_eviction_policy=policy,
-        )
-        return create_tree_cache(args, None, _MockAllocator(), 1)
+        ):
+            return create_tree_cache(None, _MockAllocator(), 1)
 
     assert type(build("lru")) is EvictHeapRadixCache
     for policy in ("mru", "priority", "lfu", "fifo", "filo"):

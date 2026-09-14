@@ -17,11 +17,17 @@ const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 1_800_000;
 const DEFAULT_POOL_IDLE_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 8;
+// Match the worker's 10 MiB audio limit plus its 64 KiB multipart allowance.
+pub(crate) const VOICE_UPLOAD_BODY_MAX_BYTES: u64 = 10 * 1024 * 1024 + 64 * 1024;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 const DEFAULT_HEADER_READ_TIMEOUT_MS: u64 = 30_000;
 const SCHEMA_VERSION: u32 = 1;
 const MAX_GLOBAL_ADMISSION: u32 = 1_000_000;
 const MAX_CLASS_ADMISSION: u32 = 65_535;
+const DEFAULT_WS_CONNECT_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_WS_WORKER_SETUP_TIMEOUT_MS: u64 = 60_000;
+const DEFAULT_WS_SPEECH_CONFIG_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_WS_CLOSE_TIMEOUT_MS: u64 = 5_000;
 
 /// Fully parsed and validated process configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -41,7 +47,57 @@ pub struct Config {
     pub(crate) http: HttpConfig,
     pub(crate) http_generation: Option<HttpGenerationConfig>,
     pub(crate) http_media: Option<HttpMediaConfig>,
+    pub(crate) websocket: Option<WebsocketConfig>,
     pub(crate) workers: Vec<WorkerConfig>,
+}
+
+/// Bounded transport policy shared by the terminating WebSocket routes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct WebsocketConfig {
+    pub(crate) speech: Option<WebsocketRouteConfig>,
+    pub(crate) realtime: Option<WebsocketRouteConfig>,
+    connect_timeout_ms: u64,
+    worker_setup_timeout_ms: u64,
+    speech_config_timeout_ms: u64,
+    close_timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebsocketRouteConfig {
+    pub(crate) trust_domain: String,
+}
+
+impl Default for WebsocketConfig {
+    fn default() -> Self {
+        Self {
+            speech: None,
+            realtime: None,
+            connect_timeout_ms: DEFAULT_WS_CONNECT_TIMEOUT_MS,
+            worker_setup_timeout_ms: DEFAULT_WS_WORKER_SETUP_TIMEOUT_MS,
+            speech_config_timeout_ms: DEFAULT_WS_SPEECH_CONFIG_TIMEOUT_MS,
+            close_timeout_ms: DEFAULT_WS_CLOSE_TIMEOUT_MS,
+        }
+    }
+}
+
+impl WebsocketConfig {
+    pub(crate) const fn connect_timeout(&self) -> Duration {
+        Duration::from_millis(self.connect_timeout_ms)
+    }
+
+    pub(crate) const fn worker_setup_timeout(&self) -> Duration {
+        Duration::from_millis(self.worker_setup_timeout_ms)
+    }
+
+    pub(crate) const fn speech_config_timeout(&self) -> Duration {
+        Duration::from_millis(self.speech_config_timeout_ms)
+    }
+
+    pub(crate) const fn close_timeout(&self) -> Duration {
+        Duration::from_millis(self.close_timeout_ms)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -208,6 +264,7 @@ impl HttpGenerationConfig {
 pub(crate) struct RouterConfig {
     #[serde(default)]
     pub(crate) strategy: RoutingStrategy,
+    pub(crate) voice_owner_worker_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -226,6 +283,8 @@ pub(crate) struct AdmissionConfig {
     pub(crate) speech_http: Option<u32>,
     pub(crate) speech_batch: Option<u32>,
     pub(crate) transcription_http: Option<u32>,
+    pub(crate) speech_websocket: Option<u32>,
+    pub(crate) realtime_websocket: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -403,15 +462,21 @@ impl Config {
         self.validate_admission()?;
         self.validate_health()?;
         validate_workers(&self.workers)?;
-        if self.http_generation.is_none() && self.http_media.is_none() {
+        if self.http_generation.is_none()
+            && self.http_media.is_none()
+            && self.websocket.is_none()
+            && self.router.voice_owner_worker_id.is_none()
+        {
             return Err(ConfigError::invalid(
-                "http_generation",
-                "must configure generation or at least one media HTTP route",
+                "routes",
+                "must configure at least one HTTP or WebSocket route",
             ));
         }
         self.validate_http()?;
         self.validate_http_generation()?;
         self.validate_http_media()?;
+        self.validate_websocket()?;
+        self.validate_voice_state()?;
         Ok(())
     }
 
@@ -425,6 +490,12 @@ impl Config {
                 self.http_media
                     .as_ref()
                     .map(|config| config.buffered_request_max_bytes),
+            )
+            .chain(
+                self.router
+                    .voice_owner_worker_id
+                    .as_ref()
+                    .map(|_| VOICE_UPLOAD_BODY_MAX_BYTES),
             )
             .max()
             .unwrap_or(0);
@@ -459,6 +530,82 @@ impl Config {
             return Err(ConfigError::invalid(
                 "http.pool_max_idle_per_host",
                 "must be between 1 and 1024",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_websocket(&self) -> Result<(), ConfigError> {
+        let Some(websocket) = self.websocket.as_ref() else {
+            return Ok(());
+        };
+        if websocket.speech.is_none() && websocket.realtime.is_none() {
+            return Err(ConfigError::invalid(
+                "websocket",
+                "must enable speech or realtime",
+            ));
+        }
+        for (field, value) in [
+            ("websocket.connect_timeout_ms", websocket.connect_timeout_ms),
+            (
+                "websocket.speech_config_timeout_ms",
+                websocket.speech_config_timeout_ms,
+            ),
+            ("websocket.close_timeout_ms", websocket.close_timeout_ms),
+        ] {
+            if !(1..=60_000).contains(&value) {
+                return Err(ConfigError::invalid(field, "must be between 1 and 60000"));
+            }
+        }
+        if !(1..=3_600_000).contains(&websocket.worker_setup_timeout_ms) {
+            return Err(ConfigError::invalid(
+                "websocket.worker_setup_timeout_ms",
+                "must be between 1 and 3600000",
+            ));
+        }
+        if let Some(route) = websocket.speech.as_ref() {
+            self.validate_websocket_route(
+                route,
+                crate::worker_pool::profile::ServiceClass::SpeechWebsocket,
+                self.admission.speech_websocket,
+                "websocket.speech",
+            )?;
+        }
+        if let Some(route) = websocket.realtime.as_ref() {
+            self.validate_websocket_route(
+                route,
+                crate::worker_pool::profile::ServiceClass::RealtimeWebsocket,
+                self.admission.realtime_websocket,
+                "websocket.realtime",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_websocket_route(
+        &self,
+        route: &WebsocketRouteConfig,
+        service: crate::worker_pool::profile::ServiceClass,
+        admission: Option<u32>,
+        field: &'static str,
+    ) -> Result<(), ConfigError> {
+        validate_identifier(&route.trust_domain, field)?;
+        if admission.is_none() {
+            return Err(ConfigError::invalid(
+                "admission",
+                "every enabled WebSocket route requires its class limit",
+            ));
+        }
+        if !self.workers.iter().any(|worker| {
+            worker.trust_domain == route.trust_domain
+                && worker
+                    .service_profiles
+                    .iter()
+                    .any(|profile| profile.service_class() == service)
+        }) {
+            return Err(ConfigError::invalid(
+                field,
+                "trust domain has no compatible configured worker",
             ));
         }
         Ok(())
@@ -616,6 +763,8 @@ impl Config {
             self.admission.speech_http,
             self.admission.speech_batch,
             self.admission.transcription_http,
+            self.admission.speech_websocket,
+            self.admission.realtime_websocket,
         ]
         .into_iter()
         .flatten()
@@ -626,6 +775,45 @@ impl Config {
                     "configured class limits must be between 1 and 65535",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_voice_state(&self) -> Result<(), ConfigError> {
+        use crate::worker_pool::profile::{ServiceProfile, VoiceNamePolicy};
+
+        let Some(owner_id) = self.router.voice_owner_worker_id.as_deref() else {
+            return Ok(());
+        };
+        let owner = self
+            .workers
+            .iter()
+            .find(|worker| worker.worker_id == owner_id)
+            .ok_or_else(|| {
+                ConfigError::invalid(
+                    "router.voice_owner_worker_id",
+                    "must name a configured worker",
+                )
+            })?;
+        let supports_uploaded_voice = |profile: &ServiceProfile| match profile {
+            ServiceProfile::SpeechHttp {
+                voice_name_policy, ..
+            }
+            | ServiceProfile::SpeechBatch {
+                voice_name_policy, ..
+            }
+            | ServiceProfile::SpeechWebsocket {
+                voice_name_policy, ..
+            } => *voice_name_policy == VoiceNamePolicy::Uploaded,
+            ServiceProfile::GenerationHttp { .. }
+            | ServiceProfile::TranscriptionHttp { .. }
+            | ServiceProfile::RealtimeWebsocket => false,
+        };
+        if !owner.service_profiles.iter().any(supports_uploaded_voice) {
+            return Err(ConfigError::invalid(
+                "router.voice_owner_worker_id",
+                "owner must advertise an uploaded-voice service profile",
+            ));
         }
         Ok(())
     }

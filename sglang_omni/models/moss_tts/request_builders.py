@@ -80,8 +80,6 @@ class MossTTSSGLangRequestData(ARRequestData):
     generation_steps: int = 0
     suppress_tokens: list[int] | None = None
     input_embeds_are_projected: bool = False
-    prefill_input_embeds: torch.Tensor | None = None
-    decode_input_embeds: list[torch.Tensor] = field(default_factory=list)
     stage_payload: Any = None
     state: MossTTSState = field(default_factory=MossTTSState)
     model_config: Any = None

@@ -1,3 +1,4 @@
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use reqwest::redirect::Policy;
@@ -12,12 +13,18 @@ pub(crate) struct ResolvedTarget {
     health_url: Url,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConnectTarget<'a> {
+    Socket(SocketAddr),
+    Host(&'a str, u16),
+}
+
 impl ResolvedTarget {
     pub(super) fn from_worker(worker: &WorkerConfig) -> Option<Self> {
         Self::from_parts(worker.base_url.as_str(), worker.health_path.as_str())
     }
 
-    pub(super) fn from_parts(base_url: &str, health_path: &str) -> Option<Self> {
+    pub(crate) fn from_parts(base_url: &str, health_path: &str) -> Option<Self> {
         let base_url = Url::parse(base_url).ok()?;
         if !matches!(base_url.scheme(), "http" | "https")
             || !base_url.username().is_empty()
@@ -48,6 +55,33 @@ impl ResolvedTarget {
 
     pub(super) fn health_url(&self) -> &Url {
         &self.health_url
+    }
+
+    /// Builds a WebSocket endpoint while retaining the configured authority.
+    pub(crate) fn websocket_uri(&self, path: &str, query: Option<&str>) -> Option<Url> {
+        let mut url = self.base_url.clone();
+        url.set_scheme(match self.base_url.scheme() {
+            "http" => "ws",
+            "https" => "wss",
+            _ => return None,
+        })
+        .ok()?;
+        url.set_path(path);
+        url.set_query(query);
+        Some(url)
+    }
+
+    pub(crate) fn connect_target(&self) -> Option<ConnectTarget<'_>> {
+        let host = self.base_url.host_str()?;
+        let port = self.base_url.port_or_known_default()?;
+        let literal = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        match literal.parse::<IpAddr>() {
+            Ok(address) => Some(ConnectTarget::Socket(SocketAddr::new(address, port))),
+            Err(_) => Some(ConnectTarget::Host(host, port)),
+        }
     }
 }
 
@@ -94,7 +128,9 @@ pub(super) fn build_http_client(
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::ResolvedTarget;
+    use std::net::SocketAddr;
+
+    use super::{ConnectTarget, ResolvedTarget};
 
     #[test]
     fn worker_origins_are_strict_and_dns_names_are_valid() {
@@ -119,7 +155,26 @@ mod tests {
             "http://worker.invalid/health"
         );
 
-        assert!(ResolvedTarget::from_parts("https://127.0.0.1/", "/health").is_some());
-        assert!(ResolvedTarget::from_parts("http://[::1]:18080/", "/health").is_some());
+        let ipv4 =
+            ResolvedTarget::from_parts("https://127.0.0.1/", "/health").expect("valid IPv4 target");
+        assert_eq!(
+            ipv4.connect_target(),
+            Some(ConnectTarget::Socket(
+                "127.0.0.1:443".parse::<SocketAddr>().expect("IPv4 socket")
+            ))
+        );
+
+        let ipv6 = ResolvedTarget::from_parts("http://[::1]:18080/", "/health")
+            .expect("valid IPv6 target");
+        assert_eq!(
+            ipv6.connect_target(),
+            Some(ConnectTarget::Socket(
+                "[::1]:18080".parse::<SocketAddr>().expect("IPv6 socket")
+            ))
+        );
+        assert_eq!(
+            hostname.connect_target(),
+            Some(ConnectTarget::Host("worker.invalid", 80))
+        );
     }
 }

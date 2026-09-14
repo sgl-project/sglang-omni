@@ -24,9 +24,6 @@ from sglang_omni.models.moss_tts.payload_types import (
     resolve_moss_audio_pad_code,
     store_moss_tts_state,
 )
-from sglang_omni.models.moss_tts.vocoder_quantizer import (
-    MossAudioTokenizerQuantizerDecoder,
-)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
@@ -191,7 +188,7 @@ def decode_codes_batch(
                 )
         if audio is None or audio_lengths is None:
             raise RuntimeError(
-                "MOSS audio tokenizer returned empty audio/audio_lengths"
+                "MOSS-Audio-Tokenizer returned empty audio/audio_lengths"
             )
         if interleaved_channels > 1:
             # note (Zhang Yiyang): de-interleave [B, 1, T * C] -> [B, C, T];
@@ -236,7 +233,6 @@ class MossTTSVocoder(BatchVocoderBase):
         self._max_segment_batch_size = max(int(max_segment_batch_size), 1)
         self._codec = getattr(audio_vocoder, "model", None)
         self._quantizer = getattr(self._codec, "quantizer", None)
-        self._quantizer_decoder = None
         self._nonstream_decoder = None
         if (
             self._compute_dtype is not None
@@ -262,15 +258,6 @@ class MossTTSVocoder(BatchVocoderBase):
             else:
                 if supports_packed_attention:
                     self._quantizer.to(dtype=torch.float32)
-                    try:
-                        self._quantizer_decoder = MossAudioTokenizerQuantizerDecoder(
-                            self._quantizer
-                        )
-                    except (AttributeError, RuntimeError, TypeError, ValueError):
-                        logger.exception(
-                            "MOSS-TTS Delay quantizer is incompatible with the "
-                            "cached decoder; using source quantizer decode"
-                        )
                     self._nonstream_decoder = nonstream_decoder
                     logger.info(
                         "MOSS-TTS Delay vocoder enabled batched packed decoder "
@@ -352,14 +339,9 @@ class MossTTSVocoder(BatchVocoderBase):
                 "MOSS-TTS Delay audio tokenizer has no supported "
                 "quantizer.decode_codes"
             )
-        quantizer_decoder = self._quantizer_decoder
         wavs = decode_codes_batch(
             segments,
-            quantizer_decode=(
-                quantizer_decoder.decode_codes
-                if quantizer_decoder is not None
-                else quantizer.decode_codes
-            ),
+            quantizer_decode=quantizer.decode_codes,
             decoder=self._nonstream_decoder,
             device=_codec_device(codec, self._device),
             compute_dtype=self._compute_dtype,
@@ -403,7 +385,6 @@ class MossTTSVocoder(BatchVocoderBase):
             failure_traceback = traceback.format_exc()
         if failure_traceback is not None:
             self._nonstream_decoder = None
-            self._quantizer_decoder = None
             logger.error(
                 "MOSS-TTS Delay packed codec decode failed; disabling the "
                 "packed path and falling back to standalone codec decode:\n%s",

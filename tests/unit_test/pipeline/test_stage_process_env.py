@@ -61,6 +61,53 @@ def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
     assert env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
 
 
+def test_tp_process_env_turns_nccl_nvls_off() -> None:
+    env = cuda_platform.get_stage_process_env(_tp_spec(gpu_id=0), {})
+
+    assert env["NCCL_NVLS_ENABLE"] == "0"
+
+
+def test_tp_process_env_leaves_an_operator_nvls_value_alone() -> None:
+    env = cuda_platform.get_stage_process_env(
+        _tp_spec(gpu_id=0), {"NCCL_NVLS_ENABLE": "1"}
+    )
+
+    assert "NCCL_NVLS_ENABLE" not in env
+
+
+def test_spawn_env_maps_the_planned_gpu_even_with_a_configured_visibility(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    stage_spec = _tp_spec(gpu_id=1)
+    stage_spec.env_defaults = {"CUDA_VISIBLE_DEVICES": "2,3"}
+
+    with _patched_spawn_env(_worker_spec(stage_spec)):
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+
+def test_spawn_env_keeps_a_configured_stage_nvls_value(monkeypatch) -> None:
+    monkeypatch.delenv("NCCL_NVLS_ENABLE", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,4")
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    stage_spec = _tp_spec(gpu_id=1)
+    stage_spec.env_defaults = {"NCCL_NVLS_ENABLE": "1"}
+
+    with _patched_spawn_env(_worker_spec(stage_spec)):
+        assert os.environ["NCCL_NVLS_ENABLE"] == "1"
+
+    assert "NCCL_NVLS_ENABLE" not in os.environ
+
+
+def test_non_tp_stage_gets_no_cuda_process_env() -> None:
+    spec = StageLaunchConfig(stage_name="thinker", tp_size=1, gpu_id=0)
+
+    assert cuda_platform.get_stage_process_env(spec, {}) == {}
+
+
 def test_tp_process_env_rejects_single_visible_device_for_second_gpu() -> None:
     with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES only exposes"):
         cuda_platform.get_stage_process_env(

@@ -3446,3 +3446,41 @@ def test_stub_endpoint_checks_auth_before_501() -> None:
 
     resp = client.post("/update_weights_from_tensor", json={})
     assert resp.status_code == 401
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None:
+    message = "MOSS-TTS Local generated no audio frames. Please retry the request."
+
+    class FailOnceClient(SuccessfulSpeechClient):
+        failed = False
+
+        async def generate(self, request, request_id=None):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError(message)
+            async for chunk in super().generate(request, request_id):
+                yield chunk
+
+        async def speech(self, request, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise ClientError(message)
+            return await super().speech(request, **kwargs)
+
+        async def abort(self, request_id):
+            pass
+
+    client = TestClient(create_app(FailOnceClient(), model_name="moss-tts"))
+    body = {
+        "model": "moss-tts",
+        "input": "hello",
+        "stream": stream,
+        "response_format": "pcm" if stream else "wav",
+    }
+    response = client.post("/v1/audio/speech", json=body)
+    assert response.status_code == 500
+    assert message in response.json()["error"]["message"]
+    response = client.post("/v1/audio/speech", json=body)
+    assert response.status_code == 200
+    assert response.content

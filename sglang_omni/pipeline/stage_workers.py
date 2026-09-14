@@ -140,6 +140,9 @@ class StageWorkerProcessSpec:
 
     process_name: str
     stage_specs: list[StageLaunchConfig]
+    # note (Dayuxiaoshui): root logger level for the spawned process. The
+    # launcher passes its own root level so --log-level reaches every stage.
+    log_level: int = logging.INFO
 
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -406,7 +409,12 @@ def stage_process_main(
     startup_error_channel: Any | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    # note (Dayuxiaoshui): a spawned process starts with fresh logging, and
+    # importing sglang already installs a root handler at INFO, which turns
+    # basicConfig into a no-op. Set the level explicitly so the stage follows
+    # the launcher's --log-level.
+    logging.basicConfig(level=spec.log_level, stream=sys.stdout)
+    logging.getLogger().setLevel(spec.log_level)
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_workers.{spec.process_name}")

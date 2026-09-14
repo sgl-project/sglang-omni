@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 
 from sglang_omni.models.qwen3_asr import sglang_model
 from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
@@ -47,10 +48,10 @@ def test_get_audio_feature_routing(monkeypatch):
     model = object.__new__(sglang_model.Qwen3ASRForConditionalGeneration)
     torch.nn.Module.__init__(model)
     model.audio_tower = tower
-    item = SimpleNamespace(
+    item = MultimodalDataItem(
+        modality=Modality.AUDIO,
         feature=torch.zeros(1, 128, 500),
-        feature_attention_mask=None,
-        model_specific_data={"num_audio_tokens": 65},
+        model_specific_data={"feature_attention_mask": None, "num_audio_tokens": 65},
     )
     get = sglang_model.Qwen3ASRForConditionalGeneration.get_audio_feature
 

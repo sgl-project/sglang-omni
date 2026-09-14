@@ -28,6 +28,11 @@ class AppleOmniPlatform(OmniPlatform):
     device_name: str = "mps"
     device_type: str = "mps"
 
+    @classmethod
+    def is_float64_supported(cls) -> bool:
+        # Note (yexiaodong): PyTorch MPS has no float64 tensor implementation.
+        return False
+
     @staticmethod
     def _validate_device_id(device_id: int) -> None:
         if int(device_id) != 0:
@@ -47,7 +52,7 @@ class AppleOmniPlatform(OmniPlatform):
         else:
             index = int(device)
         self._validate_device_id(index)
-        # note (yexiaodong): PyTorch MPS and MLX share one process-global Metal
+        # Note (yexiaodong): PyTorch MPS and MLX share one process-global Metal
         # device, so there is no CUDA-style device selection to perform.
 
     def get_device_name(self, device_id: int = 0) -> str:
@@ -56,7 +61,7 @@ class AppleOmniPlatform(OmniPlatform):
 
     def get_device_total_memory(self, device_id: int = 0) -> int:
         self._validate_device_id(device_id)
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx
@@ -67,7 +72,7 @@ class AppleOmniPlatform(OmniPlatform):
     def get_current_memory_usage(self, device: torch.device | None = None) -> float:
         if device is not None and device.type != "mps":
             raise ValueError(f"Expected an MPS device, got {device}")
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx
@@ -96,7 +101,7 @@ class AppleOmniPlatform(OmniPlatform):
         return TransportKind.SHM
 
     def empty_cache(self) -> None:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx
@@ -106,7 +111,7 @@ class AppleOmniPlatform(OmniPlatform):
             torch.mps.empty_cache()
 
     def synchronize(self) -> None:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
             import mlx.core as mx

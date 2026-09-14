@@ -22,7 +22,7 @@ from sglang_omni.serve.realtime.events import (
     TurnDetection,
     TurnDetectionType,
     make_event,
-    parse_client_event,
+    parse_conversation_client_event,
 )
 from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel, SemanticVADConfig
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
@@ -173,7 +173,7 @@ class RealtimeSession:
             await self.dispatch(payload)
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
-        event = parse_client_event(payload)
+        event = parse_conversation_client_event(payload)
         assert event is not None, f"Unsupported event type: {payload.get('type')!r}"
         method_name = HANDLERS[type(event)]
         await getattr(self, method_name)(event)

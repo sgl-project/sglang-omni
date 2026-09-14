@@ -87,6 +87,10 @@ class MossAudioTokenizerQuantizerDecoder:
         self._output_weight = output_weight
         self._output_bias = output_bias
 
+    @property
+    def device(self) -> torch.device:
+        return self._flat_codebooks.device
+
     def decode_codes(self, codes: torch.Tensor) -> torch.Tensor:
         if codes.ndim != 3:
             raise ValueError(

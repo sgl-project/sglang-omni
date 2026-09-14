@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Ming-Omni talker model.
 
-The internal LLM backbone (dense Qwen2, hidden=896), with CUDA graph
+The internal LLM backbone (dense Qwen2, hidden=896), with device graph
 infrastructure, CFM/DiT/Aggregator modules and generation.
 """
 
@@ -14,6 +14,7 @@ import queue
 import re
 import threading
 import uuid
+from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from threading import Lock
@@ -24,9 +25,11 @@ import torch.nn as nn
 import torchaudio
 from transformers import Qwen2Config, Qwen2Model, StaticCache
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.audio_features import cached_fbank
 
 from .configuration_bailing_talker import MingOmniTalkerConfig
+from .device_runtime import TalkerDeviceRuntime
 from .front.number_en import normalize_numbers
 from .front.text_segment_cut import cut_text_by_semantic_length, is_chinese
 from .front.toolkit import tokenize_mixed_text_iterator
@@ -156,7 +159,7 @@ class CFMGraphExecutor:
         if abort_event is not None and abort_event.is_set():
             raise asyncio.CancelledError()
         # Python abort checks inside CFM.sample run during capture; replay is
-        # bounded by explicit checks before and after the CUDA graph replay.
+        # bounded by explicit checks before and after the device graph replay.
         self.graph.replay()
         if abort_event is not None and abort_event.is_set():
             raise asyncio.CancelledError()
@@ -186,12 +189,17 @@ class CFMGraphExecutor:
         )
         self.sde_rnd_placeholder = torch.empty_like(sde_rnd)
 
-        # (wenyao) Aborting CFM.sample during torch.cuda.graph capture corrupts the
+        # (wenyao) Aborting CFM.sample during graph capture corrupts the
         # partial graph. Pass abort_event=None during capture; the caller
         # (execute) checks abort before _initialize_graph and on every replay.
-        self.graph = torch.cuda.CUDAGraph()
+        graph_backend = current_platform.get_device_graph_backend(input_tensor.device)
+        if graph_backend is None:
+            raise RuntimeError(
+                f"device graphs are unavailable for {input_tensor.device}"
+            )
         try:
-            with torch.cuda.graph(self.graph, capture_error_mode="thread_local"):
+            with graph_backend.capture(thread_local_errors=True) as graph:
+                self.graph = graph
                 self.gen_lat_placeholder = self.cfm.sample(
                     self.last_hidden_state_placeholder,
                     self.his_lat_placeholder,
@@ -322,10 +330,11 @@ class MingOmniTalker(nn.Module):
             self.stop_head,
             self.max_conc,
         )
+        self.device_runtime: TalkerDeviceRuntime | None = None
         self.model_graph_pool: queue.Queue = queue.Queue()
         self.past_key_values = None
         for _ in range(self.max_conc):
-            self.model_graph_pool.put((None, None, None, None, None, None, None))
+            self.model_graph_pool.put((None, None, None, None, None))
 
     # ---- External dependency setters ----
 
@@ -385,10 +394,10 @@ class MingOmniTalker(nn.Module):
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()
 
-    # ---- CUDA graph initialization ----
+    # ---- Device graph initialization ----
 
     def initial_graph(self, tokenizer=None):
-        """Initialize CUDA graphs for generation.
+        """Initialize device graphs for generation.
 
         Args:
             tokenizer: If provided, sets the model tokenizer before graph init.
@@ -447,6 +456,13 @@ class MingOmniTalker(nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
+    def _get_device_runtime(self) -> TalkerDeviceRuntime:
+        device_runtime = getattr(self, "device_runtime", None)
+        if device_runtime is None:
+            device_runtime = TalkerDeviceRuntime(self.device)
+            self.device_runtime = device_runtime
+        return device_runtime
+
     @torch.no_grad()
     def generate(
         self,
@@ -485,8 +501,6 @@ class MingOmniTalker(nn.Module):
             past_key_values,
             inputs_embeds_placeholder,
             cache_position_placeholder,
-            position_ids_placeholder,
-            attention_mask_placeholder,
             outputs_placeholder,
             model_graph,
         ) = self.model_graph_pool.get()
@@ -543,6 +557,8 @@ class MingOmniTalker(nn.Module):
                     )
                 else:
                     past_seen_tokens = past_key_values.get_seq_length()
+                    if isinstance(past_seen_tokens, torch.Tensor):
+                        past_seen_tokens = int(past_seen_tokens.item())
                     cache_position = torch.arange(
                         past_seen_tokens,
                         past_seen_tokens + inputs_embeds.shape[1],
@@ -550,22 +566,26 @@ class MingOmniTalker(nn.Module):
                     )
 
                     if model_graph is None:
-                        model_graph = torch.cuda.CUDAGraph()
+                        graph_backend = current_platform.get_device_graph_backend(
+                            inputs_embeds.device
+                        )
+                        if graph_backend is None:
+                            raise RuntimeError(
+                                f"device graphs are unavailable for {inputs_embeds.device}"
+                            )
                         inputs_embeds_placeholder = torch.empty_like(inputs_embeds)
-                        position_ids_placeholder = None
-                        attention_mask_placeholder = None
                         cache_position_placeholder = torch.empty_like(cache_position)
 
                         inputs_embeds_placeholder.copy_(inputs_embeds)
                         cache_position_placeholder.copy_(cache_position)
 
-                        with torch.cuda.graph(
-                            model_graph, capture_error_mode="thread_local"
-                        ):
+                        with graph_backend.capture(
+                            thread_local_errors=True
+                        ) as model_graph:
                             outputs_placeholder = self.model(
-                                position_ids=position_ids_placeholder,
+                                position_ids=None,
                                 cache_position=cache_position_placeholder,
-                                attention_mask=attention_mask_placeholder,
+                                attention_mask=None,
                                 past_key_values=past_key_values,
                                 inputs_embeds=inputs_embeds_placeholder,
                                 use_cache=True,
@@ -619,8 +639,6 @@ class MingOmniTalker(nn.Module):
                     past_key_values,
                     inputs_embeds_placeholder,
                     cache_position_placeholder,
-                    position_ids_placeholder,
-                    attention_mask_placeholder,
                     outputs_placeholder,
                     model_graph,
                 )
@@ -726,7 +744,12 @@ class MingOmniTalker(nn.Module):
                 :,
             ] = prompt_wav_emb[0].to(dtype=torch.bfloat16)
 
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        device_type = self.device.type
+        with torch.autocast(
+            device_type=device_type,
+            dtype=torch.bfloat16,
+            enabled=device_type in {"cuda", "npu"},
+        ):
             for audio_token in self.generate(
                 input_ids=input_ids,
                 inputs_embeds=inputs_embeds,
@@ -765,6 +788,14 @@ class MingOmniTalker(nn.Module):
         if sil_cache["buffer"]:
             speech = torch.cat([*sil_cache["buffer"], speech], dim=-1)
             sil_cache["buffer"] = []
+        if last_chunk:
+            tail_len = speech.shape[-1] % frame_size
+            # Score the real tail samples before an all-silence branch can
+            # truncate them. Earlier silence is not trailing if this tail speaks.
+            if tail_len and speech[..., -tail_len:].abs().mean() > sil_th:
+                speech = torch.cat([*sil_cache["holder"], speech], dim=-1)
+                sil_cache["holder"] = []
+                return speech, sil_cache
         if speech.shape[-1] < frame_size:
             sil_cache["buffer"].append(speech)
             if last_chunk:
@@ -801,13 +832,19 @@ class MingOmniTalker(nn.Module):
                 ),
                 sil_cache,
             )
+        if last_chunk and sil_cache["buffer"]:
+            speech = torch.cat([speech, *sil_cache["buffer"]], dim=-1)
+            sil_cache["buffer"] = []
         non_sil_len = idx * frame_step + frame_size
         if last_chunk:
             non_sil_len += int(last_sil * sample_rate)
-        speech = torch.cat([*sil_cache["holder"], speech[..., :non_sil_len]], dim=-1)
+        current_speech = speech
+        current_output = current_speech[..., :non_sil_len]
+        current_tail = current_speech[..., non_sil_len:]
+        speech = torch.cat([*sil_cache["holder"], current_output], dim=-1)
         sil_cache["holder"] = []
-        if non_sil_len < speech.shape[-1]:
-            sil_cache["holder"].append(speech[..., non_sil_len:])
+        if current_tail.shape[-1] > 0:
+            sil_cache["holder"].append(current_tail)
         return speech, sil_cache
 
     def llm_job(
@@ -828,7 +865,8 @@ class MingOmniTalker(nn.Module):
         max_decode_steps: int | None = None,
     ):
         try:
-            with torch.cuda.stream(torch.cuda.Stream(self.device)):
+            device_runtime = self._get_device_runtime()
+            with device_runtime.create_stream_context(device_runtime.create_stream()):
                 for audio_token in self.omni_audio_generation_func(
                     prompt=prompt,
                     text=text,
@@ -845,7 +883,7 @@ class MingOmniTalker(nn.Module):
                 ):
                     if abort_event is not None and abort_event.is_set():
                         raise asyncio.CancelledError()
-                    torch.cuda.current_stream().synchronize()
+                    device_runtime.synchronize()
                     if token_queue is not None:
                         token_queue.put(audio_token)
                     else:
@@ -874,7 +912,8 @@ class MingOmniTalker(nn.Module):
         abort_event: threading.Event | None = None,
         max_decode_steps: int | None = None,
     ):
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
+        device_runtime = self._get_device_runtime()
+        with device_runtime.create_stream_context(device_runtime.create_stream()):
             this_uuid = str(uuid.uuid1())
             token_queue = queue.Queue() if stream else None
             effective_abort_event = abort_event
@@ -977,14 +1016,18 @@ class MingOmniTalker(nn.Module):
                     yield {"tts_speech": this_tts_speech.cpu()}
                     completed = True
 
-                if torch.cuda.is_available():
-                    torch.cuda.current_stream().synchronize()
+                device_runtime.synchronize()
             finally:
                 if stream and not completed:
                     if effective_abort_event is not None:
                         effective_abort_event.set()
                     if future is not None:
-                        future.cancel()
+                        cancelled = future.cancel()
+                        if not cancelled:
+                            try:
+                                future.result()
+                            except (asyncio.CancelledError, FutureCancelledError):
+                                pass
                 with self.lock:
                     self.tts_speech_token_dict.pop(this_uuid, None)
                     self.llm_end_dict.pop(this_uuid, None)
@@ -1363,8 +1406,8 @@ class MingOmniTalker(nn.Module):
         instruction = None
         abort_event = kwargs.get("abort_event")
 
-        # Resolve before grabbing a CUDA stream so bad requests fail fast
-        # without holding CUDA resources.
+        # Resolve before creating a device stream so bad requests fail fast
+        # without holding device resources.
         if prompt_wav_path is not None:
             pass
         elif voice_name is not None and voice_name in self.voice_json_dict:
@@ -1385,7 +1428,8 @@ class MingOmniTalker(nn.Module):
                 "loaded voice presets) or prompt_wav_path. Both are None."
             )
 
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
+        device_runtime = self._get_device_runtime()
+        with device_runtime.create_stream_context(device_runtime.create_stream()):
             self.initial_graph()
 
             prompt_wav_lat, prompt_wav_emb, spk_emb = self.get_prompt_emb(
@@ -1429,7 +1473,8 @@ class MingOmniTalker(nn.Module):
         **kwargs,
     ):
         abort_event = kwargs.get("abort_event")
-        with torch.cuda.stream(torch.cuda.Stream(self.device)):
+        device_runtime = self._get_device_runtime()
+        with device_runtime.create_stream_context(device_runtime.create_stream()):
             self.initial_graph()
 
             prompt_wav_lat, prompt_wav_emb, spk_emb = self.get_prompt_emb(

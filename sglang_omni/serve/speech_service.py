@@ -16,7 +16,7 @@ from pydantic import ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
 from sglang_omni.client.audio import audio_encoding_unavailable_reason
-from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS
+from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS, CustomVoiceConfig
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
@@ -83,6 +83,7 @@ class SpeechRequestValidator:
         default_model: str,
         requires_uploaded_voice_for_named_voice: bool = False,
         supports_uploaded_voice_references: bool = True,
+        custom_voice_config: CustomVoiceConfig | None = None,
         required_speech_reference_count: int | None = None,
         speech_reference_text_required: bool = False,
         speech_reference_text_excludes_instructions: bool = False,
@@ -115,6 +116,17 @@ class SpeechRequestValidator:
         self.supports_uploaded_voice_references = (
             supports_uploaded_voice_references
             or requires_uploaded_voice_for_named_voice
+        )
+        self.custom_voice_config = custom_voice_config
+        if custom_voice_config is not None:
+            # Note(yzxiao): Checkpoint speakers take precedence over uploaded
+            # names, including when a stage overrides a Base model_path.
+            self.requires_uploaded_voice_for_named_voice = False
+            self.supports_uploaded_voice_references = False
+        self._speaker_keys = (
+            frozenset(name.casefold() for name in custom_voice_config.speakers)
+            if custom_voice_config is not None
+            else frozenset()
         )
         self.required_speech_reference_count = required_speech_reference_count
         self.speech_reference_text_required = speech_reference_text_required
@@ -250,6 +262,7 @@ class SpeechRequestValidator:
 
         if request.task_type is not None:
             updates["task_type"] = _normalize_task_type(request.task_type)
+        self._validate_custom_voice_request(request, task_type=updates.get("task_type"))
         if request.language is not None:
             updates["language"] = self._normalize_language(request.language)
 
@@ -262,6 +275,37 @@ class SpeechRequestValidator:
         )
         _validate_non_negative_int(request.seed, param="seed")
         return updates
+
+    def _validate_custom_voice_request(
+        self,
+        request: CreateSpeechRequest | CreateSpeechBatchRequest,
+        *,
+        task_type: str | None,
+    ) -> None:
+        config = self.custom_voice_config
+        if config is None:
+            return
+        if task_type is not None and task_type != config.task_type:
+            raise bad_request(
+                f"task_type must be one of: {config.task_type}", param="task_type"
+            )
+        for field in ("ref_audio", "ref_text", "x_vector_only_mode"):
+            if getattr(request, field) is not None:
+                raise bad_request(
+                    f"{field} is not supported by this model", param=field
+                )
+        if request.references:
+            raise bad_request(
+                "references are not supported by this model", param="references"
+            )
+        name = request.voice.strip().casefold()
+        if name in {"", "default"} or name in self._speaker_keys:
+            return
+        supported = ", ".join(("default", *config.speakers))
+        raise bad_request(
+            f"Unknown voice '{request.voice}'. Supported voices: {supported}",
+            param="voice",
+        )
 
     def _normalize_language(self, value: str) -> str:
         normalized = self._tts_language_aliases.get(value.strip().lower())
@@ -582,6 +626,7 @@ class SpeechRequestValidator:
             if batch.task_type is not None
             else None
         )
+        self._validate_custom_voice_request(batch, task_type=task_type)
         if batch.language is not None:
             self._normalize_language(batch.language)
         _validate_positive_int(batch.max_new_tokens, param="max_new_tokens")

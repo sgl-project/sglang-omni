@@ -67,7 +67,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     )
     factory = config.stages[0].factory
     engine = config.stages[0].engine
-    assert factory.device == "cuda:0"
+    assert factory.device is None
     assert engine.max_running_requests == 16
     assert engine.enable_torch_compile is True
     assert engine.torch_compile_max_bs == 4

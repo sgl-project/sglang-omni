@@ -512,7 +512,6 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     assert quantizer.codebook.dtype is torch.float32
     assert released_markers == [True]
     assert scheduler._vocoder._nonstream_decoder is None
-    assert scheduler._vocoder._quantizer_decoder is None
     assert audio_vocoder.decode_calls == 3
     assert audio_vocoder.decode_shapes == [[(2, 2)], [(2, 2)], [(2, 2)]]
     assert np.frombuffer(

@@ -10,7 +10,9 @@ from typing import Any
 import numpy as np
 import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
 
+import sglang_omni.platforms as platforms
 from sglang_omni.cli.serve import patches_from_broadcast_flags
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
@@ -322,8 +324,8 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda model_runner, server_args: records["attest_calls"].append(
-            (model_runner, server_args)
+        lambda model_runner, *, operator_selected: records["attest_calls"].append(
+            (model_runner, operator_selected)
         ),
     )
 
@@ -376,12 +378,11 @@ def test_higgs_tts_engine_default_enables_breakable_prefill_graphs(
         "cuda_graph_bs_prefill"
     ] == build_default_prefill_cuda_graph_bs(512)
     assert captured["server_args"].cuda_graph_config.prefill.backend == "breakable"
-    assert ("prefill", "backend") not in captured[
-        "server_args"
-    ]._cuda_graph_config_locked
     assert captured["infra_kwargs"]["enable_prefill_input_embeds"] is True
-    assert len(records["attest_calls"]) == 1
-    assert captured["server_args"].disable_overlap_schedule is True
+    assert records["attest_calls"][-1][1] is False
+    assert (
+        resolution_result(captured["server_args"], "disable_overlap_schedule") is True
+    )
     assert captured["server_args"].enable_torch_compile is False
     assert captured["server_args"].torch_compile_max_bs == 32
     assert records["infrastructure_saw_deferred_capture"] == [True]
@@ -491,7 +492,7 @@ def test_higgs_tts_engine_prefill_backend_policy() -> None:
         cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled"))
     )
     builder.customize_server_args(server_args)
-    assert server_args.disable_overlap_schedule is True
+    assert resolution_result(server_args, "disable_overlap_schedule") is True
 
 
 @pytest.mark.parametrize("fraction", [0.0, 1.0, 1.2, -0.1])
@@ -1557,6 +1558,15 @@ def test_higgs_vocoder_fails_startup_when_cuda_graph_capture_fails(
         def capture_decode_cuda_graphs(self, _frame_counts) -> None:
             raise RuntimeError("capture failed")
 
+    monkeypatch.setattr(
+        platforms,
+        "current_platform",
+        SimpleNamespace(
+            device_type="cuda",
+            is_npu=lambda: False,
+            enable_code2wav_graph=lambda: True,
+        ),
+    )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
     monkeypatch.setattr(
         stages,
@@ -1567,6 +1577,7 @@ def test_higgs_vocoder_fails_startup_when_cuda_graph_capture_fails(
     with pytest.raises(RuntimeError, match="capture failed"):
         stages.create_vocoder_executor(
             "fake-model",
+            gpu_id=0,
             decode_cuda_graph_frame_counts=(1, 2),
         )
 
@@ -1833,7 +1844,10 @@ def test_higgs_streaming_vocoder_honors_initial_codec_chunk_frames() -> None:
     assert codec.decode_inputs[0].shape[0] == 1
 
 
-def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail() -> None:
+@pytest.mark.parametrize("payload_first", [False, True])
+def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail(
+    payload_first: bool,
+) -> None:
     raw_codes = torch.tensor(
         [
             [1, 2, 3],
@@ -1864,12 +1878,17 @@ def test_higgs_streaming_vocoder_matches_full_decode_with_codec_tail() -> None:
     full = scheduler._decode_state_to_audio(HiggsTtsState.from_dict(payload.data))
     assert full is not None
 
-    scheduler._on_streaming_new_request("req", payload)
+    if payload_first:
+        scheduler._on_streaming_new_request("req", payload)
     for idx, row in enumerate(delayed):
         item = _higgs_stream_item(row, codebook_size=64)
         item.chunk_id = idx
         scheduler._on_chunk("req", item)
     scheduler._on_done("req")
+
+    if not payload_first:
+        scheduler._on_done("req")
+        scheduler._on_streaming_new_request("req", payload)
 
     stream_chunks = [
         np.frombuffer(msg.data["audio_waveform"], dtype=np.float32).copy()

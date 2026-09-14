@@ -29,10 +29,10 @@ from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
-    assert_workers_served_requests,
+    assert_router_healthy,
+    assert_workers_served_requests_since,
     print_log_tail,
     print_router_diagnostics,
-    print_worker_snapshot,
     router_get_json,
 )
 from tests.utils import (
@@ -62,7 +62,7 @@ WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.0249
+VC_WER_BELOW_50_CORPUS_MAX = 0.0213
 VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
 VC_N_ABOVE_50_MAX = 0
 # 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
@@ -78,7 +78,7 @@ VC_N_ABOVE_50_MAX = 0
 VC_SIMILARITY_MEAN_MIN = 60.0
 # Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
 # worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
-VC_UTMOS_MEAN_REFERENCE = 4.4481
+VC_UTMOS_MEAN_REFERENCE = 4.4444
 
 
 def _thinker_prefill_graph_info(worker_port: int) -> dict:
@@ -106,10 +106,10 @@ VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
 
 _VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 8.277,
-        "output_tok_per_req_s": 8.2,
-        "latency_mean_s": 1.793,
-        "rtf_mean": 0.5662,
+        "throughput_qps": 11.66,
+        "output_tok_per_req_s": 11.5,
+        "latency_mean_s": 1.268,
+        "rtf_mean": 0.3796,
     },
 }
 
@@ -379,6 +379,7 @@ class _SpeedArtifacts:
     output_dir: str
     summary: dict
     per_request: list
+    router_before: dict
 
 
 @pytest.fixture(scope="module")
@@ -390,11 +391,11 @@ def speed_artifacts(
     """Run the speed benchmark once and expose its artifacts."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     try:
-        workers = router_get_json(qwen3_omni_bf16_colocated_server.port, "/workers")
-        print_worker_snapshot("initial /workers snapshot", workers)
-        assert workers["total_workers"] == 2
-        assert workers["healthy_workers"] == 2
-        assert workers["routable_workers"] == 2
+        assert_router_healthy(qwen3_omni_bf16_colocated_server)
+        router_before = router_get_json(
+            qwen3_omni_bf16_colocated_server.port,
+            "/diagnostics",
+        )
 
         models = router_get_json(qwen3_omni_bf16_colocated_server.port, "/v1/models")
         assert {card["id"] for card in models["data"]} == {"qwen3-omni"}
@@ -411,6 +412,7 @@ def speed_artifacts(
         output_dir=output_dir,
         summary=results["summary"],
         per_request=results["per_request"],
+        router_before=router_before,
     )
 
 
@@ -455,27 +457,12 @@ def test_voice_cloning_non_streaming(
             f"Speed output directory missing: {speed_artifacts.output_dir}",
         )
 
-        final_workers = router_get_json(
-            qwen3_omni_bf16_colocated_server.port, "/workers"
-        )
-        print_worker_snapshot("final /workers snapshot", final_workers)
-        checks.check(
-            final_workers.get("routable_workers") == 2,
-            f"Expected 2 routable workers, got {final_workers.get('routable_workers')}",
-        )
-        active_workers = [
-            worker
-            for worker in final_workers.get("workers", [])
-            if worker.get("active_requests") != 0
-        ]
-        checks.check(
-            not active_workers,
-            f"Expected no active requests after benchmark, got {active_workers}",
-        )
         checks.check_assertion(
             "router worker traffic",
-            assert_workers_served_requests,
-            final_workers,
+            assert_workers_served_requests_since,
+            handle=qwen3_omni_bf16_colocated_server,
+            before_snapshot=speed_artifacts.router_before,
+            label="Qwen3-Omni voice cloning",
             min_total_requests=MAX_SAMPLES,
         )
         checks.assert_all()

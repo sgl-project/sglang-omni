@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import time
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
@@ -41,10 +42,12 @@ class LocalLauncher:
         *,
         command: str = "sgl-omni",
         health_endpoint: str = "/health",
+        worker_env: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config
         self.command = command
         self.health_endpoint = health_endpoint
+        self.worker_env = dict(worker_env or {})
         self.workers: list[ManagedWorkerProcess] = []
 
     @property
@@ -87,6 +90,7 @@ class LocalLauncher:
                 worker_url = build_worker_url(self.config.worker_host, port)
                 command = self.build_worker_command(port)
                 env = os.environ.copy()
+                env.update(self.worker_env)
                 placement = "default CUDA visibility"
                 if cuda_visible_devices is not None:
                     env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices

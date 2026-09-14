@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-from types import SimpleNamespace
+import builtins
+import sys
+from contextlib import nullcontext
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
 from sglang.srt.platforms.interface import SRTPlatform
 from sglang.srt.platforms.rocm import RocmSRTPlatform
@@ -12,6 +17,7 @@ from sglang.srt.platforms.xpu import XpuSRTPlatform
 
 import sglang_omni.platforms as platforms
 import sglang_omni.platforms.xpu as xpu_platform
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
@@ -35,6 +41,62 @@ class _VendorSRTPlatform(SRTPlatform, _VendorDeviceMixin):
     pass
 
 
+@pytest.mark.parametrize(
+    "platform_type",
+    [
+        OmniPlatform,
+        CPUOmniPlatform,
+        ROCMOmniPlatform,
+        XPUOmniPlatform,
+        platforms.NPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+        platforms.AppleOmniPlatform,
+    ],
+)
+def test_joint_rope_is_unavailable_without_a_platform_provider(
+    monkeypatch: pytest.MonkeyPatch, platform_type
+) -> None:
+    cuda_provider = Mock(side_effect=AssertionError("Must not use NVIDIA provider"))
+    monkeypatch.setattr(
+        CUDAOmniPlatform, "get_joint_rope_inplace_kernel", cuda_provider
+    )
+
+    assert platform_type().get_joint_rope_inplace_kernel() is None
+    cuda_provider.assert_not_called()
+
+
+def test_cuda_joint_rope_getter_returns_upstream_kernel_without_calling_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "sglang.kernels.ops.attention.rope"
+    rope_module = ModuleType(module_name)
+    kernel = Mock(side_effect=AssertionError("Getter must not execute the kernel"))
+    rope_module.apply_rope_inplace = kernel
+    monkeypatch.setitem(sys.modules, module_name, rope_module)
+
+    assert CUDAOmniPlatform().get_joint_rope_inplace_kernel() is kernel
+    kernel.assert_not_called()
+
+
+def test_cuda_joint_rope_getter_propagates_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+    error = ImportError("Joint RoPE provider is unavailable")
+
+    def import_without_rope(name, *args, **kwargs):
+        if name == "sglang.kernels.ops.attention.rope":
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_rope)
+
+    with pytest.raises(ImportError, match="Joint RoPE provider") as raised:
+        CUDAOmniPlatform().get_joint_rope_inplace_kernel()
+
+    assert raised.value is error
+
+
 def test_npu_probe_handles_torch_without_npu(monkeypatch) -> None:
     monkeypatch.delattr(torch, "npu", raising=False)
 
@@ -45,6 +107,21 @@ def test_cpu_platform_needs_no_stage_process_env() -> None:
     spec = SimpleNamespace(stage_name="cpu", tp_size=2, gpu_id=None)
 
     assert CPUOmniPlatform().get_stage_process_env(spec, {}) == {}
+
+
+def test_cuda_tp_stage_env_is_the_narrowing_plus_nvls_off() -> None:
+    spec = StageLaunchConfig(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    env = CUDAOmniPlatform().get_stage_process_env(
+        spec, {"CUDA_VISIBLE_DEVICES": "3,4"}
+    )
+
+    assert env == {
+        "CUDA_VISIBLE_DEVICES": "4",
+        "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+        "NCCL_NVLS_ENABLE": "0",
+    }
 
 
 def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
@@ -121,7 +198,7 @@ def test_rocm_talker_keeps_auto_moe_backend() -> None:
         "Qwen3OmniTalker",
     )
 
-    assert server_args.moe_runner_backend == "auto"
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
 
 
 @pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])
@@ -194,8 +271,8 @@ def test_xpu_names_the_decode_graph_backend_sglang_leaves_off() -> None:
     assert CPUOmniPlatform().get_decode_cuda_graph_backend() is None
 
 
-def test_xpu_keeps_the_qwen3_omni_talker_decode_eager() -> None:
-    assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is False
+def test_xpu_captures_the_qwen3_omni_talker_decode() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_talker_graph() is True
     assert OmniPlatform().enable_talker_graph() is True
     assert CPUOmniPlatform().enable_talker_graph() is True
 
@@ -209,12 +286,12 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 
-    NPU, CPU and Apple keep the base None: before this hook they would have run
-    a CUDA capture path and failed inside it.
+    CPU and Apple keep the base None.
     """
     from sglang_omni.platforms.apple import AppleOmniPlatform
     from sglang_omni.platforms.device_graph import (
         CudaDeviceGraphBackend,
+        NpuDeviceGraphBackend,
         XpuDeviceGraphBackend,
     )
     from sglang_omni.platforms.musa import MUSAOmniPlatform
@@ -225,7 +302,7 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
         ROCMOmniPlatform: CudaDeviceGraphBackend,
         MUSAOmniPlatform: CudaDeviceGraphBackend,
         xpu_platform.XPUOmniPlatform: XpuDeviceGraphBackend,
-        NPUOmniPlatform: None,
+        NPUOmniPlatform: NpuDeviceGraphBackend,
         CPUOmniPlatform: None,
         AppleOmniPlatform: None,
         OmniPlatform: None,
@@ -247,3 +324,55 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     assert platform.get_device_graph_backend(torch.device("xpu", 0)) is None
     assert platform.get_device_graph_backend(torch.device("meta")) is None
     assert platform.get_device_graph_backend(torch.device("cpu")) is None
+
+
+def test_xpu_names_the_sdpa_backends_a_graph_capture_can_use() -> None:
+    from torch.nn.attention import SDPBackend
+
+    backends = xpu_platform.XPUOmniPlatform().get_graph_capture_sdpa_backends()
+
+    assert set(backends) == {SDPBackend.FLASH_ATTENTION, SDPBackend.MATH}
+    assert SDPBackend.MATH in backends, "no fallback for shapes flash declines"
+    for platform in (OmniPlatform(), CPUOmniPlatform(), CUDAOmniPlatform()):
+        assert platform.get_graph_capture_sdpa_backends() == ()
+
+
+def test_a_platform_that_names_no_sdpa_backend_never_pins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torch.nn.attention as attention
+
+    calls: list[object] = []
+
+    def recording_pin(backends):
+        calls.append(backends)
+        return nullcontext()
+
+    monkeypatch.setattr(attention, "sdpa_kernel", recording_pin)
+
+    with OmniPlatform().graph_capture_attention():
+        pass
+
+    assert calls == []
+
+
+def test_the_pin_receives_exactly_the_backends_the_hook_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torch.nn.attention as attention
+    from torch.nn.attention import SDPBackend
+
+    calls: list[list[SDPBackend]] = []
+
+    def recording_pin(backends):
+        calls.append(list(backends))
+        return nullcontext()
+
+    monkeypatch.setattr(attention, "sdpa_kernel", recording_pin)
+    platform = xpu_platform.XPUOmniPlatform()
+
+    with platform.graph_capture_attention():
+        pass
+
+    assert calls == [list(platform.get_graph_capture_sdpa_backends())]
+    assert calls[0], "an empty set would leave dispatch on the uncapturable default"

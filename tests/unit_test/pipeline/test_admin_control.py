@@ -335,7 +335,8 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     scheduler.enable_hierarchical_cache = False
     scheduler.tree_cache = SimpleNamespace(reset=lambda: reset_calls.append("tree"))
     scheduler.req_to_token_pool = SimpleNamespace(
-        clear=lambda: reset_calls.append("req_pool")
+        clear=lambda: reset_calls.append("req_pool"),
+        reset_aux_cache_allocator=lambda: reset_calls.append("aux_cache"),
     )
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(
         clear=lambda: reset_calls.append("kv_pool")
@@ -353,6 +354,7 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
         "tree",
         "req_pool",
         "kv_pool",
+        "aux_cache",
         "grammar",
         "metrics",
     ]

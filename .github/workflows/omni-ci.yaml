@@ -3,6 +3,8 @@ name: Omni CI
 # DAG:
 #   preflight -> setup -> pr-test -> asr-ci -> tts-ci -> qwen3-omni-ci
 #                  |         |          |         |              |
+#                  +-- pick-asr-model --+         |
+#                  +-- pick-tts-model ------------+
 #                  +---------+----------+---------+--------------+-> cleanup (dispatch only)
 #
 # Benchmark suites wait for the previous suite to finish but use always() so a
@@ -67,11 +69,6 @@ jobs:
     timeout-minutes: 15
     outputs:
       labels: ${{ steps.pr.outputs.labels || '[]' }}
-      selected_model: ${{ steps.tts.outputs.selected_model }}
-      selection_digest: ${{ steps.tts.outputs.selection_digest }}
-      resolved_mps_config: ${{ steps.tts.outputs.resolved_mps_config }}
-      resolved_mps_model: ${{ steps.tts.outputs.resolved_mps_model }}
-      exact_sha: ${{ steps.tts.outputs.exact_sha }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -120,13 +117,172 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
 
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+      - name: Manual dispatch preflight
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
+
+  setup:
+    name: setup - omni venv
+    needs: preflight
+    if: needs.preflight.result == 'success'
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 30
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Assess CI environment completeness
+        id: env_state
+        shell: bash
+        run: |
+          echo "OMNI_CI_HOME=${OMNI_CI_HOME}"
+          if bash .github/scripts/validate_omni_env_reusable.sh omni; then
+            echo "action=reuse" >> "${GITHUB_OUTPUT}"
+            echo "Existing environment passes reuse gate; will refresh editable install."
+          else
+            echo "action=rebuild" >> "${GITHUB_OUTPUT}"
+            echo "Environment missing or drifted; will reconcile or rebuild."
+          fi
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+          install-deps: "true"
+
+      - name: Build Rust router
+        shell: bash
+        run: |
+          binary="$(bash .github/scripts/prepare_rust_router.sh build)"
+          echo "SGLANG_OMNI_ROUTER_BIN=${binary}" >> "${GITHUB_ENV}"
+
+      - uses: ./.github/actions/omni-save-cache
+        with:
+          venv-name: omni
+
+      - name: Ensure CI model weights
+        shell: bash
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          bash .github/scripts/ensure_hf_models.sh omni \
+            Qwen/Qwen3-Omni-30B-A3B-Instruct \
+            marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
+            "${QWEN3_ASR_MODEL_PATH}" \
+            "${MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH}" \
+            "${TTS_MODEL_PATH}" \
+            "${MOSS_TTS_MODEL_PATH}" \
+            "${QWEN3_TTS_MODEL_PATH}" \
+            "${FUN_ASR_MODEL_PATH}" \
+            "${WHISPER_ASR_MODEL_PATH}"
+
+      - name: Mark PR environment complete
+        shell: bash
+        run: bash .github/scripts/mark_omni_env_complete.sh omni
+
+      - name: Verify setup completion marker
+        shell: bash
+        run: bash .github/scripts/validate_omni_env_complete.sh omni
+
+  pick-asr-model:
+    name: pick ASR model
+    needs: [preflight, setup]
+    runs-on: ubuntu-latest
+    outputs:
+      asr_ci_model: ${{ steps.pick.outputs.asr_ci_model }}
+    steps:
+      - id: pick
+        env:
+          PR_LABELS: ${{ needs.preflight.outputs.labels || '[]' }}
+          RUN_FUN_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-fun-asr') }}
+          RUN_QWEN3_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-asr') }}
+          RUN_WHISPER_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-whisper-asr') }}
+          ASR_CI_MODEL_OVERRIDE: ${{ github.event.inputs.asr_ci_model }}
+        run: |
+          models=(fun qwen3 whisper)
+          selected=""
+          override="${ASR_CI_MODEL_OVERRIDE,,}"
+          if [[ -n "${override}" ]]; then
+            for model in "${models[@]}"; do
+              if [[ "${override}" == "${model}" ]]; then
+                selected="${model}"
+                break
+              fi
+            done
+            if [[ -z "${selected}" ]]; then
+              echo "::error::Unsupported asr_ci_model='${ASR_CI_MODEL_OVERRIDE}'. Expected one of: ${models[*]}"
+              exit 1
+            fi
+          else
+            label_count=0
+            for flag in "${RUN_FUN_ASR_LABEL}" "${RUN_QWEN3_ASR_LABEL}" "${RUN_WHISPER_ASR_LABEL}"; do
+              [[ "${flag}" == "true" ]] && label_count=$((label_count + 1))
+            done
+            if [[ "${label_count}" -gt 1 ]]; then
+              echo "::error::Multiple ASR model labels found in PR labels ${PR_LABELS}. Keep only one of: run-fun-asr run-qwen3-asr run-whisper-asr"
+              exit 1
+            fi
+            if [[ "${RUN_FUN_ASR_LABEL}" == "true" ]]; then
+              selected="fun"
+            elif [[ "${RUN_QWEN3_ASR_LABEL}" == "true" ]]; then
+              selected="qwen3"
+            elif [[ "${RUN_WHISPER_ASR_LABEL}" == "true" ]]; then
+              selected="whisper"
+            fi
+          fi
+          if [[ -z "${selected}" ]]; then
+            seed="$(date +%s%N)"
+            RANDOM=$((seed % 32768))
+            selected="${models[$((RANDOM % ${#models[@]}))]}"
+            echo "Random seed for ASR CI model: ${seed}"
+          fi
+          echo "Selected ASR CI model: ${selected}"
+          echo "asr_ci_model=${selected}" >> "$GITHUB_OUTPUT"
+
+  pick-tts-model:
+    name: pick TTS model
+    needs: [preflight, setup]
+    runs-on: ubuntu-latest
+    outputs:
+      selected_model: ${{ steps.tts.outputs.selected_model }}
+      selection_digest: ${{ steps.tts.outputs.selection_digest }}
+      resolved_mps_config: ${{ steps.tts.outputs.resolved_mps_config }}
+      resolved_mps_model: ${{ steps.tts.outputs.resolved_mps_model }}
+      exact_sha: ${{ steps.tts.outputs.exact_sha }}
+    steps:
+      - name: Checkout workflow scripts
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Checkout workflow scripts for manual dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+
       - name: Select TTS model once
         id: tts
         shell: bash
         env:
-          RUN_HIGGS_LABEL: ${{ contains(fromJson(steps.pr.outputs.labels || '[]'), 'run-higgs') }}
-          RUN_MOSS_LABEL: ${{ contains(fromJson(steps.pr.outputs.labels || '[]'), 'run-moss') }}
-          RUN_QWEN3_TTS_LABEL: ${{ contains(fromJson(steps.pr.outputs.labels || '[]'), 'run-qwen3-tts') }}
+          RUN_HIGGS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-higgs') }}
+          RUN_MOSS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-moss') }}
+          RUN_QWEN3_TTS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-tts') }}
           TTS_CI_MODEL_OVERRIDE: ${{ github.event.inputs.tts_ci_model }}
           EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -166,7 +322,9 @@ jobs:
             selection_index=$((16#${selection_digest: -1} % ${#models[@]}))
             selected_model="${models[${selection_index}]}"
             selection_reason="stable_github_run_id_digest"
+            echo "Selection digest for TTS CI model: ${selection_digest}"
           fi
+          echo "Selected TTS CI model: ${selected_model}"
 
           # Note (Jiaxin Deng): Qwen3-TTS is gated as a single instance and
           # has no pool of its own, so stage 5 borrows moss there. Skipping it
@@ -236,139 +394,6 @@ jobs:
           retention-days: 7
           overwrite: true
 
-      - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python .github/scripts/pr_ci_gate.py
-
-      - name: Manual dispatch preflight
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
-
-  setup:
-    name: setup - omni venv
-    needs: preflight
-    if: needs.preflight.result == 'success'
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 30
-    container:
-      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Assess CI environment completeness
-        id: env_state
-        shell: bash
-        run: |
-          echo "OMNI_CI_HOME=${OMNI_CI_HOME}"
-          if bash .github/scripts/validate_omni_env_reusable.sh omni; then
-            echo "action=reuse" >> "${GITHUB_OUTPUT}"
-            echo "Existing environment passes reuse gate; will refresh editable install."
-          else
-            echo "action=rebuild" >> "${GITHUB_OUTPUT}"
-            echo "Environment missing or drifted; will reconcile or rebuild."
-          fi
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-          install-deps: "true"
-
-      - uses: ./.github/actions/omni-save-cache
-        with:
-          venv-name: omni
-
-      - name: Ensure CI model weights
-        shell: bash
-        env:
-          HF_ENDPOINT: https://huggingface.co
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          bash .github/scripts/ensure_hf_models.sh omni \
-            Qwen/Qwen3-Omni-30B-A3B-Instruct \
-            marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
-            "${QWEN3_ASR_MODEL_PATH}" \
-            "${MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH}" \
-            "${TTS_MODEL_PATH}" \
-            "${MOSS_TTS_MODEL_PATH}" \
-            "${QWEN3_TTS_MODEL_PATH}" \
-            "${FUN_ASR_MODEL_PATH}" \
-            "${WHISPER_ASR_MODEL_PATH}"
-
-      - name: Mark PR environment complete
-        shell: bash
-        run: bash .github/scripts/mark_omni_env_complete.sh omni
-
-      - name: Verify setup completion marker
-        shell: bash
-        run: bash .github/scripts/validate_omni_env_complete.sh omni
-
-  pick-asr-model:
-    name: pick ASR model
-    needs: [preflight, setup]
-    if: needs.preflight.result == 'success' && needs.setup.result == 'success'
-    runs-on: ubuntu-latest
-    outputs:
-      asr_ci_model: ${{ steps.pick.outputs.asr_ci_model }}
-    steps:
-      - id: pick
-        env:
-          PR_LABELS: ${{ needs.preflight.outputs.labels || '[]' }}
-          RUN_FUN_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-fun-asr') }}
-          RUN_QWEN3_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-asr') }}
-          RUN_WHISPER_ASR_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-whisper-asr') }}
-          ASR_CI_MODEL_OVERRIDE: ${{ github.event.inputs.asr_ci_model }}
-        run: |
-          models=(fun qwen3 whisper)
-          selected=""
-          override="${ASR_CI_MODEL_OVERRIDE,,}"
-          if [[ -n "${override}" ]]; then
-            for model in "${models[@]}"; do
-              if [[ "${override}" == "${model}" ]]; then
-                selected="${model}"
-                break
-              fi
-            done
-            if [[ -z "${selected}" ]]; then
-              echo "::error::Unsupported asr_ci_model='${ASR_CI_MODEL_OVERRIDE}'. Expected one of: ${models[*]}"
-              exit 1
-            fi
-          else
-            label_count=0
-            for flag in "${RUN_FUN_ASR_LABEL}" "${RUN_QWEN3_ASR_LABEL}" "${RUN_WHISPER_ASR_LABEL}"; do
-              [[ "${flag}" == "true" ]] && label_count=$((label_count + 1))
-            done
-            if [[ "${label_count}" -gt 1 ]]; then
-              echo "::error::Multiple ASR model labels found in PR labels ${PR_LABELS}. Keep only one of: run-fun-asr run-qwen3-asr run-whisper-asr"
-              exit 1
-            fi
-            if [[ "${RUN_FUN_ASR_LABEL}" == "true" ]]; then
-              selected="fun"
-            elif [[ "${RUN_QWEN3_ASR_LABEL}" == "true" ]]; then
-              selected="qwen3"
-            elif [[ "${RUN_WHISPER_ASR_LABEL}" == "true" ]]; then
-              selected="whisper"
-            fi
-          fi
-          if [[ -z "${selected}" ]]; then
-            seed="$(date +%s%N)"
-            RANDOM=$((seed % 32768))
-            selected="${models[$((RANDOM % ${#models[@]}))]}"
-            echo "Random seed for ASR CI model: ${seed}"
-          fi
-          echo "Selected ASR CI model: ${selected}"
-          echo "asr_ci_model=${selected}" >> "$GITHUB_OUTPUT"
-
   asr-ci:
     name: ASR CI
     needs: [setup, pr-test, pick-asr-model]
@@ -387,17 +412,17 @@ jobs:
 
   tts-ci:
     name: TTS CI
-    needs: [preflight, setup, pr-test, asr-ci]
+    needs: [setup, pr-test, asr-ci, pick-tts-model]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
-      needs.preflight.result == 'success'
+      needs.pick-tts-model.result == 'success'
     uses: ./.github/workflows/test-tts-ci.yaml
     with:
-      tts_ci_model: ${{ needs.preflight.outputs.selected_model }}
-      tts_mps_config: ${{ needs.preflight.outputs.resolved_mps_config }}
-      tts_mps_model: ${{ needs.preflight.outputs.resolved_mps_model }}
-      exact_sha: ${{ needs.preflight.outputs.exact_sha }}
+      tts_ci_model: ${{ needs.pick-tts-model.outputs.selected_model }}
+      tts_mps_config: ${{ needs.pick-tts-model.outputs.resolved_mps_config }}
+      tts_mps_model: ${{ needs.pick-tts-model.outputs.resolved_mps_model }}
+      exact_sha: ${{ needs.pick-tts-model.outputs.exact_sha }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
@@ -441,7 +466,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
-      image: hongccc/sglang-omni@sha256:02a85f00438c901c72a2eb2ef738974a807f63af3d13084445604f3344067b19
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES

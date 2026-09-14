@@ -156,8 +156,12 @@ def _load_with_torchaudio(
         raise AudioDecodeError(f"Could not decode {source_name} audio input") from exc
 
 
-def _is_riff_wav(data: bytes) -> bool:
+def is_riff_wav(data: bytes) -> bool:
     return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+
+
+def is_sun_au(data: bytes) -> bool:
+    return len(data) >= 24 and data[:4] == b".snd"
 
 
 def _resample_with_scipy(
@@ -297,7 +301,7 @@ def load_audio(
     if isinstance(source, bytes):
         # Note (akazaakane): The direct WAV/NumPy path avoids torchaudio decoder
         # startup when mono=True without changing channel-preserving loads.
-        if mono and trim_top_db is None and _is_riff_wav(source):
+        if mono and trim_top_db is None and is_riff_wav(source):
             fast = _try_fast_wav_decode(
                 source, target_sample_rate, resample_kwargs=resample_kwargs
             )

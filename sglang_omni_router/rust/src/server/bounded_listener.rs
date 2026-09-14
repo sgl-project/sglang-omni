@@ -12,6 +12,12 @@ use tracing::trace;
 /// TCP listener that bounds accepted client sockets.
 pub(super) struct BoundedTcpListener {
     listener: TcpListener,
+    capacity: ListenerCapacity,
+}
+
+#[derive(Clone)]
+pub(super) struct ListenerCapacity {
+    limit: usize,
     permits: Arc<Semaphore>,
 }
 
@@ -20,13 +26,20 @@ impl BoundedTcpListener {
     pub(super) fn new(listener: TcpListener, max_connections: usize) -> Self {
         Self {
             listener,
-            permits: Arc::new(Semaphore::new(max_connections)),
+            capacity: ListenerCapacity {
+                limit: max_connections,
+                permits: Arc::new(Semaphore::new(max_connections)),
+            },
         }
+    }
+
+    pub(super) fn capacity(&self) -> ListenerCapacity {
+        self.capacity.clone()
     }
 
     /// Accepts one socket after reserving its lifetime permit.
     pub(super) async fn accept(&self) -> io::Result<(ConnectionIo, SocketAddr)> {
-        let permit = Arc::clone(&self.permits)
+        let permit = Arc::clone(&self.capacity.permits)
             .acquire_owned()
             .await
             .map_err(|_| io::Error::other("connection permit pool closed"))?;
@@ -39,7 +52,13 @@ impl BoundedTcpListener {
 
     #[cfg(test)]
     pub(super) fn permit_pool(&self) -> Arc<Semaphore> {
-        Arc::clone(&self.permits)
+        Arc::clone(&self.capacity.permits)
+    }
+}
+
+impl ListenerCapacity {
+    pub(super) fn usage(&self) -> (usize, usize) {
+        (self.limit, self.limit - self.permits.available_permits())
     }
 }
 
@@ -130,7 +149,7 @@ mod tests {
             .await
             .expect("connect first client");
         let (first_io, _) = listener.accept().await.expect("accept first client");
-        assert_eq!(listener.permits.available_permits(), 0);
+        assert_eq!(listener.permit_pool().available_permits(), 0);
 
         let _second_client = TcpStream::connect(address)
             .await
@@ -147,9 +166,9 @@ mod tests {
             .await
             .expect("waiting accept should wake after wrapper drop")
             .expect("accept second client");
-        assert_eq!(listener.permits.available_permits(), 0);
+        assert_eq!(listener.permit_pool().available_permits(), 0);
         drop(second_io);
-        assert_eq!(listener.permits.available_permits(), 1);
+        assert_eq!(listener.permit_pool().available_permits(), 1);
     }
 
     #[tokio::test]
@@ -177,7 +196,7 @@ mod tests {
                 .is_err(),
             "accept without a client should remain pending"
         );
-        assert_eq!(listener.permits.available_permits(), 1);
+        assert_eq!(listener.permit_pool().available_permits(), 1);
     }
 
     #[tokio::test]
@@ -187,7 +206,7 @@ mod tests {
             .await
             .expect("connect isolated client");
         let (io, _) = listener.accept().await.expect("accept client");
-        let permits = Arc::clone(&listener.permits);
+        let permits = listener.permit_pool();
 
         tokio::time::timeout(Duration::from_millis(50), async move { drop(io) })
             .await

@@ -10,7 +10,7 @@ IFS=$'\n\t'
 readonly DEFAULT_OMNI_REPO="https://github.com/sgl-project/sglang-omni.git"
 readonly DEFAULT_OMNI_REF="main"
 readonly DEFAULT_SGLANG_REPO="https://github.com/sgl-project/sglang.git"
-readonly DEFAULT_SGLANG_REF="v0.5.18"
+readonly DEFAULT_SGLANG_REF="v0.5.19"
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
@@ -77,7 +77,7 @@ Environment:
   SGLANG_OMNI_VENV         Virtual environment path.
   SGLANG_OMNI_CACHE        Cache root for source checkouts.
   SGLANG_SOURCE_DIR        SGLang source checkout path.
-  SGLANG_VERSION            SGLang git tag/branch (default: v0.5.18).
+  SGLANG_VERSION            SGLang git tag/branch (default: v0.5.19).
   SGLANG_REPO               SGLang repository URL.
   SGLANG_OMNI_REPO          sglang-omni repository URL for hosted use.
   SGLANG_OMNI_REF           sglang-omni branch/tag (default: main).
