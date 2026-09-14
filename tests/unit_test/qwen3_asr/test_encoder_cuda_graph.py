@@ -108,11 +108,97 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
     assert seen["forward_metadata"] is attention_metadata
 
 
+def test_npu_capture_all_defers_until_real_window_signature():
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._buckets = (128, 256)
+    runner._graphs = {}
+    runner._failed = set()
+
+    runner.capture_all()
+
+    assert runner._graphs == {}
+    assert runner._failed == set()
+
+
+def test_npu_capture_materializes_sequence_boundaries_on_host():
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._device = torch.device("meta")
+
+    cu_seqlens = runner._make_static_cu([4, 3, 1])
+
+    assert cu_seqlens.device.type == "cpu"
+    assert cu_seqlens.dtype == torch.int32
+    assert cu_seqlens.tolist() == [0, 4, 7, 8]
+
+
+def test_npu_replay_uses_the_exact_window_layout_as_graph_key():
+    captured = []
+    replayed = []
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._max_seqlen = 8
+    runner._buckets = (8, 16)
+    runner._failed = set()
+    runner._graphs = {}
+
+    def plan(total, windows):
+        if total == 8:
+            return 16, [8]
+        if windows == 1:
+            return 8, [4]
+        return 8, [8 - total]
+
+    runner._plan = plan
+
+    def capture(bucket_size, *, window_lens=None):
+        captured.append((bucket_size, window_lens))
+        return SimpleNamespace(
+            hidden_states=torch.zeros(bucket_size, 2),
+            cu_seqlens=torch.tensor([0, 4, 8], dtype=torch.int32),
+            attention_metadata=None,
+            graph=SimpleNamespace(replay=lambda: replayed.append(True)),
+            output=torch.zeros(bucket_size, 2),
+        )
+
+    runner._capture = capture
+    hidden_states = torch.ones(4, 2)
+
+    assert runner.run(hidden_states, [4]) is not None
+    assert runner.run(hidden_states, [4]) is not None
+    assert captured == [(8, (4, 4))]
+    assert replayed == [True, True]
+
+    assert runner.run(hidden_states, [2, 2]) is not None
+    assert captured == [(8, (4, 4)), (8, (2, 2, 4))]
+    assert len(replayed) == 3
+
+    assert runner.run(hidden_states, [1, 3]) is not None
+    assert captured == [
+        (8, (4, 4)),
+        (8, (2, 2, 4)),
+        (8, (1, 3, 4)),
+    ]
+    assert runner._failed == set()
+
+    assert runner.run(torch.ones(8, 2), [8]) is not None
+    assert captured == [
+        (8, (4, 4)),
+        (8, (2, 2, 4)),
+        (8, (1, 3, 4)),
+        (16, (8, 8)),
+    ]
 @pytest.fixture
 def asr_server_args():
     from sglang.srt.runtime_context import get_context
 
-    mm_attention_backend = "aiter_attn" if current_platform.is_rocm() else "triton_attn"
+    if current_platform.is_rocm():
+        mm_attention_backend = "aiter_attn"
+    elif current_platform.is_npu():
+        mm_attention_backend = "ascend_attn"
+    else:
+        mm_attention_backend = "triton_attn"
     with get_context().override_server_args(
         model_path="Qwen/Qwen3-ASR-1.7B", mm_attention_backend=mm_attention_backend
     ):
@@ -182,9 +268,10 @@ def test_graph_matches_eager_tower(asr_server_args):
         graph_backend=current_platform.get_device_graph_backend(tower_device),
     )
     runner.capture_all()
-    assert runner._graphs and not runner._failed
-    pools = [entry.graph.pool() for entry in runner._graphs.values()]
-    assert len(set(pools)) == len(pools)
+    if not runner._is_npu:
+        assert runner._graphs and not runner._failed
+        pools = [entry.graph.pool() for entry in runner._graphs.values()]
+        assert len(set(pools)) == len(pools)
 
     def check(frame_lens):
         feats = (torch.randn(128, sum(frame_lens), device=device) * 0.05).to(
@@ -198,6 +285,7 @@ def test_graph_matches_eager_tower(asr_server_args):
             tokens_per_window=runner.tokens_per_window,
         )
         out = runner.run(eager_preamble(tower, feats, lens), wl)
+        assert out is not None
         diff = (out.float() - ref.float()).abs().max().item()
         assert diff < 3e-2, f"{frame_lens}: max|diff|={diff}"
 
@@ -210,6 +298,7 @@ def test_graph_matches_eager_tower(asr_server_args):
         check(frame_lens)
     for frame_lens in reversed(sequence):
         check(frame_lens)
+    assert runner._graphs and not runner._failed
 
     assert (
         runner.run(
