@@ -75,6 +75,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     # note (0xtoward): Keep deterministic inference opt-in because it serializes
     # preprocessing and vocoder decoding and disables the vocoder CUDA graphs,
     # reducing throughput.
+
+    # CPU has no accelerator placement id.
+    _DEFAULT_DEVICE_ID: int | None = None if current_platform.is_cpu() else 0
     enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
@@ -94,7 +97,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             factory=FactoryArgs(dtype="bfloat16"),
-            gpu=0,
+            gpu=_DEFAULT_DEVICE_ID,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
@@ -103,7 +106,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(dtype="bfloat16"),
-            gpu=0,
+            gpu=_DEFAULT_DEVICE_ID,
             next="vocoder",
             stream_to=["vocoder"],
         ),
