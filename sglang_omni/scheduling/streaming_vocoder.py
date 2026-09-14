@@ -222,7 +222,12 @@ class StreamingVocoderBase(
         item = self._validate_stream_chunk_item(request_id, item)
         self.on_stream_chunk_batch([(request_id, item)])
 
-    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage] | None:
+        return self._finish_stream(request_id)
+
+    def _finish_stream(self, request_id: str) -> list[OutgoingMessage]:
+        """Flush the remainder (or the nothing-emitted fallback), then build
+        the terminal result; records the id as completed."""
         payload = self._stream_payloads[request_id]
         state = self._get_or_create_stream_state(request_id)
         if state is None:
@@ -354,27 +359,40 @@ class StreamingVocoderBase(
             metadata={"modality": "audio"},
         )
 
+    def _pump_one_step(self) -> list[str] | None:
+        """Returns None when no stream is ready, otherwise the request ids
+        on_step_failure aborted (empty after a successful step)."""
+        participants = self.select_step_participants()
+        if not participants:
+            return None
+        plan = self.build_step_plan(participants)
+        try:
+            decoded = self.run_step(participants, plan)
+        except Exception as exc:
+            return list(self.on_step_failure(participants, exc))
+        for request_id, _ in participants:
+            waveform = decoded.get(request_id)
+            if waveform is not None and not self._is_aborted(request_id):
+                self._mark_stream_emitted(request_id)
+                self.outbox.put(self._stream_chunk_message(request_id, waveform))
+        return []
+
     def _pump_streams(self) -> list[str]:
-        """Coalesced decode loop: the hooks pick the participants of one shared
-        step and run it; a failed step errors and aborts every participant; the
-        loop re-pumps until no participants remain, so capped-step backlogs
-        drain within one pump. Returns the request ids ``on_step_failure``
-        aborted, whose external abort cleanup the caller must run off
-        ``_state_lock``."""
+        """Coalesced decode loop: steps run until no participants remain, so
+        capped-step backlogs drain within one pump; a failed step ends the
+        pump and returns the aborted request ids."""
         while True:
-            participants = self.select_step_participants()
-            if not participants:
+            failed = self._pump_one_step()
+            if failed is None:
                 return []
-            plan = self.build_step_plan(participants)
-            try:
-                decoded = self.run_step(participants, plan)
-            except Exception as exc:
-                return list(self.on_step_failure(participants, exc))
-            for request_id, _ in participants:
-                waveform = decoded.get(request_id)
-                if waveform is not None and not self._is_aborted(request_id):
-                    self._mark_stream_emitted(request_id)
-                    self.outbox.put(self._stream_chunk_message(request_id, waveform))
+            if failed:
+                return failed
+
+    def _run_ready_step(self) -> None:
+        with self._state_lock:
+            failed = self._pump_one_step() or []
+        for request_id in failed:
+            self._cleanup_aborted_request(request_id)
 
     @abstractmethod
     def create_stream_state(self, request_id: str) -> StreamStateT:
