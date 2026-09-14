@@ -304,6 +304,8 @@ def test_qwen3_tts_speech_tokenizer_is_loaded_once_per_process_key(
     loads: list[tuple[str, dict[str, object]]] = []
 
     class FakeQwen3TTSTokenizer:
+        model = SimpleNamespace(encoder=torch.nn.Module())
+
         @classmethod
         def from_pretrained(cls, path, **kwargs):
             loads.append((path, kwargs))
@@ -851,6 +853,45 @@ def test_qwen3_tts_rejects_invalid_seed() -> None:
         build_qwen3_tts_state(payload)
 
 
+class _FakeReferenceEncoder(torch.nn.Module):
+    """Codes (1, quantizers, samples // hop), the shape the Mimi encoder returns."""
+
+    def __init__(self, encode, *, quantizers, device):
+        super().__init__()
+        self.scale = torch.nn.Parameter(torch.ones(1, device=device))
+        self._encode = encode
+        self._quantizers = quantizers
+
+    def encode(self, values, *, num_quantizers, return_dict):
+        assert num_quantizers == self._quantizers
+        assert return_dict
+        return SimpleNamespace(audio_codes=self._encode(values))
+
+
+def _fake_speech_tokenizer(encode=None, *, hop=8, quantizers=2, device="cpu"):
+    """A speech tokenizer whose encoder runs encode(values (1, 1, T)); ones by default."""
+
+    def default(values):
+        return torch.ones(
+            (1, quantizers, values.shape[-1] // hop), dtype=torch.long, device=device
+        )
+
+    def normalize(waveforms, sr):
+        assert sr == 24000
+        return [np.asarray(waveform, dtype=np.float32) for waveform in waveforms]
+
+    return SimpleNamespace(
+        model=SimpleNamespace(
+            encoder=_FakeReferenceEncoder(
+                encode or default, quantizers=quantizers, device=device
+            ),
+            encode_downsample_rate=hop,
+            encoder_valid_num_quantizers=quantizers,
+        ),
+        _normalize_audio_inputs=normalize,
+    )
+
+
 def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -858,13 +899,6 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
         inputs="target",
         tts_params={"ref_audio": "voice.wav", "ref_text": "reference"},
     )
-
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            assert sr == 24000
-            return SimpleNamespace(
-                audio_codes=[torch.ones((1, 2), dtype=torch.long) for _ in waveforms]
-            )
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
@@ -887,7 +921,7 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
         model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
-        speech_tokenizer = FakeSpeechTokenizer()
+        speech_tokenizer = _fake_speech_tokenizer()
         speaker_encoder_sample_rate = 24000
 
         def extract_speaker_embedding(self, *, audio, sr):
@@ -932,14 +966,10 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
     calls = 0
 
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            nonlocal calls
-            calls += 1
-            assert sr == 24000
-            return SimpleNamespace(
-                audio_codes=[torch.ones((1, 2), dtype=torch.long) for _ in waveforms]
-            )
+    def encode(values):
+        nonlocal calls
+        calls += 1
+        return torch.ones((1, 2, values.shape[-1] // 8), dtype=torch.long)
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
@@ -962,7 +992,7 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
         model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
-        speech_tokenizer = FakeSpeechTokenizer()
+        speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
         def extract_speaker_embedding(self, *, audio, sr):
@@ -1017,7 +1047,7 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     assert cached["ref_text"] == "reference"
     assert cached["ref_spk_embedding"][0].device.type == "cpu"
     assert cached["ref_code"][0].device.type == "cpu"
-    assert cached["ref_code"][0].shape == (1, 2)
+    assert cached["ref_code"][0].shape == (4, 2)
 
     qwen3_request_builders._prepare_qwen3_tts_request(
         make_uploaded_payload(7),
@@ -1049,14 +1079,10 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
     calls = 0
     data_uri = "data:audio/wav;base64,AAAA"
 
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            nonlocal calls
-            calls += 1
-            assert sr == 24000
-            return SimpleNamespace(
-                audio_codes=[torch.ones((1, 2), dtype=torch.long) for _ in waveforms]
-            )
+    def encode(values):
+        nonlocal calls
+        calls += 1
+        return torch.ones((1, 2, values.shape[-1] // 8), dtype=torch.long)
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
@@ -1079,7 +1105,7 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
         model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
-        speech_tokenizer = FakeSpeechTokenizer()
+        speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
         def extract_speaker_embedding(self, *, audio, sr):
@@ -1148,18 +1174,23 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
 
 def test_qwen3_tts_reference_codes_batch_across_requests() -> None:
     batch_sizes: list[int] = []
+    encodes = 0
 
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            batch_sizes.append(len(waveforms))
-            assert torch.is_inference_mode_enabled()
-            assert sr == 24000
-            return SimpleNamespace(
-                audio_codes=[torch.tensor([index]) for index in range(len(waveforms))]
-            )
+    def encode(values):
+        nonlocal encodes
+        assert torch.is_inference_mode_enabled()
+        encodes += 1
+        return torch.full((1, 2, values.shape[-1] // 8), encodes - 1, dtype=torch.long)
 
-    batcher = qwen3_request_builders._Qwen3TTSRefCodeBatcher(
-        FakeSpeechTokenizer(),
+    class DrainRecordingBatcher(qwen3_request_builders._Qwen3TTSRefCodeBatcher):
+        def _drain(self):
+            batch, shutdown = super()._drain()
+            if batch:
+                batch_sizes.append(len(batch))
+            return batch, shutdown
+
+    batcher = DrainRecordingBatcher(
+        _fake_speech_tokenizer(encode),
         max_batch_size=2,
         max_batch_wait_ms=50.0,
     )
@@ -1182,10 +1213,8 @@ def test_qwen3_tts_reference_codes_batch_across_requests() -> None:
 
     assert all(not thread.is_alive() for thread in threads)
     assert batch_sizes == [2]
-    assert sorted(int(result.item()) for result in results if result is not None) == [
-        0,
-        1,
-    ]
+    assert all(result is not None and result.shape == (2, 2) for result in results)
+    assert sorted(int(result[0, 0]) for result in results) == [0, 1]
 
 
 def test_qwen3_tts_preprocessing_executor_admits_concurrent_requests() -> None:
@@ -1207,22 +1236,17 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
             kwargs["max_batch_wait_ms"] = 500.0
             super().__init__(speech_tokenizer, **kwargs)
 
+        def _drain(self):
+            batch, shutdown = super()._drain()
+            if batch:
+                batch_sizes.append(len(batch))
+            return batch, shutdown
+
     monkeypatch.setattr(
         qwen3_request_builders,
         "_Qwen3TTSRefCodeBatcher",
         PatientRefCodeBatcher,
     )
-
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            batch_sizes.append(len(waveforms))
-            assert sr == 24000
-            return SimpleNamespace(
-                audio_codes=[
-                    torch.full((1, 2), index, dtype=torch.long)
-                    for index in range(len(waveforms))
-                ]
-            )
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
@@ -1245,7 +1269,7 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
         model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
-        speech_tokenizer = FakeSpeechTokenizer()
+        speech_tokenizer = _fake_speech_tokenizer()
         speaker_encoder_sample_rate = 24000
 
         def extract_speaker_embedding(self, *, audio, sr):
@@ -1323,11 +1347,10 @@ def test_qwen3_tts_reference_code_overlaps_speaker_embedding() -> None:
     tokenizer_started = threading.Event()
     speaker_started = threading.Event()
 
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            tokenizer_started.set()
-            assert speaker_started.wait(timeout=1.0)
-            return SimpleNamespace(audio_codes=[torch.ones((1, 2), dtype=torch.long)])
+    def encode(values):
+        tokenizer_started.set()
+        assert speaker_started.wait(timeout=1.0)
+        return torch.ones((1, 2, values.shape[-1] // 8), dtype=torch.long)
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
@@ -1335,7 +1358,7 @@ def test_qwen3_tts_reference_code_overlaps_speaker_embedding() -> None:
 
     class FakeModel:
         device = torch.device("cpu")
-        speech_tokenizer = FakeSpeechTokenizer()
+        speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
         def extract_speaker_embedding(self, *, audio, sr):
@@ -1364,9 +1387,8 @@ def test_qwen3_tts_reference_code_overlaps_speaker_embedding() -> None:
 def test_qwen3_tts_x_vector_reference_runs_only_the_speaker_encoder() -> None:
     speaker_inputs: list[tuple[int, int]] = []
 
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            raise AssertionError("x vector only mode must not encode the clip")
+    def encode(values):
+        raise AssertionError("x vector only mode must not encode the clip")
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
@@ -1374,7 +1396,7 @@ def test_qwen3_tts_x_vector_reference_runs_only_the_speaker_encoder() -> None:
 
     class FakeModel:
         device = torch.device("cpu")
-        speech_tokenizer = FakeSpeechTokenizer()
+        speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
         def extract_speaker_embedding(self, *, audio, sr):
@@ -1402,53 +1424,36 @@ def test_qwen3_tts_x_vector_reference_runs_only_the_speaker_encoder() -> None:
     assert ref_text is None
 
 
-def test_qwen3_tts_reference_code_batcher_synchronizes_cuda_results(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[object] = []
-    code = SimpleNamespace(is_cuda=True, device=torch.device("cuda"))
-
-    class FakeCurrentStream:
-        def synchronize(self):
-            events.append("synchronize")
-
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            assert len(waveforms) == 1
-            assert sr == 24000
-            return SimpleNamespace(audio_codes=[code])
-
-    monkeypatch.setattr(
-        torch.cuda,
-        "current_stream",
-        lambda device: FakeCurrentStream(),
-    )
+def test_qwen3_tts_reference_code_batcher_has_no_stream_for_cpu_encoder() -> None:
     batcher = qwen3_request_builders._Qwen3TTSRefCodeBatcher(
-        FakeSpeechTokenizer(),
-        max_batch_wait_ms=0,
-    )
-    try:
-        result = batcher.encode(np.zeros(16, dtype=np.float32), 24000)
-    finally:
-        batcher.close()
-
-    assert result is code
-    assert events == ["synchronize"]
-
-
-def test_qwen3_tts_reference_code_batcher_has_no_stream_for_cpu_device() -> None:
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            raise AssertionError("encode must not run in this test")
-
-    batcher = qwen3_request_builders._Qwen3TTSRefCodeBatcher(
-        FakeSpeechTokenizer(),
-        device=torch.device("cpu"),
+        _fake_speech_tokenizer(),
+        graph_bucket_frames=(4, 8),
     )
     try:
         assert batcher._encode_stream is None
+        assert batcher._graph_runner is None
     finally:
         batcher.close()
+
+
+def test_qwen3_tts_reference_code_batcher_pads_to_whole_frames() -> None:
+    shapes: list[tuple[int, ...]] = []
+
+    def encode(values):
+        shapes.append(tuple(values.shape))
+        return torch.arange(values.shape[-1] // 8).view(1, 1, -1).expand(1, 2, -1)
+
+    batcher = qwen3_request_builders._Qwen3TTSRefCodeBatcher(
+        _fake_speech_tokenizer(encode), max_batch_wait_ms=0
+    )
+    try:
+        codes = batcher.encode(np.zeros(21, dtype=np.float32), 24000)
+    finally:
+        batcher.close()
+
+    assert shapes == [(1, 1, 24)]
+    assert codes.shape == (3, 2)
+    assert torch.equal(codes[:, 0], torch.tensor([0, 1, 2]))
 
 
 @pytest.mark.accelerator
@@ -1457,20 +1462,14 @@ def test_qwen3_tts_reference_code_batcher_encodes_on_dedicated_cuda_stream() -> 
     device = torch.device("cuda", torch.cuda.current_device())
     encode_streams: list[object] = []
 
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            assert sr == 24000
-            encode_streams.append(torch.cuda.current_stream(device))
-            return SimpleNamespace(
-                audio_codes=[
-                    torch.full((1, 2), index, dtype=torch.long, device=device)
-                    for index in range(len(waveforms))
-                ]
-            )
+    def encode(values):
+        encode_streams.append(torch.cuda.current_stream(device))
+        return torch.zeros(
+            (1, 2, values.shape[-1] // 8), dtype=torch.long, device=device
+        )
 
     batcher = qwen3_request_builders._Qwen3TTSRefCodeBatcher(
-        FakeSpeechTokenizer(),
-        device=device,
+        _fake_speech_tokenizer(encode, device=device),
     )
     try:
         assert batcher._encode_stream is not None
@@ -1481,7 +1480,7 @@ def test_qwen3_tts_reference_code_batcher_encodes_on_dedicated_cuda_stream() -> 
 
     assert encode_streams == [batcher._encode_stream]
     assert result.is_cuda
-    assert torch.equal(result.cpu(), torch.zeros((1, 2), dtype=torch.long))
+    assert torch.equal(result.cpu(), torch.zeros((2, 2), dtype=torch.long))
 
 
 def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
@@ -1492,9 +1491,8 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
     qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
     calls = 0
 
-    class FakeSpeechTokenizer:
-        def encode(self, waveforms, *, sr):
-            raise AssertionError("x vector only mode must not encode the clip")
+    def encode(values):
+        raise AssertionError("x vector only mode must not encode the clip")
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
@@ -1514,7 +1512,7 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
         model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
-        speech_tokenizer = FakeSpeechTokenizer()
+        speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
         def extract_speaker_embedding(self, *, audio, sr):
