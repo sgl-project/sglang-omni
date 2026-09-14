@@ -262,7 +262,7 @@ class SGLModelRunner(ModelRunner):
         self._register_omni_model()
 
         port_args = PortArgs.init_new(server_args)
-        tp_size = get_parallel().tp_size
+        tp_size = server_args.tp_size
         self.nccl_port = port_args.nccl_port
 
         # model_config is already fully configured by ModelWorker._init_model_config()
@@ -270,11 +270,11 @@ class SGLModelRunner(ModelRunner):
 
         attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
             compute_dp_attention_world_info(
-                get_parallel().enable_dp_attention,
+                server_args.enable_dp_attention,
                 tp_rank,
                 tp_size,
-                get_parallel().dp_size,
-                get_parallel().attn_cp_size,
+                server_args.dp_size,
+                server_args.attn_cp_size,
             )
         )
         ps = ParallelState(
@@ -283,25 +283,25 @@ class SGLModelRunner(ModelRunner):
             pp_rank=pp_rank,
             pp_size=pp_size,
             dp_rank=None,
-            dp_size=get_parallel().dp_size,
+            dp_size=server_args.dp_size,
             attn_tp_rank=attn_tp_rank,
             attn_tp_size=attn_tp_size,
             attn_cp_rank=0,
-            attn_cp_size=get_parallel().attn_cp_size,
-            attn_dcp_rank=tp_rank % get_parallel().dcp_size,
-            attn_dcp_size=get_parallel().dcp_size,
+            attn_cp_size=server_args.attn_cp_size,
+            attn_dcp_rank=tp_rank % server_args.dcp_size,
+            attn_dcp_size=server_args.dcp_size,
             attn_dp_rank=attn_dp_rank,
             attn_dp_size=attn_dp_size,
             moe_ep_rank=moe_ep_rank,
             moe_ep_size=moe_ep_size,
             moe_dp_rank=None,
-            moe_dp_size=get_parallel().moe_dp_size,
+            moe_dp_size=server_args.moe_dp_size,
             gpu_id=gpu_id,
         )
 
         super().__init__(
             model_config=model_config,
-            mem_fraction_static=get_schedule().mem_fraction_static,
+            mem_fraction_static=server_args.mem_fraction_static,
             gpu_id=gpu_id,
             ps=ps,
             nccl_port=nccl_port,
