@@ -1327,6 +1327,83 @@ def test_streaming_attention_matches_dense_reference() -> None:
             torch.testing.assert_close(attention(chunk), expected, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize("context", [4, None])
+def test_indexed_attention_preserves_inactive_slots(context: int | None) -> None:
+    torch.manual_seed(29)
+    reference = _ReferenceAttention(8)
+    reference.context = context
+    reference.rope = _RotaryEmbedding(10000.0)
+    attention = MossAudioTokenizerAttention.from_module(
+        reference,
+        attention_backend="sdpa",
+        packed_rope_cache=attention_impl.MossPackedRopeCache(
+            max_period=10000.0, streaming_max_positions=64
+        ),
+    )
+    history = {slot: [] for slot in range(4)}
+    steps = [
+        ([2, 0], [True, True], 2),
+        ([0, 2], [False, True], 5),
+        ([2, 0], [False, False], 1),
+        ([3, 0], [True, True], 7),
+        ([2, 0], [True, True], 3),
+        ([2, 3], [True, False], 2),
+    ]
+    with attention.streaming(4), torch.no_grad():
+        state = attention._streaming_state
+        for step, (slots, valid, length) in enumerate(steps):
+            if step == len(steps) - 1:
+                state.reset_slots(torch.tensor([2]))
+                history[2].clear()
+            inactive = sorted(
+                set(range(4)) - {s for s, live in zip(slots, valid) if live}
+            )
+            before = {
+                name: value.clone()
+                for name in (
+                    "offset",
+                    "cached_keys",
+                    "cached_values",
+                    "cached_positions",
+                )
+                if (value := getattr(state, name)) is not None
+            }
+            chunk = torch.randn(len(slots), length, 8)
+            actual = attention(
+                chunk,
+                execution_context=attention_impl.StreamingExecutionContext(
+                    torch.tensor(slots), torch.tensor(valid)
+                ),
+            )
+            for row, (slot, live) in enumerate(zip(slots, valid)):
+                if not live:
+                    assert torch.count_nonzero(actual[row]) == 0
+                    continue
+                history[slot].append(chunk[row])
+                full_input = torch.cat(history[slot]).unsqueeze(0)
+                expected = reference(
+                    full_input, input_lengths=torch.tensor([full_input.shape[1]])
+                )[0, -length:]
+                torch.testing.assert_close(actual[row], expected, rtol=1e-5, atol=1e-6)
+
+            # note (Zhang Yiyang): Inactive real slots retain history to resume.
+            # Unbounded caches may grow, but their old prefix must stay intact.
+            for name, old in before.items():
+                current = getattr(state, name)
+                if name == "offset":
+                    assert torch.equal(current[inactive], old[inactive])
+                elif name == "cached_positions":
+                    assert torch.equal(current[inactive, : old.shape[1]], old[inactive])
+                    assert torch.all(current[inactive, old.shape[1] :] == -1)
+                else:
+                    assert torch.equal(
+                        current[inactive, :, : old.shape[2]], old[inactive]
+                    )
+                    assert (
+                        torch.count_nonzero(current[inactive, :, old.shape[2] :]) == 0
+                    )
+
+
 def test_transformer_layer_uses_source_modules_for_primitive_ops() -> None:
     source = _CountingLayer(hidden_size=6)
     wrapper = MossAudioTokenizerTransformerLayer.from_module(source)

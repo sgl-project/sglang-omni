@@ -641,7 +641,7 @@ def test_mps_performance_fails_closed_on_an_uncalibrated_reference(
 
     assert verdict["status"] == "fail"
     assert verdict["uncalibrated"] == ["throughput_qps"]
-    assert any("tune-ci-thresholds" in check for check in verdict["failed_checks"])
+    assert any("calibrate-h100-ci" in check for check in verdict["failed_checks"])
 
 
 def test_shipped_mps_references_are_all_calibrated() -> None:

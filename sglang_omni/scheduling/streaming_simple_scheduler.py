@@ -114,6 +114,16 @@ class StreamingSimpleScheduler:
         del request_id
         return []
 
+    def on_stream_done_before_payload(self, request_id: str) -> list[OutgoingMessage]:
+        """Output a stage owes the client the moment the producer signals EOS.
+
+        ``stream_done`` routinely lands before the terminal payload, so the
+        rest of ``on_stream_done`` is deferred until the payload latches the
+        request. Anything already computed must not wait on that latch.
+        """
+        del request_id
+        return []
+
     def clear_stream_state(self, request_id: str) -> None:
         del request_id
 
@@ -511,6 +521,9 @@ class StreamingSimpleScheduler:
                 if request_id in self._completed_non_streaming_request_ids:
                     return
                 self._pending_done.add(request_id)
+                for out in self.on_stream_done_before_payload(request_id):
+                    if not self._is_aborted(request_id):
+                        self.outbox.put(out)
                 return
             for out in self.on_stream_done(request_id):
                 if not self._is_aborted(request_id):

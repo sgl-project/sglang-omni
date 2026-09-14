@@ -145,6 +145,9 @@ def _install_audio_encoder_fakes(
         device_mod, "resolve_device_spec", lambda device, index=None: device
     )
     monkeypatch.setattr(
+        device_mod, "resolve_concrete_device", lambda device, index=None: device
+    )
+    monkeypatch.setattr(
         higgs_stages, "resolve_checkpoint", lambda model_path: "ckpt_dir"
     )
     monkeypatch.setattr(higgs_stages, "Tokenizer", _FakeTokenizer)
@@ -197,6 +200,9 @@ def _install_vocoder_fakes(
     monkeypatch.setattr(platforms_mod, "current_platform", platform)
     monkeypatch.setattr(
         device_mod, "resolve_device_spec", lambda device, index=None: device
+    )
+    monkeypatch.setattr(
+        device_mod, "resolve_concrete_device", lambda device, index=None: device
     )
     monkeypatch.setattr(
         higgs_stages, "resolve_checkpoint", lambda model_path: "ckpt_dir"

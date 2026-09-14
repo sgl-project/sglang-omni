@@ -1702,36 +1702,39 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         batch_size: int,
         cache_len: int,
     ) -> torch.Tensor:
-        hidden_states = token_embeds
-        hidden_size = hidden_states.shape[-1]
+        hidden_size = token_embeds.shape[-1]
         positions = self._predictor_position_rows[cache_len, :batch_size]
+        # note(ratish): 2D rows for the fused add and norm, which every
+        # backend's kernel expects and which writes both operands in place.
+        residual = token_embeds
+        mlp_out: torch.Tensor | None = None
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
-            residual = hidden_states
-            normed = layer.input_layernorm(hidden_states.reshape(-1, hidden_size))
-            normed = normed.reshape(batch_size, 1, hidden_size)
+            if mlp_out is None:
+                normed = layer.input_layernorm(residual.reshape(-1, hidden_size))
+            else:
+                normed, residual = layer.input_layernorm(
+                    mlp_out, residual.reshape(-1, hidden_size)
+                )
+                residual = residual.reshape(batch_size, 1, hidden_size)
             attn_input = self._predictor_cached_self_attention(
                 layer_idx=layer_idx,
                 attn=layer.self_attn,
-                hidden_states=normed,
+                hidden_states=normed.reshape(batch_size, 1, hidden_size),
                 positions=positions,
                 batch_size=batch_size,
                 cache_len=cache_len,
             )
-            hidden_states = self._predictor_o_proj_add_residual(
+            residual = self._predictor_o_proj_add_residual(
                 layer.self_attn.o_proj,
                 attn_input,
                 residual,
             )
-            residual = hidden_states
-            normed = layer.post_attention_layernorm(
-                hidden_states.reshape(-1, hidden_size)
-            )
-            mlp_out = layer.mlp(normed).reshape(batch_size, 1, hidden_size)
-            hidden_states = residual + mlp_out
-        hidden_states = self.code_predictor.model.norm(
-            hidden_states.reshape(-1, hidden_size)
+            normed = layer.post_attention_layernorm(residual.reshape(-1, hidden_size))
+            mlp_out = layer.mlp(normed)
+        normed, _ = self.code_predictor.model.norm(
+            mlp_out, residual.reshape(-1, hidden_size)
         )
-        return hidden_states.reshape(batch_size, 1, hidden_size)
+        return normed.reshape(batch_size, 1, hidden_size)
 
     @staticmethod
     def _predictor_o_proj_add_residual(

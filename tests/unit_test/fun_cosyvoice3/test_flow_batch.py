@@ -8,7 +8,7 @@ import torch
 from sglang_omni.models.fun_cosyvoice3.stages import (
     FlowBatchInput,
     FunCosyVoice3Flow,
-    _pack_flow_inputs,
+    pack_flow_inputs,
 )
 
 
@@ -115,7 +115,8 @@ class _FakeFlow(torch.nn.Module):
         self.token_mel_ratio = token_mel_ratio
         self.input_embedding = torch.nn.Embedding(32, channels)
         self.spk_embed_affine_layer = torch.nn.Linear(3, channels, bias=False)
-        self.pre_lookahead_layer = torch.nn.Identity()
+        self.pre_lookahead_layer = lambda x, context=None: x
+        self.pre_lookahead_len = 3
         self.decoder = _FakeDecoder(
             channels, max_frames=max_frames, estimator=estimator
         )
@@ -158,7 +159,7 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
         _input([0], prompt_token=[5, 6, 7]),
     ]
 
-    packed = _pack_flow_inputs(flow, items)
+    packed = pack_flow_inputs(flow, items)
 
     assert packed.token.dtype == torch.int32
     assert packed.token.tolist() == [[4, 0, 8, 0], [5, 6, 7, 0]]
@@ -173,7 +174,7 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
 
 
 def test_pack_flow_inputs_builds_variable_length_token_masks() -> None:
-    packed = _pack_flow_inputs(
+    packed = pack_flow_inputs(
         _FakeFlow(),
         [
             _input([0], prompt_token=[]),

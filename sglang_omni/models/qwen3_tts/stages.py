@@ -29,7 +29,6 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
-from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +177,10 @@ def _load_standalone_preprocessing_context(
     except ImportError as exc:
         raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
 
+    from sglang_omni.utils.device import resolve_concrete_device
+
     checkpoint_dir = _resolve_checkpoint(model_path)
-    device = resolve_device_spec(device, gpu_id)
+    device = str(resolve_concrete_device(device, gpu_id))
     torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
     logger.info(f"Loading Qwen3-TTS prompt frontend from {checkpoint_dir} on {device}")
     frontend = load_qwen3_tts_prompt_frontend(
@@ -262,11 +263,14 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph: bool | None = None,
     incremental_codec_compile: bool | None = None,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
+    incremental_codec_cuda_graph_window_frames: Sequence[int] | None = None,
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
 ) -> SimpleScheduler:
-    device = resolve_device_spec(device, gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
     # they belong to unless set explicitly, so turning the stateful decoder
     # off for a rollback is one flag.
@@ -307,6 +311,9 @@ def create_vocoder_executor(
         incremental_codec_compile=incremental_codec_compile,
         incremental_codec_cuda_graph_cold_frames=(
             incremental_codec_cuda_graph_cold_frames
+        ),
+        incremental_codec_cuda_graph_window_frames=(
+            incremental_codec_cuda_graph_window_frames
         ),
         incremental_codec_cuda_graph_min_free_gb=(
             incremental_codec_cuda_graph_min_free_gb

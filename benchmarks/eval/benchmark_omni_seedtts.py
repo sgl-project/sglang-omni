@@ -137,7 +137,8 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from functools import partial
 
 import aiohttp
 
@@ -199,6 +200,7 @@ class OmniSeedttsBenchmarkConfig:
     max_new_tokens: int = 256
     temperature: float = 0.7
     warmup: int | None = None
+    warmup_meta: str | None = None
     max_concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     disable_tqdm: bool = False
@@ -235,6 +237,7 @@ def _build_results_config(
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
         "warmup": _resolve_warmup(config),
+        "warmup_meta": config.warmup_meta,
         "max_concurrency": config.max_concurrency,
         "request_rate": config.request_rate,
     }
@@ -342,7 +345,8 @@ async def run_omni_seedtts_benchmark(
     save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
     os.makedirs(save_audio_dir, exist_ok=True)
 
-    send_fn = make_send_fn(
+    build_send_fn = partial(
+        make_send_fn,
         config.model,
         api_url,
         lang=config.lang,
@@ -351,19 +355,65 @@ async def run_omni_seedtts_benchmark(
         max_tokens=config.max_new_tokens,
         temperature=config.temperature,
         stream=config.stream,
-        save_audio_dir=save_audio_dir,
         system_prompt=config.system_prompt,
     )
+
+    warmup_count = _resolve_warmup(config)
+    if config.warmup_meta is not None and warmup_count > 0:
+        warmup_samples = load_seedtts_samples(
+            config.warmup_meta, warmup_count, split=config.lang
+        )
+        if len(warmup_samples) != warmup_count:
+            raise ValueError(
+                f"Requested {warmup_count} warmup samples, found {len(warmup_samples)}"
+            )
+        warmup_dir = os.path.join(config.output_dir, "warmup")
+        warmup_audio_dir = os.path.abspath(os.path.join(warmup_dir, "audio"))
+        os.makedirs(warmup_audio_dir, exist_ok=True)
+        warmup_send_fn = build_send_fn(save_audio_dir=warmup_audio_dir)
+
+        async def send_warmup(session, sample):
+            try:
+                return await warmup_send_fn(session, sample)
+            except Exception as exc:
+                logger.exception("Warmup request %s failed", sample.sample_id)
+                return RequestResult(request_id=sample.sample_id, error=str(exc))
+
+        # Note (wenyao): A separate input set lets callers warm the full path
+        # without pre-filling the measured set's caches or changing server startup.
+        warmup_runner = BenchmarkRunner(
+            RunConfig(
+                max_concurrency=config.max_concurrency,
+                warmup=0,
+                disable_tqdm=config.disable_tqdm,
+            )
+        )
+        warmup_outputs = await warmup_runner.run(warmup_samples, send_warmup)
+        completed = sum(output.is_success for output in warmup_outputs)
+        save_json_results(
+            {
+                "config": _build_results_config(config, base_url=base_url),
+                "completed": completed,
+                "requested": warmup_count,
+                "wall_clock_s": warmup_runner.wall_clock_s,
+                "results": [asdict(output) for output in warmup_outputs],
+            },
+            warmup_dir,
+            "results.json",
+        )
+        if completed != warmup_count:
+            raise RuntimeError(f"Benchmark warmup completed {completed}/{warmup_count}")
+        warmup_count = 0
 
     runner = BenchmarkRunner(
         RunConfig(
             max_concurrency=config.max_concurrency,
             request_rate=config.request_rate,
-            warmup=_resolve_warmup(config),
+            warmup=warmup_count,
             disable_tqdm=config.disable_tqdm,
         )
     )
-    outputs = await runner.run(samples, send_fn)
+    outputs = await runner.run(samples, build_send_fn(save_audio_dir=save_audio_dir))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
     results_config = _build_results_config(config, base_url=base_url)
@@ -423,6 +473,7 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         warmup=args.warmup,
+        warmup_meta=args.warmup_meta,
         max_concurrency=args.max_concurrency,
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
@@ -514,6 +565,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Warmup requests; defaults to the configured concurrency.",
+    )
+    parser.add_argument(
+        "--warmup-meta",
+        type=str,
+        default=None,
+        help="Separate SeedTTS metadata for warmup; use references and text outside "
+        "the measured set. Must contain at least --warmup samples.",
     )
     parser.add_argument(
         "--max-concurrency",

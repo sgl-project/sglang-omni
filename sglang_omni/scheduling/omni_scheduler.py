@@ -72,6 +72,7 @@ _ABORTED_REQUEST_ID_RETAINED = 5000
 _COMPLETED_REQUEST_ID_LIMIT = 10000
 _PENDING_STREAM_REQUEST_LIMIT = 10000
 _PENDING_STREAM_REQUEST_RETAINED = 5000
+_IDLE_WAIT_S = 0.02
 
 
 class _PendingStreamIngress:
@@ -461,6 +462,7 @@ class OmniScheduler:
         self.soft_watchdog = None
         self.recv_skipper = None
         self.idle_sleeper = None
+        self._idle_wait_message: IncomingMessage | None = None
         self._init_upstream_compat_flags(server_args)
         self.grammar_manager = _NoOpGrammarManager()
         self.grammar_queue = []
@@ -468,10 +470,8 @@ class OmniScheduler:
         self.require_mlp_sync = False
         self.abort_on_priority_when_disabled = False
 
-        # Disaggregation / hybrid (disabled)
-        from sglang.srt.disaggregation.utils import DisaggregationMode
-
-        self.disaggregation_mode = DisaggregationMode.NULL
+        # Upstream processing mode; explicit Prefill remains NULL, Decode overrides.
+        self.disaggregation_mode = self._initial_disaggregation_mode()
         self.is_hybrid_swa = False
         self.is_hybrid_ssm = False
         self.offload_tags: set = set()
@@ -518,6 +518,11 @@ class OmniScheduler:
         self._first_emit_done: set[str] = set()
         self._prefill_start_done: set[str] = set()
         self._prefill_end_done: set[str] = set()
+
+    def _initial_disaggregation_mode(self):
+        from sglang.srt.disaggregation.utils import DisaggregationMode
+
+        return DisaggregationMode.NULL
 
     def bind_model_runner(self, model_runner: Any) -> None:
         """Attach a custom runner and its SGLang execution-contract bridge.
@@ -850,6 +855,9 @@ class OmniScheduler:
 
     def _drain_local_inbox(self) -> list[IncomingMessage]:
         recv_msgs: list[IncomingMessage] = []
+        if self._idle_wait_message is not None:
+            recv_msgs.append(self._idle_wait_message)
+            self._idle_wait_message = None
         while True:
             try:
                 recv_msgs.append(self.inbox.get_nowait())
@@ -966,7 +974,18 @@ class OmniScheduler:
             request_admission_pending = bool(
                 self._pending_request_builds or self._pending_request_admissions
             )
-        time.sleep(0.0001 if request_admission_pending else 0.001)
+        if request_admission_pending:
+            time.sleep(0.0001)
+            return
+        if self.tp_size > 1 and not self.is_entry_rank:
+            # Note (jzheng17): TP followers receive through broadcast_pyobj, not their inbox.
+            # Keep polling so they can join the entry rank's broadcast promptly.
+            time.sleep(0.001)
+            return
+        try:
+            self._idle_wait_message = self.inbox.get(timeout=_IDLE_WAIT_S)
+        except _queue_mod.Empty:
+            self._idle_wait_message = None
 
     def _queued_admission_count(self) -> int:
         return (
@@ -1661,17 +1680,17 @@ class OmniScheduler:
             try:
                 # Drain runner stream buffers before the terminal payload; both
                 # use this outbox, so remaining chunks stay ahead of stream done.
-                model_runner = self._model_runner
-                if model_runner is not None:
-                    model_runner.on_request_finished(rid, data)
-                data.output_ids = list(req.output_ids)
-                data.weight_version = get_serving().weight_version
                 finished_reason = req.finished_reason
                 data.finish_reason = (
                     finished_reason.to_json().get("type")
                     if finished_reason is not None
                     else None
                 )
+                model_runner = self._model_runner
+                if model_runner is not None:
+                    model_runner.on_request_finished(rid, data)
+                data.output_ids = list(req.output_ids)
+                data.weight_version = get_serving().weight_version
                 self._flush_stream_output(rid, data)
                 result = self._result_adapter(data)
             except Exception as exc:
@@ -1681,16 +1700,9 @@ class OmniScheduler:
                     rid,
                 )
             finally:
-                callback = self._request_finished_callback
-                if callback is not None:
-                    try:
-                        callback(rid)
-                    except Exception as exc:
-                        logger.exception(
-                            f"OmniScheduler: terminal cleanup failed for {rid}"
-                        )
-                        if terminal_error is None:
-                            terminal_error = exc
+                callback_error = self._run_request_finished_callback(rid)
+                if terminal_error is None:
+                    terminal_error = callback_error
                 data.prefill_input_embeds = None
                 data.decode_input_embeds = None
                 # Note: (Jiaxin Deng) close the model-path interval before
@@ -1817,6 +1829,11 @@ class OmniScheduler:
                 if defer_running_cleanup
                 else False
             )
+            immediate_reqs = (
+                []
+                if running_abort
+                else self._mark_request_finished_immediately(request_id)
+            )
             pending = self._pending_request_builds.pop(request_id, None)
             if pending is not None:
                 pending[2].cancel()
@@ -1851,11 +1868,9 @@ class OmniScheduler:
         self._prefill_start_done.discard(request_id)
         self._prefill_end_done.discard(request_id)
         if not running_abort:
-            self._release_immediate_request_resources(request_id)
-            _remove_from_batch(self.running_batch, request_id)
-            _remove_from_batch(self.cur_batch, request_id)
-            _remove_from_batch(self.last_batch, request_id)
-            _remove_from_batch(self._async_pending_batch(), request_id)
+            for req in immediate_reqs:
+                self._release_request_kv_cache(req)
+                _detach_request_data(req)
         self._drain_inbox_for_request(request_id)
 
     def admin(
@@ -2172,6 +2187,15 @@ class OmniScheduler:
         request_ids = self._active_request_ids()
         for request_id in request_ids:
             self.abort(request_id, defer_running_cleanup=False)
+        seen: set[int] = set()
+        for batch in (self.running_batch, self.cur_batch, self.last_batch):
+            if batch is None or id(batch) in seen:
+                continue
+            seen.add(id(batch))
+            batch.filter_batch()
+            if not batch.reqs:
+                batch.batch_is_full = False
+        self.chunked_req = None
         return len(request_ids)
 
     def _active_request_ids(self) -> list[str]:
@@ -2280,16 +2304,9 @@ class OmniScheduler:
                 marked = True
         return marked
 
-    def _run_abort_callback(self, request_id: str) -> None:
-        callback = self._abort_callback
-        if callback is None:
-            return
-        try:
-            callback(request_id)
-        except Exception:
-            logger.exception("OmniScheduler: abort cleanup failed for %s", request_id)
-
-    def _release_immediate_request_resources(self, request_id: str) -> None:
+    def _mark_request_finished_immediately(self, request_id: str) -> list[Any]:
+        """Make immediate cleanup visible without rewriting prepared batches."""
+        matches = []
         seen: set[int] = set()
         for batch in (
             self.running_batch,
@@ -2303,7 +2320,34 @@ class OmniScheduler:
                 if req.rid != request_id or id(req) in seen:
                     continue
                 seen.add(id(req))
-                self._release_request_kv_cache(req)
+                matches.append(req)
+                if not req.finished():
+                    if req.to_finish is None:
+                        req.to_finish = FINISH_ABORT()
+                    req.update_finish_state()
+        return matches
+
+    def _run_abort_callback(self, request_id: str) -> None:
+        callback = self._abort_callback
+        if callback is None:
+            return
+        try:
+            callback(request_id)
+        except Exception:
+            logger.exception("OmniScheduler: abort cleanup failed for %s", request_id)
+
+    def _run_request_finished_callback(self, request_id: str) -> Exception | None:
+        callback = self._request_finished_callback
+        if callback is None:
+            return None
+        try:
+            callback(request_id)
+        except Exception as exc:
+            logger.exception(
+                "OmniScheduler: terminal cleanup failed for %s", request_id
+            )
+            return exc
+        return None
 
     def _release_request_kv_cache(self, req: Any) -> None:
         if not req.kv.holds_kv and not req.kv.holds_mamba:
@@ -2698,17 +2742,3 @@ class OmniScheduler:
             req_data.stream_done = True
             return
         self._stream_done_handler(req_data)
-
-
-def _remove_from_batch(batch: Any, request_id: str) -> None:
-    if batch is None:
-        return
-    remaining_reqs = []
-    for req in batch.reqs:
-        if req.rid == request_id:
-            _detach_request_data(req)
-        else:
-            remaining_reqs.append(req)
-    batch.reqs = remaining_reqs
-    if not batch.reqs:
-        batch.batch_is_full = False

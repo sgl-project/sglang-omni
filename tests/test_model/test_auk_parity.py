@@ -57,10 +57,10 @@ def models():
         qwen_path=qwen,
     )
     conditioning = create_conditioning_executor(
-        checkpoint, device="cuda:0", text_encoder_path=qwen
+        checkpoint, device="cuda", gpu_id=0, text_encoder_path=qwen
     )
-    engine = create_auk_engine_executor(checkpoint, device="cuda:0")
-    decode = create_decode_executor(checkpoint, device="cuda:0")
+    engine = create_auk_engine_executor(checkpoint, device="cuda", gpu_id=0)
+    decode = create_decode_executor(checkpoint, device="cuda", gpu_id=0)
 
     def generate(payload):
         return decode._fn(engine._fn(conditioning._fn(payload)))
@@ -71,7 +71,7 @@ def models():
 @pytest.mark.parametrize("reference", [False, True])
 def test_speech_matches_upstream(models, monkeypatch, reference):
     from sglang_omni.client.client import Client
-    from sglang_omni.models.auk.flow_matching import AuKFlowMatching
+    from sglang_omni.models.auk import stages
     from sglang_omni.models.auk.hf_config import make_runtime_config
     from sglang_omni.models.auk.request_builders import build_auk_state
     from sglang_omni.models.auk.vae import BigVGANFlowVAE
@@ -133,7 +133,6 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
     )
 
     original_encode = BigVGANFlowVAE.encoding_and_normalization
-    original_fuse = AuKFlowMatching.fuse
     original_denormalize = BigVGANFlowVAE.denormalize
 
     def encode(self, *args, **kwargs):
@@ -141,18 +140,13 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         actual["reference"] = result[0].detach().float().cpu()
         return result
 
-    def fuse(self, *args, **kwargs):
-        result = original_fuse(self, *args, **kwargs)
-        actual["conditioning"] = result.detach().float().cpu()
-        return result
-
     def denormalize(self, latent):
         actual["latent"] = latent.detach().float().cpu()
         return original_denormalize(self, latent)
 
     monkeypatch.setattr(BigVGANFlowVAE, "encoding_and_normalization", encode)
-    monkeypatch.setattr(AuKFlowMatching, "fuse", fuse)
     monkeypatch.setattr(BigVGANFlowVAE, "denormalize", denormalize)
+    _capture(monkeypatch, stages, "fuse_hidden_states", actual, "conditioning")
     torch.manual_seed(request.seed)
     expected["waveform"], sample_rate = upstream.generate(
         messages,

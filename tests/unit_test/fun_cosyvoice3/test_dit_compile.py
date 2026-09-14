@@ -50,7 +50,7 @@ def test_compile_dit_backbone_compiles_estimator_forward_dynamic(monkeypatch) ->
 
     monkeypatch.setattr(torch, "compile", _fake_compile)
 
-    assert stages._compile_dit_backbone(flow, warmup_mel_frames=16) is True
+    assert stages.compile_dit_backbone(flow, warmup_mel_frames=16) is True
 
     assert [call["dynamic"] for call in compile_calls] == [True]
     assert compile_calls[0]["fn"] == original_forward
@@ -79,7 +79,7 @@ def test_compile_dit_backbone_warmup_matches_serving_grad_mode(monkeypatch) -> N
 
     monkeypatch.setattr(torch, "compile", _fake_compile)
 
-    stages._compile_dit_backbone(flow, warmup_mel_frames=16, warmup_steps=2)
+    stages.compile_dit_backbone(flow, warmup_mel_frames=16, warmup_steps=2)
     assert modes == [(True, True)] * 4
 
 
@@ -91,7 +91,7 @@ def test_compile_dit_backbone_skips_non_module_estimator(monkeypatch) -> None:
 
     monkeypatch.setattr(torch, "compile", _fail_compile)
 
-    assert stages._compile_dit_backbone(flow) is False
+    assert stages.compile_dit_backbone(flow) is False
 
 
 def test_compile_dit_backbone_falls_back_to_eager_on_compile_failure(
@@ -111,7 +111,7 @@ def test_compile_dit_backbone_falls_back_to_eager_on_compile_failure(
 
     monkeypatch.setattr(torch, "compile", _fail_compile)
 
-    assert stages._compile_dit_backbone(flow, warmup_mel_frames=16) is False
+    assert stages.compile_dit_backbone(flow, warmup_mel_frames=16) is False
     assert estimator.forward == original_forward
     # The restored eager forward still runs.
     x = torch.ones(2, 80, 16)
@@ -127,7 +127,7 @@ def test_compile_dit_backbone_rejects_degenerate_warmup_length(monkeypatch) -> N
     monkeypatch.setattr(torch, "compile", _fail_compile)
 
     try:
-        stages._compile_dit_backbone(flow, warmup_mel_frames=1)
+        stages.compile_dit_backbone(flow, warmup_mel_frames=1)
     except ValueError as exc:
         assert "warmup_mel_frames" in str(exc)
     else:
@@ -139,4 +139,5 @@ def test_vocoder_factory_exposes_dit_torch_compile_flag() -> None:
 
     signature = inspect.signature(stages.create_vocoder_executor)
     assert signature.parameters["enable_dit_torch_compile"].default is False
+    assert signature.parameters["enable_flow_cuda_graph"].default is True
     assert signature.parameters["enable_flow_estimator_trt"].default is False

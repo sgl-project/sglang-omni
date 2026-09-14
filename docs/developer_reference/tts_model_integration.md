@@ -99,6 +99,13 @@ shared helpers do the heavy lifting:
   `(model_worker, tree_cache, req_to_token_pool, token_to_kv_pool_allocator,
   model_config)` tuple that `OmniScheduler` expects
 
+Every GPU stage factory you write — the engine as well as encoders and
+vocoders — declares `device: str | None = None, gpu_id: int | None = None`
+and resolves them with `sglang_omni.utils.device.resolve_concrete_device`;
+never hard-code `"cuda"` or read `gpu_id` on its own. The contract and the
+sweep test that enforces it are described under "Device and GPU placement
+contract" in [config.md](config.md).
+
 Two pieces of glue still have to be added by hand:
 
 - Insert your SGLang model class into `ModelRegistry.models[...]` inside

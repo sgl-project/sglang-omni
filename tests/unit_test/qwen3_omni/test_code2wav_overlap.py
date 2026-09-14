@@ -188,6 +188,10 @@ def _activate_event_capture(monkeypatch) -> list[dict]:
         def is_active() -> bool:
             return True
 
+        @staticmethod
+        def active_run_id() -> str:
+            return "test-overlap"
+
     monkeypatch.setattr(
         code2wav_scheduler, "_get_event_recorder", lambda: _ActiveRecorder()
     )
@@ -685,7 +689,7 @@ def test_overlap_pool_exhaustion_falls_back_sync_per_window(monkeypatch) -> None
 
     scheduler = _make_scheduler(overlap=True)
     _force_pipeline(scheduler, monkeypatch)
-    scheduler._MAX_PINNED_SLOTS = 1
+    scheduler._max_pinned_slots = 1
     _seed(scheduler, "req-a")
     _seed(scheduler, "req-b")
 
@@ -1136,3 +1140,21 @@ def test_overlap_gpu_slot_on_other_device_than_process_current() -> None:
         assert retired.slot.query() is True
     finally:
         torch.cuda.set_device(previous_device)
+
+
+def test_stream_done_flushes_tail_before_the_payload_latch() -> None:
+    # Note (wenyao): EOS precedes Talker's code-free latch payload; waiting for
+    # that latch stalls a short tail that no decode threshold or deadline releases.
+    scheduler = _make_scheduler(overlap=False, stream_chunk_size=10)
+    _feed(scheduler, "req-1", range(13))
+    assert [item[1] for item in _drain_snapshot(scheduler)] == ["stream"]
+
+    scheduler._on_done("req-1")
+    assert "req-1" in scheduler._pending_done
+    assert [item[1] for item in _drain_snapshot(scheduler)] == ["stream"]
+    scheduler._on_done("req-1")
+    assert _drain_snapshot(scheduler) == []
+
+    scheduler._on_streaming_new_request("req-1", make_qwen_payload(request_id="req-1"))
+    assert [item[1] for item in _drain_snapshot(scheduler)] == ["result"]
+    assert scheduler._stream_states == {}
