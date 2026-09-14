@@ -102,8 +102,8 @@ class Qwen3ASREncoderLayerStackGraphRunner:
 
         chunk_tokens = _get_feat_extract_output_lengths_int(cfg.n_window * 2)
         self._max_seqlen = chunk_tokens * (cfg.n_window_infer // (cfg.n_window * 2))
-        self._max_windows_for = lambda bucket_size: (
-            max_batch_size + bucket_size // self._max_seqlen + 1
+        self._max_windows_for = (
+            lambda bucket_size: max_batch_size + bucket_size // self._max_seqlen + 1
         )
         top = buckets[-1]
         self._buckets = buckets[:-1] + (top + self._max_windows_for(top),)
