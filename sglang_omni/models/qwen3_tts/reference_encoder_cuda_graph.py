@@ -13,16 +13,16 @@ from transformers.models.mimi.modeling_mimi import MimiConv1d
 
 logger = logging.getLogger(__name__)
 
-# note(ratish): 2.6 to 20.5 s of reference audio at 12.5 Hz; a key costs 32 MiB.
+# note(ratish): a replay costs a floor plus a small per frame term and a key costs
+# 32 MiB, so keys below 32 frames save nothing measurable; the step keeps the padding
+# under half a clip, and clips past 256 frames run eager.
 DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES = (32, 48, 64, 96, 128, 192, 256)
 
 
 def move_conv_padding_to_host(encoder: torch.nn.Module) -> int:
-    """Put every conv's padding integers on the CPU; returns the conv count.
-
-    note(ratish): on the device the padding arithmetic before each conv is six
-    launches and a host read, and a host read cannot be captured.
-    """
+    """Put every conv's padding integers on the CPU; returns the conv count."""
+    # note(ratish): on the device the padding arithmetic before each conv is six
+    # launches and a host read, and a host read cannot be captured.
     count = 0
     for module in encoder.modules():
         if isinstance(module, MimiConv1d):
