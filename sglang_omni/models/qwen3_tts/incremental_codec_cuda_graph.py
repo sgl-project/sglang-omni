@@ -126,7 +126,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self._min_free_bytes = int(float(min_free_gb) * (1024**3))
         self._configured = bool(
             enabled
-            and self._device.type == "cuda"
+            and self._device.type in {"cuda", "musa"}
             and self._device.index is not None
             and self._num_quantizers > 0
             and self._fresh_frames

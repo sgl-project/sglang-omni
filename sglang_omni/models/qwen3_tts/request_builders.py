@@ -198,7 +198,11 @@ def set_qwen3_tts_preprocessing_context(
             standalone=standalone,
             stream=(
                 torch.cuda.Stream(device=device)
-                if device is not None and device.type == "cuda" and not standalone
+                if (
+                    device is not None
+                    and device.type in {"cuda", "musa"}
+                    and not standalone
+                )
                 else None
             ),
         )
