@@ -367,6 +367,7 @@ def test_qwen3_tts_engine_attaches_the_vocoder_speech_tokenizer_before_the_pool(
 
     class FakeQwen3TTSTokenizer:
         feature_extractor = SimpleNamespace(sampling_rate=24000)
+        model = _fake_speech_tokenizer().model
 
         @classmethod
         def from_pretrained(cls, path, **kwargs):
@@ -6822,6 +6823,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         lambda *args, **kwargs: SimpleNamespace(
             feature_extractor=SimpleNamespace(sampling_rate=24000),
             get_encode_downsample_rate=lambda: 1920,
+            model=_fake_speech_tokenizer().model,
         ),
     )
     monkeypatch.setattr(
@@ -7481,7 +7483,7 @@ def test_qwen3_tts_standalone_preprocessing_ships_tensors_without_registry(
     monkeypatch.setattr(
         qwen3_request_builders,
         "_get_qwen3_tts_adhoc_reference_service_locked",
-        lambda model, wrapper: None,
+        lambda model, wrapper, *, graph_bucket_frames: None,
     )
     monkeypatch.setattr(
         qwen3_request_builders,

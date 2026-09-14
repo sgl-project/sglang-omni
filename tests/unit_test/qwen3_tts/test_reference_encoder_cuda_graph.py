@@ -41,6 +41,7 @@ def _small_mimi_config() -> MimiConfig:
         num_quantizers=4,
         num_semantic_quantizers=1,
         sliding_window=16,
+        upsample_groups=16,
     )
 
 
