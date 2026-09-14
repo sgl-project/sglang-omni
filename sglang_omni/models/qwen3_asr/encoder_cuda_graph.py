@@ -126,7 +126,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                 continue
             try:
                 self._graphs[bucket_size] = self._capture(bucket_size)
-            except Exception as exc:  # noqa: BLE001 - backend capture failures
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[qwen3-asr] encoder graph capture failed for bucket=%d: %s; "
                     "bucket stays eager",
