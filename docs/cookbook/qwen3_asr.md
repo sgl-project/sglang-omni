@@ -19,6 +19,8 @@ MODEL_PATH="$(
 
 ### Apple Silicon (MLX)
 
+## Manual Install Section
+
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
 SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
 
@@ -69,6 +71,11 @@ assert mx.metal.is_available()
 print("MLX Metal and TorchCodec FFmpeg loading are available")
 PY
 ```
+
+Note for macOS Apple Silicon users: If you have already run the [Installation](../get_started/installation.md), you can skip this entire section. The installer automatically creates the virtual environment, installs the pinned SGLang tag with all_mps dependencies (including MLX), installs SGLang-Omni, configures Homebrew's ffmpeg@7 and DYLD_LIBRARY_PATH, and verifies Metal and FFmpeg loading. The instructions below are only for users who prefer a fully manual setup.
+
+
+## Server Configuration(MLX)
 
 Use an MLX-converted Qwen3-ASR checkpoint and opt into the MLX runner:
 
