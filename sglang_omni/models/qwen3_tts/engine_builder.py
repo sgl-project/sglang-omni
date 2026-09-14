@@ -156,15 +156,18 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
                 checkpoint_dir
             ),
         )
+        disable_cuda_graph = bool(server_args.disable_cuda_graph)
         request_builders.set_qwen3_tts_preprocessing_context(
             model=model,
             wrapper=self.wrapper,
             device=torch.device(device),
             reference_encoder_graph_bucket_frames=(
-                self.reference_encoder_cuda_graph_bucket_frames
+                ()
+                if disable_cuda_graph
+                else self.reference_encoder_cuda_graph_bucket_frames
             ),
         )
-        if bool(server_args.disable_cuda_graph):
+        if disable_cuda_graph:
             return
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.
