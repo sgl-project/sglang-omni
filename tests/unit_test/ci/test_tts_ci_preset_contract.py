@@ -57,3 +57,33 @@ def test_the_workflow_rotation_covers_every_preset() -> None:
         f"rotation only {sorted(rotation - set(TTS_CI_PRESETS))}, "
         f"registry only {sorted(set(TTS_CI_PRESETS) - rotation)}"
     )
+
+
+@pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))
+def test_the_router_profile_matches_the_preset_request_shape(name: str) -> None:
+    """A preset's requests have to match a profile the CI router advertises."""
+    from tests.test_model.rust_router_config import (
+        CiRouterTopology,
+        render_router_config,
+    )
+
+    model = TTS_CI_PRESETS[name].model
+    config = render_router_config(
+        topology=CiRouterTopology.TTS,
+        router_port=1,
+        worker_urls=["http://127.0.0.1:2"],
+        model_name=model.model_path,
+        named_voice=not model.voice_clone,
+    )
+
+    # note (luojiaxuan): the benchmark sends the text plus a voice name for a
+    # named-voice preset and a reference clip for a cloning one; the router
+    # answers 422 for a request no profile row covers.
+    if model.voice_clone:
+        assert 'tasks = ["voice_clone"]' in config
+        assert 'reference_forms = ["direct", "list"]' in config
+        assert 'voice_name_policy = "uploaded"' in config
+    else:
+        assert 'tasks = ["text_to_speech"]' in config
+        assert 'reference_forms = ["none"]' in config
+        assert 'voice_name_policy = "preset"' in config

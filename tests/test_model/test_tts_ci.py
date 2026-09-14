@@ -730,6 +730,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         num_gpus_per_worker=_PRESET.num_gpus_per_worker,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
+        named_voice=not _PRESET.voice_clone,
     ) as router:
         yield router
 
