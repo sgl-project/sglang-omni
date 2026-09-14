@@ -71,21 +71,16 @@ sgl-omni serve \
 
 ### Prefill Coalescing
 
-ARK-ASR holds newly built requests briefly by default so the scheduler can
-admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
+ARK-ASR uses a 16-request target and a 32 ms deadline. While request builds,
+deferred admissions, or backlogged builds remain, a partial prefill batch may
+wait for more work. After that work drains, an idle decoder or a wave containing
+only cache misses is admitted immediately. During active decode, a wave with at
+least one validated embedding-cache hit may continue waiting for the target or
+deadline.
 
-```bash
-sgl-omni serve \
-  --model-path AutoArk-AI/ARK-ASR-3B \
-  --prefill-coalesce-requests 16 \
-  --prefill-coalesce-wait-ms 32 \
-  --port 8000
-```
-
-Admission is released after either the request threshold or wait deadline is
-reached; it can release earlier when pending request-build work drains. Set
-`--prefill-coalesce-requests 0` to disable coalescing. Tune these values for the
-target request distribution and latency requirements.
+Set `prefill_coalesce_requests: 0` to disable coalescing. Set
+`prefill_coalesce_after_builds_during_decode: false` under `stages.asr.factory`
+to also release cache-hit waves as soon as build work drains.
 
 ## Transcribe Audio
 
@@ -217,6 +212,9 @@ model config including `merge_factor`, mel front-end fields, dtype, attention
 backend). Changing any of those re-keys the cache rather than serving a stale
 embedding. Concurrent requests for identical audio are deduplicated
 single-flight, so the clip is encoded once.
+
+Validated cache hits skip mel feature extraction and audio encoding. Audio
+loading, resampling, and content fingerprinting still run before the lookup.
 
 Request building submits encoder work without waiting for the GPU. The
 scheduler holds the built LM request outside its waiting queue until that

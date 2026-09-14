@@ -71,6 +71,7 @@ def test_arkasr_config_registered():
     assert config.stages[0].factory.prefill_coalesce_wait_ms == 32
     assert config.stages[0].factory.prefill_coalesce_when_idle is True
     assert config.stages[0].factory.prefill_coalesce_requires_pending_builds is True
+    assert config.stages[0].factory.prefill_coalesce_after_builds_during_decode is True
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("ArkasrForConditionalGeneration")
         is ArkasrPipelineConfig
@@ -92,6 +93,10 @@ def test_arkasr_stage_defaults():
     assert signature.parameters["prefill_coalesce_when_idle"].default is True
     assert (
         signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
+    )
+    assert (
+        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
+        is True
     )
     assert signature.parameters["enable_pre_lm_encoder"].default is True
     assert signature.parameters["pre_lm_max_batch_size"].default == 8
@@ -393,6 +398,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
         async_decode_min_batch_size=4,
         prefill_coalesce_requests=8,
         prefill_coalesce_wait_ms=24.0,
+        prefill_coalesce_after_builds_during_decode=False,
         stream_emit_interval_s=0.125,
     )
 
@@ -407,6 +413,7 @@ def test_arkasr_factory_triggers_deferred_cuda_graph_capture(
     assert scheduler.prefill_coalesce_wait_ms == 24.0
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
+    assert scheduler.prefill_coalesce_after_builds_during_decode is False
     assert stub.stream_builder_calls == [
         {
             "tokenizer": stub.adapter_kwargs["tokenizer"],
