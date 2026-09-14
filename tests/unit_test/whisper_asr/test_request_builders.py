@@ -319,6 +319,20 @@ def test_request_builder_uses_generated_timestamps_for_segment_formats(
     assert custom_params["max_initial_timestamp_index"] == 50
 
 
+def test_request_builder_forwards_repetition_penalty(monkeypatch) -> None:
+    data = _build(monkeypatch, {"repetition_penalty": 1.3})
+
+    assert data.req.sampling_params.repetition_penalty == 1.3
+    assert data.repetition_penalty == 1.3
+
+
+def test_request_builder_defaults_repetition_penalty_off(monkeypatch) -> None:
+    data = _build(monkeypatch)
+
+    assert data.req.sampling_params.repetition_penalty == 1.0
+    assert data.repetition_penalty == 1.0
+
+
 def test_request_builder_keeps_timestamp_off_prefix_by_default(monkeypatch) -> None:
     data = _build(monkeypatch)
 
