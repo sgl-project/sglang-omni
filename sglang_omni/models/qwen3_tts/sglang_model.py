@@ -1316,7 +1316,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         return captured
 
-    @torch.no_grad()
+    # Keep capture in the same inference mode as replay. MUSA graph capture
+    # rejects inplace updates to inference tensors created by the warmup.
+    @torch.inference_mode()
     def _capture_predictor_graph(
         self,
         bucket_size: int,

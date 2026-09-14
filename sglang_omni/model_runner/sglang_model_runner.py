@@ -341,6 +341,21 @@ class SGLModelRunner(ModelRunner):
             )
         return kwargs
 
+    def forward(self, *args, **kwargs):
+        """Keep MUSA graph-buffer writes in the same mode as graph capture."""
+        import torch
+
+        from sglang_omni.platforms import current_platform
+
+        is_musa = (
+            getattr(current_platform, "device_type", None) == "musa"
+            or getattr(self.device, "type", None) == "musa"
+        )
+        if is_musa:
+            with torch.inference_mode():
+                return super().forward(*args, **kwargs)
+        return super().forward(*args, **kwargs)
+
     def _resolve_draft_load_format(self) -> str | None:
         """A weight-share follower builds its module tree with dummy weights.
 
@@ -469,9 +484,19 @@ class SGLModelRunner(ModelRunner):
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         _install_prefill_runner_dispatch()
 
+        import torch
+
         from sglang_omni.platforms import current_platform
 
-        with contextlib.ExitStack() as pins:
+        # MUSA capture_begin rejects inplace updates to inference tensors when
+        # the caller enters graph capture under no_grad. Keep CUDA unchanged;
+        # the MUSA bridge requires capture and warmup to share inference mode.
+        is_musa = (
+            getattr(current_platform, "device_type", None) == "musa"
+            or getattr(self.device, "type", None) == "musa"
+        )
+        capture_mode = torch.inference_mode() if is_musa else contextlib.nullcontext()
+        with capture_mode, contextlib.ExitStack() as pins:
             if current_platform.is_xpu():
                 pins.enter_context(current_platform.graph_capture_attention())
             result = super().init_cuda_graphs(capture_decode_cuda_graph)
