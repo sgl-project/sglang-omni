@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,18 @@ def _plan_only_runner(max_batch=8, max_tokens_per_clip=780):
     r._max_windows_for = lambda b: max_batch + b // 104 + 1
     raw = build_buckets(max_batch, max_tokens_per_clip)
     r._buckets = raw[:-1] + (raw[-1] + r._max_windows_for(raw[-1]),)
+    return r
+
+
+def _npu_runner(*, max_graphs=32):
+    r = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    r._is_npu = True
+    r._max_seqlen = 8
+    r._buckets = (8,)
+    r._max_graphs = max_graphs
+    r._failed = set()
+    r._graphs = {}
+    r._capture_failed = False
     return r
 
 
@@ -108,11 +121,8 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
 
 
 def test_npu_capture_all_defers_until_real_window_signature():
-    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
-    runner._is_npu = True
+    runner = _npu_runner()
     runner._buckets = (128, 256)
-    runner._graphs = {}
-    runner._failed = set()
 
     runner.capture_all()
 
@@ -135,12 +145,7 @@ def test_npu_capture_materializes_sequence_boundaries_on_host():
 def test_npu_replay_uses_the_exact_window_layout_as_graph_key():
     captured = []
     replayed = []
-    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
-    runner._is_npu = True
-    runner._max_seqlen = 8
-    runner._buckets = (8,)
-    runner._failed = set()
-    runner._graphs = {}
+    runner = _npu_runner()
     runner._plan = lambda total, windows: (8, [8 - total])
 
     def capture(bucket_size, *, window_lens=None):
@@ -165,6 +170,110 @@ def test_npu_replay_uses_the_exact_window_layout_as_graph_key():
     assert captured == [(8, (4, 4)), (8, (2, 2, 4))]
     assert len(replayed) == 3
     assert runner._failed == set()
+
+
+def test_npu_graph_capacity_returns_none_for_new_layouts():
+    captured = []
+    runner = _npu_runner(max_graphs=1)
+    runner._plan = lambda total, windows: (8, [8 - total])
+
+    def capture(bucket_size, *, window_lens=None):
+        captured.append((bucket_size, window_lens))
+        return SimpleNamespace(
+            hidden_states=torch.zeros(bucket_size, 2),
+            cu_seqlens=torch.tensor([0, 8], dtype=torch.int32),
+            attention_metadata=None,
+            graph=SimpleNamespace(replay=lambda: None),
+            output=torch.zeros(bucket_size, 2),
+        )
+
+    runner._capture = capture
+    hidden_states = torch.ones(4, 2)
+
+    assert runner.run(hidden_states, [4]) is not None
+    assert runner.run(hidden_states, [4]) is not None
+    assert runner.run(hidden_states, [2, 2]) is None
+    assert captured == [(8, (4, 4))]
+    assert len(runner._graphs) == 1
+
+
+def test_npu_capture_failure_is_terminal():
+    runner = _npu_runner()
+    runner._plan = lambda total, windows: (8, [8 - total])
+
+    def capture(bucket_size, *, window_lens=None):
+        raise RuntimeError("simulated capture failure")
+
+    runner._capture = capture
+    hidden_states = torch.ones(4, 2)
+
+    with pytest.raises(RuntimeError, match="restart the encoder process"):
+        runner.run(hidden_states, [4])
+    assert runner._capture_failed is True
+    with pytest.raises(RuntimeError, match="previously failed"):
+        runner.run(hidden_states, [4])
+
+
+def test_npu_captures_share_one_graph_pool():
+    pools = []
+
+    class Backend:
+        def capture(self, *, pool=None, thread_local_errors=False):
+            pools.append(pool)
+            return nullcontext(SimpleNamespace())
+
+    class DeviceModule:
+        def __init__(self):
+            self.pool = object()
+            self.graph_pool_handle_calls = 0
+
+        def graph_pool_handle(self):
+            self.graph_pool_handle_calls += 1
+            return self.pool
+
+        def Stream(self, device):
+            return SimpleNamespace(wait_stream=lambda other: None)
+
+        def current_stream(self, device):
+            return SimpleNamespace(wait_stream=lambda other: None)
+
+        def stream(self, side):
+            return nullcontext()
+
+        def synchronize(self, device):
+            pass
+
+    def identity(hidden_states):
+        return hidden_states, None
+
+    class IdentityNorm:
+        normalized_shape = (2,)
+
+        def __call__(self, hidden_states):
+            return hidden_states
+
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._tower = SimpleNamespace(
+        layers=[],
+        ln_post=IdentityNorm(),
+        proj1=identity,
+        act=lambda hidden_states: hidden_states,
+        proj2=identity,
+    )
+    runner._device = torch.device("cpu")
+    runner._dtype = torch.float32
+    runner._device_module = DeviceModule()
+    runner._is_npu = True
+    runner._max_seqlen = 8
+    runner._graph_backend = Backend()
+    runner._graph_pool = None
+    runner._capture_failed = False
+
+    runner._capture(8, window_lens=(4, 4))
+    runner._capture(8, window_lens=(2, 2, 4))
+
+    assert runner._device_module.graph_pool_handle_calls == 1
+    assert pools == [runner._device_module.pool, runner._device_module.pool]
 
 
 @pytest.fixture

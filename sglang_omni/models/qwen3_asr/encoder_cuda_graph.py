@@ -7,7 +7,8 @@ we capture is the 24-layer transformer stack and the output projection that
 follow. By then the batch is packed as [total_tokens, hidden]. Most backends
 can key those graphs by token bucket alone; Ascend attention binds the
 host-side window boundaries into the graph, so NPU graphs also key on the
-exact effective window layout.
+exact effective window layout. NPU retains at most ``max_graphs`` exact
+layouts; additional layouts stay on the eager path.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _GraphKey = int | tuple[int, tuple[int, ...]]
+_DEFAULT_MAX_GRAPHS = 32
 
 
 def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
@@ -85,7 +87,10 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         buckets: tuple[int, ...],
         max_batch_size: int,
         graph_backend: DeviceGraphBackend,
+        max_graphs: int = _DEFAULT_MAX_GRAPHS,
     ) -> None:
+        if max_graphs < 1:
+            raise ValueError(f"max_graphs must be positive, got {max_graphs}")
         self._tower = audio_tower
         self._graph_backend = graph_backend
         param = next(audio_tower.parameters())
@@ -104,6 +109,9 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self._buckets = buckets[:-1] + (top + self._max_windows_for(top),)
         self._graphs: dict[_GraphKey, _CapturedGraph] = {}
         self._failed: set[_GraphKey] = set()
+        self._max_graphs = max_graphs
+        self._graph_pool: Any | None = None
+        self._capture_failed = False
 
         # Ascend attention consumes the boundaries as host-side operator
         # parameters, so each exact effective window layout needs its own graph.
@@ -119,9 +127,16 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         for bucket_size in self._buckets:
             if bucket_size in self._graphs or bucket_size in self._failed:
                 continue
+            if len(self._graphs) >= self._max_graphs:
+                logger.warning(
+                    "[qwen3-asr] encoder graph capacity reached (%d); "
+                    "remaining buckets stay eager",
+                    self._max_graphs,
+                )
+                break
             try:
                 self._graphs[bucket_size] = self._capture(bucket_size)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - backend capture failures
                 logger.warning(
                     "[qwen3-asr] encoder graph capture failed for bucket=%d: %s; "
                     "bucket stays eager",
@@ -167,6 +182,13 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         for size in sizes:
             bounds.append(bounds[-1] + size)
         return torch.tensor(bounds, dtype=torch.int32, device=device)
+
+    def _capture_pool(self) -> Any | None:
+        if not self._is_npu:
+            return None
+        if self._graph_pool is None:
+            self._graph_pool = self._device_module.graph_pool_handle()
+        return self._graph_pool
 
     def _capture(
         self,
@@ -220,10 +242,11 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         device_module.current_stream(device).wait_stream(side)
         device_module.synchronize(device)
 
-        # Each capture owns a separate pool. Sharing one is only safe for
-        # graphs replayed in capture order, and requests can select any bucket
-        # or layout, so replay order is not guaranteed.
-        with self._graph_backend.capture(thread_local_errors=True) as graph:
+        # NPU captures share one bounded pool; CUDA/ROCm keep their existing
+        # private-pool behavior.
+        with self._graph_backend.capture(
+            pool=self._capture_pool(), thread_local_errors=True
+        ) as graph:
             static_out = run_once()
         logger.info(
             "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",
@@ -243,6 +266,11 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self, hidden_states: torch.Tensor, window_lens: list[int]
     ) -> torch.Tensor | None:
         """Replay the recorded graph for a batch of hidden states."""
+        if self._is_npu and self._capture_failed:
+            raise RuntimeError(
+                "NPU encoder graph capture previously failed; restart the "
+                "encoder process with encoder graphs disabled before retrying"
+            )
         total = int(hidden_states.shape[0])
         if not window_lens or sum(window_lens) != total:
             return None
@@ -257,15 +285,32 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         graph_key: _GraphKey = (
             (bucket_size, effective_window_lens) if self._is_npu else bucket_size
         )
-        if graph_key in self._failed:
+        if not self._is_npu and graph_key in self._failed:
             return None
 
         entry = self._graphs.get(graph_key)
         if entry is None:
-            entry = self._capture(
-                bucket_size,
-                window_lens=(effective_window_lens if self._is_npu else None),
-            )
+            if len(self._graphs) >= self._max_graphs:
+                logger.warning(
+                    "[qwen3-asr] encoder graph capacity reached (%d); "
+                    "bucket=%d window layout stays eager",
+                    self._max_graphs,
+                    bucket_size,
+                )
+                return None
+            try:
+                entry = self._capture(
+                    bucket_size,
+                    window_lens=(effective_window_lens if self._is_npu else None),
+                )
+            except Exception as exc:
+                if not self._is_npu:
+                    raise
+                self._capture_failed = True
+                raise RuntimeError(
+                    "NPU encoder graph capture failed; restart the encoder "
+                    "process with encoder graphs disabled before retrying"
+                ) from exc
             self._graphs[graph_key] = entry
 
         entry.hidden_states[:total].copy_(hidden_states)
