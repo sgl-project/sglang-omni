@@ -282,6 +282,26 @@ sgl-omni serve \
 
 Do not enable it together with TensorRT.
 
+### Fused Q/K RoPE for the DiT backbone
+
+On NVIDIA CUDA, the vocoder combines the Q and K rotary operations in one Triton
+launch and shares sine/cosine tables across the blocks of each DiT forward. The
+optimization is enabled by default after H100 serving and WER qualification;
+other platforms keep the native path. Disable it with
+`--vocoder.factory.enable_dit_fused_rope false`. Use the default `bfloat16`
+vocoder autocast or `float32`; `float16` weight loading is unsupported.
+
+CosyVoice3 has no Q/K normalization. Its native attention applies partial RoPE
+to the first 64 of 1024 projected channels **before** splitting heads. The fused
+path preserves that behavior, output dtype, and streaming/padding masks.
+
+It composes with `enable_dit_torch_compile` and the default whole-solver Flow
+CUDA Graphs; installation occurs before compilation and graph capture. It cannot
+be combined with `enable_flow_estimator_trt`. For an A/B, hold compile, graph,
+dtype, batching, and streaming settings fixed and toggle only
+`enable_dit_fused_rope`. Tables are local to a forward, with no persistent
+per-length cache or cross-request state.
+
 ### TensorRT for the DiT backbone
 
 TensorRT accelerates the DiT by building a cached `.plan` engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. TensorRT and torch.compile are mutually exclusive.
