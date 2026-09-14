@@ -13,6 +13,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
 
@@ -84,9 +85,15 @@ def reject_conflicting_dit_accelerators(
     *,
     enable_dit_torch_compile: bool,
     enable_flow_estimator_trt: bool,
+    enable_dit_fused_rope: bool = False,
 ) -> None:
     if enable_flow_estimator_trt and enable_dit_torch_compile:
         raise ValueError(_DIT_ACCELERATOR_CONFLICT)
+    if enable_flow_estimator_trt and enable_dit_fused_rope:
+        raise ValueError(
+            "enable_flow_estimator_trt and enable_dit_fused_rope both "
+            "target flow.decoder.estimator; enable only one"
+        )
 
 
 class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
@@ -173,6 +180,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 # note (guozhihao-224, chenyang):
                 # Follow SGLang, CUDA Graph is on by default. torch.compile and TensorRT stay opt-in.
                 enable_flow_estimator_trt=False,
+                enable_dit_fused_rope=current_platform.is_cuda(),
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
@@ -192,6 +200,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         reject_conflicting_dit_accelerators(
             enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
             enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
+            enable_dit_fused_rope=bool(extras.get("enable_dit_fused_rope")),
         )
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
