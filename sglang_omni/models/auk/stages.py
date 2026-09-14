@@ -210,7 +210,50 @@ def create_conditioning_executor(
     )
 
 
-def _sample_batch(payloads, flow, device, dtype, max_frames, sampling):
+def _sample_item_shape(item: AuKSampleItem) -> tuple[int, int, int]:
+    reference_frames = 0 if item.ref_latent is None else item.ref_latent.shape[0]
+    return item.target_frames, reference_frames, item.conditioning.shape[0]
+
+
+def _partition_sample_items_by_target(items, min_batch_work_savings):
+    _validate_min_batch_work_savings(min_batch_work_savings)
+    indexed = list(enumerate(items))
+    if min_batch_work_savings is None or len(indexed) < 2:
+        return [indexed]
+
+    ranked = sorted(indexed, key=lambda pair: pair[1].target_frames)
+
+    def padded_work(group):
+        shapes = [_sample_item_shape(item) for _, item in group]
+        return len(group) * sum(
+            max(shape[axis] for shape in shapes) for axis in range(3)
+        )
+
+    unsplit_work = padded_work(ranked)
+    split_work, split_at = min(
+        (padded_work(ranked[:index]) + padded_work(ranked[index:]), index)
+        for index in range(1, len(ranked))
+    )
+    savings = (unsplit_work - split_work) / unsplit_work
+    if savings < min_batch_work_savings:
+        return [indexed]
+    return [ranked[:split_at], ranked[split_at:]]
+
+
+def _validate_min_batch_work_savings(min_batch_work_savings):
+    if min_batch_work_savings is not None and not 0 <= min_batch_work_savings <= 1:
+        raise ValueError("min_batch_work_savings must be between 0 and 1")
+
+
+def _sample_batch(
+    payloads,
+    flow,
+    device,
+    dtype,
+    max_frames,
+    sampling,
+    min_batch_work_savings=None,
+):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
     items = [
@@ -224,9 +267,24 @@ def _sample_batch(payloads, flow, device, dtype, max_frames, sampling):
         )
         for state in states
     ]
-    logger.info("AuK DiT: sampling batch of %d requests", len(items))
+    groups = _partition_sample_items_by_target(items, min_batch_work_savings)
     with _autocast(device, dtype):
-        latents = flow.sample_batch(items, **sampling)
+        if len(groups) == 1:
+            logger.info("AuK DiT: sampling batch of %d requests", len(items))
+            latents = flow.sample_batch(items, **sampling)
+        else:
+            logger.info(
+                "AuK DiT: sampling %d requests in groups %s",
+                len(items),
+                [len(group) for group in groups],
+            )
+            latents = [None] * len(items)
+            for group in groups:
+                group_latents = flow.sample_batch(
+                    [item for _, item in group], **sampling
+                )
+                for (index, _), latent in zip(group, group_latents):
+                    latents[index] = latent
     for state, latent in zip(states, latents):
         if not torch.isfinite(latent).all():
             raise RuntimeError("AuK generated latent contains NaN/Inf")
@@ -250,6 +308,7 @@ def create_auk_engine_executor(
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
     weight_dtype: str = "float32",
+    min_batch_work_savings: float | None = None,
 ) -> SimpleScheduler:
     """Build the DiT sampling stage.
 
@@ -257,6 +316,7 @@ def create_auk_engine_executor(
     upstream-exact recipe; ``"bfloat16"`` stores the backbone in bf16 and skips
     autocast (see docs/cookbook/auk.md, Sampling).
     """
+    _validate_min_batch_work_savings(min_batch_work_savings)
     # Named dtypes are checked before resolve_checkpoint, which downloads.
     compute_dtype = _resolve_dtype(field="dtype", name=dtype)
     backbone_dtype = _resolve_dtype(field="weight_dtype", name=weight_dtype)
@@ -281,6 +341,7 @@ def create_auk_engine_executor(
             autocast_dtype,
             config.seconds_to_frames(max_seconds),
             sampling,
+            min_batch_work_savings,
         ),
         device,
         max_batch_size,
