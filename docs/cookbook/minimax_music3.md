@@ -31,6 +31,30 @@ source .venv/bin/activate
 uv pip install -v -e .   # drop -e for a non-editable install
 ```
 
+### AMD ROCm
+
+Use the SGLang 0.5.16 ROCm image for your accelerator. The `mi30x` image covers MI300X; use the `mi35x` tag for MI355X.
+
+```bash
+# Run from the sglang-omni repository root. Change mi30x to mi35x on MI355X.
+docker run --rm -it \
+  --network host --ipc host --security-opt seccomp=unconfined \
+  --ulimit memlock=-1:-1 \
+  --device /dev/kfd --device /dev/dri \
+  --group-add video --group-add render \
+  -v "$PWD":/workspace/sglang-omni \
+  -v "$HOME/.cache/huggingface":/root/.cache/huggingface \
+  lmsysorg/sglang:v0.5.16-rocm720-mi30x bash
+```
+
+The ROCm image already contains the pinned SGLang and PyTorch stack. Install the small Omni-only dependency that is absent from the image, then install this checkout without replacing the ROCm packages:
+
+```bash
+cd /workspace/sglang-omni
+python3 -m pip install --no-deps 'msgpack>=1.0.0'
+python3 -m pip install --no-deps -e .
+```
+
 **Single GPU** (colocate both stages):
 
 ```bash
@@ -43,7 +67,9 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --po
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000
 ```
 
-Default optimizations that are on without further flags: backbone decode CUDA graph, RVQ depth CUDA graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.
+On NVIDIA CUDA, the default optimizations are backbone decode CUDA graph, RVQ depth CUDA graph, compiled DIT blocks, compiled DAV decoder, and batched seeded sampling.
+
+On AMD ROCm, the same serve commands work without extra stage overrides. SGLang-Omni automatically disables the backbone and RVQ CUDA graphs; the AR stage uses AITER, while the compiled DIT/DAV acoustic stage uses Torch SDPA. This path is validated on MI300X and MI355X with ROCm 7.2.
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
