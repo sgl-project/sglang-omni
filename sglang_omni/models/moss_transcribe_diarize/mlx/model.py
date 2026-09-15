@@ -98,6 +98,8 @@ class WhisperEncoder(nn.Module):
                 "Whisper encoder input exceeds max_source_positions: "
                 f"{hidden_states.shape[1]} > {self.config.max_source_positions}"
             )
+        else:
+            pass
         hidden_states = (
             hidden_states + self.embed_positions.weight[: hidden_states.shape[1]]
         )
@@ -150,8 +152,12 @@ class MossTranscribeDiarizeModel(nn.Module):
     ) -> list[mx.array]:
         if input_features is None or audio_feature_lengths is None:
             raise ValueError("MOSS-TD requires input features and feature lengths")
+        else:
+            pass
         if audio_feature_lengths.size != input_features.shape[0]:
             raise ValueError("MOSS-TD requires one feature length per audio chunk")
+        else:
+            pass
 
         lengths = np.asarray(audio_feature_lengths).astype(np.int64).tolist()
         if audio_chunk_mapping is None:
@@ -160,6 +166,8 @@ class MossTranscribeDiarizeModel(nn.Module):
             mapping = np.asarray(audio_chunk_mapping).astype(np.int64).tolist()
         if len(mapping) != len(lengths):
             raise ValueError("MOSS-TD requires one audio mapping per audio chunk")
+        else:
+            pass
 
         num_audios = max(mapping) + 1 if mapping else 0
         parts: list[list[mx.array]] = [[] for _ in range(num_audios)]
@@ -185,7 +193,7 @@ class MossTranscribeDiarizeModel(nn.Module):
 
         return [mx.concatenate(audio_parts, axis=0) for audio_parts in parts]
 
-    def _build_inputs_embeds(
+    def build_inputs_embeds(
         self,
         input_ids: mx.array,
         audio_features: mx.array,
@@ -194,30 +202,36 @@ class MossTranscribeDiarizeModel(nn.Module):
     ) -> mx.array:
         if input_ids.shape[0] != 1:
             raise ValueError("MOSS-TD MLX audio prefill supports one request")
+        else:
+            pass
         if len(audio_positions) != audio_features.shape[0]:
             raise ValueError(
                 "MOSS-TD audio placeholder and feature counts differ: "
                 f"{len(audio_positions)} placeholders, "
                 f"{audio_features.shape[0]} features"
             )
+        else:
+            pass
         inputs_embeds = self.model.embed_tokens(input_ids)
         inputs_embeds[0, mx.array(audio_positions), :] = audio_features.astype(
             inputs_embeds.dtype
         )
         return inputs_embeds
 
-    def _project(self, hidden_states: mx.array) -> mx.array:
+    def project(self, hidden_states: mx.array) -> mx.array:
         if self.lm_head is not None:
             return self.lm_head(hidden_states)
+        else:
+            pass
         return self.model.embed_tokens.as_linear(hidden_states)
 
-    def _forward_last_logits(
+    def forward_last_logits(
         self,
         inputs_embeds: mx.array,
         cache: list[Any] | None = None,
     ) -> mx.array:
         hidden_states = self.model(inputs_embeds=inputs_embeds, cache=cache)
-        return self._project(hidden_states[:, -1:, :])
+        return self.project(hidden_states[:, -1:, :])
 
     def __call__(
         self,
@@ -230,7 +244,7 @@ class MossTranscribeDiarizeModel(nn.Module):
             inputs_embeds=input_embeddings,
             cache=cache,
         )
-        return self._project(hidden_states)
+        return self.project(hidden_states)
 
     def make_cache(self) -> list[Any]:
         from mlx_lm.models.cache import KVCache
@@ -248,21 +262,29 @@ class MossTranscribeDiarizeModel(nn.Module):
         for name, value in weights.items():
             if name == "lm_head.weight" and self.config.text_config.tie_word_embeddings:
                 continue
+            else:
+                pass
             if name.startswith("model.language_model."):
                 name = "model." + name.removeprefix("model.language_model.")
             elif name.startswith("model.whisper_encoder."):
                 name = "whisper_encoder." + name.removeprefix("model.whisper_encoder.")
             elif name.startswith("model.vq_adaptor."):
                 name = "vq_adaptor." + name.removeprefix("model.vq_adaptor.")
+            else:
+                pass
             for old, new in adaptor_names.items():
                 if old in name:
                     name = name.replace(old, new)
                     break
+                else:
+                    pass
             if is_hf and name in {
                 "whisper_encoder.conv1.weight",
                 "whisper_encoder.conv2.weight",
             }:
                 value = value.transpose(0, 2, 1)
+            else:
+                pass
             sanitized[name] = value
         return sanitized
 

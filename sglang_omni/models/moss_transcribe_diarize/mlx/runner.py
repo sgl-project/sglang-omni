@@ -18,7 +18,7 @@ class MossTranscribeDiarizeMlxModelRunner(AudioMlxModelRunner):
     model_name = "MOSS-Transcribe-Diarize"
     prefill_chunk_size = 2048
 
-    def _load_model(self) -> None:
+    def _load_model(self) -> None:  # noqa: leading-underscore  # SGLang override
         from mlx_lm.utils import load_model
         from sglang.srt.hardware_backend.mlx.remote_code_gate import (
             ensure_remote_code_allowed,
@@ -47,27 +47,18 @@ class MossTranscribeDiarizeMlxModelRunner(AudioMlxModelRunner):
             time.perf_counter() - started,
         )
 
-    @staticmethod
-    def _item_data(item: Any, name: str) -> Any:
-        value = getattr(item, name, None)
-        if value is not None:
-            return value
-        return getattr(item, "model_specific_data", {}).get(name)
-
-    def _audio_prefill_inputs(
+    def audio_prefill_inputs(
         self, req: Any, token_ids: list[int]
     ) -> tuple[mx.array, mx.array]:
-        item = self._audio_item(req)
+        item = self.audio_item(req)
         if item.feature is None:
             raise ValueError(f"{self.model_name} MLX prefill requires audio features")
-        feature_lengths = self._item_data(item, "audio_feature_lengths")
-        chunk_mapping = self._item_data(item, "audio_chunk_mapping")
-        if feature_lengths is None or chunk_mapping is None:
-            raise ValueError(
-                f"{self.model_name} MLX prefill requires audio length metadata"
-            )
+        else:
+            pass
+        feature_lengths = item.audio_feature_lengths
+        chunk_mapping = item.audio_chunk_mapping
 
-        normalized_ids = self._normalize_audio_token_ids(req, token_ids)
+        normalized_ids = self.normalize_audio_token_ids(req, token_ids)
         audio_token_id = int(req.multimodal_inputs.audio_token_id)
         audio_positions = [
             index
@@ -76,18 +67,22 @@ class MossTranscribeDiarizeMlxModelRunner(AudioMlxModelRunner):
         ]
         if not audio_positions:
             raise ValueError(f"{self.model_name} MLX prefill has no audio placeholders")
+        else:
+            pass
 
         audio_batches = self.model.get_audio_features(
-            mx.array(self._to_numpy(item.feature)),
-            mx.array(self._to_numpy(feature_lengths)),
-            mx.array(self._to_numpy(chunk_mapping)),
+            mx.array(self.to_numpy(item.feature)),
+            mx.array(self.to_numpy(feature_lengths)),
+            mx.array(self.to_numpy(chunk_mapping)),
         )
         if len(audio_batches) != 1:
             raise ValueError(
                 f"{self.model_name} MLX prefill requires exactly one audio"
             )
+        else:
+            pass
         input_ids = mx.array([normalized_ids], dtype=mx.int32)
-        input_embeddings = self.model._build_inputs_embeds(
+        input_embeddings = self.model.build_inputs_embeds(
             input_ids,
             audio_batches[0],
             audio_positions=audio_positions,

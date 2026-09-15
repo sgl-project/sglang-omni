@@ -205,7 +205,7 @@ def test_moss_transcribe_diarize_torch_mps_uses_bounded_apple_profile(
 
     defaults = builder.generation_defaults(dtype="bfloat16")
 
-    assert builder._uses_torch_mps() is True
+    assert builder.uses_torch_mps() is True
     assert defaults["context_length"] == 32768
     assert defaults["max_total_tokens"] == 32768
     assert defaults["max_prefill_tokens"] == 32768

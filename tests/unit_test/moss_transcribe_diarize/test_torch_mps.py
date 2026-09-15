@@ -49,18 +49,18 @@ def test_torch_mps_scatter_and_cache_match_full_forward(device: str) -> None:
 
     class FakeMossModel:
         @staticmethod
-        def _get_audio_feature_uncached(items, forward_batch):
+        def get_audio_feature_uncached(items, forward_batch):
             assert len(items) == 1
             assert forward_batch is forward_marker
             return features
 
     runner = object.__new__(MossTranscribeDiarizeTorchMpsModelRunner)
     runner.device = torch.device(device)
-    runner._past_key_values = {}
+    runner.past_key_values = {}
     runner.prefill_chunk_size = 3
     runner.model = FakeMossModel()
     runner.model.language_model = language_model
-    runner._next_token_result = lambda tokens: tokens
+    runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(
         feature=torch.zeros(1, 1),
         audio_feature_lengths=torch.tensor([4]),
@@ -97,7 +97,7 @@ def test_torch_mps_scatter_and_cache_match_full_forward(device: str) -> None:
     torch.testing.assert_close(logits[-1], expected, atol=1e-4, rtol=1e-4)
     assert torch.equal(second, expected.argmax(dim=-1))
     runner.on_request_finished("one", None)
-    assert not runner._past_key_values
+    assert not runner.past_key_values
 
 
 def test_torch_mps_microbatches_encoder_windows() -> None:
@@ -105,8 +105,7 @@ def test_torch_mps_microbatches_encoder_windows() -> None:
 
     class FakeMossModel:
         @staticmethod
-        def _get_audio_feature_uncached(items, forward_batch):
-            del forward_batch
+        def get_audio_feature_uncached(items, _forward_batch):
             item = items[0]
             batch_sizes.append(item.feature.shape[0])
             assert item.audio_chunk_mapping.tolist() == [0] * len(item.feature)
@@ -122,7 +121,7 @@ def test_torch_mps_microbatches_encoder_windows() -> None:
         audio_feature_lengths=torch.tensor([1, 2, 1, 2, 3]),
     )
 
-    output = runner._get_audio_feature(item, None)
+    output = runner.get_audio_feature(item, None)
 
     assert batch_sizes == [2, 2, 1]
     torch.testing.assert_close(

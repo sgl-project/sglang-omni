@@ -113,17 +113,15 @@ def test_mlx_prefill_scatters_audio_around_time_marker_tokens(mlx_device) -> Non
     runner.model = MossTranscribeDiarizeModel(_tiny_config())
     item = SimpleNamespace(
         feature=torch.zeros((1, 4, 16)),
-        model_specific_data={
-            "audio_feature_lengths": torch.tensor([4]),
-            "audio_chunk_mapping": torch.tensor([0]),
-        },
+        audio_feature_lengths=torch.tensor([4]),
+        audio_chunk_mapping=torch.tensor([0]),
         pad_value=999,
     )
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(audio_token_id=10, mm_items=[item])
     )
 
-    input_ids, embeddings = runner._audio_prefill_inputs(
+    input_ids, embeddings = runner.audio_prefill_inputs(
         req, [1, 999, 999, 7, 999, 999, 2]
     )
 
@@ -160,11 +158,11 @@ def test_mlx_prefill_scatters_audio_around_time_marker_tokens(mlx_device) -> Non
         req=req,
     )
     token = pending.lazy_token[:, None]
-    expected_first = runner.model._forward_last_logits(embeddings)
+    expected_first = runner.model.forward_last_logits(embeddings)
     assert token.item() == mx.argmax(expected_first[:, -1], axis=-1).item()
     decoded = runner.model(token, cache=cache)
     full = mx.concatenate([embeddings, runner.model.model.embed_tokens(token)], axis=1)
-    expected = runner.model._forward_last_logits(full)
+    expected = runner.model.forward_last_logits(full)
     np.testing.assert_allclose(
         np.array(decoded), np.array(expected), atol=mlx_device, rtol=mlx_device
     )

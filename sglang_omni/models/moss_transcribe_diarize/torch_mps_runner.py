@@ -22,19 +22,22 @@ def load_language_model(checkpoint: Path) -> Qwen3ForCausalLM:
         **json.loads((checkpoint / "config.json").read_text())["text_config"]
     )
     model = Qwen3ForCausalLM(config)
-    weights = {}
+    weights: dict[str, torch.Tensor] = {}
     for weight_file in sorted(checkpoint.glob("*.safetensors")):
         with safe_open(weight_file, framework="pt", device="cpu") as reader:
-            weight_names = reader.keys()
-            for name in weight_names:
+            for name in reader.keys():
                 if name.startswith("model.language_model."):
                     weights[name.replace("model.language_model.", "model.", 1)] = (
                         reader.get_tensor(name)
                     )
                 elif name == "lm_head.weight":
                     weights[name] = reader.get_tensor(name)
+                else:
+                    pass
     if config.tie_word_embeddings and "model.embed_tokens.weight" in weights:
         weights["lm_head.weight"] = weights["model.embed_tokens.weight"]
+    else:
+        pass
     model.load_state_dict(weights, strict=True, assign=True)
     model.tie_weights()
     return model.eval()
@@ -46,6 +49,8 @@ def install_torch_mps_language_model(model: Any, model_path: str) -> None:
     checkpoint = Path(model_path).expanduser()
     if not checkpoint.is_dir():
         checkpoint = Path(snapshot_download(model_path))
+    else:
+        pass
     parameter = next(model.language_model.parameters())
     device, dtype = parameter.device, parameter.dtype
     del parameter
@@ -61,11 +66,10 @@ class MossTranscribeDiarizeTorchMpsModelRunner(AudioTorchMpsModelRunner):
     model_name = "MOSS-Transcribe-Diarize"
     encoder_window_batch_size = 8
     prefill_chunk_size = 4096
+    requires_contiguous_audio_positions = False
 
-    def _validate_audio_positions(self, audio_positions: list[int]) -> None:
-        del audio_positions
-
-    def _get_audio_feature(self, item: Any, forward_batch: Any) -> torch.Tensor:
+    def get_audio_feature(self, item: Any, forward_batch: Any) -> torch.Tensor:
+        """Encode long audio in bounded window batches."""
         feature_lengths = item.audio_feature_lengths
         outputs = []
         for start in range(0, item.feature.shape[0], self.encoder_window_batch_size):
@@ -79,16 +83,17 @@ class MossTranscribeDiarizeTorchMpsModelRunner(AudioTorchMpsModelRunner):
                 ),
             )
             outputs.append(
-                self.model._get_audio_feature_uncached([batch_item], forward_batch)
+                self.model.get_audio_feature_uncached([batch_item], forward_batch)
             )
         return torch.cat(outputs, dim=0)
 
-    def _assign_audio_features(
+    def assign_audio_features(
         self,
         input_embeddings: torch.Tensor,
         audio_features: torch.Tensor,
         audio_positions: list[int],
     ) -> None:
+        """Scatter embeddings around interleaved timestamp tokens."""
         positions = torch.tensor(audio_positions, device=input_embeddings.device)
         input_embeddings[0, positions, :] = audio_features[0]
 
