@@ -4,11 +4,9 @@
 The chunk/conv front end reads each clip's length, so its shapes and control
 flow change from request to request — we leave it on the eager path. What
 we capture is the 24-layer transformer stack and the output projection that
-follow. By then the batch is packed as [total_tokens, hidden]. Most backends
-can key those graphs by token bucket alone; Ascend attention binds the
-host-side window boundaries into the graph, so NPU graphs also key on the
-exact effective window layout. NPU retains at most ``max_graphs`` exact
-layouts; additional layouts stay on the eager path.
+follow. By then the batch is packed as [total_tokens, hidden]. Graphs are keyed
+by token bucket. Ascend captures its host-side window boundaries as updatable
+graph inputs so different layouts in one bucket can replay the same graph.
 """
 
 from __future__ import annotations
@@ -27,9 +25,6 @@ if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 logger = logging.getLogger(__name__)
-
-_GraphKey = int | tuple[int, tuple[int, ...]]
-_DEFAULT_MAX_GRAPHS = 32
 
 
 def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
@@ -87,10 +82,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         buckets: tuple[int, ...],
         max_batch_size: int,
         graph_backend: DeviceGraphBackend,
-        max_graphs: int = _DEFAULT_MAX_GRAPHS,
     ) -> None:
-        if max_graphs < 1:
-            raise ValueError(f"max_graphs must be positive, got {max_graphs}")
         self._tower = audio_tower
         self._graph_backend = graph_backend
         param = next(audio_tower.parameters())
@@ -107,9 +99,8 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         )
         top = buckets[-1]
         self._buckets = buckets[:-1] + (top + self._max_windows_for(top),)
-        self._graphs: dict[_GraphKey, _CapturedGraph] = {}
-        self._failed: set[_GraphKey] = set()
-        self._max_graphs = max_graphs
+        self._graphs: dict[int, _CapturedGraph] = {}
+        self._failed: set[int] = set()
         self._graph_pool: Any | None = None
         self._capture_failed = False
 
@@ -232,10 +223,12 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         device_module.current_stream(device).wait_stream(side)
         device_module.synchronize(device)
 
-        # NPU captures share one bounded pool; CUDA/ROCm keep their existing
-        # private-pool behavior.
+        # NPU captures share one pool; CUDA/ROCm keep their existing private-pool
+        # behavior.
         with self._graph_backend.capture(
-            pool=self._capture_pool(), thread_local_errors=True
+            pool=self._capture_pool(),
+            thread_local_errors=True,
+            allow_host_input_update=self._is_npu,
         ) as graph:
             static_out = run_once()
         logger.info(
@@ -272,24 +265,12 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             return None
         bucket_size, dummy_sizes = plan
         effective_window_lens = tuple(window_lens + dummy_sizes)
-        # Ascend attention consumes the boundaries as host-side operator
-        # parameters, so each exact effective window layout needs its own graph.
-        graph_key: _GraphKey = (
-            (bucket_size, effective_window_lens) if self._is_npu else bucket_size
-        )
+        graph_key = bucket_size
         if not self._is_npu and graph_key in self._failed:
             return None
 
         entry = self._graphs.get(graph_key)
         if entry is None:
-            if self._is_npu and len(self._graphs) >= self._max_graphs:
-                logger.warning(
-                    "[qwen3-asr] encoder graph capacity reached (%d); "
-                    "bucket=%d window layout stays eager",
-                    self._max_graphs,
-                    bucket_size,
-                )
-                return None
             try:
                 entry = self._capture(
                     bucket_size,
@@ -306,14 +287,27 @@ class Qwen3ASREncoderLayerStackGraphRunner:
             self._graphs[graph_key] = entry
 
         entry.hidden_states[:total].copy_(hidden_states)
-        if not self._is_npu:
-            cu = self._make_cu_seqlens(effective_window_lens, device="cpu")
+        cu = self._make_cu_seqlens(effective_window_lens, device="cpu")
+        host_input_updates = None
+        if self._is_npu:
+            cumulative_window_lens = cu[1:].tolist()
+            host_input_updates = [
+                {
+                    "actual_seq_lengths": cumulative_window_lens,
+                    "actual_seq_lengths_kv": cumulative_window_lens,
+                }
+            ]
+        else:
             entry.cu_seqlens.copy_(cu, non_blocking=True)
             if entry.attention_metadata is not None:
                 entry.attention_metadata.seq_lens.copy_(
                     cu[1:] - cu[:-1], non_blocking=True
                 )
-        entry.graph.replay()
+        self._graph_backend.replay(
+            entry.graph,
+            host_input_updates=host_input_updates,
+            device=self._device,
+        )
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]
             out = out.squeeze(0)
