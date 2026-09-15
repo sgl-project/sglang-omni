@@ -13,6 +13,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.packed import PackedLayout
 
 
 def request_generator(
@@ -173,19 +174,21 @@ class AuKFlowMatching(nn.Module):
                 dim=1,
             )
 
-        packed_layout = None
-        if enable_packed_dit and len(items) > 1:
-            from sglang_omni.models.auk.packed import PackedLayout
-
-            if not self.transformer.attn_mask_enabled:
-                raise ValueError("Packed AuK DiT requires attn_mask_enabled")
-            audio_mask = torch.cat((ref_mask, mask), dim=1)
-            packed_text_mask = text_mask
-            if cfg_strength >= 1e-5:
-                audio_mask = audio_mask.repeat(2, 1)
-                packed_text_mask = text_mask.repeat(2, 1)
+        if not enable_packed_dit or len(items) == 1:
+            packed_layout = None
+        elif not self.transformer.attn_mask_enabled:
+            raise ValueError("Packed AuK DiT requires attn_mask_enabled")
+        elif cfg_strength < 1e-5:
             packed_layout = PackedLayout.build(
-                audio_mask, packed_text_mask, ref.shape[1], y0.shape[1]
+                torch.cat((ref_mask, mask), dim=1), text_mask, ref.shape[1], y0.shape[1]
+            )
+        else:
+            # CFG stacks the conditional rows above the unconditional ones.
+            packed_layout = PackedLayout.build(
+                torch.cat((ref_mask, mask), dim=1).repeat(2, 1),
+                text_mask.repeat(2, 1),
+                ref.shape[1],
+                y0.shape[1],
             )
 
         def fn(t, x):
@@ -200,9 +203,8 @@ class AuKFlowMatching(nn.Module):
                 cache=True,
                 audio_positions=audio_positions,
                 joint_positions=joint_positions,
+                packed_layout=packed_layout,
             )
-            if packed_layout is not None:
-                kwargs["packed_layout"] = packed_layout
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False

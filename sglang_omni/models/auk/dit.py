@@ -17,11 +17,15 @@ from sglang_omni.models.auk.packed import flash_attention, gather_rope, gather_r
 
 
 def _modulation(value, token_batch):
-    if token_batch is not None and value.shape[0] == 1:
+    """Broadcast a per-request modulation row over padded ``[B, T, D]`` or packed rows."""
+    if token_batch is None:
+        return value[:, None]
+    elif value.shape[0] == 1:
         # Euler evaluates the whole batch at one scalar time. Broadcasting the
         # shared modulation avoids materializing six token-sized arrays/block.
         return value[0]
-    return value[:, None] if token_batch is None else value.index_select(0, token_batch)
+    else:
+        return value.index_select(0, token_batch)
 
 
 def _attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -243,9 +247,14 @@ class Attention(nn.Module):
     ):
         if packed_layout is not None:
             return self._forward_packed(x, c, rope, c_rope, packed_layout)
-        if c is None:
+        elif c is None:
             return self._forward_self(x, mask=mask, rope=rope, bias=bias)
+        else:
+            return self._forward_joint(
+                x, c, mask=mask, rope=rope, c_rope=c_rope, c_mask=c_mask, bias=bias
+            )
 
+    def _forward_joint(self, x, c, *, mask, rope, c_rope, c_mask, bias):
         audio_mask = mask
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
         c_query, c_key, c_value = self.to_qkv_c(c).chunk(3, dim=-1)
@@ -281,28 +290,34 @@ class Attention(nn.Module):
         return x_out, c_out
 
     def _forward_packed(self, x, c, rope, c_rope, layout):
+        """Attention over packed ``[tokens, D]`` rows bounded by ``layout.cu_seqlens``."""
+
         def project(rows, linear, q_norm, k_norm, positions):
             q, k, v = linear(rows).view(rows.shape[0], 3, self.heads, -1).unbind(1)
             q, k = q_norm(q), k_norm(k)
-            if positions is not None:
+            if positions is None:
+                return q, k, v
+            else:
                 q, k = self._apply_rope(q.transpose(0, 1), k.transpose(0, 1), positions)
-                q, k = q.transpose(0, 1), k.transpose(0, 1)
-            return q, k, v
+                return q.transpose(0, 1), k.transpose(0, 1), v
 
         q, k, v = project(x, self.to_qkv, self.q_norm, self.k_norm, rope)
-        if c is not None:
+        if c is None:
+            out = flash_attention(q, k, v, layout).flatten(1).to(q.dtype)
+            return self.to_out[1](self.to_out[0](out))
+        else:
             cq, ck, cv = project(c, self.to_qkv_c, self.c_q_norm, self.c_k_norm, c_rope)
+            # Interleave the audio and text streams request by request so each
+            # request's joint sequence is contiguous for the varlen kernel.
             q, k, v = (
                 torch.cat((a, b)).index_select(0, layout.double_order)
                 for a, b in ((q, cq), (k, ck), (v, cv))
             )
-        out = flash_attention(q, k, v, layout).flatten(1).to(q.dtype)
-        if c is None:
-            return self.to_out[1](self.to_out[0](out))
-        out = out.index_select(0, layout.double_inverse)
-        return self.to_out[1](self.to_out[0](out[: x.shape[0]])), self.to_out_c(
-            out[x.shape[0] :]
-        )
+            out = flash_attention(q, k, v, layout).flatten(1).to(q.dtype)
+            out = out.index_select(0, layout.double_inverse)
+            return self.to_out[1](self.to_out[0](out[: x.shape[0]])), self.to_out_c(
+                out[x.shape[0] :]
+            )
 
     def _forward_self(
         self,
@@ -352,7 +367,10 @@ class DiTBlock(nn.Module):
         bias: torch.Tensor | None = None,
         packed_layout=None,
     ) -> torch.Tensor:
-        token_batch = None if packed_layout is None else packed_layout.single_batch
+        if packed_layout is None:
+            token_batch = None
+        else:
+            token_batch = packed_layout.single_batch
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
             x, emb=t, token_batch=token_batch
         )
@@ -408,8 +426,10 @@ class MMDiTBlock(nn.Module):
         bias: torch.Tensor | None = None,
         packed_layout=None,
     ):
-        cb = None if packed_layout is None else packed_layout.text_batch
-        xb = None if packed_layout is None else packed_layout.audio_batch
+        if packed_layout is None:
+            cb = xb = None
+        else:
+            cb, xb = packed_layout.text_batch, packed_layout.audio_batch
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
             c, emb=t, token_batch=cb
         )
@@ -634,9 +654,14 @@ class AuKDit(nn.Module):
         packed_layout=None,
     ) -> torch.Tensor:
         batch = x.shape[0]
-        shared_time = packed_layout is not None and time.ndim == 0
-        if time.ndim == 0:
-            time = time.reshape(1) if shared_time else time.repeat(batch)
+        if time.ndim != 0:
+            shared_time = False
+        elif packed_layout is None:
+            time, shared_time = time.repeat(batch), False
+        else:
+            # Euler evaluates the whole batch at one scalar time; the packed
+            # blocks broadcast that single modulation row instead of gathering.
+            time, shared_time = time.reshape(1), True
         t = self.time_embed(time)
 
         if c_mask is None:
@@ -665,8 +690,7 @@ class AuKDit(nn.Module):
 
             x = torch.cat((x_cond, x_uncond), dim=0)
             c = torch.cat((c_cond, c_uncond), dim=0)
-            if not shared_time:
-                t = torch.cat((t, t), dim=0)
+            t = t if shared_time else torch.cat((t, t), dim=0)
             audio_mask = (
                 torch.cat((a_mask_cond, a_mask_uncond), dim=0)
                 if a_mask_cond is not None and a_mask_uncond is not None
@@ -691,7 +715,6 @@ class AuKDit(nn.Module):
         )
         rope_text = self.rotary_embed.forward_from_seq_len(text_len)
 
-        joint_bias = single_bias = single_mask = None
         if packed_layout is not None:
             x = gather_rows(x, packed_layout.audio_indices)
             c = gather_rows(c, packed_layout.text_indices)
@@ -701,14 +724,19 @@ class AuKDit(nn.Module):
             rope_text = gather_rope(
                 rope_text, packed_layout.text_indices, packed_layout.batch
             )
-            audio_mask = c_mask = None
-        elif audio_mask is not None:
+            # Packed rows carry no padding, so there is nothing to mask.
+            audio_mask = c_mask = joint_bias = single_bias = single_mask = None
+        elif audio_mask is None:
+            joint_bias = single_bias = single_mask = None
+        else:
             single_mask = torch.cat([c_mask, audio_mask], dim=1)
             if self.attn_mask_enabled:
                 joint_bias = _attention_bias(
                     torch.cat([audio_mask, c_mask], dim=1), x.dtype
                 )
                 single_bias = _attention_bias(single_mask, x.dtype)
+            else:
+                joint_bias = single_bias = None
 
         for block in self.transformer_blocks:
             c, x = block(
@@ -723,17 +751,15 @@ class AuKDit(nn.Module):
                 packed_layout=packed_layout,
             )
 
-        x = (
-            torch.cat([c, x], dim=0).index_select(0, packed_layout.single_order)
-            if packed_layout is not None
-            else torch.cat([c, x], dim=1)
-        )
         rope = (
             self.rotary_embed.forward_from_seq_len(text_len + seq_len)
             if joint_positions is None
             else self.rotary_embed(joint_positions)
         )
-        if packed_layout is not None:
+        if packed_layout is None:
+            x = torch.cat([c, x], dim=1)
+        else:
+            x = torch.cat([c, x], dim=0).index_select(0, packed_layout.single_order)
             rope = gather_rope(rope, packed_layout.joint_indices, packed_layout.batch)
         for block in self.single_transformer_blocks:
             x = block(
@@ -745,12 +771,12 @@ class AuKDit(nn.Module):
                 packed_layout=packed_layout,
             )
 
-        if packed_layout is not None:
+        if packed_layout is None:
+            x = x[:, text_len + prompt_len :]
+            return self.proj_out(self.norm_out(x, t))
+        else:
             x = x.index_select(0, packed_layout.target_rows)
             x = self.proj_out(
                 self.norm_out(x, t, token_batch=packed_layout.target_batch)
             )
             return packed_layout.unpack_target(x)
-
-        x = x[:, text_len + prompt_len :]
-        return self.proj_out(self.norm_out(x, t))

@@ -126,6 +126,7 @@ def test_engine_uses_checkpoint_sampling_recipe(monkeypatch, flash):
         cfg_strength=0 if flash else 3,
         sway_sampling_coef=None if flash else -1,
         t_grid=C.FLASH_T_GRID if flash else None,
+        enable_packed_dit=False,
     )
 
 
@@ -151,16 +152,56 @@ def test_unknown_dtype_names_are_rejected_before_the_checkpoint_is_resolved(fiel
         create_auk_engine_executor("stub", device="cpu", **{field: "bf16"})
 
 
-def test_packed_requires_cuda_bf16_before_resolving_checkpoint(monkeypatch):
-    from sglang_omni.models.auk import stages
-
-    resolve = Mock(side_effect=AssertionError("must validate before downloading"))
-    monkeypatch.setattr(stages, "resolve_checkpoint", resolve)
-    with pytest.raises(ValueError, match="CUDA and weight_dtype=bfloat16"):
-        create_auk_engine_executor(
-            "stub", device="cpu", weight_dtype="bfloat16", enable_packed_dit=True
+@pytest.mark.parametrize(
+    "device, enable_packed_dit, probe_ok, expected",
+    [
+        ("cuda", None, True, "packed"),
+        ("cuda", None, False, "padded"),
+        ("cpu", None, True, "padded"),
+        ("cuda", True, False, "error"),
+        ("cuda", False, False, "padded"),
+    ],
+)
+def test_packed_dit_gate(
+    stages, monkeypatch, caplog, device, enable_packed_dit, probe_ok, expected
+):
+    """Auto mode packs where the probe passes and logs why it fell back; True
+    makes the failure fatal; False never probes."""
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda d, i: torch.device(device)
+    )
+    probe = Mock(side_effect=None if probe_ok else ValueError("unsupported on sm75"))
+    monkeypatch.setattr(stages, "probe_flash_attention", probe)
+    flow = Mock()
+    flow.sample_batch.return_value = [torch.zeros(10, 64)]
+    monkeypatch.setattr(stages, "_load_flow", lambda *args: flow)
+    kwargs = dict(
+        device=device, weight_dtype="bfloat16", enable_packed_dit=enable_packed_dit
+    )
+    if expected == "error":
+        with pytest.raises(ValueError, match="sm75"):
+            create_auk_engine_executor("stub", **kwargs)
+    else:
+        with caplog.at_level("WARNING", logger="sglang_omni.models.auk.stages"):
+            scheduler = create_auk_engine_executor("stub", **kwargs)
+        state = AuKState(
+            gen_frames=10,
+            conditioning=torch.zeros(6, 16),
+            text_mask=torch.ones(6, dtype=torch.bool),
         )
-    resolve.assert_not_called()
+        scheduler._fn(
+            StagePayload(
+                request_id="test",
+                request=OmniRequest(inputs="hello"),
+                data=state.to_dict(),
+            )
+        )
+        packed = flow.sample_batch.call_args.kwargs["enable_packed_dit"]
+        assert packed is (expected == "packed")
+        assert ("Packed AuK DiT disabled" in caplog.text) is (
+            enable_packed_dit is None and expected == "padded"
+        )
+    assert probe.called is (enable_packed_dit is not False and device == "cuda")
 
 
 def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):

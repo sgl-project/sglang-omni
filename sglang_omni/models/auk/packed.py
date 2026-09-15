@@ -4,8 +4,71 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cache
 
 import torch
+
+
+@cache
+def resolve_flash_version(device: torch.device) -> int:
+    """Pick the SGLang varlen FlashAttention build that serves ``device``.
+
+    FA4 on Blackwell (sm100 and the sm120 consumer parts, where the varlen
+    kernel is validated; sm103 excluded as in SGLang's VisionAttention) and
+    FA3 on sm80-sm90 via the MOSS-Audio-Tokenizer gate (``_is_fa3_supported``),
+    so an unsupported device is rejected with a reason instead of failing on
+    the first batch.
+    """
+    device = torch.device(device)
+    if device.type != "cuda" or not torch.cuda.is_available():
+        raise ValueError(f"Packed AuK DiT requires a CUDA device, got {device}")
+    elif torch.version.hip is not None:
+        raise ValueError(
+            "Packed AuK DiT is unsupported on HIP: SGLang ships no FA3/FA4 varlen "
+            "kernel there"
+        )
+    else:
+        # Lazy imports: the padded path and CPU model loading never need Flash.
+        from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+        from sglang.kernels.ops.attention.flash_attention_v4 import (
+            is_flash_attention_v4_available,
+        )
+
+        major, minor = torch.cuda.get_device_capability(device)
+        blackwell = major >= 10 and (major, minor) != (10, 3)
+        if blackwell and is_flash_attention_v4_available():
+            return 4
+        elif blackwell:
+            raise ValueError(
+                f"Packed AuK DiT needs FlashAttention 4 on sm{major}{minor}, but "
+                "SGLang's FA4 varlen kernel is unavailable (install flash-attn-4)"
+            )
+        elif _is_fa3_supported(device):
+            return 3
+        else:
+            raise ValueError(
+                f"Packed AuK DiT is unsupported on sm{major}{minor}: SGLang FA3 "
+                "needs sm80-sm90 with CUDA >= 12.3"
+            )
+
+
+def probe_flash_attention(device: torch.device, *, heads: int, head_dim: int) -> None:
+    """Run one tiny varlen call with the DiT's head shape.
+
+    Missing kernels, JIT failures and unsupported head sizes then surface at
+    stage construction rather than on the first multi-request batch.
+    """
+    mask = torch.ones(2, 4, dtype=torch.bool, device=device)
+    layout = PackedLayout.build(mask, mask, prompt_width=0, target_width=4)
+    q = torch.randn(16, heads, head_dim, dtype=torch.bfloat16, device=device)
+    out = flash_attention(q, q, q, layout)
+    if torch.isfinite(out).all():
+        return None
+    else:
+        raise RuntimeError(
+            f"Packed AuK DiT FlashAttention probe returned non-finite values for "
+            f"{tuple(q.shape)} on {device}"
+        )
 
 
 def flash_attention(q, k, v, layout):
@@ -30,15 +93,13 @@ def gather_rows(x, indices):
 
 
 def gather_rope(rope, indices, batch):
+    """Packed rows of ``[T, D]`` (shared) or ``[B, T, D]`` (per-request) frequencies.
+
+    The DiT's ``RotaryEmbedding`` has no xpos, so ``scale`` is a scalar and
+    passes through unchanged.
+    """
     freqs, scale = rope
-    if freqs.ndim == 2:
-        freqs = freqs.unsqueeze(0)
-    freqs = freqs.expand(batch, -1, -1)
-    if isinstance(scale, torch.Tensor) and scale.ndim >= 2:
-        if scale.ndim == 2:
-            scale = scale.unsqueeze(0)
-        scale = scale.expand(batch, -1, -1)
-        scale = gather_rows(scale, indices).unsqueeze(0)
+    freqs = freqs.reshape(-1, *freqs.shape[-2:]).expand(batch, -1, -1)
     return gather_rows(freqs, indices).unsqueeze(0), scale
 
 
@@ -107,12 +168,9 @@ class PackedLayout:
             int(lengths.max().item()),
             batch,
             target_width,
-            (
-                4
-                if audio_mask.is_cuda
-                and torch.cuda.get_device_capability(audio_mask.device)[0] >= 10
-                else 3
-            ),
+            # The kernel is CUDA-only; a non-CUDA layout only ever reaches a
+            # substituted attention, so its version is never dispatched on.
+            resolve_flash_version(audio_mask.device) if audio_mask.is_cuda else 3,
         )
 
     def unpack_target(self, x):

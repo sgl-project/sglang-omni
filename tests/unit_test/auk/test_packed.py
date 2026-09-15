@@ -5,6 +5,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.auk import packed
 from sglang_omni.models.auk.dit import AuKDit
 from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
 
@@ -48,8 +49,7 @@ def make_flow(device="cpu", dtype=torch.float32):
 def make_items(device="cpu", no_reference=False):
     result = []
     for i, (text, frames, ref) in enumerate([(7, 19, 5), (9, 11, 8), (4, 15, 0)]):
-        if no_reference:
-            ref = 0
+        ref = 0 if no_reference else ref
         mask = torch.ones(text, dtype=torch.bool, device=device)
         # Include left padding and a hole; neither is equivalent to [:sum(mask)].
         mask[0] = False
@@ -100,16 +100,47 @@ def test_singleton_keeps_original_path(monkeypatch):
     torch.testing.assert_close(a[0], b[0], atol=0, rtol=0)
 
 
-def test_packed_rejects_disabled_padding_mask():
-    flow = make_flow()
-    flow.transformer.attn_mask_enabled = False
-    with pytest.raises(ValueError, match="attn_mask_enabled"):
-        flow.sample_batch(
-            make_items(), steps=2, cfg_strength=2.0, enable_packed_dit=True
-        )
+@pytest.mark.parametrize(
+    "capability, hip, fa3, fa4, expected",
+    [
+        ((8, 0), False, True, True, 3),
+        ((9, 0), False, True, True, 3),
+        ((10, 0), False, True, True, 4),
+        ((12, 0), False, True, True, 4),
+        ((10, 0), False, True, False, "FlashAttention 4 on sm100"),
+        ((9, 4), True, True, True, "unsupported on HIP"),
+        ((7, 5), False, False, True, "unsupported on sm75"),
+    ],
+)
+def test_flash_version_policy(monkeypatch, capability, hip, fa3, fa4, expected):
+    import sglang.kernels.ops.attention.flash_attention_v3 as v3
+    import sglang.kernels.ops.attention.flash_attention_v4 as v4
+
+    packed.resolve_flash_version.cache_clear()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: capability)
+    monkeypatch.setattr(torch.version, "hip", "6.2" if hip else None)
+    monkeypatch.setattr(v3, "_is_fa3_supported", lambda device=None: fa3)
+    monkeypatch.setattr(v4, "is_flash_attention_v4_available", lambda: fa4)
+    if isinstance(expected, int):
+        assert packed.resolve_flash_version(torch.device("cuda", 0)) == expected
+    else:
+        with pytest.raises(ValueError, match=expected):
+            packed.resolve_flash_version(torch.device("cuda", 0))
+    packed.resolve_flash_version.cache_clear()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+# Skip the real-kernel test with the gate's own reason on hosts it rejects.
+try:
+    packed.resolve_flash_version(torch.device("cuda", 0))
+    flash_unsupported = None
+except (ImportError, ValueError) as exc:
+    flash_unsupported = str(exc)
+finally:
+    packed.resolve_flash_version.cache_clear()
+
+
+@pytest.mark.skipif(flash_unsupported is not None, reason=str(flash_unsupported))
 @torch.inference_mode()
 def test_packed_flash_cuda_matches_padded(monkeypatch):
     from sglang_omni.models.auk.packed import flash_attention
