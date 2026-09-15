@@ -1154,6 +1154,8 @@ class Stage:
                             )
                     elif out.type == "error":
                         await self._send_failure(out.request_id, str(out.data))
+                elif out.type == "result":
+                    self._release_scheduler_result(out.data, delivered=False)
 
                 if batch_index + 1 >= _OUTBOX_DRAIN_BATCH_SIZE:
                     await asyncio.sleep(0)
@@ -1176,6 +1178,7 @@ class Stage:
                 continue
 
             if out.type == "result":
+                self._release_scheduler_result(out.data, delivered=False)
                 self._clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
@@ -1265,10 +1268,44 @@ class Stage:
         if isinstance(transfer, KVPageTransfer) and transfer.lease is not None:
             transfer.lease.release()
 
+    def _release_scheduler_result(self, result: Any, *, delivered: bool) -> None:
+        """Settle optional scheduler-owned resources after routing or dropping."""
+        release = getattr(self.scheduler, "release_result", None)
+        if release is not None:
+            release(result, delivered=delivered)
+
     async def _route_result(self, request_id: str, result: Any) -> None:
-        """Route a completed result to next stage(s) or complete at coordinator."""
+        """Route a result and settle its resources even when routing fails."""
+        delivered = False
+
+        def on_submitted() -> None:
+            nonlocal delivered
+            delivered = True
+
+        try:
+            await self._route_scheduler_result(request_id, result, on_submitted)
+        except BaseException:
+            try:
+                self._release_scheduler_result(result, delivered=delivered)
+            except Exception:
+                logger.exception(
+                    "Stage %s failed to release result for %s", self.name, request_id
+                )
+            raise
+        self._release_scheduler_result(result, delivered=delivered)
+
+    async def _route_scheduler_result(
+        self, request_id: str, result: Any, on_submitted: Callable[[], None]
+    ) -> None:
+        """Route while recording transport acceptance before local cleanup."""
         if not self._owns_external_io:
             self._clear_request_state(request_id)
+            return
+        next_stages = self.get_next(request_id, result)
+        claim_result = getattr(self.scheduler, "claim_result", None)
+        if claim_result is not None and not claim_result(
+            result, terminal=next_stages is None
+        ):
             return
         # Send stream done to the active stream targets for this request.
         stream_targets = self._stream_targets
@@ -1288,7 +1325,6 @@ class Stage:
                 is_done=True,
             )
 
-        next_stages = self.get_next(request_id, result)
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1297,14 +1333,19 @@ class Stage:
                 event_name="stage_complete",
                 metadata={"terminal": True},
             )
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data if isinstance(result, StagePayload) else result,
-                )
+            message = CompleteMessage(
+                request_id=request_id,
+                from_stage=self.name,
+                success=True,
+                result=result.data if isinstance(result, StagePayload) else result,
             )
+            if getattr(self.scheduler, "release_result", None) is None:
+                await self.control_plane.send_complete(message)
+            else:
+                await self.control_plane.send_complete(
+                    message, on_submitted=on_submitted
+                )
+            on_submitted()
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
@@ -1324,6 +1365,7 @@ class Stage:
                     allow_projected_local_object=not is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
                 )
+                on_submitted()
 
         self._clear_request_state(request_id)
 
