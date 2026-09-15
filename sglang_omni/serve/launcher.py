@@ -537,8 +537,10 @@ def launch_server(
             :class:`~sglang_omni.client.Client`.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
-        allowed_local_media_path: Directory allowed for ``file://`` media
-            references in TTS requests.
+        allowed_local_media_path: Directory that local media references in TTS
+            requests must resolve inside. ``file://`` references are disabled
+            when omitted; bare local paths remain allowed by default but are
+            also restricted to this directory once it is configured.
         allowed_media_domains: Domains allowed for remote TTS reference audio.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.

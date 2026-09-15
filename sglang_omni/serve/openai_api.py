@@ -226,8 +226,10 @@ def create_app(
         supports_realtime_audio_output: Whether the mounted realtime endpoint
             can request streamed audio from the configured pipeline.
         realtime_transcription: Pipeline-owned live-ASR strategy declaration.
-        allowed_local_media_path: Directory allowed for ``file://`` TTS
-            reference audio.
+        allowed_local_media_path: Directory that local media references in TTS
+            requests must resolve inside. ``file://`` references are disabled
+            when omitted; bare local paths remain allowed by default but are
+            also restricted to this directory once it is configured.
         allowed_media_domains: Domains allowed for remote TTS reference audio.
         admin_api_key: Optional API key for admin-control endpoints.
         tts_batch_max_items: Maximum items accepted by

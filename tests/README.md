@@ -869,7 +869,11 @@ that happened to contain an older version of the test.
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution (including declared G.711 bytes getting
   a WAV container), duration validation, fingerprinting, downmixing, and
-  legacy input compatibility.
+  legacy input compatibility. `test_resource_connector.py` covers the
+  `MultiModalResourceConnector` local-media policy: bare local paths and
+  `file://` URLs are both scoped to `allowed_local_media_path` once it is
+  configured, and `..` traversal and symlink escapes are rejected before
+  MediaIO is called.
 
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
