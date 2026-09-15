@@ -15,6 +15,13 @@ import torch
 
 from .base import MediaIO, _is_url
 
+# KSDATAFORMAT_SUBTYPE_* GUIDs (16 bytes, WAV on-disk byte order). A
+# WAVE_FORMAT_EXTENSIBLE fmt chunk only maps to plain PCM / IEEE-float when its
+# SubFormat matches one of these in full; the leading 16 bits alone are not
+# enough, since vendor-defined GUIDs may reuse those bytes.
+_WAVE_SUBFORMAT_PCM = bytes.fromhex("0100000000001000800000aa00389b71")
+_WAVE_SUBFORMAT_IEEE_FLOAT = bytes.fromhex("0300000000001000800000aa00389b71")
+
 
 def _decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
     """Decode audio bytes using PyAV (supports WebM/Opus, MP3, OGG, FLAC, etc.)."""
@@ -88,6 +95,16 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
                 fmt_tag, channels, sample_rate, _, _, bits_per_sample = struct.unpack(
                     "<HHIIHH", chunk_data[:16]
                 )
+                # WAVE_FORMAT_EXTENSIBLE carries the real codec in a full 16-byte
+                # SubFormat GUID. Only unwrap it when the complete GUID matches a
+                # known PCM/IEEE-float subtype; otherwise leave fmt_tag as 0xFFFE
+                # so the dispatch below raises and the PyAV fallback takes over.
+                if fmt_tag == 0xFFFE and len(chunk_data) >= 40:
+                    subformat = chunk_data[24:40]
+                    if subformat == _WAVE_SUBFORMAT_PCM:
+                        fmt_tag = 1
+                    elif subformat == _WAVE_SUBFORMAT_IEEE_FLOAT:
+                        fmt_tag = 3
         elif chunk_id == b"data":
             data_bytes = chunk_data
 
@@ -107,6 +124,17 @@ def _parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, in
         if bits_per_sample == 16:
             audio_i16 = np.frombuffer(data_bytes, dtype="<i2")
             audio = (audio_i16.astype(np.float32) / 32768.0).astype(np.float32)
+        elif bits_per_sample == 24:
+            usable = (len(data_bytes) // 3) * 3
+            raw = np.frombuffer(data_bytes[:usable], dtype="u1").reshape(-1, 3)
+            audio_i32 = (
+                raw[:, 0].astype(np.int32)
+                | (raw[:, 1].astype(np.int32) << 8)
+                | (raw[:, 2].astype(np.int32) << 16)
+            )
+            # Sign-extend the 24-bit value into the int32 range.
+            audio_i32 = np.where(audio_i32 & 0x800000, audio_i32 - 0x1000000, audio_i32)
+            audio = (audio_i32.astype(np.float32) / 8388608.0).astype(np.float32)
         elif bits_per_sample == 32:
             audio_i32 = np.frombuffer(data_bytes, dtype="<i4")
             audio = (audio_i32.astype(np.float32) / 2147483648.0).astype(np.float32)
