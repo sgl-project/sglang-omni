@@ -20,12 +20,20 @@ try:
     from mooncake.engine import TransferEngine, TransferNotify, TransferOpcode
 
     MOONCAKE_AVAILABLE = True
-except ImportError as e:
-    logger.error(
-        f"Failed to import mooncake: {e}. MooncakeRelay will not work. "
-        "Install with: pip install mooncake-transfer-engine"
-    )
+except ImportError as exc:
+    from ._optional_dependency import UnavailableDependency
+
     MOONCAKE_AVAILABLE = False
+    _mooncake_unavailable = UnavailableDependency(
+        package="mooncake",
+        backend="Mooncake",
+        error=exc,
+        logger=logger,
+        install_hint=(
+            "Check the chained import error and the backend installation "
+            "requirements for your platform."
+        ),
+    )
 
     # Mock classes
     class TransferEngine:
@@ -93,6 +101,9 @@ class MooncakeConnection:
             protocol: Transfer protocol ("tcp", "rdma", "nvlink")
             device_name: RDMA device name (e.g., "mlx5_0") for RDMA protocol
         """
+        if not MOONCAKE_AVAILABLE:
+            _mooncake_unavailable.raise_unavailable()
+
         self.engine_id = engine_id
         self.hostname = hostname
         self.protocol = protocol
