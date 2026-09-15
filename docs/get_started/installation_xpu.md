@@ -12,7 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni, Fun-ASR-Nano) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
 
@@ -137,6 +137,22 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "file=@sample.wav" -F "model=/path/to/Qwen3-ASR-1.7B"
 ```
 
+### Fun-ASR-Nano (speech-to-text, single XPU)
+
+Same endpoint as Qwen3-ASR, one uploaded clip of 30 s or less per request. See
+[docs/cookbook/fun_asr.md](../cookbook/fun_asr.md) for the request parameters.
+
+```bash
+sgl-omni serve --model-path /path/to/Fun-ASR-Nano-2512-hf --host 0.0.0.0 --port 8000
+# transcribe:
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@sample.wav" -F "model=/path/to/Fun-ASR-Nano-2512-hf" -F "language=en"
+```
+
+The audio encoder captures a graph per (batch, length) bucket the first time it
+sees one, on XPU as on CUDA. Buckets that fail to capture log a warning and run
+eager, so a transcript is never at stake.
+
 ### Qwen3-TTS (text-to-speech, single XPU)
 
 Qwen3-TTS needs the upstream `qwen-tts` package. Option A already includes it; for
@@ -187,5 +203,6 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni all serve end-to-end on Intel XPU**
-> (ASR single-card, TTS single-card, Qwen3-Omni thinker across 8 cards with tensor parallelism).
+> ✅ Support status: **Qwen3-ASR, Fun-ASR-Nano, Qwen3-TTS, and Qwen3-Omni all serve end-to-end on
+> Intel XPU** (ASR single-card, TTS single-card, Qwen3-Omni thinker across 8 cards with tensor
+> parallelism).
