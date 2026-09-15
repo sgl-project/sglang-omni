@@ -158,14 +158,20 @@ def test_batched_decode_casts_hidden_to_decoder_dtype_without_autocast() -> None
         def __init__(self) -> None:
             super().__init__()
             self.weight = nn.Parameter(torch.ones((), dtype=torch.bfloat16))
-            self.seen_dtype = None
+            self.seen_dtype: torch.dtype | None = None
 
         @staticmethod
-        def output_lengths(lengths):
+        def output_lengths(lengths: list[int]) -> list[int]:
             return list(lengths)
 
-        def forward(self, hidden, lengths, *, input_lengths_cpu=None):
-            del input_lengths_cpu
+        def forward(
+            self,
+            hidden: torch.Tensor,
+            lengths: torch.Tensor,
+            *,
+            input_lengths_cpu: list[int] | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            assert input_lengths_cpu == lengths.tolist()
             self.seen_dtype = hidden.dtype
             return hidden[:, :1], lengths
 
