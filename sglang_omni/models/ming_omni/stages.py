@@ -303,6 +303,12 @@ def create_sglang_thinker_executor_from_config(
 
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
+    from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
+        build_generation_batch_overrides,
+        operator_selected_prefill_backend,
+        validate_generation_batch_policy,
+    )
     from sglang_omni.scheduling.sglang_backend import (
         build_sglang_server_args,
         pin_resolved_device_type,
@@ -313,16 +319,34 @@ def create_sglang_thinker_executor_from_config(
 
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
-
-    overrides = dict(server_args_overrides or {})
-    overrides.setdefault("sampling_backend", "pytorch")
-    overrides.setdefault("trust_remote_code", False)
+    operator_selected = operator_selected_prefill_backend(server_args_overrides)
+    overrides = build_generation_batch_overrides(
+        max_running_requests=16,
+        server_args_overrides=server_args_overrides,
+        disable_cuda_graph=False,
+        sampling_backend="pytorch",
+        trust_remote_code=False,
+    )
+    if (
+        operator_selected
+        and overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.BREAKABLE
+        and not overrides.get("cuda_graph_bs_prefill")
+    ):
+        raise ValueError(
+            "Ming-Omni thinker explicit breakable prefill CUDA graph backend "
+            "requires cuda_graph_max_bs_prefill, cuda_graph_bs_prefill, or "
+            "chunked_prefill_size"
+        )
     overrides["tp_size"] = tp_size
     pin_resolved_device_type(overrides, concrete_device.type)
     server_args = build_sglang_server_args(
         model_path,
         context_length=thinker_max_seq_len,
         **overrides,
+    )
+    validate_generation_batch_policy(
+        model_name="Ming-Omni thinker",
+        server_args=server_args,
     )
     return create_thinker_scheduler(
         server_args,
@@ -332,6 +356,7 @@ def create_sglang_thinker_executor_from_config(
         tp_size=tp_size,
         nccl_port=nccl_port,
         enable_streaming_tts=enable_streaming_tts,
+        operator_selected_prefill_backend=operator_selected,
     )
 
 
