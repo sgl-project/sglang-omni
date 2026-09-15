@@ -272,6 +272,11 @@ class _BatchedReferenceEncoder:
         max_batch_wait_ms: int = 4,
     ) -> None:
         self._audio_tokenizer = audio_tokenizer
+        self._stream = None
+        device = torch.device(audio_tokenizer.device)
+        if device.type == "cuda":
+            self._stream = torch.cuda.Stream(device=device)
+            self._stream.wait_stream(torch.cuda.current_stream(device))
         self._n_vq = int(n_vq)
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
@@ -353,7 +358,8 @@ class _BatchedReferenceEncoder:
     def _worker(self) -> None:
         while True:
             batch = self._drain_batch()
-            results = self._encode_batch(batch)
+            with torch.cuda.stream(self._stream):
+                results = self._encode_batch(batch)
             for index, (_, future) in enumerate(batch):
                 outcome = results.get(index)
                 if isinstance(outcome, Exception):

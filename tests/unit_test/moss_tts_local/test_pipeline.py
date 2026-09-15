@@ -1081,6 +1081,8 @@ def test_create_preprocessing_executor_cache_toggles(monkeypatch):
     from sglang_omni.models.moss_tts_local import stages
 
     class _FakeAudioTokenizer:
+        device = "cpu"
+
         def encode_paths(self, paths, *, num_quantizers):
             assert num_quantizers == N_VQ
             return []
@@ -1384,6 +1386,49 @@ def test_decode_frame_graphed_matches_branchless_eager():
     torch.testing.assert_close(from_graph, eager)
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_batched_reference_encoder_uses_dedicated_cuda_stream():
+    import threading
+
+    from sglang_omni.models.moss_tts_local.stages import _BatchedReferenceEncoder
+
+    device = torch.device("cuda", torch.cuda.current_device())
+    calls = []
+
+    class _FakeCudaAudioTokenizerModel:
+        config = types.SimpleNamespace(sampling_rate=48000, number_channels=1)
+
+        def batch_encode(self, wavs, *, num_quantizers):
+            waveform = wavs[0]
+            assert waveform.device == device
+            calls.append((threading.get_ident(), torch.cuda.current_stream(device)))
+            codes = waveform.gt(0).long().view(1, 1, -1)
+            return _FakeEncodedAudio(
+                codes.repeat(num_quantizers, 1, 1),
+                torch.tensor([waveform.numel()], device=device),
+            )
+
+    default_stream = torch.cuda.default_stream(device)
+    with torch.cuda.stream(default_stream):
+        encoder = _BatchedReferenceEncoder(
+            MossAudioEncoder(_FakeCudaAudioTokenizerModel(), device=str(device)),
+            n_vq=N_VQ,
+            max_batch_size=1,
+            max_batch_wait_ms=0,
+        )
+        codes = encoder.encode_wav(torch.tensor([[1.0, -1.0, 1.0, -1.0]]), 48000)
+
+    worker_thread, worker_stream = calls[0]
+    assert worker_thread != threading.get_ident()
+    assert worker_stream.device == device
+    assert worker_stream != default_stream
+    assert worker_stream == encoder._stream
+    assert codes.device.type == "cpu"
+    expected = torch.tensor([1, 0, 1, 0]).unsqueeze(1).expand(-1, N_VQ)
+    torch.testing.assert_close(codes, expected, rtol=0, atol=0)
+
+
 def test_batched_reference_encoder_coalesces_and_isolates_errors():
     import threading
 
@@ -1392,6 +1437,8 @@ def test_batched_reference_encoder_coalesces_and_isolates_errors():
     calls = []
 
     class _FakeAudioTokenizer:
+        device = "cpu"
+
         def load_paths(self, paths):
             return [(torch.full((1, len(path)), len(path)), 48000) for path in paths]
 
@@ -1447,6 +1494,8 @@ def test_batched_reference_encoder_mixes_path_and_waveform_jobs():
     calls = []
 
     class _FakeAudioTokenizer:
+        device = "cpu"
+
         def load_paths(self, paths):
             return [(torch.full((1, len(path)), len(path)), 48000) for path in paths]
 
