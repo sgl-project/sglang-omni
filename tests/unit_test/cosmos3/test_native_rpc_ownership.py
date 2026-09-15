@@ -22,7 +22,9 @@ def test_finite_rpc_deadline_is_rejected_before_native_startup(timeout):
         native_server_kwargs("checkpoint", 0, {"scheduler_rpc_timeout": timeout})
 
 
-def test_native_http_app_and_generation_share_no_rpc_deadline(monkeypatch):
+def test_native_http_app_and_generation_share_no_rpc_deadline(
+    monkeypatch, tmp_path, native
+):
     http_server = ModuleType("sglang.multimodal_gen.runtime.entrypoints.http_server")
     server_args = ModuleType("sglang.multimodal_gen.runtime.server_args")
     app = FastAPI()
@@ -46,7 +48,7 @@ def test_native_http_app_and_generation_share_no_rpc_deadline(monkeypatch):
         )
 
     monkeypatch.setattr(media, "_unused_port", available_port)
-    config = Cosmos3PipelineConfig(model_path="checkpoint")
+    config = Cosmos3PipelineConfig(model_path=str(tmp_path))
     config.stages[0].gpu = 0
     assert prepare_native_media_app(config, host="127.0.0.1", port=19000) is app
     assert captured[0].scheduler_rpc_timeout is None

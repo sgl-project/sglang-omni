@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from sglang_omni.models.cosmos3.checkpoint import resolve_native_checkpoint
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -268,14 +269,15 @@ def create_generation_scheduler(
 ) -> NativeGenerationScheduler:
     if multiprocessing.current_process().daemon:
         raise RuntimeError("Native generation requires allow_child_processes=true")
+    kwargs = native_server_kwargs(
+        model_path, gpu_id, server_args_overrides, runtime_gpu_ids
+    )
     from sglang.multimodal_gen.runtime.entrypoints.diffusion_generator import (
         DiffGenerator,
     )
     from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
-    kwargs = native_server_kwargs(
-        model_path, gpu_id, server_args_overrides, runtime_gpu_ids
-    )
+    kwargs = resolve_native_checkpoint(kwargs)
     output_dir = str(Path(output_dir).resolve())
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     generator = DiffGenerator.from_server_args(ServerArgs.from_kwargs(**kwargs))

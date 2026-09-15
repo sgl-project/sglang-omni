@@ -11,7 +11,9 @@ from sglang_omni.serve.native_media import prepare_native_media_app
 
 
 @pytest.mark.parametrize("supported", [False, True])
-def test_native_owner_failure_contract_is_required(monkeypatch, supported):
+def test_native_owner_failure_contract_is_required(
+    monkeypatch, supported, tmp_path, native
+):
     from sglang.multimodal_gen.runtime import scheduler_client, server_args
     from sglang.multimodal_gen.runtime.entrypoints import http_server
     from sglang.multimodal_gen.runtime.server_args import ServerArgs
@@ -34,7 +36,7 @@ def test_native_owner_failure_contract_is_required(monkeypatch, supported):
     monkeypatch.setattr(
         http_server, "create_app", lambda args: initialized.append(args) or app
     )
-    config = Cosmos3PipelineConfig(model_path="checkpoint")
+    config = Cosmos3PipelineConfig(model_path=str(tmp_path))
     if supported:
         assert prepare_native_media_app(config, host="127.0.0.1", port=19000) is app
         assert len(initialized) == 1

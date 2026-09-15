@@ -12,6 +12,7 @@ from copy import deepcopy
 from typing import Any
 
 from sglang_omni.admission import InvalidRequestError
+from sglang_omni.models.cosmos3.checkpoint import resolve_native_checkpoint
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
@@ -310,13 +311,20 @@ def create_reasoner_scheduler(
 ) -> NativeReasonerScheduler:
     if multiprocessing.current_process().daemon:
         raise RuntimeError("Native SRT requires allow_child_processes=true")
+    if (
+        isinstance(max_concurrency, bool)
+        or not isinstance(max_concurrency, int)
+        or max_concurrency < 1
+    ):
+        raise ValueError("Reasoner max_concurrency must be a positive integer")
+    kwargs = native_reasoner_kwargs(
+        model_path, gpu_id, server_args_overrides, runtime_gpu_ids
+    )
     from sglang import Engine
     from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
     from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 
-    kwargs = native_reasoner_kwargs(
-        model_path, gpu_id, server_args_overrides, runtime_gpu_ids
-    )
+    kwargs = resolve_native_checkpoint(kwargs)
     engine = Engine(**kwargs)
     try:
         service = OpenAIServingChat(engine.tokenizer_manager, engine.template_manager)
