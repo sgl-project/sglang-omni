@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import gc
+from typing import Any
 
 import pytest
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.config import PipelineConfig, ProcessConfig
 from sglang_omni.config.topology import compile_logical_processes
-from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.pipeline.coordinator import Coordinator, RequestState
 from sglang_omni.pipeline.replicas import ReplicaTopology, expand_replica_stages
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
@@ -1072,5 +1073,86 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
         await coordinator._submit_request("req-0", "hello")
 
         assert control_plane.submitted[0][2].replica_bindings is None
+
+    asyncio.run(_run())
+
+
+class FlakySubmitControlPlane(RecordingCoordinatorControlPlane):
+    def __init__(self, failures_left: int = 1):
+        super().__init__()
+        self._failures_left = failures_left
+
+    async def submit_to_stage(self, stage: str, endpoint: str, msg: Any) -> None:
+        if self._failures_left > 0:
+            self._failures_left -= 1
+            raise RuntimeError("entry stage submit failed")
+        self.submitted.append((stage, endpoint, msg))
+
+
+def test_coordinator_rolls_back_state_when_entry_submit_fails() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = FlakySubmitControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        with pytest.raises(RuntimeError, match="entry stage submit failed"):
+            await coordinator._submit_request("req-1", {"text": "hello"})
+
+        assert "req-1" not in coordinator._requests
+        assert "req-1" not in coordinator._completion_futures
+        assert "req-1" not in coordinator._stream_queues
+
+        await coordinator._submit_request("req-1", {"text": "hello"})
+        assert "req-1" in coordinator._requests
+        assert "req-1" in coordinator._completion_futures
+        assert coordinator._requests["req-1"].state == RequestState.RUNNING
+
+    asyncio.run(_run())
+
+
+def test_coordinator_rolls_back_stream_state_when_entry_submit_fails() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = FlakySubmitControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        with pytest.raises(RuntimeError, match="entry stage submit failed"):
+            await coordinator._submit_request(
+                "req-stream", {"text": "hello"}, stream_queue=asyncio.Queue()
+            )
+
+        assert "req-stream" not in coordinator._requests
+        assert "req-stream" not in coordinator._completion_futures
+        assert "req-stream" not in coordinator._stream_queues
+
+    asyncio.run(_run())
+
+
+def test_coordinator_submit_propagates_entry_submit_failure_without_leak() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = FlakySubmitControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+
+        with pytest.raises(RuntimeError, match="entry stage submit failed"):
+            await coordinator.submit("req-2", {"text": "hello"})
+
+        assert "req-2" not in coordinator._requests
+        assert "req-2" not in coordinator._completion_futures
 
     asyncio.run(_run())
