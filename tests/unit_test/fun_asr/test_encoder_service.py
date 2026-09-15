@@ -765,3 +765,42 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         text_config=SimpleNamespace(hidden_size=_HIDDEN_SIZE), marker="other"
     )
     assert namespace != build_cache_namespace(changed_config, **base)
+
+
+def test_synchronize_batch_waits_for_the_encode_without_a_side_stream(
+    monkeypatch,
+) -> None:
+    service = _make_service()
+    service._stream = None
+    service._device = torch.device("xpu", 0)
+    events: list[str] = []
+
+    class _Event:
+        def record(self) -> None:
+            events.append("record")
+
+        def synchronize(self) -> None:
+            events.append("synchronize")
+
+    monkeypatch.setattr(
+        torch, "get_device_module", lambda device: SimpleNamespace(Event=_Event)
+    )
+
+    service.synchronize_batch()
+
+    # Ordering by submission only holds while the consumer shares this stream,
+    # and disable_overlap_schedule is overridable, so the encode is waited on.
+    assert events == ["record", "synchronize"]
+
+
+def test_synchronize_batch_does_nothing_on_cpu(monkeypatch) -> None:
+    service = _make_service()
+    service._stream = None
+    service._device = torch.device("cpu")
+
+    def _refuse(device):  # noqa: ANN001, ANN202
+        raise AssertionError("cpu has no stream to wait on")
+
+    monkeypatch.setattr(torch, "get_device_module", _refuse)
+
+    service.synchronize_batch()

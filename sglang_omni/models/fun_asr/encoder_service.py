@@ -351,12 +351,19 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         return False
 
     def synchronize_batch(self) -> None:
-        # Only the side stream needs waiting on. Where there is none, the encoder
-        # and the LM both issue on the device's default stream -- Fun-ASR keeps
-        # disable_overlap_schedule, so nothing forwards on a stream of its own --
-        # and submission order already orders the embedding before its reader.
         if self._stream is not None:
             self._stream.synchronize()
+            return
+        if self._device.type == "cpu":
+            return
+        # A device with no side stream still has to land the encode before the
+        # embedding is published. Submission order would cover it only while the
+        # consumer shares this stream, and that rests on disable_overlap_schedule,
+        # which is a stage default a deployment can override. Wait on the work
+        # just issued rather than on the whole device.
+        encoded = torch.get_device_module(self._device).Event()
+        encoded.record()
+        encoded.synchronize()
 
     def cache_embedding(
         self,
