@@ -2,11 +2,51 @@
 
 set -uo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
-
 max_attempts="${OMNI_CI_MAX_ATTEMPTS:-3}"
 retry_delay_seconds="${OMNI_CI_RETRY_DELAY_SECONDS:-10}"
 stage_label="${OMNI_CI_STAGE_LABEL:-${GITHUB_JOB:-pytest stage}}"
+observer="$(dirname "${BASH_SOURCE[0]}")/record_omni_ci_observation.py"
+observer_python="${OMNI_CI_PYTHON:-python3}"
+wrapper_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+attempt=0
+attempts_completed=0
+
+emit_attempt_observation() {
+  local status="$1"
+  local finished_at="$2"
+  if ! timeout 30s "${observer_python}" "${observer}" attempt \
+    --stage-label "${stage_label}" \
+    --attempt "${attempt}" \
+    --max-attempts "${max_attempts}" \
+    --started-at "${attempt_started_at}" \
+    --started-epoch "${attempt_started_epoch}" \
+    --finished-at "${finished_at}" \
+    --exit-code "${status}" \
+    --log-file "${log_file}"; then
+    echo "::warning::Failed to persist Omni CI attempt observation; continuing without telemetry."
+  fi
+}
+
+record_wrapper_terminal() {
+  local original_status="$?"
+  local finished_at
+  trap - EXIT
+  set +e
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if ! timeout 30s "${observer_python}" "${observer}" wrapper-terminal \
+    --stage-label "${stage_label}" \
+    --started-at "${wrapper_started_at}" \
+    --finished-at "${finished_at}" \
+    --exit-code "${original_status}" \
+    --attempts-completed "${attempts_completed}"; then
+    echo "::warning::Failed to persist Omni CI wrapper observation; continuing without telemetry."
+  fi
+  exit "${original_status}"
+}
+
+trap record_wrapper_terminal EXIT
+
+source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"
 
 if ! [[ "${max_attempts}" =~ ^[0-9]+$ ]] || [ "${max_attempts}" -lt 1 ]; then
   echo "::error::OMNI_CI_MAX_ATTEMPTS must be a positive integer; got '${max_attempts}'"
@@ -91,11 +131,15 @@ last_status=0
 
 while [ "${attempt}" -le "${max_attempts}" ]; do
   log_file="${log_root}/${slug}-attempt-${attempt}.log"
+  attempt_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  attempt_started_epoch="$(date +%s)"
 
   echo "::group::${stage_label} attempt ${attempt}/${max_attempts}"
   OMNI_CI_ATTEMPT="${attempt}" "$@" 2>&1 | tee "${log_file}"
   last_status="${PIPESTATUS[0]}"
   echo "::endgroup::"
+  emit_attempt_observation "${last_status}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  attempts_completed="${attempt}"
 
   if [ "${last_status}" -eq 0 ]; then
     if [ "${attempt}" -gt 1 ]; then
