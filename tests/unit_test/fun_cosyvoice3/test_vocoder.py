@@ -721,6 +721,37 @@ def test_flow_scheduler_cost_uses_exact_frames() -> None:
     assert vocoder.flow_scheduler_cost(_payload(state)) == 6
 
 
+def test_flow_scheduler_cost_counts_tensor_list_wire_values() -> None:
+    vocoder = stages.CosyVoice3Vocoder(_BatchCapableFakeFlow(), _FakeHiFT())
+    state = FunCosyVoice3State(
+        flow_prompt_speech_token=torch.tensor([[10, 11]], dtype=torch.int32),
+        audio_codes=torch.tensor([[20, 21], [22, 23]], dtype=torch.long),
+    )
+    wire = state.to_dict()
+
+    assert wire["flow_prompt_speech_token"] == [[10, 11]]
+    assert wire["audio_codes"] == [[20, 21], [22, 23]]
+    assert vocoder.flow_scheduler_cost(_payload(state)) == 12
+
+
+def test_flow_scheduler_cost_without_prompt_tokens() -> None:
+    vocoder = stages.CosyVoice3Vocoder(_BatchCapableFakeFlow(), _FakeHiFT())
+    state = FunCosyVoice3State(flow_prompt_speech_token=None)
+    state.audio_codes = _codes(2)
+
+    assert vocoder.flow_scheduler_cost(_payload(state)) == 4
+
+
+def test_flow_scheduler_cost_preserves_missing_audio_codes_error() -> None:
+    vocoder = stages.CosyVoice3Vocoder(_BatchCapableFakeFlow(), _FakeHiFT())
+
+    with pytest.raises(
+        RuntimeError,
+        match="Fun-CosyVoice3 vocoder requires audio_codes from tts_engine",
+    ):
+        vocoder.flow_scheduler_cost(_payload(_state()))
+
+
 def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None:
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
