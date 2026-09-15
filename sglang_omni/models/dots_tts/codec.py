@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils.lock_profile import ProfiledRLock, labeled
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,31 @@ class DotsAudioCodec:
         self.sample_rate = int(vocoder.sample_rate)
         self.hop_size = int(vocoder.hop_size)
         self.device = torch.device(device)
-        self.lock = threading.RLock()
+        # Shared across reference/vocoder stage threads.
+        self.lock = ProfiledRLock()
+        # Separate guard so lock profiling does not measure its own reporter.
+        self._lock_log_guard = threading.Lock()
+        self._last_lock_log_time = 0.0
+
+    _LOCK_LOG_INTERVAL_S = 30.0
+
+    def lock_stats(self) -> dict[str, dict[str, float | int]]:
+        stats = getattr(self.lock, "stats", None)
+        return stats() if callable(stats) else {}
+
+    def maybe_log_lock_stats(self) -> None:
+        """Rate-limited lock contention logging; no-op when profiling is off."""
+        if not getattr(self.lock, "enabled", False):
+            return
+        now = time.monotonic()
+        if now - self._last_lock_log_time < self._LOCK_LOG_INTERVAL_S:
+            return
+        with self._lock_log_guard:
+            if now - self._last_lock_log_time < self._LOCK_LOG_INTERVAL_S:
+                return
+            self._last_lock_log_time = now
+            summary = self.lock.summary()
+        logger.info("dots.tts codec lock contention:\n%s", summary)
 
     @staticmethod
     def _reference_load_workers(count: int) -> int:
@@ -115,7 +141,7 @@ class DotsAudioCodec:
         )
         speaker_batch, speaker_lengths = self._speaker_input(batch, audio_lengths)
 
-        with self.lock:
+        with labeled(self.lock, "reference_encode"):
             speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
             latent_distribution = self.inference.extract_latents(batch)
 
