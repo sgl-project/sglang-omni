@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import shutil
 import tempfile
@@ -56,8 +57,22 @@ def build_sampling_params(payload: StagePayload, output_dir: str) -> dict[str, A
     elif not isinstance(inputs, dict):
         raise ValueError("Generation inputs must be a prompt or native sampling fields")
     params = resolve_generation_options(payload.request.params, inputs)
-    if not isinstance(params.get("prompt"), str) or not params["prompt"].strip():
+    action_mode = params.get("action_mode")
+    if action_mode is not None:
+        action_mode = str(action_mode).strip().lower()
+        if action_mode not in ("policy", "inverse_dynamics", "forward_dynamics"):
+            raise ValueError(f"Unsupported action_mode={action_mode!r}")
+        params["action_mode"] = action_mode
+        params.setdefault("prompt", "")
+    if not isinstance(params.get("prompt"), str) or (
+        action_mode is None and not params["prompt"].strip()
+    ):
         raise ValueError("Generation requires a nonempty prompt")
+    if (
+        action_mode in ("policy", "inverse_dynamics")
+        and params.get("num_outputs_per_prompt", 1) != 1
+    ):
+        raise ValueError("Action generation returns one action sequence per request")
     if payload.request.params.get("stream"):
         raise ValueError("Use the native realtime video API for streaming generation")
     if params.get("prompt_file_path"):
@@ -167,6 +182,11 @@ class NativeGenerationScheduler(SimpleScheduler):
 
     def _generate(self, payload: StagePayload) -> StagePayload:
         params = build_sampling_params(payload, self.output_dir)
+        action_output = params.get("action_mode") in ("policy", "inverse_dynamics")
+        if action_output:
+            # Use native SDK sampling fields and normalization. HTTP observation
+            # envelopes remain owned by the mounted native action endpoint.
+            params.update(save_output=False, return_file_paths_only=False)
         with self._abort_lock:
             if payload.request_id in self._aborted:
                 return payload
@@ -180,10 +200,31 @@ class NativeGenerationScheduler(SimpleScheduler):
         if (
             getattr(self.generator, "supports_cancellation", False)
             and params.get("num_outputs_per_prompt", 1) == 1
+            and not action_output
         ):
             kwargs["cancellation_event"] = request.cancelled
         succeeded = False
         try:
+            if action_output:
+                from sglang.multimodal_gen.runtime.entrypoints.action.protocol import (
+                    action_generation_response,
+                )
+
+                # Native generate_action has no cancellation_event contract.
+                # Wait for it to settle before the existing finally block can
+                # remove cancelled outputs or release request ownership.
+                output = self.generator.generate_action(**kwargs)
+                response = action_generation_response(
+                    output, self.generator.server_args
+                )
+                path = request.directory / "action.json"
+                path.write_text(json.dumps(response, allow_nan=False), encoding="utf-8")
+                payload.data = {
+                    "media": [{"path": str(path), "modality": "action"}],
+                    "finish_reason": "stop",
+                }
+                succeeded = True
+                return payload
             results = self.generator.generate(**kwargs)
             if results is None:
                 raise RuntimeError(
