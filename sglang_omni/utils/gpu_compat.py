@@ -9,12 +9,10 @@ import os
 from collections.abc import Mapping, MutableMapping, Sequence
 
 from sglang_omni.utils.gpu_memory import (
-    _get_device_handle,
-    _shutdown_nvml,
-    _try_import_pynvml,
     parse_cuda_visible_devices,
     resolve_visible_device_id,
 )
+from sglang_omni.utils.nvml import get_device_handle, nvml_session, try_import_pynvml
 
 logger = logging.getLogger(__name__)
 
@@ -49,24 +47,22 @@ def _get_compute_capability(
     except Exception:
         return None
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is not None:
         try:
-            pynvml.nvmlInit()
-            if visible_devices:
-                handle = _get_device_handle(pynvml, device_id)
-            else:
-                handle = pynvml.nvmlDeviceGetHandleByIndex(logical_gpu_id)
-            major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-            return int(major), int(minor)
+            with nvml_session(pynvml):
+                if visible_devices:
+                    handle = get_device_handle(pynvml, device_id)
+                else:
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(logical_gpu_id)
+                major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+                return int(major), int(minor)
         except Exception as exc:
             logger.debug(
                 "NVML compute capability query failed for gpu_id=%s: %s",
                 logical_gpu_id,
                 exc,
             )
-        finally:
-            _shutdown_nvml(pynvml)
 
     if source_env.get("CUDA_VISIBLE_DEVICES") != os.environ.get("CUDA_VISIBLE_DEVICES"):
         return None
@@ -86,15 +82,13 @@ def _get_compute_capability(
 
 
 def _get_cuda_device_count() -> int | None:
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is not None:
         try:
-            pynvml.nvmlInit()
-            return int(pynvml.nvmlDeviceGetCount())
+            with nvml_session(pynvml):
+                return int(pynvml.nvmlDeviceGetCount())
         except Exception as exc:
             logger.debug("NVML device count query failed: %s", exc)
-        finally:
-            _shutdown_nvml(pynvml)
 
     try:
         torch = importlib.import_module("torch")
@@ -186,7 +180,7 @@ def gpu_ids_support_p2p_mesh(
     if len(ids) < 2:
         return None
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
         return None
 
@@ -207,25 +201,23 @@ def gpu_ids_support_p2p_mesh(
     )
 
     try:
-        pynvml.nvmlInit()
-        handles = []
-        for logical_id in ids:
-            device_id = resolve_visible_device_id(logical_id, visible_devices)
-            handles.append(_get_device_handle(pynvml, device_id))
-        for i, handle_i in enumerate(handles):
-            for j, handle_j in enumerate(handles):
-                if i == j:
-                    continue
-                if get_status(handle_i, handle_j, read_index) != status_ok:
-                    return False
-        return True
+        with nvml_session(pynvml):
+            handles = []
+            for logical_id in ids:
+                device_id = resolve_visible_device_id(logical_id, visible_devices)
+                handles.append(get_device_handle(pynvml, device_id))
+            for i, handle_i in enumerate(handles):
+                for j, handle_j in enumerate(handles):
+                    if i == j:
+                        continue
+                    if get_status(handle_i, handle_j, read_index) != status_ok:
+                        return False
+            return True
     except Exception as exc:
         logger.warning(
             f"NVML P2P mesh query failed for gpus={ids}: {exc}; keeping custom all-reduce disabled",
         )
         return None
-    finally:
-        _shutdown_nvml(pynvml)
 
 
 def should_disable_custom_all_reduce_for_gpus(

@@ -191,8 +191,10 @@ def test_resource_monitor_refuses_overlapping_nvml_session(
     assert result["error"] == "another NVML resource monitor is still active"
 
 
+@pytest.mark.parametrize("failure", [None, "init", "handle"])
 def test_resource_monitor_keeps_nvml_calls_on_sampler_thread(
     monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
 ) -> None:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     caller_thread = threading.get_ident()
@@ -203,9 +205,18 @@ def test_resource_monitor_keeps_nvml_calls_on_sampler_thread(
         return value
 
     pynvml = ModuleType("pynvml")
-    pynvml.nvmlInit = lambda: record()
-    pynvml.nvmlShutdown = lambda: record()
-    pynvml.nvmlDeviceGetHandleByIndex = lambda _index: record("gpu")
+    lifecycle = []
+
+    def operation(name, value=None):
+        lifecycle.append(name)
+        record()
+        if name == failure:
+            raise RuntimeError(f"{name} failed")
+        return value
+
+    pynvml.nvmlInit = lambda: operation("init")
+    pynvml.nvmlShutdown = lambda: operation("shutdown")
+    pynvml.nvmlDeviceGetHandleByIndex = lambda _index: operation("handle", "gpu")
     pynvml.nvmlDeviceGetMemoryInfo = lambda _handle: record(
         SimpleNamespace(used=1024, free=2048)
     )
@@ -226,11 +237,17 @@ def test_resource_monitor_keeps_nvml_calls_on_sampler_thread(
 
     monitor = ResourceMonitor(interval_s=0.01).start()
     deadline = time.monotonic() + 1.0
-    while not monitor.samples and time.monotonic() < deadline:
+    while monitor.error is None and not monitor.samples and time.monotonic() < deadline:
         time.sleep(0.01)
     result = monitor.stop()
 
-    assert result["available"] is True
+    assert result["available"] is (failure is None)
+    assert lifecycle == (
+        ["init"] if failure == "init" else ["init", "handle", "shutdown"]
+    )
+    if failure is not None:
+        assert f"{failure} failed" in result["error"]
+    assert not runtime_metrics._NVML_SESSION_LOCK.locked()
     assert nvml_threads
     assert caller_thread not in nvml_threads
     assert len(set(nvml_threads)) == 1

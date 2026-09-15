@@ -8,6 +8,8 @@ import uuid
 from enum import IntEnum
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from sglang_omni.mps.devices import NvmlDeviceInfo
 
 GPU_A = "GPU-aaaaaaaa-bbbb-cccc-dddd-000000000001"
@@ -33,8 +35,6 @@ class _FakeDriver:
         return (self.init_status,)
 
     def cuDeviceGet(self, ordinal):
-        if ordinal not in self.uuids:
-            return _CudaStatus.INVALID_DEVICE, None
         return _CudaStatus.SUCCESS, ordinal
 
     def cuDeviceGetUuid(self, device):
@@ -49,25 +49,22 @@ def _fake_pynvml(failed_uuids: set[str] | None = None):
     class NvmlNotSupported(NvmlError):
         pass
 
-    handles: list[str] = []
     failures = failed_uuids or set()
 
     def by_uuid(raw_uuid):
-        gpu_uuid = raw_uuid.decode()
+        gpu_uuid = raw_uuid.decode() if isinstance(raw_uuid, bytes) else raw_uuid
         if gpu_uuid in failures:
             raise NvmlError(f"cannot inspect {gpu_uuid}")
-        handles.append(gpu_uuid)
         return gpu_uuid
 
     return SimpleNamespace(
-        handles=handles,
         NVMLError=NvmlError,
         NVMLError_NotSupported=NvmlNotSupported,
         NVML_DEVICE_MIG_ENABLE=1,
         nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
         nvmlDeviceGetHandleByUUID=by_uuid,
         nvmlDeviceGetUUID=lambda handle: handle,
-        nvmlDeviceGetCudaComputeCapability=lambda _handle: (9, 0),
         nvmlDeviceGetMigMode=lambda _handle: (0, 0),
     )
 
@@ -117,3 +114,36 @@ def test_nvml_failure_preserves_driver_resolved_uuid(monkeypatch):
     assert inspected[0].unsupported_reason is None
     assert inspected[1].gpu_uuid == GPU_B
     assert "NVML query failed" in inspected[1].unsupported_reason
+
+
+@pytest.mark.parametrize(
+    "outcome", ["ok", "query_error", "init_error", "mig_device", "mig_mode"]
+)
+def test_device_inspection_balances_nvml_session(monkeypatch, outcome):
+    pynvml = _fake_pynvml({GPU_A} if outcome == "query_error" else None)
+    calls = []
+
+    def init():
+        calls.append("init")
+        if outcome == "init_error":
+            raise pynvml.NVMLError("initialization failed")
+
+    pynvml.nvmlInit = init
+    pynvml.nvmlShutdown = lambda: calls.append("shutdown")
+    if outcome == "mig_device":
+        pynvml.nvmlDeviceGetUUID = lambda handle: "MIG-example"
+    elif outcome == "mig_mode":
+        pynvml.nvmlDeviceGetMigMode = lambda handle: (1, 1)
+    monkeypatch.setitem(sys.modules, "pynvml", pynvml)
+    _install_cuda_driver(monkeypatch, _FakeDriver({0: GPU_A}))
+
+    device = NvmlDeviceInfo().inspect([0])[0]
+
+    assert device.gpu_uuid == GPU_A
+    assert calls == (["init"] if outcome == "init_error" else ["init", "shutdown"])
+    if outcome.startswith("mig"):
+        assert "MIG" in device.unsupported_reason
+    elif outcome == "ok":
+        assert device.unsupported_reason is None
+    else:
+        assert "NVML query failed" in device.unsupported_reason

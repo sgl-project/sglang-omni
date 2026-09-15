@@ -12,7 +12,7 @@ from tests.test_ci import test_mps_native as mps_ci
 
 
 def _make_pipe_dir(tmp_path):
-    pipe_dir = tmp_path / "GPU-test" / "pipe"
+    pipe_dir = tmp_path / "run-test" / "pipe"
     pipe_dir.mkdir(parents=True)
     return pipe_dir
 
@@ -77,18 +77,13 @@ def test_operator_cleanup_preserves_signal_and_control_order(
     mps_ci._operator_cleanup({700})
 
     assert not tmp_path.exists()
-    assert [event[0] for event in events] == [
-        "signal",
-        "read",
-        "snapshot",
-        "signal",
-        "snapshot",
-        "quit",
-        "alive",
-        "gone",
-    ]
-    assert events[0][1] == signal.SIGSTOP
-    assert events[3][1] == signal.SIGKILL
+    stop = ("signal", signal.SIGSTOP, frozenset({700}))
+    kill = ("signal", signal.SIGKILL, frozenset({700}))
+    drained = ("snapshot", pipe_dir, frozenset())
+    assert events.index(stop) < events.index(("read", pipe_dir)) < events.index(kill)
+    assert events.index(kill) < events.index(drained) < events.index(("quit", pipe_dir))
+    assert events.index(("quit", pipe_dir)) < events.index(("alive", 900, False))
+    assert events[-1][0] == "gone"
 
     mps_ci._operator_cleanup({700})
     assert not tmp_path.exists()

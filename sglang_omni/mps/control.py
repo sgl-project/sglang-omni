@@ -3,17 +3,56 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
-from sglang_omni.mps.manager import (
-    MPS_CLIENT_TOKEN_ENV,
-    MpsClientRef,
-    MpsControlError,
-    MpsDaemonNotStartedError,
-)
+
+class MpsError(RuntimeError):
+    """Raised when the MPS lifecycle cannot proceed safely."""
+
+
+class MpsDirtyStateError(MpsError):
+    """Cleanup could not confirm resource release; the run directory is preserved."""
+
+
+class MpsControlError(MpsError):
+    """Raised when a strict MPS control or process query fails."""
+
+
+class MpsDaemonNotStartedError(MpsControlError):
+    """The control binary was not executed, so it cannot have created a daemon."""
+
+
+@dataclass(frozen=True, order=True)
+class MpsClientRef:
+    """One CUDA client as identified by the MPS server that owns it."""
+
+    server_pid: int
+    client_pid: int
+
+
+class MpsControlClient(Protocol):
+    """Native control I/O used by the serve runtime."""
+
+    def start_daemon(
+        self, pipe_dir: Path, log_dir: Path, gpu_uuids: tuple[str, ...]
+    ) -> None: ...
+
+    def read_daemon_identity(self, pipe_dir: Path) -> int: ...
+
+    def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]: ...
+
+    def get_server_status(self, pipe_dir: Path, server_pid: int) -> str: ...
+
+    def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None: ...
+
+    def quit_daemon(self, pipe_dir: Path) -> None: ...
+
+    def daemon_process_alive(self, pid: int) -> bool: ...
+
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
 _QUERY_TIMEOUT_SECONDS = 10
@@ -62,12 +101,14 @@ class SubprocessMpsControlClient:
             )
         return result.stdout
 
-    def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None:
+    def start_daemon(
+        self, pipe_dir: Path, log_dir: Path, gpu_uuids: tuple[str, ...]
+    ) -> None:
         env = self._control_env(pipe_dir)
         env["CUDA_MPS_LOG_DIRECTORY"] = str(log_dir)
         # UUID visibility, not ordinal: an ordinal-scoped daemon remaps the
         # client-side ordinals used by examples/mps_dp.
-        env["CUDA_VISIBLE_DEVICES"] = gpu_uuid
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_uuids)
         try:
             subprocess.run(
                 [_CONTROL_BINARY, "-d"],
@@ -133,13 +174,14 @@ class SubprocessMpsControlClient:
                 clients.add(MpsClientRef(server_pid, client_pid))
         return clients
 
+    def get_server_status(self, pipe_dir: Path, server_pid: int) -> str:
+        """Query the native status of a previously verified MPS server."""
+
+        return self._query(pipe_dir, f"get_server_status {server_pid}").strip()
+
     def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None:
         command = f"terminate_client {client.server_pid} {client.client_pid}"
-        output = self._query(pipe_dir, command).strip()
-        if output != "0":
-            raise MpsControlError(
-                f"{_CONTROL_BINARY} {command!r} returned {output!r}, expected '0'"
-            )
+        self._query(pipe_dir, command)
 
     def quit_daemon(self, pipe_dir: Path) -> None:
         self._query(pipe_dir, "quit")
@@ -157,39 +199,3 @@ class SubprocessMpsControlClient:
             return False
         except (OSError, IndexError) as exc:
             raise MpsControlError(f"cannot inspect daemon pid {pid}: {exc}") from exc
-
-    def client_token(self, pid: int) -> str | None:
-        try:
-            entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            raise MpsControlError(f"cannot inspect client pid {pid}: {exc}") from exc
-        prefix = f"{MPS_CLIENT_TOKEN_ENV}=".encode()
-        values = [entry[len(prefix) :] for entry in entries if entry.startswith(prefix)]
-        if not values:
-            return None
-        if len(values) != 1 or not values[0]:
-            raise MpsControlError(
-                f"client pid {pid} has malformed {MPS_CLIENT_TOKEN_ENV}"
-            )
-        try:
-            return values[0].decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise MpsControlError(
-                f"client pid {pid} has non-ASCII {MPS_CLIENT_TOKEN_ENV}"
-            ) from exc
-
-    def owner_lease_held(self, lease_file: Path) -> bool:
-        try:
-            with lease_file.open("r+") as probe:
-                try:
-                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    return True
-                fcntl.flock(probe, fcntl.LOCK_UN)
-                return False
-        except OSError as exc:
-            raise MpsControlError(
-                f"cannot inspect owner lease {lease_file}: {exc}"
-            ) from exc

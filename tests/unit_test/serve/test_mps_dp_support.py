@@ -179,16 +179,15 @@ def gpu_with_16gib(monkeypatch):
     )
 
 
-def test_budget_rejects_kv_pools_over_physical_vram(tmp_path, gpu_with_16gib):
+@pytest.mark.parametrize("weight_share", [False, True])
+def test_budget_rejects_kv_pools_over_physical_vram(
+    tmp_path, gpu_with_16gib, weight_share
+):
     yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="9GiB")
-    with pytest.raises(ValueError, match="18.00GiB of KV pools"):
-        _strict_budget(yaml_path, gpu_id=0, replicas=2)
-
-
-def test_kv_hard_bound_applies_with_weight_share_too(tmp_path, gpu_with_16gib):
-    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="9GiB")
-    with pytest.raises(ValueError, match="KV pools"):
-        _strict_budget(yaml_path, gpu_id=0, replicas=2, weight_share=True)
+    with pytest.raises(ValueError, match="18.00GiB of KV pools") as exc:
+        _strict_budget(yaml_path, gpu_id=0, replicas=2, weight_share=weight_share)
+    assert "total_reserve_bytes" not in str(exc.value)
+    assert "even split" not in str(exc.value)
 
 
 def test_budget_rejects_declared_reserve_total_over_physical_vram(
@@ -211,6 +210,8 @@ def test_budget_within_vram_passes_with_declared_reserve(tmp_path, gpu_with_16gi
     assert budget["per_replica_kv_cache_bytes"] == 6 * 1024**3
     assert budget["total_kv_cache_bytes"] == 12 * 1024**3
     assert budget["requested_total_bytes"] == 16 * 1024**3
+    manifest = mps_dp_config._serialize_mps_memory_budget_manifest(budget)
+    assert "mps_budget_total_vram_bytes=" in manifest
 
 
 def test_omitted_reserve_passes_kv_bound_and_warns_for_dp(
@@ -236,17 +237,6 @@ def test_omitted_reserve_single_replica_does_not_warn(tmp_path, gpu_with_16gib, 
     _strict_budget(yaml_path, gpu_id=0, replicas=1)
 
     assert capsys.readouterr().err == ""
-
-
-def test_kv_error_only_cites_user_written_numbers(tmp_path, gpu_with_16gib):
-    yaml_path = _write_budget_yaml(tmp_path, kv_cache_bytes="9GiB")
-
-    with pytest.raises(ValueError) as exc_info:
-        _strict_budget(yaml_path, gpu_id=0, replicas=2)
-
-    message = str(exc_info.value)
-    assert "total_reserve_bytes" not in message
-    assert "even split" not in message
 
 
 def test_weight_share_budget_skips_reserve_total_check(
@@ -332,17 +322,6 @@ def test_missing_kv_budget_is_required_but_may_be_skipped(tmp_path, gpu_with_16g
     )
 
 
-def test_budget_manifest_serialization_has_single_vram_key(tmp_path, gpu_with_16gib):
-    yaml_path = _write_budget_yaml(
-        tmp_path, kv_cache_bytes="6GiB", total_reserve_bytes="8GiB"
-    )
-
-    budget = _strict_budget(yaml_path, gpu_id=0, replicas=2)
-    manifest = mps_dp_config._serialize_mps_memory_budget_manifest(budget)
-
-    assert "mps_budget_total_vram_bytes=" in manifest
-
-
 def test_docs_table_matches_the_code_registries():
     text = DOCS_PAGE.read_text(encoding="utf-8")
     supported_rows = [
@@ -386,7 +365,15 @@ class TestLaunchFailsClosedBeforeResources:
 
     def test_unpinned_kv_budget_leaves_no_state(self, tmp_path):
         yaml_path = _write_yaml(tmp_path, "LLaDA2UniPipelineConfig")
-        proc, state_root = self._run(tmp_path, yaml_path)
+        probe = tmp_path / "nvidia-smi"
+        probe.write_text(
+            '#!/bin/sh\n[ "$1" = "--query-gpu=uuid" ] || exit 1\n'
+            "echo GPU-aaaaaaaa-bbbb-cccc-dddd-000000000001\n"
+        )
+        probe.chmod(0o755)
+        proc, state_root = self._run(
+            tmp_path, yaml_path, PATH=f"{tmp_path}:{os.environ['PATH']}"
+        )
         assert proc.returncode != 0
         assert "MAX_TOTAL_TOKENS is required" in proc.stdout + proc.stderr
         assert not state_root.exists()
@@ -427,24 +414,7 @@ def _engine_stage_name(config_cls) -> str:
     )
 
 
-def test_kv_budget_rejects_a_second_token_cap_knob(tmp_path):
-    stage = _engine_stage_name(WhisperASRPipelineConfig)
-    yaml_path = tmp_path / "probe.yaml"
-    yaml_path.write_text(
-        "config_cls: WhisperASRPipelineConfig\n"
-        "name: probe\n"
-        "model_path: dummy/none\n"
-        "stages:\n"
-        f"  {stage}:\n"
-        "    engine:\n"
-        "      kv_cache_bytes: 2GiB\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="keep exactly one"):
-        mps_dp_config.resolve_max_total_tokens(yaml_path, 30000)
-
-
-def test_kv_only_config_resolves_unpinned(tmp_path):
+def test_kv_budget_uses_one_token_cap(tmp_path):
     stage = _engine_stage_name(WhisperASRPipelineConfig)
     yaml_path = tmp_path / "probe.yaml"
     yaml_path.write_text(
@@ -460,3 +430,5 @@ def test_kv_only_config_resolves_unpinned(tmp_path):
     resolved_stage, value = mps_dp_config.resolve_max_total_tokens(yaml_path)
     assert resolved_stage == stage
     assert value is None
+    with pytest.raises(ValueError, match="keep exactly one"):
+        mps_dp_config.resolve_max_total_tokens(yaml_path, 30000)

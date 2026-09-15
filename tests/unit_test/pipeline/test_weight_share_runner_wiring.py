@@ -160,9 +160,6 @@ class _FakeGroup:
     def dead_summary(self) -> str:
         return f"{self.group_name} exited"
 
-    def process_start_attempts(self) -> set[str]:
-        return {self.group_name} if self.processes else set()
-
     async def shutdown(self, before_signal=None) -> None:
         del before_signal
         self.events.append(f"shutdown {self.group_name}")
@@ -304,29 +301,31 @@ async def test_mps_environment_survives_the_weight_share_merge(
     _patch(monkeypatch, events, [leader, follower])
 
     class _FakeMps:
-        has_leases = False
+        has_resources = False
 
-        async def start(self) -> None:
+        async def start(self, gpu_uuids) -> None:
             events.append("MPS acquire")
 
-        def env_for_process(self, process_name: str) -> dict[str, str]:
-            return {"CUDA_MPS_PIPE_DIRECTORY": f"/tmp/pipe/{process_name}"}
+        @property
+        def worker_env(self) -> dict[str, str]:
+            return {"CUDA_MPS_PIPE_DIRECTORY": "/tmp/pipe"}
 
-        async def verify(self) -> None:
+        async def verify(self, worker_pids) -> None:
             events.append("MPS verify")
 
-        async def probe_failures(self) -> dict[str, str]:
-            return {}
+        async def probe(self) -> str | None:
+            return None
 
-        async def retire_process_clients(self, process_name: str) -> set:
-            return set()
+        async def retire_process_clients(self, worker_pid: int) -> None:
+            pass
 
-        async def close(self, *, process_start_attempts=None) -> None:
-            del process_start_attempts
+        async def close(self) -> None:
             events.append("MPS close")
 
     monkeypatch.setattr(
-        mp_runner, "create_for_pipeline", lambda mode, specs: _FakeMps()
+        mp_runner,
+        "create_for_pipeline",
+        lambda mode, specs: (_FakeMps(), {"gen@r0": "GPU-a", "gen@r1": "GPU-a"}),
     )
     config = _config(tmp_path)
     config.mps = "on"
@@ -335,7 +334,7 @@ async def test_mps_environment_survives_the_weight_share_merge(
     await runner.start(timeout=5.0)
     try:
         env = leader.spawn_env
-        assert env["gen@r0"]["CUDA_MPS_PIPE_DIRECTORY"] == "/tmp/pipe/gen@r0"
+        assert env["gen@r0"]["CUDA_MPS_PIPE_DIRECTORY"] == "/tmp/pipe"
         assert env["gen@r0"][ENV_WEIGHT_SHARE].startswith("leader:")
         assert env["gen@r0"][ENV_WEIGHT_SHARE_COMPAT] == "1"
     finally:
@@ -392,3 +391,24 @@ async def test_sharing_off_keeps_one_spawn_wave_and_one_broadcast(
     assert events.index("spawn gen@r1") < events.index("ready gen@r0")
     assert first.spawn_env is None
     assert coordinator.shutdown_calls == [None]
+
+
+@pytest.mark.asyncio
+async def test_failed_follower_shutdown_does_not_stop_its_leader(tmp_path, monkeypatch):
+    events = []
+    leader = _FakeGroup(events, "gen@r0")
+    follower = _FakeGroup(events, "gen@r1")
+    coordinator = _patch(monkeypatch, events, [leader, follower])
+
+    async def failed_shutdown(**kwargs):
+        raise RuntimeError("follower still has active CUDA contexts")
+
+    monkeypatch.setattr(follower, "shutdown", failed_shutdown)
+    runner = MultiProcessPipelineRunner(_config(tmp_path))
+    await runner.start()
+    with pytest.raises(RuntimeError, match="follower still has active CUDA contexts"):
+        await runner.stop()
+    assert coordinator.shutdown_calls == [["engine@r1"]]
+    assert "shutdown gen@r0" not in events
+    assert runner._groups == [leader, follower]
+    runner._close_runtime_dir()
