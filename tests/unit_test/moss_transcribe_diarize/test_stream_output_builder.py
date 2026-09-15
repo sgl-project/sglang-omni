@@ -106,6 +106,12 @@ def test_silent_when_no_token_this_step():
     assert builder("req-1", rd, _make_req_output(None)) == []
 
 
+def test_no_terminal_flush_hook():
+    builder = _builder({1: b"A"})
+
+    assert not hasattr(builder, "flush")
+
+
 def test_silent_when_req_or_payload_missing():
     builder = _builder({1: b"A"})
 
@@ -215,7 +221,18 @@ def test_min_emit_interval_holds_then_eos_flushes():
     assert builder("r", rd, _make_req_output(3)) == []
 
     msgs = builder("r", rd, _make_req_output(_EOS))
+
     assert [m.data["text"] for m in msgs] == ["BC"]
+    assert [m.metadata for m in msgs] == [{"modality": "text", "token_id": _EOS}]
+
+
+def test_eos_holds_incomplete_utf8_replacement():
+    builder = _interval_builder({1: b"\xe4", _EOS: b"<eos>"}, interval_s=3600.0)
+    rd = _make_req_data()
+
+    assert builder("r", rd, _make_req_output(1)) == []
+    assert builder("r", rd, _make_req_output(_EOS)) == []
+    assert rd.req._moss_stream_pending_ids == [1]
 
 
 def test_min_emit_interval_elapsed_flushes_batch():
