@@ -87,9 +87,11 @@ The MLX path currently supports one device (`tp_size=1`) and greedy decoding.
 Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
 HTTP and SSE transcription interfaces below are the same as on CUDA;
 `stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
-The Apple paths do not provide sampling penalties or token logprobs yet. MLX
-can batch multiple requests, but `max_running_requests=1` is recommended when
-single-request latency matters; increase it only when throughput is preferred.
+The MLX path supports `repetition_penalty`, but not frequency/presence penalties
+or token logprobs yet. The Torch MPS path does not provide sampling penalties or
+token logprobs. MLX can batch multiple requests, but `max_running_requests=1` is
+recommended when single-request latency matters; increase it only when
+throughput is preferred.
 
 To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
 and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
@@ -297,6 +299,7 @@ rollback state.
 | `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
+| `repetition_penalty` | float | `1.0` | Penalize generated tokens that have already appeared; accepted range is `(0, 2]` |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
 
