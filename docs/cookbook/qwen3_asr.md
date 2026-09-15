@@ -20,7 +20,7 @@ MODEL_PATH="$(
 ### Apple Silicon (MLX)
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
-SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula(by following Installation): draft All future MLX-supported Model shall use a unified installation approach.
 
 ```bash
 brew install ffmpeg@7
