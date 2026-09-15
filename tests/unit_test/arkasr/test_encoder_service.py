@@ -74,9 +74,7 @@ class _StubModel(torch.nn.Module):
             rows = _expected_audio_tokens(item) + self.row_offset
             fill = float((getattr(item, "hash", None) or 0) % 97 + 1)
             parts.append(torch.full((rows, _HIDDEN_SIZE), fill, dtype=self.dtype))
-        # ARK's get_audio_feature concatenates each item's [tokens_i, hidden]
-        # block in item order across its encoder microbatches, so the result is
-        # already flat (A-PR4 #1411).
+        # note (Akazaakane): encoder microbatches are flattened in item order.
         packed = torch.cat(parts, dim=0)
         if self.packed_3d_output:
             return packed.unsqueeze(0)
@@ -264,6 +262,191 @@ def test_cache_hit_skips_reencode() -> None:
     assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
     assert second.feature is None
     assert service.stats()["hits"] == 1
+
+
+def test_lookup_cached_embedding_returns_only_valid_entries() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    item = _item(11, 3)
+    service.encode_item(item)
+
+    cached = service.lookup_cached_embedding(item.audio_fingerprint, 3)
+
+    assert cached is not None
+    assert torch.equal(cached, item.precomputed_embeddings.cpu())
+    stats = service.stats()
+    assert stats["hits"] == 0
+    assert stats["early_hits"] == 0
+
+    second = _item(11, 3, with_feature=False)
+    service.submit_cached_item(second, cached).result(timeout=1)
+    stats = service.stats()
+    assert stats["hits"] == 1
+    assert stats["early_hits"] == 1
+
+    assert service.lookup_cached_embedding(item.audio_fingerprint, 4) is None
+    assert len(service._cache) == 0
+
+
+def test_submit_cached_item_preserves_submission_counters() -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    first = _item(11, 3)
+    service.encode_item(first)
+    cached = service.lookup_cached_embedding(first.audio_fingerprint, 3)
+    assert cached is not None
+    second = _item(11, 3, with_feature=False)
+
+    future = service.submit_cached_item(second, cached)
+
+    assert future.result(timeout=1) is cached
+    assert second.precomputed_embeddings is not None
+    assert second.feature is None
+    stats = service.stats()
+    assert stats["hits"] == 1
+    assert stats["early_hits"] == 1
+    assert stats["submitted"] == 2
+    assert stats["pending"] == 0
+
+
+def test_cached_attachment_oom_is_tracked_and_recovered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    first = _item(11, 3)
+    service.encode_item(first)
+    cached = service.lookup_cached_embedding(first.audio_fingerprint, 3)
+    assert cached is not None
+    recovered: list[Exception] = []
+
+    def fail_attach(_item, _embedding) -> None:  # noqa: ANN001
+        raise torch.OutOfMemoryError("cached attachment OOM")
+
+    monkeypatch.setattr(service, "attach_embedding", fail_attach)
+    monkeypatch.setattr(service, "_recover_after_failure", recovered.append)
+
+    future = service.submit_cached_item(_item(11, 3, with_feature=False), cached)
+
+    with pytest.raises(torch.OutOfMemoryError, match="cached attachment OOM"):
+        future.result(timeout=1)
+    stats = service.stats()
+    assert stats["hits"] == 0
+    assert stats["early_hits"] == 0
+    assert stats["submitted"] == 2
+    assert stats["failed"] == 1
+    assert stats["pending"] == 0
+    assert len(recovered) == 1
+    assert isinstance(recovered[0], torch.OutOfMemoryError)
+
+
+def test_late_cache_hit_attachment_oom_uses_failure_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    first = _item(11, 3)
+    service.encode_item(first)
+    recovered: list[Exception] = []
+
+    monkeypatch.setattr(service, "lookup_cached_embedding", lambda *_args: None)
+
+    def fail_attach(_item, _embedding) -> None:  # noqa: ANN001
+        raise torch.OutOfMemoryError("late cache attachment OOM")
+
+    monkeypatch.setattr(service, "attach_embedding", fail_attach)
+    monkeypatch.setattr(service, "_recover_after_failure", recovered.append)
+
+    future = service.submit_item(_item(11, 3))
+
+    with pytest.raises(torch.OutOfMemoryError, match="late cache attachment OOM"):
+        future.result(timeout=1)
+    stats = service.stats()
+    assert stats["hits"] == 0
+    assert stats["early_hits"] == 0
+    assert stats["submitted"] == 2
+    assert stats["failed"] == 1
+    assert stats["pending"] == 0
+    assert len(recovered) == 1
+    assert isinstance(recovered[0], torch.OutOfMemoryError)
+
+
+def test_follower_attachment_oom_uses_failure_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    encode_gate = threading.Event()
+    model.encode_gate = encode_gate
+    model.encode_started = threading.Event()
+    service = _make_service(model)
+    leader_item = _item(22, 3)
+    follower_item = _item(22, 3)
+    original_attach = service.attach_embedding
+    recovered: list[Exception] = []
+
+    def attach(item, embedding) -> None:  # noqa: ANN001
+        if item is follower_item:
+            raise torch.OutOfMemoryError("follower attachment OOM")
+        original_attach(item, embedding)
+
+    monkeypatch.setattr(service, "attach_embedding", attach)
+    monkeypatch.setattr(service, "_recover_after_failure", recovered.append)
+
+    leader = service.submit_item(leader_item)
+    assert model.encode_started.wait(timeout=5)
+    follower = service.submit_item(follower_item)
+    accounting_finished = threading.Event()
+    follower.add_done_callback(lambda _done: accounting_finished.set())
+    encode_gate.set()
+
+    assert leader.result(timeout=5) is not None
+    with pytest.raises(torch.OutOfMemoryError, match="follower attachment OOM"):
+        follower.result(timeout=5)
+    assert accounting_finished.wait(timeout=1)
+    stats = service.stats()
+    assert stats["merged"] == 1
+    assert stats["failed"] == 1
+    assert stats["pending"] == 0
+    assert len(recovered) == 1
+
+
+def test_cached_attachment_uses_default_cuda_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _StubModel()
+    service = _make_service(model)
+    first = _item(11, 3)
+    service.encode_item(first)
+    cached = service.lookup_cached_embedding(first.audio_fingerprint, 3)
+    assert cached is not None
+    service._device = torch.device("cuda")
+    default_stream = object()
+    active_streams: list[object] = []
+
+    class _StreamContext:
+        def __init__(self, stream: object) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> None:
+            active_streams.append(self.stream)
+
+        def __exit__(self, *_args) -> None:
+            active_streams.pop()
+
+    monkeypatch.setattr(torch.cuda, "default_stream", lambda _device: default_stream)
+    monkeypatch.setattr(torch.cuda, "stream", _StreamContext)
+
+    def attach(item, embedding) -> None:  # noqa: ANN001
+        assert active_streams == [default_stream]
+        item.precomputed_embeddings = embedding
+        item.feature = None
+
+    monkeypatch.setattr(service, "attach_embedding", attach)
+
+    future = service.submit_cached_item(_item(11, 3, with_feature=False), cached)
+
+    assert future.result(timeout=1) is cached
+    assert active_streams == []
 
 
 def test_extended_audio_never_reuses_prefix_embedding() -> None:
@@ -588,14 +771,7 @@ def test_token_count_mismatch_fails_loudly() -> None:
 
 
 def test_packed_3d_encoder_output_is_rejected() -> None:
-    """ARK's get_audio_feature returns a flat [total_tokens, hidden] tensor.
-
-    Unlike Qwen3-ASR (whose tower emits a packed [1, total, hidden]
-    last_hidden_state), there is no unit batch dim to squeeze here -- A-PR4's
-    batched encoder still flattens its microbatch outputs back to 2-D in item
-    order. A 3-D result means the encoder contract changed and the split would
-    be wrong, so fail loudly rather than mis-scatter rows into the LM.
-    """
+    """ARK encoder batches must return flattened [total_tokens, hidden] rows."""
     model = _StubModel()
     model.packed_3d_output = True
     service = _make_service(model)

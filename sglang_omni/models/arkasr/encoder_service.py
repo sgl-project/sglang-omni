@@ -1,31 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Precompute and cache complete LM-ready ARK-ASR audio embeddings.
+"""Precompute and cache LM-ready ARK-ASR audio embeddings.
 
-A-PR2. Today ``ArkasrForConditionalGeneration.get_audio_feature`` runs inside
-multimodal embedding construction on the LM forward path, so every admission
-stalls the running decode batch for the whole audio-encoder forward on the
-scheduler thread and the default stream. This service mirrors the shared
-pre-LM encoder pattern (Qwen3-ASR / Fun-ASR): complete audio-encoder execution
-happens at request-build time on a dedicated worker thread and CUDA stream, and
-the request is admitted with ``MultimodalDataItem.precomputed_embeddings``
-already attached.
+Audio encoding runs before LM admission on a dedicated worker thread and CUDA
+stream. The service batches queued requests, deduplicates identical audio, and
+admits each request only after its complete embedding is attached.
 
-Batching composes with A-PR4 (#1411) rather than duplicating it. This service
-decides *how many queued requests are handed to one* ``get_audio_feature``
-call (``max_batch_size``, drained from the request-build queue);
-``get_audio_feature`` then pads-and-masks that group and splits it into
-sequential microbatches of ``encoder_max_batch_size`` to bound activation
-memory. Both default to 8, so one drained group is exactly one encoder
-microbatch. Raising ``max_batch_size`` above ``encoder_max_batch_size`` is
-what turns the group into several bounded forwards; it does not widen any
-single forward.
-
-The ``pre_lm_max_batch_size`` / ``pre_lm_max_batch_wait_ms`` knob names follow
-Fun-ASR and Qwen3-ASR. Note the difference from those models: Fun-ASR's
-pad+mask encoder has no internal bound, so there its one knob sets the actual
-encoder width, whereas for ARK it only sets how many requests reach the call.
-(MOSS-TD spells its drain size ``encoder_max_batch_size``; that name is
-already ARK's model-internal bound, so it is deliberately not reused here.)
+The service batch limit controls how many queued requests enter one
+``get_audio_feature`` call. The model's ``encoder_max_batch_size`` separately
+bounds the microbatches used to execute that call.
 """
 
 from __future__ import annotations
@@ -159,6 +141,7 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         self._closed = False
         self._inflight: dict[str, concurrent.futures.Future[torch.Tensor]] = {}
         self._hits = 0
+        self._early_hits = 0
         self._misses = 0
         self._merged = 0
         self._failed = 0
@@ -230,24 +213,12 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         if key is None:
             return self._track_submission(self._submit(item))
 
-        cached = self._cache.get(key)
+        cached = self.lookup_cached_embedding(
+            getattr(item, "audio_fingerprint", None),
+            expected_tokens,
+        )
         if cached is not None:
-            if self._is_valid(cached, expected_tokens):
-                with self._lock:
-                    self._hits += 1
-                self.attach_embedding(item, cached)
-                future: concurrent.futures.Future[torch.Tensor] = (
-                    concurrent.futures.Future()
-                )
-                future.set_result(cached)
-                return self._track_submission(future)
-            logger.warning(
-                f"ARK-ASR pre-LM cache entry {key} failed validation "
-                f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"discarding it if unchanged before re-encoding"
-            )
-            self._cache.remove_if_same(key, cached)
-            cached = None
+            return self._submit_cache_hit(item, cached, early=False)
 
         follower_of: concurrent.futures.Future[torch.Tensor] | None = None
         leader = False
@@ -255,9 +226,7 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             future = self._inflight.get(key)
             if future is None:
                 cached = self._cache.get(key)
-                if cached is not None and self._is_valid(cached, expected_tokens):
-                    self._hits += 1
-                else:
+                if cached is None or not self._is_valid(cached, expected_tokens):
                     cached = None
                     future = concurrent.futures.Future()
                     self._inflight[key] = future
@@ -267,12 +236,7 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 self._merged += 1
                 follower_of = future
         if cached is not None:
-            self.attach_embedding(item, cached)
-            completed: concurrent.futures.Future[torch.Tensor] = (
-                concurrent.futures.Future()
-            )
-            completed.set_result(cached)
-            return self._track_submission(completed)
+            return self._submit_cache_hit(item, cached, early=False)
         if leader:
             future.add_done_callback(
                 lambda done, cache_key=key: self._clear_inflight(cache_key, done)
@@ -290,6 +254,7 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         completion: concurrent.futures.Future[torch.Tensor] = (
             concurrent.futures.Future()
         )
+        self._track_submission(completion)
 
         def attach_follower(done: concurrent.futures.Future[torch.Tensor]) -> None:
             try:
@@ -299,13 +264,60 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                         f"ARK-ASR pre-LM encode leader for {key} returned an "
                         "invalid embedding"
                     )
-                self.attach_embedding(item, embedding)
+                self._attach_ready_embedding(item, embedding)
                 completion.set_result(embedding)
             except Exception as exc:
                 completion.set_exception(exc)
 
         follower_of.add_done_callback(attach_follower)
-        return self._track_submission(completion)
+        return completion
+
+    def submit_cached_item(
+        self,
+        item: Any,
+        embedding: torch.Tensor,
+    ) -> concurrent.futures.Future[torch.Tensor]:
+        return self._submit_cache_hit(item, embedding, early=True)
+
+    def _submit_cache_hit(
+        self,
+        item: Any,
+        embedding: torch.Tensor,
+        *,
+        early: bool,
+    ) -> concurrent.futures.Future[torch.Tensor]:
+        future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+        self._track_submission(future)
+        try:
+            self._attach_ready_embedding(item, embedding)
+        except Exception as exc:
+            future.set_exception(exc)
+            return future
+        with self._lock:
+            self._hits += 1
+            if early:
+                self._early_hits += 1
+        future.set_result(embedding)
+        return future
+
+    def _attach_ready_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+        expected_tokens = _expected_audio_tokens(item)
+        if expected_tokens is None or not self._is_valid(embedding, expected_tokens):
+            raise RuntimeError("ARK-ASR embedding attachment failed validation")
+        try:
+            if self._device.type == "cuda":
+                with torch.cuda.stream(torch.cuda.default_stream(self._device)):
+                    self.attach_embedding(item, embedding)
+            else:
+                self.attach_embedding(item, embedding)
+        except Exception as exc:
+            failure = self._detach_failure(exc)
+            logger.error(
+                "ARK-ASR embedding attachment failed:\n%s",
+                failure.formatted_traceback,
+            )
+            self._recover_after_failure(failure.exception)
+            raise failure.exception from None
 
     def encode_item(self, item: Any) -> None:
         """Block until ``item.precomputed_embeddings`` holds the LM embedding.
@@ -345,11 +357,34 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             if self._inflight.get(key) is future:
                 del self._inflight[key]
 
+    def lookup_cached_embedding(
+        self,
+        audio_fingerprint: str | None,
+        expected_tokens: int,
+    ) -> torch.Tensor | None:
+        """Return a validated cached embedding without starting an encode."""
+        key = self._cache_key_from_fingerprint(audio_fingerprint)
+        cached = self._cache.get(key)
+        if cached is None:
+            return None
+        if self._is_valid(cached, expected_tokens):
+            return cached
+        logger.warning(
+            "ARK-ASR pre-LM cache entry %s failed validation "
+            "(shape=%s, dtype=%s); discarding it if unchanged before re-encoding",
+            key,
+            getattr(cached, "shape", None),
+            getattr(cached, "dtype", None),
+        )
+        self._cache.remove_if_same(key, cached)
+        return None
+
     def stats(self) -> dict[str, int | float]:
         with self._lock:
             cache_lookups = self._hits + self._misses
             return {
                 "hits": self._hits,
+                "early_hits": self._early_hits,
                 "misses": self._misses,
                 "merged": self._merged,
                 "failed": self._failed,
@@ -376,10 +411,14 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             }
 
     def _cache_key(self, item: Any) -> str | None:
-        item_hash = getattr(item, "audio_fingerprint", None)
-        if item_hash is None:
+        return self._cache_key_from_fingerprint(
+            getattr(item, "audio_fingerprint", None)
+        )
+
+    def _cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
+        if audio_fingerprint is None:
             return None
-        return f"{self._namespace}:{item_hash}"
+        return f"{self._namespace}:{audio_fingerprint}"
 
     def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
         return (
