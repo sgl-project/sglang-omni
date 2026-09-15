@@ -110,7 +110,9 @@ class StreamingSimpleScheduler:
                 self._emit_error(request_id, exc)
                 self.abort(request_id)
 
-    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage] | None:
+        """Messages that complete the stream, or None to complete it later
+        through _complete_stream_request."""
         del request_id
         return []
 
@@ -127,6 +129,13 @@ class StreamingSimpleScheduler:
     def clear_stream_state(self, request_id: str) -> None:
         del request_id
 
+    def _has_ready_work(self) -> bool:
+        """True when a compute step can run on already-ingested state."""
+        return False
+
+    def _run_ready_step(self) -> None:
+        """One compute step on already-ingested state; runs off the inbox."""
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -136,9 +145,18 @@ class StreamingSimpleScheduler:
         loop = asyncio.new_event_loop()
         try:
             while self._running:
-                msg = self._next_message()
-                if msg is None:
-                    continue
+                if self._has_ready_work():
+                    # note(ratish): every queued message lands in state before a
+                    # step runs, so a step never decides on a stale view of the streams.
+                    try:
+                        msg = self._get_batch_message()
+                    except _queue_mod.Empty:
+                        self._run_ready_step()
+                        continue
+                else:
+                    msg = self._next_message()
+                    if msg is None:
+                        continue
                 if self._is_aborted(msg.request_id):
                     continue
                 try:
@@ -183,12 +201,16 @@ class StreamingSimpleScheduler:
         raise ValueError(f"Unsupported streaming scheduler message type: {msg.type}")
 
     def _next_message(self) -> IncomingMessage | None:
-        if self._pending_messages:
-            return self._pending_messages.popleft()
         try:
-            return self.inbox.get(timeout=0.1)
+            return self._get_batch_message(timeout=0.1)
         except _queue_mod.Empty:
             return None
+
+    def _get_batch_message(self, *, timeout: float = 0.0) -> IncomingMessage:
+        """The one ordered message source: parked messages, then the inbox."""
+        if self._pending_messages:
+            return self._pending_messages.popleft()
+        return self.inbox.get(timeout=timeout)
 
     # ------------------------------------------------------------------
     # Abort and cleanup
@@ -267,17 +289,18 @@ class StreamingSimpleScheduler:
         ):
             return batch
 
+        deferred: list[IncomingMessage] = []
         batch_cost = self._message_cost(first_msg)
         deadline = time.monotonic() + self._max_batch_wait_s
         while len(batch) < self._max_batch_size:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 try:
-                    msg = self.inbox.get(timeout=remaining)
+                    msg = self._get_batch_message(timeout=remaining)
                 except _queue_mod.Empty:
                     break
 
@@ -290,9 +313,9 @@ class StreamingSimpleScheduler:
                 ):
                     # Note(Chenchen Hong): Done-before-payload only latches state,
                     # so defer it and keep looking for terminal payloads that can batch.
-                    self._pending_messages.append(msg)
+                    deferred.append(msg)
                     continue
-                self._pending_messages.append(msg)
+                deferred.append(msg)
                 break
             try:
                 is_streaming = self.is_streaming_payload(msg.data)
@@ -301,7 +324,7 @@ class StreamingSimpleScheduler:
                 self.abort(msg.request_id)
                 continue
             if is_streaming:
-                self._pending_messages.append(msg)
+                deferred.append(msg)
                 break
             if self._max_batch_cost is not None:
                 try:
@@ -311,10 +334,13 @@ class StreamingSimpleScheduler:
                     self.abort(msg.request_id)
                     continue
                 if batch and batch_cost + msg_cost > self._max_batch_cost:
-                    self._pending_messages.appendleft(msg)
+                    deferred.append(msg)
                     break
                 batch_cost += msg_cost
             batch.append(msg)
+        # Do not re-read done-before-payload markers during this collection.
+        # Restore them ahead of any unconsumed pending or inbox messages.
+        self._pending_messages.extendleft(reversed(deferred))
         return batch
 
     def _collect_stream_chunk_batch(
@@ -333,7 +359,7 @@ class StreamingSimpleScheduler:
             return batch
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 break
             if msg.type != "stream_chunk":
@@ -525,7 +551,16 @@ class StreamingSimpleScheduler:
                     if not self._is_aborted(request_id):
                         self.outbox.put(out)
                 return
-            for out in self.on_stream_done(request_id):
+            messages = self.on_stream_done(request_id)
+            if messages is None:
+                return
+            self._complete_stream_request(request_id, messages)
+
+    def _complete_stream_request(
+        self, request_id: str, messages: list[OutgoingMessage]
+    ) -> None:
+        with self._state_lock:
+            for out in messages:
                 if not self._is_aborted(request_id):
                     self.outbox.put(out)
             if not self._is_aborted(request_id):

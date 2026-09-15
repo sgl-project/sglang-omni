@@ -604,6 +604,38 @@ def test_coalescing_single_chunk_path_pumps_same_backbone() -> None:
     assert messages[0].metadata == {"modality": "audio"}
 
 
+def test_pump_one_step_reports_nothing_ready_then_runs_one_step() -> None:
+    scheduler = _CoalescingFakeVocoder(threshold=1)
+    assert scheduler._pump_one_step() is None
+    scheduler._run_ready_step()
+    assert _drain(scheduler) == []
+
+    scheduler._ingest_stream_item("a", _item([1]))
+    scheduler._ingest_stream_item("b", _item([2]))
+    scheduler._run_ready_step()
+    assert [(m.request_id, m.type) for m in _drain(scheduler)] == [
+        ("a", "stream"),
+        ("b", "stream"),
+    ]
+    assert scheduler._pump_one_step() is None
+
+
+def test_run_ready_step_failure_aborts_participants_off_the_lock() -> None:
+    cleaned: list[str] = []
+    scheduler = _CoalescingFakeVocoder(
+        threshold=1, fail_steps=True, abort_callback=cleaned.append
+    )
+    scheduler._ingest_stream_item("a", _item([1]))
+
+    scheduler._run_ready_step()
+
+    messages = _drain(scheduler)
+    assert [(m.request_id, m.type) for m in messages] == [("a", "error")]
+    assert scheduler._is_aborted("a")
+    assert scheduler._stream_states == {}
+    assert cleaned == ["a"]
+
+
 def test_step_failure_aborts_every_participant() -> None:
     scheduler = _CoalescingFakeVocoder(threshold=1, fail_steps=True)
     scheduler.on_stream_chunk_batch([("a", _item([1])), ("b", _item([2]))])
