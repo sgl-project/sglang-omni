@@ -162,7 +162,8 @@ def _build_stream_vocoder_chunk(
     if stream_crossfade_samples > 0:
         delta_audio = _apply_stream_crossfade(
             state,
-            delta_audio,
+            audio_tensor,
+            overlap_samples=overlap_samples,
             stream_crossfade_samples=stream_crossfade_samples,
             is_final=is_final,
         )
@@ -189,17 +190,19 @@ def _build_stream_vocoder_chunk(
 
 def _apply_stream_crossfade(
     state: _StreamVocoderState,
-    delta_audio: torch.Tensor,
+    audio_tensor: torch.Tensor,
     *,
+    overlap_samples: int,
     stream_crossfade_samples: int,
     is_final: bool,
 ) -> torch.Tensor | None:
+    delta_audio = audio_tensor[overlap_samples:]
     pending_tail = state.pending_tail
     if pending_tail is not None and pending_tail.numel() > 0:
         crossfade = min(
             int(stream_crossfade_samples),
             int(pending_tail.shape[-1]),
-            int(delta_audio.shape[-1]),
+            int(overlap_samples),
         )
         if crossfade > 0:
             fade_in = torch.linspace(
@@ -210,12 +213,9 @@ def _apply_stream_crossfade(
                 device=delta_audio.device,
             )
             fade_out = 1.0 - fade_in
-            blended = (
-                pending_tail[-crossfade:] * fade_out + delta_audio[:crossfade] * fade_in
-            )
-            delta_audio = torch.cat(
-                [pending_tail[:-crossfade], blended, delta_audio[crossfade:]]
-            )
+            refreshed = audio_tensor[overlap_samples - crossfade : overlap_samples]
+            blended = pending_tail[-crossfade:] * fade_out + refreshed * fade_in
+            delta_audio = torch.cat([pending_tail[:-crossfade], blended, delta_audio])
         else:
             delta_audio = torch.cat([pending_tail, delta_audio])
 
