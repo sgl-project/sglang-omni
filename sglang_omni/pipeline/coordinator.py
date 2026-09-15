@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.comm import stage_io
 from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
 from sglang_omni.pipeline.replicas import (
@@ -25,6 +26,7 @@ from sglang_omni.proto import (
     AdminResult,
     AdminResultMessage,
     CompleteMessage,
+    DataReadyMessage,
     OmniRequest,
     RequestInfo,
     RequestState,
@@ -124,6 +126,8 @@ class Coordinator:
         # local admission closed and lets the broadcast survive caller cancellation.
         self._abort_tasks: dict[str, asyncio.Task[bool]] = {}
         self._admin_ops: dict[str, _AdminPendingOperation] = {}
+        self._request_bindings: dict[str, dict[str, Any]] = {}
+        self._stream_chunk_ids: dict[str, int] = {}
         self._admin_lock = asyncio.Lock()
 
         # State
@@ -439,6 +443,7 @@ class Coordinator:
         if entry_instance not in self._stages:
             raise ValueError(f"Entry stage {entry_instance} not registered")
         entry_info = self._stages[entry_instance]
+        self._request_bindings[request_id] = bindings
 
         # Track request
         self._requests[request_id] = RequestInfo(
@@ -490,6 +495,48 @@ class Coordinator:
             entry_info.control_endpoint,
             replica_bindings,
         )
+
+    async def append_stream(self, request_id, data, *, to_stage):
+        data_ref = stage_io.serialize_inline_stream_chunk(data, None)
+        chunk_id = self._stream_chunk_ids.get(request_id, 0)
+        self._stream_chunk_ids[request_id] = chunk_id + 1
+        await self._send_stream_message(
+            request_id, to_stage, data_ref=data_ref, chunk_id=chunk_id
+        )
+
+    async def close_stream(self, request_id, *, to_stage):
+        await self._send_stream_message(
+            request_id, to_stage, data_ref=None, is_done=True
+        )
+
+    async def _send_stream_message(self, request_id, to_stage, **fields):
+        info = self._requests.get(request_id)
+        if info is None or info.state not in (
+            RequestState.PENDING,
+            RequestState.RUNNING,
+        ):
+            return
+        bindings = self._request_bindings.get(request_id, {})
+        instance = (
+            self._replica_topology.resolve(to_stage, bindings[to_stage])
+            if self._replica_topology.is_replicated(to_stage)
+            else to_stage
+        )
+        await self.control_plane.send_stream_chunk(
+            instance,
+            self._stages[instance].control_endpoint,
+            DataReadyMessage(
+                request_id=request_id,
+                from_stage="coordinator",
+                to_stage=instance,
+                replica_bindings=bindings or None,
+                **fields,
+            ),
+        )
+
+    def _forget_stream_state(self, request_id):
+        self._request_bindings.pop(request_id, None)
+        self._stream_chunk_ids.pop(request_id, None)
 
     def _request_id_is_reserved(self, request_id: str) -> bool:
         """Return whether any coordinator owner still holds this request ID."""
@@ -577,6 +624,7 @@ class Coordinator:
             )
 
         self._requests.pop(request_id, None)
+        self._forget_stream_state(request_id)
         self._partial_results.pop(request_id, None)
 
         logger.info("Coordinator aborted req=%s", request_id)
@@ -670,6 +718,7 @@ class Coordinator:
             if stream_queue is not None:
                 await stream_queue.put(msg)
             self._requests.pop(request_id, None)
+            self._forget_stream_state(request_id)
             return
 
         expected_terminal_stages = self._expected_terminal_stages(request_id)
@@ -694,6 +743,7 @@ class Coordinator:
             if request_id in self._stream_queues:
                 await self._stream_queues[request_id].put(msg)
             self._requests.pop(request_id, None)
+            self._forget_stream_state(request_id)
             return
 
         # Multi-terminal: collect partial results
@@ -718,6 +768,7 @@ class Coordinator:
             if not future.done():
                 future.set_result(merged)
         self._requests.pop(request_id, None)
+        self._forget_stream_state(request_id)
 
     async def _handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
