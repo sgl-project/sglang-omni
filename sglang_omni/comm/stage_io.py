@@ -504,11 +504,12 @@ async def read_tensor(
     if data_ref.offset is None:
         raise ValueError("raw tensor data_ref is missing offset")
     transfer_buf = await _read_transfer_buffer(relay, data_ref.object_id, data_ref)
-    return (
-        transfer_buf[data_ref.offset :]
-        .view(_torch_dtype(data_ref.dtype))
-        .reshape(data_ref.shape)
-    )
+    dtype = _torch_dtype(data_ref.dtype)
+    numel = 1
+    for dim in data_ref.shape:
+        numel *= dim
+    end = data_ref.offset + numel * torch.empty((), dtype=dtype).element_size()
+    return transfer_buf[data_ref.offset : end].view(dtype).reshape(data_ref.shape)
 
 
 async def write_stream_chunk(
