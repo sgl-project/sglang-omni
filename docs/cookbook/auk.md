@@ -119,11 +119,12 @@ python -m sglang_omni.cli serve --model-path tencent/AuK \
   --auk_engine.factory.enable_dit_fused_qk_norm_rope false
 ```
 
-The kernel derives the head dimension and output dtype from the model. It
-leaves the conditioner, VAE, and sampling recipe unchanged. Non-CUDA devices
-and AuK-Flash use the native path. The first request may include Triton JIT
-compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
-weights under BF16 autocast and with native BF16 weights.
+The kernel derives the head dimension and output dtype from the model and
+serves both the padded and the packed DiT paths. It leaves the conditioner,
+VAE, and sampling recipe unchanged. Non-CUDA devices and AuK-Flash use the
+native path. The first request may include Triton JIT compilation; the 32-step
+AuK checkpoint has been validated on H100 with FP32 weights under BF16 autocast
+and with native BF16 weights.
 
 ## SeedTTS Evaluation
 

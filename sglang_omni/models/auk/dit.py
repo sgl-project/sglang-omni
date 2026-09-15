@@ -294,12 +294,16 @@ class Attention(nn.Module):
 
         def project(rows, linear, q_norm, k_norm, positions):
             q, k, v = linear(rows).view(rows.shape[0], 3, self.heads, -1).unbind(1)
-            q, k = q_norm(q), k_norm(k)
-            if positions is None:
-                return q, k, v
-            else:
-                q, k = self._apply_rope(q.transpose(0, 1), k.transpose(0, 1), positions)
-                return q.transpose(0, 1), k.transpose(0, 1), v
+            # _norm_rope and the fused kernel take [B, heads, seq, dim]; the
+            # packed rows are one sequence whose rope was gathered per row.
+            q, k = self._norm_rope(
+                q.transpose(0, 1)[None],
+                k.transpose(0, 1)[None],
+                q_norm,
+                k_norm,
+                positions,
+            )
+            return q[0].transpose(0, 1), k[0].transpose(0, 1), v
 
         q, k, v = project(x, self.to_qkv, self.q_norm, self.k_norm, rope)
         if c is None:
