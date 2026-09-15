@@ -359,10 +359,19 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         # A device with no side stream still has to land the encode before the
         # embedding is published. Submission order would cover it only while the
         # consumer shares this stream, and that rests on disable_overlap_schedule,
-        # which is a stage default a deployment can override. Wait on the work
-        # just issued rather than on the whole device.
-        encoded = torch.get_device_module(self._device).Event()
-        encoded.record()
+        # which is a stage default a deployment can override.
+        device_module = torch.get_device_module(self._device)
+        current_stream = getattr(device_module, "current_stream", None)
+        if current_stream is None:
+            # torch.mps carries no stream API at all and its Event.record takes
+            # no stream, so waiting on the device is the only wait it offers.
+            device_module.synchronize()
+            return
+        # This runs on the encode worker thread, which never set a current
+        # device, so an unqualified record would land on device 0 while the
+        # encode was issued on self._device.
+        encoded = device_module.Event()
+        encoded.record(current_stream(self._device))
         encoded.synchronize()
 
     def cache_embedding(

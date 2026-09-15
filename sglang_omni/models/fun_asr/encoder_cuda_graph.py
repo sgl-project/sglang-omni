@@ -179,8 +179,16 @@ class FunASREncoderCudaGraphRunner:
             # dominating -- bounded by the headroom check above, which stops
             # capturing and leaves later buckets eager rather than exhausting the
             # card.
-            with self._graph_backend.capture(thread_local_errors=True) as graph:
-                static_out = _masked_forward()
+            entry_stream = self._device_module.current_stream(self._device)
+            try:
+                with self._graph_backend.capture(thread_local_errors=True) as graph:
+                    static_out = _masked_forward()
+            finally:
+                # The capture context ends the capture before restoring the
+                # stream it set, so a throw inside capture_end would leave this
+                # thread on the capture stream and every later replay would
+                # record into a graph instead of running.
+                self._device_module.set_stream(entry_stream)
         logger.info(
             "Captured Fun-ASR encoder CUDA graph batch=%d t=%d -> out %s "
             "(%d cached)",

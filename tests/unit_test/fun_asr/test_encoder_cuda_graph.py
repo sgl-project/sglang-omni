@@ -204,6 +204,9 @@ class _FakeDeviceModule:
     def current_stream(self, device=None) -> _InertStream:
         return _InertStream()
 
+    def set_stream(self, stream: _InertStream) -> None:
+        self.log.append("set_stream")
+
     @contextlib.contextmanager
     def stream(self, stream: _InertStream):
         self.log.append("warmup-stream:enter")
@@ -219,11 +222,27 @@ class _FakeDeviceModule:
         return contextlib.nullcontext()
 
 
+class _FailingGraphBackend:
+    """Fails the way capture_end can: after the capture context is entered."""
+
+    def __init__(self, log: list[str]) -> None:
+        self.log = log
+
+    @contextlib.contextmanager
+    def capture(self, **kwargs):
+        self.log.append("capture:enter")
+        yield _FakeGraph()
+        raise RuntimeError("capture_end exploded")
+
+
 def _runner_on(
-    module: _FakeDeviceModule, monkeypatch, free_gb: float = 40.0
+    module: _FakeDeviceModule,
+    monkeypatch,
+    free_gb: float = 40.0,
+    backend: object | None = None,
 ) -> FunASREncoderCudaGraphRunner:
     """A runner whose device and graph backend are the fakes above."""
-    backend = _FakeGraphBackend(module.log, module.capture_kwargs)
+    backend = backend or _FakeGraphBackend(module.log, module.capture_kwargs)
     monkeypatch.setattr(
         encoder_cuda_graph.current_platform,
         "get_device_graph_backend",
@@ -432,3 +451,17 @@ def test_a_backend_on_another_device_surface_stays_eager(
     # on one surface and the capture on the other is untested, so it stays eager.
     assert (runner._graph_backend is not None) is captures
     assert (runner._done_event is not None) is captures
+
+
+def test_a_failed_capture_restores_the_stream_it_was_entered_on(monkeypatch) -> None:
+    log: list[str] = []
+    module = _FakeDeviceModule(log)
+    runner = _runner_on(module, monkeypatch, backend=_FailingGraphBackend(log))
+    _record_sdpa_pin(monkeypatch, log)
+
+    assert runner.run(torch.zeros(1, 17, 560), [17]) is None
+
+    # The capture context ends the capture before restoring its stream, so a
+    # throw there would otherwise leave the worker recording into a dead graph.
+    assert log.index("capture:enter") < log.index("set_stream")
+    assert runner._graphs == {}

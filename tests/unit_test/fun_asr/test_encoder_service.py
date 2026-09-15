@@ -767,30 +767,53 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
     assert namespace != build_cache_namespace(changed_config, **base)
 
 
-def test_synchronize_batch_waits_for_the_encode_without_a_side_stream(
+def test_synchronize_batch_waits_on_the_stream_the_encode_was_issued_to(
     monkeypatch,
 ) -> None:
     service = _make_service()
     service._stream = None
-    service._device = torch.device("xpu", 0)
-    events: list[str] = []
+    service._device = torch.device("xpu", 3)
+    recorded: list[object] = []
 
     class _Event:
-        def record(self) -> None:
-            events.append("record")
+        def record(self, stream) -> None:  # noqa: ANN001
+            recorded.append(stream)
 
         def synchronize(self) -> None:
-            events.append("synchronize")
+            recorded.append("waited")
 
     monkeypatch.setattr(
-        torch, "get_device_module", lambda device: SimpleNamespace(Event=_Event)
+        torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            Event=_Event,
+            current_stream=lambda dev: f"stream-of-{dev}",
+        ),
     )
 
     service.synchronize_batch()
 
-    # Ordering by submission only holds while the consumer shares this stream,
-    # and disable_overlap_schedule is overridable, so the encode is waited on.
-    assert events == ["record", "synchronize"]
+    # The worker thread never set a current device, so an unqualified record
+    # would wait on device 0 while the encode ran on xpu:3.
+    assert recorded == ["stream-of-xpu:3", "waited"]
+
+
+def test_synchronize_batch_waits_on_a_device_without_a_stream_api(monkeypatch) -> None:
+    service = _make_service()
+    service._stream = None
+    service._device = torch.device("mps")
+    waits: list[str] = []
+
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(synchronize=lambda: waits.append("device")),
+    )
+
+    service.synchronize_batch()
+
+    # torch.mps has no current_stream and its Event.record takes no stream.
+    assert waits == ["device"]
 
 
 def test_synchronize_batch_does_nothing_on_cpu(monkeypatch) -> None:
@@ -799,7 +822,7 @@ def test_synchronize_batch_does_nothing_on_cpu(monkeypatch) -> None:
     service._device = torch.device("cpu")
 
     def _refuse(device):  # noqa: ANN001, ANN202
-        raise AssertionError("cpu has no stream to wait on")
+        raise AssertionError("cpu has no stream or device to wait on")
 
     monkeypatch.setattr(torch, "get_device_module", _refuse)
 
