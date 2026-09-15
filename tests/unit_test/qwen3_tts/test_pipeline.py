@@ -3217,6 +3217,7 @@ def test_qwen3_tts_streaming_vocoder_avoids_cuda_value_sync() -> None:
     class CudaChunk:
         ndim = 2
         shape = (1, 2)
+        device = torch.device("cuda")
         is_cuda = True
 
         def __lt__(self, other):
