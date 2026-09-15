@@ -39,6 +39,7 @@ Thumbs.db
 .ruff_cache/
 uv.lock
 results/
+outputs/cosmos3_super/
 .humanize/
 .benchmark-data/
 
