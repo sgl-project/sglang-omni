@@ -366,6 +366,7 @@ def test_arkasr_prefill_graph_uses_resolved_auto_chunk_size(
 
     prefill = scheduler.server_args.cuda_graph_config.prefill
     assert stub.build_kwargs["chunked_prefill_size"] is None
+    assert stub.build_kwargs["disable_radix_cache"] is True
     assert "cuda_graph_bs_prefill" not in stub.build_kwargs
     assert "cuda_graph_max_bs_prefill" not in stub.build_kwargs
     assert list(prefill.bs) == _sglang_prefill_ladder(2048)

@@ -256,6 +256,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     scheduler = fun_asr_stages.create_sglang_fun_asr_executor("dummy")
 
     assert build_kwargs["cuda_graph_max_bs"] == 64
+    assert build_kwargs["disable_radix_cache"] is True
     assert build_kwargs["cuda_graph_bs"] == [
         1,
         2,

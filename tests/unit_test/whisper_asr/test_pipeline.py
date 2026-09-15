@@ -173,6 +173,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
     defaults = builder.generation_defaults(dtype="float16")
 
     assert defaults["max_prefill_tokens"] == 6144
+    assert defaults["disable_radix_cache"] is True
     assert defaults["chunked_prefill_size"] == 0
 
     overrides = {"chunked_prefill_size": 0}
