@@ -7,6 +7,10 @@ import torch
 import triton
 import triton.language as tl
 
+_PROJECTED_DIM = 1024
+_ROTARY_DIM = 64
+_NUM_WARPS = 4
+
 
 @triton.jit(do_not_specialize=["seq_len"])
 def _partial_qk_rope(
@@ -28,7 +32,7 @@ def _partial_qk_rope(
     rotated = channel < ROT_DIM
     cos = tl.load(COS + token * ROT_DIM + channel, rotated, other=0)
     sin = tl.load(SIN + token * ROT_DIM + channel, rotated, other=0)
-    # Interleaved pairs: [-x1, x0, -x3, x2, ...]. The tail is copied verbatim.
+    # note (wirybeaver): CosyVoice rotates interleaved pairs before splitting heads.
     partner = (batch * seq_len + token) * WIDTH + (channel ^ 1)
     sign = tl.where(channel % 2 == 0, -1.0, 1.0)
     q = tl.load(Q + offset, channel < WIDTH, other=0).to(tl.float32)
@@ -44,8 +48,7 @@ def _partial_qk_rope(
 def fused_qk_rope(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    # Private inference ABI: projections are contiguous [B, T, 1024], and
-    # tables are contiguous [1, T, 64] FP32. No input is modified or aliased.
+    """Apply partial interleaved RoPE to contiguous Q and K projections."""
     q_out, k_out = torch.empty_like(q), torch.empty_like(k)
     with torch.cuda.device(q.device):
         _partial_qk_rope[(q.shape[1], q.shape[0])](
@@ -56,11 +59,14 @@ def fused_qk_rope(
             q_out,
             k_out,
             q.shape[1],
-            WIDTH=1024,
-            ROT_DIM=64,
-            BLOCK=1024,
-            num_warps=4,
-            # Match the native separate multiply/add rounding.
+            WIDTH=_PROJECTED_DIM,
+            ROT_DIM=_ROTARY_DIM,
+            BLOCK=_PROJECTED_DIM,
+            num_warps=_NUM_WARPS,
+            # note (wirybeaver): Native rotary uses separate multiply and add rounding.
             enable_fp_fusion=False,
         )
     return q_out, k_out
+
+
+__all__ = ["fused_qk_rope"]

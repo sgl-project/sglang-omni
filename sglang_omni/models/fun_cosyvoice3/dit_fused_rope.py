@@ -1,40 +1,55 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in partial Q/K RoPE fusion for the CosyVoice3 Flow DiT.
-
-CosyVoice applies RoPE to [B, T, 1024] *before* splitting heads. Only the
-first 64 channels rotate; adding Q/K norm or rotating every head would change
-the model. Trig tables are local to each DiT forward and shared by its blocks.
-"""
+"""Partial Q/K RoPE fusion for the CosyVoice3 Flow DiT."""
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
 
+if TYPE_CHECKING:
+    from cosyvoice.flow.DiT.dit import DiT
+    from cosyvoice.flow.DiT.modules import Attention
 
-class _RopeTables(NamedTuple):
+_PROJECTED_DIM = 1024
+_ROTARY_DIM = 64
+_FusedRope = Callable[
+    [torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    tuple[torch.Tensor, torch.Tensor],
+]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _RopeTables:
     cos: torch.Tensor
     sin: torch.Tensor
 
 
 class _RotaryTablesForward:
-    def __init__(self, native_forward):
+    def __init__(
+        self, native_forward: Callable[[int], tuple[torch.Tensor, float]]
+    ) -> None:
         self.native_forward = native_forward
 
-    def __call__(self, seq_len):
+    def __call__(self, seq_len: int) -> _RopeTables:
         freqs, _ = self.native_forward(seq_len)
-        return _RopeTables(freqs.cos().contiguous(), freqs.sin().contiguous())
+        return _RopeTables(cos=freqs.cos().contiguous(), sin=freqs.sin().contiguous())
 
 
 class _FusedRopeAttnProcessor:
-    def __init__(self, fused_rope):
+    def __init__(self, fused_rope: _FusedRope) -> None:
         self.fused_rope = fused_rope
 
-    def __call__(self, attn, x, mask=None, rope=None):
-        # Keep projections, SDPA, and output masking identical to CosyVoice's
-        # AttnProcessor. Only the two apply_rotary_pos_emb calls are replaced.
+    def __call__(
+        self,
+        attn: Attention,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        rope: _RopeTables | None = None,
+    ) -> torch.Tensor:
         query, key, value = attn.to_q(x), attn.to_k(x), attn.to_v(x)
         if rope is not None:
             query, key = self.fused_rope(query, key, rope.cos, rope.sin)
@@ -61,7 +76,7 @@ class _FusedRopeAttnProcessor:
         return x
 
 
-def install_dit_fused_rope(estimator: torch.nn.Module) -> None:
+def install_dit_fused_rope(estimator: DiT) -> None:
     """Install after loading weights, before torch.compile; leave state keys intact."""
     param = next(estimator.parameters())
     if param.device.type != "cuda" or torch.version.hip is not None:
@@ -70,28 +85,28 @@ def install_dit_fused_rope(estimator: torch.nn.Module) -> None:
     from cosyvoice.flow.DiT.modules import AttnProcessor
 
     rotary = estimator.rotary_embed
-    if isinstance(rotary.forward_from_seq_len, _RotaryTablesForward):
-        return
-    # The released model uses FP32 frequencies, including under BF16 autocast.
-    # Half-weight loading also halves inv_freq and has different rounding.
+    # note (wirybeaver): Half-weight loading changes the native frequency rounding.
     if (
         rotary.inv_freq.dtype != torch.float32
-        or rotary.inv_freq.numel() != 32
+        or rotary.inv_freq.numel() != _ROTARY_DIM // 2
         or rotary.scale is not None
     ):
         raise ValueError("Fused DiT RoPE requires 64-D FP32 frequencies without XPos")
     attentions = [block.attn for block in estimator.transformer_blocks]
     if not attentions or any(
         type(attn.processor) is not AttnProcessor
-        or attn.inner_dim != 1024
-        or attn.heads != 16
+        or attn.inner_dim != _PROJECTED_DIM
+        or attn.heads * _ROTARY_DIM != _PROJECTED_DIM
         for attn in attentions
     ):
         raise ValueError("Fused DiT RoPE requires the CosyVoice3 attention layout")
 
-    # No Triton import on the default path or on unsupported platforms.
+    # note (wirybeaver): Keep Triton optional for non-CUDA imports.
     from sglang_omni.models.fun_cosyvoice3.dit_fused_rope_kernel import fused_qk_rope
 
     rotary.forward_from_seq_len = _RotaryTablesForward(rotary.forward_from_seq_len)
     for attn in attentions:
         attn.processor = _FusedRopeAttnProcessor(fused_qk_rope)
+
+
+__all__ = ["install_dit_fused_rope"]

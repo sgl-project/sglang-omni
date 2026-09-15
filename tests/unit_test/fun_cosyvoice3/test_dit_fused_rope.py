@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
-# Like test_compat.py, avoid pulling in the serving stack for operator tests.
+# note (wirybeaver): Direct loading keeps CPU tests independent of SGLang.
 _PATH = (
     Path(__file__).resolve().parents[3]
     / "sglang_omni/models/fun_cosyvoice3/dit_fused_rope.py"
@@ -22,27 +22,31 @@ rope_impl = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(rope_impl)
 
 
-def _torch_qk_rope(q, k, cos, sin):
-    def rotate(x):
-        prefix = x[..., :64].float()
-        pairs = prefix.reshape(*prefix.shape[:-1], 32, 2)
+def _torch_qk_rope(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    def rotate(x: torch.Tensor) -> torch.Tensor:
+        prefix = x[..., : rope_impl._ROTARY_DIM].float()
+        pairs = prefix.reshape(*prefix.shape[:-1], rope_impl._ROTARY_DIM // 2, 2)
         partner = torch.stack((-pairs[..., 1], pairs[..., 0]), dim=-1).flatten(-2)
-        return torch.cat((prefix * cos + partner * sin, x[..., 64:]), dim=-1).to(
-            x.dtype
-        )
+        rotated = prefix * cos + partner * sin
+        return torch.cat((rotated, x[..., rope_impl._ROTARY_DIM :]), dim=-1).to(x.dtype)
 
     return rotate(q), rotate(k)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_native_rope_rotates_only_first_head(dtype):
+def test_native_rope_rotates_only_first_head(dtype: torch.dtype) -> None:
     torch.manual_seed(7)
     q = torch.randn(2, 73, 1024).to(dtype)
     k = torch.randn_like(q)
     rotary = RotaryEmbedding(64)
     freqs, scale = rotary.forward_from_seq_len(73)
     tables = rope_impl._RotaryTablesForward(rotary.forward_from_seq_len)(73)
-    actual = _torch_qk_rope(q, k, *tables)
+    actual = _torch_qk_rope(q, k, tables.cos, tables.sin)
     for source, result in zip((q, k), actual):
         expected = apply_rotary_pos_emb(source, freqs, scale)
         torch.testing.assert_close(result, expected, rtol=0, atol=0)
@@ -51,7 +55,7 @@ def test_native_rope_rotates_only_first_head(dtype):
 
 
 @pytest.mark.parametrize("chunk_mask", [False, True])
-def test_processor_preserves_sdpa_and_output_masks(chunk_mask):
+def test_processor_preserves_sdpa_and_output_masks(chunk_mask: bool) -> None:
     torch.manual_seed(7)
     batch, length, width, heads = 2, 9, 1024, 16
     x = torch.randn(batch, length, width)
@@ -73,9 +77,14 @@ def test_processor_preserves_sdpa_and_output_masks(chunk_mask):
     rotary = RotaryEmbedding(64)
     freqs, scale = rotary.forward_from_seq_len(length)
     tables = rope_impl._RotaryTablesForward(rotary.forward_from_seq_len)(length)
-    calls = []
+    calls: list[tuple[torch.Tensor, torch.Tensor]] = []
 
-    def fused(q, k, cos, sin):
+    def fused(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         calls.append((cos, sin))
         return _torch_qk_rope(q, k, cos, sin)
 
@@ -101,7 +110,7 @@ def test_processor_preserves_sdpa_and_output_masks(chunk_mask):
     assert all(cos is tables.cos and sin is tables.sin for cos, sin in calls)
 
 
-def test_tables_follow_current_length_and_do_not_keep_a_shape_cache():
+def test_tables_follow_current_length_and_do_not_keep_a_shape_cache() -> None:
     rotary = RotaryEmbedding(64)
     forward = rope_impl._RotaryTablesForward(rotary.forward_from_seq_len)
     for length in (73, 129, 73):
@@ -111,7 +120,7 @@ def test_tables_follow_current_length_and_do_not_keep_a_shape_cache():
         torch.testing.assert_close(tables.sin, freqs.sin(), rtol=0, atol=0)
 
 
-def test_cpu_install_fails_before_importing_cuda_dependencies():
+def test_cpu_install_fails_before_importing_cuda_dependencies() -> None:
     with pytest.raises(ValueError, match="NVIDIA CUDA"):
         rope_impl.install_dit_fused_rope(torch.nn.Linear(1, 1))
 
@@ -119,7 +128,7 @@ def test_cpu_install_fails_before_importing_cuda_dependencies():
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires NVIDIA CUDA")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-def test_cuda_kernel_matches_native_across_shapes(dtype):
+def test_cuda_kernel_matches_native_across_shapes(dtype: torch.dtype) -> None:
     from sglang_omni.models.fun_cosyvoice3.dit_fused_rope_kernel import fused_qk_rope
 
     torch.manual_seed(7)
@@ -141,7 +150,7 @@ def test_cuda_kernel_matches_native_across_shapes(dtype):
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires NVIDIA CUDA")
-def test_cuda_compile_and_graph_replay_use_current_inputs():
+def test_cuda_compile_and_graph_replay_use_current_inputs() -> None:
     from sglang_omni.models.fun_cosyvoice3.dit_fused_rope_kernel import fused_qk_rope
 
     compiled = torch.compile(fused_qk_rope, dynamic=True, fullgraph=True)
@@ -158,7 +167,6 @@ def test_cuda_compile_and_graph_replay_use_current_inputs():
                     output, apply_rotary_pos_emb(source, freqs, scale), rtol=0, atol=0
                 )
 
-        # Warm the eager operator on a side stream before capture.
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
@@ -179,14 +187,14 @@ def test_cuda_compile_and_graph_replay_use_current_inputs():
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires NVIDIA CUDA")
-def test_real_dit_install_preserves_weights_and_streaming_outputs():
+def test_real_dit_install_preserves_weights_and_streaming_outputs() -> None:
     from cosyvoice.flow.DiT.dit import DiT
 
     torch.manual_seed(7)
     estimator = DiT(dim=1024, depth=2, heads=16, dim_head=64, spk_dim=80).cuda().eval()
     keys = set(estimator.state_dict())
-    inputs = []
-    expected = []
+    inputs: list[tuple[tuple[torch.Tensor, ...], bool]] = []
+    expected: list[torch.Tensor] = []
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         for streaming, length in ((False, 73), (True, 129)):
             x = torch.randn(2, 80, length, device="cuda")
@@ -202,7 +210,6 @@ def test_real_dit_install_preserves_weights_and_streaming_outputs():
             )
             inputs.append((args, streaming))
             expected.append(estimator(*args, streaming=streaming))
-        rope_impl.install_dit_fused_rope(estimator)
         rope_impl.install_dit_fused_rope(estimator)
         assert set(estimator.state_dict()) == keys
         for (args, streaming), reference in zip(inputs, expected):
