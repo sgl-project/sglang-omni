@@ -5,6 +5,12 @@ to reproducible Super deployments. It provides candidate multi-GPU configs and
 CPU contract coverage. GPU correctness, quality, memory fit, and recovery are
 not yet qualified.
 
+| Phase 4 requirement | Current boundary |
+| --- | --- |
+| Super geometry | Preserve checkpoint metadata and delegate loading to native SGLang; CPU contract tested |
+| Transactional multi-GPU loading/recovery | Omni placement, returned-owner rollback and cleanup tested; partial native construction rollback requires the foundation's native prerequisites |
+| Independent modality qualification | SDK routing and 11 separate GPU smoke cases ready; H100 execution and quality/parity results pending |
+
 ## Architecture
 
 The generation path calls native SGLang `DiffGenerator`; the understanding path
@@ -102,59 +108,42 @@ For understanding, use `cosmos3_super_reasoner.yaml` in the same command.
 The generation deployment mounts native media routes. The Reasoner deployment
 serves `/v1/chat/completions`. Neither example enables interleaving.
 
-## SDK smoke test on the GPU machine
+## SDK modality routing
 
-Save this as a Python script and run it from the repository with a local
-checkpoint. The main guard is required for spawned workers.
+The SDK accepts native sampling fields in `GenerateRequest(prompt={...}, stream=False)`.
+The [GPU tests](../../tests/integration/cosmos3/test_super_gpu.py) contain complete
+startup, request, validation, and shutdown examples.
 
-```python
-import asyncio
-import time
+| Task | Native request fields | Output |
+| --- | --- | --- |
+| T2I / T2V | `prompt`, `num_frames` (1 for an image) | Saved image/video |
+| I2V | Add `image_path` | Saved video |
+| V2V continuation | Add `video_path`, `condition_frame_indexes`, `condition_video_keep` | Saved video |
+| Video with sound | Add `sound_duration` in seconds | Video with an audio stream |
+| Action policy | `action_mode="policy"`, `image_path`, domain settings | Action JSON |
+| Inverse dynamics | `action_mode="inverse_dynamics"`, `video_path`, domain settings | Action JSON |
+| Forward dynamics | `action_mode="forward_dynamics"`, `image_path`, `action`, domain settings | Saved video |
 
-from sglang_omni.client import Client, GenerateRequest
-from sglang_omni.config.manager import ConfigManager
-from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+Action policy/inverse requests call native `generate_action()`; forward dynamics
+calls native `generate()`, following the distinction in Edge #2107. The SDK uses
+native sampling fields directly, including `num_frames` (action horizon + 1),
+`domain_name` or `domain_id`, and `raw_action_dim`. Explicit sampling values are
+preserved by the native SDK. For example, the action tests use 17 frames, an AV
+domain with 9 action channels, `guidance_scale=1.0`, and disable system/duration
+templates. They use synthetic fixtures to exercise routing, not physical control
+or trajectory quality. See NVIDIA's [action cookbook](https://github.com/NVIDIA/cosmos/blob/main/cookbooks/cosmos3/generator/action/README.md)
+for real workload examples.
 
+Prompt-free action requests are accepted. Policy/inverse results use the existing
+`chunk.media` contract: `{"path": ".../action.json", "modality": "action"}`. The JSON
+uses native `action_generation_response()`, including action values and shape.
+Native action generation currently has no SDK cancellation-event argument: an
+active action call must settle before cancelled output is removed. Successful
+output survives delivery; failed or undelivered output is cleaned up.
 
-async def main():
-    config = ConfigManager.from_file(
-        "examples/configs/cosmos3_super_generation.yaml"
-    ).config
-    config.model_path = "/models/Cosmos3-Super"
-    runner = MultiProcessPipelineRunner(config)
-    try:
-        started = time.perf_counter()
-        await runner.start(timeout=1800)
-        print("startup_seconds", time.perf_counter() - started)
-        request = GenerateRequest(
-            prompt={
-                "prompt": "A red ceramic mug on a wooden table in daylight.",
-                "width": 832,
-                "height": 480,
-                "num_frames": 1,
-                "seed": 0,
-                "num_inference_steps": 35,
-            },
-            stream=False,
-        )
-        started = time.perf_counter()
-        async for chunk in Client(runner.coordinator).generate(request):
-            print("media", chunk.media)
-        print("request_seconds", time.perf_counter() - started)
-    finally:
-        await runner.stop()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-Inspect and decode the produced image. A returned filename alone is not a
-correctness or quality result. This first request is cold; it is not a latency
-benchmark. For video, independently qualify native `num_frames`, `image_path`,
-`video_path`, and `sound_duration` requests as appropriate. Action-output SDK
-routing, full modality qualification, and shared interleaving remain follow-up
-work. Native HTTP action route availability is not evidence of qualification.
+HTTP requests continue through the mounted native routes and their native
+schemas, including action observation envelopes. They do not use the SDK's
+sampling-dictionary conversion. This contribution adds no duplicate HTTP router.
 
 ## Qualification gates
 
@@ -173,11 +162,28 @@ export COSMOS3_SUPER_GPU_IDS=0,1,2,3
 python -m pytest -q tests/integration/cosmos3/test_super_gpu.py
 ```
 
-The tests run generation and Reasoner sequentially. Generation covers T2I, T2V,
-I2V, decoding, output dimensions/frame counts, owned-process cleanup, and serving
-after a fresh startup. Reasoner covers text and a synthetic image, requiring
-nonempty responses. Four denoising steps keep this a plumbing check; neither
-those outputs nor the Reasoner assertions establish semantic quality/parity.
+There are 11 independently selectable cases, each with its own startup, shutdown,
+and report. Run sequentially on the reserved GPUs (do not use pytest-xdist).
+
+- Generation: `t2i`, `t2v`, `i2v`, `v2v`, `sound`, `policy`, `inverse_dynamics`, `forward_dynamics`.
+- Reasoner: `text`, `image`, `video`.
+
+Select a case with, for example:
+
+```bash
+python -m pytest -q 'tests/integration/cosmos3/test_super_gpu.py::test_super_generation[sound]'
+python -m pytest -q 'tests/integration/cosmos3/test_super_gpu.py::test_super_reasoner[video]'
+```
+
+Visual checks decode files and verify dimensions/frame counts. Sound additionally
+requires a decodable, finite, non-silent audio stream of the requested duration.
+Action checks require native JSON with the expected horizon/channel dimensions
+and finite values. Reasoner checks require a nonempty response, saved locally for
+inspection. Every case checks owned-process cleanup; T2I also tests serving after
+a fresh startup. Four denoising steps keep these plumbing checks; they do not
+establish semantic quality, task accuracy, or numerical parity. The fixtures use
+`adjust_frames=False` to keep workload size fixed across GPU counts while retaining
+native temporal-VAE validation.
 
 Repeat with `COSMOS3_SUPER_GPU_IDS=0,1,2,3,4,5,6,7`, then `0,1`, then `0`.
 These are independent campaigns, not automatic fallbacks after an OOM. GPU IDs
@@ -197,8 +203,8 @@ Each test writes a timestamped JSON report under `results/cosmos3-super/` (or
 `COSMOS3_SUPER_REPORT_DIR`). It records revisions, device information, requested native options,
 timings, output sizes, and cleanup counts. Raw media remains in pytest's temporary
 directory. A failure report is not benchmark evidence; logs and assertions still
-need inspection. GPU fault injection, HTTP integration, V2V/sound/action,
-Reasoner video/parity, and performance distributions remain separate gates.
+need inspection. Running these cases on H100, GPU fault injection, HTTP integration,
+semantic/numerical parity, and performance distributions remain separate gates.
 
 ### Acceptance checklist
 

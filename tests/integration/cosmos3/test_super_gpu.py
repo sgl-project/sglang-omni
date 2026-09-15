@@ -208,73 +208,175 @@ def _check_media(item, frames, width, height):
     }
 
 
-@pytest.mark.asyncio
-async def test_super_visual_generation_and_fresh_restart(tmp_path):
+def _write_video(path, images, fps):
+    import av
+
+    with av.open(str(path), "w") as output:
+        stream = output.add_stream("mpeg4", rate=fps)
+        stream.width, stream.height = images[0].size
+        stream.pix_fmt = "yuv420p"
+        for image in images:
+            for packet in stream.encode(av.VideoFrame.from_image(image)):
+                output.mux(packet)
+        for packet in stream.encode():
+            output.mux(packet)
+
+
+def _generation_case(mode, directory):
     from PIL import Image, ImageDraw
 
+    frames = 1 if mode == "t2i" else 49 if mode == "sound" else 17
+    action = mode in ("policy", "inverse_dynamics", "forward_dynamics")
+    inputs = {
+        "prompt": "A red box moves slowly right on a white table, stationary camera.",
+        "width": 832,
+        "height": 480,
+        "num_frames": frames,
+        # Keep the same workload across GPU counts; retain native VAE frame validation.
+        "adjust_frames": False,
+        "fps": 5 if action else 24,
+        "seed": 0,
+        "num_inference_steps": 4,
+        "guidance_scale": 1.0 if action else 5.0,
+    }
+    images = []
+    for index in range(17):
+        image = Image.new("RGB", (832, 480), "white")
+        ImageDraw.Draw(image).rectangle(
+            (200 + 10 * index, 140, 400 + 10 * index, 340), fill="red"
+        )
+        images.append(image)
+    if mode in ("i2v", "policy", "forward_dynamics"):
+        path = directory / "synthetic.png"
+        images[0].save(path)
+        inputs["image_path"] = str(path)
+    if mode in ("v2v", "inverse_dynamics"):
+        path = directory / "synthetic.mp4"
+        _write_video(path, images, inputs["fps"])
+        inputs["video_path"] = str(path)
+        if mode == "v2v":
+            inputs.update(condition_frame_indexes=[0, 1], condition_video_keep="first")
+    if mode == "sound":
+        inputs.update(
+            prompt="A waterfall flows continuously with a loud rushing water sound.",
+            sound_duration=frames / inputs["fps"],
+        )
+    if action:
+        inputs.update(
+            action_mode=mode,
+            domain_name="av",
+            raw_action_dim=9,
+            use_system_prompt=False,
+            use_duration_template=False,
+        )
+        if mode == "forward_dynamics":
+            # Synthetic actions exercise the input contract, not trajectory quality.
+            inputs["action"] = [[0.0] * 9 for _ in range(frames - 1)]
+        else:
+            inputs.pop("prompt")  # Exercise prompt-free action output.
+    return inputs
+
+
+def _check_audio(path, expected_seconds):
+    import av
+    import numpy as np
+
+    seconds, samples, energy = 0.0, 0, 0.0
+    with av.open(str(path)) as container:
+        assert (
+            len(container.streams.audio) == 1
+        ), "Expected generated sound in the video"
+        for frame in container.decode(audio=0):
+            values = frame.to_ndarray().astype(np.float64)
+            assert values.size and np.isfinite(values).all()
+            samples += frame.samples
+            seconds += frame.samples / frame.sample_rate
+            energy += float(np.square(values).sum())
+    assert samples > 0 and energy > 0, "Generated sound is empty or silent"
+    # Allow AAC padding and tokenizer time quantization.
+    assert abs(seconds - expected_seconds) <= 0.15
+    return {"audio_samples": samples, "audio_seconds": seconds}
+
+
+def _check_action(item, mode, horizon, dimension):
+    import numpy as np
+
+    assert item["modality"] == "action"
+    response = json.loads(Path(item["path"]).read_text())
+    assert response["object"] == "action.generation"
+    assert len(response["data"]) == 1
+    action = response["data"][0]["action"]
+    assert action["action_mode"] == mode
+    assert action["shape"] == [horizon, dimension]
+    values = np.asarray(action["values"], dtype=float)
+    assert values.shape == (horizon, dimension) and np.isfinite(values).all()
+    return {"action_horizon": horizon, "action_dim": dimension}
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "t2i",
+        "t2v",
+        "i2v",
+        "v2v",
+        "sound",
+        "policy",
+        "inverse_dynamics",
+        "forward_dynamics",
+    ],
+)
+@pytest.mark.asyncio
+async def test_super_generation(tmp_path, mode):
     from sglang_omni.client import GenerateRequest
 
     model, devices, revision, native_revision = _settings()
     config = _config("generation", model, devices, tmp_path / "media")
     report = _report("generation", devices, revision, native_revision, config)
-    reference = tmp_path / "synthetic.png"
-    image = Image.new("RGB", (832, 480), "white")
-    ImageDraw.Draw(image).rectangle((300, 140, 530, 340), fill="red")
-    image.save(reference)
+    report["case"] = mode
     try:
+        inputs = _generation_case(mode, tmp_path)
         first = {}
         report["runs"].append(first)
         async with _running(config, first) as runner:
-            first["requests"] = []
-            for mode, frames in (("t2i", 1), ("t2v", 17), ("i2v", 17)):
-                inputs = {
-                    "prompt": "A red box on a white table, stationary camera.",
-                    "width": 832,
-                    "height": 480,
-                    "num_frames": frames,
-                    "fps": 24,
-                    "seed": 0,
-                    "num_inference_steps": 4,
-                }
-                if mode == "i2v":
-                    inputs["image_path"] = str(reference)
-                started = time.perf_counter()
+            started = time.perf_counter()
+            chunk = await _generate(
+                runner, GenerateRequest(prompt=inputs, stream=False)
+            )
+            assert chunk.media and len(chunk.media) == 1
+            first["request_seconds"] = time.perf_counter() - started
+            first["sampling"] = {
+                key: value
+                for key, value in inputs.items()
+                if isinstance(value, (int, float, bool))
+            }
+            if mode in ("policy", "inverse_dynamics"):
+                first.update(
+                    _check_action(
+                        chunk.media[0],
+                        mode,
+                        inputs["num_frames"] - 1,
+                        inputs["raw_action_dim"],
+                    )
+                )
+            else:
+                first.update(
+                    _check_media(chunk.media[0], inputs["num_frames"], 832, 480)
+                )
+                if mode == "sound":
+                    first.update(
+                        _check_audio(chunk.media[0]["path"], inputs["sound_duration"])
+                    )
+        if mode == "t2i":
+            # A new owner must serve after the previous owner's complete shutdown.
+            second = {}
+            report["runs"].append(second)
+            async with _running(config, second) as runner:
                 chunk = await _generate(
                     runner, GenerateRequest(prompt=inputs, stream=False)
                 )
                 assert chunk.media and len(chunk.media) == 1
-                first["requests"].append(
-                    {
-                        "mode": mode,
-                        "seed": 0,
-                        "steps": 4,
-                        "width": 832,
-                        "height": 480,
-                        "frames": frames,
-                        "request_seconds": time.perf_counter() - started,
-                        **_check_media(chunk.media[0], frames, 832, 480),
-                    }
-                )
-        # A new runner must load and serve after the first owner fully exits.
-        second = {}
-        report["runs"].append(second)
-        async with _running(config, second) as runner:
-            chunk = await _generate(
-                runner,
-                GenerateRequest(
-                    prompt={
-                        "prompt": "A red ceramic mug.",
-                        "width": 832,
-                        "height": 480,
-                        "num_frames": 1,
-                        "seed": 0,
-                        "num_inference_steps": 4,
-                    },
-                    stream=False,
-                ),
-            )
-            assert chunk.media and len(chunk.media) == 1
-            second["media"] = _check_media(chunk.media[0], 1, 832, 480)
+                second["media"] = _check_media(chunk.media[0], 1, 832, 480)
         report["status"] = "passed"
     except BaseException:
         report["status"] = "failed"
@@ -283,8 +385,9 @@ async def test_super_visual_generation_and_fresh_restart(tmp_path):
         _save_report(report)
 
 
+@pytest.mark.parametrize("mode", ["text", "image", "video"])
 @pytest.mark.asyncio
-async def test_super_reasoner_text_and_image(tmp_path):
+async def test_super_reasoner(tmp_path, mode):
     import base64
 
     from PIL import Image
@@ -294,57 +397,64 @@ async def test_super_reasoner_text_and_image(tmp_path):
     model, devices, revision, native_revision = _settings()
     config = _config("reasoner", model, devices, tmp_path)
     report = _report("reasoner", devices, revision, native_revision, config)
-    reference = tmp_path / "red.png"
-    Image.new("RGB", (224, 224), "red").save(reference)
-    image_url = (
-        "data:image/png;base64," + base64.b64encode(reference.read_bytes()).decode()
-    )
+    report["case"] = mode
     try:
+        prompt = "What is two plus two? Give a short answer."
+        if mode != "text":
+            if mode == "image":
+                reference = tmp_path / "red.png"
+                Image.new("RGB", (224, 224), "red").save(reference)
+                url = (
+                    "data:image/png;base64,"
+                    + base64.b64encode(reference.read_bytes()).decode()
+                )
+                question = "Name the dominant color."
+            else:
+                reference = tmp_path / "colors.mp4"
+                _write_video(
+                    reference,
+                    [
+                        Image.new("RGB", (224, 224), color)
+                        for color in ("red", "blue")
+                        for _ in range(8)
+                    ],
+                    4,
+                )
+                url = str(reference)
+                question = (
+                    "Describe how the color changes from the beginning to the end."
+                )
+            key = f"{mode}_url"
+            prompt = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": question},
+                            {"type": key, key: {"url": url}},
+                        ],
+                    }
+                ]
+            }
         run = {}
         report["runs"].append(run)
         async with _running(config, run) as runner:
-            run["requests"] = []
-            cases = [
-                ("text", "What is two plus two? Give a short answer."),
-                (
-                    "image",
-                    {
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "text",
-                                        "text": "Name the dominant color.",
-                                    },
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {"url": image_url},
-                                    },
-                                ],
-                            }
-                        ]
-                    },
+            started = time.perf_counter()
+            chunk = await _generate(
+                runner,
+                GenerateRequest(
+                    prompt=prompt,
+                    sampling=SamplingParams(temperature=0.0, max_new_tokens=128),
+                    stream=False,
                 ),
-            ]
-            for mode, prompt in cases:
-                started = time.perf_counter()
-                chunk = await _generate(
-                    runner,
-                    GenerateRequest(
-                        prompt=prompt,
-                        sampling=SamplingParams(temperature=0.0, max_new_tokens=128),
-                        stream=False,
-                    ),
-                )
-                assert chunk.text and chunk.text.strip()
-                run["requests"].append(
-                    {
-                        "mode": mode,
-                        "text_characters": len(chunk.text),
-                        "request_seconds": time.perf_counter() - started,
-                    }
-                )
+            )
+            assert chunk.text and chunk.text.strip()
+            # Keep the response locally for inspection, never in the shareable report.
+            (tmp_path / "response.txt").write_text(chunk.text)
+            run.update(
+                text_characters=len(chunk.text),
+                request_seconds=time.perf_counter() - started,
+            )
         report["status"] = "passed"
     except BaseException:
         report["status"] = "failed"
