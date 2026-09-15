@@ -74,7 +74,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
         flow_embedding=torch.ones(1, 192),
     )
     payload = _payload(state)
-    scheduler._stream_payloads["req"] = payload
+    scheduler.stream_payloads["req"] = payload
     scheduler.on_streaming_new_request("req", payload)
     scheduler.on_stream_chunk(
         "req",
@@ -133,6 +133,7 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
             return self
 
     flow = _Model()
+    flow.decoder = SimpleNamespace(estimator=torch.nn.Module())
     hift = _Model()
 
     def fake_load_hyperpyyaml(handle, overrides):
@@ -165,6 +166,7 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
     )
 
     assert isinstance(loaded_flow, stages.FunCosyVoice3Flow)
+    assert loaded_flow.packed_estimator.dit is flow.decoder.estimator
     assert loaded_hift is hift
     assert observed["overrides"] == {
         "qwen_pretrain_path": str(tmp_path / "CosyVoice-BlankEN"),
@@ -739,9 +741,9 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     second = IncomingMessage("short", "new_request", _payload(short_state))
     scheduler.inbox.put(second)
 
-    assert scheduler._max_batch_cost == 2000
-    assert scheduler._collect_new_request_batch(first) == [first]
-    assert scheduler._next_message() == second
+    assert scheduler.max_batch_cost == 2000
+    assert scheduler.collect_new_request_batch(first) == [first]
+    assert scheduler.next_message() == second
 
 
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
@@ -759,14 +761,14 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
     )
     scheduler = stages.create_vocoder_executor("model", device="cpu")
 
-    assert scheduler._max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
+    assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
     assert (
-        scheduler._max_batch_cost // 713 >= 8
+        scheduler.max_batch_cost // 713 >= 8
     ), "default admission budget no longer holds a useful batch"
-    assert scheduler._max_batch_size == 16
-    assert scheduler._max_batch_wait_s == pytest.approx(0.03)
-    assert scheduler._vocoder.flow_merge_max_gap_frames == 384
-    assert scheduler._vocoder.flow_merge_pad_budget_percent == 25.0
+    assert scheduler.max_batch_size == 16
+    assert scheduler.max_batch_wait_s == pytest.approx(0.03)
+    assert scheduler.vocoder.flow_merge_max_gap_frames == 384
+    assert scheduler.vocoder.flow_merge_pad_budget_percent == 25.0
 
 
 def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> None:
@@ -806,15 +808,15 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     )
 
     assert isinstance(scheduler, FunCosyVoice3StreamingVocoderScheduler)
-    assert scheduler._max_batch_size == 6
-    assert scheduler._max_batch_wait_s == pytest.approx(0.007)
-    assert scheduler._max_batch_cost == 200
-    assert callable(scheduler._request_cost_fn)
-    assert scheduler._vocoder.flow_merge_max_gap_frames == 0
-    assert scheduler._vocoder.flow_merge_pad_budget_percent == 0
+    assert scheduler.max_batch_size == 6
+    assert scheduler.max_batch_wait_s == pytest.approx(0.007)
+    assert scheduler.max_batch_cost == 200
+    assert callable(scheduler.request_cost_fn)
+    assert scheduler.vocoder.flow_merge_max_gap_frames == 0
+    assert scheduler.vocoder.flow_merge_pad_budget_percent == 0
     state = _state(prompt_tokens=1)
     state.audio_codes = _codes(2)
-    assert scheduler._request_cost_fn(_payload(state)) == 6
+    assert scheduler.request_cost_fn(_payload(state)) == 6
     assert captured == {
         "checkpoint_dir": "/checkpoint",
         "device": "cpu",

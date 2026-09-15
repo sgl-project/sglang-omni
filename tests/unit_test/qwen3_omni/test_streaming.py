@@ -782,10 +782,10 @@ def test_code2wav_chunk_without_stream_metadata_raises():
         left_context_size=0,
     )
     with pytest.raises(RuntimeError, match="missing metadata"):
-        sched._on_chunk("req-1", _make_code_chunk(metadata=None))
+        sched.handle_stream_chunk("req-1", _make_code_chunk(metadata=None))
 
     sched.abort("req-1")
-    assert "req-1" not in sched._stream_states
+    assert "req-1" not in sched.stream_states
 
 
 def test_code2wav_streaming_emits_per_window_and_slim_final():
@@ -800,11 +800,11 @@ def test_code2wav_streaming_emits_per_window_and_slim_final():
         request=OmniRequest(inputs=[], params={"stream": True}),
         data={},
     )
-    sched._stream_payloads["req-1"] = payload
+    sched.stream_payloads["req-1"] = payload
 
     # Two chunks trigger the first decode step (stream_chunk_size=2).
-    sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
-    sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
+    sched.handle_stream_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
+    sched.handle_stream_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
 
     out: list[OutgoingMessage] = []
     while not sched.outbox.empty():
@@ -814,7 +814,7 @@ def test_code2wav_streaming_emits_per_window_and_slim_final():
     ), "streaming clients should receive per-window audio"
 
     # Done → slim final.
-    sched._on_done("req-1")
+    sched.handle_stream_done("req-1")
     final = [
         m
         for m in (sched.outbox.get_nowait() for _ in range(sched.outbox.qsize()))
@@ -838,10 +838,10 @@ def test_code2wav_non_streaming_returns_full_pcm():
         request=OmniRequest(inputs=[], params={"stream": False}),
         data={},
     )
-    sched._stream_payloads["req-1"] = payload
+    sched.stream_payloads["req-1"] = payload
 
-    sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": False}))
-    sched._on_done("req-1")
+    sched.handle_stream_chunk("req-1", _make_code_chunk(metadata={"stream": False}))
+    sched.handle_stream_done("req-1")
 
     msgs: list[OutgoingMessage] = []
     while not sched.outbox.empty():
@@ -868,17 +868,17 @@ def test_code2wav_done_without_audio_raises():
         request=OmniRequest(inputs=[], params={"stream": False}),
         data={},
     )
-    sched._stream_payloads["req-1"] = payload
-    state = sched._get_or_create_stream_state("req-1")
+    sched.stream_payloads["req-1"] = payload
+    state = sched.get_or_create_stream_state("req-1")
     state.stream_enabled = False
 
     with pytest.raises(RuntimeError, match="produced no audio"):
-        sched._on_done("req-1")
+        sched.handle_stream_done("req-1")
     assert not any(m.type == "stream" for m in list(sched.outbox.queue))
 
     sched.abort("req-1")
-    assert "req-1" not in sched._stream_states
-    assert "req-1" not in sched._stream_payloads
+    assert "req-1" not in sched.stream_states
+    assert "req-1" not in sched.stream_payloads
 
 
 def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
@@ -1127,14 +1127,14 @@ def test_code2wav_abort_clears_all_per_request_state():
         stream_chunk_size=10,
         left_context_size=0,
     )
-    sched._on_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
-    assert "req-1" in sched._stream_states
-    assert sched._stream_states["req-1"].stream_enabled is True
+    sched.handle_stream_chunk("req-1", _make_code_chunk(metadata={"stream": True}))
+    assert "req-1" in sched.stream_states
+    assert sched.stream_states["req-1"].stream_enabled is True
 
     sched.abort("req-1")
-    assert "req-1" not in sched._stream_states
-    assert "req-1" not in sched._stream_payloads
-    assert "req-1" not in sched._pending_done
+    assert "req-1" not in sched.stream_states
+    assert "req-1" not in sched.stream_payloads
+    assert "req-1" not in sched.pending_done
 
 
 class _FakeCoordinatorForClient:

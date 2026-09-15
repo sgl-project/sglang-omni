@@ -264,10 +264,10 @@ def _run_stream(
 ) -> list:
     metadata = metadata if metadata is not None else _metadata()
     for index, row in enumerate(rows):
-        scheduler._on_chunk(request_id, _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk(request_id, _stream_item(row, metadata, index))
     # Real pipeline order: chunks -> stream_done -> terminal payload replay.
-    scheduler._on_done(request_id)
-    scheduler._on_streaming_new_request(
+    scheduler.handle_stream_done(request_id)
+    scheduler.handle_streaming_new_request(
         request_id, _terminal_payload(rows, request_id=request_id, params=params)
     )
     return _drain(scheduler)
@@ -353,7 +353,7 @@ def test_default_session_streaming_lane_capacity(monkeypatch) -> None:
     scheduler = _make_scheduler(monkeypatch, FakeProcessor())
     session = scheduler._ensure_session()
 
-    assert scheduler._max_batch_size == 8
+    assert scheduler.max_batch_size == 8
     # note (Zhang Yiyang): 15 streaming lanes + the 1 lane freed by removing the
     # offline reserve = 16; the freed lane goes to streaming, not the trash.
     assert scheduler._stream_slots == 16
@@ -516,7 +516,7 @@ def _run_stream_batched(
     params: dict[str, Any] | None = None,
 ) -> list:
     """Drive chunks through the real batched seam: enqueue stream_chunk messages and
-    pump the serving loop so _collect_stream_chunk_batch coalesces already-queued chunks.
+    pump the serving loop so collect_stream_chunk_batch coalesces already-queued chunks.
     """
     metadata = metadata if metadata is not None else _metadata()
     for index, row in enumerate(rows):
@@ -526,8 +526,8 @@ def _run_stream_batched(
             )
         )
     _pump_queued_stream_chunks(scheduler)
-    scheduler._on_done(request_id)
-    scheduler._on_streaming_new_request(
+    scheduler.handle_stream_done(request_id)
+    scheduler.handle_streaming_new_request(
         request_id, _terminal_payload(rows, request_id=request_id, params=params)
     )
     return _drain(scheduler)
@@ -535,10 +535,10 @@ def _run_stream_batched(
 
 def _pump_queued_stream_chunks(scheduler) -> None:
     while True:
-        msg = scheduler._next_message()
+        msg = scheduler.next_message()
         if msg is None:
             break
-        scheduler._handle_message(msg, None)
+        scheduler.handle_message(msg, None)
 
 
 def test_batched_coalescing_matches_offline_decode(monkeypatch) -> None:
@@ -550,9 +550,9 @@ def test_batched_coalescing_matches_offline_decode(monkeypatch) -> None:
         stream_chunk_frames=10,
         initial_chunk_frames=5,
     )
-    assert scheduler._can_batch_stream_chunks is True
+    assert scheduler.can_batch_stream_chunks is True
     assert (
-        scheduler._stream_chunk_batch_max == 8
+        scheduler.stream_chunk_batch_max == 8
     )  # follows stream_slots, not max_batch_size
     rows = _rows(23, seed=1)
     messages = _run_stream_batched(scheduler, rows)
@@ -581,8 +581,8 @@ def test_batched_step_capped_at_chunk_frames(monkeypatch) -> None:
         stream_chunk_frames=10,
         initial_chunk_frames=5,
     )
-    assert scheduler._stream_chunk_batch_max == 16
-    scheduler._stream_chunk_batch_distinct_requests = False
+    assert scheduler.stream_chunk_batch_max == 16
+    scheduler.stream_chunk_batch_distinct_requests = False
     rows = _rows(16, seed=3)
     messages = _run_stream_batched(scheduler, rows)
 
@@ -629,10 +629,14 @@ def test_batched_coalescing_handles_two_streaming_lanes(monkeypatch) -> None:
         chunk_id += 1
 
     _pump_queued_stream_chunks(scheduler)
-    scheduler._on_done("a")
-    scheduler._on_streaming_new_request("a", _terminal_payload(rows_a, request_id="a"))
-    scheduler._on_done("b")
-    scheduler._on_streaming_new_request("b", _terminal_payload(rows_b, request_id="b"))
+    scheduler.handle_stream_done("a")
+    scheduler.handle_streaming_new_request(
+        "a", _terminal_payload(rows_a, request_id="a")
+    )
+    scheduler.handle_stream_done("b")
+    scheduler.handle_streaming_new_request(
+        "b", _terminal_payload(rows_b, request_id="b")
+    )
     messages = _drain(scheduler)
 
     stream_boundaries = [
@@ -664,11 +668,11 @@ def test_batched_ingest_failure_aborts_and_cleans_up_off_lock(monkeypatch) -> No
     cleanup_saw_lock_owned: list[bool] = []
 
     def cleanup(request_id: str) -> None:
-        is_owned = getattr(scheduler._state_lock, "_is_owned", lambda: False)
+        is_owned = getattr(scheduler.state_lock, "_is_owned", lambda: False)
         cleanup_saw_lock_owned.append(bool(is_owned()))
         cleanup_calls.append(request_id)
 
-    monkeypatch.setattr(scheduler, "_cleanup_aborted_request", cleanup)
+    monkeypatch.setattr(scheduler, "cleanup_aborted_request", cleanup)
     rows = _rows(2, seed=6)
     metadata = _metadata()
     scheduler.inbox.put(
@@ -686,14 +690,16 @@ def test_batched_ingest_failure_aborts_and_cleans_up_off_lock(monkeypatch) -> No
     )
 
     _pump_queued_stream_chunks(scheduler)
-    scheduler._on_done("ok")
-    scheduler._on_streaming_new_request("ok", _terminal_payload(rows, request_id="ok"))
+    scheduler.handle_stream_done("ok")
+    scheduler.handle_streaming_new_request(
+        "ok", _terminal_payload(rows, request_id="ok")
+    )
     messages = _drain(scheduler)
 
     assert cleanup_calls == ["bad"]
     assert cleanup_saw_lock_owned == [False]
-    assert scheduler._is_aborted("bad")
-    assert "bad" not in scheduler._stream_states
+    assert scheduler.is_aborted("bad")
+    assert "bad" not in scheduler.stream_states
     assert any(m.request_id == "bad" and m.type == "error" for m in messages)
     np.testing.assert_array_equal(
         _concat_stream_audio(messages, "ok"),
@@ -755,15 +761,23 @@ def test_interleaved_streams_are_isolated(monkeypatch) -> None:
     chunk_id = 0
     for index in range(max(len(rows_a), len(rows_b))):
         if index < len(rows_a):
-            scheduler._on_chunk("a", _stream_item(rows_a[index], metadata, chunk_id))
+            scheduler.handle_stream_chunk(
+                "a", _stream_item(rows_a[index], metadata, chunk_id)
+            )
             chunk_id += 1
         if index < len(rows_b):
-            scheduler._on_chunk("b", _stream_item(rows_b[index], metadata, chunk_id))
+            scheduler.handle_stream_chunk(
+                "b", _stream_item(rows_b[index], metadata, chunk_id)
+            )
             chunk_id += 1
-    scheduler._on_done("b")
-    scheduler._on_streaming_new_request("b", _terminal_payload(rows_b, request_id="b"))
-    scheduler._on_done("a")
-    scheduler._on_streaming_new_request("a", _terminal_payload(rows_a, request_id="a"))
+    scheduler.handle_stream_done("b")
+    scheduler.handle_streaming_new_request(
+        "b", _terminal_payload(rows_b, request_id="b")
+    )
+    scheduler.handle_stream_done("a")
+    scheduler.handle_streaming_new_request(
+        "a", _terminal_payload(rows_a, request_id="a")
+    )
     messages = _drain(scheduler)
 
     audio_a = _concat_stream_audio(messages, "a")
@@ -796,19 +810,27 @@ def test_near_due_streams_coalesce_into_one_step(monkeypatch) -> None:
     # Warm both streams past their initial chunk so both sit at the steady
     # threshold (6) with empty buffers.
     for index in range(3):
-        scheduler._on_chunk("a", _stream_item(rows_a[index], metadata, chunk_id))
+        scheduler.handle_stream_chunk(
+            "a", _stream_item(rows_a[index], metadata, chunk_id)
+        )
         chunk_id += 1
     for index in range(3):
-        scheduler._on_chunk("b", _stream_item(rows_b[index], metadata, chunk_id))
+        scheduler.handle_stream_chunk(
+            "b", _stream_item(rows_b[index], metadata, chunk_id)
+        )
         chunk_id += 1
     messages += _drain(scheduler)
     # B buffers 5 frames (one short of due); then A crosses its threshold.
     for index in range(3, 8):
-        scheduler._on_chunk("b", _stream_item(rows_b[index], metadata, chunk_id))
+        scheduler.handle_stream_chunk(
+            "b", _stream_item(rows_b[index], metadata, chunk_id)
+        )
         chunk_id += 1
     calls_before = codec.frame_calls
     for index in range(3, 9):
-        scheduler._on_chunk("a", _stream_item(rows_a[index], metadata, chunk_id))
+        scheduler.handle_stream_chunk(
+            "a", _stream_item(rows_a[index], metadata, chunk_id)
+        )
         chunk_id += 1
     assert codec.frame_calls - calls_before == 1
     coalesced = _drain(scheduler)
@@ -824,10 +846,14 @@ def test_near_due_streams_coalesce_into_one_step(monkeypatch) -> None:
     messages += coalesced
     # Finishing both streams must still produce exactly the offline waveform,
     # proving the rider step advanced B's slot state correctly.
-    scheduler._on_done("a")
-    scheduler._on_streaming_new_request("a", _terminal_payload(rows_a, request_id="a"))
-    scheduler._on_done("b")
-    scheduler._on_streaming_new_request("b", _terminal_payload(rows_b, request_id="b"))
+    scheduler.handle_stream_done("a")
+    scheduler.handle_streaming_new_request(
+        "a", _terminal_payload(rows_a, request_id="a")
+    )
+    scheduler.handle_stream_done("b")
+    scheduler.handle_streaming_new_request(
+        "b", _terminal_payload(rows_b, request_id="b")
+    )
     messages += _drain(scheduler)
     np.testing.assert_array_equal(
         _concat_stream_audio(messages, "a"),
@@ -856,16 +882,20 @@ def test_explicit_zero_initial_chunk_is_not_pulled_below_steady(monkeypatch) -> 
     # B explicitly opts out of a smaller first chunk, so five buffered frames
     # must not ride along when A crosses its own first-chunk threshold.
     for index in range(5):
-        scheduler._on_chunk("b", _stream_item(rows_b[index], metadata_b, chunk_id))
+        scheduler.handle_stream_chunk(
+            "b", _stream_item(rows_b[index], metadata_b, chunk_id)
+        )
         chunk_id += 1
     for index in range(2):
-        scheduler._on_chunk("a", _stream_item(rows_a[index], metadata_a, chunk_id))
+        scheduler.handle_stream_chunk(
+            "a", _stream_item(rows_a[index], metadata_a, chunk_id)
+        )
         chunk_id += 1
 
     messages = _drain(scheduler)
     assert [m.request_id for m in messages if m.type == "stream"] == ["a"]
 
-    scheduler._on_chunk("b", _stream_item(rows_b[5], metadata_b, chunk_id))
+    scheduler.handle_stream_chunk("b", _stream_item(rows_b[5], metadata_b, chunk_id))
     messages += _drain(scheduler)
     b_chunks = [
         _decode_audio(m.data).shape[1] // SAMPLES_PER_FRAME
@@ -892,15 +922,17 @@ def test_positive_initial_chunk_is_not_pulled_below_threshold(monkeypatch) -> No
     # B asked for a 5-frame first chunk; four buffered frames must not ride
     # along when A becomes due with a 1-frame floor.
     for index in range(4):
-        scheduler._on_chunk("b", _stream_item(rows_b[index], metadata_b, chunk_id))
+        scheduler.handle_stream_chunk(
+            "b", _stream_item(rows_b[index], metadata_b, chunk_id)
+        )
         chunk_id += 1
-    scheduler._on_chunk("a", _stream_item(rows_a[0], metadata_a, chunk_id))
+    scheduler.handle_stream_chunk("a", _stream_item(rows_a[0], metadata_a, chunk_id))
     chunk_id += 1
 
     messages = _drain(scheduler)
     assert [m.request_id for m in messages if m.type == "stream"] == ["a"]
 
-    scheduler._on_chunk("b", _stream_item(rows_b[4], metadata_b, chunk_id))
+    scheduler.handle_stream_chunk("b", _stream_item(rows_b[4], metadata_b, chunk_id))
     messages += _drain(scheduler)
     b_chunks = [
         _decode_audio(m.data).shape[1] // SAMPLES_PER_FRAME
@@ -948,23 +980,23 @@ def test_slot_reacquisition_preserves_initial_chunk_boundary(monkeypatch) -> Non
     hold_rows = _rows(1, seed=22)
     starved_rows = _rows(4, seed=23)
 
-    scheduler._on_chunk("hold", _stream_item(hold_rows[0], metadata))
+    scheduler.handle_stream_chunk("hold", _stream_item(hold_rows[0], metadata))
     _drain(scheduler)
     for index, row in enumerate(starved_rows[:3]):
-        scheduler._on_chunk("starved", _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk("starved", _stream_item(row, metadata, index))
     assert not [
         msg
         for msg in _drain(scheduler)
         if msg.type == "stream" and msg.request_id == "starved"
     ]
 
-    scheduler._on_done("hold")
-    scheduler._on_streaming_new_request(
+    scheduler.handle_stream_done("hold")
+    scheduler.handle_streaming_new_request(
         "hold", _terminal_payload(hold_rows, request_id="hold")
     )
     _drain(scheduler)
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         "starved", _stream_item(starved_rows[3], metadata, len(starved_rows) - 1)
     )
     messages = _drain(scheduler)
@@ -975,8 +1007,8 @@ def test_slot_reacquisition_preserves_initial_chunk_boundary(monkeypatch) -> Non
     ]
     assert first_chunk_sizes == [1]
 
-    scheduler._on_done("starved")
-    scheduler._on_streaming_new_request(
+    scheduler.handle_stream_done("starved")
+    scheduler.handle_streaming_new_request(
         "starved", _terminal_payload(starved_rows, request_id="starved")
     )
     messages += _drain(scheduler)
@@ -1000,14 +1032,16 @@ def test_slot_exhaustion_falls_back_to_batched_decode(monkeypatch) -> None:
     rows_b = _rows(8, seed=31)
     messages: list = []
     for index, row in enumerate(rows_a[:5]):
-        scheduler._on_chunk("a", _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk("a", _stream_item(row, metadata, index))
     # "b" cannot get a slot while "a" holds the only one: nothing may stream.
     for index, row in enumerate(rows_b):
-        scheduler._on_chunk("b", _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk("b", _stream_item(row, metadata, index))
     messages += _drain(scheduler)
     assert all(m.request_id != "b" for m in messages if m.type == "stream")
-    scheduler._on_done("b")
-    scheduler._on_streaming_new_request("b", _terminal_payload(rows_b, request_id="b"))
+    scheduler.handle_stream_done("b")
+    scheduler.handle_streaming_new_request(
+        "b", _terminal_payload(rows_b, request_id="b")
+    )
     messages_b = _drain(scheduler)
     sizes_b = [
         _decode_audio(m.data).shape[1] // SAMPLES_PER_FRAME
@@ -1022,9 +1056,11 @@ def test_slot_exhaustion_falls_back_to_batched_decode(monkeypatch) -> None:
     )
     # note (Zhang Yiyang): "a" is unaffected by b's batched decode.
     for index, row in enumerate(rows_a[5:], start=5):
-        scheduler._on_chunk("a", _stream_item(row, metadata, index))
-    scheduler._on_done("a")
-    scheduler._on_streaming_new_request("a", _terminal_payload(rows_a, request_id="a"))
+        scheduler.handle_stream_chunk("a", _stream_item(row, metadata, index))
+    scheduler.handle_stream_done("a")
+    scheduler.handle_streaming_new_request(
+        "a", _terminal_payload(rows_a, request_id="a")
+    )
     messages += _drain(scheduler)
     np.testing.assert_array_equal(
         _concat_stream_audio(messages, "a"),
@@ -1036,8 +1072,8 @@ def test_done_without_chunks_decodes_payload_codes(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
     rows = _rows(5, seed=40)
-    scheduler._on_done("req")
-    scheduler._on_streaming_new_request("req", _terminal_payload(rows))
+    scheduler.handle_stream_done("req")
+    scheduler.handle_streaming_new_request("req", _terminal_payload(rows))
     messages = _drain(scheduler)
     np.testing.assert_array_equal(
         _concat_stream_audio(messages, "req"),
@@ -1058,7 +1094,7 @@ def test_abort_releases_slot(monkeypatch) -> None:
     metadata = _metadata()
     rows_a = _rows(3, seed=50)
     for index, row in enumerate(rows_a):
-        scheduler._on_chunk("a", _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk("a", _stream_item(row, metadata, index))
     scheduler.abort("a")
     _drain(scheduler)
     rows_b = _rows(6, seed=51)
@@ -1201,7 +1237,7 @@ def test_offline_batch_leaves_stream_slots_untouched(monkeypatch) -> None:
     )
 
     for request_id, seed in (("hold-a", 80), ("hold-b", 81)):
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             request_id, _stream_item(_rows(1, seed=seed)[0], _metadata())
         )
     assert codec.frame_calls == 0
@@ -1238,20 +1274,24 @@ def test_offline_batch_leaves_stream_slots_untouched(monkeypatch) -> None:
 def test_stop_closes_persistent_streaming_session(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
-    scheduler._on_chunk("req", _stream_item(_rows(1, seed=74)[0], _metadata()))
+    scheduler.handle_stream_chunk(
+        "req", _stream_item(_rows(1, seed=74)[0], _metadata())
+    )
     assert scheduler._session is not None
     assert scheduler._codec.offsets is not None
 
     scheduler.stop()
 
     assert scheduler._session is None
-    assert scheduler._stream_states == {}
+    assert scheduler.stream_states == {}
     assert scheduler._codec.offsets is None
 
     # Reusing the same codec instance after stop must be able to open a fresh
     # streaming context instead of tripping the codec's nested-session guard.
     restarted = _make_scheduler(monkeypatch, processor)
-    restarted._on_chunk("req2", _stream_item(_rows(1, seed=75)[0], _metadata()))
+    restarted.handle_stream_chunk(
+        "req2", _stream_item(_rows(1, seed=75)[0], _metadata())
+    )
     assert restarted._session is not None
     assert restarted._codec.offsets is not None
     restarted.stop()
@@ -1291,7 +1331,7 @@ def test_decode_step_failure_fails_participants_only(monkeypatch) -> None:
     # Decode #1 succeeds: "c" emits its initial 2-frame chunk.
     rows_c = _rows(2, seed=100)
     for index, row in enumerate(rows_c):
-        scheduler._on_chunk("c", _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk("c", _stream_item(row, metadata, index))
     early = _drain(scheduler)
     assert [m.type for m in early] == ["stream"]
     assert early[0].request_id == "c"
@@ -1301,13 +1341,13 @@ def test_decode_step_failure_fails_participants_only(monkeypatch) -> None:
     # ride along because it did not opt out of smaller initial chunks.
     rows_b = _rows(5, seed=101)
     for index, row in enumerate(rows_b):
-        scheduler._on_chunk("b", _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk("b", _stream_item(row, metadata, index))
     early_b = _drain(scheduler)
     assert [m.type for m in early_b] == ["stream"]
     assert early_b[0].request_id == "b"
     rows_a = _rows(2, seed=102)
     for index, row in enumerate(rows_a):
-        scheduler._on_chunk("a", _stream_item(row, metadata, index))
+        scheduler.handle_stream_chunk("a", _stream_item(row, metadata, index))
 
     messages = _drain(scheduler)
     errors = [m for m in messages if m.type == "error"]
@@ -1315,8 +1355,8 @@ def test_decode_step_failure_fails_participants_only(monkeypatch) -> None:
     assert all(m.request_id != "c" for m in messages if m.type == "stream")
 
     # Both participants' state is gone and their slots are back in the pool.
-    assert "a" not in scheduler._stream_states
-    assert "b" not in scheduler._stream_states
+    assert "a" not in scheduler.stream_states
+    assert "b" not in scheduler.stream_states
     assert len(scheduler._session._free_stream_slots) == scheduler._stream_slots - 1
 
     # The scheduler keeps serving: a fresh stream decodes normally.
@@ -1347,7 +1387,7 @@ def test_stream_chunk_requires_metadata_contract(monkeypatch) -> None:
     assert "n_vq changed" in str(errors["req2"])
     # note (Gaokai): the serving path aborts a request whose chunk breaks the
     # model contract, so neither request may keep stream state.
-    assert scheduler._stream_states == {}
+    assert scheduler.stream_states == {}
 
 
 def test_stream_chunk_accepts_batched_ar_rows(monkeypatch) -> None:
@@ -1691,22 +1731,26 @@ def test_streaming_reuses_graphed_session_after_nonstreaming(
     )
 
     if trigger == "chunk":
-        scheduler._on_chunk("s", _stream_item(_rows(6, seed=2)[0], _metadata()))
+        scheduler.handle_stream_chunk(
+            "s", _stream_item(_rows(6, seed=2)[0], _metadata())
+        )
     elif trigger == "slot_starved":
         # note (Zhang Yiyang): "hold" takes the persistent session's only
         # slot; "starve" buffers without a slot, then finishes through the
         # batched path.
         for i, row in enumerate(_rows(5, seed=3)):
-            scheduler._on_chunk("hold", _stream_item(row, _metadata(), i))
+            scheduler.handle_stream_chunk("hold", _stream_item(row, _metadata(), i))
         for i, row in enumerate(_rows(6, seed=4)):
-            scheduler._on_chunk("starve", _stream_item(row, _metadata(), 100 + i))
-        scheduler._on_done("starve")
-        scheduler._on_streaming_new_request(
+            scheduler.handle_stream_chunk(
+                "starve", _stream_item(row, _metadata(), 100 + i)
+            )
+        scheduler.handle_stream_done("starve")
+        scheduler.handle_streaming_new_request(
             "starve", _terminal_payload(_rows(6, seed=4), request_id="starve")
         )
     else:  # no_chunk_done: terminal payload replay with no chunks -> _decode_payload_codes
-        scheduler._on_done("nc")
-        scheduler._on_streaming_new_request(
+        scheduler.handle_stream_done("nc")
+        scheduler.handle_streaming_new_request(
             "nc", _terminal_payload(_rows(5, seed=5), request_id="nc")
         )
 
