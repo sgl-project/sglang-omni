@@ -628,28 +628,31 @@ def build_generation_kwargs(
         explicit_fields = set()
 
     selected_fields: dict[str, Any] = {}
-    for field in _GENERATION_FIELDS:
-        stage_value = tts_engine_params.get(field)
+    for field_name in _GENERATION_FIELDS:
+        stage_value = tts_engine_params.get(field_name)
         if stage_value is not None:
-            selected_fields[field] = stage_value
+            selected_fields[field_name] = stage_value
             continue
-        value = params.get(field)
+        value = params.get(field_name)
         if value is None:
             continue
-        if field in _IMPLICIT_SAMPLING_DEFAULTS and field not in explicit_fields:
-            if value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
+        if (
+            field_name in _IMPLICIT_SAMPLING_DEFAULTS
+            and field_name not in explicit_fields
+        ):
+            if value in _IMPLICIT_SAMPLING_DEFAULTS[field_name]:
                 continue
-        selected_fields[field] = value
+        selected_fields[field_name] = value
 
     max_new_tokens = selected_fields.get("max_new_tokens")
     if max_new_tokens is None:
         max_new_tokens = QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS
     generation_kwargs: dict[str, Any] = {"max_new_tokens": int(max_new_tokens)}
-    for field in _GENERATION_FIELDS:
-        if field == "max_new_tokens":
+    for field_name in _GENERATION_FIELDS:
+        if field_name == "max_new_tokens":
             continue
-        if field in selected_fields:
-            generation_kwargs[field] = selected_fields[field]
+        if field_name in selected_fields:
+            generation_kwargs[field_name] = selected_fields[field_name]
     return generation_kwargs
 
 

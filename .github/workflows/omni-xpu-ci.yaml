@@ -73,8 +73,8 @@ jobs:
       xpu: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.xpu }}
       image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         if: github.event_name == 'pull_request'
         id: filter
         with:
@@ -103,7 +103,7 @@ jobs:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
         id: pr
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ github.token }}
           script: |
@@ -137,13 +137,13 @@ jobs:
 
       - name: Checkout workflow scripts
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Checkout workflow scripts for manual dispatch
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Resolve exact SHA
         id: meta
@@ -179,7 +179,7 @@ jobs:
         run: sudo rm -rf "$GITHUB_WORKSPACE"/* "$GITHUB_WORKSPACE"/.[!.]* 2>/dev/null || true
 
       - name: Checkout PR code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.preflight.outputs.exact_sha }}
           fetch-depth: 0

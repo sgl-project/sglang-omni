@@ -322,7 +322,7 @@ class NixlRelay(Relay):
                 indices,
                 remote_handle,
                 indices,
-                notif_msg=f"done".encode(),
+                notif_msg="done".encode(),
             )
             self.connection._nixl.transfer(xfer_handle)
 
@@ -350,5 +350,5 @@ class NixlRelay(Relay):
         if NIXL_AVAILABLE:
             try:
                 self.connection._nixl.deregister_memory(self.pool_handle)
-            except:
+            except Exception:
                 pass

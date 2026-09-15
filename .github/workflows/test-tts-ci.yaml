@@ -60,7 +60,7 @@ jobs:
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -91,7 +91,7 @@ jobs:
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Upload non-streaming speed artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tts-stage-nonstream-speed-results
           path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/**/speed_results.json
@@ -128,7 +128,7 @@ jobs:
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -149,7 +149,7 @@ jobs:
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Upload streaming speed artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tts-stage-stream-speed-results
           path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/**/speed_results.json
@@ -185,20 +185,20 @@ jobs:
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni
 
       - name: Download non-streaming speed artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tts-stage-nonstream-speed-results
           path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream
 
       - name: Download streaming speed artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tts-stage-stream-speed-results
           path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream
@@ -240,7 +240,7 @@ jobs:
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -312,7 +312,7 @@ jobs:
       TTS_MPS_GPU_ID: "0"
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.exact_sha }}
 
@@ -385,7 +385,7 @@ jobs:
 
       - name: Upload TTS MPS evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tts-stage-mps-nonstream-evidence
           # Evidence only: the canonical directory also holds 1088 generated

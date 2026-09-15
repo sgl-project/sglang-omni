@@ -108,7 +108,7 @@ runs:
 
     - name: Upload CI artifacts
       if: ${{ inputs.artifact-upload-name != '' && inputs.artifact-upload-path != '' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.artifact-upload-name }}
         path: ${{ inputs.artifact-upload-path }}

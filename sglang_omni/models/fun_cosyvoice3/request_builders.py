@@ -598,14 +598,17 @@ def build_generation_kwargs(
         explicit_fields = set()
 
     selected_fields = set()
-    for field in _GENERATION_FIELDS:
-        value = params.get(field)
+    for field_name in _GENERATION_FIELDS:
+        value = params.get(field_name)
         if value is None:
             continue
-        if field in _IMPLICIT_SAMPLING_DEFAULTS and field not in explicit_fields:
-            if value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
+        if (
+            field_name in _IMPLICIT_SAMPLING_DEFAULTS
+            and field_name not in explicit_fields
+        ):
+            if value in _IMPLICIT_SAMPLING_DEFAULTS[field_name]:
                 continue
-        selected_fields.add(field)
+        selected_fields.add(field_name)
 
     # note: max_new_tokens is intentionally left out of generation_kwargs
     # unless the caller explicitly passed one. CosyVoice3's own generation
@@ -617,11 +620,11 @@ def build_generation_kwargs(
     max_new_tokens = params.get("max_new_tokens")
     if max_new_tokens is not None:
         generation_kwargs["max_new_tokens"] = int(max_new_tokens)
-    for field in _GENERATION_FIELDS:
-        if field == "max_new_tokens":
+    for field_name in _GENERATION_FIELDS:
+        if field_name == "max_new_tokens":
             continue
-        if field in selected_fields and params.get(field) is not None:
-            generation_kwargs[field] = params[field]
+        if field_name in selected_fields and params.get(field_name) is not None:
+            generation_kwargs[field_name] = params[field_name]
     return generation_kwargs
 
 

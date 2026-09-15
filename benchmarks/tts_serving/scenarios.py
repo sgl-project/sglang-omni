@@ -323,7 +323,6 @@ def _over_limit_sentence_text(
 def _over_limit_paragraph_text(
     spec: BenchmarkSpec, stage: LoadStage, index: int, target_chars: int
 ) -> str:
-    run_scope = spec.run_id or "default"
     visible_run_scope = _visible_run_scope(spec.run_id)
     prefix = (
         f"speech over_limit_paragraph run {visible_run_scope} stage {stage.id} "

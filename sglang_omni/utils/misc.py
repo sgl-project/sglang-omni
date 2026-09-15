@@ -6,11 +6,14 @@ from __future__ import annotations
 import pickle
 import random
 import re
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
+
+if TYPE_CHECKING:
+    from sglang.srt.configs.model_config import ModelConfig
 
 
 def get_layer_id(weight_name):

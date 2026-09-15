@@ -287,7 +287,7 @@ def validate_generation_batch_policy(
     _validate_prefill_graph_policy(server_args, cuda_graph_enabled, errors)
 
     torch_compile_enabled = bool(cfg.enable_torch_compile)
-    torch_compile_max_bs = _validate_positive_int(
+    _validate_positive_int(
         "torch_compile_max_bs",
         cfg.torch_compile_max_bs,
         errors,

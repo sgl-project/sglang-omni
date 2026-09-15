@@ -34,7 +34,7 @@ jobs:
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -68,7 +68,7 @@ jobs:
         -v /data/cache/huggingface:/root/.cache/huggingface
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - uses: ./.github/actions/omni-setup
         with:

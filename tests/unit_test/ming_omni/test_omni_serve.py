@@ -394,7 +394,7 @@ def test_registry_rejects_duplicate_architecture_aliases(tmp_path, monkeypatch) 
                     "from typing import ClassVar",
                     "from sglang_omni.config import PipelineConfig",
                     "",
-                    f"class FakeConfig(PipelineConfig):",
+                    "class FakeConfig(PipelineConfig):",
                     f"    architecture: ClassVar[str] = {architecture!r}",
                     "    architecture_aliases: ClassVar[tuple[str, ...]] = ("
                     "'SharedArch',)",

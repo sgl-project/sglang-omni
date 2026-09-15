@@ -36,9 +36,7 @@ repos:
     rev: v0.11.10
     hooks:
       - id: ruff
-        args: [--select=F401, --fixable=F401]
-        files: ^(benchmarks/|docs/|examples/)
-        exclude: \.ipynb$
+        types_or: [python, pyi]
   - repo: https://github.com/psf/black
     rev: 24.10.0
     hooks:

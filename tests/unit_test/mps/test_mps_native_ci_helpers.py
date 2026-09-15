@@ -21,7 +21,7 @@ def test_operator_cleanup_preserves_signal_and_control_order(
     tmp_path,
     monkeypatch,
 ) -> None:
-    pipe_dir = _make_pipe_dir(tmp_path)
+    _make_pipe_dir(tmp_path)
     events: list[tuple] = []
     live_sessions = {700}
     clients = {"owned-client"}

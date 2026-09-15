@@ -340,7 +340,6 @@ def create_control_plane_app(
             admission_unreadable_since = None
         elif admission_unreadable_since is None:
             admission_unreadable_since = now
-        admission_readable = admission_view is None or admission_error is None
         wedged = (
             admission_unreadable_since is not None
             and now - admission_unreadable_since >= admission_grace_secs

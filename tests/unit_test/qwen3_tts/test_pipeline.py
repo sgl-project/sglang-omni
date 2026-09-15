@@ -13,6 +13,7 @@ from collections import deque
 from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest

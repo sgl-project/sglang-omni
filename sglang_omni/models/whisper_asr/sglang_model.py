@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Tuple
 
 import torch
 import torch.nn.functional as F

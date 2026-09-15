@@ -13,6 +13,8 @@ from sglang_omni.utils.misc import normalize_quantization
 
 if TYPE_CHECKING:
     import torch
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.server_args import ServerArgs
     from torch.nn.attention import SDPBackend
 
     from sglang_omni.comm.data_ref import TransportKind

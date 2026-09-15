@@ -140,6 +140,29 @@ override-dependencies = [
     "protobuf>=7.35.1,<8.0.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
+[tool.ruff]
+extend-exclude = [".claude/skills"]
+
+[tool.ruff.lint]
+# Allow existing lambda assignments in callbacks and test doubles.
+ignore = ["E731"]
+
+[tool.ruff.lint.per-file-ignores]
+# Preserve upstream initialization code without changing its behavior.
+"sglang_omni/models/fishaudio_s2_pro/fish_speech/models/dac/modded_dac.py" = ["F841"]
+# Keep short comprehension variables in stage parametrization.
+"tests/unit_test/test_stage_device_contract.py" = ["E741"]
+# These modules initialize import paths or compatibility shims before importing.
+"benchmarks/eval/benchmark_asr_transcribe_diarize.py" = ["E402"]
+"sglang_omni/models/dots_tts/tail.py" = ["E402"]
+"tests/unit_test/dots_tts/test_tail.py" = ["E402"]
+# These tests check optional dependencies before importing the code under test.
+"tests/unit_test/preprocessing/test_resample_cache.py" = ["E402"]
+"tests/unit_test/qwen3_omni/test_request_builder_text_only.py" = ["E402"]
+"tests/unit_test/qwen3_omni/test_sglang_thinker.py" = ["E402"]
+"tests/unit_test/qwen3_omni/test_thinker_prefill_contract.py" = ["E402"]
+"tests/unit_test/utils/test_fbank_cache.py" = ["E402"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 markers = [

@@ -121,7 +121,7 @@ class PutOperation(NcclOperation):
         try:
             while not self._work.is_completed():
                 if time.time() - start > timeout:
-                    raise TimeoutError(f"PutOperation timed out")
+                    raise TimeoutError("PutOperation timed out")
                 await asyncio.sleep(0.0001)
 
             self._work.wait()
@@ -153,7 +153,7 @@ class GetOperation(NcclOperation):
         try:
             while not self._work.is_completed():
                 if time.time() - start > timeout:
-                    raise TimeoutError(f"GetOperation timed out")
+                    raise TimeoutError("GetOperation timed out")
                 await asyncio.sleep(0.0001)
 
             self._work.wait()

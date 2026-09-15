@@ -9,6 +9,7 @@ from sglang_omni.platforms.interface import OmniPlatform
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang_omni.profiler.torch_profiler import TorchProfiler
 
 
 class NPUOmniPlatform(OmniPlatform):
