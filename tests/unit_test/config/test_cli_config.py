@@ -104,6 +104,28 @@ def plain_config_file(tmp_path, base_config):
 
 
 class TestResolve:
+    @pytest.mark.parametrize(
+        ("block", "message"),
+        [("stages", "must be a mapping"), ("shared", "must be a list")],
+    )
+    def test_an_explicit_null_block_is_not_treated_as_absent(
+        self, tmp_path, base_config, block, message
+    ):
+        path = tmp_path / "null-block.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "config_cls": base_config.config_cls,
+                    "model_path": "dummy",
+                    block: None,
+                },
+                sort_keys=False,
+            )
+        )
+
+        with pytest.raises(ValueError, match=message):
+            ConfigManager.from_file(str(path))
+
     def test_prints_the_config_a_launch_would_use(self, runner, config_file):
         """The whole point: this is what `serve` with these arguments builds."""
         result = runner.invoke(config_app, ["resolve", "--config", str(config_file)])
