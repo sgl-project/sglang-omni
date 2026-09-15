@@ -1,0 +1,145 @@
+{
+  "run_id": "dots-seedtts-resume-20260811-022527-944075000",
+  "created_at": "2026-08-11T02:25:27.987340+00:00",
+  "inventory_observed_at": "2026-08-11T02:22:29.198228+00:00",
+  "per_host_cap": 4,
+  "logical_shard_count": 5,
+  "worker_count": 5,
+  "hosts": {
+    "hyper00": {
+      "gpu_ids": [
+        7,
+        6,
+        5
+      ],
+      "worker_ids": [
+        0,
+        1,
+        2
+      ],
+      "logical_shard_ids": [
+        0,
+        1,
+        2
+      ]
+    },
+    "hyper01": {
+      "gpu_ids": [
+        7,
+        6
+      ],
+      "worker_ids": [
+        3,
+        4
+      ],
+      "logical_shard_ids": [
+        3,
+        4
+      ]
+    }
+  },
+  "workers": [
+    {
+      "host": "hyper00",
+      "local_rank": 0,
+      "physical_gpu_id": 7,
+      "worker_id": 0,
+      "logical_shard_ids": [
+        0
+      ]
+    },
+    {
+      "host": "hyper00",
+      "local_rank": 1,
+      "physical_gpu_id": 6,
+      "worker_id": 1,
+      "logical_shard_ids": [
+        1
+      ]
+    },
+    {
+      "host": "hyper00",
+      "local_rank": 2,
+      "physical_gpu_id": 5,
+      "worker_id": 2,
+      "logical_shard_ids": [
+        2
+      ]
+    },
+    {
+      "host": "hyper01",
+      "local_rank": 0,
+      "physical_gpu_id": 7,
+      "worker_id": 3,
+      "logical_shard_ids": [
+        3
+      ]
+    },
+    {
+      "host": "hyper01",
+      "local_rank": 1,
+      "physical_gpu_id": 6,
+      "worker_id": 4,
+      "logical_shard_ids": [
+        4
+      ]
+    }
+  ],
+  "resume_of": "dots-seedtts-stream-1444-20260811",
+  "persistent_run_root": "/data/dots_seedtts_runs/dots-seedtts-stream-1444-20260811/resume-20260811-022527-944075000",
+  "selection_policy": "free GPUs only, descending host GPU id",
+  "completed_before_resume": [
+    {
+      "concurrency": 1,
+      "samples": 50,
+      "host": "hyper00",
+      "physical_gpu_id": 7
+    }
+  ],
+  "pending_workers": [
+    {
+      "host": "hyper00",
+      "physical_gpu_id": 7,
+      "container_local_gpu_id": 0,
+      "concurrency": 2,
+      "samples": 1088,
+      "port": 31847
+    },
+    {
+      "host": "hyper00",
+      "physical_gpu_id": 6,
+      "container_local_gpu_id": 1,
+      "concurrency": 4,
+      "samples": 1088,
+      "port": 35611
+    },
+    {
+      "host": "hyper00",
+      "physical_gpu_id": 5,
+      "container_local_gpu_id": 2,
+      "concurrency": 8,
+      "samples": 1088,
+      "port": 40127
+    },
+    {
+      "host": "hyper01",
+      "physical_gpu_id": 7,
+      "container_local_gpu_id": 0,
+      "concurrency": 16,
+      "samples": 1088,
+      "port": 43781
+    },
+    {
+      "host": "hyper01",
+      "physical_gpu_id": 6,
+      "container_local_gpu_id": 1,
+      "concurrency": 32,
+      "samples": 1088,
+      "port": 48619
+    }
+  ],
+  "task_containers": {
+    "hyper00": "sglang-omni-jaxan-20260811-022528-334786000",
+    "hyper01": "sglang-omni-jaxan-20260811-022528-371558000"
+  }
+}
