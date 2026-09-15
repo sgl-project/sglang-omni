@@ -1822,10 +1822,6 @@ def create_vocoder_executor(
             raise ValueError(
                 "enable_dit_torch_compile is unavailable on the native MLX vocoder"
             )
-        if enable_dit_fused_rope:
-            raise ValueError(
-                "enable_dit_fused_rope is unavailable on the native MLX vocoder"
-            )
         vocoder = _CosyVoice3MlxVocoderAdapter(
             _load_cosyvoice3_mlx_vocoder(
                 mlx_model_path, revision=mlx_model_revision, expected_dtype=dtype
@@ -1858,7 +1854,7 @@ def create_vocoder_executor(
         fp16=(dtype == "float16"),
         enable_flow_estimator_trt=enable_flow_estimator_trt,
     )
-    if enable_dit_fused_rope:
+    if enable_dit_fused_rope and current_platform.is_cuda():
         from sglang_omni.models.fun_cosyvoice3.dit_fused_rope import (
             install_dit_fused_rope,
         )
