@@ -55,9 +55,7 @@ def _autocast_if_supported(
     device: torch.device,
     dtype: torch.dtype | None,
 ) -> Iterator[None]:
-    enabled = (device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)) or (
-        device.type == "cpu" and dtype is torch.bfloat16
-    )
+    enabled = _autocast_is_supported(device, dtype)
     if enabled:
         with torch.autocast(
             device_type=device.type,
@@ -66,6 +64,15 @@ def _autocast_if_supported(
             yield
     else:
         yield
+
+
+def _autocast_is_supported(
+    device: torch.device,
+    dtype: torch.dtype | None,
+) -> bool:
+    return (device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)) or (
+        device.type == "cpu" and dtype is torch.bfloat16
+    )
 
 
 def _join_waveforms(waveforms: list[torch.Tensor]) -> torch.Tensor:
@@ -180,6 +187,12 @@ def decode_codes_batch(
             # the attention backend.
             with torch.autocast(device_type=device.type, enabled=False):
                 decoder_hidden_states = quantizer_decode(audio_codes).float()
+            if not _autocast_is_supported(device, compute_dtype):
+                decoder_dtype = _module_dtype(decoder)
+                if decoder_dtype is not None:
+                    decoder_hidden_states = decoder_hidden_states.to(
+                        dtype=decoder_dtype
+                    )
             with _autocast_if_supported(device, compute_dtype):
                 audio, audio_lengths = decoder(
                     decoder_hidden_states,
