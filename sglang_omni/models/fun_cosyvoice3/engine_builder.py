@@ -136,6 +136,11 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     ) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
+        from sglang_omni.models.fun_cosyvoice3.metadata_graph import (
+            patch_metadata_capture,
+        )
+
+        patch_metadata_capture()
         del checkpoint_dir, gpu_id
         root = self._checkpoint_root
         assert root is not None, "checkpoint_root not set"
