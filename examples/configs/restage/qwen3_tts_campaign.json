@@ -1,0 +1,30 @@
+{
+  "plan_directory": "plan",
+  "task": "tts",
+  "repeats": 1,
+  "arrival_seed": 42,
+  "run_identity": "sglang-omni <sha> / <image> / H200 / Qwen3-TTS-1.7B-CustomVoice <revision>",
+  "trial_options": {
+    "model_path": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "asr_model_path": "Qwen/Qwen3-ASR-1.7B",
+    "asr_config_path": "asr.yaml",
+    "port": 8140,
+    "lang": "en",
+    "max_wer": 0.2,
+    "warmup": 2,
+    "sender_options": {
+      "voice": "Ryan",
+      "no_ref_audio": true
+    },
+    "slo": {
+      "max_rtf": 1.0,
+      "min_good_fraction": 0.99
+    },
+    "samples": {
+      "source": "zhaochenyang20/seed-tts-eval-arrow",
+      "split": "en",
+      "max_samples": 96
+    },
+    "corpus_repeats": 4
+  }
+}

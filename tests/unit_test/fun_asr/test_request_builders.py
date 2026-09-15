@@ -10,6 +10,9 @@ import torch
 
 import sglang_omni.models.fun_asr.request_builders as request_builders
 import sglang_omni.preprocessing.transcription as transcription
+from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
+    fun_asr_low_frame_rate_length,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio import audio_fingerprint
 
@@ -84,12 +87,11 @@ def _feature_extractor(num_lfr_frames: int):
     return _call
 
 
-def test_fun_asr_request_builder_records_inclusive_audio_offsets(
-    monkeypatch,
-) -> None:
+def test_fun_asr_request_builder_records_inclusive_audio_offsets(monkeypatch) -> None:
+    # 17 LFR frames -> three ceil(x/2) reductions: 17->9->5->3 audio tokens
     num_lfr_frames = 17
-    num_audio_tokens = 3
-    extractor = _feature_extractor(num_lfr_frames)
+    num_audio_tokens = fun_asr_low_frame_rate_length(num_lfr_frames)
+    assert num_audio_tokens == 3
 
     monkeypatch.setattr(
         transcription,
@@ -99,7 +101,7 @@ def test_fun_asr_request_builder_records_inclusive_audio_offsets(
     request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=_FakeTokenizer(),
         max_new_tokens=32,
-        feature_extractor=extractor,
+        feature_extractor=_feature_extractor(num_lfr_frames),
     )
     payload = StagePayload(
         request_id="req-fun-asr",

@@ -9,6 +9,9 @@ import torch.nn as nn
 
 from sglang_omni.models.fun_asr.encoder_cuda_graph import _bucket_batch, _bucket_t
 from sglang_omni.models.fun_asr.sglang_model import FunAsrNanoForConditionalGeneration
+from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
+    fun_asr_low_frame_rate_length,
+)
 
 
 def test_bucket_batch_rounds_up_within_max() -> None:
@@ -50,7 +53,7 @@ class _EagerProjector(nn.Module):
 
     def forward(self, enc_out, mask):
         b, t, _ = enc_out.shape
-        t_out = t
+        t_out = int(fun_asr_low_frame_rate_length(t))
         return torch.arange(b * t_out * self.llm_dim, dtype=torch.float32).reshape(
             b, t_out, self.llm_dim
         )
@@ -81,7 +84,7 @@ def test_get_audio_feature_routes_through_graph_runner() -> None:
             observed["xs_shape"] = tuple(xs.shape)
             observed["lengths"] = list(lengths)
             b = xs.shape[0]
-            t_out = xs.shape[1]
+            t_out = int(fun_asr_low_frame_rate_length(xs.shape[1]))
             return torch.ones(b, t_out, 4)
 
     model = _model_with(_Runner())
@@ -89,7 +92,9 @@ def test_get_audio_feature_routes_through_graph_runner() -> None:
 
     assert observed["xs_shape"] == (2, 17, 560)
     assert observed["lengths"] == [17, 9]
-    expected_rows = 3 + 2  # ceil(17 / 8) + ceil(9 / 8)
+    expected_rows = int(fun_asr_low_frame_rate_length(17)) + int(
+        fun_asr_low_frame_rate_length(9)
+    )
     assert out.shape == (expected_rows, 4)
     # eager tower must not have run
     assert model.audio_tower.calls == []
@@ -108,14 +113,16 @@ def test_get_audio_feature_falls_back_to_eager_when_runner_declines() -> None:
     xs_shape, mask_shape = model.audio_tower.calls[0]
     assert tuple(xs_shape) == (2, 17, 560)
     assert tuple(mask_shape) == (2, 1, 17)
-    expected_rows = 3 + 2  # ceil(17 / 8) + ceil(9 / 8)
+    expected_rows = int(fun_asr_low_frame_rate_length(17)) + int(
+        fun_asr_low_frame_rate_length(9)
+    )
     assert out.shape == (expected_rows, 4)
 
 
-def test_get_audio_feature_without_runner_truncates_embeddings() -> None:
+def test_get_audio_feature_without_runner_matches_previous_behavior() -> None:
     model = _model_with(None)
     out = model.get_audio_feature([_item(12)])
 
     # single unpadded item keeps the maskless fast path
     assert model.audio_tower.calls == [((1, 12, 560), None)]
-    assert out.shape == (2, 4)  # ceil(12 / 8)
+    assert out.shape == (int(fun_asr_low_frame_rate_length(12)), 4)

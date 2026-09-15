@@ -116,6 +116,7 @@ Supported Models
    cookbook/llada2_uni.md
    cookbook/fun_cosyvoice3.md
    cookbook/auk.md
+   cookbook/restage.md
 
 .. toctree::
    :maxdepth: 1

@@ -21,8 +21,8 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
 
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
-        "vocoder",
         "tts_engine",
+        "vocoder",
     ]
     assert [stage.process for stage in config.stages] == [
         "pipeline",

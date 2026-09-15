@@ -73,19 +73,79 @@ def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | Non
     return tmp_path_factory.mktemp(prefix) / "server.log"
 
 
-def stop_server(proc: subprocess.Popen) -> None:
-    """Gracefully stop the server process group, tolerating already-dead processes."""
+def _process_group_has_live_members(pgid: int) -> bool:
+    if sys.platform == "linux":
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            if int(fields[2]) == pgid and fields[0] not in {"Z", "X"}:
+                return True
+        return False
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        proc.wait(timeout=30)
-    except (ProcessLookupError, ChildProcessError):
-        return
-    except subprocess.TimeoutExpired:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def stop_server(
+    proc: subprocess.Popen,
+    *,
+    terminate_timeout_s: float = 30,
+    kill_timeout_s: float = 10,
+) -> None:
+    """Stop the private process group created by start_server_from_cmd.
+
+    Wait for live workers as well as the leader. Detached processes outside
+    this group are not owned by this cleanup operation.
+    """
+    pgid = proc.pid
+    try:
+        if os.getpgid(proc.pid) != pgid:
+            raise ValueError("Server must have its own process group")
+    except ProcessLookupError:
+        pass
+    # Note (Jiaxin Deng): let the server close its pipeline and encoder workers
+    # before group-wide signals would bypass their shutdown callbacks.
+    if proc.poll() is None:
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
-        except (ProcessLookupError, ChildProcessError):
+            proc.terminate()
+            proc.wait(timeout=terminate_timeout_s)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        if not _process_group_has_live_members(pgid):
+            proc.wait(timeout=kill_timeout_s)
             return
+    # Note (Jiaxin Deng): the leader may exit before its GPU workers; retain
+    # its original group ID and wait for the group without scanning GPU owners.
+    logger.warning(
+        "Escalating server cleanup to process group %s (leader return code: %s)",
+        pgid,
+        proc.poll(),
+    )
+    for sig, timeout in (
+        (signal.SIGTERM, terminate_timeout_s),
+        (signal.SIGKILL, kill_timeout_s),
+    ):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            proc.wait(timeout=kill_timeout_s)
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            proc.poll()
+            if not _process_group_has_live_members(pgid):
+                proc.wait(timeout=kill_timeout_s)
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+    raise TimeoutError(f"Server process group {pgid} did not exit after SIGKILL")
 
 
 def wait_for_gpu_memory_release(
@@ -363,6 +423,9 @@ def _ensure_port_available(host: str, port: int) -> None:
     probe_host = "" if host in {"0.0.0.0", "::"} else host
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            # Note (Jiaxin Deng): match server reuse so TIME_WAIT is not a live listener.
+            if os.name == "posix":
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((probe_host, port))
     except OSError as exc:
         raise RuntimeError(

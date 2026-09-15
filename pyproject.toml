@@ -58,6 +58,9 @@ dependencies = [
     "pandas",
     "tabulate",
     "typer>=0.9.0",
+    "aiohttp",
+    "requests",
+    "tqdm",
     "openai==2.6.1",
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
@@ -153,6 +156,8 @@ where = ["."]
 include = [
     "sglang_omni",
     "sglang_omni.*",
+    "benchmarks",
+    "benchmarks.*",
     "sglang_omni_router.python",
     "sglang_omni_router.python.*",
 ]

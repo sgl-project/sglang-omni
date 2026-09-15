@@ -1,0 +1,14 @@
+{
+  "devices": [
+    0
+  ],
+  "max_colocated": 3,
+  "dimensions": {
+    "split": [
+      {},
+      {
+        "vocoder.process": "vocoder"
+      }
+    ]
+  }
+}

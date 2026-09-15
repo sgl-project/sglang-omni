@@ -57,7 +57,7 @@ def _compile_fun_asr_audio_encoder(
         # inference-mode tensors fail, forcing a full recompile on the first
         # real request
         t = int(warmup_lfr_frames)
-        feat_dim = int(model.config.audio_config.input_size)
+        feat_dim = int(model.config.encoder_config.input_size)
 
         # note(guozhihao-224): Dynamo specializes B=0/1 and mask=None vs tensor;
         # B1/None + B1/mask + B2/mask cover the mask branch and the B>=2 dynamic graph.

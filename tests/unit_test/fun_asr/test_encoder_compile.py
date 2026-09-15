@@ -34,7 +34,7 @@ def _tiny_model() -> SimpleNamespace:
     return SimpleNamespace(
         audio_tower=encoder,
         multi_modal_projector=projector,
-        config=SimpleNamespace(audio_config=SimpleNamespace(input_size=8)),
+        config=SimpleNamespace(encoder_config=SimpleNamespace(input_size=8)),
     )
 
 

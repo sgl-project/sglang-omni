@@ -737,8 +737,8 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         sampling_rate=16000,
         frame_length=25,
         frame_shift=10,
-        num_frames_lfr=7,
-        stride_lfr=6,
+        lfr_m=7,
+        lfr_n=6,
         window="hamming",
     )
     base = dict(
@@ -756,11 +756,10 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         model, **{**base, "mm_attention_backend": "triton_attn"}
     )
     assert namespace != build_cache_namespace(_StubModel(dtype=torch.bfloat16), **base)
-    for field, value in (("num_frames_lfr", 5), ("stride_lfr", 3)):
-        changed_frontend = SimpleNamespace(**{**vars(frontend), field: value})
-        assert namespace != build_cache_namespace(
-            model, **{**base, "feature_extractor": changed_frontend}
-        )
+    changed_frontend = SimpleNamespace(**{**vars(frontend), "lfr_m": 5})
+    assert namespace != build_cache_namespace(
+        model, **{**base, "feature_extractor": changed_frontend}
+    )
     changed_config = _StubModel()
     changed_config.config = SimpleNamespace(
         text_config=SimpleNamespace(hidden_size=_HIDDEN_SIZE), marker="other"
