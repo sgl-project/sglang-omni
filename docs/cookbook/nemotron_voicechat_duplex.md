@@ -9,8 +9,10 @@ offline VoiceChat configuration is unchanged.
 
 Use the checkpoint and tokenizer downloads in [the offline cookbook](nemotron_voicechat.md).
 The initial configuration supports one session on one GPU, with four separate
-stage processes. On B200, Talker explicitly uses `triton` attention because
-the default TRTLLM context kernel does not support its head dimension of 72.
+stage processes. On B200, both AR stages use `triton` attention with page size 1. This avoids
+64-position padding for the thinker’s single-position continuations; Talker also
+requires this because the default TRTLLM context kernel does not support its
+head dimension of 72.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python examples/run_nemotron_voicechat_duplex.py \
@@ -34,8 +36,9 @@ CUDA_VISIBLE_DEVICES=0 python examples/run_nemotron_voicechat_duplex.py \
 
 Open **http://localhost:8097** after the server prints `VoiceChat UI`.
 The example serves its HTML, CSS and JavaScript directly; no frontend build or
-npm installation is required. Startup runs two silent frames to warm first-frame
-and continuation kernels before opening the port (`--no-warmup` skips this).
+npm installation is required. Startup captures the fixed-size codec graph and runs two silent frames to warm
+first-frame and continuation kernels, including the speech sampler graph, before
+opening the port (`--no-warmup` skips the silent session).
 
 1. Click **开始对话** and allow microphone access. Headphones help avoid acoustic feedback.
 2. Speak naturally. The browser sends continuous 80 ms PCM frames and plays
@@ -57,6 +60,10 @@ first audio packet (which can contain silence). It stops if input backlog exceed
 one browser session is supported at a time. This is a prototype: sustained GPU
 processing can fall behind real time. Automatic interruption depends on model
 behavior; the explicit interrupt button is available to test cancellation.
+
+Playback uses a 480 ms startup/rebuffer reserve, then schedules packets
+contiguously. Where supported, the output AudioContext runs at 22050 Hz so
+resampling happens on the continuous mix, rather than independently per packet.
 
 Browser audio tests: `node --test examples/voicechat_ui/audio.test.mjs`.
 Static route tests: `pytest tests/unit_test/nemotron_voicechat/test_duplex_ui.py`.
@@ -101,7 +108,11 @@ uses the shared runtime's epoch semantics. Playback does not rewind model histor
 
 The initial version uses the checkpoint system prompt and Aria voice. Custom
 instructions are rejected. Tool execution, session resume, cross-unit overlap,
-concurrent sessions, CUDA graphs, and latency optimization are outside this change.
+concurrent sessions, and backbone CUDA graphs are outside this change. Fixed-shape
+speech sampling, the full codec window, and perception after its causal caches
+reach their fixed bounds use CUDA graph replay; dynamic backbone KV remains
+managed by the native session scheduler. Perception capture restores its warmup
+state before replay, so capture does not consume extra input frames.
 Sessions are limited to 240 seconds; the AR adapters also enforce context bounds.
 The underlying offline talker precision and classifier-free-guidance limitations
 still apply. Do not interpret unit tests or a smoke run as a quality benchmark.

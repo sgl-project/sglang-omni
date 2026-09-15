@@ -86,6 +86,52 @@ class DuplexThinkerRunner(NemotronVoiceChatModelRunner):
 
 
 class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
+    def _generate_codes(self, index):
+        # Fixed one-frame sampler only: backbone/session KV remains scheduler-owned.
+        # Replaying its small kernels avoids Python dispatch on every 80 ms unit.
+        if self.model._hidden_out.device.type != "cuda":
+            return super()._generate_codes(index)
+        if not hasattr(self, "_sampler_graph"):
+            from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
+                NUM_ITER,
+            )
+
+            hidden = self.model._hidden_out[index : index + 1].float().clone()
+            rates = torch.linspace(0, 1, NUM_ITER + 1, device=hidden.device)[:-1]
+            counts = torch.ceil(
+                (1 - rates.pow(self.exponent)).pow(1 / self.exponent)
+                * self.model.talker.num_quantizers
+            ).long()
+            counts = tuple(
+                (counts - torch.cat([counts[1:], counts.new_zeros(1)])).tolist()
+            )
+
+            def sample():
+                return self.model.talker.generate_codes(
+                    hidden,
+                    self.model.mog_head,
+                    num_iter=NUM_ITER,
+                    exponent=self.exponent,
+                    top_p=self.top_p,
+                    noise_scale=self.noise_scale,
+                    assignment_counts=counts,
+                )
+
+            stream = torch.cuda.Stream(device=hidden.device)
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(3):
+                    sample()
+            torch.cuda.current_stream().wait_stream(stream)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=stream):
+                output = sample()
+            self._sampler_graph = graph
+            self._sampler_hidden, self._sampler_output = hidden, output
+        self._sampler_hidden.copy_(self.model._hidden_out[index : index + 1])
+        self._sampler_graph.replay()
+        return self._sampler_output.clone()
+
     def before_prefill(self, forward_batch, schedule_batch, requests):
         attach_rows(forward_batch, requests)
 

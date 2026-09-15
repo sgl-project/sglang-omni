@@ -71,3 +71,27 @@ test('interrupt clears scheduled audio and never acknowledges cancelled samples'
   ctx.sources[1].onended();
   assert.deepEqual(acks,[80]);
 });
+
+
+test('arrival jitter does not insert gaps into continuous PCM', () => {
+  const ctx = fakeContext(); const player = new PCMPlayer(ctx);
+  for (let i = 0; i < 12; i++) {
+    ctx.currentTime = i * 0.085 + (i % 2 ? 0.01 : 0);
+    player.enqueue(new Float32Array(1764), 22050, event);
+  }
+  for (let i = 1; i < ctx.sources.length; i++) {
+    assert.ok(Math.abs(ctx.sources[i].at - ctx.sources[i-1].at - 0.08) < 1e-9);
+  }
+  assert.equal(player.rebuffers, 0);
+});
+
+test('a genuine underrun replenishes jitter headroom once', () => {
+  const ctx = fakeContext(); const player = new PCMPlayer(ctx);
+  player.enqueue(new Float32Array(1764), 22050, event);
+  ctx.currentTime = 0.8;
+  player.enqueue(new Float32Array(1764), 22050, event);
+  ctx.currentTime = 0.88;
+  player.enqueue(new Float32Array(1764), 22050, event);
+  assert.equal(player.rebuffers, 1);
+  assert.ok(Math.abs(ctx.sources[2].at - ctx.sources[1].at - 0.08) < 1e-9);
+});

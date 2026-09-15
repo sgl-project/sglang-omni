@@ -34,6 +34,15 @@ class SessionBuilder:
 
 
 class ThinkerBuilder(SessionBuilder, NemotronVoiceChatEngineBuilder):
+    def generation_defaults(self, *, dtype):
+        # Native continuations extend a single position. Avoid TRTLLM's
+        # minimum 64-token prefill padding for each 80 ms audio frame.
+        return {
+            **super().generation_defaults(dtype=dtype),
+            "attention_backend": "triton",
+            "page_size": 1,
+        }
+
     def make_model_runner(self, model_worker, output_proc):
         self.runner = DuplexThinkerRunner(model_worker, output_proc)
         return self.runner
@@ -146,8 +155,25 @@ def create_codec(model_path, *, dtype="float32", device=None, gpu_id=None):
     offline = create_code2wav_executor(
         model_path, dtype=dtype, device=device, gpu_id=gpu_id
     )
+    hooks = CodecHooks(offline._decoder, offline._device)
+    # Capture the steady-state codec before accepting a live microphone.
+    import torch
+
+    if torch.device(offline._device).type == "cuda":
+        from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
+            DECODE_WINDOW_FRAMES,
+        )
+
+        hooks.decode(
+            torch.zeros(
+                DECODE_WINDOW_FRAMES,
+                offline._decoder.silence_codes.numel(),
+                dtype=torch.long,
+                device=offline._device,
+            )
+        )
     return SessionScheduler(
-        CodecHooks(offline._decoder, offline._device),
+        hooks,
         max_sessions=1,
         max_concurrency=1,
     )

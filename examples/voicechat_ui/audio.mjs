@@ -61,6 +61,7 @@ export class PCMPlayer {
     this.sources = new Set();
     this.endAt = 0;
     this.ends = new Map();
+    this.rebuffers = 0;
   }
   get queuedSeconds() { return Math.max(0, this.endAt - this.context.currentTime); }
   enqueue(pcm, rate, event) {
@@ -77,7 +78,12 @@ export class PCMPlayer {
     this.ends.set(key, playedEndMs);
     const item = {source, cancelled: false};
     this.sources.add(item);
-    const at = Math.max(this.context.currentTime + 0.04, this.endAt);
+    // Reserve jitter headroom only at startup/underrun. Adding a lead to
+    // every packet punches gaps into an otherwise continuous waveform.
+    const now = this.context.currentTime;
+    const underrun = this.endAt > 0 && this.endAt < now + 0.005;
+    if (underrun) this.rebuffers++;
+    const at = this.endAt > now + 0.005 ? this.endAt : now + 0.48;
     this.endAt = at + buffer.duration;
     source.onended = () => {
       this.sources.delete(item);

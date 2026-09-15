@@ -79,7 +79,10 @@ async function start() {
   $('call-title').textContent = '正在准备你的麦克风'; $('call-hint').textContent = '请允许浏览器使用麦克风。';
   $('first-audio').textContent = '—'; $('backlog').textContent = '—'; $('buffer').textContent = '—';
   try {
-    s.outputContext = new AudioContext({latencyHint: 'interactive'});
+    // Keep packet boundaries at the model rate; resample the continuous mix
+    // to the device rate instead of resampling each small source separately.
+    try { s.outputContext = new AudioContext({sampleRate: 22050, latencyHint: 'interactive'}); }
+    catch { s.outputContext = new AudioContext({latencyHint: 'interactive'}); }
     try { s.captureContext = new AudioContext({sampleRate: 16000, latencyHint: 'interactive'}); }
     catch { s.captureContext = new AudioContext({latencyHint: 'interactive'}); }
     await Promise.all([s.outputContext.resume(), s.captureContext.resume()]);
@@ -216,7 +219,7 @@ async function end(message = '', isError = false) {
   await Promise.allSettled([socketClosed, s.captureContext?.close(), s.player ? s.player.close() : s.outputContext?.close()]);
   controls(false); status(isError ? '对话已停止' : '服务就绪', isError ? 'error' : '');
   $('stage').classList.remove('active'); $('stage').querySelector('.orb').style.transform = '';
-  $('call-title').textContent = '随时，再聊一会儿'; $('call-hint').textContent = '这段对话已结束，点击开始可以开启新的会话。';
+  $('call-title').textContent = isError ? '本次对话已停止，请重新开始' : '随时，再聊一会儿'; $('call-hint').textContent = '这段对话已结束，点击开始可以开启新的会话。';
   $('mic-label').textContent = '未开启'; $('speaker-label').textContent = '已停止'; $('transcript-state').textContent = 'TRANSCRIPT';
   $('mute').textContent = '静音麦克风'; $('mute').setAttribute('aria-pressed', 'false');
   $('backlog').textContent = '—'; $('buffer').textContent = '—';

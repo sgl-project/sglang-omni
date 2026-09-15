@@ -21,6 +21,50 @@ OUTPUT_RATE = 22050
 FRAME_SAMPLES = 1280
 
 
+class GraphPerception(StreamingPerception):
+    """Replay only after causal cache shapes have reached their fixed bounds."""
+
+    _single = ("sample_buffer", "preemphasis_carry")
+    _lists = ("sub_caches", "key_caches", "value_caches", "conv_caches")
+
+    def _buffers(self):
+        return [getattr(self, name) for name in self._single] + [
+            tensor for name in self._lists for tensor in getattr(self, name)
+        ]
+
+    @torch.inference_mode()
+    def push(self, samples):
+        if self.device.type != "cuda" or len(self.key_caches[0]) < self.max_keys:
+            return super().push(samples)
+        if not hasattr(self, "_graph"):
+            inputs = self._buffers()
+            saved = [value.clone() for value in inputs]
+            attrs = {name: getattr(self, name) for name in self._single}
+            attrs.update({name: list(getattr(self, name)) for name in self._lists})
+            self._input = samples.to(device=self.device, dtype=self.dtype).clone()
+            stream = torch.cuda.Stream(device=self.device)
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(3):
+                    super().push(self._input)
+            torch.cuda.current_stream().wait_stream(stream)
+            for target, value in zip(inputs, saved):
+                target.copy_(value)
+            for name, value in attrs.items():
+                setattr(self, name, list(value) if name in self._lists else value)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=stream):
+                output = super().push(self._input)
+                for target, value in zip(inputs, self._buffers()):
+                    target.copy_(value)
+            for name, value in attrs.items():
+                setattr(self, name, list(value) if name in self._lists else value)
+            self._graph, self._output = graph, output
+        self._input.copy_(samples)
+        self._graph.replay()
+        return self._output
+
+
 @dataclass
 class PerceptionState:
     stream: object | None
@@ -32,7 +76,7 @@ class PerceptionHooks(SessionHooks):
         self.model = model
 
     def open(self, ref, request):
-        return PerceptionState(StreamingPerception(self.model))
+        return PerceptionState(GraphPerception(self.model))
 
     @torch.inference_mode()
     def append(self, state, chunk, payload, context):
@@ -86,6 +130,29 @@ class CodecHooks(SessionHooks):
 
     def __init__(self, decoder, device):
         self.decoder, self.device = decoder, device
+        self._decode_graph = None
+
+    @torch.inference_mode()
+    def decode(self, codes):
+        # Once the rolling window is full, its shape never changes. Reuse a
+        # graph for codec kernels without changing the window or audio samples.
+        if codes.device.type != "cuda" or codes.shape[0] != DECODE_WINDOW_FRAMES:
+            return self.decoder(codes)
+        if self._decode_graph is None:
+            self._decode_input = codes.clone()
+            stream = torch.cuda.Stream(device=codes.device)
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                for _ in range(3):
+                    self.decoder(self._decode_input)
+            torch.cuda.current_stream().wait_stream(stream)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=stream):
+                self._decode_output = self.decoder(self._decode_input)
+            self._decode_graph = graph
+        self._decode_input.copy_(codes)
+        self._decode_graph.replay()
+        return self._decode_output
 
     def open(self, ref, request):
         return CodecState()
@@ -108,7 +175,7 @@ class CodecHooks(SessionHooks):
             available = state.frames * frame_samples - (
                 0 if eos else TAIL_HOLDBACK_SAMPLES
             )
-            audio = self.decoder(torch.stack(state.rows))
+            audio = self.decode(torch.stack(state.rows))
             fresh = (
                 audio[
                     state.emitted - first * frame_samples : available

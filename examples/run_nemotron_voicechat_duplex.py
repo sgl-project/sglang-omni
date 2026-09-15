@@ -8,6 +8,7 @@ import asyncio
 import json
 import time
 import wave
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 
@@ -24,6 +25,21 @@ def mount_example_ui(app):
         return FileResponse(
             assets / "index.html", headers={"Cache-Control": "no-store"}
         )
+
+
+def close_workers_on_shutdown(app, stop):
+    """Close GPU workers before Uvicorn re-raises a termination signal."""
+    lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def managed_lifespan(app):
+        try:
+            async with lifespan(app):
+                yield
+        finally:
+            await stop()
+
+    app.router.lifespan_context = managed_lifespan
 
 
 async def warmup_realtime(dep):
@@ -91,6 +107,7 @@ async def run(args):
             app = create_app(
                 client, model_name="nemotron-voicechat", realtime_deployment=dep
             )
+            close_workers_on_shutdown(app, runner.stop)
             mount_example_ui(app)
             print(f"VoiceChat UI: http://localhost:{args.port}", flush=True)
             await uvicorn.Server(
