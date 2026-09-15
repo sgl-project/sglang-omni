@@ -36,6 +36,8 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         onnx_intra_op_threads: int = 16,
         mlx_model_path: str | None = None,
         mlx_model_revision: str | None = None,
+        enable_async_decode: bool = False,
+        async_decode_min_batch_size: int = 2,
     ) -> None:
         super().__init__()
         hop = int(token_hop_len)
@@ -46,6 +48,8 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         self._mlx_model_path = mlx_model_path
         self._mlx_model_revision = mlx_model_revision
         self.device: str | None = None
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
 
         # note (Dayuxiaoshui): both ONNX sessions get a pool of this size, so
         # cap it at the host core count instead of trusting the default of 16.
@@ -248,7 +252,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
-            return {}
+            return {
+                "enable_async_decode": self.enable_async_decode,
+                "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            }
         return {
             "enable_async_decode": True,
             "async_decode_min_batch_size": 1,
