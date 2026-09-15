@@ -348,7 +348,7 @@ class SGLModelRunner(ModelRunner):
         from sglang_omni.platforms import current_platform
 
         is_musa = (
-            getattr(current_platform, "device_type", None) == "musa"
+            current_platform.device_type == "musa"
             or getattr(self.device, "type", None) == "musa"
         )
         if is_musa:
@@ -492,7 +492,7 @@ class SGLModelRunner(ModelRunner):
         # the caller enters graph capture under no_grad. Keep CUDA unchanged;
         # the MUSA bridge requires capture and warmup to share inference mode.
         is_musa = (
-            getattr(current_platform, "device_type", None) == "musa"
+            current_platform.device_type == "musa"
             or getattr(self.device, "type", None) == "musa"
         )
         capture_mode = torch.inference_mode() if is_musa else contextlib.nullcontext()

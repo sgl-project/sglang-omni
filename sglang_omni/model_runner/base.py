@@ -208,7 +208,7 @@ class ModelRunner:
     def _musa_inference_context(self):
         """Keep MUSA graph-buffer writes and sampling in one inference mode."""
         is_musa = (
-            getattr(current_platform, "device_type", None) == "musa"
+            current_platform.device_type == "musa"
             or getattr(self.device, "type", None) == "musa"
         )
         return torch.inference_mode() if is_musa else contextlib.nullcontext()
