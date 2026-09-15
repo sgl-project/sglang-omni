@@ -37,9 +37,33 @@ __all__ = [
     "is_fp8_block_quant",
     "convert_fp8_weight_scale_inv",
     "get_weight_preprocessor",
+    "inject_fp8_experts_quant_config",
     "needs_quant_config_normalization",
     "normalize_quant_config",
 ]
+
+_FP8_EXPERTS_IGNORED_LAYERS: tuple[str, ...] = (
+    "query_key_value",
+    "dense",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+
+
+def inject_fp8_experts_quant_config(model_config: Any) -> dict[str, Any] | None:
+    hf_config = getattr(model_config, "hf_config", None)
+    if not getattr(hf_config, "use_fp8_experts", False):
+        return None
+    quant_config: dict[str, Any] = {
+        "quant_method": "fp8",
+        "activation_scheme": "dynamic",
+        "weight_block_size": [128, 128],
+        "modules_to_not_convert": list(_FP8_EXPERTS_IGNORED_LAYERS),
+    }
+    hf_config.quantization_config = quant_config
+    model_config.quantization = "fp8"
+    return quant_config
 
 
 def _to_mutable_dict(quant_config: Any, metadata_key: str) -> dict[str, Any]:
