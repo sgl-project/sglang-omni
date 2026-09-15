@@ -48,6 +48,7 @@ class FunASRRequestData(SGLangARRequestData):
     audio_duration_s: float = 0.0
     language: str | None = None
     engine_start_s: float = 0.0
+    streaming_prefix_text: str = ""
 
 
 def _default_token_budget(audio_duration_s: float, max_new_tokens: int) -> int:
@@ -88,6 +89,34 @@ def _decode_token_ids(
         )
     except TypeError:
         return tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)
+
+
+def _align_to_word_boundary(text: str, cut: int) -> int:
+    # note (Xinhao Tan): a raw char-count cut can land mid-word (e.g. "this"
+    # -> "thi"), forcing the model to continue from a fragment it can't
+    # reliably complete. Walk back to the nearest whitespace instead; no
+    # whitespace at all means roll back the whole run.
+    if cut <= 0 or cut >= len(text):
+        return cut
+    if text[cut - 1].isspace() or text[cut].isspace():
+        return cut
+    while cut > 0 and not text[cut - 1].isspace():
+        cut -= 1
+    return cut
+
+
+def _retained_streaming_prefix(
+    tokenizer: Any, text: str, rollback_chars: int
+) -> tuple[list[int], str]:
+    cut = _align_to_word_boundary(text, max(len(text) - rollback_chars, 0))
+    # note (Xinhao Tan): drop a trailing boundary space here — the
+    # continuation's own leading-space token supplies the separator, so
+    # keeping both doubles up the whitespace between words.
+    retained_text = text[:cut].rstrip()
+    if not retained_text:
+        return [], ""
+    token_ids = tokenizer(retained_text, add_special_tokens=False).input_ids
+    return list(token_ids), retained_text
 
 
 def _resolve_language(lang_raw: str | None) -> str | None:
@@ -259,6 +288,16 @@ def make_fun_asr_scheduler_adapters(
         ]
         audio_item.offsets = [(audio_start, audio_start + num_audio_tokens - 1)]
 
+        is_streaming_refresh = params.get("_asr_streaming") is True
+        streaming_prefix = params.get("_asr_streaming_prefix_text")
+        rollback_chars = int(params.get("_asr_streaming_rollback_chars", 0))
+        streaming_prefix_token_ids, retained_streaming_prefix = (
+            _retained_streaming_prefix(tokenizer, streaming_prefix, rollback_chars)
+            if is_streaming_refresh and streaming_prefix
+            else ([], "")
+        )
+        input_ids = input_ids + streaming_prefix_token_ids
+
         mm_inputs = MultimodalInputs(
             mm_items=[audio_item],
             num_image_tokens=num_audio_tokens,
@@ -293,6 +332,7 @@ def make_fun_asr_scheduler_adapters(
             temperature=temperature,
             top_p=1.0,
             stop_token_ids=[eos_token_id],
+            repetition_penalty=float(params.get("repetition_penalty", 1.0)),
         )
         sampling_params.normalize(tokenizer=None)
 
@@ -320,6 +360,7 @@ def make_fun_asr_scheduler_adapters(
             audio_duration_s=audio_duration_s,
             language=lang_raw,
             engine_start_s=time.perf_counter(),
+            streaming_prefix_text=retained_streaming_prefix,
             stage_payload=payload,
         )
 
@@ -327,7 +368,10 @@ def make_fun_asr_scheduler_adapters(
         payload = data.stage_payload
         output_ids = list(data.output_ids or [])
 
-        text = _decode_token_ids(tokenizer, output_ids, skip_special_tokens=True)
+        continuation = _decode_token_ids(
+            tokenizer, output_ids, skip_special_tokens=True
+        )
+        text = f"{data.streaming_prefix_text}{continuation}"
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
         )
