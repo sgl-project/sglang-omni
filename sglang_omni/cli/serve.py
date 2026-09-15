@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Annotated, Literal
 
 import typer
@@ -251,6 +252,20 @@ def apply_tensor_parallel_engine_overrides(
     return config_cls(**data)
 
 
+def apply_request_waiting_timeout(seconds: float | None) -> None:
+    """Publish the waiting-queue timeout the schedulers read from the environment.
+
+    Upstream reads ``SGLANG_REQ_WAITING_TIMEOUT`` inside
+    ``Scheduler._abort_on_waiting_timeout`` rather than off ``server_args``, and
+    reads it per call, so setting it here reaches every stage process the
+    launcher later spawns. Nothing in this repo referenced the variable, so the
+    bound existed but no deployment could find it.
+    """
+    if seconds is None:
+        return
+    os.environ["SGLANG_REQ_WAITING_TIMEOUT"] = str(seconds)
+
+
 def serve(
     ctx: typer.Context,
     model_path: Annotated[
@@ -332,6 +347,20 @@ def serve(
         Literal["debug", "info", "warning", "error", "critical"],
         typer.Option(help="Log level (default: info)."),
     ] = "info",
+    req_waiting_timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--req-waiting-timeout",
+            "--req_waiting_timeout",
+            min=0.0,
+            help=(
+                "Drop a request that has waited longer than this many seconds "
+                "in the waiting queue, answering it with HTTP 503. Bounds how "
+                "long a request may wait, where the queue length bounds how "
+                "many may wait. Omit to let requests wait indefinitely."
+            ),
+        ),
+    ] = None,
     enable_realtime: Annotated[
         bool,
         typer.Option(
@@ -353,6 +382,7 @@ def serve(
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    apply_request_waiting_timeout(req_waiting_timeout)
 
     _validate_colocate_cli_request(
         colocate=colocate,
