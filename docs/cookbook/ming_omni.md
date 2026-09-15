@@ -35,21 +35,25 @@ flowchart LR
     THK -->|text| DEC["decode → text"]
     THK -->|speech| TLK["talker → speech"]
     THK -->|streaming speech| SEG["segmenter → talker_stream<br/>chunked audio over SSE"]
+    THK -->|image| CND["semantic_conditioner<br/>proj_in → Qwen2 connector → proj_out"] --> DIT["image_gen DiT<br/>Z-Image-Turbo (dedicated GPU)"]
 ```
 
-Media preprocessing and the audio/image encoders prepare multimodal embeddings, `mm_aggregate` fuses them, the thinker generates response text, and the terminal stage decides the output: `decode` for text, `talker` for full-utterance speech, or `segmenter -> talker_stream` for chunked streaming audio.
+Media preprocessing and the audio/image encoders prepare multimodal embeddings, `mm_aggregate` fuses them, the thinker generates response text, and the terminal stage decides the output: `decode` for text, `talker` for full-utterance speech, or `segmenter -> talker_stream` for chunked streaming audio. For image output the thinker emits gen-mask-selected hidden states, the `semantic_conditioner` projects them to `[B, 256, 2560]` condition embeds (without reloading BailingMoeV2), and the Z-Image-Turbo DiT denoises them into a PNG on its own GPU.
 
-Ming has three serving variants:
+Ming has four serving variants:
 
 | Variant | Pipeline | Output | Entry point |
 |---|---|---|---|
 | Text | `preprocessing -> audio_encoder + image_encoder -> mm_aggregate -> thinker -> decode` | Text | `sgl-omni serve --text-only` |
 | Speech | Text pipeline plus `talker` terminal stage | Text + audio | `sgl-omni serve` |
 | Streaming speech | Speech pipeline with `segmenter -> talker_stream` | Text + chunked audio over SSE | `MingOmniStreamingSpeechPipelineConfig` pipeline config |
+| Image | `preprocessing -> thinker -> semantic_conditioner -> image_gen DiT` | Image (base64 PNG) | `sgl-omni serve --image-gen --diffusion-model-path <path>` |
 
 When you pass only `--model-path`, OmniServe selects the default Ming speech pipeline. Add `--text-only` when you only need text output and want to avoid launching the talker. Streaming speech is a separate Ming pipeline variant; the benchmark section includes streaming evidence, but the ready copy-paste commands in this cookbook focus on the generic model-path text and speech paths.
 
 The router, when used, routes whole requests to complete Ming workers. It does not split one request across the thinker and talker of different workers.
+
+The image variant (`MingOmniImagePipelineConfig`) is launched from the generic `sgl-omni serve` path with `--image-gen`: it disaggregates the thinker (TP) from a dedicated Z-Image DiT GPU and returns base64 PNGs through the same `/v1/chat/completions` endpoint with `modalities: ["image"]`.
 
 ## Server Configuration
 
@@ -98,6 +102,35 @@ The streaming pipeline is for audio chunks. The text-only `stream=true` path cur
 ### Placement and Memory Notes
 
 Use `--thinker.tp_size` to set thinker tensor parallelism and `--thinker.gpu` to choose the logical GPU ids as a JSON list. `--thinker.engine.cpu_offload_gb`, `--thinker.engine.quantization`, and the broadcast `--mem-fraction-static` are forwarded to the thinker server. Use `--talker.gpu` only for the speech pipeline, and keep it separate from the thinker GPUs. Use `--image_encoder.tp_size` / `--image_encoder.gpu` for image-encoder tensor parallelism. The selector above wires all of these placements consistently.
+
+### Image Generation Server
+
+Image output runs the thinker plus a dedicated Z-Image-Turbo DiT stage. Launch it from the generic `sgl-omni serve` path with `--image-gen`, which selects the `MingOmniImagePipelineConfig` pipeline and adds the terminal DiT stage. `--image-gen` requires `--diffusion-model-path` (the Z-Image bundle); it is mutually exclusive with `--text-only` and `--colocate`.
+
+```bash
+sgl-omni serve \
+  --model-path inclusionAI/Ming-flash-omni-2.0 \
+  --image-gen \
+  --diffusion-model-path Tongyi-MAI/Z-Image-Turbo \
+  --thinker-tp-size 4 --thinker-gpus 0,1,2,3 \
+  --image-gen-gpu 4 \
+  --enable-byt5-text-rendering \
+  --host 0.0.0.0 --port 8000 --model-name ming-omni
+```
+
+The image-generation flags:
+
+| Flag | Default | Role |
+|---|---|---|
+| `--image-gen` | off | Select the image-generation pipeline (thinker + diffusion DiT). Requires `--diffusion-model-path`; mutually exclusive with `--text-only`/`--colocate`. |
+| `--diffusion-model-path` | — (required) | Path or HF id of the Z-Image diffusion bundle (the directory holding `scheduler/`, `vae/`, and `transformer/` subdirs). |
+| `--image-gen-gpu` | pipeline default (GPU 1) | Logical GPU id for the DiT stage. Must not overlap the thinker TP range. |
+| `--enable-standalone-semantic-encoder` | off | Load the standalone Ming semantic encoder so requests can set `semantic_source=standalone`. The default thinker-fused source is the supported route; leave this off unless you specifically need the standalone path. |
+| `--enable-byt5-text-rendering` | off | Load the ByT5 text encoder so the DiT can render legible quoted text. Requires a `<ming>/byt5/` dir and fails fast otherwise. |
+
+Thinker placement reuses the same `--thinker-tp-size` / `--thinker-gpus` flags as the text and speech pipelines, with `CUDA_VISIBLE_DEVICES`-relative logical ids. Here the thinker runs TP4 on logical GPUs 0-3 and the DiT takes logical GPU 4. The DiT GPU must not overlap the thinker TP range — the launcher validates and rejects overlap before startup (`_validate_image_gen_gpu_not_in_thinker_tp_range`), re-checking after `--image-gen-gpu` is applied. Because the pipeline captures thinker hidden states to condition the DiT, it forces hidden-state capture on the thinker and is therefore incompatible with `--thinker-cuda-graph on`. `--mem-fraction-static` is forwarded to the thinker stage as usual.
+
+For disaggregated setups that need absolute GPU placement or a non-default inter-stage transport, the same pipeline can also be launched from the lower-level `examples/run_ming_omni_image_server.py` script, which additionally exposes `--relay-backend {shm,nccl,nixl}` and absolute `--gpu-thinker` / `--gpu-img-gen` ids.
 
 ## Input and Output Examples
 
@@ -273,6 +306,88 @@ Output (short clip of two astronauts on a space station, `temperature: 0.0`):
 The video shows two astronauts inside a space station. One astronaut is holding a microphone and speaking, while the other is standing with his arms crossed. The background includes various equipment and a laptop.
 ```
 
+### Text Input, Image Output
+
+Launch the image server first (the `Image Generation Server` command above), then request an image with `modalities: ["image"]` and an `image_generation` block. `modalities` must contain `"image"` whenever `image_generation` is present, or the server returns HTTP 400. The PNG comes back in `choices[0].message.images[0].data` as a base64-encoded PNG (raw base64, no `data:` URI prefix).
+
+```bash
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ming-omni",
+    "messages": [{"role": "user", "content": "A cat sitting on a windowsill watching the sunset"}],
+    "modalities": ["image"],
+    "image_generation": {
+      "size": "1024x1024",
+      "num_inference_steps": 28,
+      "guidance_scale": 2.0,
+      "seed": 42
+    },
+    "stream": false
+  }' \
+  | python3 -c 'import sys, json, base64; img = json.load(sys.stdin)["choices"][0]["message"]["images"][0]; open("ming_image.png", "wb").write(base64.b64decode(img["data"]))'
+```
+
+Python:
+
+```python
+import base64
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "ming-omni",
+        "messages": [{"role": "user", "content": "A cat sitting on a windowsill watching the sunset"}],
+        "modalities": ["image"],
+        "image_generation": {
+            "size": "1024x1024",
+            "num_inference_steps": 28,
+            "guidance_scale": 2.0,
+            "seed": 42,
+        },
+        "stream": False,
+    },
+)
+resp.raise_for_status()
+image = resp.json()["choices"][0]["message"]["images"][0]
+with open("ming_image.png", "wb") as f:
+    f.write(base64.b64decode(image["data"]))
+```
+
+Output (image server, `seed: 42`) — a 1024x1024 PNG at `ming_image.png`; the response item also carries `format: "png"`, `width: 1024`, and `height: 1024`:
+
+![Ming-Omni image output: a cat on a windowsill watching the sunset](../_static/image/ming-image-gen-cat-sunset.jpg)
+
+Non-English prompts work the same way — `"一幅水墨画，画中有竹子和远山"` ("an ink-wash painting with bamboo and distant mountains"), same parameters:
+
+![Ming-Omni image output: an ink-wash painting of bamboo and distant mountains](../_static/image/ming-image-gen-ink-wash.jpg)
+
+### Rendered Text
+
+For legible glyphs, launch with `--enable-byt5-text-rendering`, set `enable_text_rendering: true`, and put the literal text in a quoted span in the prompt — only the **last** quoted substring is rendered. ByT5 encodes that span and concatenates it onto the semantic prompt embeds before denoise. The per-request flag alone does nothing without the launch flag and the `<ming>/byt5/` dir.
+
+```bash
+curl -s -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ming-omni",
+    "messages": [{"role": "user", "content": "A vintage storefront window with a neon sign that reads \"OPEN\""}],
+    "modalities": ["image"],
+    "image_generation": {
+      "size": "1024x1024",
+      "num_inference_steps": 28,
+      "guidance_scale": 2.0,
+      "seed": 42,
+      "enable_text_rendering": true
+    },
+    "stream": false
+  }' \
+  | python3 -c 'import sys, json, base64; img = json.load(sys.stdin)["choices"][0]["message"]["images"][0]; open("ming_text_image.png", "wb").write(base64.b64decode(img["data"]))'
+```
+
+Output: a 1024x1024 PNG at `ming_text_image.png`. ByT5 conditions the DiT on the quoted span (`OPEN`) so the rendered glyphs track the requested text; without `--enable-byt5-text-rendering` the base DiT tends to garble exact strings.
+
 ### Text Input, Text + Audio Output
 
 Launch the speech server first (the `Text + Audio Output` command above), then request audio with `modalities: ["text", "audio"]`. The speech reply comes back in `choices[0].message.audio.data` as base64 WAV.
@@ -430,6 +545,21 @@ The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming repl
 | `audio.format` | `wav` | Chat-completions audio format. |
 | `stage_params` | `null` | Advanced per-stage parameters. |
 
+### Image Generation Parameters
+
+These apply to the image server only. Send the `image_generation` block on the request and include `"image"` in `modalities`.
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `modalities` | `["text"]` | Must include `"image"` for image output, else HTTP 400. |
+| `image_generation.size` | `"1024x1024"` | `"WIDTHxHEIGHT"` string; or pass `width` + `height` ints. `size` wins when valid. |
+| `image_generation.num_inference_steps` | `28` | DiT denoise steps. |
+| `image_generation.guidance_scale` | `2.0` | Tuned low for the distilled Z-Image-Turbo DiT; do not raise to SD-style 7-9 without retuning. |
+| `image_generation.seed` | `null` | Set an int for reproducibility; `null` is nondeterministic. |
+| `image_generation.negative_prompt` | `""` | Influences the thinker prompt path; the DiT runs with `text_encoder=None`, and unset negatives default to zeroed semantic embeds. |
+| `image_generation.semantic_source` | `"thinker"` | Keep the default. `"standalone"` errors unless launched with `--enable-standalone-semantic-encoder`. |
+| `image_generation.enable_text_rendering` | `false` | ByT5 glyph rendering of the last quoted span; also needs `--enable-byt5-text-rendering` at launch. |
+
 ## Benchmark Results
 
 The numbers below are directional H100-class serving evidence for SGLang-Omni serving Ming-flash-omni-2.0 under matched prompts, sampling settings, and decode parameters. They are useful for setting expectations, not universal guarantees; keep the caveats with the numbers when quoting them.
@@ -498,6 +628,18 @@ A small c=1 audit (single prompt, single voice, n=4 WAVs per mode) checks that t
 
 Intelligibility is fully preserved; streaming and non-streaming are close but not bit-identical (expected from chunked-decode windowing).
 
+### Image Generation
+
+Image output (`modalities=["image"]`), 1024x1024 @ 28 inference steps, measured end-to-end on H100 against a warm pipeline. Topology: thinker TP4 (GPUs 0-3) + Z-Image-Turbo DiT on one dedicated GPU.
+
+| Stage | Mean latency |
+|---|---:|
+| Total e2e (warm) | `~14 s / image` |
+| DiT denoise (Z-Image-Turbo, Stage 2) | `~9.5 s` |
+| Remainder (thinker prefill + semantic conditioning + relay + VAE decode + PNG/base64) | `~4.5 s` |
+
+DiT denoise dominates the warm cost (~9.5 s of the ~14 s total); the remainder is the arithmetic balance, not separately profiled. `guidance_scale 2.0` is the tuned operating point for the distilled, low-CFG Z-Image-Turbo DiT. These are directional warm-pipeline numbers, not a release-wide guarantee; keep the topology and caveats with them when quoting.
+
 ## Known Limitations
 
 - **Ming is large.** Use thinker TP and plan GPU placement deliberately. On 80 GB H100-class GPUs the MoE thinker does not fit on a single GPU, so bare default placement (no `--thinker.tp_size`) out-of-memories during startup — TP=4 is the smallest placement that loads (TP=1 and TP=2 both OOM). CPU offload can make the model fit on fewer GPUs but slows inference.
@@ -508,3 +650,10 @@ Intelligibility is fully preserved; streaming and non-streaming are close but no
 - **Text streaming is not token-by-token today.** In the current Ming path, text-only `stream=true` currently emits an aggregate text chunk. Use streaming speech when you need audio chunks.
 - **Streaming speech is optimized for low client concurrency.** It improves first-audio latency at c=1 but can be slower than non-streaming for multi-client workloads.
 - **Long-form speech can drift.** For long narration, split text into smaller turns or run a voice/drift audit for your target voice and language.
+- **Image generation is a `sgl-omni serve` variant.** Image output uses `sgl-omni serve --image-gen` (the two-stage `MingOmniImagePipelineConfig`). `--diffusion-model-path` is required, and the DiT GPU (`--image-gen-gpu`) must not overlap the thinker TP range — the launcher validates and rejects overlap before startup. It is mutually exclusive with `--text-only`/`--colocate` and incompatible with `--thinker-cuda-graph on`.
+- **`image_generation` requires the image modality.** Send `modalities: ["image"]` whenever the request carries an `image_generation` block, or the server returns HTTP 400.
+- **Text rendering needs both flags plus a quoted span.** Start the server with `--enable-byt5-text-rendering` AND send `enable_text_rendering: true` AND put the literal text in a quoted span in the prompt — only the **last** quoted substring is rendered. Missing the launch flag or the `<ming>/byt5/` dir fails fast; the per-request flag alone does nothing.
+- **Keep `guidance_scale` low.** The default `2.0` is tuned for the distilled, low-CFG Z-Image-Turbo DiT. High CFG washes out the image; do not raise it to SD-style 7-9 values without retuning.
+- **The standalone semantic source is dormant.** `semantic_source: "standalone"` errors unless launched with `--enable-standalone-semantic-encoder`. Use the default thinker-fused source (omit `semantic_source` or set `"thinker"`).
+- **Conditioning length is fixed.** `img_gen_scales [16] => 256` condition tokens is anchored to the model's scale config; `size` is configurable but the conditioning length is not.
+- **Negative conditioning defaults to zeros.** When `negative_prompt` is empty the DiT negative embeds default to zeroed semantic embeds, since the Z-Image pipeline runs with `text_encoder=None` (negative_prompt influences the thinker prompt path, not a separate DiT text encoder).
