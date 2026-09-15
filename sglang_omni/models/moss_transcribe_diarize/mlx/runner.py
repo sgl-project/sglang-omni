@@ -47,25 +47,14 @@ class MossTranscribeDiarizeMlxModelRunner(AudioMlxModelRunner):
             time.perf_counter() - started,
         )
 
-    @staticmethod
-    def _item_data(item: Any, name: str) -> Any:
-        value = getattr(item, name, None)
-        if value is not None:
-            return value
-        return getattr(item, "model_specific_data", {}).get(name)
-
     def _audio_prefill_inputs(
         self, req: Any, token_ids: list[int]
     ) -> tuple[mx.array, mx.array]:
         item = self._audio_item(req)
         if item.feature is None:
             raise ValueError(f"{self.model_name} MLX prefill requires audio features")
-        feature_lengths = self._item_data(item, "audio_feature_lengths")
-        chunk_mapping = self._item_data(item, "audio_chunk_mapping")
-        if feature_lengths is None or chunk_mapping is None:
-            raise ValueError(
-                f"{self.model_name} MLX prefill requires audio length metadata"
-            )
+        feature_lengths = item.audio_feature_lengths
+        chunk_mapping = item.audio_chunk_mapping
 
         normalized_ids = self._normalize_audio_token_ids(req, token_ids)
         audio_token_id = int(req.multimodal_inputs.audio_token_id)

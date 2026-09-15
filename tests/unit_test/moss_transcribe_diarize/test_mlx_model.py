@@ -113,10 +113,8 @@ def test_mlx_prefill_scatters_audio_around_time_marker_tokens(mlx_device) -> Non
     runner.model = MossTranscribeDiarizeModel(_tiny_config())
     item = SimpleNamespace(
         feature=torch.zeros((1, 4, 16)),
-        model_specific_data={
-            "audio_feature_lengths": torch.tensor([4]),
-            "audio_chunk_mapping": torch.tensor([0]),
-        },
+        audio_feature_lengths=torch.tensor([4]),
+        audio_chunk_mapping=torch.tensor([0]),
         pad_value=999,
     )
     req = SimpleNamespace(

@@ -22,11 +22,10 @@ def load_language_model(checkpoint: Path) -> Qwen3ForCausalLM:
         **json.loads((checkpoint / "config.json").read_text())["text_config"]
     )
     model = Qwen3ForCausalLM(config)
-    weights = {}
+    weights: dict[str, torch.Tensor] = {}
     for weight_file in sorted(checkpoint.glob("*.safetensors")):
         with safe_open(weight_file, framework="pt", device="cpu") as reader:
-            weight_names = reader.keys()
-            for name in weight_names:
+            for name in reader.keys():
                 if name.startswith("model.language_model."):
                     weights[name.replace("model.language_model.", "model.", 1)] = (
                         reader.get_tensor(name)
@@ -61,9 +60,7 @@ class MossTranscribeDiarizeTorchMpsModelRunner(AudioTorchMpsModelRunner):
     model_name = "MOSS-Transcribe-Diarize"
     encoder_window_batch_size = 8
     prefill_chunk_size = 4096
-
-    def _validate_audio_positions(self, audio_positions: list[int]) -> None:
-        del audio_positions
+    requires_contiguous_audio_positions = False
 
     def _get_audio_feature(self, item: Any, forward_batch: Any) -> torch.Tensor:
         feature_lengths = item.audio_feature_lengths

@@ -15,6 +15,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
 
     model_name = "Audio ASR"
     prefill_chunk_size: int | None = None
+    requires_contiguous_audio_positions = True
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
@@ -40,17 +41,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
             can_run_cuda_graph=False,
         )
 
-    def _validate_audio_positions(self, audio_positions: list[int]) -> None:
-        audio_start = audio_positions[0]
-        if audio_positions != list(
-            range(audio_start, audio_start + len(audio_positions))
-        ):
-            raise ValueError(
-                f"{self.model_name} Torch MPS audio placeholders must be contiguous"
-            )
-
     def _get_audio_feature(self, item: Any, forward_batch: Any) -> torch.Tensor:
-        del forward_batch
         return self.model.get_audio_feature([item])
 
     def _assign_audio_features(
@@ -104,7 +95,14 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise ValueError(
                 f"{self.model_name} Torch MPS prefill has no audio placeholders"
             )
-        self._validate_audio_positions(audio_positions)
+        if self.requires_contiguous_audio_positions:
+            audio_start = audio_positions[0]
+            if audio_positions != list(
+                range(audio_start, audio_start + len(audio_positions))
+            ):
+                raise ValueError(
+                    f"{self.model_name} Torch MPS audio placeholders must be contiguous"
+                )
 
         language_model = self.model.language_model
         input_ids = torch.tensor(
