@@ -17,11 +17,13 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
 from sglang_omni.models.nemotron_voicechat.model_runner import (
     NemotronVoiceChatModelRunner,
 )
 from sglang_omni.models.nemotron_voicechat.request_builders import _ar_request
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
+    NUM_ITER,
     NemotronVoiceChatTalkerModelRunner,
 )
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
@@ -31,11 +33,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FrameHistory:
-    rows: list = field(default_factory=list)
+    rows: list[torch.Tensor] = field(default_factory=list)
     positions: int = 0
     text_token: int | None = None
     function_token: int | None = None
-    codes: object = None
+    codes: torch.Tensor | None = None
     spoken: list[int] = field(default_factory=list)
     text: str = ""
     forwarded: int = 0
@@ -86,16 +88,12 @@ class DuplexThinkerRunner(NemotronVoiceChatModelRunner):
 
 
 class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
-    def _generate_codes(self, index):
+    def _generate_codes(self, index: int) -> torch.Tensor:
         # Fixed one-frame sampler only: backbone/session KV remains scheduler-owned.
         # Replaying its small kernels avoids Python dispatch on every 80 ms unit.
         if self.model._hidden_out.device.type != "cuda":
             return super()._generate_codes(index)
         if not hasattr(self, "_sampler_graph"):
-            from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
-                NUM_ITER,
-            )
-
             hidden = self.model._hidden_out[index : index + 1].float().clone()
             rates = torch.linspace(0, 1, NUM_ITER + 1, device=hidden.device)[:-1]
             counts = torch.ceil(
@@ -117,17 +115,10 @@ class DuplexTalkerRunner(NemotronVoiceChatTalkerModelRunner):
                     assignment_counts=counts,
                 )
 
-            stream = torch.cuda.Stream(device=hidden.device)
-            stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(stream):
-                for _ in range(3):
-                    sample()
-            torch.cuda.current_stream().wait_stream(stream)
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, stream=stream):
-                output = sample()
-            self._sampler_graph = graph
-            self._sampler_hidden, self._sampler_output = hidden, output
+            self._sampler_graph, self._sampler_output = capture_cuda_graph(
+                sample, hidden.device
+            )
+            self._sampler_hidden = hidden
         self._sampler_hidden.copy_(self.model._hidden_out[index : index + 1])
         self._sampler_graph.replay()
         return self._sampler_output.clone()

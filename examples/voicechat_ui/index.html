@@ -1,27 +1,174 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>VoiceChat · 实时语音</title>
-  <link rel="stylesheet" href="/voicechat-assets/style.css">
-</head>
-<body>
-<header class="topbar"><a class="brand" href="/"><span class="brandmark">v<span>c</span></span><span>VoiceChat <small>by SGLang Omni</small></span></a><span class="pill"><i></i> Native full duplex</span></header>
-<main>
-  <section class="heading"><div><p class="eyebrow">REALTIME VOICE LAB</p><h1>开口，开始一段对话。</h1><p class="intro">边听边说，不需要按住说话，也不用等它说完。</p></div><div class="model-tag">NEMOTRON <strong>VoiceChat 11B</strong><span>Aria · 原生全双工</span></div></section>
-  <div class="workspace">
-    <section class="call-card" aria-label="语音对话">
-      <div class="card-top"><span id="status" class="status" role="status"><i></i>正在检查服务</span><span id="duration" class="duration">00:00 / 04:00</span></div>
-      <div class="stage" id="stage"><div class="orb" aria-hidden="true"><div class="orb-inner"><svg viewBox="0 0 100 100"><path d="M24 49v3m10-17v31m10-42v53m11-62v70m11-49v29m10-19v9"/></svg></div></div><h2 id="call-title">准备好，聊点什么？</h2><p id="call-hint">戴上耳机，点击下方按钮，允许访问麦克风。</p></div>
-      <div class="signals"><div><span><i class="mic-dot"></i>你的麦克风 <b id="mic-label">未开启</b></span><canvas id="mic-wave" width="600" height="42" aria-label="麦克风音量"></canvas></div><div><span><i class="voice-dot"></i>VoiceChat <b id="speaker-label">等待对话</b></span><canvas id="speaker-wave" width="600" height="42" aria-label="回复音量"></canvas></div></div>
-      <div class="controls"><button id="start" class="primary" disabled><span>开始对话</span><span aria-hidden="true">↗</span></button><button id="mute" class="secondary" disabled aria-pressed="false">静音麦克风</button><button id="interrupt" class="secondary" disabled>打断播放</button><button id="stop" class="danger" disabled>结束</button></div>
-      <p class="control-note" id="control-note">静音时仍会发送静音帧，让模型继续回复。</p>
-      <div id="notice" class="notice" role="alert" hidden></div>
-    </section>
-    <aside class="transcript-card"><div class="card-top"><h2>模型回复</h2><span class="live-label" id="transcript-state">TRANSCRIPT</span></div><div id="transcript" class="transcript" role="log" aria-live="polite" aria-relevant="additions text"><div class="empty" id="empty"><span class="quote">“</span><h3>从一句 Hello 开始</h3><p>试试问它今天做什么晚餐，<br>或者一起练习英语对话。</p><span class="muted">这里会实时显示模型的回复文字。</span></div></div><div class="transcript-footer"><span>声音直接送给模型 · 不做用户语音转写</span><button id="copy" class="text-button" disabled>复制回复</button></div></aside>
-  </div>
-  <section class="metrics" aria-label="会话指标"><div><span>输入积压</span><strong id="backlog">—</strong><small>已采集、尚未处理的音频</small></div><div><span>播放缓冲</span><strong id="buffer">—</strong><small>等待播放的回复音频</small></div><div><span>首个音频包</span><strong id="first-audio">—</strong><small>含静音，不代表首句延迟</small></div><div><span>原生帧节奏</span><strong>80 <em>ms</em></strong><small>16 kHz 输入 · 22.05 kHz 输出</small></div></section>
-  <div class="bottom"><p><span>实验版本</span>单次最多 4 分钟，仅一个会话。若积压持续上升，回复会变慢；可结束后重新开始。</p><details><summary>设备与连接 <span>＋</span></summary><div class="connection"><label for="microphone">麦克风</label><select id="microphone"><option value="">系统默认麦克风</option></select><p id="connection">使用当前页面的 WebSocket 服务</p><p>推荐使用耳机，避免扬声器声音被麦克风再次收录。麦克风需要 localhost 或 HTTPS。</p><pre id="events" aria-label="连接事件"></pre></div></details></div>
-</main><footer>Built for a conversation, one frame at a time.</footer>
-<script type="module" src="/voicechat-assets/app.mjs"></script>
-</body></html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>VoiceChat · 实时语音</title>
+        <link rel="stylesheet" href="/voicechat-assets/style.css" />
+    </head>
+    <body>
+        <header class="topbar">
+            <a class="brand" href="/"
+                ><span class="brandmark">v<span>c</span></span
+                ><span>VoiceChat <small>by SGLang Omni</small></span></a
+            ><span class="pill"><i></i> Native full duplex</span>
+        </header>
+        <main>
+            <section class="heading">
+                <div>
+                    <p class="eyebrow">REALTIME VOICE LAB</p>
+                    <h1>开口，开始一段对话。</h1>
+                    <p class="intro">
+                        边听边说，不需要按住说话，也不用等它说完。
+                    </p>
+                </div>
+                <div class="model-tag">
+                    NEMOTRON <strong>VoiceChat 11B</strong
+                    ><span>Aria · 原生全双工</span>
+                </div>
+            </section>
+            <div class="workspace">
+                <section class="call-card" aria-label="语音对话">
+                    <div class="card-top">
+                        <span id="status" class="status" role="status"
+                            ><i></i>正在检查服务</span
+                        ><span id="duration" class="duration"
+                            >00:00 / 04:00</span
+                        >
+                    </div>
+                    <div class="stage" id="stage">
+                        <div class="orb" aria-hidden="true">
+                            <div class="orb-inner">
+                                <svg viewBox="0 0 100 100">
+                                    <path
+                                        d="M24 49v3m10-17v31m10-42v53m11-62v70m11-49v29m10-19v9"
+                                    />
+                                </svg>
+                            </div>
+                        </div>
+                        <h2 id="call-title">准备好，聊点什么？</h2>
+                        <p id="call-hint">
+                            戴上耳机，点击下方按钮，允许访问麦克风。
+                        </p>
+                    </div>
+                    <div class="signals">
+                        <div>
+                            <span
+                                ><i class="mic-dot"></i>你的麦克风
+                                <b id="mic-label">未开启</b></span
+                            ><canvas
+                                id="mic-wave"
+                                width="600"
+                                height="42"
+                                aria-label="麦克风音量"
+                            ></canvas>
+                        </div>
+                        <div>
+                            <span
+                                ><i class="voice-dot"></i>VoiceChat
+                                <b id="speaker-label">等待对话</b></span
+                            ><canvas
+                                id="speaker-wave"
+                                width="600"
+                                height="42"
+                                aria-label="回复音量"
+                            ></canvas>
+                        </div>
+                    </div>
+                    <div class="controls">
+                        <button id="start" class="primary" disabled>
+                            <span>开始对话</span
+                            ><span aria-hidden="true">↗</span></button
+                        ><button
+                            id="mute"
+                            class="secondary"
+                            disabled
+                            aria-pressed="false"
+                        >
+                            静音麦克风</button
+                        ><button id="interrupt" class="secondary" disabled>
+                            打断播放</button
+                        ><button id="stop" class="danger" disabled>结束</button>
+                    </div>
+                    <p class="control-note" id="control-note">
+                        静音时仍会发送静音帧，让模型继续回复。
+                    </p>
+                    <div id="notice" class="notice" role="alert" hidden></div>
+                </section>
+                <aside class="transcript-card">
+                    <div class="card-top">
+                        <h2>模型回复</h2>
+                        <span class="live-label" id="transcript-state"
+                            >TRANSCRIPT</span
+                        >
+                    </div>
+                    <div
+                        id="transcript"
+                        class="transcript"
+                        role="log"
+                        aria-live="polite"
+                        aria-relevant="additions text"
+                    >
+                        <div class="empty" id="empty">
+                            <span class="quote">“</span>
+                            <h3>从一句 Hello 开始</h3>
+                            <p>
+                                试试问它今天做什么晚餐，<br />或者一起练习英语对话。
+                            </p>
+                            <span class="muted"
+                                >这里会实时显示模型的回复文字。</span
+                            >
+                        </div>
+                    </div>
+                    <div class="transcript-footer">
+                        <span>声音直接送给模型 · 不做用户语音转写</span
+                        ><button id="copy" class="text-button" disabled>
+                            复制回复
+                        </button>
+                    </div>
+                </aside>
+            </div>
+            <section class="metrics" aria-label="会话指标">
+                <div>
+                    <span>输入积压</span><strong id="backlog">—</strong
+                    ><small>已采集、尚未处理的音频</small>
+                </div>
+                <div>
+                    <span>播放缓冲</span><strong id="buffer">—</strong
+                    ><small>等待播放的回复音频</small>
+                </div>
+                <div>
+                    <span>首个音频包</span><strong id="first-audio">—</strong
+                    ><small>含静音，不代表首句延迟</small>
+                </div>
+                <div>
+                    <span>原生帧节奏</span><strong>80 <em>ms</em></strong
+                    ><small>16 kHz 输入 · 22.05 kHz 输出</small>
+                </div>
+            </section>
+            <div class="bottom">
+                <p>
+                    <span>实验版本</span>单次最多 4
+                    分钟，仅一个会话。若积压持续上升，回复会变慢；可结束后重新开始。
+                </p>
+                <details>
+                    <summary>设备与连接 <span>＋</span></summary>
+                    <div class="connection">
+                        <label for="microphone">麦克风</label
+                        ><select id="microphone">
+                            <option value="">系统默认麦克风</option>
+                        </select>
+                        <p id="connection">使用当前页面的 WebSocket 服务</p>
+                        <p>
+                            推荐使用耳机，避免扬声器声音被麦克风再次收录。麦克风需要
+                            localhost 或 HTTPS。
+                        </p>
+                        <pre id="events" aria-label="连接事件"></pre>
+                    </div>
+                </details>
+            </div>
+        </main>
+        <footer>Built for a conversation, one frame at a time.</footer>
+        <script type="module" src="/voicechat-assets/app.mjs"></script>
+    </body>
+</html>

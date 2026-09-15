@@ -4,17 +4,24 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def test_browser_assets():
+@pytest.fixture
+def example_module():
     root = Path(__file__).resolve().parents[3]
     spec = importlib.util.spec_from_file_location(
         "voicechat_example", root / "examples/run_nemotron_voicechat_duplex.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_browser_assets(example_module):
+    module = example_module
     app = FastAPI()
     module.mount_example_ui(app)
     with TestClient(app) as client:
@@ -28,15 +35,10 @@ def test_browser_assets():
         assert client.get("/voicechat-assets/missing.js").status_code == 404
 
 
-def test_worker_cleanup_follows_application_shutdown():
+def test_worker_cleanup_follows_application_shutdown(example_module):
     from contextlib import asynccontextmanager
 
-    root = Path(__file__).resolve().parents[3]
-    spec = importlib.util.spec_from_file_location(
-        "voicechat_example", root / "examples/run_nemotron_voicechat_duplex.py"
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = example_module
     events = []
 
     @asynccontextmanager
