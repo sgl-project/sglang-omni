@@ -13,6 +13,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.packed import PackedLayout
 
 
 def request_generator(
@@ -97,6 +98,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        enable_packed_dit: bool = False,
     ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -172,6 +174,23 @@ class AuKFlowMatching(nn.Module):
                 dim=1,
             )
 
+        if not enable_packed_dit or len(items) == 1:
+            packed_layout = None
+        elif not self.transformer.attn_mask_enabled:
+            raise ValueError("Packed AuK DiT requires attn_mask_enabled")
+        elif cfg_strength < 1e-5:
+            packed_layout = PackedLayout.build(
+                torch.cat((ref_mask, mask), dim=1), text_mask, ref.shape[1], y0.shape[1]
+            )
+        else:
+            # CFG stacks the conditional rows above the unconditional ones.
+            packed_layout = PackedLayout.build(
+                torch.cat((ref_mask, mask), dim=1).repeat(2, 1),
+                text_mask.repeat(2, 1),
+                ref.shape[1],
+                y0.shape[1],
+            )
+
         def fn(t, x):
             kwargs = dict(
                 x=x.to(weight_dtype),
@@ -184,6 +203,7 @@ class AuKFlowMatching(nn.Module):
                 cache=True,
                 audio_positions=audio_positions,
                 joint_positions=joint_positions,
+                packed_layout=packed_layout,
             )
             if cfg_strength < 1e-5:
                 return self.transformer(

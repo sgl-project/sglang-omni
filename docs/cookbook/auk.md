@@ -88,6 +88,23 @@ Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.
 
 The DiT stores its weights in BF16 and runs without autocast by default (`--auk_engine.factory.weight_dtype bfloat16`), which removes the per-step FP32-to-BF16 weight casts. Set `--auk_engine.factory.weight_dtype float32` to keep FP32 weights with BF16 autocast instead; that is the upstream-exact recipe the parity test compares against, at roughly 1.3x the sampling time. The ODE state is integrated in FP32 in both modes.
 
+Multi-request DiT batches run packed by default. The transformer blocks run
+only valid text/reference/target tokens through Linear, Norm, FFN and non-
+causal variable-length FlashAttention. Original position IDs and separate CFG
+branches are preserved. Convolutional audio embeddings and the FP32 Euler state
+retain their padded layout; layout indices are built once per trajectory.
+Singleton batches retain the padded execution path. Packing requires a CUDA
+BF16 backbone, a checkpoint with `attn_mask_enabled`, and SGLang's varlen
+FlashAttention: FA4 on Blackwell (sm100 and sm120) and FA3 on sm80-sm90. The
+stage factory checks the checkpoint flag and runs one probe attention call
+before loading the DiT weights. When a check fails (`weight_dtype float32`,
+HIP, other devices, a missing kernel build) the engine logs the reason and
+keeps the padded path; set `--auk_engine.factory.enable_packed_dit true` to
+turn that into a startup error, or `false` to keep the padded path
+unconditionally. Packing does not enable CUDA graph capture. Different
+attention and GEMM reductions can change generated waveforms relative to the
+padded path.
+
 `seed` initializes separate request-local generators for target noise and reference VAE posterior sampling, without changing the process RNG. Sampling is reproducible for fixed inputs; different batch shapes or compute backends can still produce numerical differences. Multiple structured references are rejected.
 
 Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
@@ -102,11 +119,12 @@ python -m sglang_omni.cli serve --model-path tencent/AuK \
   --auk_engine.factory.enable_dit_fused_qk_norm_rope false
 ```
 
-The kernel derives the head dimension and output dtype from the model. It
-leaves the conditioner, VAE, and sampling recipe unchanged. Non-CUDA devices
-and AuK-Flash use the native path. The first request may include Triton JIT
-compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
-weights under BF16 autocast and with native BF16 weights.
+The kernel derives the head dimension and output dtype from the model and
+serves both the padded and the packed DiT paths. It leaves the conditioner,
+VAE, and sampling recipe unchanged. Non-CUDA devices and AuK-Flash use the
+native path. The first request may include Triton JIT compilation; the 32-step
+AuK checkpoint has been validated on H100 with FP32 weights under BF16 autocast
+and with native BF16 weights.
 
 ## SeedTTS Evaluation
 
