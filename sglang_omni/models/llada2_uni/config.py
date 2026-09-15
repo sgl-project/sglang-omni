@@ -64,8 +64,37 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
     ]
 
 
+T2I_GENERATOR_STAGE = "t2i_generator"
+IMAGE_DECODER_STAGE = "image_decoder"
+
+
+class LLaDA2UniT2IPipelineConfig(PipelineConfig):
+    architecture: ClassVar[str] = "LLaDA2MoeModelLM"
+
+    model_path: str
+    stages: list[StageConfig] = [
+        StageConfig(
+            name=T2I_GENERATOR_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_t2i_generator_executor",
+            factory=FactoryArgs(device="cuda"),
+            gpu=0,
+            next=IMAGE_DECODER_STAGE,
+        ),
+        StageConfig(
+            name=IMAGE_DECODER_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_image_decoder_executor",
+            factory=FactoryArgs(device="cuda"),
+            gpu=0,
+            terminal=True,
+        ),
+    ]
+
+
 EntryClass = LLaDA2UniPipelineConfig
 
 Variants = {
     "text": LLaDA2UniPipelineConfig,
+    "t2i": LLaDA2UniT2IPipelineConfig,
 }

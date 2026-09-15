@@ -92,6 +92,7 @@ class Client:
         """
         text_parts: list[str] = []
         audio_chunks: list[Any] = []
+        image_parts: list[str] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
         finish_reason: str | None = None
@@ -105,6 +106,8 @@ class Client:
             last_chunk = chunk
             if chunk.text:
                 text_parts.append(chunk.text)
+            if chunk.images:
+                image_parts.extend(chunk.images)
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
             if chunk.sample_rate is not None:
@@ -149,6 +152,7 @@ class Client:
             request_id=request_id,
             text=full_text,
             audio=audio,
+            images=image_parts or None,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -535,6 +539,9 @@ class Client:
             language = result.get("language")
             if isinstance(language, str):
                 chunk.language = language
+            images = result.get("images")
+            if images is not None:
+                chunk.images = list(images)
             Client._set_audio_data(chunk, result)
             chunk.usage = Client._build_usage_info(result)
             return chunk

@@ -143,6 +143,7 @@ class GenerateChunk:
     language: str | None = None
     audio_data: Any = None
     sample_rate: int | None = None
+    images: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +163,7 @@ class GenerateChunk:
             "language": self.language,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
+            "images": self.images,
         }
 
 
@@ -202,6 +204,7 @@ class CompletionResult:
     request_id: str
     text: str
     audio: CompletionAudio | None = None
+    images: list[str] | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
     output_token_logprobs: list[Any] | None = None
