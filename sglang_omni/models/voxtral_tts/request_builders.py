@@ -23,6 +23,12 @@ class VoxtralSGLangRequestData(SGLangARRequestData):
     audio_token_id: int = 24
     output_codes: list[torch.Tensor] = field(default_factory=list)
     pending_feedback_queue: Any = field(default_factory=collections.deque)
+    # Persistent history of the fused (all-codebook) decode-input embedding fed
+    # for each generated frame. Unlike pending_feedback_queue (popped during
+    # decode) this is never consumed, so a retraction re-prefill can replay the
+    # exact fused embeds for already-generated positions instead of rebuilding
+    # them as semantic-only (which silently drops the acoustic codebooks).
+    generated_input_embeds: list[torch.Tensor] = field(default_factory=list)
 
 
 def _voice_cache_key(voice: str, voice_embedding: torch.Tensor | None) -> str | None:
