@@ -158,11 +158,15 @@ def test_model_factory_must_return_a_native_application(monkeypatch):
 
 
 def test_cosmos3_declares_model_owned_native_frontend():
-    from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
+    from sglang_omni.models.cosmos3.config import (
+        Cosmos3PipelineConfig,
+        Cosmos3ReasonerPipelineConfig,
+    )
 
     assert Cosmos3PipelineConfig.native_media_factory_path == (
         "sglang_omni.models.cosmos3.media.prepare_native_media_app"
     )
+    assert Cosmos3ReasonerPipelineConfig.native_media_stage is None
 
 
 def test_native_lifespan_receives_the_existing_runtime_failure_signal():

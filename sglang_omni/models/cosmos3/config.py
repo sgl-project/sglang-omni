@@ -30,4 +30,22 @@ class Cosmos3PipelineConfig(PipelineConfig):
 EntryClass = Cosmos3PipelineConfig
 
 
-Variants = {"generation": Cosmos3PipelineConfig}
+class Cosmos3ReasonerPipelineConfig(Cosmos3PipelineConfig):
+    native_media_stage: ClassVar[str | None] = None
+    stages: list[StageConfig] = [
+        StageConfig(
+            name="reasoner",
+            process="reasoner",
+            factory_path="sglang_omni.models.cosmos3.reasoner.create_reasoner_scheduler",
+            allow_child_processes=True,
+            factory=FactoryArgs(max_concurrency=8),
+            gpu=0,
+            terminal=True,
+        )
+    ]
+
+
+Variants = {
+    "text": Cosmos3ReasonerPipelineConfig,
+    "generation": Cosmos3PipelineConfig,
+}

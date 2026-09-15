@@ -4,6 +4,7 @@ import pytest
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
+from sglang_omni.models.cosmos3.reasoner import native_reasoner_kwargs
 from sglang_omni.models.cosmos3.stages import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import _build_stage_groups
@@ -66,6 +67,10 @@ def test_native_parallel_options_use_the_declared_gpu_group():
     gen = native_server_kwargs("checkpoint", 1, {"tp_size": 2}, [1, 3])
     assert gen["gpu_ids"] == [1, 3]
     assert gen["num_gpus"] == gen["tp_size"] == 2
+    reasoner = native_reasoner_kwargs("checkpoint", 1, None, [1, 3])
+    assert reasoner["base_gpu_id"] == 1
+    assert reasoner["gpu_id_step"] == 2
+    assert reasoner["tp_size"] == 2
 
 
 @pytest.mark.parametrize("devices", [[], [1, 1], [2, 3], [1, -1]])

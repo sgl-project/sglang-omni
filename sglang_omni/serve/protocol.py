@@ -39,9 +39,9 @@ class ChatCompletionAudio(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """OpenAI-compatible chat completion request."""
+    """OpenAI-compatible chat request with backend-validated extensions."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     model: str | None = None
     messages: list[ChatMessage]
