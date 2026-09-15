@@ -103,13 +103,15 @@ def test_request_builder_reconstructs_prefix_plus_continuation(
         "load_audio",
         lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
     )
+    decoder = lambda *args, **kwargs: SimpleNamespace(  # noqa: E731
+        input_features=torch.zeros((1, 128, 100)),
+        attention_mask=torch.ones((1, 100), dtype=torch.long),
+    )
+    decoder.hop_length = 160
     request_builder, result_adapter = make_qwen3_asr_scheduler_adapters(
         tokenizer=BuilderTokenizer(),
         max_new_tokens=32,
-        feature_extractor=lambda *args, **kwargs: SimpleNamespace(
-            input_features=torch.zeros((1, 128, 100)),
-            attention_mask=torch.ones((1, 100), dtype=torch.long),
-        ),
+        feature_extractor=decoder,
     )
     data = request_builder(
         StagePayload(
