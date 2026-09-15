@@ -139,6 +139,11 @@ QWEN3_OMNI_BF16_THINKER_ARGS = f"--config {QWEN3_OMNI_BF16_THINKER_CONFIG}"
 QWEN3_OMNI_DISAGG_THINKER_MEM_FRACTION = "0.82"
 QWEN3_OMNI_DISAGG_TALKER_MEM_FRACTION = "0.40"
 QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION = "0.40"
+MINICPMO_MODEL_PATH = "openbmb/MiniCPM-o-4_5"
+MINICPMO_TEST_MODEL_PATH = os.environ.get(
+    "SGLANG_OMNI_TEST_MINICPMO_MODEL", MINICPMO_MODEL_PATH
+)
+MINICPMO_MODEL_NAME = "minicpm-o"
 
 
 @pytest.fixture(scope="module")
@@ -185,6 +190,12 @@ def qwen3_omni_bf16_tp2_server(tmp_path_factory: pytest.TempPathFactory):
     yield from _start_qwen3_omni_tp2(tmp_path_factory, thinker_max_seq_len=128)
 
 
+@pytest.fixture(scope="module")
+def minicpm_o_text_server(tmp_path_factory: pytest.TempPathFactory):
+    """MiniCPM-o thinker-only server for the Video-MME accuracy CI."""
+    yield from _start_minicpm_o_text_server(tmp_path_factory)
+
+
 def _start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFactory):
     """Start 2 FP8 colocated replicas (one per H100) behind the managed router."""
     from tests.test_model.omni_router_utils import (
@@ -202,6 +213,62 @@ def _start_qwen3_omni_fp8_colocated_router(tmp_path_factory: pytest.TempPathFact
         num_gpus_per_worker=1,
     ) as router:
         yield router
+
+
+def _start_minicpm_o_text_server(
+    tmp_path_factory: pytest.TempPathFactory,
+):
+    """Start the single-GPU MiniCPM-o text pipeline used by Video-MME CI."""
+    import sys
+
+    from sglang_omni.utils import find_available_port
+    from tests.utils import (
+        ServerHandle,
+        server_log_file,
+        start_server_from_cmd,
+        stop_server,
+    )
+
+    if not _model_cache_present(MINICPMO_TEST_MODEL_PATH):
+        pytest.skip(
+            f"{MINICPMO_TEST_MODEL_PATH} is not in the local HF cache; "
+            "pre-populate it or set SGLANG_OMNI_TEST_MINICPMO_MODEL."
+        )
+
+    port = find_available_port()
+    log_file = server_log_file(
+        tmp_path_factory, prefix="server_logs_minicpm_o_videomme_ci"
+    )
+    allowed_media_path = os.environ.get(
+        "HF_HOME", str(Path.home() / ".cache" / "huggingface")
+    )
+    cmd = [
+        sys.executable,
+        "-m",
+        "sglang_omni.cli",
+        "serve",
+        "--model-path",
+        MINICPMO_TEST_MODEL_PATH,
+        "--text-only",
+        "--model-name",
+        MINICPMO_MODEL_NAME,
+        "--allowed-local-media-path",
+        allowed_media_path,
+        "--port",
+        str(port),
+    ]
+    proc = start_server_from_cmd(
+        cmd,
+        log_file,
+        port,
+        timeout=1200,
+        strip_proxy=True,
+    )
+    server = ServerHandle(proc=proc, port=port, log_file=log_file)
+    try:
+        yield server
+    finally:
+        stop_server(proc)
 
 
 def _start_qwen3_omni_bf16_colocated_router(

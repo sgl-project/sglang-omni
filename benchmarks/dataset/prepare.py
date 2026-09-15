@@ -44,6 +44,8 @@ DATASETS: dict[str, str] = {
     "longlibriheavy-30": f"{LONGLIBRIHEAVY_DATASET_ID}:llh_test_30",
     "longlibriheavy-60": f"{LONGLIBRIHEAVY_DATASET_ID}:llh_test_60",
     "meanwhile": f"{MEANWHILE_DATASET_ID}:test",
+    "librispeech-clean": "openslr/librispeech_asr:clean",
+    "librispeech-other": "openslr/librispeech_asr:other",
     "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
@@ -103,7 +105,19 @@ def download_dataset(
             repo_type="dataset",
             **revision_kwargs,
         )
+    elif dataset_id == "openslr/librispeech_asr" and separator:
+        # Restrict to the test parquet files; loading the config downloads
+        # the train splits too (tens of GB).
+        dataset_id, config_name = repo_id.split(":", 1)
+        load_dataset(
+            dataset_id,
+            data_files={"test": f"{config_name}/test/*.parquet"},
+            split="test",
+            verification_mode="no_checks",
+            **revision_kwargs,
+        )
     elif dataset_id == "lmms-lab/mmau" and separator:
+        dataset_id, split = repo_id.split(":", 1)
         load_dataset(
             dataset_id,
             split=split,

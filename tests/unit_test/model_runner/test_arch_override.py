@@ -83,3 +83,28 @@ def test_thinker_pool_keeps_the_thinker_layers() -> None:
     ModelWorker._apply_arch_override(config, "Qwen3OmniThinkerForCausalLM")
     assert _pool_layers(config) == 48
     assert config.num_key_value_heads == 4
+
+
+@pytest.mark.parametrize("config_object", [False, True])
+def test_minicpm_talker_pool_uses_tts_layers_and_kv_heads(config_object) -> None:
+    config = _qwen3_omni_engine_config()
+    tts_config = dict(
+        hidden_size=768,
+        num_attention_heads=12,
+        num_key_value_heads=2,
+        num_hidden_layers=20,
+        num_audio_tokens=1026,
+    )
+    config.hf_config.tts_config = (
+        SimpleNamespace(to_dict=lambda: tts_config) if config_object else tts_config
+    )
+
+    ModelWorker._apply_arch_override(config, "MiniCPMOTalkerForCausalLM")
+
+    assert _pool_layers(config) == 20
+    assert config.num_hidden_layers == config.num_attention_layers == 20
+    assert config.hf_text_config.num_key_value_heads == 2
+    assert config.num_key_value_heads == 2
+    assert config.hidden_size == 768
+    assert config.head_dim == config.v_head_dim == 64
+    assert config.vocab_size == 1026

@@ -23,8 +23,12 @@ STT_BENCHMARK_SPLIT = "train"
 STT_BENCHMARK_LANG = "en"
 
 _REQUIRED_COLUMNS = {"sample_id", "audio", "transcription"}
+# Common ASR datasets (e.g. openslr/librispeech_asr) use these names instead.
+_COLUMN_ALIASES = {"id": "sample_id", "text": "transcription"}
 
-_STAGED_CACHE: dict[tuple[str, str, str | None, int | None], list[SampleInput]] = {}
+_STAGED_CACHE: dict[
+    tuple[str, str | None, str, str | None, int | None], list[SampleInput]
+] = {}
 
 
 def _staged_wav_path(staging_root: Path, sample_id: str, *, repo_id: str) -> Path:
@@ -44,6 +48,7 @@ def load_stt_benchmark_samples(
     repo_id: str = STT_BENCHMARK_DATASET_ID,
     max_samples: int | None = None,
     *,
+    config_name: str | None = None,
     split: str = STT_BENCHMARK_SPLIT,
     revision: str | None = None,
 ) -> list[SampleInput]:
@@ -51,25 +56,40 @@ def load_stt_benchmark_samples(
     if revision is None and repo_id == STT_BENCHMARK_DATASET_ID:
         revision = STT_BENCHMARK_DATASET_REVISION
 
-    full_cache_key = (repo_id, split, revision, None)
+    full_cache_key = (repo_id, config_name, split, revision, None)
     if full_cache_key in _STAGED_CACHE:
         samples = _STAGED_CACHE[full_cache_key]
         return samples[:max_samples] if max_samples is not None else list(samples)
 
-    cache_key = (repo_id, split, revision, max_samples)
+    cache_key = (repo_id, config_name, split, revision, max_samples)
     if cache_key in _STAGED_CACHE:
         return list(_STAGED_CACHE[cache_key])
 
     from datasets import Audio, load_dataset
 
     logger.info(
-        "Loading %s split=%s revision=%s from HuggingFace ...",
+        "Loading %s config=%s split=%s revision=%s from HuggingFace ...",
         repo_id,
+        config_name or "default",
         split,
         revision or "default",
     )
     load_kwargs = {"revision": revision} if revision else {}
-    ds = load_dataset(repo_id, split=split, **load_kwargs)
+    if config_name:
+        # Only pull the requested split's parquet files; naming the config
+        # downloads its train splits too (mirrors dataset.prepare).
+        ds = load_dataset(
+            repo_id,
+            data_files={split: f"{config_name}/{split}/*.parquet"},
+            split=split,
+            verification_mode="no_checks",
+            **load_kwargs,
+        )
+    else:
+        ds = load_dataset(repo_id, split=split, **load_kwargs)
+    ds = ds.rename_columns(
+        {old: new for old, new in _COLUMN_ALIASES.items() if old in ds.column_names}
+    )
 
     missing = _REQUIRED_COLUMNS - set(ds.column_names)
     if missing:
@@ -105,11 +125,15 @@ def load_stt_benchmark_samples(
             audio_bytes = Path(audio_path).read_bytes()
 
         if audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
-            raise ValueError(
-                f"Non-WAV audio bytes for {repo_id}/{split}/{sample_id}; "
-                "missing RIFF/WAVE magic"
-            )
-        wav_path.write_bytes(audio_bytes)
+            # e.g. LibriSpeech ships FLAC; transcode to PCM WAV on staging.
+            import io
+
+            import soundfile as sf
+
+            waveform, sample_rate = sf.read(io.BytesIO(audio_bytes))
+            sf.write(str(wav_path), waveform, sample_rate, format="WAV")
+        else:
+            wav_path.write_bytes(audio_bytes)
 
         transcription = str(row["transcription"] or "").strip()
         samples.append(

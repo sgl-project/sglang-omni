@@ -1,0 +1,65 @@
+name: MiniCPM-o CI
+
+on:
+  workflow_call:
+    inputs:
+      omni_ci_home:
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  OMNI_CI_HOME: >-
+    ${{ inputs.omni_ci_home != ''
+        && inputs.omni_ci_home
+        || format('/data/omni-ci/run-{0}', github.run_id) }}
+  PYTORCH_ALLOC_CONF: expandable_segments:True
+
+jobs:
+  videomme:
+    name: MiniCPM-o Video-MME accuracy
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 35
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        --cap-add=SYS_PTRACE
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run MiniCPM-o Video-MME CI
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_minicpm_o_videomme_ci.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          SGLANG_OMNI_TEST_MINICPMO_MODEL: openbmb/MiniCPM-o-4_5
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: MiniCPM-o Video-MME
+          artifact-path-globs: |
+            */videomme/videomme_results.json
+          artifact-upload-name: minicpm-o-videomme-results
+          artifact-upload-path: /tmp/**/videomme/videomme_results.json
