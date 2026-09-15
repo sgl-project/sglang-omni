@@ -144,11 +144,14 @@ def _build_stage_groups(
         # injects signature-dependent args after importing the factory it
         # must construct anyway.
         base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
+        if stage_cfg.runtime_gpu_ids is not None:
+            base_factory_kwargs["runtime_gpu_ids"] = list(gpu_ids)
         typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
             factory=stage_cfg.factory_path,
+            allow_child_processes=stage_cfg.allow_child_processes,
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
@@ -489,6 +492,7 @@ class MultiProcessPipelineRunner:
         self._groups: list[StageGroup] = []
         self._completion_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
+        self._teardown_task: asyncio.Task | None = None
         self._fatal_event: asyncio.Event | None = None
         self._fatal_error: BaseException | None = None
         self._prep: PipelineRuntimePrep | None = None
@@ -522,6 +526,9 @@ class MultiProcessPipelineRunner:
     async def start(self, timeout: float = 120.0) -> None:
         if self._started:
             raise RuntimeError("Already started")
+        if self._teardown_task is not None:
+            await _finish_despite_cancellation(self._teardown_task)
+            self._teardown_task = None
 
         try:
             ctx = multiprocessing.get_context("spawn")
@@ -782,22 +789,23 @@ class MultiProcessPipelineRunner:
         self._ipc_runtime_dir = None
 
     async def stop(self) -> None:
-        if not self._started:
-            return
-        self._started = False
+        if self._teardown_task is None:
+            if not self._started:
+                return
+            self._started = False
 
-        if self._monitor_task is not None:
-            current = asyncio.current_task()
-            if current != self._monitor_task:
-                self._monitor_task.cancel()
-            self._monitor_task = None
+            if self._monitor_task is not None:
+                current = asyncio.current_task()
+                if current != self._monitor_task:
+                    self._monitor_task.cancel()
+                self._monitor_task = None
 
-        # Note (Jiaxin Deng): _started is already false, so a cancellation that
-        # lands mid teardown would make every later stop() a no-op and strand
-        # the MPS lease, its flock and the state dir for the next serve.
-        await _finish_despite_cancellation(self._teardown())
+            self._teardown_task = asyncio.create_task(self._teardown())
+
+        await _finish_despite_cancellation(self._teardown_task)
 
     async def _teardown(self) -> None:
+        errors: list[BaseException] = []
         before_signal = self._retire_mps_clients if self._mps is not None else None
         waves = self._shutdown_waves()
         partitioned = len(waves) > 1
@@ -816,31 +824,42 @@ class MultiProcessPipelineRunner:
                 logger.warning("shutdown_stages error: %s", e)
 
             # Shutdown this wave's groups
-            await asyncio.gather(
+            results = await asyncio.gather(
                 *(g.shutdown(before_signal=before_signal) for g in wave),
                 return_exceptions=True,
             )
+            for result in results:
+                if isinstance(result, BaseException):
+                    logger.error("Stage group teardown incomplete: %s", result)
+                    errors.append(result)
 
-        mps_error: BaseException | None = None
         if self._mps is not None:
             try:
                 await self._close_mps()
             except BaseException as exc:
                 logger.error("MPS teardown incomplete: %s", exc)
-                mps_error = exc
+                errors.append(exc)
 
-        await self._cancel_completion_task()
+        try:
+            await self._cancel_completion_task()
+        except BaseException as exc:
+            logger.error("Completion loop teardown incomplete: %s", exc)
+            errors.append(exc)
 
-        await self._coordinator.stop()
-        self._groups.clear()
-        self._coordinator = None
+        try:
+            await self._coordinator.stop()
+        except BaseException as exc:
+            logger.error("Coordinator teardown incomplete: %s", exc)
+            errors.append(exc)
+
+        if errors:
+            if self._fatal_error is not None:
+                self._fatal_error.__cause__ = errors[0]
+            raise errors[0]
 
         self._close_runtime_dir()
-        if mps_error is not None:
-            if isinstance(mps_error, Exception) and self._fatal_error is not None:
-                self._fatal_error.__cause__ = mps_error
-                return
-            raise mps_error
+        self._groups.clear()
+        self._coordinator = None
 
     async def _cleanup_on_failure(self) -> None:
         """Best-effort cleanup after a failed start()."""

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -67,6 +68,7 @@ class StageLaunchConfig:
     typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
+    allow_child_processes: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
     # Note (Jiaxin Deng): the byte budgets are first-class fields, never
     # factory kwargs, so no factory signature can accidentally absorb them.
@@ -153,6 +155,12 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     tenant, so mixing a TP stage with any other stage in the same process group
     is a placement bug.
     """
+    if len(spec.stage_specs) > 1 and any(
+        s.allow_child_processes for s in spec.stage_specs
+    ):
+        raise ValueError(
+            "A stage that owns native child processes must own its OS process"
+        )
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
         return {}
@@ -283,7 +291,7 @@ class StageGroup:
                 target=stage_process_main,
                 args=(spec, event, startup_error_channel),
                 name=proc_name,
-                daemon=True,
+                daemon=not any(s.allow_child_processes for s in spec.stage_specs),
             )
             try:
                 extra_env = (
@@ -380,25 +388,41 @@ class StageGroup:
         join_timeout: float = 30.0,
         before_signal: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
+        errors: list[tuple[str, Exception]] = []
+        stopped = False
         try:
             for spec, p in zip(self.process_specs, self._processes):
-                p.join(timeout=join_timeout)
-                if p.is_alive():
-                    logger.warning(
-                        "Terminating stuck process %s (pid=%s)",
-                        p.name,
-                        p.pid,
-                    )
-                    if before_signal is not None:
-                        await before_signal(spec.process_name)
-                    p.terminate()
-                    p.join(timeout=5)
+                try:
+                    p.join(timeout=join_timeout)
                     if p.is_alive():
-                        p.kill()
-                        p.join(timeout=2)
+                        logger.warning(
+                            "Terminating stuck process %s (pid=%s)",
+                            p.name,
+                            p.pid,
+                        )
+                        if before_signal is not None:
+                            await before_signal(spec.process_name)
+                        p.terminate()
+                        p.join(timeout=5)
+                        if p.is_alive():
+                            p.kill()
+                            p.join(timeout=2)
+                    if p.is_alive():
+                        raise RuntimeError(
+                            f"Process {p.name} (pid={p.pid}) is still alive"
+                        )
+                except Exception as exc:
+                    errors.append((spec.process_name, exc))
+            if errors:
+                details = "; ".join(f"{name}: {exc}" for name, exc in errors)
+                raise RuntimeError(
+                    f"StageGroup {self.group_name} shutdown failed: {details}"
+                ) from errors[0][1]
+            stopped = True
         finally:
             self.close_control_channels()
-            self._processes.clear()
+            if stopped:
+                self._processes.clear()
             self._ready_events.clear()
             self._startup_error_channels.clear()
 
@@ -544,13 +568,13 @@ def _cleanup_constructed_stages(
 
 
 def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
-    return sorted(
-        {
-            int(stage_spec.gpu_id)
-            for stage_spec in stage_specs
-            if stage_spec.gpu_id is not None
-        }
-    )
+    gpu_ids = set()
+    for spec in stage_specs:
+        if spec.gpu_id is not None:
+            gpu_ids.add(int(spec.gpu_id))
+        if spec.allow_child_processes:
+            gpu_ids.update(spec.stage_gpu_ids.get(spec.stage_name, ()))
+    return sorted(gpu_ids)
 
 
 def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:

@@ -147,8 +147,8 @@ class Coordinator:
         logger.info("Coordinator started")
 
     async def stop(self) -> None:
-        """Stop the coordinator."""
-        self._running = False
+        """Stop the coordinator and settle pending clients."""
+        await self.fail_pending_requests(self._fatal_error or "Coordinator stopped")
         self.control_plane.close()
         logger.info("Coordinator stopped")
 
