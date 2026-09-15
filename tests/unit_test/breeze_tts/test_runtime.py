@@ -1,0 +1,386 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from dataclasses import asdict
+from threading import RLock
+from types import SimpleNamespace
+
+import pytest
+import torch
+from sglang.srt.managers.schedule_batch import NextBatchPlan
+
+from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.models.breeze_tts.depth_decoder import BreezeDepthDecoder
+from sglang_omni.models.breeze_tts.engine_builder import BreezeEngineBuilder
+from sglang_omni.models.breeze_tts.hf_config import BreezeConfig
+from sglang_omni.models.breeze_tts.model_runner import BreezeModelRunner
+from sglang_omni.models.breeze_tts.request_builders import (
+    CFG_SUFFIX,
+    apply_result,
+    build_request,
+    stream_output,
+)
+from sglang_omni.models.breeze_tts.sampling import SamplingConfig
+from sglang_omni.models.breeze_tts.scheduler import BreezeScheduler
+from sglang_omni.models.breeze_tts.sglang_model import BreezeSGLangModel
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+
+@pytest.fixture(autouse=True)
+def cpu_runner_device(monkeypatch):
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.base.current_platform.get_device",
+        lambda _: torch.device("cpu"),
+    )
+
+
+class FakeModel(SimpleNamespace):
+    # Reuse the real decode-embedding allocator: before_decode stages every step
+    # through it, so a stub would hide the path a captured graph replays.
+    stage_decode_embeddings = BreezeSGLangModel.stage_decode_embeddings
+
+
+def make_model(config):
+    depth = BreezeDepthDecoder(config["depth_decoder_config"]).eval()
+    torch.nn.init.normal_(depth.codebooks_head.weight, std=0.1)
+    return FakeModel(
+        config=BreezeConfig(**config),
+        depth_decoder=depth,
+        lm_head=torch.nn.Linear(16, 12),
+        model=SimpleNamespace(
+            norm=torch.nn.LayerNorm(16), embed_tokens=torch.nn.Embedding(64, 16)
+        ),
+    )
+
+
+def make_request(model, rid="request", seed=42):
+    payload = StagePayload(
+        request_id=rid,
+        request=OmniRequest(inputs="Hello", params={"stream": True}),
+        data={
+            "prompt_embeds": torch.randn(5, 16),
+            "negative_embeds": torch.randn(3, 16),
+            "sampling": asdict(
+                SamplingConfig(temperature=0, max_new_tokens=3, seed=seed)
+            ),
+        },
+    )
+    return build_request(payload, model)
+
+
+def test_branch_ownership_prefill_and_feedback(tiny_config):
+    model = make_model(tiny_config)
+    data = make_request(model)
+    twin = data.cfg_uncond
+    assert twin.req.rid == data.req.rid + CFG_SUFFIX
+    assert twin.generation is data.generation
+    assert data.stage_payload.data == {}  # ownership moved out of relay payload
+    assert data.req.origin_input_ids == [0] * 5
+    runner = BreezeModelRunner(
+        SimpleNamespace(gpu_id=0, model_runner=SimpleNamespace(model=model)), None
+    )
+    requests = [SimpleNamespace(data=data), SimpleNamespace(data=twin)]
+    for sr in requests:
+        sr.data.req.extend_range = SimpleNamespace(
+            length=len(sr.data.prefill_input_embeds)
+        )
+        sr.data.req.prefix_indices = []
+    fb = SimpleNamespace(
+        replace_embeds=None, input_ids=torch.zeros(8, dtype=torch.long)
+    )
+    runner.before_prefill(fb, None, requests)
+    expected = torch.cat([data.prefill_input_embeds, twin.prefill_input_embeds])
+    torch.testing.assert_close(get_omni_prefill_inputs(fb).input_embeds, expected)
+    logits = torch.zeros(2, 12)
+    logits[:, 3] = 10
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(
+            next_token_logits=logits, hidden_states=torch.randn(2, 16)
+        ),
+        next_token_ids=None,
+    )
+    runner._advance(result, requests)
+    assert result.next_token_ids.tolist() == [3, 3]
+    assert len(data.generation.codes) == 1
+    runner.before_decode(fb, None, requests)
+    # The step's embeddings are staged in the model's fixed decode table, with
+    # input_ids pointing at their rows, so a captured graph replays them.
+    assert fb.input_embeds is None
+    assert fb.input_ids[:2].tolist() == [0, 1]
+    staged = model.stage_decode_embeddings(2).weight
+    torch.testing.assert_close(staged[0], staged[1])
+    torch.testing.assert_close(
+        staged[0], model.depth_decoder.embed_frames(data.generation.codes[-1])
+    )
+    # A companion row must not steal the primary row's pending codec frame.
+    assert list(stream_output(twin.req.rid, twin, None)) == []
+    chunks = list(stream_output("request", data, None))
+    assert len(chunks) == 1
+    assert chunks[0].data.shape == (1, 4)
+    assert list(stream_output("request", data, None)) == []  # no duplicate audio
+    final = apply_result(data)
+    assert final.data["completion_tokens"] == 1
+    assert final.data["ref_code_len"] == 0  # references condition AR, not codec prefix
+
+
+def test_eos_never_reaches_depth_or_codec(tiny_config, monkeypatch):
+    model = make_model(tiny_config)
+    data = make_request(model)
+    runner = BreezeModelRunner(
+        SimpleNamespace(gpu_id=0, model_runner=SimpleNamespace(model=model)), None
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("EOS must not run the depth decoder")
+
+    monkeypatch.setattr(model.depth_decoder, "decode_frames", forbidden)
+    logits = torch.zeros(2, 12)
+    logits[:, 11] = 100
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=logits), next_token_ids=None
+    )
+    runner._advance(
+        result, [SimpleNamespace(data=data), SimpleNamespace(data=data.cfg_uncond)]
+    )
+    assert result.next_token_ids.tolist() == [11, 11]
+    assert list(stream_output("request", data, None)) == []
+    with pytest.raises(ValueError, match="no audio"):
+        apply_result(data)
+
+
+def test_requests_do_not_share_rng_feedback_or_codec_history(tiny_config):
+    model = make_model(tiny_config)
+    first, second = make_request(model), make_request(model, "other")
+    assert first.generation is not second.generation
+    first.generation.note_token(7, 12, torch.device("cpu"))
+    first.generation.codes.append(torch.ones(4))
+    assert second.generation.seen is None
+    assert second.generation.codes == []
+    assert second.generation.feedback is None
+    with pytest.raises(RuntimeError, match="adjacent CFG pair"):
+        BreezeModelRunner._generations(
+            [SimpleNamespace(data=first), SimpleNamespace(data=second)]
+        )
+
+
+@pytest.mark.parametrize("logical_requests", [1, 2, 8, 16, 32])
+def test_engine_capacity_counts_logical_requests(logical_requests):
+    builder = BreezeEngineBuilder()
+    settings = builder.generation_defaults(dtype="bfloat16")
+    settings["max_running_requests"] = logical_requests
+    builder.adjust_overrides(settings)
+    assert settings["max_running_requests"] == 2 * logical_requests
+    assert settings["max_queued_requests"] == 128
+
+
+@pytest.mark.parametrize("shortfall", [0, 1])
+def test_kv_reservation_covers_all_cfg_rows(monkeypatch, shortfall):
+    needed = 8 * (1024 + 2 * 64) + 1
+
+    def initialize(self, **kwargs):
+        self.max_running_requests = 8
+        self.page_size = 64
+        self.max_prefill_tokens = 4096
+        self.token_to_kv_pool_allocator = SimpleNamespace(
+            available_size=lambda: needed - shortfall
+        )
+
+    monkeypatch.setattr(OmniScheduler, "__init__", initialize)
+    if shortfall:
+        with pytest.raises(ValueError, match="KV token slots"):
+            BreezeScheduler()
+    else:
+        BreezeScheduler()
+
+
+def test_batched_advance_compacts_eos_and_routes_feedback(tiny_config, monkeypatch):
+    model = make_model(tiny_config)
+    data = [make_request(model, str(i)) for i in range(3)]
+    runner = BreezeModelRunner(
+        SimpleNamespace(gpu_id=0, model_runner=SimpleNamespace(model=model)), None
+    )
+    requests = [SimpleNamespace(data=row) for d in data for row in (d, d.cfg_uncond)]
+    hidden = torch.randn(6, 16)
+    logits = torch.zeros(6, 12)
+    for i, token in enumerate([3, 11, 5]):
+        logits[2 * i : 2 * i + 2, token] = 100
+    calls = []
+
+    def decode(hidden_rows, first, params, frames, **kwargs):
+        calls.append((hidden_rows.clone(), first.tolist(), frames.tolist()))
+        assert params == [data[0].generation.sampling, data[2].generation.sampling]
+        return torch.tensor([[3, 2, 1, 0], [5, 6, 7, 1]])
+
+    monkeypatch.setattr(model.depth_decoder, "decode_frames", decode)
+    result = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=logits, hidden_states=hidden),
+        next_token_ids=None,
+    )
+    runner._advance(result, requests)
+    assert result.next_token_ids.tolist() == [3, 3, 11, 11, 5, 5]
+    assert len(calls) == 1  # one shared depth forward, not one call per request
+    torch.testing.assert_close(calls[0][0], hidden[[0, 1, 4, 5]])
+    assert calls[0][1] == [3, 5]
+    assert calls[0][2] == [0, 0]  # both requests are on their first frame
+    assert data[1].generation.codes == []
+    assert data[1].generation.seen is None
+    assert data[1].generation.feedback is None
+    # Simulate EOS removal and batch reordering between decode steps.
+    fb = SimpleNamespace(input_ids=torch.zeros(8, dtype=torch.long))
+    runner.before_decode(fb, None, requests[4:] + requests[:2])
+    staged = model.stage_decode_embeddings(4).weight
+    assert fb.input_ids[:4].tolist() == [0, 1, 2, 3]
+    for row, d in zip((0, 2), (data[2], data[0])):
+        expected = model.depth_decoder.embed_frames(d.generation.codes[-1])
+        torch.testing.assert_close(staged[row], expected)
+        torch.testing.assert_close(staged[row + 1], expected)
+        assert len(list(stream_output(d.req.rid, d, None))) == 1
+        assert list(stream_output(d.req.rid, d, None)) == []
+
+
+def test_nonstreaming_requests_keep_codes_without_emitting_partial_audio(tiny_config):
+    data = make_request(make_model(tiny_config))
+    data.stage_payload.request.params["stream"] = False
+    data.generation.codes.append(torch.tensor([1, 2, 3, 4]))
+    data.generation.pending_chunk = data.generation.codes[-1]
+    assert list(stream_output("request", data, None)) == []
+    assert data.generation.pending_chunk is None
+    assert apply_result(data).data["audio_codes"].tolist() == [[1, 2, 3, 4]]
+
+
+def test_late_prepared_request_cannot_enqueue_orphan_cfg_twin(tiny_config, monkeypatch):
+    # The shared scheduler drops an already-aborted primary request. Even
+    # though preprocessing completed, its auxiliary CFG row must also vanish.
+    scheduler = object.__new__(BreezeScheduler)
+    scheduler._request_admission_lock = RLock()
+    scheduler.waiting_queue = []
+    monkeypatch.setattr(OmniScheduler, "_enqueue_built_request", lambda *a, **k: None)
+    data = make_request(make_model(tiny_config))
+    scheduler._enqueue_built_request(data.stage_payload, False, data)
+    assert scheduler.waiting_queue == []
+
+
+def make_scheduler(pairs, *, slots=8, budget=4096, page_size=64):
+    scheduler = object.__new__(BreezeScheduler)
+    scheduler._request_admission_lock = RLock()
+    scheduler.max_prefill_tokens = budget
+    scheduler.page_size = page_size
+    scheduler.max_running_requests = slots
+    scheduler.get_num_allocatable_reqs = lambda running: slots - running
+    scheduler.waiting_queue = []
+    for index, (cond_len, uncond_len) in enumerate(pairs):
+        cond = SimpleNamespace(
+            rid=str(index),
+            origin_input_ids=[0] * cond_len,
+            _omni_data=SimpleNamespace(),
+        )
+        uncond = SimpleNamespace(
+            rid=str(index) + CFG_SUFFIX,
+            origin_input_ids=[0] * uncond_len,
+            _omni_data=SimpleNamespace(),
+        )
+        cond._omni_data.cfg_uncond = uncond._omni_data
+        scheduler.waiting_queue.extend([cond, uncond])
+    return scheduler
+
+
+def test_scheduler_admits_pairs_during_decode_and_restores_queue(monkeypatch):
+    scheduler = make_scheduler([(5, 3)] * 4, slots=6)
+    queue = list(scheduler.waiting_queue)
+    seen = []
+    updated_running = SimpleNamespace(reqs=["active", "active-uncond"])
+
+    def prefill(self, running):
+        seen.append(list(self.waiting_queue))
+        admitted = list(self.waiting_queue)
+        # Match upstream, which rebinds the queue after removing admitted rows.
+        self.waiting_queue = []
+        return NextBatchPlan(
+            batch_to_run=SimpleNamespace(reqs=admitted),
+            running_batch=updated_running,
+        )
+
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", prefill)
+    plan = scheduler.get_new_batch_prefill(updated_running)
+    assert plan.batch_to_run.reqs == queue[:4]
+    assert plan.running_batch is updated_running
+    assert seen == [queue[:4]]
+    assert scheduler.waiting_queue == queue[4:]
+
+
+@pytest.mark.parametrize(
+    "slots,budget,expected",
+    [(8, 2048, 4), (3, 4096, 2), (1, 4096, 0), (8, 1152, 2)],
+)
+def test_pair_admission_respects_paged_strict_prefill_budget(slots, budget, expected):
+    scheduler = make_scheduler(
+        [(100, 100), (400, 400), (500, 500)], slots=slots, budget=budget
+    )
+    # SGLang rejects a later row when its rounded input length EQUALS the
+    # remaining budget. 256 + 896 == 1152 must defer the entire second pair.
+    assert scheduler._pair_admission_limit(SimpleNamespace(reqs=[])) == expected
+
+
+def test_prefill_exception_preserves_deferred_pairs(monkeypatch):
+    scheduler = make_scheduler([(5, 3)] * 3, slots=4)
+    queue = list(scheduler.waiting_queue)
+
+    def fail(self, running):
+        self.waiting_queue = []
+        raise RuntimeError("prefill failed")
+
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", fail)
+    with pytest.raises(RuntimeError, match="prefill failed"):
+        scheduler.get_new_batch_prefill(SimpleNamespace(reqs=[]))
+    assert scheduler.waiting_queue == queue
+
+
+def test_idle_scheduler_returns_upstream_plan_before_first_request():
+    scheduler = object.__new__(BreezeScheduler)
+    scheduler._request_admission_lock = RLock()
+    scheduler.waiting_queue = []
+    running = SimpleNamespace(reqs=[])
+    plan = scheduler.get_new_batch_prefill(running)
+    # The real SGLang event loop dereferences this even before the first HTTP
+    # request. Returning None crashes the worker immediately after startup.
+    assert plan.batch_to_run is None
+    assert plan.running_batch is running
+
+
+def test_scheduler_abort_also_retires_cfg_twin(monkeypatch):
+    aborted = []
+    monkeypatch.setattr(
+        OmniScheduler, "abort", lambda self, rid, **kwargs: aborted.append(rid)
+    )
+    scheduler = object.__new__(BreezeScheduler)
+    scheduler._request_admission_lock = RLock()
+    scheduler.abort("request")
+    assert aborted == ["request", "request" + CFG_SUFFIX]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("tp_size", 2),
+        ("max_running_requests", 0),
+        ("schedule_policy", "random"),
+        ("enable_priority_scheduling", True),
+        ("prefill_max_requests", 3),
+        ("enable_prefill_delayer", True),
+        ("enable_deterministic_inference", False),
+        ("attention_backend", "triton"),
+        ("disable_radix_cache", False),
+        ("disable_cuda_graph", True),
+        ("chunked_prefill_size", 16),
+        ("dtype", "float16"),
+        ("quantization", "fp8"),
+        ("max_prefill_tokens", 1024),
+        ("max_prefill_tokens", 2048),
+    ],
+)
+def test_unsupported_execution_cannot_bypass_cfg_invariants(field, value):
+    builder = BreezeEngineBuilder()
+    settings = builder.generation_defaults(dtype="bfloat16")
+    settings[field] = value
+    with pytest.raises(ValueError, match="Breeze"):
+        builder.adjust_overrides(settings)
