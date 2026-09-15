@@ -6,6 +6,8 @@ import asyncio
 import logging
 import pickle
 import threading
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -37,6 +39,28 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     tensor_equal,
 )
 from tests.unit_test.pipeline.helpers import make_stage
+
+
+@pytest.mark.parametrize("template", [None, "{unknown}", "{", "{}"])
+def test_invalid_profiler_template_preserves_event_recording(monkeypatch, template):
+    profiler = Mock()
+    profiler.is_active.return_value = False
+    recorder = Mock()
+    monkeypatch.setattr(stage_runtime_module, "TorchProfiler", profiler)
+    monkeypatch.setattr(stage_runtime_module, "_get_recorder", lambda: recorder)
+    Stage._on_profiler_start(
+        SimpleNamespace(name="test-stage"),
+        SimpleNamespace(
+            run_id="run",
+            enable_torch=True,
+            trace_path_template=template,
+            event_dir="events",
+        ),
+    )
+    profiler.start.assert_not_called()
+    recorder.start.assert_called_once_with(
+        run_id="run", event_dir="events", stage="test-stage"
+    )
 
 
 @pytest.fixture(autouse=True)
