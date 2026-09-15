@@ -36,6 +36,7 @@ class OmniPrefillInputs:
 
     input_embeds: torch.Tensor
     input_embeds_are_projected: bool | None = None
+    audio_mask: torch.Tensor | None = None
 
 
 def attach_omni_prefill_inputs(
@@ -47,6 +48,12 @@ def attach_omni_prefill_inputs(
             "OmniPrefillInputs conflicts with forward_batch.replace_embeds"
         )
     num_tokens = len(forward_batch.input_ids)
+    if prefill_inputs.audio_mask is not None and prefill_inputs.audio_mask.shape != (
+        num_tokens,
+    ):
+        raise RuntimeError(
+            "OmniPrefillInputs audio_mask must cover the extend-window tokens"
+        )
     if prefill_inputs.input_embeds.shape[0] != num_tokens:
         raise RuntimeError(
             "OmniPrefillInputs embeddings must cover the extend-window tokens: "

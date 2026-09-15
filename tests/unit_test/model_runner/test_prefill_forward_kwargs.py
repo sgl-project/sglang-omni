@@ -52,6 +52,24 @@ def test_extend_forward_kwargs_bridges_sidecar_without_mutating_batch() -> None:
     assert get_omni_prefill_inputs(forward_batch) is payload
     # Models that do not declare the flag must not receive it.
     assert "input_embeds_are_projected" not in kwargs
+    assert "audio_mask" not in kwargs
+
+
+def test_audio_mask_survives_loss_of_dynamic_batch_attributes() -> None:
+    runner = SGLModelRunner.__new__(SGLModelRunner)
+    runner.support_pp = False
+    runner.is_generation = True
+    runner.dtype = torch.float32
+    forward_batch = _forward_batch()
+    mask = torch.tensor([0, 1, 1, 0])
+    attach_omni_prefill_inputs(
+        forward_batch, OmniPrefillInputs(torch.zeros(4, 8), audio_mask=mask)
+    )
+    # EagerRunner builds kwargs before extracting its static ForwardBatch.
+    kwargs = runner._extend_forward_kwargs(forward_batch, object())
+    static_batch = _forward_batch()
+    assert get_omni_prefill_inputs(static_batch) is None
+    assert kwargs["audio_mask"] is mask
 
 
 def test_extend_forward_kwargs_forwards_the_projected_flag_when_set() -> None:

@@ -335,6 +335,8 @@ class SGLModelRunner(ModelRunner):
             )
         kwargs["input_embeds"] = prefill_inputs.input_embeds
         kwargs["omni_prefill_rids"] = forward_batch.rids
+        if prefill_inputs.audio_mask is not None:
+            kwargs["audio_mask"] = prefill_inputs.audio_mask
         if prefill_inputs.input_embeds_are_projected is not None:
             kwargs["input_embeds_are_projected"] = (
                 prefill_inputs.input_embeds_are_projected
@@ -589,6 +591,7 @@ class SGLModelRunner(ModelRunner):
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
+            "VoxCPM2SGLangModel": "sglang_omni.models.voxcpm2.sglang_model:VoxCPM2SGLangModel",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")

@@ -33,7 +33,9 @@ def test_cli_defaults_follow_checkpoint_name(monkeypatch, model, is_auk):
         assert profile.argument_defaults == {}
 
 
-@pytest.mark.parametrize("model", ["tencent/AuK", "fishaudio/s2-pro"])
+@pytest.mark.parametrize(
+    "model", ["tencent/AuK", "fishaudio/s2-pro", "openbmb/VoxCPM2"]
+)
 def test_evaluation_releases_tts_server_before_starting_asr(monkeypatch, model):
     events = []
     servers = []
@@ -81,8 +83,26 @@ def test_evaluation_releases_tts_server_before_starting_asr(monkeypatch, model):
         assert "cuda_graph_max_bs" not in servers[0]
         assert servers[0]["server_config"] is None
     else:
-        assert servers[0]["max_running_requests"] == 64
-        assert servers[0]["cuda_graph_max_bs"] == 64
+        expected = 1 if model == "openbmb/VoxCPM2" else 64
+        assert servers[0]["max_running_requests"] == expected
+        assert servers[0]["cuda_graph_max_bs"] == expected
+
+
+@pytest.mark.parametrize("explicit_limit", [None, 2])
+def test_voxcpm2_keeps_single_request_default_unless_overridden(
+    monkeypatch, explicit_limit
+):
+    argv = ["benchmark", "--model", "openbmb/VoxCPM2"]
+    if explicit_limit is not None:
+        argv += [
+            "--max-running-requests",
+            str(explicit_limit),
+            "--cuda-graph-max-bs",
+            str(explicit_limit),
+        ]
+    monkeypatch.setattr(sys, "argv", argv)
+    args, _ = tts._parse_args(tts._build_arg_parser())
+    assert args.max_running_requests == args.cuda_graph_max_bs == (explicit_limit or 1)
 
 
 def test_filtered_wer_mean_keeps_exactly_50_percent_and_excludes_failures():

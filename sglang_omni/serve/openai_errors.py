@@ -26,6 +26,10 @@ _BAD_REQUEST_MARKERS = (
     "AuK accepts at most one",
     "AuK expected a",
     "AuK references must be",
+    # note (Xinhao Tan): pipeline transport preserves the validation message,
+    # but not its exception type; missing reference audio is a client error.
+    "VoxCPM2 reference audio is missing:",
+    "VoxCPM2 ref_text was given without reference audio:",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(
