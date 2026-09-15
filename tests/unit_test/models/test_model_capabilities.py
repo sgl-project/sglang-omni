@@ -94,7 +94,7 @@ EXPECTED_MODEL_CAPABILITIES = {
         supports_streaming_vocoder=False,
         supports_cuda_graph=True,
         supports_torch_compile=True,
-        supports_breakable_prefill_cuda_graph=False,
+        supports_breakable_prefill_cuda_graph=True,
     ),
     "Zonos2ForCausalLM": ModelCapabilities(
         supports_reference_audio=True,
