@@ -176,7 +176,11 @@ def test_packed_dit_gate(
     flow.sample_batch.return_value = [torch.zeros(10, 64)]
     monkeypatch.setattr(stages, "_load_flow", lambda *args: flow)
     kwargs = dict(
-        device=device, weight_dtype="bfloat16", enable_packed_dit=enable_packed_dit
+        device=device,
+        weight_dtype="bfloat16",
+        enable_packed_dit=enable_packed_dit,
+        # The mocked flow has no blocks for the Q/K fusion to install into.
+        enable_dit_fused_qk_norm_rope=False,
     )
     if expected == "error":
         with pytest.raises(ValueError, match="sm75"):
