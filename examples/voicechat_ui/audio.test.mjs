@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {PCMFramer, PCMPlayer, encodePCM, decodePCM} from './audio.mjs';
+import {PCMFramer, PCMPlayer, PlaybackResampler, encodePCM, decodePCM} from './audio.mjs';
 
 for (const rate of [16000, 44100, 48000]) {
   test(`${rate} Hz capture preserves duration across worklet boundaries`, () => {
@@ -36,7 +36,7 @@ test('PCM transport preserves signed little-endian values', () => {
 
 function fakeContext() {
   const sources = [];
-  return {sources, currentTime: 0, destination: {},
+  return {sources, currentTime: 0, sampleRate: 22050, destination: {},
     createAnalyser: () => ({connect() {}, disconnect() {}}),
     createBuffer: (_, n, rate) => ({duration: n / rate, copyToChannel() {}}),
     createBufferSource: () => {
@@ -94,4 +94,29 @@ test('a genuine underrun replenishes jitter headroom once', () => {
   player.enqueue(new Float32Array(1764), 22050, event);
   assert.equal(player.rebuffers, 1);
   assert.ok(Math.abs(ctx.sources[2].at - ctx.sources[1].at - 0.08) < 1e-9);
+});
+
+
+test('playback resampling is continuous across arbitrary packet boundaries', () => {
+  const pcm = Float32Array.from({length: 22050}, (_, i) => .2*Math.sin(2*Math.PI*437*i/22050));
+  for (const rate of [44100, 48000]) {
+    const expected = new PlaybackResampler(22050, rate).push(pcm);
+    const streaming = new PlaybackResampler(22050, rate);
+    const actual = [];
+    for (let i=0; i<pcm.length; i+=137) actual.push(...streaming.push(pcm.subarray(i,i+137)));
+    assert.deepEqual(Float32Array.from(actual), expected);
+    assert.ok(actual.every(Number.isFinite));
+    assert.ok(Math.abs(actual.length/rate - pcm.length/22050) < .001);
+  }
+});
+
+test('fallback device rate uses native-rate buffers and clears filter state on cancel', () => {
+  const ctx = fakeContext(); ctx.sampleRate = 48000;
+  const player = new PCMPlayer(ctx);
+  player.enqueue(new Float32Array(1764).fill(.1),22050,event);
+  assert.ok(player.resampler);
+  player.clear();
+  assert.equal(player.resampler,null);
+  player.enqueue(new Float32Array(1764),22050,{...event,sglang:{epoch:1}});
+  assert.ok(player.resampler.buffer.every(x => x === 0));
 });

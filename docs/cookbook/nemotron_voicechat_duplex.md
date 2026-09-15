@@ -64,6 +64,9 @@ behavior; the explicit interrupt button is available to test cancellation.
 Playback uses a 480 ms startup/rebuffer reserve, then schedules packets
 contiguously. Where supported, the output AudioContext runs at 22050 Hz so
 resampling happens on the continuous mix, rather than independently per packet.
+If the browser uses another device rate, a stateful 32-tap windowed-sinc converter
+retains filter history across packets before scheduling buffers at that rate.
+This prevents periodic clicks from restarting browser resampling at packet edges.
 
 Browser audio tests: `node --test examples/voicechat_ui/audio.test.mjs`.
 Static route tests: `pytest tests/unit_test/nemotron_voicechat/test_duplex_ui.py`.

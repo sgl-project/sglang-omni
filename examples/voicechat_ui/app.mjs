@@ -159,7 +159,7 @@ function handle(s, event) {
       $('stage').classList.add('active'); $('call-title').textContent = '我在听，请直接说话';
       $('call-hint').textContent = '你可以随时开口。点击“打断播放”可立即停止当前回复。';
       $('mic-label').textContent = '正在收音'; $('speaker-label').textContent = '等待回复';
-      $('transcript-state').textContent = 'LIVE'; log('开始收音 · 16 kHz → 22.05 kHz');
+      $('transcript-state').textContent = 'LIVE'; log(`开始收音 · 16 kHz → 22.05 kHz · 浏览器播放 ${s.outputContext.sampleRate / 1000} kHz`);
       break;
     }
     case 'response.output_audio.delta':
