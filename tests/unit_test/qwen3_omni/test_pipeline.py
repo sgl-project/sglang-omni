@@ -102,10 +102,7 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     speech_talker = _stage(speech_config, "talker_ar")
     text_thinker = _stage(text_config, "thinker")
     preprocessing = _stage(speech_config, "preprocessing")
-    # Speech-mode thinker streams hidden states to talker_ar AND text-token
-    # ids to decode (for the streaming detokenizer); text-mode thinker
-    # streams only to decode. Lock both so a regression here can't silently
-    # disable per-token streaming for either path.
+    # Speech streams tokens to both talker_ar and decode; text only to decode.
     request_builders_path = "sglang_omni.models.qwen3_omni.request_builders"
     assert "mm_aggregate" not in {stage.name for stage in speech_config.stages}
     assert preprocessing.next == [
@@ -847,22 +844,10 @@ def test_qwen_encoder_mem_reserve_routes_as_scheduler_group_value() -> None:
     assert _stage(merged, "talker_ar").factory.encoder_mem_reserve is None
 
 
-@pytest.mark.parametrize(
-    (
-        "speech_enabled",
-        "expected_capture_hidden_layers",
-        "expected_graph_helper_calls",
-    ),
-    [
-        (False, None, 0),
-        (True, [0, 24], 1),
-    ],
-)
+@pytest.mark.parametrize("speech_enabled", [False, True])
 def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     speech_enabled: bool,
-    expected_capture_hidden_layers: list[int] | None,
-    expected_graph_helper_calls: int,
 ) -> None:
     from sglang.srt.utils import hf_transformers_utils
 
@@ -884,7 +869,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     )
     infrastructure_saw_graph_disabled: list[bool] = []
     infrastructure_saw_return_hidden: list[bool] = []
-    capture_hidden_layers_seen: list[list[int] | None] = []
+    infrastructure_kwargs: list[dict] = []
     graph_init_workers: list[object] = []
     generic_runner_calls: list[tuple[object, object]] = []
     qwen_runner_calls: list[tuple[object, object]] = []
@@ -914,7 +899,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         infrastructure_saw_return_hidden.append(
             bool(args[0].enable_return_hidden_states)
         )
-        capture_hidden_layers_seen.append(kwargs.get("capture_hidden_layers"))
+        infrastructure_kwargs.append(dict(kwargs))
         return (
             model_worker,
             object(),
@@ -979,8 +964,11 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     )
 
     assert infrastructure_saw_graph_disabled == [False]
-    assert capture_hidden_layers_seen == [expected_capture_hidden_layers]
-    assert graph_init_workers == [model_worker] * expected_graph_helper_calls
+    # Verify the capture kwargs are omitted rather than passed as None.
+    assert "capture_hidden_layers" not in infrastructure_kwargs[0]
+    assert "defer_cuda_graph_capture" not in infrastructure_kwargs[0]
+    # Shared infrastructure, not Qwen bootstrap, owns graph initialization.
+    assert graph_init_workers == []
     assert infrastructure_saw_return_hidden == [False]
     assert server_args.enable_return_hidden_states is False
     assert server_args.disable_cuda_graph is False
@@ -993,10 +981,8 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert scheduler.server_args is server_args
 
 
-@pytest.mark.parametrize("speech_enabled", [False, True])
 def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch: pytest.MonkeyPatch,
-    speech_enabled: bool,
 ) -> None:
     from sglang.srt.utils import hf_transformers_utils
 
@@ -1089,21 +1075,15 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
 
-    scheduler = bootstrap.create_thinker_scheduler(
-        server_args, speech_enabled=speech_enabled
-    )
+    scheduler = bootstrap.create_thinker_scheduler(server_args, speech_enabled=True)
 
     assert captured["enable_prefill_input_embeds"] is True
-    assert captured["capture_hidden_layers"] == ([0, 24] if speech_enabled else None)
-    assert captured["defer_cuda_graph_capture"] is speech_enabled
-    assert graph_init_workers == ([model_worker] if speech_enabled else [])
+    assert "capture_hidden_layers" not in captured
+    assert "defer_cuda_graph_capture" not in captured
+    # Shared infrastructure, not Qwen bootstrap, owns graph initialization.
+    assert graph_init_workers == []
     assert attest_calls == [(model_worker.model_runner, False)]
-    assert len(output_proc_kwargs) == 1
-    output_args = output_proc_kwargs[0]
-    assert output_args["capture_hidden"] is speech_enabled
-    assert output_args["capture_hidden_layers"] == ([0, 24] if speech_enabled else None)
-    assert output_args["model"] is (model if speech_enabled else None)
-    assert callable(output_args["should_emit_hidden"])
+    assert output_proc_kwargs == [{}]
     assert qwen_runner_calls == [(model_worker, output_proc)]
     assert scheduler.server_args is server_args
 
