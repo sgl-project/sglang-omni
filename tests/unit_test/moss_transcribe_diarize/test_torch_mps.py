@@ -105,8 +105,7 @@ def test_torch_mps_microbatches_encoder_windows() -> None:
 
     class FakeMossModel:
         @staticmethod
-        def _get_audio_feature_uncached(items, forward_batch):
-            del forward_batch
+        def _get_audio_feature_uncached(items, _forward_batch):
             item = items[0]
             batch_sizes.append(item.feature.shape[0])
             assert item.audio_chunk_mapping.tolist() == [0] * len(item.feature)

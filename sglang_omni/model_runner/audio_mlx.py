@@ -126,8 +126,8 @@ class AudioMlxModelRunner:
                 input_embeddings[:, start : start + chunk_size],
                 cache=cache,
             )
-            # Materialize intermediate chunks to bound memory, while leaving
-            # the final result lazy for the worker's asynchronous evaluation.
+            # Note (wirybeaver): Materialize intermediate chunks to bound memory;
+            # leave the final result lazy for the worker's asynchronous evaluation.
             if start + chunk_size < input_embeddings.shape[1]:
                 mx.eval(logits)
         assert logits is not None

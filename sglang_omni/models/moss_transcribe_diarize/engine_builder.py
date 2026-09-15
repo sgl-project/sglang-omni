@@ -255,7 +255,6 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del device, gpu_id, server_args
         if self._uses_torch_mps():
             from sglang_omni.models.moss_transcribe_diarize.torch_mps_runner import (
                 install_torch_mps_language_model,

@@ -50,7 +50,6 @@ class AudioTorchMpsModelRunner(ModelRunner):
             )
 
     def _get_audio_feature(self, item: Any, forward_batch: Any) -> torch.Tensor:
-        del forward_batch
         return self.model.get_audio_feature([item])
 
     def _assign_audio_features(
