@@ -152,7 +152,6 @@ from the resulting text.
 | `temperature` | (model default) | Sampling temperature |
 | `top_p` | (model default) | Top-p sampling |
 | `top_k` | (model default) | Top-k sampling |
-| `min_p` | (model default) | Min-p sampling |
 | `repetition_penalty` | (model default) | Audio repetition penalty |
 
 ## Benchmarking
