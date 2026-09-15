@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), Cosmos 3 Super visual generation, and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -79,6 +79,9 @@ Supported Models
    * - `inclusionAI/LLaDA2.0-Uni <https://huggingface.co/inclusionAI/LLaDA2.0-Uni>`_
      - Multimodal
      - Text + image understanding and generation
+   * - `nvidia/Cosmos3-Super <https://huggingface.co/nvidia/Cosmos3-Super>`_
+     - Visual generation
+     - Initial BF16 text-to-image support through the Omni SDK and image API
 
 
 .. toctree::
@@ -116,6 +119,7 @@ Supported Models
    cookbook/llada2_uni.md
    cookbook/fun_cosyvoice3.md
    cookbook/auk.md
+   cookbook/cosmos3.md
 
 .. toctree::
    :maxdepth: 1

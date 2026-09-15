@@ -4,7 +4,10 @@ import pytest
 from sglang_omni.config import StageConfig
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
-from sglang_omni.models.cosmos3.stages import native_server_kwargs
+from sglang_omni.models.cosmos3.stages import (
+    native_server_kwargs,
+    resolved_native_server_kwargs,
+)
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import _build_stage_groups
 from sglang_omni.pipeline.replicas import validate_device_assignment
@@ -66,6 +69,26 @@ def test_native_parallel_options_use_the_declared_gpu_group():
     gen = native_server_kwargs("checkpoint", 1, {"tp_size": 2}, [1, 3])
     assert gen["gpu_ids"] == [1, 3]
     assert gen["num_gpus"] == gen["tp_size"] == 2
+
+
+def test_native_parallel_override_must_match_the_declared_gpu_group():
+    with pytest.raises(ValueError, match="tensor parallel size"):
+        native_server_kwargs("checkpoint", 1, {"tp_size": 1}, [1, 3])
+
+
+def test_pinned_native_checkpoint_is_resolved_and_keeps_its_served_name(monkeypatch):
+    from sglang_omni.utils import checkpoint
+
+    seen = []
+    monkeypatch.setattr(
+        checkpoint,
+        "resolve_checkpoint",
+        lambda model_path: seen.append(model_path) or "/models/pinned",
+    )
+    kwargs = resolved_native_server_kwargs("nvidia/model@abc123", 0, None)
+    assert seen == ["nvidia/model@abc123"]
+    assert kwargs["model_path"] == "/models/pinned"
+    assert kwargs["served_model_name"] == "nvidia/model"
 
 
 @pytest.mark.parametrize("devices", [[], [1, 1], [2, 3], [1, -1]])

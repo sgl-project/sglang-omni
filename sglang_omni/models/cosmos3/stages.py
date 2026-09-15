@@ -246,15 +246,37 @@ def native_server_kwargs(
         raise ValueError("Native GPU ids must be nonnegative")
     if kwargs.get("num_gpus", len(devices)) != len(devices):
         raise ValueError("Native GPU count must match Omni placement")
+    if kwargs.get("tp_size", len(devices)) != len(devices):
+        raise ValueError("Native tensor parallel size must match Omni placement")
     if kwargs.get("nnodes", 1) != 1:
         raise ValueError("This stage owns GPUs on one host")
     if any(key in kwargs for key in ("gpu_ids", "base_gpu_id", "model_path")):
         raise ValueError("Set the generation model and GPUs through Omni placement")
-    kwargs.update(model_path=model_path, num_gpus=len(devices))
+    kwargs.update(
+        model_path=model_path,
+        num_gpus=len(devices),
+        tp_size=len(devices),
+    )
     if runtime_gpu_ids is None:
         kwargs["base_gpu_id"] = gpu_id
     else:
         kwargs["gpu_ids"] = devices
+    return kwargs
+
+
+def resolved_native_server_kwargs(
+    model_path: str,
+    gpu_id: int,
+    overrides: dict[str, Any] | None,
+    runtime_gpu_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """Resolve one immutable checkpoint while preserving its public model name."""
+    kwargs = native_server_kwargs(model_path, gpu_id, overrides, runtime_gpu_ids)
+    if "@" in model_path and not Path(model_path).is_dir():
+        from sglang_omni.utils.checkpoint import resolve_checkpoint
+
+        kwargs["model_path"] = resolve_checkpoint(model_path)
+    kwargs.setdefault("served_model_name", model_path.partition("@")[0])
     return kwargs
 
 
@@ -273,7 +295,7 @@ def create_generation_scheduler(
     )
     from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
-    kwargs = native_server_kwargs(
+    kwargs = resolved_native_server_kwargs(
         model_path, gpu_id, server_args_overrides, runtime_gpu_ids
     )
     output_dir = str(Path(output_dir).resolve())
