@@ -55,6 +55,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.messages import IncomingMessage
@@ -286,7 +287,10 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
         "create_sglang_tts_engine_executor"
     )
     assert config.terminal_stages == ["vocoder"]
-    assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    expected_gpu_map = (
+        {} if current_platform.is_cpu() else {"tts_engine": 0, "vocoder": 0}
+    )
+    assert config.gpu_placement == expected_gpu_map
     assert stages["tts_engine"].factory.device is None
     assert stages["vocoder"].factory.device is None
     assert {stage.process for stage in config.stages} == {"pipeline"}
@@ -7137,7 +7141,8 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         while published:
             published.pop().restore()
 
-    assert build_kwargs["disable_cuda_graph"] is False
+    is_cpu = current_platform.is_cpu()
+    assert build_kwargs["disable_cuda_graph"] is is_cpu
     assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs
     assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["enable_torch_compile"] is False
@@ -7176,13 +7181,13 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         torch.tensor([1.0, 0.01], dtype=torch.float32),
     )
 
-    assert infrastructure_saw_deferred_capture == [True]
-    assert init_graph_calls == [True]
+    assert infrastructure_saw_deferred_capture == [not is_cpu]
+    assert init_graph_calls == ([] if is_cpu else [True])
     assert predictor_captures == [(True, 50, 1.0)]
     assert events == ["predictor_capture", "memory_pool", "init_graphs"]
     assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs
     assert scheduler.server_args.cuda_graph_max_bs == 64
-    assert scheduler.server_args.disable_cuda_graph is False
+    assert scheduler.server_args.disable_cuda_graph is is_cpu
     assert scheduler.server_args.enable_torch_compile is False
     assert scheduler.server_args.torch_compile_max_bs == 64
     clear_qwen3_tts_preprocessing_context()
