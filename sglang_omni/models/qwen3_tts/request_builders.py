@@ -10,6 +10,7 @@ import json
 import queue
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +18,10 @@ import torch
 
 from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
+    DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+    Qwen3TTSReferenceEncoderCudaGraphRunner,
+)
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
 from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
@@ -186,12 +191,19 @@ def set_qwen3_tts_preprocessing_context(
     wrapper: Any,
     standalone: bool = False,
     device: torch.device | None = None,
+    reference_encoder_graph_bucket_frames: Sequence[int] = (
+        DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
+    ),
 ) -> None:
     """Register model objects used by the preprocessing stage."""
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
+        _get_qwen3_tts_adhoc_reference_service_locked(
+            model,
+            wrapper,
+            graph_bucket_frames=reference_encoder_graph_bucket_frames,
+        )
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
@@ -743,16 +755,10 @@ class _Qwen3TTSAdhocReferenceInput:
     x_vector_only_mode: bool
 
 
-def _new_cuda_encode_stream(device: Any) -> torch.cuda.Stream | None:
-    if device is None or not torch.cuda.is_available():
+def _new_cuda_encode_stream(device: torch.device) -> torch.cuda.Stream | None:
+    if device.type != "cuda":
         return None
-    try:
-        resolved = torch.device(device)
-    except (TypeError, ValueError, RuntimeError):
-        return None
-    if resolved.type != "cuda":
-        return None
-    return torch.cuda.Stream(device=resolved)
+    return torch.cuda.Stream(device=device)
 
 
 def _record_ref_code_consumer_stream(ref_code: Any) -> Any:
@@ -769,14 +775,30 @@ class _Qwen3TTSRefCodeBatcher:
         self,
         speech_tokenizer: Any,
         *,
-        device: Any | None = None,
         max_batch_size: int = 8,
         max_batch_wait_ms: float = 2.0,
+        graph_bucket_frames: Sequence[int] = (),
     ) -> None:
         self._speech_tokenizer = speech_tokenizer
+        self._encoder = speech_tokenizer.model.encoder
+        self._hop = int(speech_tokenizer.model.encode_downsample_rate)
+        self._num_quantizers = int(speech_tokenizer.model.encoder_valid_num_quantizers)
+        param = next(self._encoder.parameters())
+        self._encoder_device = param.device
+        self._encoder_dtype = param.dtype
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self._encode_stream = _new_cuda_encode_stream(device)
+        self._encode_stream = _new_cuda_encode_stream(self._encoder_device)
+        self._graph_runner: Qwen3TTSReferenceEncoderCudaGraphRunner | None = None
+        if self._encode_stream is not None and graph_bucket_frames:
+            self._graph_runner = Qwen3TTSReferenceEncoderCudaGraphRunner(
+                self._encoder,
+                hop=self._hop,
+                num_quantizers=self._num_quantizers,
+                bucket_frames=graph_bucket_frames,
+                stream=self._encode_stream,
+            )
+            self._graph_runner.capture()
         self._queue: queue.Queue[object] = queue.Queue()
         self._thread = threading.Thread(
             target=self._run,
@@ -824,27 +846,39 @@ class _Qwen3TTSRefCodeBatcher:
             batch.append(queued)
         return batch, shutdown
 
-    def _synchronize_outcomes(
-        self, outcomes: dict[int, torch.Tensor | Exception]
-    ) -> None:
+    def _synchronize_outcomes(self) -> None:
         # note (luojiaxuan): resolve futures only after the encode kernels
-        # finish so consumer threads may use the codes on any stream. With a
-        # dedicated stream, waiting on its event leaves the default stream —
-        # where speaker-embedding kernels run concurrently — untouched; the
-        # fallback keeps the historical current-stream synchronize for
-        # tokenizers whose device could not be resolved up front.
+        # finish so consumer threads may use the codes on any stream. Waiting
+        # on the dedicated stream's event leaves the default stream, where
+        # speaker-embedding kernels run concurrently, untouched.
         if self._encode_stream is not None:
             handoff = torch.cuda.Event()
             handoff.record(self._encode_stream)
             handoff.synchronize()
-            return
-        cuda_devices = {
-            outcome.device
-            for outcome in outcomes.values()
-            if not isinstance(outcome, Exception) and getattr(outcome, "is_cuda", False)
-        }
-        for device in cuda_devices:
-            torch.cuda.current_stream(device).synchronize()
+
+    def _encode_waveform(self, waveform: Any, sample_rate: int) -> torch.Tensor:
+        """Codes (frames, quantizers) of one reference, frames = ceil(samples / hop)."""
+        audio = self._speech_tokenizer._normalize_audio_inputs(
+            [waveform], sr=sample_rate
+        )
+        samples = torch.from_numpy(audio[0])
+        if self._graph_runner is not None:
+            codes = self._graph_runner.encode(samples)
+            if codes is not None:
+                return codes
+        frames = -(-samples.numel() // self._hop)
+        # note(ratish): whole frames, so every conv layer's own tail padding is
+        # zero and the eager encode has the shape the graphs capture.
+        values = torch.zeros(
+            (1, 1, frames * self._hop),
+            device=self._encoder_device,
+            dtype=self._encoder_dtype,
+        )
+        values[0, 0, : samples.numel()].copy_(samples)
+        codes = self._encoder.encode(
+            values, num_quantizers=self._num_quantizers, return_dict=True
+        ).audio_codes
+        return codes[0, :, :frames].transpose(0, 1)
 
     def _run(self) -> None:
         while True:
@@ -854,9 +888,6 @@ class _Qwen3TTSRefCodeBatcher:
             batch = [
                 item for item in raw_batch if isinstance(item, tuple) and len(item) == 3
             ]
-            groups: dict[int, list[tuple[int, Any]]] = {}
-            for index, (waveform, sample_rate, _) in enumerate(batch):
-                groups.setdefault(sample_rate, []).append((index, waveform))
             outcomes: dict[int, torch.Tensor | Exception] = {}
             encode_stream_ctx = (
                 torch.cuda.stream(self._encode_stream)
@@ -864,31 +895,12 @@ class _Qwen3TTSRefCodeBatcher:
                 else contextlib.nullcontext()
             )
             with torch.inference_mode(), encode_stream_ctx:
-                for sample_rate, group in groups.items():
-                    waveforms = [waveform for _, waveform in group]
+                for index, (waveform, sample_rate, _) in enumerate(batch):
                     try:
-                        encoded = self._speech_tokenizer.encode(
-                            waveforms,
-                            sr=sample_rate,
-                        ).audio_codes
-                        if len(encoded) != len(group):
-                            raise ValueError(
-                                "Qwen3-TTS speech tokenizer returned "
-                                f"{len(encoded)} codes for {len(group)} references"
-                            )
-                    except Exception:
-                        for index, waveform in group:
-                            try:
-                                outcomes[index] = self._speech_tokenizer.encode(
-                                    waveform,
-                                    sr=sample_rate,
-                                ).audio_codes[0]
-                            except Exception as exc:
-                                outcomes[index] = exc
-                    else:
-                        for (index, _), code in zip(group, encoded, strict=True):
-                            outcomes[index] = code
-            self._synchronize_outcomes(outcomes)
+                        outcomes[index] = self._encode_waveform(waveform, sample_rate)
+                    except Exception as exc:
+                        outcomes[index] = exc
+            self._synchronize_outcomes()
             for index, (_, _, future) in enumerate(batch):
                 outcome = outcomes[index]
                 if isinstance(outcome, Exception):
@@ -910,15 +922,18 @@ class _Qwen3TTSAdhocReferenceHook(
     encoder_id = "qwen3_tts_voice_clone_prompt"
     artifact_kind = "qwen3_tts_voice_clone_prompt_adhoc"
 
-    def __init__(self, *, model: Any, wrapper: Any) -> None:
+    def __init__(
+        self,
+        *,
+        model: Any,
+        wrapper: Any,
+        graph_bucket_frames: Sequence[int] = (),
+    ) -> None:
         self._model = model
         self._wrapper = wrapper
-        # note (luojiaxuan): the engine builder loads the speech tokenizer on
-        # the same device as the talker model, so model.device selects the
-        # dedicated reference-code encode stream for that device.
         self._ref_code_batcher = _Qwen3TTSRefCodeBatcher(
             model.speech_tokenizer,
-            device=getattr(model, "device", None),
+            graph_bucket_frames=graph_bucket_frames,
         )
         self.model_revision = _qwen3_tts_model_revision(model, wrapper)
         self.encoder_config_hash = _qwen3_tts_encoder_config_hash(model, wrapper)
@@ -1052,7 +1067,12 @@ def _qwen3_tts_encoder_config_hash(model: Any, wrapper: Any) -> str:
 
 
 def _get_qwen3_tts_adhoc_reference_service_locked(
-    model: Any, wrapper: Any
+    model: Any,
+    wrapper: Any,
+    *,
+    graph_bucket_frames: Sequence[int] = (
+        DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
+    ),
 ) -> ReferenceEncodeService:
     global _ADHOC_REFERENCE_SERVICE_ENTRY
     owner = (id(model), id(wrapper))
@@ -1061,7 +1081,11 @@ def _get_qwen3_tts_adhoc_reference_service_locked(
         if entry is not None:
             entry[1].close()
         service = ReferenceEncodeService(
-            _Qwen3TTSAdhocReferenceHook(model=model, wrapper=wrapper),
+            _Qwen3TTSAdhocReferenceHook(
+                model=model,
+                wrapper=wrapper,
+                graph_bucket_frames=graph_bucket_frames,
+            ),
             max_items=256,
             max_bytes=64 * 1024 * 1024,
             timeout_s=130.0,

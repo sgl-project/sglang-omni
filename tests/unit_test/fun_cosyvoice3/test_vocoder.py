@@ -133,6 +133,7 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
             return self
 
     flow = _Model()
+    flow.decoder = SimpleNamespace(estimator=torch.nn.Module())
     hift = _Model()
 
     def fake_load_hyperpyyaml(handle, overrides):
@@ -165,6 +166,7 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
     )
 
     assert isinstance(loaded_flow, stages.FunCosyVoice3Flow)
+    assert loaded_flow.packed_estimator.dit is flow.decoder.estimator
     assert loaded_hift is hift
     assert observed["overrides"] == {
         "qwen_pretrain_path": str(tmp_path / "CosyVoice-BlankEN"),
