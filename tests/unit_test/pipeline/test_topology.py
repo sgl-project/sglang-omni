@@ -124,6 +124,38 @@ def test_tp_process_field_is_used_as_rank_process_prefix() -> None:
     assert topology.tp_stage_to_processes == {"thinker": ("model_tp0", "model_tp1")}
 
 
+def test_tp_override_releases_stage_from_shared_process() -> None:
+    config = PipelineConfig(
+        model_path="dummy",
+        stages=[
+            _stage("a", process="pipeline", next_stage="thinker"),
+            _stage("thinker", gpu=0, process="pipeline", next_stage="b"),
+            _stage("b", process="pipeline", terminal=True),
+        ],
+    )
+
+    merged = ConfigManager(config).merge_config(
+        {"thinker.tp_size": 2, "thinker.gpu": [0, 1]}
+    )
+
+    assert merged.stage_named("thinker").process is None
+    assert [stage.process for stage in config.stages] == ["pipeline"] * 3
+    topology = _topology(merged)
+    assert topology.stage_to_process == {"a": "pipeline", "b": "pipeline"}
+    assert topology.tp_stage_to_processes == {"thinker": ("thinker_tp0", "thinker_tp1")}
+
+
+def test_non_tp_stage_cannot_claim_a_tp_stage_process() -> None:
+    with pytest.raises(ValueError, match="cannot be shared"):
+        PipelineConfig(
+            model_path="dummy",
+            stages=[
+                _stage("a", process="thinker", next_stage="thinker"),
+                _stage("thinker", gpu=[0, 1], tp_size=2, terminal=True),
+            ],
+        )
+
+
 def test_same_process_same_gpu_does_not_require_memory_budgets() -> None:
     config = PipelineConfig(
         model_path="dummy",

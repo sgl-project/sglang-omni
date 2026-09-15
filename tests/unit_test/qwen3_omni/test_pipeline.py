@@ -1169,6 +1169,26 @@ def test_qwen_text_thinker_tp_builds_topology_without_memory_fractions() -> None
     assert topology.tp_stage_to_processes["thinker"] == ("thinker_tp0", "thinker_tp1")
 
 
+def test_qwen_text_thinker_tp_leaves_the_shared_pipeline_process() -> None:
+    """Issue #1782: --text-only --thinker.tp_size 2 without --thinker.process."""
+    config = Qwen3OmniPipelineConfig(model_path="dummy")
+
+    merged = ConfigManager(config).merge_config(
+        [("thinker.tp_size", "2"), ("thinker.gpu", "[2, 3]")]
+    )
+
+    thinker = _stage(merged, "thinker")
+    assert thinker.tp_size == 2
+    assert thinker.process is None
+    others = [stage.process for stage in merged.stages if stage.name != "thinker"]
+    assert others == ["pipeline"] * 5
+
+    build_stage_placement_plan(merged)
+    topology = build_compiled_process_topology(merged)
+    assert topology.tp_stage_to_processes["thinker"] == ("thinker_tp0", "thinker_tp1")
+    assert "thinker" not in topology.stage_to_process
+
+
 def test_qwen_thinker_tp_disables_custom_all_reduce_across_configs() -> None:
     """TP>1 thinker must drop the custom all-reduce kernel (parity w/ MingOmni).
 
