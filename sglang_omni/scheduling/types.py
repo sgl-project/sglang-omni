@@ -89,6 +89,9 @@ class ARRequestData:
     # compacts the history of every request it retracts, whatever the model.
     prefill_input_embeds: "torch.Tensor | None" = None
     decode_input_embeds: list["torch.Tensor"] | None = field(default_factory=list)
+    # note(ratish): a result whose payload is still being copied off the device
+    # carries the copy's event, the stage runtime waits it before routing.
+    result_ready_event: Any = None
 
 
 def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import queue
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -433,6 +434,120 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline(
     assert sent[0]["to_stage"] == "decode"
     assert sent[0]["transport"] == "inline"
     assert sent[0]["bytes"] == 8
+
+
+class _GatedReadiness:
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.done = False
+
+    def query(self) -> bool:
+        return self.done
+
+    def synchronize(self) -> None:
+        self.entered.set()
+        assert self.release.wait(timeout=5)
+        self.done = True
+
+
+def _terminal_stage(control_plane, scheduler) -> Stage:
+    return Stage(
+        name="vocoder",
+        role="single",
+        get_next=lambda request_id, output: None,
+        gpu_id=None,
+        endpoints={"tts_engine": "inproc://tts_engine"},
+        control_plane=control_plane,
+        relay=_FakeRelay(),
+        scheduler=scheduler,
+        is_terminal=True,
+    )
+
+
+def test_terminal_result_is_routed_only_after_its_readiness_event() -> None:
+    async def _run() -> None:
+        event = _GatedReadiness()
+        ready_at_completion: list[bool] = []
+
+        class _ControlPlane(_FakeControlPlane):
+            async def send_complete(self, msg) -> None:
+                ready_at_completion.append(event.query())
+                await super().send_complete(msg)
+
+        control_plane = _ControlPlane()
+        scheduler = SimpleNamespace(outbox=queue.Queue())
+        stage = _terminal_stage(control_plane, scheduler)
+        stage._active_requests.update({"req-staged", "req-plain"})
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req-staged",
+                type="result",
+                data={"audio_codes": [1, 2, 3]},
+                metadata={"result_ready_event": event},
+            )
+        )
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req-plain",
+                type="result",
+                data={"audio_codes": [4]},
+            )
+        )
+        event.release.set()
+
+        await stage._drain_outbox_external()
+
+        assert ready_at_completion == [True, True]
+        assert [m.request_id for m in control_plane.completions] == [
+            "req-staged",
+            "req-plain",
+        ]
+        assert control_plane.completions[0].result == {"audio_codes": [1, 2, 3]}
+
+    asyncio.run(_run())
+
+
+def test_result_aborted_during_its_readiness_wait_is_dropped() -> None:
+    async def _run() -> None:
+        event = _GatedReadiness()
+        control_plane = _FakeControlPlane()
+        scheduler = SimpleNamespace(
+            outbox=queue.Queue(),
+            inbox=queue.Queue(),
+            abort=lambda request_id: None,
+        )
+        stage = _terminal_stage(control_plane, scheduler)
+        stage._active_requests.update({"req-aborted", "req-live"})
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req-aborted",
+                type="result",
+                data={"audio_codes": [1]},
+                metadata={"result_ready_event": event},
+            )
+        )
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req-live",
+                type="result",
+                data={"audio_codes": [2]},
+            )
+        )
+
+        drain = asyncio.create_task(stage._drain_outbox_external())
+        loop = asyncio.get_running_loop()
+        entered = await loop.run_in_executor(None, event.entered.wait, 5)
+        assert entered
+        stage._on_abort("req-aborted")
+        event.release.set()
+        await asyncio.wait_for(drain, timeout=5)
+
+        assert [m.request_id for m in control_plane.completions] == ["req-live"]
+        assert control_plane.streams == []
+        assert "req-aborted" not in stage._active_requests
+
+    asyncio.run(_run())
 
 
 def test_inline_stream_chunk_gate() -> None:
