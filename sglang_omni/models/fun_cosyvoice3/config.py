@@ -84,7 +84,7 @@ def reject_conflicting_dit_accelerators(
     *,
     enable_dit_torch_compile: bool,
     enable_flow_estimator_trt: bool,
-    enable_dit_fused_rope: bool = False,
+    enable_dit_fused_rope: bool,
 ) -> None:
     if enable_flow_estimator_trt and (
         enable_dit_torch_compile or enable_dit_fused_rope
