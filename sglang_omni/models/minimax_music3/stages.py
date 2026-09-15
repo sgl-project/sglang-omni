@@ -9,7 +9,6 @@ from typing import Any
 
 import torch
 
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -21,6 +20,12 @@ from .request_builders import build_ttm_state
 logger = logging.getLogger(__name__)
 
 _DEFAULT_AR_CONCURRENCY = int(os.environ.get("MINIMAX_MUSIC3_AR_CONCURRENCY", "16"))
+
+
+def _use_mlx_backend() -> bool:
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    return bool(use_mlx())
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
@@ -43,8 +48,35 @@ def create_ar_executor(
     device: str | None = None,
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
+    mlx_model_revision: str | None = None,
+    torch_model_revision: str | None = None,
 ):
-    if not (current_platform.is_cuda() or current_platform.is_musa()):
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    resolved_device = resolve_concrete_device(device, gpu_id)
+    if _use_mlx_backend():
+        if resolved_device.type != "mps":
+            raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+        from .mlx.ar_scheduler import MiniMaxMusic3MlxARScheduler
+
+        scheduler = MiniMaxMusic3MlxARScheduler(
+            model_path,
+            revision=mlx_model_revision,
+        )
+        logger.info("MiniMax Music 3 AR executor ready backend=mlx max_concurrency=1")
+        return scheduler
+    if resolved_device.type == "mps":
+        from .torch_mps import MiniMaxMusic3TorchMpsARScheduler
+
+        scheduler = MiniMaxMusic3TorchMpsARScheduler(
+            model_path,
+            revision=torch_model_revision,
+        )
+        logger.info(
+            "MiniMax Music 3 AR executor ready backend=torch_mps max_concurrency=1"
+        )
+        return scheduler
+    if resolved_device.type not in ("cuda", "musa"):
         raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA backend")
     torch.backends.cudnn.enabled = False
     torch.backends.cuda.enable_cudnn_sdp(False)
@@ -89,17 +121,75 @@ def create_dit_dav_executor(
     cache_dit_max_warmup_steps: int = 4,
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
+    mlx_model_revision: str | None = None,
+    torch_model_revision: str | None = None,
 ) -> MiniMaxMusic3AcousticScheduler:
     from sglang_omni.utils.device import resolve_concrete_device
 
-    if not (current_platform.is_cuda() or current_platform.is_musa()):
+    resolved_device = resolve_concrete_device(device, gpu_id)
+    if _use_mlx_backend():
+        if resolved_device.type != "mps":
+            raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+        if cache_dit:
+            raise ValueError("MiniMax Music 3 cache_dit is unavailable with MLX")
+        if breakable_cuda_graph:
+            raise ValueError(
+                "MiniMax Music 3 breakable_cuda_graph is unavailable with MLX"
+            )
+        from .mlx.acoustic import MiniMaxMusic3MlxAcousticDecoder
+
+        decoder = MiniMaxMusic3MlxAcousticDecoder(
+            model_path,
+            revision=mlx_model_revision,
+            dit_steps=dit_steps,
+            dit_cfg_scale=dit_cfg_scale,
+        )
+        logger.info(
+            "MiniMax Music 3 acoustic executor ready backend=mlx dtype=%s "
+            "dit_steps=%d dit_cfg_scale=%.3f sample_rate=%d",
+            decoder.dtype,
+            decoder.dit_steps,
+            decoder.dit_cfg_scale,
+            OUTPUT_SAMPLE_RATE,
+        )
+        return MiniMaxMusic3AcousticScheduler(decoder)
+    if resolved_device.type == "mps":
+        if cache_dit:
+            raise ValueError("MiniMax Music 3 cache_dit is unavailable with Torch MPS")
+        if breakable_cuda_graph:
+            raise ValueError(
+                "MiniMax Music 3 breakable_cuda_graph is unavailable with Torch MPS"
+            )
+        from .torch_mps import resolve_torch_mps_directory
+
+        model_dir = resolve_torch_mps_directory(model_path, torch_model_revision)
+        decoder = MiniMaxMusic3AcousticDecoder(
+            str(model_dir),
+            device=str(resolved_device),
+            dtype="bfloat16",
+            dit_steps=dit_steps,
+            dit_cfg_scale=dit_cfg_scale,
+            attention_backend="torch_sdpa",
+            cache_dit=False,
+            compile_acoustic=False,
+            breakable_cuda_graph=False,
+        )
+        logger.info(
+            "MiniMax Music 3 acoustic executor ready backend=torch_mps "
+            "dtype=%s dit_steps=%d dit_cfg_scale=%.3f sample_rate=%d",
+            decoder.dtype,
+            decoder.dit_steps,
+            decoder.dit_cfg_scale,
+            OUTPUT_SAMPLE_RATE,
+        )
+        return MiniMaxMusic3AcousticScheduler(decoder)
+    if resolved_device.type not in ("cuda", "musa"):
         raise RuntimeError(
             "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
         )
-    device = str(resolve_concrete_device(device, gpu_id))
     decoder = MiniMaxMusic3AcousticDecoder(
         model_path,
-        device=device,
+        device=str(resolved_device),
         dtype=dtype,
         dit_steps=dit_steps,
         dit_cfg_scale=dit_cfg_scale,

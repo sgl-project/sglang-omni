@@ -3,6 +3,22 @@
 Text-to-music: a Qwen3 backbone with an eight-codebook RVQ frame, followed by a
 flow-matching DIT and a DAC decoder. Output is 32 kHz stereo.
 
+On Apple Silicon, use the native MLX path with a converted artifact:
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path mlx-community/MiniMax-Music3-mxfp8 \
+  --port 8000
+```
+
+Or leave `SGLANG_USE_MLX` unset to run the official checkpoint through the
+Torch/MPS compatibility path:
+
+```bash
+unset SGLANG_USE_MLX
+sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000
+```
+
 ```bash
 # Single GPU
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000
