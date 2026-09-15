@@ -303,6 +303,11 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     "Qwen3ASRForConditionalGeneration": WeightSharePolicy(),
     "WhisperForConditionalGeneration": WeightSharePolicy(),
     "FunAsrNanoForConditionalGeneration": WeightSharePolicy(),
+    # Fish's staging is unregistered, and its Fast-AR decoder with per-step KV
+    # buffers joins the module tree only after the immutable base-model export.
+    # Two same-GPU process replicas passed MPS attach, concurrent serving, and
+    # clean-teardown validation with no registered replica-private tensors.
+    "S2ProSGLangTextModel": WeightSharePolicy(),
 }
 
 # Note (Jiaxin Deng): completed mutation audits whose launcher end-to-end
@@ -319,10 +324,6 @@ AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # Note (Jiaxin Deng): Voxtral keeps its decode staging in an unregistered
     # plain tensor; if that scratch is ever registered, this needs its name.
     "VoxtralSGLangTTSModel": WeightSharePolicy(),
-    # Note (Jiaxin Deng): Fish's staging is unregistered and its fast-AR
-    # decoder, with per-step KV buffers, joins the module tree only after
-    # export; the empty set holds only while export stays at load_model's end.
-    "S2ProSGLangTextModel": WeightSharePolicy(),
     # Note (Jiaxin Deng): LLaDA2's denoise-loop state lives in per-replica
     # scheduler and pool state, never in registered tensors; its pipeline also
     # declares no generation SGLang stage, so the launcher cannot drive it.
