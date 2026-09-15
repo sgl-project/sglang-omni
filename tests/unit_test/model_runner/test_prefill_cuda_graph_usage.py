@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 
+from sglang_omni.model_runner.hybrid_prefill_router import HybridPrefillGraphRouter
 from sglang_omni.model_runner.model_worker import ModelWorker, _PrefillCudaGraphUsage
 
 
@@ -137,3 +139,44 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
     assert stats["custom_eager_count"] == 1
     assert stats["replay_buckets"] == {"16": 1, "32": 1}
     assert json.loads(json.dumps(stats)) == stats
+
+
+@pytest.mark.parametrize("full_has_input_embeds", [False, True])
+def test_model_info_attests_both_hybrid_prefill_captures(
+    full_has_input_embeds, monkeypatch
+):
+    def runner(buckets, has_input_embeds):
+        return SimpleNamespace(
+            capture_num_tokens=buckets,
+            backend=SimpleNamespace(),
+            buffer_registry=SimpleNamespace(has_slot=lambda name: has_input_embeds),
+        )
+
+    worker = object.__new__(ModelWorker)
+    worker.model_runner = SimpleNamespace(
+        prefill_cuda_graph_runner=HybridPrefillGraphRouter(
+            runner([8, 16], True), runner([32, 64], full_has_input_embeds)
+        )
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_exec",
+        lambda: SimpleNamespace(
+            graph=SimpleNamespace(
+                cuda_graph_config=SimpleNamespace(
+                    prefill=SimpleNamespace(backend="breakable")
+                )
+            )
+        ),
+    )
+    worker._prefill_cuda_graph_usage = _PrefillCudaGraphUsage()
+
+    info = worker._prefill_cuda_graph_info()
+
+    assert info["backend"] == "hybrid"
+    assert info["runner"] == "HybridPrefillGraphRouter"
+    assert info["capture_num_tokens"] == [8, 16, 32, 64]
+    assert info["input_embeds_slot"] is full_has_input_embeds
+    assert info["hybrid_backends"]["breakable"]["capture_num_tokens"] == [8, 16]
+    assert info["hybrid_backends"]["full"]["capture_num_tokens"] == [32, 64]
+    assert info["hybrid_backends"]["full"]["input_embeds_slot"] is full_has_input_embeds
+    assert json.loads(json.dumps(info)) == info

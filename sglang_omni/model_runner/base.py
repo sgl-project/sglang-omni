@@ -97,6 +97,10 @@ class ModelRunner:
       - decode hooks for single-step autoregressive decode processing
     """
 
+    _stage_sync_token_ids: bool = False
+    _token_id_copy_stream: Any | None = None
+    _stage_ready_event: Any | None = None
+
     def __init__(self, tp_worker: Any, output_processor: Any):
         self.tp_worker = tp_worker
         self.output_processor = output_processor
@@ -120,17 +124,25 @@ class ModelRunner:
         self._suppress_tensor_cache: dict[tuple, tuple[Any, torch.Tensor | None]] = {}
 
     def _stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
-        # Note (wenyao): pinned host copy staged once at sample time so downstream
-        # .tolist() never triggers a blocking pageable D2H; next_token_ids stays device-side
+        # Note (wenyao): Waiting only on the sampling and copy events keeps token readback
+        # from fencing unrelated work on the shared default stream.
         if not (isinstance(ids, torch.Tensor) and ids.is_cuda):
             result._host_token_ids = ids
             result._host_token_ids_event = None
             return
         n = ids.shape[0]
         buf = self._next_token_id_host_buf(ids, n)
-        buf[:n].copy_(ids[:n], non_blocking=True)
-        event = torch.cuda.Event()
-        event.record()
+        copy_stream = self._token_id_copy_stream
+        if copy_stream is None:
+            copy_stream = torch.cuda.Stream(device=ids.device)
+            self._token_id_copy_stream = copy_stream
+            self._stage_ready_event = torch.cuda.Event()
+        self._stage_ready_event.record()
+        copy_stream.wait_event(self._stage_ready_event)
+        with torch.cuda.stream(copy_stream):
+            buf[:n].copy_(ids[:n], non_blocking=True)
+            event = torch.cuda.Event()
+            event.record()
         result._host_token_ids = buf[:n]
         result._host_token_ids_event = event
 
@@ -335,6 +347,8 @@ class ModelRunner:
                 schedule_batch,
                 scheduler_output,
             )
+            if self._stage_sync_token_ids:
+                self._stage_token_ids(batch_result, batch_result.next_token_ids)
             self._publish_next_tokens(
                 batch_result,
                 forward_batch,

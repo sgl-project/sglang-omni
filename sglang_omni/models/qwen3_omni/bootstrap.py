@@ -20,6 +20,7 @@ def create_thinker_scheduler(
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
     operator_selected_prefill_backend: bool = False,
+    hybrid_full_bs: list[int] | None = None,
 ):
     """Create the Qwen thinker scheduler."""
     from sglang.srt.arg_groups.model_override_base import resolved_view
@@ -84,6 +85,17 @@ def create_thinker_scheduler(
         cuda_graph_batch_validator.attest_prefill_cuda_graphs(
             model_worker.model_runner,
             operator_selected=operator_selected_prefill_backend,
+        )
+        if hybrid_full_bs is not None:
+            from sglang_omni.model_runner.hybrid_prefill_router import (
+                install_hybrid_full_prefill,
+            )
+
+            install_hybrid_full_prefill(model_worker, hybrid_full_bs)
+    elif hybrid_full_bs is not None:
+        raise RuntimeError(
+            "prefill backend 'hybrid' was declared but the thinker prefill "
+            "graph backend resolved to a non-BREAKABLE mode"
         )
 
     def _should_generate_qwen_audio_output(request: Any) -> bool:
