@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
@@ -17,7 +17,7 @@ from .cache_key import compute_media_cache_key
 
 def load_image_path(path: str | Path) -> Image.Image:
     """Load an image from disk as RGB."""
-    return Image.open(path).convert("RGB")
+    return ImageOps.exif_transpose(Image.open(path)).convert("RGB")
 
 
 class ImageMediaIO(MediaIO[Image.Image]):
@@ -37,7 +37,9 @@ class ImageMediaIO(MediaIO[Image.Image]):
     def load_bytes(self, data: bytes) -> Image.Image:
         """Load image from raw bytes."""
         try:
-            return Image.open(BytesIO(data)).convert(self.image_mode)
+            return ImageOps.exif_transpose(Image.open(BytesIO(data))).convert(
+                self.image_mode
+            )
         except UnidentifiedImageError as e:
             raise ValueError(f"Failed to identify image: {e}") from e
 
@@ -52,7 +54,9 @@ class ImageMediaIO(MediaIO[Image.Image]):
     def load_file(self, filepath: Path) -> Image.Image:
         """Load image from a local file path."""
         try:
-            return Image.open(filepath).convert(self.image_mode)
+            return ImageOps.exif_transpose(Image.open(filepath)).convert(
+                self.image_mode
+            )
         except UnidentifiedImageError as e:
             raise ValueError(f"Failed to identify image: {e}") from e
 
