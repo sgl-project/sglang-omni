@@ -405,11 +405,31 @@ python -m benchmarks.dataset.prepare --dataset mmar          # MMAR metadata + a
 python -m benchmarks.dataset.prepare --dataset videomme-ci-50  # Video-MME CI subset
 python -m benchmarks.dataset.prepare --dataset videomme      # full Video-MME
 python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI subset
+python -m benchmarks.dataset.prepare --dataset ming-freeform-audio-edit  # AuK speech-edit benchmark
 ```
 
-All datasets are pre-warmed into the default HuggingFace cache via
-`datasets.load_dataset(repo_id)`.  SeedTTS Arrow repos stage audio to
+Most datasets are pre-warmed into the default HuggingFace cache via
+`datasets.load_dataset(repo_id)`. SeedTTS Arrow repos stage audio to
 process-local tempfiles at load time; no manual `--local-dir` step is needed.
+
+The Ming Freeform Audio Edit loader is pinned to the published dataset revision
+and supports deletion, insertion, substitution, time stretch, pitch shift,
+volume, emotion, and Chinese dialect tasks. Time-stretch and volume outputs can
+be scored with `benchmarks.metrics.speech_edit`, which implements the dataset's
+published absolute and relative duration and amplitude error formulas.
+
+With an AuK server running, generate edits and calculate the available
+signal-level metrics with:
+
+```bash
+python -m benchmarks.eval.benchmark_auk_audio_edit \
+  --task time_stretch --language en \
+  --output-dir results/auk_ming_time_stretch
+```
+
+The runner accepts every task listed above and retains generated WAVs plus the
+published original and edited transcripts for subsequent WER,
+speaker-similarity, and task-specific evaluation.
 
 Video-AMME is generated from the Video-MME CI subset by moving the
 question/options/instruction into per-sample WAV files. The benchmark request
