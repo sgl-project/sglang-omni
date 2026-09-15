@@ -38,6 +38,7 @@ class LogicalProcess:
     # Note (kaige): one inner tuple per replica, each holding tp_size device
     # ids. None when the process declares no replica_devices.
     replica_devices: tuple[tuple[int, ...], ...] | None
+    sm_cap: int | None = None
 
     @property
     def is_replicated(self) -> bool:
@@ -152,11 +153,18 @@ def _build_logical_process(
     # Note (kaige): a TP stage owns its process outright, so the max is that
     # stage's tp_size; a shared process only ever holds non-TP stages.
     tp_size = max(stage.tp_size for stage in stages)
+    if policy.sm_cap is not None and (
+        tp_size > 1 or not any(stage.gpu is not None for stage in stages)
+    ):
+        raise ValueError(
+            f"Process {name!r}: sm_cap requires a GPU process with non-TP stages"
+        )
     return LogicalProcess(
         name=name,
         stage_names=tuple(stage.name for stage in stages),
         tp_size=tp_size,
         num_replicas=policy.num_replicas,
+        sm_cap=policy.sm_cap,
         replica_devices=_resolve_replica_devices(
             name,
             stages,

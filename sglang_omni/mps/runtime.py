@@ -12,7 +12,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -45,6 +45,8 @@ class _MpsDeviceInfo(Protocol):
 class _PhysicalMpsPlan:
     logical_gpu_ids: tuple[int, ...]
     client_process_names: tuple[str, ...]
+    sm_caps: dict[str, int] = field(default_factory=dict)
+    partition_for_process: dict[str, str] = field(default_factory=dict)
 
 
 def _default_state_root() -> Path:
@@ -63,6 +65,7 @@ def _resolve_physical_plans(
 ) -> dict[str, _PhysicalMpsPlan]:
     """Resolve physical identity before applying any MPS-specific gate."""
 
+    capped = [fact for fact in process_facts if fact.sm_cap is not None]
     potential_clients = [
         fact
         for fact in process_facts
@@ -87,6 +90,11 @@ def _resolve_physical_plans(
                 for process_gpu_ids in placement_ordinals_by_process.values()
                 for gpu_id in process_gpu_ids
             }
+            | (
+                {gpu_id for fact in process_facts for gpu_id in fact.placement_gpu_ids}
+                if capped
+                else set()
+            )
         )
     )
     try:
@@ -134,9 +142,10 @@ def _resolve_physical_plans(
 
     if resolution_errors:
         detail = "; ".join(resolution_errors)
-        if mode == "on":
+        if mode == "on" or capped:
             raise MpsError(
-                "mps=on could not resolve the physical GPU mapping: " + detail
+                "MPS could not resolve the physical GPU mapping required by mps=on or sm_cap: "
+                + detail
             )
         logger.warning(
             "MPS auto: physical GPU mapping is incomplete (%s); running " "without MPS",
@@ -195,9 +204,29 @@ def _resolve_physical_plans(
 
     physical_plans: dict[str, _PhysicalMpsPlan] = {}
     for gpu_uuid, process_names in sorted(clients_by_uuid.items()):
+        resident = [
+            fact
+            for fact in (process_facts if capped else potential_clients)
+            if any(uuid_for[gpu_id] == gpu_uuid for gpu_id in fact.placement_gpu_ids)
+        ]
+        sm_caps = {
+            fact.logical_process_name or fact.process_name: fact.sm_cap
+            for fact in resident
+            if fact.sm_cap is not None
+        }
+        if sm_caps and any(fact.sm_cap is None for fact in resident):
+            missing = [fact.process_name for fact in resident if fact.sm_cap is None]
+            raise MpsError(
+                f"GPU {gpu_uuid}: every process must declare sm_cap when static partitioning is used; "
+                f"missing: {missing}. Clients without a partition cannot initialize CUDA in static partitioning mode"
+            )
         reasons = blocked.get(gpu_uuid, ())
         logical_gpu_ids = tuple(sorted(logical_ids_by_uuid[gpu_uuid]))
         if reasons:
+            if sm_caps:
+                raise MpsError(
+                    f"GPU {gpu_uuid}: sm_cap requires MPS but this placement is ineligible: {'; '.join(reasons)}"
+                )
             logger.warning(
                 "MPS (%s): skipping physical GPU %s (logical GPUs %s): %s",
                 mode,
@@ -206,7 +235,7 @@ def _resolve_physical_plans(
                 "; ".join(dict.fromkeys(reasons)),
             )
             continue
-        if mode == "auto" and len(process_names) < 2:
+        if mode == "auto" and len(process_names) < 2 and not sm_caps:
             logger.info(
                 "MPS auto: physical GPU %s (logical GPUs %s) has one client; "
                 "running without MPS",
@@ -217,6 +246,12 @@ def _resolve_physical_plans(
         physical_plans[gpu_uuid] = _PhysicalMpsPlan(
             logical_gpu_ids=logical_gpu_ids,
             client_process_names=tuple(process_names),
+            sm_caps=sm_caps,
+            partition_for_process={
+                fact.process_name: fact.logical_process_name or fact.process_name
+                for fact in resident
+                if fact.sm_cap is not None
+            },
         )
 
     if mode == "on" and not physical_plans:
@@ -234,16 +269,20 @@ _UNSUPPORTED_PROCESS_ENV = (
     "CUDA_VISIBLE_DEVICES",
     "CUDA_DEVICE_ORDER",
     "CUDA_MPS_PIPE_DIRECTORY",
+    "CUDA_MPS_SM_PARTITION",
     "SGLANG_OMNI_WEIGHT_SHARE",
 )
 
 
 def _reject_process_env_overrides(process_specs) -> None:
     conflicts: list[str] = []
+    unsupported = _UNSUPPORTED_PROCESS_ENV
+    if any(getattr(spec, "sm_cap", None) is not None for spec in process_specs):
+        unsupported += ("CUDA_MPS_ACTIVE_THREAD_PERCENTAGE",)
     for process_spec in process_specs:
         for stage_spec in process_spec.stage_specs:
             env_defaults = getattr(stage_spec, "env_defaults", {})
-            for name in _UNSUPPORTED_PROCESS_ENV:
+            for name in unsupported:
                 if name in env_defaults:
                     conflicts.append(
                         f"process {process_spec.process_name!r}, stage "
@@ -298,9 +337,10 @@ class MpsPipelineRuntime:
     ) -> MpsPipelineRuntime | None:
         if mode not in MPS_MODES:
             raise MpsDecisionError(f"invalid mps mode {mode!r}; expected {MPS_MODES}")
+        process_specs = list(process_specs)
+        _require_mps_for_caps(mode, process_specs)
         if mode == "off":
             return None
-        process_specs = list(process_specs)
         _reject_process_env_overrides(process_specs)
         process_facts = collect_mps_facts(process_specs)
         physical_plans = _resolve_physical_plans(
@@ -321,8 +361,9 @@ class MpsPipelineRuntime:
                 ),
                 gpu_uuid=gpu_uuid,
                 client=client,
+                static_partitioning=bool(plan.sm_caps),
             )
-            for gpu_uuid in physical_plans
+            for gpu_uuid, plan in physical_plans.items()
         }
         return cls(managers, physical_plans, mode=mode)
 
@@ -350,7 +391,11 @@ class MpsPipelineRuntime:
         acquired: list[str] = []
         try:
             for gpu_uuid, manager in self.managers.items():
-                lease = manager.acquire(self._tokens_on(gpu_uuid))
+                sm_caps = self._plans[gpu_uuid].sm_caps
+                if sm_caps:
+                    lease = manager.acquire(self._tokens_on(gpu_uuid), sm_caps=sm_caps)
+                else:
+                    lease = manager.acquire(self._tokens_on(gpu_uuid))
                 self._leases[gpu_uuid] = lease
                 acquired.append(gpu_uuid)
                 logger.info(
@@ -415,7 +460,12 @@ class MpsPipelineRuntime:
         if gpu_uuid is None:
             return {}
         env = self.managers[gpu_uuid].env_for_stage()
-        # UUID visibility makes the physical device local ordinal zero.
+        plan = self._plans[gpu_uuid]
+        if plan.sm_caps:
+            lease = self._leases[gpu_uuid]
+            partition_id = lease.partitions[plan.partition_for_process[process_name]]
+            env["CUDA_MPS_SM_PARTITION"] = f"{gpu_uuid}/{partition_id}"
+            env["CUDA_VISIBLE_DEVICES"] = "0"
         env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "true"
         env[MPS_CLIENT_TOKEN_ENV] = self._client_tokens[process_name]
         return env
@@ -553,15 +603,23 @@ class MpsPipelineRuntime:
         return error
 
 
+def _require_mps_for_caps(mode: str, process_specs) -> bool:
+    has_caps = any(getattr(spec, "sm_cap", None) is not None for spec in process_specs)
+    if mode == "off" and has_caps:
+        raise MpsDecisionError("sm_cap requires MPS; set mps=on or mps=auto")
+    return has_caps
+
+
 def create_for_pipeline(
     mode: str,
     process_specs,
 ) -> MpsPipelineRuntime | None:
     """Build the orchestrator with production device inspection and control I/O."""
 
+    process_specs = list(process_specs)
+    has_caps = _require_mps_for_caps(mode, process_specs)
     if mode == "off":
         return None
-    process_specs = list(process_specs)
     _reject_process_env_overrides(process_specs)
     if "CUDA_MPS_PIPE_DIRECTORY" in os.environ:
         raise MpsError(
@@ -569,6 +627,11 @@ def create_for_pipeline(
             f"{os.environ['CUDA_MPS_PIPE_DIRECTORY']!r} from the parent "
             "environment; remove it or use mps=off."
         )
+    for name in ("CUDA_MPS_SM_PARTITION", "CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"):
+        if name in os.environ and (name == "CUDA_MPS_SM_PARTITION" or has_caps):
+            raise MpsError(
+                f"native MPS cannot combine with parent {name}; remove it and configure processes.<name>.sm_cap instead"
+            )
 
     weight_share = os.environ.get("SGLANG_OMNI_WEIGHT_SHARE", "").strip()
     if weight_share:
@@ -582,14 +645,14 @@ def create_for_pipeline(
     from sglang_omni.platforms import current_platform
 
     if not current_platform.is_cuda():
-        if mode == "on":
-            raise MpsError("mps=on requires an NVIDIA CUDA platform")
+        if mode == "on" or has_caps:
+            raise MpsError("mps=on or sm_cap requires an NVIDIA CUDA platform")
         logger.warning("MPS auto: platform is not NVIDIA CUDA; running without MPS")
         return None
 
     if shutil.which("nvidia-cuda-mps-control") is None:
-        if mode == "on":
-            raise MpsError("mps=on but nvidia-cuda-mps-control is not on PATH")
+        if mode == "on" or has_caps:
+            raise MpsError("mps=on or sm_cap requires nvidia-cuda-mps-control on PATH")
         logger.warning(
             "MPS auto: nvidia-cuda-mps-control not found; running without MPS"
         )

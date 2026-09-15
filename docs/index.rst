@@ -129,6 +129,7 @@ Supported Models
    basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
+   basic_usage/mps_static_sm_partition.md
 
 
 .. toctree::

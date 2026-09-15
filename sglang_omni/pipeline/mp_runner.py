@@ -89,6 +89,7 @@ def _build_stage_groups(
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
     replica_topology: ReplicaTopology | None = None,
+    logical_process_plan: LogicalProcessPlan | None = None,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
 
@@ -228,6 +229,15 @@ def _build_stage_groups(
             )
         )
     groups.extend(tp_groups)
+    if logical_process_plan is not None:
+        for group in groups:
+            for spec in group.process_specs:
+                stage_name = replica_topology.logical_name(
+                    spec.stage_specs[0].stage_name
+                )
+                process = logical_process_plan.process_of(stage_name)
+                spec.logical_process_name = process.name
+                spec.sm_cap = process.sm_cap
     _attach_process_memory_fraction_defaults(groups)
 
     return groups
@@ -542,6 +552,7 @@ class MultiProcessPipelineRunner:
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
+                logical_process_plan=prep.logical_process_plan,
             )
 
             # Note (Jiaxin Deng): roles are assigned before the coordinator
