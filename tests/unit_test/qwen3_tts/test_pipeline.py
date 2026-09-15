@@ -1437,6 +1437,22 @@ def test_qwen3_tts_reference_code_batcher_has_no_stream_for_cpu_encoder() -> Non
         batcher.close()
 
 
+def test_qwen3_tts_reference_code_batcher_allocates_a_musa_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[object] = []
+    expected = object()
+    monkeypatch.setattr(
+        torch.cuda,
+        "Stream",
+        lambda *, device: created.append(device) or expected,
+    )
+
+    device = SimpleNamespace(type="musa")
+    assert qwen3_request_builders._new_cuda_encode_stream(device) is expected
+    assert created == [device]
+
+
 def test_qwen3_tts_reference_code_batcher_pads_to_whole_frames() -> None:
     shapes: list[tuple[int, ...]] = []
 
