@@ -75,6 +75,20 @@ def test_tp_process_env_leaves_an_operator_nvls_value_alone() -> None:
     assert "NCCL_NVLS_ENABLE" not in env
 
 
+def test_tp_process_env_selects_the_legacy_custom_all_reduce() -> None:
+    env = cuda_platform.get_stage_process_env(_tp_spec(gpu_id=0), {})
+
+    assert env["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"] == "0"
+
+
+def test_tp_process_env_leaves_an_operator_custom_all_reduce_choice_alone() -> None:
+    env = cuda_platform.get_stage_process_env(
+        _tp_spec(gpu_id=0), {"SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "1"}
+    )
+
+    assert "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2" not in env
+
+
 def test_spawn_env_maps_the_planned_gpu_even_with_a_configured_visibility(
     monkeypatch,
 ) -> None:
