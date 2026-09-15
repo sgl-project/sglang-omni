@@ -244,6 +244,29 @@ class SGLangGenerationEngineBuilder(ABC):
         # Subclasses override this when they need a resolved local snapshot.
         return model_path
 
+    @staticmethod
+    def _uses_mlx() -> bool:
+        """True when this process runs the native MLX backend."""
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+        return bool(use_mlx())
+
+    def _uses_torch_mps(self) -> bool:
+        """True when this stage runs Torch on Metal, without the MLX runner.
+
+        Keyed off the resolved device rather than ``current_platform``, which is
+        a process-wide singleton: on macOS arm64 it reports MPS even for a stage
+        explicitly placed on CPU, which would then inherit the Metal-only
+        profile.
+        """
+        import torch
+
+        return (
+            not self._uses_mlx()
+            and self.device is not None
+            and torch.device(self.device).type == "mps"
+        )
+
     @abstractmethod
     def generation_defaults(
         self,

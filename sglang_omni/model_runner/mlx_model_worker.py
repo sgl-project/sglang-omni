@@ -182,6 +182,36 @@ class MlxSchedulerModelRunner(ModelRunner):
             self._resolve_skip_rids = set()
 
 
+def _qwen3_asr_runner_factory():
+    from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
+
+    return make_qwen3_asr_mlx_runner_class
+
+
+def _whisper_runner_factory():
+    from sglang_omni.models.whisper_asr.mlx.runner import make_whisper_mlx_runner_class
+
+    return make_whisper_mlx_runner_class
+
+
+def _fun_cosyvoice3_runner_factory():
+    from sglang_omni.models.fun_cosyvoice3.mlx.runner import (
+        make_fun_cosyvoice3_mlx_runner_class,
+    )
+
+    return make_fun_cosyvoice3_mlx_runner_class
+
+
+# Architecture -> a callable returning that model's runner-class factory. The
+# indirection keeps the model imports lazy, so the membership check above can
+# run on a host with no MLX installed.
+_MLX_RUNNER_FACTORIES = {
+    "Qwen3ASRForConditionalGeneration": _qwen3_asr_runner_factory,
+    "WhisperForConditionalGeneration": _whisper_runner_factory,
+    "FunCosyVoice3SGLangModel": _fun_cosyvoice3_runner_factory,
+}
+
+
 def create_mlx_model_worker(
     *,
     config: Any,
@@ -191,21 +221,13 @@ def create_mlx_model_worker(
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
     model_arch = config.model_arch_override
-    if model_arch == "Qwen3ASRForConditionalGeneration":
-        from sglang_omni.models.qwen3_asr.mlx.runner import (
-            make_qwen3_asr_mlx_runner_class,
-        )
-
-        make_runner_class = make_qwen3_asr_mlx_runner_class
-    elif model_arch == "FunCosyVoice3SGLangModel":
-        from sglang_omni.models.fun_cosyvoice3.mlx.runner import (
-            make_fun_cosyvoice3_mlx_runner_class,
-        )
-
-        make_runner_class = make_fun_cosyvoice3_mlx_runner_class
-    else:
+    # Reject before importing anything: the MLX backend modules below are absent
+    # on a non-Apple host, so an unsupported architecture would surface as an
+    # ImportError instead of this message.
+    if model_arch not in _MLX_RUNNER_FACTORIES:
         raise NotImplementedError(
-            "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
+            "Omni's MLX worker currently supports only "
+            + ", ".join(sorted(_MLX_RUNNER_FACTORIES))
         )
 
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
@@ -222,6 +244,8 @@ def create_mlx_model_worker(
         publish,
     )
     from sglang.srt.server_args import PortArgs
+
+    make_runner_class = _MLX_RUNNER_FACTORIES[model_arch]()
 
     class OmniMlxWorker(MlxTpModelWorker):
         @property

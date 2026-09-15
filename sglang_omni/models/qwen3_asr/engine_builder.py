@@ -128,16 +128,6 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         max_output_budget = max(self.max_new_tokens, qwen3_asr_max_output_tokens())
         self.context_length = max_prompt_tokens + max_output_budget + 8
 
-    def _uses_torch_mps(self) -> bool:
-        import torch
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        return (
-            not use_mlx()
-            and self.device is not None
-            and torch.device(self.device).type == "mps"
-        )
-
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
