@@ -11,6 +11,50 @@ import wave
 from pathlib import Path
 
 
+def mount_example_ui(app):
+    """Keep the demo and its WebSocket on the same origin (no CORS setup)."""
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    assets = Path(__file__).resolve().parent / "voicechat_ui"
+    app.mount("/voicechat-assets", StaticFiles(directory=assets), name="voicechat-ui")
+
+    @app.get("/", include_in_schema=False)
+    async def voicechat_ui():
+        return FileResponse(
+            assets / "index.html", headers={"Cache-Control": "no-store"}
+        )
+
+
+async def warmup_realtime(dep):
+    """Warm both first-frame and continuation kernels before accepting a mic."""
+    from sglang_omni.serve.realtime.control import Drained, Failure
+    from sglang_omni.serve.realtime.runtime import SessionRuntime
+
+    runtime = SessionRuntime(
+        "nemotron-voicechat", dep.capabilities, dep.adapter_factory, dep.limits
+    )
+
+    async def consume():
+        async for envelope in runtime.outputs():
+            if isinstance(envelope.event, Failure):
+                raise RuntimeError(envelope.event.message)  # noqa: TRY004
+            if isinstance(envelope.event, Drained):
+                return
+        raise RuntimeError("warmup ended without a drain receipt")
+
+    task = asyncio.create_task(consume())
+    try:
+        await runtime.update({"output_modalities": ["audio"]}, "warmup-configure")
+        await runtime.append(b"\0\0" * 2560, 0, None, "warmup-audio")
+        await runtime.end("warmup-end")
+        await asyncio.wait_for(task, 90)
+    finally:
+        await runtime.close("warmup_finished")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def run(args):
     import numpy as np
 
@@ -38,9 +82,17 @@ async def run(args):
 
             from sglang_omni.serve.openai_api import create_app
 
+            if not args.no_warmup:
+                print(
+                    "Warming up VoiceChat before opening the microphone UI...",
+                    flush=True,
+                )
+                await warmup_realtime(dep)
             app = create_app(
                 client, model_name="nemotron-voicechat", realtime_deployment=dep
             )
+            mount_example_ui(app)
+            print(f"VoiceChat UI: http://localhost:{args.port}", flush=True)
             await uvicorn.Server(
                 uvicorn.Config(app, host="127.0.0.1", port=args.port)
             ).serve()
@@ -121,7 +173,14 @@ if __name__ == "__main__":
     parser.add_argument("--out", default="voicechat-duplex.wav")
     parser.add_argument("--seconds", type=float)
     parser.add_argument("--paced", action="store_true")
-    parser.add_argument("--serve", action="store_true")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="serve the microphone UI and WebSocket on localhost",
+    )
+    parser.add_argument(
+        "--no-warmup", action="store_true", help="skip startup warmup when serving"
+    )
     parser.add_argument("--port", type=int, default=8097)
     parser.add_argument("--talker-attention", choices=["triton", "torch_native"])
     asyncio.run(run(parser.parse_args()))

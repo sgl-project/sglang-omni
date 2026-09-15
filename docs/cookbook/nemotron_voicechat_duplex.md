@@ -30,6 +30,39 @@ CUDA_VISIBLE_DEVICES=0 python examples/run_nemotron_voicechat_duplex.py \
   --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B --serve --port 8097
 ```
 
+### Browser conversation UI
+
+Open **http://localhost:8097** after the server prints `VoiceChat UI`.
+The example serves its HTML, CSS and JavaScript directly; no frontend build or
+npm installation is required. Startup runs two silent frames to warm first-frame
+and continuation kernels before opening the port (`--no-warmup` skips this).
+
+1. Click **开始对话** and allow microphone access. Headphones help avoid acoustic feedback.
+2. Speak naturally. The browser sends continuous 80 ms PCM frames and plays
+   streamed output, with assistant text shown alongside it.
+3. **静音麦克风** sends silence while the model continues responding.
+   **打断播放** clears scheduled output and cancels the current response while
+   preserving model history. **结束对话** releases the microphone and session.
+
+Microphone access requires localhost or HTTPS. To use a Kubernetes worker,
+forward its example port, then open the same localhost URL:
+
+```bash
+kubectl port-forward --context YOUR_CONTEXT -n default pod/YOUR_GPU_POD 8097:8097 --address 127.0.0.1
+```
+
+The page shows input processing backlog, queued playback duration, and time to
+first audio packet (which can contain silence). It stops if input backlog exceeds
+9 seconds instead of silently dropping input. Sessions last at most four minutes;
+one browser session is supported at a time. This is a prototype: sustained GPU
+processing can fall behind real time. Automatic interruption depends on model
+behavior; the explicit interrupt button is available to test cancellation.
+
+Browser audio tests: `node --test examples/voicechat_ui/audio.test.mjs`.
+Static route tests: `pytest tests/unit_test/nemotron_voicechat/test_duplex_ui.py`.
+
+### WebSocket clients
+
 Connect to `ws://127.0.0.1:8097/v1/realtime`. Send `session.update` with
 `{"output_modalities":["audio"]}` and wait for `session.updated`. The advertised
 input is mono PCM16 at 16 kHz and output is PCM16 at 22050 Hz. Send
