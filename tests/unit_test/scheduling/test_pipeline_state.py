@@ -253,7 +253,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
         (
             HiggsTtsState(
                 prompt_token_ids=[10, 11],
-                reference_codes_delayed=[[1, 2], [3, 4]],
+                reference_codes_delayed=torch.tensor([[1, 2], [3, 4]]),
                 target_text="target",
                 reference_text="reference",
                 reference_waveform=torch.tensor([[[0.1, 0.2]]]),
@@ -265,7 +265,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 seed=7,
                 return_logprob=True,
                 return_omni_rollout=True,
-                output_codes_delayed=[[5, 6], [7, 8]],
+                output_codes_delayed=torch.tensor([[5, 6], [7, 8]]),
                 omni_rollout={"tokens": [1, 2], "logprobs": [-0.1, -0.2]},
                 prompt_tokens=2,
                 completion_tokens=4,
