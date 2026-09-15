@@ -110,6 +110,7 @@ def launch_managed_router(
     force_log: bool = False,
     external_worker_urls: list[str] | None = None,
     worker_env: dict[str, str] | None = None,
+    named_voice: bool = False,
 ) -> Iterator[ManagedRouterHandle]:
     """Launch a Rust router over local or externally owned workers."""
     router_binary = _rust_router_binary()
@@ -151,6 +152,7 @@ def launch_managed_router(
         router_port=router_port,
         worker_urls=worker_urls,
         model_name=model_name,
+        named_voice=named_voice,
     )
     router_log = (
         tmp_path_factory.mktemp(log_prefix) / "server.log"
@@ -455,6 +457,7 @@ def _write_router_config(
     router_port: int,
     worker_urls: list[str],
     model_name: str,
+    named_voice: bool,
 ) -> Path:
     config_path = tmp_path_factory.mktemp("omni_router_config") / "router.toml"
     config_path.write_text(
@@ -463,6 +466,7 @@ def _write_router_config(
             router_port=router_port,
             worker_urls=worker_urls,
             model_name=model_name,
+            named_voice=named_voice,
         ),
         encoding="utf-8",
     )

@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       tts_ci_model:
-        description: "Optional TTS CI model preset to run (higgs, moss or qwen3-tts). Leave empty for random."
+        description: "Optional TTS CI model preset to run (higgs, moss, qwen3-tts or qwen3-tts-custom-voice). Leave empty for random."
         required: false
         type: string
         default: ""
@@ -283,26 +283,27 @@ jobs:
           RUN_HIGGS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-higgs') }}
           RUN_MOSS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-moss') }}
           RUN_QWEN3_TTS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-tts') }}
+          RUN_QWEN3_TTS_CUSTOM_VOICE_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-tts-custom-voice') }}
           TTS_CI_MODEL_OVERRIDE: ${{ github.event.inputs.tts_ci_model }}
           EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          models=(higgs moss qwen3-tts)
+          models=(higgs moss qwen3-tts qwen3-tts-custom-voice)
           override="${TTS_CI_MODEL_OVERRIDE,,}"
           label_count=0
-          for flag in "${RUN_HIGGS_LABEL}" "${RUN_MOSS_LABEL}" "${RUN_QWEN3_TTS_LABEL}"; do
+          for flag in "${RUN_HIGGS_LABEL}" "${RUN_MOSS_LABEL}" "${RUN_QWEN3_TTS_LABEL}" "${RUN_QWEN3_TTS_CUSTOM_VOICE_LABEL}"; do
             [[ "${flag}" == "true" ]] && label_count=$((label_count + 1))
           done
           if [[ "${label_count}" -gt 1 ]]; then
-            echo "::error::run-higgs, run-moss and run-qwen3-tts are mutually exclusive"
+            echo "::error::run-higgs, run-moss, run-qwen3-tts and run-qwen3-tts-custom-voice are mutually exclusive"
             exit 1
           fi
 
           selection_digest=""
           if [[ -n "${override}" ]]; then
             case "${override}" in
-              higgs|moss|qwen3-tts) ;;
+              higgs|moss|qwen3-tts|qwen3-tts-custom-voice) ;;
               *)
-                echo "::error::unsupported tts_ci_model=${TTS_CI_MODEL_OVERRIDE}; expected higgs, moss or qwen3-tts"
+                echo "::error::unsupported tts_ci_model=${TTS_CI_MODEL_OVERRIDE}; expected higgs, moss, qwen3-tts or qwen3-tts-custom-voice"
                 exit 1
                 ;;
             esac
@@ -317,6 +318,9 @@ jobs:
           elif [[ "${RUN_QWEN3_TTS_LABEL}" == "true" ]]; then
             selected_model="qwen3-tts"
             selection_reason="run-qwen3-tts_label"
+          elif [[ "${RUN_QWEN3_TTS_CUSTOM_VOICE_LABEL}" == "true" ]]; then
+            selected_model="qwen3-tts-custom-voice"
+            selection_reason="run-qwen3-tts-custom-voice_label"
           else
             selection_digest="$(printf "%s" "${GITHUB_RUN_ID}" | sha256sum | awk '{print $1}')"
             selection_index=$((16#${selection_digest: -1} % ${#models[@]}))
