@@ -24,6 +24,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     Qwen3TTSIncrementalCodecCudaGraphRunner,
 )
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -410,7 +411,7 @@ _ASYNC_STOP = None
 
 
 class _Qwen3TTSInitialDecodeGraphs:
-    """CUDA graphs for fixed shape streaming decodes, one holder per stream."""
+    """Device graphs for fixed shape streaming decodes, one holder per stream."""
 
     def __init__(
         self,
@@ -430,16 +431,18 @@ class _Qwen3TTSInitialDecodeGraphs:
         )
         self._input_frames = tuple(sorted(set(int(f) for f in frames if int(f) > 0)))
         self._batch_sizes = tuple(sorted(set(int(size) for size in batch_sizes)))
-        self._enabled = bool(enabled and device.type == "cuda")
-        self._graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
+        self._device_module = torch.get_device_module(device)
+        self._graph_backend = current_platform.get_device_graph_backend(device)
+        self._enabled = bool(enabled and self._graph_backend is not None)
+        self._graphs: dict[tuple[int, int], Any] = {}
         self._inputs: dict[tuple[int, int], torch.Tensor] = {}
         self._outputs: dict[tuple[int, int], torch.Tensor] = {}
 
     def capture(self) -> None:
         if not self._enabled or self._graphs:
             return
-        capture_stream = torch.cuda.Stream(device=self._device)
-        graph_pool = torch.cuda.graph_pool_handle()
+        capture_stream = self._device_module.Stream(device=self._device)
+        graph_pool = self._device_module.graph_pool_handle()
         for input_frames, batch_size in (
             (f, b) for f in self._input_frames for b in self._batch_sizes
         ):
@@ -449,19 +452,23 @@ class _Qwen3TTSInitialDecodeGraphs:
                     dtype=torch.long,
                     device=self._device,
                 )
-                capture_stream.wait_stream(torch.cuda.current_stream(self._device))
-                with torch.inference_mode(), torch.cuda.stream(capture_stream):
+                capture_stream.wait_stream(
+                    self._device_module.current_stream(self._device)
+                )
+                with (
+                    torch.inference_mode(),
+                    self._device_module.stream(capture_stream),
+                ):
                     for _ in range(2):
                         self._decoder(static_input)
                 capture_stream.synchronize()
-                graph = torch.cuda.CUDAGraph()
                 with (
                     torch.inference_mode(),
-                    torch.cuda.graph(
-                        graph,
+                    current_platform.graph_capture_attention(),
+                    self._graph_backend.capture(
                         pool=graph_pool,
                         stream=capture_stream,
-                    ),
+                    ) as graph,
                 ):
                     static_output = self._decoder(static_input)
             except Exception:
@@ -633,17 +640,21 @@ class Qwen3TTSStreamingVocoderScheduler(
             )
         self._tokenizer = tokenizer
         self._device = torch.device(device)
+        # note: an unindexed accelerator device carries no stream or graph
+        # identity, so take the index the weights already landed on.
+        self._accelerator = self._device.type == current_platform.device_type
         self._decoder = tokenizer.model.decoder
         parameters = getattr(self._decoder, "parameters", None)
         parameter = next(parameters(), None) if callable(parameters) else None
         codec_state_dtype = parameter.dtype if parameter is not None else torch.float32
         if (
-            self._device.type == "cuda"
+            self._accelerator
             and self._device.index is None
             and parameter is not None
-            and parameter.device.type == "cuda"
+            and parameter.device.type == self._device.type
         ):
             self._device = parameter.device
+        self._device_module = torch.get_device_module(self._device)
         if fused_snake_activation:
             from sglang_omni.models.qwen3_tts.vocoder_kernels import (
                 fuse_vocoder_decoder,
@@ -760,11 +771,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._async_decode = (
             False
             if (self._enable_stateful_codec_decoder and self._deterministic_inference)
-            else (
-                self._device.type == "cuda"
-                if async_decode is None
-                else bool(async_decode)
-            )
+            else (self._accelerator if async_decode is None else bool(async_decode))
         )
         self._codec_arena = self._build_codec_arena(
             int(codec_state_slots),
@@ -810,17 +817,17 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._codec_slots_in_flight: set[int] = set()
         self._codec_slots_deferred: set[int] = set()
         self._decode_staging = threading.local()
-        self._pinned_staging_disabled = self._device.type != "cuda"
+        self._pinned_staging_disabled = not self._accelerator
         self._cuda_decode_failed = False
-        if self._device.type == "cuda":
+        if self._accelerator:
             followup_priority = self._decode_stream_priority()
-            self._decode_stream = torch.cuda.Stream(
+            self._decode_stream = self._device_module.Stream(
                 device=self._device,
                 priority=followup_priority,
             )
             self._followup_decode_streams = (
                 tuple(
-                    torch.cuda.Stream(
+                    self._device_module.Stream(
                         device=self._device,
                         priority=followup_priority,
                     )
@@ -935,7 +942,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             enabled and self._async_decode and not self._deterministic_inference
         )
         graph_priority = (
-            self._decode_stream_priority() if self._device.type == "cuda" else 0
+            self._decode_stream_priority() if self._accelerator else 0
         )
         graph_batch_sizes = self._resolve_incremental_warm_graph_batch_sizes(
             max_batch_size=min(
@@ -1246,7 +1253,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 f"Qwen3-TTS stream chunk has {int(chunk.shape[1])} quantizers, "
                 f"expected {state.num_quantizers}"
             )
-        if not chunk.is_cuda and (
+        if chunk.device.type == "cpu" and (
             bool((chunk < 0).any()) or bool((chunk >= _QWEN3_TTS_CODEBOOK_SIZE).any())
         ):
             raise ValueError(
@@ -1275,13 +1282,17 @@ class Qwen3TTSStreamingVocoderScheduler(
         # stream, so the newest chunk's event also covers every older one.
         codes_ready = state.pending_codes_ready
         state.pending_codes_ready = None
-        if codes_ready is None and codes.is_cuda:
+        if (
+            codes_ready is None
+            and self._accelerator
+            and codes.device.type == self._device.type
+        ):
             # note(ratish): raw CUDA IPC orders only the receiver's default
             # stream after the producer; the decode workers read on their own.
             # note (luojiaxuan): so `record` has to land on that same default
             # stream. It does because nothing on the ingest path switches
             # streams; the workers' `set_stream` calls stay in their threads.
-            codes_ready = torch.cuda.Event()
+            codes_ready = self._device_module.Event()
             codes_ready.record()
         state.codes_ready = codes_ready
         state.total_frames += int(codes.shape[0])
@@ -1637,14 +1648,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         """Order this thread's stream after the talker's newest chunk."""
         if state.codes_ready is None:
             return
-        torch.cuda.current_stream(self._device).wait_event(state.codes_ready)
+        self._device_module.current_stream(self._device).wait_event(state.codes_ready)
 
-    @staticmethod
-    def _decode_stream_priority() -> int:
+    def _decode_stream_priority(self) -> int:
         """The second-highest priority: ahead of the talker's default stream,
         with the top notch left free. A device with only two levels uses the
         top one."""
-        least_priority, greatest_priority = torch.cuda.Stream.priority_range()
+        least_priority, greatest_priority = self._device_module.Stream.priority_range()
         if greatest_priority + 1 < least_priority:
             return greatest_priority + 1
         return greatest_priority
@@ -1652,7 +1662,7 @@ class Qwen3TTSStreamingVocoderScheduler(
     def _decode_stream_context(self) -> Any:
         if self._decode_stream is None:
             return contextlib.nullcontext()
-        return torch.cuda.stream(self._decode_stream)
+        return self._device_module.stream(self._decode_stream)
 
     def _screen_out_of_range_codes(self, decoder_input: torch.Tensor) -> Any:
         # Note (Jiaxin Deng): an out-of-range id makes the codec embedding lookup
@@ -1676,7 +1686,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self,
         plans: list[Any],
         *,
-        stream: torch.cuda.Stream | None,
+        stream: Any | None,
         incremental: _IncrementalDecodeBatch | None = None,
     ) -> _Qwen3TTSDecodeHandle:
         """Launch one decode batch and return its handle.
@@ -1751,7 +1761,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         gpu_input: torch.Tensor,
         plans: list[_IncrementalDecodePlan],
         incremental: _IncrementalDecodeBatch,
-        stream: torch.cuda.Stream | None,
+        stream: Any | None,
     ) -> tuple[list[torch.Tensor], torch.Tensor]:
         """Decode one same-width cohort against the arena.
 
@@ -1839,7 +1849,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         plans: list[Any],
         decoder_input: torch.Tensor,
         bad_rows: torch.Tensor,
-        stream: torch.cuda.Stream,
+        stream: Any,
         incremental: _IncrementalDecodeBatch | None = None,
     ) -> _Qwen3TTSDecodeHandle:
         slot = self._thread_decode_slot()
@@ -1861,7 +1871,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         gpu_input: torch.Tensor | None = None
         keepalives: list[Any] = []
         try:
-            with torch.cuda.stream(stream):
+            with self._device_module.stream(stream):
                 gpu_input = self._stage_decoder_input(
                     decoder_input, slot if pinned else None
                 )
@@ -2324,7 +2334,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         # slot zeroing and launches all land there, and nothing it does queues
         # behind the talker's work on the default stream.
         if self._decode_stream is not None:
-            torch.cuda.set_stream(self._decode_stream)
+            self._device_module.set_stream(self._decode_stream)
         while True:
             batch = self._collect_async_batch(
                 self._initial_queue,
@@ -2397,7 +2407,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self,
         group: list[tuple[str, _Qwen3TTSStreamState, _Qwen3TTSDecodePlan]],
         *,
-        stream: torch.cuda.Stream | None,
+        stream: Any | None,
     ) -> (
         tuple[list[tuple[str, _Qwen3TTSStreamState, _Qwen3TTSDecodePlan]], list] | None
     ):
@@ -2453,7 +2463,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self,
         group: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
         *,
-        stream: torch.cuda.Stream | None,
+        stream: Any | None,
     ) -> (
         tuple[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]], list]
         | None
@@ -2468,7 +2478,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self,
         group: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
         *,
-        stream: torch.cuda.Stream | None,
+        stream: Any | None,
     ) -> _PendingIncrementalGroup | None:
         """Launch one cohort and return it pending, or None after a fallback.
 
@@ -2649,7 +2659,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             else self._followup_decode_stream
         )
         if self._worker_ctx.stream is not None:
-            torch.cuda.set_stream(self._worker_ctx.stream)
+            self._device_module.set_stream(self._worker_ctx.stream)
         while True:
             in_flight = bool(getattr(self._worker_ctx, "pending_incremental", None))
             if in_flight:

@@ -889,31 +889,58 @@ def test_no_host_readback_in_eager_chain():
 
 
 def test_capture_uses_thread_local_error_mode():
-    source = (
-        Path(__file__).resolve().parents[3]
-        / "sglang_omni"
-        / "models"
-        / "qwen3_tts"
-        / "sglang_model.py"
+    """The predictor asks for thread-local errors; the CUDA backend translates it."""
+    repo_root = Path(__file__).resolve().parents[3]
+    model_tree = ast.parse(
+        (repo_root / "sglang_omni" / "models" / "qwen3_tts" / "sglang_model.py").read_text(
+            encoding="utf-8"
+        )
     )
-    tree = ast.parse(source.read_text(encoding="utf-8"))
+    capture_calls = [
+        node
+        for node in ast.walk(model_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "capture"
+    ]
+    assert capture_calls, "Qwen3-TTS predictor graph capture call not found"
+    assert any(
+        keyword.arg == "thread_local_errors"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is True
+        for call in capture_calls
+        for keyword in call.keywords
+    )
+
+    backend_tree = ast.parse(
+        (repo_root / "sglang_omni" / "platforms" / "device_graph.py").read_text(
+            encoding="utf-8"
+        )
+    )
     graph_calls = [
         node
-        for node in ast.walk(tree)
+        for node in ast.walk(backend_tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "graph"
         and isinstance(node.func.value, ast.Attribute)
         and node.func.value.attr == "cuda"
     ]
-    assert graph_calls, "Qwen3-TTS predictor CUDA graph capture call not found"
-    assert any(
-        keyword.arg == "capture_error_mode"
-        and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value == "thread_local"
-        for call in graph_calls
-        for keyword in call.keywords
-    )
+    assert graph_calls, "CUDA device graph backend capture call not found"
+    # the backend builds the kwarg conditionally, so match the assignment
+    assert [
+        node
+        for node in ast.walk(backend_tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value == "thread_local"
+        and any(
+            isinstance(target, ast.Subscript)
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == "capture_error_mode"
+            for target in node.targets
+        )
+    ], "CUDA device graph backend does not request thread_local capture errors"
 
 
 def test_normalize_predictor_graph_batch_sizes():
@@ -1214,12 +1241,19 @@ def test_capture_state_body_failure_restores_state():
 
 def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     talker = object.__new__(Qwen3TTSTalker)
+    # the resolver reads the device off the predictor cache the graph serves
+    talker._predictor_k_cache = SimpleNamespace(device=torch.device("cpu"))
     graph = SimpleNamespace(disable_cuda_graph=False)
     parallel = SimpleNamespace(tp_size=1)
     monkeypatch.setattr(
         sglang_model_module, "get_exec", lambda: SimpleNamespace(graph=graph)
     )
     monkeypatch.setattr(sglang_model_module, "get_parallel", lambda: parallel)
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "get_device_graph_backend",
+        lambda _device: object(),
+    )
     monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
 
     assert talker._resolve_predictor_graph_enabled() is True
@@ -1230,6 +1264,13 @@ def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     assert talker._resolve_predictor_graph_enabled() is False
     parallel.tp_size = 1
     monkeypatch.setenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, "0")
+    assert talker._resolve_predictor_graph_enabled() is False
+    monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "get_device_graph_backend",
+        lambda _device: None,
+    )
     assert talker._resolve_predictor_graph_enabled() is False
 
 

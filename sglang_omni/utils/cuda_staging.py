@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reusable pinned host staging buffers and CUDA completion events.
+"""Reusable pinned host staging buffers and device completion events.
 
 Streaming decoders copy device results into pinned host memory asynchronously
-and wait on a CUDA event before reading them back. The two classes here hold
+and wait on a device event before reading them back. The two classes here hold
 just the buffer and the event and carry no ownership policy: the owner
 serializes access, grows a buffer only while no asynchronous copy can still be
 using it, and must not touch a slot between ``record()`` and observed
@@ -17,6 +17,8 @@ from typing import Any
 
 import torch
 
+from sglang_omni.platforms import current_platform
+
 
 def _allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
     # Note (jiannan-17): allocate outside inference mode even when the caller
@@ -28,8 +30,9 @@ def _allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
 
 def _normalize_device(device: torch.device | str | int) -> torch.device:
     resolved = torch.device(device)
-    if resolved.type == "cuda" and resolved.index is None:
-        return torch.device("cuda", torch.cuda.current_device())
+    if resolved.type == current_platform.device_type and resolved.index is None:
+        module = torch.get_device_module(resolved)
+        return torch.device(resolved.type, module.current_device())
     return resolved
 
 
@@ -75,7 +78,7 @@ class GrowablePinnedBuffer:
 
 
 class PinnedTransferSlot:
-    """One growable pinned host buffer plus one reusable CUDA event.
+    """One growable pinned host buffer plus one reusable device event.
 
     The event fences work queued before ``record()``. Do not resize or reuse
     the buffer until ``synchronize()`` returns or ``query()`` reports True.
@@ -93,6 +96,7 @@ class PinnedTransferSlot:
         initial_capacity: int = 0,
     ) -> None:
         self.device = _normalize_device(device)
+        self._device_module = torch.get_device_module(self.device)
         self._buffer = GrowablePinnedBuffer(dtype, initial_capacity=initial_capacity)
         self._event: Any = None
         # Note (jiannan-17): True only while the most recent ``record()``
@@ -113,8 +117,8 @@ class PinnedTransferSlot:
         return self._buffer.view(numel)
 
     def _device_guard(self) -> contextlib.AbstractContextManager[Any]:
-        if self.device.type == "cuda":
-            return torch.cuda.device(self.device)
+        if self.device.type == current_platform.device_type:
+            return self._device_module.device(self.device)
         return contextlib.nullcontext()
 
     def record(self, stream: Any) -> None:
@@ -126,7 +130,7 @@ class PinnedTransferSlot:
         succeeds.
         """
         # Note (jiannan-17): cleared before anything can fail, so neither a
-        # rejected stream nor a failed CUDA record can leave the previous
+        # rejected stream nor a failed device record can leave the previous
         # transfer's completion state readable as this transfer's.
         self._recorded = False
         stream_device = getattr(stream, "device", None)
@@ -140,7 +144,7 @@ class PinnedTransferSlot:
             )
         with self._device_guard():
             if self._event is None:
-                self._event = torch.cuda.Event()
+                self._event = self._device_module.Event()
             self._event.record(stream)
         self._recorded = True
 

@@ -43,14 +43,6 @@ class _FailingGraph:
         self.resets += 1
 
 
-class _DeviceContext:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-
 def _state(
     rows: int,
     *,
@@ -257,16 +249,11 @@ def test_incremental_codec_graph_splits_frames_by_captured_widths_only() -> None
     assert runner.largest_batch_bucket() == 0
 
 
-def test_incremental_codec_graph_replay_failure_disables_runner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_incremental_codec_graph_replay_failure_disables_runner() -> None:
     runner = _runner(batch_sizes=(1,))
     key = IncrementalCodecGraphKey(8, 1)
     graph = _FailingGraph()
     runner._graphs[key] = _entry(1, graph=graph)
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
 
     with pytest.raises(RuntimeError, match="injected replay failure"):
         runner.decode_slots(torch.zeros(1, 2, 8, dtype=torch.long), [0])
@@ -297,12 +284,13 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
     temporary = {key: SimpleNamespace()}
     pool = object()
     capture_stream = object()
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
 
     def fail_synchronize(_device) -> None:
         raise RuntimeError("injected synchronize failure")
 
-    monkeypatch.setattr(torch.cuda, "synchronize", fail_synchronize)
+    monkeypatch.setattr(
+        runner, "_device_module", SimpleNamespace(synchronize=fail_synchronize)
+    )
 
     runner._rollback_capture(
         temporary,
@@ -319,9 +307,7 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
     assert retained.stream is capture_stream
 
 
-def test_incremental_codec_capture_rollback_resets_temporary_graphs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_incremental_codec_capture_rollback_resets_temporary_graphs() -> None:
     runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
         SimpleNamespace(),
         device=torch.device("cpu"),
@@ -335,10 +321,6 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
     graph = _FakeGraph()
     key = IncrementalCodecGraphKey(8, 1)
     temporary = {key: SimpleNamespace(graph=graph)}
-
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
-    monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
 
     runner._rollback_capture(
         temporary,
