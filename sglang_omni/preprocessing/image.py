@@ -13,6 +13,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
+from .resource_connector import await_media_cleanup
 
 
 def load_image_path(path: str | Path) -> Image.Image:
@@ -94,34 +95,40 @@ async def ensure_image_list_async(
         media_connector = get_global_resource_connector()
 
     # Collect coroutines for URL items
-    coroutines: list[asyncio.Task[Any] | None] = []
+    coroutines: list[asyncio.Task[Any]] = []
     url_indices: list[int] = []
     normalized: list[Any] = []
 
-    # First pass: identify URL items and create coroutines
-    for idx, item in enumerate(items):
-        if isinstance(item, (str, Path)):
-            if _is_url(item):
-                # Create coroutine for async URL fetching
-                coro = media_connector.fetch_image_async(
-                    str(item), image_mode=image_mode
-                )
-                task = asyncio.create_task(coro)
-                coroutines.append(task)
-                url_indices.append(idx)
-                normalized.append(None)  # Placeholder
+    try:
+        # First pass: identify URL items and create coroutines
+        for idx, item in enumerate(items):
+            if isinstance(item, (str, Path)):
+                if _is_url(item):
+                    # Create coroutine for async URL fetching
+                    coro = media_connector.fetch_image_async(
+                        str(item), image_mode=image_mode
+                    )
+                    task = asyncio.create_task(coro)
+                    coroutines.append(task)
+                    url_indices.append(idx)
+                    normalized.append(None)  # Placeholder
+                else:
+                    normalized.append(load_image_path(item))
             else:
-                normalized.append(load_image_path(item))
-        else:
-            # Already processed (PIL Image, etc.)
-            normalized.append(item)
+                # Already processed (PIL Image, etc.)
+                normalized.append(item)
 
-    # Wait for all URL fetches to complete
-    if coroutines:
-        results = await asyncio.gather(*coroutines)
-        # Fill in the results at the correct indices
-        for url_idx, result in zip(url_indices, results):
-            normalized[url_idx] = result
+        # Wait for all URL fetches to complete
+        if coroutines:
+            results = await asyncio.gather(*coroutines)
+            # Fill in the results at the correct indices
+            for url_idx, result in zip(url_indices, results):
+                normalized[url_idx] = result
+    finally:
+        for task in coroutines:
+            if not task.done():
+                task.cancel()
+        await await_media_cleanup(asyncio.gather(*coroutines, return_exceptions=True))
 
     return normalized
 

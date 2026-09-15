@@ -11,7 +11,7 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -26,6 +26,32 @@ _MAX_HTTP_REDIRECTS = 5
 # Global thread pool for CPU-bound tasks (decoding/resampling)
 global_thread_pool = ThreadPoolExecutor(max_workers=8)
 atexit.register(global_thread_pool.shutdown)
+
+
+async def await_media_cleanup(awaitable: Awaitable[_M]) -> _M:
+    """Finish cleanup before propagating cancellation of its caller."""
+    cleanup = asyncio.ensure_future(awaitable)
+    cancellation = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    result = cleanup.result()
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
+async def run_media_io(func: Callable[..., _M], *args: Any) -> _M:
+    """Wait for decoder threads to finish even when the request is cancelled."""
+    future = asyncio.get_running_loop().run_in_executor(global_thread_pool, func, *args)
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        # Running threads cannot be cancelled; drain them before closing the request.
+        await await_media_cleanup(asyncio.gather(future, return_exceptions=True))
+        raise
 
 
 class ResourceHTTPConnection:
@@ -352,7 +378,6 @@ class MultiModalResourceConnector:
             Loaded media object.
         """
         url_spec = urlparse(url)
-        loop = asyncio.get_running_loop()
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
             download_start = time.time()
@@ -369,9 +394,7 @@ class MultiModalResourceConnector:
                 )
 
             decode_start = time.time()
-            result = await loop.run_in_executor(
-                global_thread_pool, media_io.load_http_bytes, data, media_type
-            )
+            result = await run_media_io(media_io.load_http_bytes, data, media_type)
             decode_time = time.time() - decode_start
 
             if len(data) > 1024 * 1024:
@@ -389,9 +412,7 @@ class MultiModalResourceConnector:
                 if url_spec.scheme == "data"
                 else self._load_file_url
             )
-            return await loop.run_in_executor(
-                global_thread_pool, method, url_spec, media_io
-            )
+            return await run_media_io(method, url_spec, media_io)
 
         raise ValueError(f"Unsupported URL scheme: {url_spec.scheme}")
 
