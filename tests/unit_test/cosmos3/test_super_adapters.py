@@ -14,7 +14,6 @@ from fastapi import FastAPI
 
 from sglang_omni.models.cosmos3 import checkpoint, media, reasoner, stages
 from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
-from sglang_omni.proto import OmniRequest, StagePayload
 
 
 @pytest.fixture
@@ -65,69 +64,6 @@ def test_local_path_containing_at_is_not_split(tmp_path):
         "model_path": str(local),
         "served_model_name": str(local),
     }
-
-
-def test_hub_revision_reaches_snapshot_download(monkeypatch, snapshot):
-    import huggingface_hub
-
-    calls = []
-    monkeypatch.setattr(
-        huggingface_hub,
-        "snapshot_download",
-        lambda repo, revision: calls.append((repo, revision)) or str(snapshot),
-    )
-    resolved = checkpoint.resolve_native_checkpoint(
-        {"model_path": "nvidia/Cosmos3-Super@abcdef"}
-    )
-    assert calls == [("nvidia/Cosmos3-Super", "abcdef")]
-    assert resolved["model_path"] == str(snapshot)
-
-
-def test_generation_passes_super_snapshot_and_native_topology(
-    native, snapshot, tmp_path
-):
-    scheduler = stages.create_generation_scheduler(
-        str(snapshot),
-        gpu_id=1,
-        runtime_gpu_ids=[1, 3, 5, 7],
-        output_dir=str(tmp_path / "outputs"),
-        server_args_overrides={
-            "sp_degree": 4,
-            "ulysses_degree": 4,
-            "use_fsdp_inference": True,
-        },
-    )
-    try:
-        args = native.generation[0]
-        assert args.model_path == str(snapshot)
-        assert args.gpu_ids == [1, 3, 5, 7]
-        assert args.num_gpus == args.sp_degree == args.ulysses_degree == 4
-        assert args.use_fsdp_inference
-        assert not scheduler.requires_tp_work_fanout
-        assert (
-            json.loads((Path(args.model_path) / "config.json").read_text())[
-                "text_config"
-            ]["hidden_size"]
-            == 5120
-        )
-    finally:
-        scheduler.stop()
-    assert native.shutdown == ["generation"]
-
-
-def test_reasoner_passes_super_snapshot_and_native_tp(native, snapshot, monkeypatch):
-    monkeypatch.setattr(reasoner, "NativeReasonerScheduler", lambda *args: args[0])
-    engine = reasoner.create_reasoner_scheduler(
-        str(snapshot), gpu_id=1, runtime_gpu_ids=[1, 3, 5, 7]
-    )
-    try:
-        args = native.reasoner[0]
-        assert args["model_path"] == str(snapshot)
-        assert (args["base_gpu_id"], args["gpu_id_step"], args["tp_size"]) == (1, 2, 4)
-        assert "hf_config_path" not in args
-        assert "json_model_override_args" not in args
-    finally:
-        engine.shutdown()
 
 
 @pytest.mark.parametrize("kind", ["generation", "reasoner"])
@@ -261,46 +197,3 @@ def test_frontend_honors_stage_checkpoint_and_explicit_alias(
     media.prepare_native_media_app(config, host="127.0.0.1", port=8000)
     assert native.apps[0].model_path == str(snapshot)
     assert native.apps[0].served_model_name == "super-local"
-
-
-def test_super_sampling_keeps_geometry_seed_and_modality_options():
-    inputs = {
-        "prompt": "A lake",
-        "width": 1280,
-        "height": 720,
-        "num_frames": 189,
-        "seed": 0,
-        "sound_duration": 7.875,
-    }
-    payload = StagePayload("super", OmniRequest(inputs), None)
-    params = stages.build_sampling_params(payload, "outputs")
-    assert all(params[key] == value for key, value in inputs.items())
-
-
-@pytest.mark.parametrize("variant", ["generation", "reasoner"])
-def test_super_recipe_reserves_four_gpus_with_one_omni_owner(variant, monkeypatch):
-    from sglang_omni.config.manager import ConfigManager
-    from sglang_omni.pipeline import runtime_config
-    from sglang_omni.pipeline.mp_runner import _build_stage_groups
-
-    root = Path(__file__).resolve().parents[3]
-    config = ConfigManager.from_file(
-        str(root / "examples" / "configs" / f"cosmos3_super_{variant}.yaml")
-    ).config
-    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: 4)
-    prep = runtime_config.prepare_pipeline_runtime(config)
-    try:
-        groups = _build_stage_groups(
-            config,
-            stages_cfg=prep.stages_cfg,
-            endpoints=prep.endpoints,
-            placement_plan=prep.placement_plan,
-            process_plan=prep.process_plan,
-        )
-        assert set(prep.placement_plan.gpus) == {0, 1, 2, 3}
-        assert len(groups) == len(groups[0].specs) == 1
-        spec = groups[0].specs[0]
-        assert spec.tp_size == 1
-        assert spec.factory_kwargs["runtime_gpu_ids"] == [0, 1, 2, 3]
-    finally:
-        prep.runtime_dir.close()

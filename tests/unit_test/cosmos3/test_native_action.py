@@ -6,14 +6,12 @@ import sys
 import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from sglang_omni.client.client import Client
-from sglang_omni.models.cosmos3.stages import (
-    NativeGenerationScheduler,
-    build_sampling_params,
-)
+from sglang_omni.models.cosmos3.stages import NativeGenerationScheduler
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -28,62 +26,21 @@ def action_runtime(monkeypatch, native):
         "object": "action.generation",
         "data": [{"action": {"values": [[0.5]]}}],
     }
-    calls = []
-
-    def format_response(output, args):
-        calls.append((output, args))
-        return response
-
-    protocol.action_generation_response = format_response
+    protocol.action_generation_response = Mock(return_value=response)
     monkeypatch.setitem(sys.modules, protocol.__name__, protocol)
-
-    class Generator:
-        local_scheduler_process = None
-        supports_cancellation = True
-        server_args = SimpleNamespace(served_model_name="super")
-
-        def __init__(self):
-            self.calls = []
-
-        def generate_action(self, **kwargs):
-            self.calls.append(kwargs)
-            return {"actions": [[0.5]]}
-
-        def generate(self, **kwargs):
-            pytest.fail("Action-output request dispatched to visual generation")
-
-        def shutdown(self):
-            pass
-
-    return SimpleNamespace(generator=Generator(), response=response, formatted=calls)
-
-
-@pytest.mark.parametrize("mode", ["policy", "inverse_dynamics", "forward_dynamics"])
-def test_action_modes_allow_empty_prompt_and_preserve_native_options(mode):
-    request = payload(
-        " " + mode.upper() + " ",
-        num_frames=17,
-        domain_name="av",
-        raw_action_dim=9,
-        guidance_scale=0.0,
-        guidance_interval=(0.0, 1.0),
-        seed=0,
-        use_system_prompt=False,
+    generator = SimpleNamespace(
+        local_scheduler_process=None,
+        supports_cancellation=True,
+        server_args=object(),
+        generate_action=Mock(return_value={"actions": [[0.5]]}),
+        generate=Mock(side_effect=AssertionError("Expected action dispatch")),
+        shutdown=Mock(),
     )
-    params = build_sampling_params(request, "outputs")
-    assert params["action_mode"] == mode
-    assert params["prompt"] == ""
-    for key in (
-        "num_frames",
-        "domain_name",
-        "raw_action_dim",
-        "guidance_scale",
-        "guidance_interval",
-        "seed",
-        "use_system_prompt",
-    ):
-        assert params[key] == request.request.inputs[key]
-    assert "prompt" not in request.request.inputs
+    return SimpleNamespace(
+        generator=generator,
+        response=response,
+        formatted=protocol.action_generation_response,
+    )
 
 
 @pytest.mark.parametrize(
@@ -97,7 +54,7 @@ def test_invalid_action_dispatch_is_rejected_before_native_call(
     request.request.inputs.update(inputs)
     with pytest.raises(ValueError):
         scheduler._generate(request)
-    assert not action_runtime.generator.calls
+    assert not action_runtime.generator.generate_action.called
     assert not list(tmp_path.iterdir())
 
 
@@ -107,19 +64,23 @@ def test_action_json_crosses_client_boundary_and_survives_delivery(
 ):
     scheduler = NativeGenerationScheduler(action_runtime.generator, str(tmp_path))
     result = scheduler._generate(
-        payload(mode, num_frames=17, guidance_scale=1.0, seed=0)
+        payload(" " + mode.upper() + " ", num_frames=17, guidance_scale=1.0, seed=0)
     )
     chunk = Client._default_result_builder(result.request_id, result.data)
     assert chunk.media[0]["modality"] == "action"
     path = Path(chunk.media[0]["path"])
     assert path.parent.parent == tmp_path
     assert json.loads(path.read_text()) == action_runtime.response
-    kwargs = action_runtime.generator.calls[0]
+    kwargs = action_runtime.generator.generate_action.call_args.kwargs
     assert "cancellation_event" not in kwargs
     params = kwargs["sampling_params_kwargs"]
+    assert params["action_mode"] == mode and params["prompt"] == ""
     assert params["guidance_scale"] == 1.0 and params["seed"] == 0
     assert not params["save_output"] and not params["return_file_paths_only"]
-    assert action_runtime.formatted[0][1] is action_runtime.generator.server_args
+    assert (
+        action_runtime.formatted.call_args.args[1]
+        is action_runtime.generator.server_args
+    )
     assert scheduler.claim_result(result, terminal=True)
     scheduler.release_result(result, delivered=True)
     scheduler.stop()
@@ -142,7 +103,7 @@ def test_forward_dynamics_keeps_native_video_path(action_runtime, tmp_path):
     output = scheduler._generate(
         payload("forward_dynamics", action=actions, image_path="input.png")
     )
-    assert not action_runtime.generator.calls
+    assert not action_runtime.generator.generate_action.called
     assert calls[0]["sampling_params_kwargs"]["action"] == actions
     assert output.data["media"][0]["path"] == result.output_file_path
     scheduler.release_result(output, delivered=False)

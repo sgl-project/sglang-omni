@@ -2,8 +2,8 @@
 """Opt-in single-node Super GPU smoke tests; see docs/cookbook/cosmos3_super.md.
 
 Imports of serving code and CUDA are delayed so ordinary CPU collection is safe.
-Raw artifacts stay in pytest's temporary directory; the JSON report contains
-numeric measurements and revision/topology metadata, not request/response text.
+Raw artifacts stay in pytest's temporary directory. Use pytest JUnit XML for
+case results and revision metadata; these smoke tests do not benchmark quality.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import asyncio
 import json
 import os
 import subprocess
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,145 +23,96 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _settings():
+@pytest.fixture(scope="module")
+def deployment(record_testsuite_property):
     import torch
 
-    model = os.environ.get("COSMOS3_SUPER_MODEL_PATH")
-    assert (
-        model and Path(model).is_dir()
-    ), "COSMOS3_SUPER_MODEL_PATH must be a local snapshot"
-    devices = [
-        int(value)
-        for value in os.environ.get("COSMOS3_SUPER_GPU_IDS", "0,1,2,3").split(",")
-    ]
-    assert len(devices) in (
-        1,
-        2,
-        4,
-        8,
-    ), "Test one of the 1/2/4/8-GPU single-node allocations"
-    assert len(set(devices)) == len(devices) and min(devices) >= 0
-    assert torch.cuda.is_available() and max(devices) < torch.cuda.device_count()
-    # Verify Super geometry before loading; the caller pins the base checkpoint.
+    model = os.environ["COSMOS3_SUPER_MODEL_PATH"]
+    assert Path(model).is_dir(), "Use a local Super snapshot"
     config = json.loads((Path(model) / "config.json").read_text())
-    text = config["text_config"]
     assert config["architectures"] == ["Cosmos3ForConditionalGeneration"]
-    assert (text["hidden_size"], text["num_hidden_layers"]) == (5120, 64)
-    revision = os.environ.get("COSMOS3_SUPER_CHECKPOINT_REVISION")
     assert (
-        revision
-    ), "Record the local snapshot's commit in COSMOS3_SUPER_CHECKPOINT_REVISION"
-    native_revision = os.environ.get("COSMOS3_SUPER_NATIVE_REVISION")
+        config["text_config"]["hidden_size"],
+        config["text_config"]["num_hidden_layers"],
+    ) == (5120, 64)
+    devices = [
+        int(v) for v in os.environ.get("COSMOS3_SUPER_GPU_IDS", "0,1,2,3").split(",")
+    ]
+    assert len(devices) in (1, 2, 4, 8) and len(set(devices)) == len(devices)
     assert (
-        native_revision
-    ), "Record patched native source revision in COSMOS3_SUPER_NATIVE_REVISION"
-    return model, devices, revision, native_revision
+        torch.cuda.is_available()
+        and 0 <= min(devices) <= max(devices) < torch.cuda.device_count()
+    )
+    for name in ("CHECKPOINT_REVISION", "NATIVE_REVISION"):
+        record_testsuite_property(name, os.environ[f"COSMOS3_SUPER_{name}"])
+    root = Path(__file__).resolve().parents[3]
+    record_testsuite_property(
+        "omni_revision",
+        subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip(),
+    )
+    record_testsuite_property("gpu_ids", str(devices))
+    record_testsuite_property(
+        "gpu_names", str([torch.cuda.get_device_name(d) for d in devices])
+    )
+    extra = os.environ.get("COSMOS3_SUPER_NATIVE_OVERRIDES")
+    if extra:
+        record_testsuite_property("native_overrides", Path(extra).read_text())
+    return model, devices
 
 
 def _config(kind, model, devices, output):
-    from sglang_omni.models.cosmos3.config import (
-        Cosmos3PipelineConfig,
-        Cosmos3ReasonerPipelineConfig,
-    )
+    from sglang_omni.config.manager import ConfigManager
 
-    cls = (
-        Cosmos3PipelineConfig if kind == "generation" else Cosmos3ReasonerPipelineConfig
-    )
-    config = cls(model_path=model)
+    root = Path(__file__).resolve().parents[3]
+    config = ConfigManager.from_file(
+        str(root / "examples/configs" / f"cosmos3_super_{kind}.yaml")
+    ).config
+    config.model_path = model
     stage = config.stages[0]
-    stage.gpu = devices[0]
-    stage.runtime_gpu_ids = devices
+    stage.gpu, stage.runtime_gpu_ids = devices[0], devices
+    overrides = stage.factory.server_args_overrides
     if kind == "generation":
         stage.factory.output_dir = str(output)
-        overrides = {
-            "tp_size": 1,
-            "use_fsdp_inference": len(devices) > 1,
-            "hsdp_shard_dim": len(devices),
-            "hsdp_replicate_dim": 1,
-            "warmup_mode": "off",
-        }
+        overrides.update(
+            use_fsdp_inference=len(devices) > 1, hsdp_shard_dim=len(devices)
+        )
         if len(devices) == 1:
-            # Candidate low-memory path; host RAM and output activations still matter.
-            overrides["component_residency"] = {"transformer": "layerwise-offload"}
-            overrides["layerwise_resident_layers"] = {"transformer": 1}
+            overrides.update(
+                component_residency={"transformer": "layerwise-offload"},
+                layerwise_resident_layers={"transformer": 1},
+            )
     else:
-        overrides = {
-            "tp_size": len(devices),
-            "context_length": 8192,
-            "mem_fraction_static": 0.9 if len(devices) == 1 else 0.6,
-        }
+        overrides.update(
+            tp_size=len(devices), mem_fraction_static=0.9 if len(devices) == 1 else 0.6
+        )
     extra = os.environ.get("COSMOS3_SUPER_NATIVE_OVERRIDES")
     if extra:
         overrides.update(json.loads(Path(extra).read_text()).get(kind, {}))
-    stage.factory.server_args_overrides = overrides
     return config
 
 
-def _revision():
-    root = Path(__file__).resolve().parents[3]
-    return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
-    ).strip()
-
-
-def _report(kind, devices, checkpoint_revision, native_revision, config):
-    import torch
-
-    return {
-        "kind": kind,
-        "status": "running",
-        "omni_revision": _revision(),
-        "native_revision": native_revision,
-        "checkpoint_revision": checkpoint_revision,
-        "gpu_ids": devices,
-        "gpus": [
-            {
-                "name": torch.cuda.get_device_name(device),
-                "memory_bytes": torch.cuda.get_device_properties(device).total_memory,
-            }
-            for device in devices
-        ],
-        "requested_native_options": config.stages[0].factory.server_args_overrides,
-        "runs": [],
-        "quality_qualified": False,
-    }
-
-
-def _save_report(report):
-    target = Path(os.environ.get("COSMOS3_SUPER_REPORT_DIR", "results/cosmos3-super"))
-    target.mkdir(parents=True, exist_ok=True)
-    # Different topology/kind runs must not overwrite each other's evidence.
-    path = (
-        target / f"{report['kind']}-{len(report['gpu_ids'])}gpu-{time.time_ns()}.json"
-    )
-    path.write_text(json.dumps(report, indent=2) + "\n")
-
-
 @asynccontextmanager
-async def _running(config, record):
+async def _running(config):
     import psutil
 
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
     runner = MultiProcessPipelineRunner(config)
     owned = []
-    started = time.perf_counter()
     try:
         await runner.start(
             timeout=float(os.environ.get("COSMOS3_SUPER_STARTUP_TIMEOUT", "1800"))
         )
-        record["startup_seconds"] = time.perf_counter() - started
         for group in runner._groups:
             for process in group.processes:
                 owner = psutil.Process(process.pid)
                 owned.extend([owner, *owner.children(recursive=True)])
         yield runner
     finally:
-        started = time.perf_counter()
         await runner.stop()
-        record["shutdown_seconds"] = time.perf_counter() - started
         _, alive = psutil.wait_procs(owned, timeout=30)
-        record["remaining_owned_processes"] = len(alive)
         assert not alive, "Owned stage/native processes remained after shutdown"
 
 
@@ -200,12 +150,6 @@ def _check_media(item, frames, width, height):
                 assert (frame.width, frame.height) == (width, height)
                 decoded += 1
             assert decoded == frames
-    return {
-        "bytes": path.stat().st_size,
-        "decoded_frames": decoded,
-        "native_generation_seconds": item.get("generation_time"),
-        "native_peak_memory_mb": item.get("peak_memory_mb"),
-    }
 
 
 def _write_video(path, images, fps):
@@ -295,7 +239,6 @@ def _check_audio(path, expected_seconds):
     assert samples > 0 and energy > 0, "Generated sound is empty or silent"
     # Allow AAC padding and tokenizer time quantization.
     assert abs(seconds - expected_seconds) <= 0.15
-    return {"audio_samples": samples, "audio_seconds": seconds}
 
 
 def _check_action(item, mode, horizon, dimension):
@@ -310,7 +253,6 @@ def _check_action(item, mode, horizon, dimension):
     assert action["shape"] == [horizon, dimension]
     values = np.asarray(action["values"], dtype=float)
     assert values.shape == (horizon, dimension) and np.isfinite(values).all()
-    return {"action_horizon": horizon, "action_dim": dimension}
 
 
 @pytest.mark.parametrize(
@@ -327,137 +269,81 @@ def _check_action(item, mode, horizon, dimension):
     ],
 )
 @pytest.mark.asyncio
-async def test_super_generation(tmp_path, mode):
+async def test_super_generation(tmp_path, mode, deployment):
     from sglang_omni.client import GenerateRequest
 
-    model, devices, revision, native_revision = _settings()
+    model, devices = deployment
     config = _config("generation", model, devices, tmp_path / "media")
-    report = _report("generation", devices, revision, native_revision, config)
-    report["case"] = mode
-    try:
-        inputs = _generation_case(mode, tmp_path)
-        first = {}
-        report["runs"].append(first)
-        async with _running(config, first) as runner:
-            started = time.perf_counter()
+    inputs = _generation_case(mode, tmp_path)
+    # T2I also checks serving after the first owner completely shuts down.
+    for _ in range(2 if mode == "t2i" else 1):
+        async with _running(config) as runner:
             chunk = await _generate(
                 runner, GenerateRequest(prompt=inputs, stream=False)
             )
             assert chunk.media and len(chunk.media) == 1
-            first["request_seconds"] = time.perf_counter() - started
-            first["sampling"] = {
-                key: value
-                for key, value in inputs.items()
-                if isinstance(value, (int, float, bool))
-            }
             if mode in ("policy", "inverse_dynamics"):
-                first.update(
-                    _check_action(
-                        chunk.media[0],
-                        mode,
-                        inputs["num_frames"] - 1,
-                        inputs["raw_action_dim"],
-                    )
-                )
+                _check_action(chunk.media[0], mode, inputs["num_frames"] - 1, 9)
             else:
-                first.update(
-                    _check_media(chunk.media[0], inputs["num_frames"], 832, 480)
-                )
+                _check_media(chunk.media[0], inputs["num_frames"], 832, 480)
                 if mode == "sound":
-                    first.update(
-                        _check_audio(chunk.media[0]["path"], inputs["sound_duration"])
-                    )
-        if mode == "t2i":
-            # A new owner must serve after the previous owner's complete shutdown.
-            second = {}
-            report["runs"].append(second)
-            async with _running(config, second) as runner:
-                chunk = await _generate(
-                    runner, GenerateRequest(prompt=inputs, stream=False)
-                )
-                assert chunk.media and len(chunk.media) == 1
-                second["media"] = _check_media(chunk.media[0], 1, 832, 480)
-        report["status"] = "passed"
-    except BaseException:
-        report["status"] = "failed"
-        raise
-    finally:
-        _save_report(report)
+                    _check_audio(chunk.media[0]["path"], inputs["sound_duration"])
 
 
 @pytest.mark.parametrize("mode", ["text", "image", "video"])
 @pytest.mark.asyncio
-async def test_super_reasoner(tmp_path, mode):
+async def test_super_reasoner(tmp_path, mode, deployment):
     import base64
 
     from PIL import Image
 
     from sglang_omni.client import GenerateRequest, SamplingParams
 
-    model, devices, revision, native_revision = _settings()
+    model, devices = deployment
     config = _config("reasoner", model, devices, tmp_path)
-    report = _report("reasoner", devices, revision, native_revision, config)
-    report["case"] = mode
-    try:
-        prompt = "What is two plus two? Give a short answer."
-        if mode != "text":
-            if mode == "image":
-                reference = tmp_path / "red.png"
-                Image.new("RGB", (224, 224), "red").save(reference)
-                url = (
-                    "data:image/png;base64,"
-                    + base64.b64encode(reference.read_bytes()).decode()
-                )
-                question = "Name the dominant color."
-            else:
-                reference = tmp_path / "colors.mp4"
-                _write_video(
-                    reference,
-                    [
-                        Image.new("RGB", (224, 224), color)
-                        for color in ("red", "blue")
-                        for _ in range(8)
+    prompt = "What is two plus two? Give a short answer."
+    if mode != "text":
+        if mode == "image":
+            reference = tmp_path / "red.png"
+            Image.new("RGB", (224, 224), "red").save(reference)
+            url = (
+                "data:image/png;base64,"
+                + base64.b64encode(reference.read_bytes()).decode()
+            )
+            question = "Name the dominant color."
+        else:
+            reference = tmp_path / "colors.mp4"
+            _write_video(
+                reference,
+                [
+                    Image.new("RGB", (224, 224), color)
+                    for color in ("red", "blue")
+                    for _ in range(8)
+                ],
+                4,
+            )
+            url = str(reference)
+            question = "Describe how the color changes from the beginning to the end."
+        key = f"{mode}_url"
+        prompt = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": question},
+                        {"type": key, key: {"url": url}},
                     ],
-                    4,
-                )
-                url = str(reference)
-                question = (
-                    "Describe how the color changes from the beginning to the end."
-                )
-            key = f"{mode}_url"
-            prompt = {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": question},
-                            {"type": key, key: {"url": url}},
-                        ],
-                    }
-                ]
-            }
-        run = {}
-        report["runs"].append(run)
-        async with _running(config, run) as runner:
-            started = time.perf_counter()
-            chunk = await _generate(
-                runner,
-                GenerateRequest(
-                    prompt=prompt,
-                    sampling=SamplingParams(temperature=0.0, max_new_tokens=128),
-                    stream=False,
-                ),
-            )
-            assert chunk.text and chunk.text.strip()
-            # Keep the response locally for inspection, never in the shareable report.
-            (tmp_path / "response.txt").write_text(chunk.text)
-            run.update(
-                text_characters=len(chunk.text),
-                request_seconds=time.perf_counter() - started,
-            )
-        report["status"] = "passed"
-    except BaseException:
-        report["status"] = "failed"
-        raise
-    finally:
-        _save_report(report)
+                }
+            ]
+        }
+    async with _running(config) as runner:
+        chunk = await _generate(
+            runner,
+            GenerateRequest(
+                prompt=prompt,
+                sampling=SamplingParams(temperature=0.0, max_new_tokens=128),
+                stream=False,
+            ),
+        )
+        assert chunk.text and chunk.text.strip()
+        (tmp_path / "response.txt").write_text(chunk.text)
