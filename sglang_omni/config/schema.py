@@ -622,6 +622,8 @@ class PipelineConfig(BaseModel):
 
     architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
+    native_media_stage: ClassVar[str | None] = None
+    native_media_factory_path: ClassVar[str | None] = None
     requires_model_capabilities: ClassVar[bool] = False
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
