@@ -247,8 +247,8 @@ def _make_scheduler(
 def test_ingest_unbinds_coalesced_chunk_and_decodes() -> None:
     model = FakeCode2WavModel(total_upsample=2)
     scheduler = _make_scheduler(model)
-    scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
-    scheduler._handle_stream_chunk(
+    scheduler.stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+    scheduler.handle_stream_chunk(
         "req-1",
         StreamItem(
             0,
@@ -258,7 +258,7 @@ def test_ingest_unbinds_coalesced_chunk_and_decodes() -> None:
         ),
     )
     assert model.calls == [(1, 2, 2)]
-    state = scheduler._stream_states["req-1"]
+    state = scheduler.stream_states["req-1"]
     assert all(chunk.ndim == 1 for chunk in state.chunks)
 
 

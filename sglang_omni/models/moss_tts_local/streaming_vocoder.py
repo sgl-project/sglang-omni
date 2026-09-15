@@ -309,8 +309,8 @@ class MossTTSLocalStreamingVocoderScheduler(
 ):
     """Decode MOSS-TTS Local codec rows incrementally on the v2 codec."""
 
-    _can_batch_stream_chunks = True
-    _stream_chunk_batch_distinct_requests = True
+    can_batch_stream_chunks = True
+    stream_chunk_batch_distinct_requests = True
 
     def __init__(
         self,
@@ -373,7 +373,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         self._attention_backend = attention_backend
         self._stream_slots = int(stream_slots)
         # Coalesce up to one full set of streaming lanes per pump, not the offline batch width.
-        self._stream_chunk_batch_max = self._stream_slots
+        self.stream_chunk_batch_max = self._stream_slots
         self._stream_chunk_frames = int(stream_chunk_frames)
         self._default_initial_chunk_frames = max(
             0, min(int(initial_chunk_frames), int(stream_chunk_frames))
@@ -514,7 +514,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         del request_id
         return audio_waveform_payload(
             waveform.detach().to("cpu", torch.float32),
-            sample_rate=self._sample_rate,
+            sample_rate=self.sample_rate,
             modality="audio",
             source_hint=f"{_SOURCE_HINT} streaming",
             keep_channels=True,
@@ -532,7 +532,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         del request_id, state
         final_data: dict[str, Any] = {
             "modality": "audio",
-            "sample_rate": self._sample_rate,
+            "sample_rate": self.sample_rate,
         }
         usage = build_usage(MossTTSLocalState.from_dict(payload.data))
         if usage is not None:
@@ -554,7 +554,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         )
         slotted = [
             (request_id, state)
-            for request_id, state in self._stream_state_items()
+            for request_id, state in self.stream_state_items()
             if state.slot is not None and state.threshold > 0
         ]
         due = [
@@ -645,7 +645,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         skipped, e.g. non-CUDA codec) still gets its one capture attempt here, synchronously,
         fail-safe to eager on low VRAM; a low-VRAM skip is remembered (no per-step re-probe).
         """
-        with self._state_lock:
+        with self.state_lock:
             session = self._ensure_session()
             if (
                 self._vocoder_cuda_graph
@@ -734,7 +734,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             wav, source_hint=_SOURCE_HINT, keep_channels=True
         )
         state.audio_codes = None
-        state.sample_rate = self._sample_rate
+        state.sample_rate = self.sample_rate
         payload.data = state.to_dict()
         payload.data.update(audio_payload)
         payload.data["sample_rate"] = state.sample_rate
@@ -756,7 +756,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             decoder=self._nonstream_decoder,
             device=next(self._codec.parameters()).device,
             compute_dtype=self._compute_dtype,
-            max_batch_size=self._max_batch_size,
+            max_batch_size=self.max_batch_size,
             interleaved_channels=self._interleaved_channels,
         )
 

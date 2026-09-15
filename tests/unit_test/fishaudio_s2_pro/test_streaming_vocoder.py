@@ -423,9 +423,9 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
     thread = threading.Thread(target=scheduler.start, daemon=True)
     try:
         scheduler._payloads["req"] = _payload("req")
-        scheduler._pending_done.add("req")
-        scheduler._on_chunk("req", _chunk(1))
-        scheduler._pending_messages.append(IncomingMessage("req", "stream_done"))
+        scheduler.pending_done.add("req")
+        scheduler.handle_stream_chunk("req", _chunk(1))
+        scheduler.pending_messages.append(IncomingMessage("req", "stream_done"))
         scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
 
@@ -433,9 +433,9 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
         thread.start()
 
         assert "req" not in scheduler._payloads
-        assert "req" not in scheduler._stream_states
-        assert "req" not in scheduler._pending_done
-        assert "req" in scheduler._aborted_request_ids
+        assert "req" not in scheduler.stream_states
+        assert "req" not in scheduler.pending_done
+        assert "req" in scheduler.aborted_request_ids
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:
@@ -472,7 +472,7 @@ def test_streaming_vocoder_chunk_failure_emits_one_error_and_no_success() -> Non
         del request_id, chunk
         raise RuntimeError("chunk failed")
 
-    scheduler._on_chunk = _raise_on_chunk
+    scheduler.handle_stream_chunk = _raise_on_chunk
     try:
         scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
         scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
@@ -481,7 +481,7 @@ def test_streaming_vocoder_chunk_failure_emits_one_error_and_no_success() -> Non
         assert error.request_id == "req"
         assert error.type == "error"
         assert isinstance(error.data, RuntimeError)
-        assert "req" in scheduler._aborted_request_ids
+        assert "req" in scheduler.aborted_request_ids
 
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
         with pytest.raises(queue.Empty):
@@ -497,7 +497,7 @@ def test_streaming_vocoder_abort_during_final_vocode_suppresses_result() -> None
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
     )
-    scheduler._on_streaming_new_request("req", _payload("req"))
+    scheduler.handle_streaming_new_request("req", _payload("req"))
 
     def _abort_during_vocode(payload):
         scheduler.abort(payload.request_id)
@@ -505,9 +505,9 @@ def test_streaming_vocoder_abort_during_final_vocode_suppresses_result() -> None
 
     scheduler._vocode_payload = _abort_during_vocode
 
-    scheduler._on_done("req")
+    scheduler.handle_stream_done("req")
 
-    assert "req" in scheduler._aborted_request_ids
+    assert "req" in scheduler.aborted_request_ids
     assert scheduler.outbox.empty()
 
 
@@ -561,7 +561,7 @@ def test_non_streaming_vocoder_batch_isolates_invalid_payload() -> None:
         ),
     ]
 
-    scheduler._handle_new_request_batch(messages)
+    scheduler.handle_new_request_batch(messages)
 
     outputs = [scheduler.outbox.get_nowait(), scheduler.outbox.get_nowait()]
     by_request = {out.request_id: out for out in outputs}
@@ -610,8 +610,8 @@ def test_non_streaming_vocoder_batch_skips_aborted_request() -> None:
         IncomingMessage("aborted", "new_request", _payload("aborted", stream=False))
     )
 
-    batch = scheduler._collect_new_request_batch(first)
-    scheduler._handle_new_request_batch(batch)
+    batch = scheduler.collect_new_request_batch(first)
+    scheduler.handle_new_request_batch(batch)
 
     out = scheduler.outbox.get_nowait()
     assert out.request_id == "other"
@@ -635,9 +635,9 @@ def test_non_streaming_vocoder_abort_during_batch_decode_suppresses_result() -> 
         scheduler.abort("aborted")
         return payloads
 
-    scheduler._batch_fn = _abort_during_decode
+    scheduler.batch_fn = _abort_during_decode
 
-    scheduler._handle_new_request_batch(messages)
+    scheduler.handle_new_request_batch(messages)
 
     out = scheduler.outbox.get_nowait()
     assert out.request_id == "other"

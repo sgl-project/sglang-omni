@@ -98,7 +98,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         return _MossStreamState(
             n_vq=self._default_n_vq or None,
             audio_pad_code=self._default_audio_pad_code,
-            sample_rate=self._sample_rate,
+            sample_rate=self.sample_rate,
             samples_per_frame=self._default_samples_per_frame,
         )
 
@@ -263,7 +263,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         del request_id
         final_state = load_moss_tts_state(payload)
         final_state.delayed_audio_codes = None
-        final_state.sample_rate = int(state.sample_rate or self._sample_rate)
+        final_state.sample_rate = int(state.sample_rate or self.sample_rate)
         data = final_state.to_dict()
         data["modality"] = "audio"
         data["sample_rate"] = final_state.sample_rate

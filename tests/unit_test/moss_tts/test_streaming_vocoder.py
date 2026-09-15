@@ -187,10 +187,10 @@ def test_streaming_matches_full_decode_across_segments() -> None:
     full_state, full_delayed = vocoder.prepare_item(payload)
     full, _ = vocoder._decode_audio(full_state, full_delayed)
 
-    scheduler._on_streaming_new_request("req", payload)
-    scheduler._on_chunk("req", _item(delayed[:5], 0))
-    scheduler._on_chunk("req", _item(delayed[5:], 1))
-    scheduler._on_done("req")
+    scheduler.handle_streaming_new_request("req", payload)
+    scheduler.handle_stream_chunk("req", _item(delayed[:5], 0))
+    scheduler.handle_stream_chunk("req", _item(delayed[5:], 1))
+    scheduler.handle_stream_done("req")
 
     messages = _drain(scheduler)
     chunks = [
@@ -217,9 +217,9 @@ def test_streaming_path_does_not_call_nonstream_batch_decoder(
         pytest.fail("streaming requests must not use the non-streaming batch decoder")
 
     monkeypatch.setattr(vocoder, "decode_batch", fail_decode_batch)
-    scheduler._on_streaming_new_request("req", _payload("req", delayed))
-    scheduler._on_chunk("req", _item(delayed))
-    scheduler._on_done("req")
+    scheduler.handle_streaming_new_request("req", _payload("req", delayed))
+    scheduler.handle_stream_chunk("req", _item(delayed))
+    scheduler.handle_stream_done("req")
 
     messages = _drain(scheduler)
 
@@ -239,10 +239,10 @@ def test_chunks_and_done_before_payload_preserve_final_tail() -> None:
     full_state, full_delayed = vocoder.prepare_item(payload)
     full, _ = vocoder._decode_audio(full_state, full_delayed)
 
-    scheduler._on_chunk("req", _item(delayed))
-    scheduler._on_done("req")
-    assert "req" in scheduler._pending_done
-    scheduler._on_streaming_new_request("req", payload)
+    scheduler.handle_stream_chunk("req", _item(delayed))
+    scheduler.handle_stream_done("req")
+    assert "req" in scheduler.pending_done
+    scheduler.handle_streaming_new_request("req", payload)
 
     messages = _drain(scheduler)
     chunks = [
@@ -251,8 +251,8 @@ def test_chunks_and_done_before_payload_preserve_final_tail() -> None:
         if message.type == "stream"
     ]
     np.testing.assert_array_equal(np.concatenate(chunks), full.numpy())
-    assert "req" not in scheduler._pending_done
-    assert "req" not in scheduler._stream_states
+    assert "req" not in scheduler.pending_done
+    assert "req" not in scheduler.stream_states
 
 
 def test_abort_drops_state_and_late_chunks() -> None:
@@ -260,11 +260,11 @@ def test_abort_drops_state_and_late_chunks() -> None:
         torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.long)
     )
     scheduler, _, _ = _make_scheduler()
-    scheduler._on_chunk("req", _item(delayed[:2]))
-    assert "req" in scheduler._stream_states
+    scheduler.handle_stream_chunk("req", _item(delayed[:2]))
+    assert "req" in scheduler.stream_states
 
     scheduler.abort("req")
-    scheduler._on_chunk("req", _item(delayed[2:]))
+    scheduler.handle_stream_chunk("req", _item(delayed[2:]))
 
-    assert "req" not in scheduler._stream_states
+    assert "req" not in scheduler.stream_states
     assert _drain(scheduler) == []

@@ -1202,7 +1202,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         if metadata.get("bootstrap_silence_suppression"):
             state.suppress_bootstrap = (
                 self._suppress_bootstrap_silence
-                and len(self._stream_states) <= self._suppress_bootstrap_max_streams
+                and len(self.stream_states) <= self._suppress_bootstrap_max_streams
             )
             if state.suppress_bootstrap:
                 # note (luojiaxuan): the withheld frame is also withheld from
@@ -2113,7 +2113,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             plan.generated_frames + self._next_followup_stride(state)
         )
         now = time.monotonic()
-        duration_s = float(delta.numel()) / float(self._sample_rate)
+        duration_s = float(delta.numel()) / float(self.sample_rate)
         state.playback_deadline_s = max(state.playback_deadline_s, now) + duration_s
         return delta
 
@@ -2292,7 +2292,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         """Plan one decode, preferring the incremental path.
 
         Returns ``(plan, is_incremental)``; a ``None`` plan means there is no
-        work yet. Must be called under ``_state_lock``.
+        work yet. Must be called under ``state_lock``.
 
         Note (Qihao Liu): the flag still says which planner produced the plan,
         so an exhausted arena degrades this request to the left-context planner
@@ -2343,10 +2343,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         planned_incremental: list[
             tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]
         ] = []
-        with self._state_lock:
+        with self.state_lock:
             for request_id, state in batch:
                 if (
-                    self._stream_states.get(request_id) is not state
+                    self.stream_states.get(request_id) is not state
                     or state.decoded_chunks
                 ):
                     continue
@@ -2570,8 +2570,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             exc,
             exc_info=True,
         )
-        with self._state_lock:
-            if self._stream_states.get(request_id) is not state:
+        with self.state_lock:
+            if self.stream_states.get(request_id) is not state:
                 self._release_codec_slot(state)
                 return
             state.incremental_codec_fallback = True
@@ -2607,18 +2607,18 @@ class Qwen3TTSStreamingVocoderScheduler(
         delta: torch.Tensor,
     ) -> None:
         cleanup_abort = False
-        with self._state_lock:
-            if self._stream_states.get(request_id) is not state:
+        with self.state_lock:
+            if self.stream_states.get(request_id) is not state:
                 return
             try:
                 delta = self._commit_decode_plan(state, plan, delta)
             except Exception as exc:
-                self._emit_error(request_id, exc)
-                self._abort_state(request_id)
+                self.emit_error(request_id, exc)
+                self.abort_state(request_id)
                 cleanup_abort = True
             else:
                 state.initial_pending = False
-                if not self._is_aborted(request_id):
+                if not self.is_aborted(request_id):
                     self._mark_stream_emitted(request_id)
                     self.outbox.put(self._stream_chunk_message(request_id, delta))
                 has_remainder = (
@@ -2630,7 +2630,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 elif state.final_pending or self.should_decode(state, is_final=False):
                     self._schedule_followup(request_id, state)
         if cleanup_abort:
-            self._cleanup_aborted_request(request_id)
+            self.cleanup_aborted_request(request_id)
 
     def _run_followup_worker(self, index: int = 0) -> None:
         self._worker_ctx.graphs = (
@@ -2713,9 +2713,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         planned_incremental: list[
             tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]
         ] = []
-        with self._state_lock:
+        with self.state_lock:
             for request_id, state in batch:
-                if self._stream_states.get(request_id) is not state:
+                if self.stream_states.get(request_id) is not state:
                     continue
                 plan, incremental = self._plan_stream_decode(
                     request_id,
@@ -2791,17 +2791,17 @@ class Qwen3TTSStreamingVocoderScheduler(
         delta: torch.Tensor,
     ) -> None:
         cleanup_abort = False
-        with self._state_lock:
-            if self._stream_states.get(request_id) is not state:
+        with self.state_lock:
+            if self.stream_states.get(request_id) is not state:
                 return
             try:
                 delta = self._commit_decode_plan(state, plan, delta)
             except Exception as exc:
-                self._emit_error(request_id, exc)
-                self._abort_state(request_id)
+                self.emit_error(request_id, exc)
+                self.abort_state(request_id)
                 cleanup_abort = True
             else:
-                if not self._is_aborted(request_id):
+                if not self.is_aborted(request_id):
                     self._mark_stream_emitted(request_id)
                     self.outbox.put(self._stream_chunk_message(request_id, delta))
                 has_remainder = (
@@ -2816,7 +2816,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else:
                     state.followup_pending = False
         if cleanup_abort:
-            self._cleanup_aborted_request(request_id)
+            self.cleanup_aborted_request(request_id)
 
     def _fail_async_stream(
         self,
@@ -2825,22 +2825,22 @@ class Qwen3TTSStreamingVocoderScheduler(
         exc: BaseException,
     ) -> None:
         cleanup_abort = False
-        with self._state_lock:
-            if self._stream_states.get(request_id) is state:
-                self._emit_error(request_id, exc)
-                self._abort_state(request_id)
+        with self.state_lock:
+            if self.stream_states.get(request_id) is state:
+                self.emit_error(request_id, exc)
+                self.abort_state(request_id)
                 cleanup_abort = True
         if cleanup_abort:
-            self._cleanup_aborted_request(request_id)
+            self.cleanup_aborted_request(request_id)
 
-    def _handle_stream_done(self, request_id: str) -> None:
-        with self._state_lock:
-            if request_id not in self._stream_payloads:
-                if request_id in self._completed_non_streaming_request_ids:
+    def handle_stream_done(self, request_id: str) -> None:
+        with self.state_lock:
+            if request_id not in self.stream_payloads:
+                if request_id in self.completed_non_streaming_request_ids:
                     return
-                self._pending_done.add(request_id)
+                self.pending_done.add(request_id)
                 return
-            state = self._get_or_create_stream_state(request_id)
+            state = self.get_or_create_stream_state(request_id)
             if (
                 self._async_decode
                 and state is not None
@@ -2854,15 +2854,15 @@ class Qwen3TTSStreamingVocoderScheduler(
         # threshold flush synchronously below, so that decode and its resolve
         # run under _state_lock. Kept as-is here; moving short finals onto the
         # initial worker is a separate change.
-        super()._handle_stream_done(request_id)
+        super().handle_stream_done(request_id)
 
     def _finish_async_stream(
         self,
         request_id: str,
         state: _Qwen3TTSStreamState,
     ) -> None:
-        payload = self._stream_payloads.get(request_id)
-        if payload is None or self._is_aborted(request_id):
+        payload = self.stream_payloads.get(request_id)
+        if payload is None or self.is_aborted(request_id):
             return
         self.outbox.put(
             OutgoingMessage(
@@ -2876,7 +2876,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             )
         )
         self._record_completed_stream_request_id(request_id)
-        self._clear_request_state(request_id)
+        self.clear_request_state(request_id)
 
     def fallback_full_decode(
         self,
@@ -2897,7 +2897,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         final_state = Qwen3TTSState.from_dict(payload.data)
         data: dict[str, Any] = {
             "modality": "audio",
-            "sample_rate": self._sample_rate,
+            "sample_rate": self.sample_rate,
         }
         usage = build_usage(final_state)
         if usage is not None:

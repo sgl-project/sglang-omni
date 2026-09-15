@@ -254,7 +254,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
         del request_id
         return audio_waveform_payload(
             waveform,
-            sample_rate=self._sample_rate,
+            sample_rate=self.sample_rate,
             modality="audio",
             source_hint="Higgs TTS streaming",
         )
@@ -271,7 +271,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
         del request_id, state
         final_data: dict[str, Any] = {
             "modality": "audio",
-            "sample_rate": self._sample_rate,
+            "sample_rate": self.sample_rate,
         }
         final_state = HiggsTtsState.from_dict(payload.data)
         usage = build_usage(final_state)
@@ -402,7 +402,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[_HiggsStreamState, Non
     ) -> StagePayload:
         data = audio_waveform_payload(
             waveform if waveform is not None else [],
-            sample_rate=self._sample_rate,
+            sample_rate=self.sample_rate,
             modality="audio",
             source_hint="Higgs TTS vocoder",
         )

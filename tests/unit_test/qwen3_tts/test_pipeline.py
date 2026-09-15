@@ -2006,10 +2006,10 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
         audio_codes=torch.tensor([[5, 6], [7, 8]]),
     ).to_dict()
 
-    results = asyncio.run(scheduler._batch_fn([first, second]))
+    results = asyncio.run(scheduler.batch_fn([first, second]))
 
-    assert scheduler._max_batch_size == 2
-    assert scheduler._max_batch_wait_s == pytest.approx(0.003)
+    assert scheduler.max_batch_size == 2
+    assert scheduler.max_batch_wait_s == pytest.approx(0.003)
     assert decode_batch_sizes == [2]
     assert results[0].data["sample_rate"] == 24000
     first_audio = np.frombuffer(results[0].data["audio_waveform"], dtype=np.float32)
@@ -2375,7 +2375,7 @@ def _admit_reference_stream(
     ref_code_len: int,
 ) -> _Qwen3TTSStreamState:
     state = scheduler.create_stream_state(request_id)
-    scheduler._stream_states[request_id] = state
+    scheduler.stream_states[request_id] = state
     scheduler.latch_stream_contract(
         request_id,
         state,
@@ -3169,7 +3169,7 @@ def test_qwen3_tts_initial_chunk_override_is_message_order_independent() -> None
         params={"stream": True, "initial_codec_chunk_frames": 32},
     )
     payload.request_id = "payload-first"
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
 
     chunk = _qwen3_tts_stream_item(
         torch.ones((1, 2), dtype=torch.long),
@@ -3178,10 +3178,10 @@ def test_qwen3_tts_initial_chunk_override_is_message_order_independent() -> None
     )
     assert chunk.metadata is not None
     chunk.metadata["initial_codec_chunk_frames"] = 32
-    scheduler._on_chunk("chunk-first", chunk)
+    scheduler.handle_stream_chunk("chunk-first", chunk)
 
-    assert scheduler._stream_states["payload-first"].initial_chunk_frames == 16
-    assert scheduler._stream_states["chunk-first"].initial_chunk_frames == 16
+    assert scheduler.stream_states["payload-first"].initial_chunk_frames == 16
+    assert scheduler.stream_states["chunk-first"].initial_chunk_frames == 16
 
 
 def test_qwen3_tts_streaming_vocoder_keeps_codec_chunks_on_source_device() -> None:
@@ -3533,8 +3533,8 @@ def test_qwen3_tts_short_request_final_flush_decodes_synchronously() -> None:
         initial_chunk_frames=8,
     )
     payload = make_payload(inputs="short", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
-    scheduler._on_chunk(
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             torch.ones((2, 2), dtype=torch.long),
@@ -3544,7 +3544,7 @@ def test_qwen3_tts_short_request_final_flush_decodes_synchronously() -> None:
     )
     assert scheduler.outbox.qsize() == 0, "below the threshold nothing is scheduled"
 
-    scheduler._handle_stream_done(payload.request_id)
+    scheduler.handle_stream_done(payload.request_id)
 
     chunk = scheduler.outbox.get_nowait()
     assert chunk.type == "stream"
@@ -4034,7 +4034,7 @@ def test_qwen3_tts_streaming_vocoder_decodes_initial_chunk_early() -> None:
         stream_followup_stride=2,
     )
     payload = make_payload(inputs="target", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
 
     # note (akazaakane): derived from the shipped default instead of hardcoded.
     # This test asserted a 1-frame emit and broke silently when the default moved
@@ -4043,7 +4043,7 @@ def test_qwen3_tts_streaming_vocoder_decodes_initial_chunk_early() -> None:
     initial_frames = scheduler._default_initial_chunk_frames
     assert initial_frames < scheduler._stream_stride
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             torch.ones((initial_frames, 2), dtype=torch.long),
@@ -4056,12 +4056,12 @@ def test_qwen3_tts_streaming_vocoder_decodes_initial_chunk_early() -> None:
     first = scheduler.outbox.get_nowait()
     assert len(first.data["audio_waveform"]) == initial_frames * 4 * 4
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(torch.ones((1, 2), dtype=torch.long), chunk_id=1),
     )
     assert scheduler.outbox.qsize() == 0
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(torch.ones((1, 2), dtype=torch.long), chunk_id=2),
     )
@@ -4078,10 +4078,10 @@ def test_qwen3_tts_streaming_vocoder_uses_steady_followup_stride() -> None:
         stream_chunk_ramp=(8,),
     )
     payload = make_payload(inputs="target", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
 
     initial_frames = scheduler._default_initial_chunk_frames
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             torch.ones((initial_frames, 2), dtype=torch.long),
@@ -4089,10 +4089,10 @@ def test_qwen3_tts_streaming_vocoder_uses_steady_followup_stride() -> None:
             ref_code_len=0,
         ),
     )
-    state = scheduler._stream_states[payload.request_id]
+    state = scheduler.stream_states[payload.request_id]
     assert state.next_decode_generated_frames == initial_frames + 8
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(torch.ones((8, 2), dtype=torch.long), chunk_id=1),
     )
@@ -4107,14 +4107,14 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_schedules_early_chunks() -> None
         stream_chunk_ramp=(2, 4, 8),
     )
     payload = make_payload(inputs="target", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
 
     emitted_frames: list[int] = []
     chunk_id = 0
 
     def feed(frames: int) -> None:
         nonlocal chunk_id
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((frames, 2), dtype=torch.long),
@@ -4215,12 +4215,12 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_covers_graph_shapes() -> None:
     )
 
     payload = make_payload(inputs="target", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
     covered = (
         scheduler._initial_decode_graphs._input_frames
         + scheduler._followup_decode_graphs._input_frames
     )
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             torch.ones((left + 2, 2), dtype=torch.long),
@@ -4229,7 +4229,7 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_covers_graph_shapes() -> None:
         ),
     )
     for chunk_id, frames in enumerate((4, 8, 8), start=1):
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((frames, 2), dtype=torch.long), chunk_id=chunk_id
@@ -4249,9 +4249,9 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_splits_backlogged_first_decode()
         stream_chunk_ramp=(2, 4, 8),
     )
     payload = make_payload(inputs="target", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             torch.ones((20, 2), dtype=torch.long),
@@ -4265,12 +4265,12 @@ def test_qwen3_tts_streaming_vocoder_chunk_ramp_splits_backlogged_first_decode()
         emitted_frames.append(len(message.data["audio_waveform"]) // (4 * 4))
     assert emitted_frames == [2, 4, 8, 6]
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(torch.ones((4, 2), dtype=torch.long), chunk_id=1),
     )
     assert scheduler.outbox.qsize() == 0
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(torch.ones((4, 2), dtype=torch.long), chunk_id=2),
     )
@@ -4290,10 +4290,10 @@ def test_qwen3_tts_streaming_vocoder_request_override_resizes_only_first_chunk()
         inputs="target",
         params={"stream": True, "initial_codec_chunk_frames": 1},
     )
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
     emitted_frames: list[int] = []
     for chunk_id, frames in enumerate((1, 4, 8)):
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((frames, 2), dtype=torch.long),
@@ -4320,10 +4320,10 @@ def test_qwen3_tts_streaming_vocoder_zero_override_with_ramp() -> None:
         inputs="target",
         params={"stream": True, "initial_codec_chunk_frames": 0},
     )
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
     emitted_frames: list[int] = []
     for chunk_id, frames in enumerate((16, 4, 8)):
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((frames, 2), dtype=torch.long),
@@ -4344,10 +4344,10 @@ def test_qwen3_tts_streaming_vocoder_singleton_ramp_goes_straight_to_steady() ->
         stream_chunk_ramp=(2,),
     )
     payload = make_payload(inputs="target", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
     emitted_frames: list[int] = []
     for chunk_id, frames in enumerate((2, 8, 8)):
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((frames, 2), dtype=torch.long),
@@ -4382,8 +4382,8 @@ def test_qwen3_tts_vocoder_factory_forwards_chunk_ramp(
         enable_stateful_codec_decoder=False,
     )
     payload = make_payload(inputs="target", params={"stream": True})
-    scheduler._on_streaming_new_request(payload.request_id, payload)
-    scheduler._on_chunk(
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             torch.ones((2, 2), dtype=torch.long), chunk_id=0, ref_code_len=0
@@ -4449,9 +4449,9 @@ def test_qwen3_tts_streaming_vocoder_zero_initial_chunk_uses_steady_stride() -> 
         inputs="target",
         params={"stream": True, "initial_codec_chunk_frames": 0},
     )
-    scheduler._on_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             torch.ones((15, 2), dtype=torch.long),
@@ -4460,7 +4460,7 @@ def test_qwen3_tts_streaming_vocoder_zero_initial_chunk_uses_steady_stride() -> 
         ),
     )
     assert scheduler.outbox.qsize() == 0
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(torch.ones((1, 2), dtype=torch.long), chunk_id=1),
     )
@@ -4492,8 +4492,8 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
         completion_tokens=generated_frames,
     ).to_dict()
 
-    scheduler._on_streaming_new_request(payload.request_id, payload)
-    scheduler._on_chunk(
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(all_codes, chunk_id=0, ref_code_len=ref_frames),
     )
@@ -4502,7 +4502,7 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
     # flush, which is also why these requests are N/A for C50/C100/C200.
     assert scheduler.outbox.qsize() == 0
 
-    scheduler._on_done(payload.request_id)
+    scheduler.handle_stream_done(payload.request_id)
     messages = []
     while not scheduler.outbox.empty():
         messages.append(scheduler.outbox.get_nowait())
@@ -4516,7 +4516,7 @@ def test_qwen3_tts_streaming_vocoder_short_utterance_flushes_complete_audio() ->
     expected = all_codes[ref_frames:, 0].to(torch.float32).repeat_interleave(4).numpy()
     np.testing.assert_array_equal(stream_audio, expected)
     assert any(message.type == "result" for message in messages)
-    assert payload.request_id not in scheduler._stream_states
+    assert payload.request_id not in scheduler.stream_states
 
 
 def test_qwen3_tts_stream_output_prepends_reference_once() -> None:
@@ -4732,7 +4732,7 @@ def test_qwen3_tts_bootstrap_suppression_credits_only_emitted_audio() -> None:
     assert int(emitted.shape[-1]) == frame * (state.initial_chunk_frames - 1)
     credited = state.playback_deadline_s - time.monotonic()
     assert credited == pytest.approx(
-        float(emitted.numel()) / scheduler._sample_rate, abs=0.05
+        float(emitted.numel()) / scheduler.sample_rate, abs=0.05
     )
 
 
@@ -4745,16 +4745,16 @@ def test_qwen3_tts_bootstrap_suppression_skips_at_high_concurrency() -> None:
     metadata = {"num_quantizers": 2, "bootstrap_silence_suppression": True}
 
     under = scheduler.create_stream_state("a")
-    scheduler._stream_states["a"] = under
+    scheduler.stream_states["a"] = under
     scheduler.latch_stream_contract("a", under, metadata, origin="metadata")
     assert under.suppress_bootstrap is True
 
     # A third live stream puts the vocoder past the gate, so the extra
     # first-chunk frame is not spent and the silence is left in place.
     for rid in ("b", "c"):
-        scheduler._stream_states[rid] = scheduler.create_stream_state(rid)
+        scheduler.stream_states[rid] = scheduler.create_stream_state(rid)
     over = scheduler.create_stream_state("d")
-    scheduler._stream_states["d"] = over
+    scheduler.stream_states["d"] = over
     scheduler.latch_stream_contract("d", over, metadata, origin="metadata")
     assert over.suppress_bootstrap is False
     assert (
@@ -4872,8 +4872,8 @@ def test_qwen3_tts_streaming_vocoder_matches_full_decode() -> None:
         completion_tokens=3,
     ).to_dict()
 
-    scheduler._on_streaming_new_request(payload.request_id, payload)
-    scheduler._on_chunk(
+    scheduler.handle_streaming_new_request(payload.request_id, payload)
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(
             all_codes[:3],
@@ -4891,11 +4891,11 @@ def test_qwen3_tts_streaming_vocoder_matches_full_decode() -> None:
     )
     assert first_audio.size == 4
 
-    scheduler._on_chunk(
+    scheduler.handle_stream_chunk(
         payload.request_id,
         _qwen3_tts_stream_item(all_codes[3:], chunk_id=1),
     )
-    scheduler._on_done(payload.request_id)
+    scheduler.handle_stream_done(payload.request_id)
     messages = first_messages
     while not scheduler.outbox.empty():
         messages.append(scheduler.outbox.get_nowait())
@@ -4919,7 +4919,7 @@ def test_qwen3_tts_streaming_vocoder_matches_full_decode() -> None:
             "total_tokens": 5,
         },
     }
-    assert payload.request_id not in scheduler._stream_states
+    assert payload.request_id not in scheduler.stream_states
 
 
 def test_qwen3_tts_streaming_fallback_matches_full_decode_reference_trim() -> None:
@@ -4962,8 +4962,8 @@ def test_qwen3_tts_async_followup_flushes_before_result() -> None:
 
     scheduler.on_serving_start()
     try:
-        scheduler._on_streaming_new_request(payload.request_id, payload)
-        scheduler._on_chunk(
+        scheduler.handle_streaming_new_request(payload.request_id, payload)
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 all_codes[:1],
@@ -4972,11 +4972,11 @@ def test_qwen3_tts_async_followup_flushes_before_result() -> None:
             ),
         )
         first = scheduler.outbox.get(timeout=1)
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(all_codes[1:], chunk_id=1),
         )
-        scheduler._on_done(payload.request_id)
+        scheduler.handle_stream_done(payload.request_id)
 
         followup = scheduler.outbox.get(timeout=1)
         result = scheduler.outbox.get(timeout=1)
@@ -4994,7 +4994,7 @@ def test_qwen3_tts_async_followup_flushes_before_result() -> None:
     )
     expected = all_codes[:, 0].to(torch.float32).repeat_interleave(4).numpy()
     np.testing.assert_array_equal(streamed, expected)
-    assert payload.request_id not in scheduler._stream_states
+    assert payload.request_id not in scheduler.stream_states
 
 
 def test_qwen3_tts_async_initial_batches_ready_requests() -> None:
@@ -5017,8 +5017,8 @@ def test_qwen3_tts_async_initial_batches_ready_requests() -> None:
     scheduler.on_serving_start()
     try:
         for payload in payloads:
-            scheduler._on_streaming_new_request(payload.request_id, payload)
-            scheduler._on_chunk(
+            scheduler.handle_streaming_new_request(payload.request_id, payload)
+            scheduler.handle_stream_chunk(
                 payload.request_id,
                 _qwen3_tts_stream_item(
                     torch.ones((1, 2), dtype=torch.long),
@@ -5056,8 +5056,8 @@ def test_qwen3_tts_async_initial_flushes_before_result() -> None:
 
     scheduler.on_serving_start()
     try:
-        scheduler._on_streaming_new_request(payload.request_id, payload)
-        scheduler._on_chunk(
+        scheduler.handle_streaming_new_request(payload.request_id, payload)
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((1, 2), dtype=torch.long),
@@ -5065,7 +5065,7 @@ def test_qwen3_tts_async_initial_flushes_before_result() -> None:
                 ref_code_len=0,
             ),
         )
-        scheduler._on_done(payload.request_id)
+        scheduler.handle_stream_done(payload.request_id)
         stream = scheduler.outbox.get(timeout=1)
         result = scheduler.outbox.get(timeout=1)
     finally:
@@ -5073,7 +5073,7 @@ def test_qwen3_tts_async_initial_flushes_before_result() -> None:
 
     assert stream.type == "stream"
     assert result.type == "result"
-    assert payload.request_id not in scheduler._stream_states
+    assert payload.request_id not in scheduler.stream_states
 
 
 def test_qwen3_tts_async_followup_round_robins_backlog() -> None:
@@ -5096,8 +5096,8 @@ def test_qwen3_tts_async_followup_round_robins_backlog() -> None:
 
     scheduler.on_serving_start()
     try:
-        scheduler._on_streaming_new_request(payload.request_id, payload)
-        scheduler._on_chunk(
+        scheduler.handle_streaming_new_request(payload.request_id, payload)
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 all_codes[:1],
@@ -5106,11 +5106,11 @@ def test_qwen3_tts_async_followup_round_robins_backlog() -> None:
             ),
         )
         messages = [scheduler.outbox.get(timeout=1)]
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(all_codes[1:], chunk_id=1),
         )
-        scheduler._on_done(payload.request_id)
+        scheduler.handle_stream_done(payload.request_id)
         messages.extend(scheduler.outbox.get(timeout=1) for _ in range(4))
     finally:
         scheduler.stop()
@@ -5156,8 +5156,8 @@ def test_qwen3_tts_async_followup_batches_ready_requests() -> None:
     scheduler.on_serving_start()
     try:
         for payload in payloads:
-            scheduler._on_streaming_new_request(payload.request_id, payload)
-            scheduler._on_chunk(
+            scheduler.handle_streaming_new_request(payload.request_id, payload)
+            scheduler.handle_stream_chunk(
                 payload.request_id,
                 _qwen3_tts_stream_item(
                     torch.ones((1, 2), dtype=torch.long),
@@ -5168,7 +5168,7 @@ def test_qwen3_tts_async_followup_batches_ready_requests() -> None:
             assert scheduler.outbox.get(timeout=1).type == "stream"
 
         for payload in payloads:
-            scheduler._on_chunk(
+            scheduler.handle_stream_chunk(
                 payload.request_id,
                 _qwen3_tts_stream_item(
                     torch.ones((2, 2), dtype=torch.long),
@@ -5228,7 +5228,7 @@ def test_qwen3_tts_async_worker_propagates_process_exit(
     state.total_frames = 1
     if worker == "followup":
         state.decoded_chunks = 1
-    scheduler._stream_states["request"] = state
+    scheduler.stream_states["request"] = state
 
     def interrupt(*args, **kwargs):
         del args, kwargs
@@ -5262,7 +5262,7 @@ def test_qwen3_tts_async_commit_propagates_process_exit(
     state.num_quantizers = 2
     state.code_chunks.append(torch.ones((1, 2), dtype=torch.long))
     state.total_frames = 1
-    scheduler._stream_states["request"] = state
+    scheduler.stream_states["request"] = state
     plan = scheduler._build_decode_plan(state, is_final=False)
     assert plan is not None
 
@@ -5304,8 +5304,8 @@ def test_qwen3_tts_async_followup_drops_late_audio_after_abort() -> None:
 
     scheduler.on_serving_start()
     try:
-        scheduler._on_streaming_new_request(payload.request_id, payload)
-        scheduler._on_chunk(
+        scheduler.handle_streaming_new_request(payload.request_id, payload)
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((1, 2), dtype=torch.long),
@@ -5314,7 +5314,7 @@ def test_qwen3_tts_async_followup_drops_late_audio_after_abort() -> None:
             ),
         )
         scheduler.outbox.get(timeout=1)
-        scheduler._on_chunk(
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((2, 2), dtype=torch.long),
@@ -5330,7 +5330,7 @@ def test_qwen3_tts_async_followup_drops_late_audio_after_abort() -> None:
         release.set()
         scheduler.stop()
 
-    assert payload.request_id not in scheduler._stream_states
+    assert payload.request_id not in scheduler.stream_states
 
 
 def test_qwen3_tts_async_initial_drops_late_audio_after_abort() -> None:
@@ -5356,8 +5356,8 @@ def test_qwen3_tts_async_initial_drops_late_audio_after_abort() -> None:
 
     scheduler.on_serving_start()
     try:
-        scheduler._on_streaming_new_request(payload.request_id, payload)
-        scheduler._on_chunk(
+        scheduler.handle_streaming_new_request(payload.request_id, payload)
+        scheduler.handle_stream_chunk(
             payload.request_id,
             _qwen3_tts_stream_item(
                 torch.ones((1, 2), dtype=torch.long),
@@ -5374,7 +5374,7 @@ def test_qwen3_tts_async_initial_drops_late_audio_after_abort() -> None:
         release.set()
         scheduler.stop()
 
-    assert payload.request_id not in scheduler._stream_states
+    assert payload.request_id not in scheduler.stream_states
 
 
 def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
@@ -7252,7 +7252,7 @@ def test_qwen3_tts_codec_slot_is_released_when_the_stream_finishes(
     arena = scheduler._codec_arena
     assert arena is not None
     state = scheduler.create_stream_state("request")
-    scheduler._stream_states["request"] = state
+    scheduler.stream_states["request"] = state
     state.initial_chunk_frames = 2
     state.code_chunks.append(torch.tensor([[10, 1], [20, 2]], dtype=torch.long))
     state.total_frames = 2
@@ -7281,7 +7281,7 @@ def test_qwen3_tts_codec_slot_release_waits_for_an_in_flight_decode(
     arena = scheduler._codec_arena
     assert arena is not None
     state = scheduler.create_stream_state("request")
-    scheduler._stream_states["request"] = state
+    scheduler.stream_states["request"] = state
     state.initial_chunk_frames = 2
     state.code_chunks.append(torch.tensor([[10, 1], [20, 2]], dtype=torch.long))
     state.total_frames = 2
@@ -7335,7 +7335,7 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     arena = scheduler._codec_arena
     assert arena is not None
     state = scheduler.create_stream_state("request")
-    scheduler._stream_states["request"] = state
+    scheduler.stream_states["request"] = state
     state.decoded_chunks = 1
     state.followup_pending = True
     state.codec_slot = arena.acquire()
@@ -7348,7 +7348,7 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     assert state.incremental_codec_fallback is True
     assert state.codec_slot is None
     assert arena.active_slots() == 0
-    assert "request" in scheduler._stream_states
+    assert "request" in scheduler.stream_states
     assert state.followup_pending is True
     assert scheduler._followup_queue.qsize() == 1
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 1
