@@ -1,0 +1,16 @@
+# Candidate topology; requires independent GPU memory, quality, and lifecycle qualification.
+config_cls: Cosmos3ReasonerPipelineConfig
+name: cosmos3-super-reasoner
+model_path: nvidia/Cosmos3-Super
+
+stages:
+  reasoner:
+    gpu: 0
+    runtime_gpu_ids: [0, 1, 2, 3]
+    tp_size: 1
+    factory:
+      max_concurrency: 8
+      server_args_overrides:
+        tp_size: 4
+        context_length: 8192
+        mem_fraction_static: 0.6

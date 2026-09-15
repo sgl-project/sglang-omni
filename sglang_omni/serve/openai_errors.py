@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import re
 
+from sglang_omni.admission import InvalidRequestError, QueueFullError
+
 _BAD_REQUEST_MARKERS = (
     "Unsupported language:",
     "longer than the model's context length",
@@ -38,7 +40,18 @@ _BAD_REQUEST_PATTERNS = (
 
 
 def is_bad_request_error(exc: BaseException) -> bool:
+    if InvalidRequestError.matches(exc):
+        return True
     message = str(exc)
     return any(marker in message for marker in _BAD_REQUEST_MARKERS) or any(
         pattern.search(message) is not None for pattern in _BAD_REQUEST_PATTERNS
     )
+
+
+def http_status_from_error(exc: BaseException) -> int:
+    """Preserve admission errors across the string-only coordinator IPC."""
+    if QueueFullError.matches(exc):
+        return 503
+    if re.fullmatch(r"Request .+ already exists", str(exc), flags=re.DOTALL):
+        return 409
+    return 400 if is_bad_request_error(exc) else 500

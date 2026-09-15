@@ -1,0 +1,20 @@
+# Starting allocation for Super; requires GPU correctness and memory qualification.
+config_cls: Cosmos3PipelineConfig
+name: cosmos3-super-generation
+model_path: nvidia/Cosmos3-Super
+
+stages:
+  generation:
+    gpu: 0
+    runtime_gpu_ids: [0, 1, 2, 3]
+    # One Omni owner; native SGLang creates its own workers.
+    tp_size: 1
+    factory:
+      output_dir: outputs/cosmos3-super
+      server_args_overrides:
+        tp_size: 1
+        # Reuse native execution defaults. Do not impose a Ulysses/CFG policy.
+        use_fsdp_inference: true
+        hsdp_shard_dim: 4
+        hsdp_replicate_dim: 1
+        warmup_mode: "off"
