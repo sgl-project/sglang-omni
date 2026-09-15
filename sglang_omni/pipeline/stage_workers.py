@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,6 +9,7 @@ import logging
 import multiprocessing
 import os
 import queue
+import signal
 import sys
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
@@ -67,6 +69,7 @@ class StageLaunchConfig:
     typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
+    allow_child_processes: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
     # Note (Jiaxin Deng): the byte budgets are first-class fields, never
     # factory kwargs, so no factory signature can accidentally absorb them.
@@ -153,6 +156,12 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     tenant, so mixing a TP stage with any other stage in the same process group
     is a placement bug.
     """
+    if len(spec.stage_specs) > 1 and any(
+        s.allow_child_processes for s in spec.stage_specs
+    ):
+        raise ValueError(
+            "A stage that owns native child processes must own its OS process"
+        )
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
         return {}
@@ -265,6 +274,13 @@ class StageGroup:
     def processes(self) -> list[multiprocessing.Process]:
         return list(self._processes)
 
+    @property
+    def is_ready(self) -> bool:
+        """Every planned process has completed stage startup."""
+        return len(self._ready_events) == self.process_count and all(
+            event.is_set() for event in self._ready_events
+        )
+
     def process_start_attempts(self) -> set[str]:
         """Return process names whose ``Process.start()`` was called."""
         return set(self._process_start_attempts)
@@ -283,7 +299,7 @@ class StageGroup:
                 target=stage_process_main,
                 args=(spec, event, startup_error_channel),
                 name=proc_name,
-                daemon=True,
+                daemon=not any(s.allow_child_processes for s in spec.stage_specs),
             )
             try:
                 extra_env = (
@@ -403,6 +419,10 @@ class StageGroup:
             self._startup_error_channels.clear()
 
 
+def _exit_on_sigterm(signum, frame) -> None:
+    raise SystemExit(128 + signum)
+
+
 def stage_process_main(
     spec: StageWorkerProcessSpec,
     ready_event: multiprocessing.Event,
@@ -419,7 +439,11 @@ def stage_process_main(
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
     try:
+        if previous_sigterm == signal.SIG_DFL:
+            # Startup rollback must run registered native process finalizers.
+            signal.signal(signal.SIGTERM, _exit_on_sigterm)
         for stage_spec in spec.stage_specs:
             _prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
@@ -451,6 +475,9 @@ def stage_process_main(
         if startup_error_channel is not None:
             startup_error_channel.put(traceback_text)
         sys.exit(1)
+    finally:
+        if signal.getsignal(signal.SIGTERM) is _exit_on_sigterm:
+            signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def _run_process(
@@ -544,13 +571,13 @@ def _cleanup_constructed_stages(
 
 
 def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
-    return sorted(
-        {
-            int(stage_spec.gpu_id)
-            for stage_spec in stage_specs
-            if stage_spec.gpu_id is not None
-        }
-    )
+    gpu_ids = set()
+    for spec in stage_specs:
+        if spec.gpu_id is not None:
+            gpu_ids.add(int(spec.gpu_id))
+        if spec.allow_child_processes:
+            gpu_ids.update(spec.stage_gpu_ids.get(spec.stage_name, ()))
+    return sorted(gpu_ids)
 
 
 def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
